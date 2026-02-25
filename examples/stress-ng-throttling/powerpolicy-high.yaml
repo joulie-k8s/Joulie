@@ -1,0 +1,14 @@
+apiVersion: joulie.io/v1alpha1
+kind: PowerPolicy
+metadata:
+  name: stress-ng-demo-policy
+spec:
+  priority: 1000
+  selector:
+    matchLabels:
+      feature.node.kubernetes.io/cpu-model.vendor_id: AMD
+      joulie.io/power-demo: target
+  cpu:
+    packagePowerCapWatts: 220
+  gpu:
+    enabled: false

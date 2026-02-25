@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-ng-demo
+  namespace: joulie-examples
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stress-ng-demo
+  template:
+    metadata:
+      labels:
+        app: stress-ng-demo
+    spec:
+      nodeSelector:
+        joulie.io/power-demo: target
+      containers:
+        - name: stress-ng
+          image: registry.cern.ch/docker.io/polinux/stress-ng:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              i=0
+              while true; do
+                i=$((i+1))
+                echo "=== round ${i} $(date -Iseconds) ==="
+                stress-ng --cpu 0 --cpu-load 100 --timeout 20s --metrics-brief
+                sleep 5
+              done

@@ -1,0 +1,14 @@
+apiVersion: joulie.io/v1alpha1
+kind: PowerPolicy
+metadata:
+  name: amd-worker-balanced
+spec:
+  priority: 100
+  selector:
+    matchLabels:
+      feature.node.kubernetes.io/cpu-model.vendor_id: AMD
+      node-role.kubernetes.io/worker: ""
+  cpu:
+    packagePowerCapWatts: 180
+  gpu:
+    enabled: false

@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: joulie-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: joulie-agent
+  namespace: joulie-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: joulie-agent
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["joulie.io"]
+    resources: ["powerpolicies"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: joulie-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: joulie-agent
+subjects:
+  - kind: ServiceAccount
+    name: joulie-agent
+    namespace: joulie-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: joulie-agent
+  namespace: joulie-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: joulie-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: joulie-agent
+    spec:
+      serviceAccountName: joulie-agent
+      hostNetwork: true
+      # tolerations:
+      #   - operator: Exists
+      containers:
+        - name: agent
+          image: registry.cern.ch/mbunino/joulie/joulie-agent:latest
+          imagePullPolicy: Always
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: RECONCILE_INTERVAL
+              value: 20s
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: host-sys
+              mountPath: /host-sys
+      volumes:
+        - name: host-sys
+          hostPath:
+            path: /sys
+            type: Directory
