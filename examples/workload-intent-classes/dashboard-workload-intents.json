@@ -389,22 +389,22 @@
       "pluginVersion": "12.4.0",
       "targets": [
         {
-          "expr": "((max by(node) (kube_node_labels{node=~\"$node\",label_joulie_io_power_profile=\"performance\"}) > bool 0) or on(node) (0 * max by(node) (joulie_operator_node_state{node=~\"$node\"})))",
-          "legendFormat": "{{node}} current=performance (0/1)",
+          "expr": "sum by (node) ((kube_pod_status_phase{namespace=\"$namespace\",phase=\"Running\",pod=~\"perf-intent-.*\"} == 1) * on(namespace,pod) group_left(node) kube_pod_info{namespace=\"$namespace\",node=~\"$node\"})",
+          "legendFormat": "{{node}} performance",
           "refId": "A"
         },
         {
-          "expr": "((max by(node) (kube_node_labels{node=~\"$node\",label_joulie_io_power_profile=\"draining-performance\"}) > bool 0) or on(node) (0 * max by(node) (joulie_operator_node_state{node=~\"$node\"})))",
-          "legendFormat": "{{node}} current=draining-performance (0/1)",
+          "expr": "sum by (node) ((kube_pod_status_phase{namespace=\"$namespace\",phase=\"Running\",pod=~\"eco-intent-.*\"} == 1) * on(namespace,pod) group_left(node) kube_pod_info{namespace=\"$namespace\",node=~\"$node\"})",
+          "legendFormat": "{{node}} eco",
           "refId": "B"
         },
         {
-          "expr": "((max by(node) (kube_node_labels{node=~\"$node\",label_joulie_io_power_profile=\"eco\"}) > bool 0) or on(node) (0 * max by(node) (joulie_operator_node_state{node=~\"$node\"})))",
-          "legendFormat": "{{node}} current=eco (0/1)",
+          "expr": "sum by (node) ((kube_pod_status_phase{namespace=\"$namespace\",phase=\"Running\",pod=~\"flex-intent-.*\"} == 1) * on(namespace,pod) group_left(node) kube_pod_info{namespace=\"$namespace\",node=~\"$node\"})",
+          "legendFormat": "{{node}} flex",
           "refId": "C"
         }
       ],
-      "title": "Current Node Label (Instant 0/1)",
+      "title": "Running Pods on Selected Node by Intent Class",
       "type": "timeseries"
     },
     {
