@@ -15,6 +15,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -25,7 +26,8 @@ import (
 )
 
 var (
-	policyGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "powerpolicies"}
+	policyGVR      = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "powerpolicies"}
+	profileNodeGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodepowerprofiles"}
 )
 
 type HardwareInfo struct {
@@ -38,6 +40,14 @@ type PowerPolicy struct {
 	Priority   int64
 	Selector   map[string]string
 	PowerWatts *float64
+}
+
+type NodePowerProfile struct {
+	Name       string
+	NodeName   string
+	Profile    string
+	PowerWatts *float64
+	PolicyName string
 }
 
 type DVFSCpu struct {
@@ -188,9 +198,11 @@ func main() {
 	startMetricsServer()
 
 	reconcileEvery := durationEnv("RECONCILE_INTERVAL", 20*time.Second)
+	simulateOnly := strings.EqualFold(strings.TrimSpace(os.Getenv("SIMULATE_ONLY")), "true")
 	dvfs, err := newDVFSControllerFromEnv(metrics)
 	if err != nil {
-		log.Fatalf("dvfs init: %v", err)
+		log.Printf("warning: DVFS controller disabled: %v", err)
+		dvfs = nil
 	}
 
 	cfg, err := rest.InClusterConfig()
@@ -210,7 +222,7 @@ func main() {
 	var lastRaplKey string
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := reconcileOnce(ctx, kube, dyn, nodeName, dvfs, metrics, &lastRaplKey)
+		err := reconcileOnce(ctx, kube, dyn, nodeName, dvfs, metrics, simulateOnly, &lastRaplKey)
 		cancel()
 		if err != nil {
 			metrics.reconcileErrorsTotal.WithLabelValues(nodeName).Inc()
@@ -242,6 +254,7 @@ func reconcileOnce(
 	nodeName string,
 	dvfs *DVFSController,
 	metrics *AgentMetrics,
+	simulateOnly bool,
 	lastRaplKey *string,
 ) error {
 	node, err := kube.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
@@ -250,12 +263,11 @@ func reconcileOnce(
 	}
 
 	hw := discoverHardware(node.Labels)
-	policies, err := listPolicies(ctx, dyn)
-	if err != nil {
-		return fmt.Errorf("list powerpolicies: %w", err)
-	}
 
-	selected := selectPolicyForNode(policies, node.Labels)
+	selected, source, err := resolveDesiredStateForNode(ctx, dyn, nodeName, node.Labels)
+	if err != nil {
+		return err
+	}
 	if selected == nil {
 		metrics.setBackendMode("none")
 		if *lastRaplKey != "" {
@@ -268,9 +280,16 @@ func reconcileOnce(
 		log.Printf("policy %s has no cpu.packagePowerCapWatts; nothing to enforce", selected.Name)
 		return nil
 	}
+	log.Printf("desired state source=%s name=%s node=%s cap=%.2fW", source, selected.Name, nodeName, *selected.PowerWatts)
 	metrics.policyCapWatts.WithLabelValues(nodeName, selected.Name).Set(*selected.PowerWatts)
 	if len(hw.GPUVendors) > 0 {
 		log.Printf("discovered GPUs %v on node %s; GPU caps are not implemented yet", hw.GPUVendors, nodeName)
+	}
+
+	if simulateOnly {
+		metrics.setBackendMode("none")
+		log.Printf("simulate-only mode: would apply policy=%s cap=%.2fW on node=%s", selected.Name, *selected.PowerWatts, nodeName)
+		return nil
 	}
 
 	appliedRapl, raplFiles, err := applyRAPLPackageCap(hw, *selected.PowerWatts)
@@ -297,6 +316,10 @@ func reconcileOnce(
 
 	*lastRaplKey = ""
 	metrics.setBackendMode("dvfs")
+	if dvfs == nil {
+		log.Printf("warning: no enforce backend available for node=%s policy=%s (RAPL unavailable and DVFS disabled); recording desired state only", nodeName, selected.Name)
+		return nil
+	}
 	if raplFiles == 0 && !dvfs.warned {
 		log.Printf("warning: RAPL power-limit files not available on node %s (vendor=%s); using DVFS fallback controller", nodeName, hw.CPUVendor)
 		dvfs.warned = true
@@ -705,6 +728,68 @@ func hasNFDGPUVendor(nodeLabels map[string]string, vendorHex string) bool {
 		}
 	}
 	return false
+}
+
+func resolveDesiredStateForNode(ctx context.Context, dyn dynamic.Interface, nodeName string, nodeLabels map[string]string) (*PowerPolicy, string, error) {
+	np, err := getNodePowerProfile(ctx, dyn, nodeName)
+	if err != nil {
+		return nil, "", fmt.Errorf("get NodePowerProfile: %w", err)
+	}
+	if np != nil {
+		return &PowerPolicy{
+			Name:       np.Name,
+			Priority:   1_000_000,
+			Selector:   map[string]string{},
+			PowerWatts: np.PowerWatts,
+		}, "nodepowerprofile", nil
+	}
+
+	policies, err := listPolicies(ctx, dyn)
+	if err != nil {
+		return nil, "", fmt.Errorf("list powerpolicies: %w", err)
+	}
+	selected := selectPolicyForNode(policies, nodeLabels)
+	if selected == nil {
+		return nil, "", nil
+	}
+	return selected, "powerpolicy", nil
+}
+
+func getNodePowerProfile(ctx context.Context, dyn dynamic.Interface, nodeName string) (*NodePowerProfile, error) {
+	ul, err := dyn.Resource(profileNodeGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	for _, item := range ul.Items {
+		np := parseNodePowerProfile(item)
+		if np.NodeName == nodeName {
+			return &np, nil
+		}
+	}
+	return nil, nil
+}
+
+func parseNodePowerProfile(u unstructured.Unstructured) NodePowerProfile {
+	np := NodePowerProfile{Name: u.GetName()}
+	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "nodeName"); ok {
+		np.NodeName = v
+	}
+	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "profile"); ok {
+		np.Profile = v
+	}
+	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "policy", "name"); ok {
+		np.PolicyName = v
+	}
+	if w, ok, _ := unstructured.NestedFloat64(u.Object, "spec", "cpu", "packagePowerCapWatts"); ok {
+		np.PowerWatts = &w
+	} else if wi, ok, _ := unstructured.NestedInt64(u.Object, "spec", "cpu", "packagePowerCapWatts"); ok {
+		w := float64(wi)
+		np.PowerWatts = &w
+	}
+	return np
 }
 
 func listPolicies(ctx context.Context, dyn dynamic.Interface) ([]PowerPolicy, error) {

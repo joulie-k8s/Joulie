@@ -9,6 +9,12 @@ metadata:
   name: joulie-agent
   namespace: joulie-system
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: joulie-operator
+  namespace: joulie-system
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -18,7 +24,7 @@ rules:
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["joulie.io"]
-    resources: ["powerpolicies"]
+    resources: ["powerpolicies", "nodepowerprofiles"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -32,6 +38,31 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: joulie-agent
+    namespace: joulie-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: joulie-operator
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["joulie.io"]
+    resources: ["nodepowerprofiles"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: joulie-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: joulie-operator
+subjects:
+  - kind: ServiceAccount
+    name: joulie-operator
     namespace: joulie-system
 ---
 apiVersion: apps/v1
@@ -82,6 +113,38 @@ spec:
           hostPath:
             path: /sys
             type: Directory
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: joulie-operator
+  namespace: joulie-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: joulie-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: joulie-operator
+    spec:
+      serviceAccountName: joulie-operator
+      containers:
+        - name: operator
+          image: registry.cern.ch/mbunino/joulie/joulie-operator:latest
+          imagePullPolicy: Always
+          env:
+            - name: RECONCILE_INTERVAL
+              value: 1m
+            - name: NODE_SELECTOR
+              value: joulie.io/managed=true
+            - name: RESERVED_LABEL_KEY
+              value: joulie.io/reserved
+            - name: PERFORMANCE_CAP_WATTS
+              value: "5000"
+            - name: ECO_CAP_WATTS
+              value: "120"
 ---
 apiVersion: v1
 kind: Service

@@ -1,0 +1,11 @@
+apiVersion: joulie.io/v1alpha1
+kind: NodePowerProfile
+metadata:
+  name: node-sample
+spec:
+  nodeName: worker-0
+  profile: eco
+  cpu:
+    packagePowerCapWatts: 120
+  policy:
+    name: manual-sample

@@ -2,15 +2,32 @@
 
 ## CRD
 
-The implemented API is:
+The implemented APIs are:
 
 - Group: `joulie.io`
 - Version: `v1alpha1`
-- Kind: `PowerPolicy`
-- Resource: `powerpolicies`
-- Scope: `Cluster`
+- `PowerPolicy` (`powerpolicies`, cluster-scoped) for selector-based intent
+- `NodePowerProfile` (`nodepowerprofiles`, cluster-scoped) for operator-assigned per-node desired state
 
-CRD file: `config/crd/bases/joulie.io_powerpolicies.yaml`
+CRD files:
+
+- `config/crd/bases/joulie.io_powerpolicies.yaml`
+- `config/crd/bases/joulie.io_nodepowerprofiles.yaml`
+
+## Conceptual model (next step)
+
+Policy should be modeled as a cluster-wide mapping:
+
+- input: cluster context at time `t`
+- output: `node -> power profile`
+
+Minimal profiles:
+
+- `performance` (HPC, unconstrained)
+- `eco` (energy-aware, throttling allowed)
+
+Initial implementation should remain rule-based and deterministic.
+Future implementations can be telemetry-driven or model-driven.
 
 ## Spec fields
 
@@ -20,15 +37,36 @@ CRD file: `config/crd/bases/joulie.io_powerpolicies.yaml`
 - `spec.gpu.enabled` (optional, bool; reserved)
 - `spec.gpu.powerLimitWatts` (optional, number; reserved)
 
-## Selection behavior
+## Selection behavior (current)
 
-On each node, agent:
+On each node, agent resolves desired state as:
 
-1. Lists all `PowerPolicy` objects.
-2. Matches policy selector against node labels.
-3. Picks highest `spec.priority`.
-4. Uses name as tiebreaker (lexicographically).
-5. Applies CPU cap if `spec.cpu.packagePowerCapWatts` is set.
+1. `NodePowerProfile` for that node (`spec.nodeName == <node>`), if present.
+2. Otherwise fallback to `PowerPolicy`:
+3. List all `PowerPolicy` objects.
+4. Match selector against node labels.
+5. Pick highest `spec.priority`.
+6. Use name as tiebreaker.
+
+## Simple starter policy (recommended)
+
+Bootstrap test policy:
+
+1. Select two non-reserved nodes.
+2. Assign `performance` to node A and `eco` to node B.
+3. Every minute, swap assignments.
+4. Observe frequency/power metrics and verify profile transitions.
+
+This validates control-loop correctness before adding advanced policy logic.
+
+## Future extension hooks
+
+Policy modules should be able to consume:
+
+- node metadata (geo/zone/rack, reserved flag)
+- schedules/time windows
+- telemetry (PUE, temperatures, hotspot signals)
+- external inference outputs (for example KServe model predictions)
 
 ## Example
 
@@ -41,8 +79,8 @@ spec:
   priority: 100
   selector:
     matchLabels:
-      feature.node.kubernetes.io/cpu-vendor: AuthenticAMD
-      node-role.kubernetes.io/worker: ""
+      feature.node.kubernetes.io/cpu-model.vendor_id: AMD
+      joulie.io/managed: "true"
   cpu:
     packagePowerCapWatts: 180
 ```

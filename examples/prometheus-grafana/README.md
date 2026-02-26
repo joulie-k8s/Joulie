@@ -6,13 +6,13 @@ It includes:
 
 - `ServiceMonitor` for Prometheus Operator users.
 - Grafana dashboard JSON for manual import, focused on DVFS fallback impact (power/EMA/throttle/frequency).
-- Prometheus metrics reference: [docs/metrics.md](/home/mbunino2/code/Joulie/docs/metrics.md)
+- Prometheus metrics reference: [docs/metrics.md](../../docs/metrics.md)
 
 ## Prerequisites
 
 - Joulie deployed with metrics enabled in `deploy/joulie.yaml`.
 - Prometheus scraping from `joulie-system/joulie-agent-metrics:8080/metrics`.
-- Grafana running (with dashboard sidecar importer if using the provided ConfigMap workflow).
+- Grafana running.
 
 ## 1) Verify metrics endpoint
 
@@ -26,6 +26,13 @@ Quick sample metric check:
 ```bash
 kubectl -n joulie-system port-forward svc/joulie-agent-metrics 18080:8080
 curl -s localhost:18080/metrics | grep '^joulie_' | head
+```
+
+## Quick access (Prometheus + Grafana UI)
+
+```bash
+kubectl port-forward svc/telemetry-kube-prometheus-prometheus 9090:9090 1>/dev/null &
+kubectl port-forward svc/telemetry-grafana 5000:80 1>/dev/null &
 ```
 
 ## 2) Prometheus scrape configuration

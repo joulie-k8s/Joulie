@@ -5,6 +5,8 @@ This directory contains the minimal docs for the current PoC.
 ## What exists today
 
 - `PowerPolicy` CRD (cluster-scoped)
+- `NodePowerProfile` CRD (cluster-scoped)
+- `joulie-operator` Deployment (rule-based central assignment loop)
 - `joulie-agent` DaemonSet (node-local enforcer)
 - NFD-based hardware discovery in agent
 - AMD and Intel CPU backend hooks via Linux `powercap` sysfs path
@@ -19,8 +21,11 @@ This directory contains the minimal docs for the current PoC.
 - [Metrics Reference](./metrics.md)
 - [Example: stress-ng throttling](../examples/stress-ng-throttling/README.md)
 - [Example: Prometheus + Grafana](../examples/prometheus-grafana/README.md)
+- [Example: Operator Configuration](../examples/operator-configuration/README.md)
 
 ## Current naming
 
-The implementation currently uses `PowerPolicy` (`powerpolicies.joulie.io`).
-If older text refers to `PowerState`, treat it as the same conceptual API for now.
+Current APIs are:
+
+- `PowerPolicy` (`powerpolicies.joulie.io`) for selector-based intent
+- `NodePowerProfile` (`nodepowerprofiles.joulie.io`) for operator-assigned node state

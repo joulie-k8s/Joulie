@@ -1,0 +1,231 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+)
+
+var profileGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodepowerprofiles"}
+
+type NodeAssignment struct {
+	NodeName  string
+	Profile   string
+	CapWatts  float64
+	ManagedBy string
+}
+
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
+	log.SetPrefix("[joulie-operator] ")
+
+	reconcileEvery := durationEnv("RECONCILE_INTERVAL", time.Minute)
+	selector := envOrDefault("NODE_SELECTOR", "node-role.kubernetes.io/worker")
+	reservedLabel := envOrDefault("RESERVED_LABEL_KEY", "joulie.io/reserved")
+	perfCap := floatEnv("PERFORMANCE_CAP_WATTS", 5000)
+	ecoCap := floatEnv("ECO_CAP_WATTS", 120)
+
+	parsedSelector, err := labels.Parse(selector)
+	if err != nil {
+		log.Fatalf("invalid NODE_SELECTOR %q: %v", selector, err)
+	}
+
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		log.Fatalf("in-cluster config: %v", err)
+	}
+	kube, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		log.Fatalf("kube client: %v", err)
+	}
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		log.Fatalf("dynamic client: %v", err)
+	}
+
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		if err := reconcile(ctx, kube, dyn, parsedSelector, reservedLabel, reconcileEvery, perfCap, ecoCap); err != nil {
+			log.Printf("reconcile failed: %v", err)
+		}
+		cancel()
+		time.Sleep(reconcileEvery)
+	}
+}
+
+func reconcile(
+	ctx context.Context,
+	kube *kubernetes.Clientset,
+	dyn dynamic.Interface,
+	selector labels.Selector,
+	reservedLabel string,
+	interval time.Duration,
+	perfCap float64,
+	ecoCap float64,
+) error {
+	nodes, err := kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("list nodes: %w", err)
+	}
+
+	eligible := make([]string, 0)
+	for _, n := range nodes.Items {
+		if n.Spec.Unschedulable {
+			continue
+		}
+		if n.Labels[reservedLabel] == "true" {
+			continue
+		}
+		if !selector.Matches(labels.Set(n.Labels)) {
+			continue
+		}
+		eligible = append(eligible, n.Name)
+	}
+	sort.Strings(eligible)
+	if len(eligible) == 0 {
+		log.Printf("no eligible nodes matched selector=%q", selector.String())
+		return nil
+	}
+
+	plan := buildPlan(eligible, interval, perfCap, ecoCap)
+	for _, a := range plan {
+		if err := upsertNodeProfile(ctx, dyn, a); err != nil {
+			return err
+		}
+	}
+
+	log.Printf("assigned profiles interval=%s nodes=%d plan=%s", interval, len(eligible), summarizePlan(plan))
+	return nil
+}
+
+func buildPlan(nodes []string, interval time.Duration, perfCap, ecoCap float64) []NodeAssignment {
+	phase := int((time.Now().Unix() / int64(interval.Seconds())) % 2)
+	plan := make([]NodeAssignment, 0, len(nodes))
+	for i, n := range nodes {
+		profile := "performance"
+		cap := perfCap
+		if i == 0 && (phase%2 == 0) {
+			profile = "eco"
+			cap = ecoCap
+		}
+		if i == 1 && (phase%2 == 1) {
+			profile = "eco"
+			cap = ecoCap
+		}
+		plan = append(plan, NodeAssignment{NodeName: n, Profile: profile, CapWatts: cap, ManagedBy: "rule-swap-v1"})
+	}
+	if len(nodes) == 1 {
+		if phase%2 == 0 {
+			plan[0].Profile = "eco"
+			plan[0].CapWatts = ecoCap
+		} else {
+			plan[0].Profile = "performance"
+			plan[0].CapWatts = perfCap
+		}
+	}
+	return plan
+}
+
+func summarizePlan(plan []NodeAssignment) string {
+	parts := make([]string, 0, len(plan))
+	for _, p := range plan {
+		parts = append(parts, fmt.Sprintf("%s=%s(%.1fW)", p.NodeName, p.Profile, p.CapWatts))
+	}
+	return strings.Join(parts, ",")
+}
+
+func upsertNodeProfile(ctx context.Context, dyn dynamic.Interface, a NodeAssignment) error {
+	name := fmt.Sprintf("node-%s", sanitizeName(a.NodeName))
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "joulie.io/v1alpha1",
+		"kind":       "NodePowerProfile",
+		"metadata": map[string]any{
+			"name": name,
+			"labels": map[string]any{
+				"joulie.io/managed-by": "operator",
+			},
+		},
+		"spec": map[string]any{
+			"nodeName": a.NodeName,
+			"profile":  a.Profile,
+			"cpu": map[string]any{
+				"packagePowerCapWatts": a.CapWatts,
+			},
+			"policy": map[string]any{
+				"name": a.ManagedBy,
+			},
+		},
+	}}
+
+	res := dyn.Resource(profileGVR)
+	existing, err := res.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("get NodePowerProfile %s: %w", name, err)
+		}
+		_, err := res.Create(ctx, obj, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create NodePowerProfile %s: %w", name, err)
+		}
+		return nil
+	}
+
+	existing.Object["spec"] = obj.Object["spec"]
+	if _, err := res.Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("update NodePowerProfile %s: %w", name, err)
+	}
+	return nil
+}
+
+func sanitizeName(in string) string {
+	in = strings.ToLower(in)
+	var b strings.Builder
+	for _, r := range in {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteRune('-')
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func durationEnv(key string, def time.Duration) time.Duration {
+	if s := strings.TrimSpace(os.Getenv(key)); s != "" {
+		if d, err := time.ParseDuration(s); err == nil {
+			return d
+		}
+	}
+	return def
+}
+
+func floatEnv(key string, def float64) float64 {
+	if s := strings.TrimSpace(os.Getenv(key)); s != "" {
+		if v, err := strconv.ParseFloat(s, 64); err == nil {
+			return v
+		}
+	}
+	return def
+}
+
+func envOrDefault(key, def string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	return v
+}
