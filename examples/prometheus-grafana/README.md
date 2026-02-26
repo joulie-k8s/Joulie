@@ -14,6 +14,14 @@ It includes:
 - Prometheus scraping from `joulie-system/joulie-agent-metrics:8080/metrics`.
 - Grafana running.
 
+If you need to install kube-prometheus-stack first:
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+helm install telemetry prometheus-community/kube-prometheus-stack -f values/prometheus-grafana.yaml
+```
+
 ## 1) Verify metrics endpoint
 
 ```bash

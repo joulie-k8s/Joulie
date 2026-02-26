@@ -5,7 +5,7 @@ NAMESPACE ?= joulie-system
 # Image names must follow joulie-<component>, where <component> matches cmd/<component>.
 IMAGES ?= joulie-agent joulie-operator
 
-.PHONY: help install uninstall build push build-push rollout build-push-rollout build-push-rollut build-push-install make-build-install print-images
+.PHONY: help install uninstall build push build-push rollout build-push-rollout build-push-install print-images
 
 help:
 	@echo "Targets:"
@@ -64,13 +64,7 @@ rollout:
 
 build-push-rollout: build-push rollout
 
-# compatibility alias for common typo
-build-push-rollut: build-push-rollout
-
 build-push-install: build-push install
 	@echo "Waiting for rollout to complete"
 	kubectl -n "$(NAMESPACE)" rollout status daemonset/joulie-agent
 	kubectl -n "$(NAMESPACE)" rollout status deployment/joulie-operator
-
-# compatibility alias
-make-build-install: build-push-install

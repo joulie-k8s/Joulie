@@ -17,6 +17,14 @@ kubectl label node <node-a> joulie.io/managed=true --overwrite
 kubectl label node <node-b> joulie.io/managed=true --overwrite
 ```
 
+- kube-prometheus-stack installed (if not already present):
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+helm install telemetry prometheus-community/kube-prometheus-stack -f values/prometheus-grafana.yaml
+```
+
 - operator reconcile interval configured (example `1m`):
 
 ```bash
