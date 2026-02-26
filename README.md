@@ -55,6 +55,33 @@ The policy engine may run:
 - inside the operator (simple PoC), or
 - as a separate component talking to the operator (cleaner separation).
 
+## 2.3 Next step: central policy/operator loop
+
+The next milestone is to move from agent-selected policies to a central control loop:
+
+1. Every `X` minutes, the operator evaluates global cluster state.
+2. It computes node-to-profile assignments.
+3. It writes desired state for each node.
+4. Agents enforce the assigned profile and report metrics.
+
+Initial profiles:
+
+- `performance` (HPC): unconstrained node behavior.
+- `eco`: constrained node behavior (power/frequency throttling when needed).
+
+Initial policy implementation (simple rule-based):
+
+- Example bootstrap scenario: two nodes, every minute swap profiles between nodes.
+
+Policy inputs (now and future):
+
+- Node metadata (location, reserved/immutable nodes).
+- Time windows (peak-hour rules).
+- Telemetry (PUE, temperatures, hotspots, energy mix).
+- Future data-driven inputs (Prometheus analytics, AI inference via KServe, etc.).
+
+Design goal: keep the policy engine extensible so custom policy modules can be added without changing the core operator loop.
+
 ## 3. Design principles (PoC constraints)
 
 - **Coarse control first**: node-wide power actions only.
