@@ -38,6 +38,8 @@ This validates:
 - remote assignment propagation.
 - observed effect in metrics.
 
+Current implementation includes this baseline policy as `rule-swap-v1` in `cmd/operator/main.go`.
+
 ## Extensibility model
 
 Keep policy logic pluggable:

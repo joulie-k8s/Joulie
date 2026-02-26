@@ -1,16 +1,21 @@
 REGISTRY ?= registry.cern.ch/mbunino/joulie
 TAG ?= latest
+NAMESPACE ?= joulie-system
 
-# Add more image names here as additional Dockerfiles/components are introduced.
-IMAGES ?= joulie-agent
+# Image names must follow joulie-<component>, where <component> matches cmd/<component>.
+IMAGES ?= joulie-agent joulie-operator
 
-.PHONY: help build push build-push print-images
+.PHONY: help install build push build-push rollout build-push-rollout build-push-rollut make-build-install print-images
 
 help:
 	@echo "Targets:"
+	@echo "  make install TAG=<tag>                Apply CRDs/manifests and set image tag"
 	@echo "  make build TAG=<tag>                  Build all images"
 	@echo "  make push TAG=<tag>                   Push all images"
 	@echo "  make build-push TAG=<tag>             Build and push all images"
+	@echo "  make rollout TAG=<tag>                Update and roll out agent+operator images"
+	@echo "  make build-push-rollout TAG=<tag>     Build, push, update image, wait rollout"
+	@echo "  make make-build-install TAG=<tag>     Build, push, install manifests, wait rollout"
 	@echo "  make build IMAGE=<name> TAG=<tag>     Build a single image"
 	@echo "  make push IMAGE=<name> TAG=<tag>      Push a single image"
 
@@ -19,10 +24,20 @@ print-images:
 		echo "$(REGISTRY)/$$img:$(TAG)"; \
 	done
 
+install:
+	kubectl apply -f config/crd/bases/joulie.io_powerpolicies.yaml
+	kubectl apply -f config/crd/bases/joulie.io_nodepowerprofiles.yaml
+	kubectl apply -f deploy/joulie.yaml
+	kubectl -n "$(NAMESPACE)" set image daemonset/joulie-agent \
+		agent="$(REGISTRY)/joulie-agent:$(TAG)"
+	kubectl -n "$(NAMESPACE)" set image deployment/joulie-operator \
+		operator="$(REGISTRY)/joulie-operator:$(TAG)"
+
 build:
 	@for img in $(if $(IMAGE),$(IMAGE),$(IMAGES)); do \
+		component=$${img#joulie-}; \
 		echo "Building $(REGISTRY)/$$img:$(TAG)"; \
-		docker build -t "$(REGISTRY)/$$img:$(TAG)" -f Dockerfile .; \
+		docker build --build-arg COMPONENT=$$component -t "$(REGISTRY)/$$img:$(TAG)" -f Dockerfile .; \
 	done
 
 push:
@@ -32,3 +47,23 @@ push:
 	done
 
 build-push: build push
+
+rollout:
+	@echo "Updating image tags in namespace $(NAMESPACE)"
+	kubectl -n "$(NAMESPACE)" set image daemonset/joulie-agent \
+		agent="$(REGISTRY)/joulie-agent:$(TAG)"
+	kubectl -n "$(NAMESPACE)" set image deployment/joulie-operator \
+		operator="$(REGISTRY)/joulie-operator:$(TAG)"
+	@echo "Waiting for rollout to complete"
+	kubectl -n "$(NAMESPACE)" rollout status daemonset/joulie-agent
+	kubectl -n "$(NAMESPACE)" rollout status deployment/joulie-operator
+
+build-push-rollout: build-push rollout
+
+# compatibility alias for common typo
+build-push-rollut: build-push-rollout
+
+make-build-install: build-push install
+	@echo "Waiting for rollout to complete"
+	kubectl -n "$(NAMESPACE)" rollout status daemonset/joulie-agent
+	kubectl -n "$(NAMESPACE)" rollout status deployment/joulie-operator

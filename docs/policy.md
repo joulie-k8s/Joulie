@@ -2,15 +2,17 @@
 
 ## CRD
 
-The implemented API is:
+The implemented APIs are:
 
 - Group: `joulie.io`
 - Version: `v1alpha1`
-- Kind: `PowerPolicy`
-- Resource: `powerpolicies`
-- Scope: `Cluster`
+- `PowerPolicy` (`powerpolicies`, cluster-scoped) for selector-based intent
+- `NodePowerProfile` (`nodepowerprofiles`, cluster-scoped) for operator-assigned per-node desired state
 
-CRD file: `config/crd/bases/joulie.io_powerpolicies.yaml`
+CRD files:
+
+- `config/crd/bases/joulie.io_powerpolicies.yaml`
+- `config/crd/bases/joulie.io_nodepowerprofiles.yaml`
 
 ## Conceptual model (next step)
 
