@@ -52,6 +52,11 @@ Use service annotations already in `deploy/joulie.yaml` or add static scrape con
 Import this file directly in Grafana:
 
 - [dashboard-joulie-dvfs.json](dashboard-joulie-dvfs.json)
+- [dashboard-sample.png](dashboard-sample.png)
+
+Sample dashboard:
+
+![Joulie DVFS fallback dashboard](./dashboard-sample.png)
 
 ## 4) What to look at during the stress-ng demo
 
