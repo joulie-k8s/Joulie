@@ -41,7 +41,73 @@ kubectl get nodepowerprofiles -o wide
 
 You should see periodic assignment logs and one `NodePowerProfile` per eligible (managed, non-reserved) node.
 
-## 4) Quick inline override (alternative)
+## 4) Visualize in Grafana
+
+Prerequisite: Prometheus/Grafana wiring from [Prometheus + Grafana example](../prometheus-grafana/README.md).
+
+Make sure to deploy the service monitor for Joulie as shown [in this page](../prometheus-grafana/servicemonitor.yaml).
+
+Import dashboard JSON in Grafana:
+
+- [dashboard-operator-policy.json](./dashboard-operator-policy.json)
+
+After import, use the `Node` dashboard variable (top bar) to focus on one node or keep `All`.
+
+Quick toolbox to validate wiring before opening Grafana:
+
+```bash
+# service and endpoint exposed by joulie agent
+kubectl -n joulie-system get svc joulie-agent-metrics
+kubectl -n joulie-system get endpointslice -l kubernetes.io/service-name=joulie-agent-metrics
+
+# if using Prometheus Operator, confirm ServiceMonitor exists
+kubectl -n default get servicemonitor joulie-agent
+```
+
+Optional local checks:
+
+```bash
+# sample metrics from Joulie directly
+kubectl -n joulie-system port-forward svc/joulie-agent-metrics 18080:8080
+curl -s localhost:18080/metrics | grep '^joulie_' | head -n 30
+```
+
+```bash
+# open Prometheus and Grafana locally (adjust service names if needed)
+kubectl port-forward svc/telemetry-kube-prometheus-prometheus 9090:9090 1>/dev/null &
+kubectl port-forward svc/telemetry-grafana 5000:80 1>/dev/null &
+# Get Grafana 'admin' user password by running:
+kubectl --namespace default get secrets telemetry-grafana -o jsonpath="{.data.admin-password}" | base64 -d ; echo
+# then browse:
+# http://localhost:9090/targets
+# http://localhost:9090/graph
+# http://localhost:5000
+```
+
+Recommended panels/queries in this dashboard:
+
+- assigned cap by node: `joulie_policy_cap_watts`
+- reassignment event density: `changes(joulie_policy_cap_watts[5m])`
+- backend mode none: `joulie_backend_mode{mode="none"}`
+- backend mode rapl: `joulie_backend_mode{mode="rapl"}`
+- backend mode dvfs: `joulie_backend_mode{mode="dvfs"}`
+- dvfs throttle percent: `joulie_dvfs_throttle_pct`
+- avg cpu max freq by node (MHz): `avg by (node) (joulie_dvfs_cpu_max_freq_khz) / 1000`
+- observed power by node: `joulie_dvfs_observed_power_watts`
+- ema power by node: `joulie_dvfs_ema_power_watts`
+
+Grafana interpretation:
+
+- `Assigned Cap by Node`: shows performance/eco switch decisions over time.
+- `Policy Reassignment Events`: shows how often operator is changing node profile.
+- `DVFS Throttle %` and `Average CPU Max Freq`: shows whether fallback is actively throttling.
+- `Observed vs EMA Power`: raw power estimate vs smoothed control signal.
+
+Sample dashboard on virtualized nodes:
+
+![Joulie dashboard](./dashboard-sample.png)
+
+## 5) Quick inline override (alternative)
 
 ```bash
 kubectl -n joulie-system set env deploy/joulie-operator \

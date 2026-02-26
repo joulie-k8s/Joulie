@@ -1,0 +1,87 @@
+{
+  "title": "Joulie Operator Policy View",
+  "uid": "joulie-operator-policy",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "node",
+        "type": "query",
+        "label": "Node",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "refresh": 1,
+        "query": {
+          "query": "label_values(joulie_policy_cap_watts, node)",
+          "refId": "NodeVariableQuery"
+        },
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Assigned Cap by Node (W)",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 7},
+      "targets": [
+        {"expr": "joulie_policy_cap_watts{node=~\"$node\"}", "legendFormat": "{{node}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Policy Reassignment Events (5m window)",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 7},
+      "targets": [
+        {"expr": "changes(joulie_policy_cap_watts{node=~\"$node\"}[5m])", "legendFormat": "{{node}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Backend Mode by Node",
+      "gridPos": {"x": 0, "y": 7, "w": 12, "h": 7},
+      "targets": [
+        {"expr": "joulie_backend_mode{mode=\"none\",node=~\"$node\"}", "legendFormat": "{{node}} none"},
+        {"expr": "joulie_backend_mode{mode=\"rapl\",node=~\"$node\"}", "legendFormat": "{{node}} rapl"},
+        {"expr": "joulie_backend_mode{mode=\"dvfs\",node=~\"$node\"}", "legendFormat": "{{node}} dvfs"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "DVFS Throttle % by Node",
+      "gridPos": {"x": 12, "y": 7, "w": 12, "h": 7},
+      "targets": [
+        {"expr": "joulie_dvfs_throttle_pct{node=~\"$node\"}", "legendFormat": "{{node}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Average CPU Max Freq by Node (MHz)",
+      "gridPos": {"x": 0, "y": 14, "w": 12, "h": 7},
+      "targets": [
+        {"expr": "avg by (node) (joulie_dvfs_cpu_max_freq_khz{node=~\"$node\"}) / 1000", "legendFormat": "{{node}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Observed / EMA Power by Node",
+      "gridPos": {"x": 12, "y": 14, "w": 12, "h": 7},
+      "targets": [
+        {"expr": "joulie_dvfs_observed_power_watts{node=~\"$node\"}", "legendFormat": "{{node}} observed"},
+        {"expr": "joulie_dvfs_ema_power_watts{node=~\"$node\"}", "legendFormat": "{{node}} ema"}
+      ]
+    }
+  ]
+}

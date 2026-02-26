@@ -28,6 +28,13 @@ kubectl -n joulie-system port-forward svc/joulie-agent-metrics 18080:8080
 curl -s localhost:18080/metrics | grep '^joulie_' | head
 ```
 
+## Quick access (Prometheus + Grafana UI)
+
+```bash
+kubectl port-forward svc/telemetry-kube-prometheus-prometheus 9090:9090 1>/dev/null &
+kubectl port-forward svc/telemetry-grafana 5000:80 1>/dev/null &
+```
+
 ## 2) Prometheus scrape configuration
 
 ### Option A: Prometheus Operator (ServiceMonitor)
