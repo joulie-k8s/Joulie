@@ -33,13 +33,34 @@ kubectl get nodepowerprofiles -o wide
 kubectl get nodes -L joulie.io/power-profile
 ```
 
-## 2) Deploy intent-class workloads (as Deployments)
+## 2) Run the experiment (full sequence)
 
 ```bash
+# label managed workers
+kubectl label node <node-a> joulie.io/managed=true --overwrite
+kubectl label node <node-b> joulie.io/managed=true --overwrite
+
+# fast operator loop for demo
+kubectl -n joulie-system set env deploy/joulie-operator RECONCILE_INTERVAL=2m
+kubectl -n joulie-system rollout status deploy/joulie-operator
+
+# deploy workloads + recycler + operator ServiceMonitor
 kubectl apply -f examples/workload-intent-classes/namespace.yaml
 kubectl apply -f examples/workload-intent-classes/deployments.yaml
 kubectl apply -f examples/workload-intent-classes/recycler.yaml
 kubectl apply -f examples/workload-intent-classes/servicemonitor-operator.yaml
+
+# sanity checks
+kubectl get nodepowerprofiles -o wide
+kubectl get nodes -L joulie.io/power-profile
+kubectl -n joulie-intent-demo get pods -o wide
+kubectl -n joulie-system logs deploy/joulie-operator --tail=200 | egrep "assigned profiles|transition deferred"
+```
+
+You can also watch the status in real time:
+
+```bash
+watch -n 5 'kubectl -n joulie-intent-demo get pods -o wide; echo; kubectl get nodes -L joulie.io/power-profile'
 ```
 
 Note: `servicemonitor-operator.yaml` assumes Prometheus Operator release label `release: telemetry` in namespace `default`.
@@ -79,8 +100,8 @@ Dashboard highlights:
   - visualize `ActivePerformance` / `DrainingPerformance` / `ActiveEco` per node
 - `State Transitions (5m)`:
   - `applied` transitions and `deferred` transitions from operator guard logic
-- `Operator Profile vs Node Label (Side-by-side)`:
-  - compare operator-exported profile signal with actual `joulie.io/power-profile` node label value
+- `Kubernetes Node Label Profile (kube_node_labels)`:
+  - actual `joulie.io/power-profile` label value from Kubernetes
 - `Pods by Intent Class and Node`:
   - shows how `performance`, `eco`, `flex` workloads land on nodes
 - `Pod Re-creations (5m)`:

@@ -161,7 +161,7 @@ func reconcile(
 		plan[i].LabelProfile = plan[i].Profile
 		plan[i].State = profileToState(plan[i].Profile)
 	}
-	applyDowngradeGuards(ctx, kube, plan, nodesByName, intentLabel, perfIntentValue, perfCap)
+	applyDowngradeGuards(ctx, kube, plan, nodesByName, intentLabel, perfIntentValue, perfCap, ecoCap)
 	for _, a := range plan {
 		if err := upsertNodeProfile(ctx, dyn, a); err != nil {
 			return err
@@ -254,13 +254,45 @@ func applyDowngradeGuards(
 	intentLabel string,
 	perfIntentValue string,
 	perfCap float64,
+	ecoCap float64,
 ) {
 	for i := range plan {
 		a := &plan[i]
+
+		current := currentProfiles[a.NodeName]
+		// If a node is already in draining, prioritize drain completion:
+		// as soon as performance-intent workloads on that node are gone, move to eco.
+		if current == "draining-performance" {
+			count, err := runningIntentPodCountOnNode(ctx, kube, a.NodeName, intentLabel, perfIntentValue)
+			if err != nil {
+				log.Printf("warning: cannot check workload intents on node=%s: %v", a.NodeName, err)
+				continue
+			}
+			if count == 0 {
+				a.Profile = "eco"
+				a.CapWatts = ecoCap
+				a.ManagedBy = "rule-swap-v1-drain-complete"
+				a.State = "ActiveEco"
+				a.LabelProfile = "eco"
+				log.Printf("drain completed node=%s transition=DrainingPerformance->ActiveEco", a.NodeName)
+				continue
+			}
+
+			// Still draining: keep high cap and keep node unattractive for new performance pods.
+			a.Profile = "performance"
+			a.CapWatts = perfCap
+			a.ManagedBy = "rule-swap-v1-draining"
+			a.State = "DrainingPerformance"
+			a.LabelProfile = "draining-performance"
+			operatorStateTransitions.WithLabelValues(a.NodeName, "DrainingPerformance", "ActiveEco", "deferred").Inc()
+			log.Printf("transition deferred node=%s from=DrainingPerformance to=ActiveEco reason=running-intent-pods label=%s value=%s count=%d", a.NodeName, intentLabel, perfIntentValue, count)
+			continue
+		}
+
 		if a.Profile != "eco" {
 			continue
 		}
-		if currentProfiles[a.NodeName] != "performance" {
+		if current != "performance" {
 			continue
 		}
 		count, err := runningIntentPodCountOnNode(ctx, kube, a.NodeName, intentLabel, perfIntentValue)
