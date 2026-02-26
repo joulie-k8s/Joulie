@@ -9,6 +9,6 @@ spec:
       feature.node.kubernetes.io/cpu-model.vendor_id: AMD
       node-role.kubernetes.io/worker: ""
   cpu:
-    packagePowerCapWatts: 180
+    packagePowerCapWatts: 180.0
   gpu:
     enabled: false

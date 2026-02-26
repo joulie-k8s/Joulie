@@ -65,6 +65,9 @@ spec:
               value: 20s
           securityContext:
             privileged: true
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: true
           volumeMounts:
             - name: host-sys
               mountPath: /host-sys

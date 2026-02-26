@@ -9,6 +9,6 @@ spec:
       feature.node.kubernetes.io/cpu-model.vendor_id: AMD
       joulie.io/power-demo: target
   cpu:
-    packagePowerCapWatts: 220
+    packagePowerCapWatts: 5000.0
   gpu:
     enabled: false
