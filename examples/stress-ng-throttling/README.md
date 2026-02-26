@@ -106,7 +106,7 @@ Then monitor agent logs for `throttle-down` steps (meaning less throttling), and
 If you want immediate host reset, use:
 
 ```bash
-sudo /home/mbunino2/code/Joulie/scripts/restore-cpufreq.sh
+sudo ../../scripts/restore-cpufreq.sh
 ```
 
 ## 8. Cleanup
