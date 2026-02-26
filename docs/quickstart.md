@@ -9,7 +9,19 @@
   - RAPL power limit files, or
   - cpufreq sysfs interfaces
 
-## 1. Build and push image
+## 1. Install from release (recommended)
+
+Install directly from OCI chart release:
+
+```bash
+helm upgrade --install joulie oci://registry.cern.ch/mbunino/joulie/joulie \
+  --version <version> \
+  -n joulie-system \
+  --create-namespace \
+  -f values/joulie.yaml
+```
+
+## 2. Install from source (when developing)
 
 If you changed source code, from repo root:
 
@@ -30,7 +42,7 @@ make build-push-install TAG=<tag>
 
 If you use `make build-push-install`, you can skip step 2.
 
-## 2. Install CRDs + components
+## 3. Install CRDs + components (source workflow)
 
 If images for `TAG` are already in the registry (no source changes), run:
 
@@ -69,7 +81,7 @@ To remove Joulie components and CRD:
 make uninstall
 ```
 
-## 3. Label nodes managed by the operator
+## 4. Label nodes managed by the operator
 
 The default operator selector in Helm values (`values/joulie.yaml`) is:
 
@@ -82,13 +94,13 @@ kubectl label node <node1> joulie.io/managed=true --overwrite
 kubectl label node <node2> joulie.io/managed=true --overwrite
 ```
 
-## 4. Update to a new image tag later
+## 5. Update to a new image tag later
 
 ```bash
 make rollout TAG=<new-tag>
 ```
 
-## 5. Control mode
+## 6. Control mode
 
 ### Central operator mode (single path)
 
@@ -106,12 +118,14 @@ kubectl -n joulie-system logs deploy/joulie-operator --tail=100
 kubectl -n joulie-system logs -l app.kubernetes.io/name=joulie-agent --tail=100
 ```
 
-## 6. Verify
+## 7. Verify
 
 ```bash
 kubectl get nodepowerprofiles
 kubectl -n joulie-system get pods -o wide
 kubectl -n joulie-system logs -l app.kubernetes.io/name=joulie-agent --tail=100
+kubectl -n joulie-system get pods \
+  -o custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[0].image,IMAGEID:.status.containerStatuses[0].imageID
 ```
 
 Look for log lines containing desired-state source and enforcement/fallback actions.
