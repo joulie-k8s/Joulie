@@ -1,6 +1,9 @@
 REGISTRY ?= registry.cern.ch/mbunino/joulie
 TAG ?= latest
 NAMESPACE ?= joulie-system
+HELM_RELEASE ?= joulie
+HELM_CHART ?= charts/joulie
+HELM_VALUES ?= values/joulie.yaml
 
 # Image names must follow joulie-<component>, where <component> matches cmd/<component>.
 IMAGES ?= joulie-agent joulie-operator
@@ -9,8 +12,8 @@ IMAGES ?= joulie-agent joulie-operator
 
 help:
 	@echo "Targets:"
-	@echo "  make install TAG=<tag>                Apply CRDs/manifests and set image tag"
-	@echo "  make uninstall                        Remove manifests and CRD"
+	@echo "  make install TAG=<tag> [HELM_VALUES=values/joulie.yaml]  Helm install/upgrade"
+	@echo "  make uninstall                        Helm uninstall and remove CRD"
 	@echo "  make build TAG=<tag>                  Build all images"
 	@echo "  make push TAG=<tag>                   Push all images"
 	@echo "  make build-push TAG=<tag>             Build and push all images"
@@ -26,16 +29,17 @@ print-images:
 	done
 
 install:
-	kubectl apply -f config/crd/bases/joulie.io_nodepowerprofiles.yaml
-	kubectl apply -f deploy/joulie.yaml
-	kubectl -n "$(NAMESPACE)" set image daemonset/joulie-agent \
-		agent="$(REGISTRY)/joulie-agent:$(TAG)"
-	kubectl -n "$(NAMESPACE)" set image deployment/joulie-operator \
-		operator="$(REGISTRY)/joulie-operator:$(TAG)"
+	helm upgrade --install "$(HELM_RELEASE)" "$(HELM_CHART)" \
+		-n "$(NAMESPACE)" --create-namespace \
+		-f "$(HELM_VALUES)" \
+		--set agent.image.repository="$(REGISTRY)/joulie-agent" \
+		--set operator.image.repository="$(REGISTRY)/joulie-operator" \
+		--set agent.image.tag="$(TAG)" \
+		--set operator.image.tag="$(TAG)"
 
 uninstall:
-	kubectl delete -f deploy/joulie.yaml --ignore-not-found=true
-	kubectl delete -f config/crd/bases/joulie.io_nodepowerprofiles.yaml --ignore-not-found=true
+	helm uninstall "$(HELM_RELEASE)" -n "$(NAMESPACE)" || true
+	kubectl delete crd nodepowerprofiles.joulie.io --ignore-not-found=true
 
 build:
 	@for img in $(if $(IMAGE),$(IMAGE),$(IMAGES)); do \
@@ -53,11 +57,14 @@ push:
 build-push: build push
 
 rollout:
-	@echo "Updating image tags in namespace $(NAMESPACE)"
-	kubectl -n "$(NAMESPACE)" set image daemonset/joulie-agent \
-		agent="$(REGISTRY)/joulie-agent:$(TAG)"
-	kubectl -n "$(NAMESPACE)" set image deployment/joulie-operator \
-		operator="$(REGISTRY)/joulie-operator:$(TAG)"
+	@echo "Rolling out helm release $(HELM_RELEASE) in namespace $(NAMESPACE)"
+	helm upgrade --install "$(HELM_RELEASE)" "$(HELM_CHART)" \
+		-n "$(NAMESPACE)" --create-namespace \
+		-f "$(HELM_VALUES)" \
+		--set agent.image.repository="$(REGISTRY)/joulie-agent" \
+		--set operator.image.repository="$(REGISTRY)/joulie-operator" \
+		--set agent.image.tag="$(TAG)" \
+		--set operator.image.tag="$(TAG)"
 	@echo "Waiting for rollout to complete"
 	kubectl -n "$(NAMESPACE)" rollout status daemonset/joulie-agent
 	kubectl -n "$(NAMESPACE)" rollout status deployment/joulie-operator

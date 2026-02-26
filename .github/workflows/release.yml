@@ -1,0 +1,84 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-images:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set release version
+        id: vars
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to CERN registry
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cern.ch
+          username: ${{ secrets.CERN_REGISTRY_USER }}
+          password: ${{ secrets.CERN_REGISTRY_PASSWORD }}
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push agent
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          build-args: COMPONENT=agent
+          push: true
+          tags: |
+            registry.cern.ch/mbunino/joulie/joulie-agent:${{ steps.vars.outputs.version }}
+            registry.cern.ch/mbunino/joulie/joulie-agent:latest
+
+      - name: Build and push operator
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          build-args: COMPONENT=operator
+          push: true
+          tags: |
+            registry.cern.ch/mbunino/joulie/joulie-operator:${{ steps.vars.outputs.version }}
+            registry.cern.ch/mbunino/joulie/joulie-operator:latest
+
+  publish-helm-chart:
+    runs-on: ubuntu-latest
+    needs: publish-images
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Set release version
+        id: vars
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to CERN registry for Helm OCI
+        run: echo "${{ secrets.CERN_REGISTRY_PASSWORD }}" | helm registry login registry.cern.ch -u "${{ secrets.CERN_REGISTRY_USER }}" --password-stdin
+
+      - name: Package chart
+        run: |
+          helm package charts/joulie \
+            --version "${{ steps.vars.outputs.version }}" \
+            --app-version "${{ steps.vars.outputs.version }}"
+
+      - name: Push chart to CERN registry (OCI)
+        run: |
+          helm push "joulie-${{ steps.vars.outputs.version }}.tgz" "oci://registry.cern.ch/mbunino/joulie"

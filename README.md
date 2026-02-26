@@ -13,6 +13,14 @@
 - [Example: Operator Configuration](./examples/operator-configuration/README.md)
 - [Example: Workload Intent Classes](./examples/workload-intent-classes/README.md)
 
+## CI/CD
+
+- CI (`.github/workflows/ci.yml`): runs `go test ./...` and Helm lint/template on PRs to `main` and pushes to `main`.
+- Release (`.github/workflows/release.yml`):
+  - builds and pushes images to `registry.cern.ch/mbunino/joulie`,
+  - packages and pushes Helm chart as OCI artifact to `registry.cern.ch/mbunino/joulie`.
+  - required repo secrets: `CERN_REGISTRY_USER`, `CERN_REGISTRY_PASSWORD`.
+
 ## 1. Motivation
 
 Modern data-centres are heterogeneous (Intel/AMD CPUs, NVIDIA/AMD/Intel GPUs) and operate under thermal and power constraints that vary across time and space (rack placement, hot spots, HVAC behaviour, weather, energy mix, peak hours). Even without per-core or per-pod control, applying coarse, node-level power actions can:

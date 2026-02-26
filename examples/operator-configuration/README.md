@@ -121,4 +121,4 @@ kubectl -n joulie-system set env deploy/joulie-operator \
 ## Notes
 
 - `NODE_SELECTOR` controls which nodes the operator manages. It does **not** control DaemonSet placement.
-- Agent placement is configured in the DaemonSet spec (`deploy/joulie.yaml`).
+- Agent placement is configured in the Helm DaemonSet template (`charts/joulie/templates/agent-daemonset.yaml`).

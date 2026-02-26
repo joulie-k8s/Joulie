@@ -1,0 +1,7 @@
+apiVersion: v2
+name: joulie
+description: Lean node-level power orchestrator (agent + operator)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
