@@ -17,6 +17,7 @@ This directory contains the minimal docs for the current PoC.
 - [CRD and Policy Model](./policy.md)
 - [Operator Notes](./operator.md)
 - [Example: stress-ng throttling](../examples/stress-ng-throttling/README.md)
+- [Example: Prometheus + Grafana](../examples/prometheus-grafana/README.md)
 
 ## Current naming
 

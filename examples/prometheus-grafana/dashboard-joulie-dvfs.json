@@ -1,0 +1,141 @@
+{
+  "title": "Joulie DVFS Fallback",
+  "uid": "joulie-dvfs-fallback",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Backend Mode",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "joulie_backend_mode{mode=\"rapl\"}",
+          "legendFormat": "rapl"
+        },
+        {
+          "expr": "joulie_backend_mode{mode=\"dvfs\"}",
+          "legendFormat": "dvfs"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Policy Cap (W)",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "joulie_policy_cap_watts",
+          "legendFormat": "{{policy}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Observed vs EMA Power",
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "joulie_rapl_package_total_power_watts",
+          "legendFormat": "rapl_pkg_total"
+        },
+        {
+          "expr": "joulie_dvfs_observed_power_watts",
+          "legendFormat": "dvfs_observed"
+        },
+        {
+          "expr": "joulie_dvfs_ema_power_watts",
+          "legendFormat": "dvfs_ema"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "DVFS Throttle %",
+      "gridPos": {
+        "x": 12,
+        "y": 7,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "joulie_dvfs_throttle_pct",
+          "legendFormat": "throttle_pct"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Average CPU Max Freq (MHz)",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "avg(joulie_dvfs_cpu_max_freq_khz) / 1000",
+          "legendFormat": "avg_max_mhz"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Average CPU Current Freq (MHz)",
+      "gridPos": {
+        "x": 12,
+        "y": 14,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "avg(joulie_dvfs_cpu_cur_freq_khz) / 1000",
+          "legendFormat": "avg_cur_mhz"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "DVFS Action Rates",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "rate(joulie_dvfs_actions_total{action=\"throttle_up\"}[5m])",
+          "legendFormat": "throttle_up/s"
+        },
+        {
+          "expr": "rate(joulie_dvfs_actions_total{action=\"throttle_down\"}[5m])",
+          "legendFormat": "throttle_down/s"
+        }
+      ]
+    }
+  ]
+}

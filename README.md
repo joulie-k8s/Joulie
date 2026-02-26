@@ -8,6 +8,7 @@
 - [CRD and Policy Model](./docs/policy.md)
 - [Operator Notes](./docs/operator.md)
 - [Example: stress-ng throttling](./examples/stress-ng-throttling/README.md)
+- [Example: Prometheus + Grafana](./examples/prometheus-grafana/README.md)
 
 ## 1. Motivation
 

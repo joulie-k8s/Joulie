@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -40,6 +43,7 @@ type PowerPolicy struct {
 type DVFSCpu struct {
 	Index   int
 	MaxFile string
+	CurFile string
 	MinKHz  int64
 	MaxKHz  int64
 }
@@ -48,6 +52,25 @@ type energySample struct {
 	LastUJ   int64
 	LastTime time.Time
 	RangeUJ  int64
+}
+
+type AgentMetrics struct {
+	node string
+
+	backendMode          *prometheus.GaugeVec
+	policyCapWatts       *prometheus.GaugeVec
+	raplEnergyUJ         *prometheus.GaugeVec
+	raplPowerWatts       *prometheus.GaugeVec
+	raplPackageTotalW    *prometheus.GaugeVec
+	dvfsObservedPowerW   *prometheus.GaugeVec
+	dvfsEMAPowerW        *prometheus.GaugeVec
+	dvfsThrottlePct      *prometheus.GaugeVec
+	dvfsTripAbove        *prometheus.GaugeVec
+	dvfsTripBelow        *prometheus.GaugeVec
+	dvfsCPUCurFreqKHz    *prometheus.GaugeVec
+	dvfsCPUMaxFreqKHz    *prometheus.GaugeVec
+	dvfsActionsTotal     *prometheus.CounterVec
+	reconcileErrorsTotal *prometheus.CounterVec
 }
 
 type DVFSController struct {
@@ -71,7 +94,85 @@ type DVFSController struct {
 	belowCount int
 	tripCount  int
 
-	warned bool
+	warned  bool
+	metrics *AgentMetrics
+}
+
+func newAgentMetrics(node string) *AgentMetrics {
+	m := &AgentMetrics{
+		node: node,
+		backendMode: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "joulie_backend_mode",
+			Help: "Current backend mode (1 active) per node and mode",
+		}, []string{"node", "mode"}),
+		policyCapWatts: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "joulie_policy_cap_watts",
+			Help: "Current policy cap watts selected by the agent",
+		}, []string{"node", "policy"}),
+		raplEnergyUJ: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "joulie_rapl_energy_uj",
+			Help: "Latest RAPL energy reading in microjoules",
+		}, []string{"node", "zone"}),
+		raplPowerWatts: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "joulie_rapl_estimated_power_watts",
+			Help: "Estimated per-zone RAPL power in watts",
+		}, []string{"node", "zone"}),
+		raplPackageTotalW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "joulie_rapl_package_total_power_watts",
+			Help: "Estimated total package power watts (sum of package zones)",
+		}, []string{"node"}),
+		dvfsObservedPowerW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "joulie_dvfs_observed_power_watts",
+			Help: "Observed package power used by DVFS controller",
+		}, []string{"node"}),
+		dvfsEMAPowerW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "joulie_dvfs_ema_power_watts",
+			Help: "EMA package power used by DVFS controller",
+		}, []string{"node"}),
+		dvfsThrottlePct: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "joulie_dvfs_throttle_pct",
+			Help: "Current DVFS throttle percent",
+		}, []string{"node"}),
+		dvfsTripAbove: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "joulie_dvfs_above_trip_count",
+			Help: "Consecutive above-threshold samples",
+		}, []string{"node"}),
+		dvfsTripBelow: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "joulie_dvfs_below_trip_count",
+			Help: "Consecutive below-threshold samples",
+		}, []string{"node"}),
+		dvfsCPUCurFreqKHz: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "joulie_dvfs_cpu_cur_freq_khz",
+			Help: "Current CPU/policy frequency in kHz",
+		}, []string{"node", "cpu"}),
+		dvfsCPUMaxFreqKHz: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "joulie_dvfs_cpu_max_freq_khz",
+			Help: "Current CPU/policy max frequency cap in kHz",
+		}, []string{"node", "cpu"}),
+		dvfsActionsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "joulie_dvfs_actions_total",
+			Help: "Total number of DVFS control actions",
+		}, []string{"node", "action"}),
+		reconcileErrorsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "joulie_reconcile_errors_total",
+			Help: "Total reconcile errors",
+		}, []string{"node"}),
+	}
+
+	prometheus.MustRegister(
+		m.backendMode, m.policyCapWatts, m.raplEnergyUJ, m.raplPowerWatts, m.raplPackageTotalW,
+		m.dvfsObservedPowerW, m.dvfsEMAPowerW, m.dvfsThrottlePct, m.dvfsTripAbove, m.dvfsTripBelow,
+		m.dvfsCPUCurFreqKHz, m.dvfsCPUMaxFreqKHz, m.dvfsActionsTotal, m.reconcileErrorsTotal,
+	)
+	m.setBackendMode("none")
+	return m
+}
+
+func (m *AgentMetrics) setBackendMode(mode string) {
+	m.backendMode.WithLabelValues(m.node, "none").Set(0)
+	m.backendMode.WithLabelValues(m.node, "rapl").Set(0)
+	m.backendMode.WithLabelValues(m.node, "dvfs").Set(0)
+	m.backendMode.WithLabelValues(m.node, mode).Set(1)
 }
 
 func main() {
@@ -83,8 +184,11 @@ func main() {
 		log.Fatal("NODE_NAME env var is required")
 	}
 
+	metrics := newAgentMetrics(nodeName)
+	startMetricsServer()
+
 	reconcileEvery := durationEnv("RECONCILE_INTERVAL", 20*time.Second)
-	dvfs, err := newDVFSControllerFromEnv()
+	dvfs, err := newDVFSControllerFromEnv(metrics)
 	if err != nil {
 		log.Fatalf("dvfs init: %v", err)
 	}
@@ -106,13 +210,29 @@ func main() {
 	var lastRaplKey string
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := reconcileOnce(ctx, kube, dyn, nodeName, dvfs, &lastRaplKey)
+		err := reconcileOnce(ctx, kube, dyn, nodeName, dvfs, metrics, &lastRaplKey)
 		cancel()
 		if err != nil {
+			metrics.reconcileErrorsTotal.WithLabelValues(nodeName).Inc()
 			log.Printf("reconcile failed: %v", err)
 		}
 		time.Sleep(reconcileEvery)
 	}
+}
+
+func startMetricsServer() {
+	addr := strings.TrimSpace(os.Getenv("METRICS_ADDR"))
+	if addr == "" {
+		addr = ":8080"
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	go func() {
+		log.Printf("metrics server listening on %s", addr)
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			log.Printf("warning: metrics server stopped: %v", err)
+		}
+	}()
 }
 
 func reconcileOnce(
@@ -121,6 +241,7 @@ func reconcileOnce(
 	dyn dynamic.Interface,
 	nodeName string,
 	dvfs *DVFSController,
+	metrics *AgentMetrics,
 	lastRaplKey *string,
 ) error {
 	node, err := kube.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
@@ -136,6 +257,7 @@ func reconcileOnce(
 
 	selected := selectPolicyForNode(policies, node.Labels)
 	if selected == nil {
+		metrics.setBackendMode("none")
 		if *lastRaplKey != "" {
 			log.Printf("no matching policy for node %s; leaving current settings untouched", nodeName)
 			*lastRaplKey = ""
@@ -146,6 +268,7 @@ func reconcileOnce(
 		log.Printf("policy %s has no cpu.packagePowerCapWatts; nothing to enforce", selected.Name)
 		return nil
 	}
+	metrics.policyCapWatts.WithLabelValues(nodeName, selected.Name).Set(*selected.PowerWatts)
 	if len(hw.GPUVendors) > 0 {
 		log.Printf("discovered GPUs %v on node %s; GPU caps are not implemented yet", hw.GPUVendors, nodeName)
 	}
@@ -155,6 +278,7 @@ func reconcileOnce(
 		return err
 	}
 	if appliedRapl {
+		metrics.setBackendMode("rapl")
 		key := fmt.Sprintf("%s|rapl|%.2f", selected.Name, *selected.PowerWatts)
 		if key != *lastRaplKey {
 			log.Printf("applied policy=%s backend=rapl cap=%.2fW files=%d cpuVendor=%s", selected.Name, *selected.PowerWatts, raplFiles, hw.CPUVendor)
@@ -172,11 +296,10 @@ func reconcileOnce(
 	}
 
 	*lastRaplKey = ""
-	if raplFiles == 0 {
-		if !dvfs.warned {
-			log.Printf("warning: RAPL power-limit files not available on node %s (vendor=%s); using DVFS fallback controller", nodeName, hw.CPUVendor)
-			dvfs.warned = true
-		}
+	metrics.setBackendMode("dvfs")
+	if raplFiles == 0 && !dvfs.warned {
+		log.Printf("warning: RAPL power-limit files not available on node %s (vendor=%s); using DVFS fallback controller", nodeName, hw.CPUVendor)
+		dvfs.warned = true
 	}
 	action, err := dvfs.Reconcile(*selected.PowerWatts)
 	if err != nil {
@@ -275,7 +398,6 @@ func energyFiles() ([]string, error) {
 
 func isPackageEnergyFile(path string) bool {
 	zone := filepath.Base(filepath.Dir(path))
-	// Package zones are commonly intel-rapl:N. Subdomains are intel-rapl:N:M.
 	return strings.Count(zone, ":") == 1
 }
 
@@ -291,9 +413,10 @@ func cpufreqCPUList() ([]DVFSCpu, error) {
 	}
 	matches = append(matches, cpuMatches...)
 	matches = append(matches, policyMatches...)
+
 	cpus := make([]DVFSCpu, 0, len(matches))
-	for _, f := range matches {
-		dir := filepath.Dir(f)
+	for _, maxf := range matches {
+		dir := filepath.Dir(maxf)
 		idx, ok := cpuIndexFromPath(dir)
 		if !ok {
 			continue
@@ -306,7 +429,7 @@ func cpufreqCPUList() ([]DVFSCpu, error) {
 		if err != nil {
 			continue
 		}
-		cpus = append(cpus, DVFSCpu{Index: idx, MaxFile: f, MinKHz: minKHz, MaxKHz: maxKHz})
+		cpus = append(cpus, DVFSCpu{Index: idx, MaxFile: maxf, CurFile: filepath.Join(dir, "scaling_cur_freq"), MinKHz: minKHz, MaxKHz: maxKHz})
 	}
 	sort.Slice(cpus, func(i, j int) bool { return cpus[i].Index < cpus[j].Index })
 	return cpus, nil
@@ -334,7 +457,7 @@ func cpuIndexFromPath(cpufreqDir string) (int, bool) {
 	return v, true
 }
 
-func newDVFSControllerFromEnv() (*DVFSController, error) {
+func newDVFSControllerFromEnv(metrics *AgentMetrics) (*DVFSController, error) {
 	cpus, err := cpufreqCPUList()
 	if err != nil {
 		return nil, err
@@ -352,6 +475,7 @@ func newDVFSControllerFromEnv() (*DVFSController, error) {
 		minFreqKHz:  int64Env("DVFS_MIN_FREQ_KHZ", 1500000),
 		cooldown:    durationEnv("DVFS_COOLDOWN", 20*time.Second),
 		tripCount:   intEnv("DVFS_TRIP_COUNT", 2),
+		metrics:     metrics,
 	}, nil
 }
 
@@ -376,9 +500,15 @@ func (d *DVFSController) Reconcile(capWatts float64) (string, error) {
 	} else {
 		d.emaPowerW = d.emaAlpha*powerW + (1.0-d.emaAlpha)*d.emaPowerW
 	}
+	d.metrics.dvfsObservedPowerW.WithLabelValues(d.metrics.node).Set(powerW)
+	d.metrics.dvfsEMAPowerW.WithLabelValues(d.metrics.node).Set(d.emaPowerW)
+	d.metrics.dvfsThrottlePct.WithLabelValues(d.metrics.node).Set(float64(d.throttlePct))
 
 	now := time.Now()
 	if now.Sub(d.lastAction) < d.cooldown {
+		d.metrics.dvfsTripAbove.WithLabelValues(d.metrics.node).Set(float64(d.aboveCount))
+		d.metrics.dvfsTripBelow.WithLabelValues(d.metrics.node).Set(float64(d.belowCount))
+		d.updateCPUFreqMetrics()
 		return fmt.Sprintf("mode=dvfs-fallback observed=%.2fW ema=%.2fW throttlePct=%d action=hold(cooldown)", powerW, d.emaPowerW, d.throttlePct), nil
 	}
 
@@ -394,6 +524,8 @@ func (d *DVFSController) Reconcile(capWatts float64) (string, error) {
 		d.aboveCount = 0
 		d.belowCount = 0
 	}
+	d.metrics.dvfsTripAbove.WithLabelValues(d.metrics.node).Set(float64(d.aboveCount))
+	d.metrics.dvfsTripBelow.WithLabelValues(d.metrics.node).Set(float64(d.belowCount))
 
 	if d.aboveCount >= d.tripCount {
 		oldPct := d.throttlePct
@@ -404,6 +536,9 @@ func (d *DVFSController) Reconcile(capWatts float64) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		d.metrics.dvfsActionsTotal.WithLabelValues(d.metrics.node, "throttle_up").Inc()
+		d.metrics.dvfsThrottlePct.WithLabelValues(d.metrics.node).Set(float64(d.throttlePct))
+		d.updateCPUFreqMetrics()
 		return fmt.Sprintf("mode=dvfs-fallback observed=%.2fW ema=%.2fW upper=%.2fW action=throttle-up pct=%d->%d cpus=%d", powerW, d.emaPowerW, upper, oldPct, d.throttlePct, written), nil
 	}
 
@@ -416,14 +551,24 @@ func (d *DVFSController) Reconcile(capWatts float64) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		d.metrics.dvfsActionsTotal.WithLabelValues(d.metrics.node, "throttle_down").Inc()
+		d.metrics.dvfsThrottlePct.WithLabelValues(d.metrics.node).Set(float64(d.throttlePct))
+		d.updateCPUFreqMetrics()
 		return fmt.Sprintf("mode=dvfs-fallback observed=%.2fW ema=%.2fW lower=%.2fW action=throttle-down pct=%d->%d cpus=%d", powerW, d.emaPowerW, lower, oldPct, d.throttlePct, written), nil
 	}
 
+	d.updateCPUFreqMetrics()
 	return fmt.Sprintf("mode=dvfs-fallback observed=%.2fW ema=%.2fW throttlePct=%d action=hold", powerW, d.emaPowerW, d.throttlePct), nil
 }
 
 func (d *DVFSController) RestoreAllMax() (int, error) {
-	return d.applyThrottlePct(0)
+	written, err := d.applyThrottlePct(0)
+	if err == nil {
+		d.throttlePct = 0
+		d.metrics.dvfsThrottlePct.WithLabelValues(d.metrics.node).Set(0)
+		d.updateCPUFreqMetrics()
+	}
+	return written, err
 }
 
 func (d *DVFSController) applyThrottlePct(pct int) (int, error) {
@@ -446,6 +591,18 @@ func (d *DVFSController) applyThrottlePct(pct int) (int, error) {
 	return written, nil
 }
 
+func (d *DVFSController) updateCPUFreqMetrics() {
+	for _, c := range d.cpus {
+		cpuLabel := strconv.Itoa(c.Index)
+		if maxKHz, err := readInt64(c.MaxFile); err == nil {
+			d.metrics.dvfsCPUMaxFreqKHz.WithLabelValues(d.metrics.node, cpuLabel).Set(float64(maxKHz))
+		}
+		if curKHz, err := readInt64(c.CurFile); err == nil {
+			d.metrics.dvfsCPUCurFreqKHz.WithLabelValues(d.metrics.node, cpuLabel).Set(float64(curKHz))
+		}
+	}
+}
+
 func (d *DVFSController) readPowerWatts() (float64, bool, error) {
 	files, err := energyFiles()
 	if err != nil {
@@ -459,10 +616,12 @@ func (d *DVFSController) readPowerWatts() (float64, bool, error) {
 	count := 0
 	now := time.Now()
 	for _, f := range files {
+		zone := filepath.Base(filepath.Dir(f))
 		currentUJ, err := readInt64(f)
 		if err != nil {
 			continue
 		}
+		d.metrics.raplEnergyUJ.WithLabelValues(d.metrics.node, zone).Set(float64(currentUJ))
 		s, ok := d.samples[f]
 		if !ok {
 			rangeUJ, _ := readInt64(filepath.Join(filepath.Dir(f), "max_energy_range_uj"))
@@ -482,12 +641,14 @@ func (d *DVFSController) readPowerWatts() (float64, bool, error) {
 			continue
 		}
 		w := (float64(deltaUJ) / 1_000_000.0) / dt
+		d.metrics.raplPowerWatts.WithLabelValues(d.metrics.node, zone).Set(w)
 		totalW += w
 		count++
 	}
 	if count == 0 {
 		return 0, false, nil
 	}
+	d.metrics.raplPackageTotalW.WithLabelValues(d.metrics.node).Set(totalW)
 	return totalW, true, nil
 }
 

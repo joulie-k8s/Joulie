@@ -1,0 +1,20 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: joulie-agent
+  namespace: default
+  labels:
+    release: telemetry
+    app.kubernetes.io/name: joulie-agent
+spec:
+  namespaceSelector:
+    matchNames:
+      - joulie-system
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: joulie-agent
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      honorLabels: true
