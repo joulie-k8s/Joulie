@@ -6,6 +6,7 @@ It includes:
 
 - `ServiceMonitor` for Prometheus Operator users.
 - Grafana dashboard JSON for manual import, focused on DVFS fallback impact (power/EMA/throttle/frequency).
+- Prometheus metrics reference: [docs/metrics.md](/home/mbunino2/code/Joulie/docs/metrics.md)
 
 ## Prerequisites
 
