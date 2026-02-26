@@ -1,0 +1,16 @@
+spec:
+  template:
+    spec:
+      containers:
+        - name: operator
+          env:
+            - name: RECONCILE_INTERVAL
+              value: 30s
+            - name: NODE_SELECTOR
+              value: joulie.io/managed=true
+            - name: RESERVED_LABEL_KEY
+              value: joulie.io/reserved
+            - name: PERFORMANCE_CAP_WATTS
+              value: "4500"
+            - name: ECO_CAP_WATTS
+              value: "180"

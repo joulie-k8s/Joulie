@@ -37,17 +37,16 @@ Future implementations can be telemetry-driven or model-driven.
 - `spec.gpu.enabled` (optional, bool; reserved)
 - `spec.gpu.powerLimitWatts` (optional, number; reserved)
 
-## Selection behavior
+## Selection behavior (current)
 
-On each node, agent:
+On each node, agent resolves desired state as:
 
-1. Lists all `PowerPolicy` objects.
-2. Matches policy selector against node labels.
-3. Picks highest `spec.priority`.
-4. Uses name as tiebreaker (lexicographically).
-5. Applies CPU cap if `spec.cpu.packagePowerCapWatts` is set.
-
-This is the current agent-driven behavior. The target architecture is operator-driven assignment, where agents consume only their node-specific desired profile/state.
+1. `NodePowerProfile` for that node (`spec.nodeName == <node>`), if present.
+2. Otherwise fallback to `PowerPolicy`:
+3. List all `PowerPolicy` objects.
+4. Match selector against node labels.
+5. Pick highest `spec.priority`.
+6. Use name as tiebreaker.
 
 ## Simple starter policy (recommended)
 
@@ -80,8 +79,8 @@ spec:
   priority: 100
   selector:
     matchLabels:
-      feature.node.kubernetes.io/cpu-vendor: AuthenticAMD
-      node-role.kubernetes.io/worker: ""
+      feature.node.kubernetes.io/cpu-model.vendor_id: AMD
+      joulie.io/managed: "true"
   cpu:
     packagePowerCapWatts: 180
 ```

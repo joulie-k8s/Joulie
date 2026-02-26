@@ -10,6 +10,7 @@
 - [Metrics Reference](./docs/metrics.md)
 - [Example: stress-ng throttling](./examples/stress-ng-throttling/README.md)
 - [Example: Prometheus + Grafana](./examples/prometheus-grafana/README.md)
+- [Example: Operator Configuration](./examples/operator-configuration/README.md)
 
 ## 1. Motivation
 
@@ -117,24 +118,23 @@ Note: GPU support will be implemented behind a device plugin interface so that C
 
 ## 5. Kubernetes API model (CRDs)
 
-Keep the CRD surface minimal. The core idea is: one CRD representing the **desired node power state**.
+The implementation currently uses two CRDs:
 
-### 5.1 `PowerState` (core CRD)
+- `PowerPolicy` (cluster-scoped): selector-based intent.
+- `NodePowerProfile` (cluster-scoped): operator-assigned per-node desired state.
 
-Represents desired state for a node (or a group of nodes, see selectors).
+Current preferred flow is operator-driven:
 
-Example:
+1. Operator assigns each managed node a profile (`performance` or `eco`).
+2. Operator writes one `NodePowerProfile` per managed node.
+3. Agent reads local `NodePowerProfile` and applies (or simulates) actions.
 
-```yaml
-apiVersion: joulie.io/v1alpha1
-kind: PowerState
-metadata:
-  name: global-default
-  namespace: joulie-system
-spec:
-  selector:
-    matchLabels:
-      joulie.io/managed: "true"
-  state: balanced
-  gpu:
-    enabled: false
+Alternative selector-based mode:
+
+- if no `NodePowerProfile` exists for a node, agent can still evaluate `PowerPolicy` selectors.
+
+See:
+
+- [CRD and Policy Model](./docs/policy.md)
+- [Operator Notes](./docs/operator.md)
+- [Quickstart](./docs/quickstart.md)

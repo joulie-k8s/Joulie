@@ -12,7 +12,7 @@ It includes:
 
 - Joulie deployed with metrics enabled in `deploy/joulie.yaml`.
 - Prometheus scraping from `joulie-system/joulie-agent-metrics:8080/metrics`.
-- Grafana running (with dashboard sidecar importer if using the provided ConfigMap workflow).
+- Grafana running.
 
 ## 1) Verify metrics endpoint
 

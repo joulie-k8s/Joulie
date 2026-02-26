@@ -11,21 +11,31 @@
 
 ## 1. Build and push image
 
-From repo root:
+If you changed source code, from repo root:
 
 ```bash
-make build-push TAG=0.0.7
+make build-push TAG=<tag>
 ```
 
 This pushes:
 
-- `registry.cern.ch/mbunino/joulie/joulie-agent:0.0.7`
-- `registry.cern.ch/mbunino/joulie/joulie-operator:0.0.7`
+- `registry.cern.ch/mbunino/joulie/joulie-agent:<tag>`
+- `registry.cern.ch/mbunino/joulie/joulie-operator:<tag>`
+
+You can also do build+push+install in one command:
+
+```bash
+make make-build-install TAG=<tag>
+```
+
+If you use `make make-build-install`, you can skip step 2.
 
 ## 2. Install CRDs + components
 
+If images for `TAG` are already in the registry (no source changes), run:
+
 ```bash
-make install TAG=0.0.7
+make install TAG=<tag>
 ```
 
 This applies CRDs/manifests and sets both images to the requested tag.
@@ -46,7 +56,7 @@ kubectl label node <node2> joulie.io/managed=true --overwrite
 ## 4. Update to a new image tag later
 
 ```bash
-make rollout TAG=0.0.7
+make rollout TAG=<new-tag>
 ```
 
 ## 5. Choose a control mode
@@ -54,6 +64,10 @@ make rollout TAG=0.0.7
 ### A) Central operator mode (recommended first test)
 
 The operator writes `NodePowerProfile` assignments and swaps `eco`/`performance` across nodes every reconcile interval.
+
+Configuration details and patch examples:
+
+- [Operator Configuration Example](../examples/operator-configuration/README.md)
 
 Verify:
 
@@ -63,7 +77,7 @@ kubectl -n joulie-system logs deploy/joulie-operator --tail=100
 kubectl -n joulie-system logs -l app.kubernetes.io/name=joulie-agent --tail=100
 ```
 
-### B) Legacy direct policy mode
+### B) Direct selector-based policy mode
 
 ```bash
 kubectl apply -f config/samples/powerpolicy-amd-worker.yaml

@@ -57,7 +57,7 @@ Current state is agent-driven (`PowerPolicy` self-selection per node).
 Migration path:
 
 1. Keep `PowerPolicy` as user intent surface.
-2. Introduce operator-owned node-scoped desired state (for example `NodePowerState`).
+2. Introduce operator-owned node-scoped desired state (`NodePowerProfile`).
 3. Switch agents to consume only their node-scoped assignment.
 4. Add policy plugins incrementally (rule-based first, telemetry/AI later).
 
