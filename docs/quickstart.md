@@ -38,7 +38,30 @@ If images for `TAG` are already in the registry (no source changes), run:
 make install TAG=<tag>
 ```
 
-This applies CRDs/manifests and sets both images to the requested tag.
+This performs a Helm install/upgrade (`charts/joulie`) and sets both images to the requested tag.
+Default values come from:
+
+- `values/joulie.yaml`
+
+You can override with:
+
+```bash
+make install TAG=<tag> HELM_VALUES=<path-to-values.yaml>
+```
+
+Important: by default, install does not auto-select nodes.
+Default expected selector value is:
+
+- `joulie.io/managed=true` (operator env `NODE_SELECTOR`)
+
+So you must label target worker nodes, for example:
+
+```bash
+kubectl label node <node-a> joulie.io/managed=true --overwrite
+kubectl label node <node-b> joulie.io/managed=true --overwrite
+```
+
+If this is missing, operator logs will show `no eligible nodes matched selector`.
 
 To remove Joulie components and CRD:
 
@@ -48,7 +71,7 @@ make uninstall
 
 ## 3. Label nodes managed by the operator
 
-The default operator selector in `deploy/joulie.yaml` is:
+The default operator selector in Helm values (`values/joulie.yaml`) is:
 
 - `NODE_SELECTOR=joulie.io/managed=true`
 

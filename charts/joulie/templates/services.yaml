@@ -1,0 +1,39 @@
+{{- if .Values.agent.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: joulie-agent-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: joulie-agent
+  annotations:
+    {{- toYaml .Values.agent.service.annotations | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: joulie-agent
+  ports:
+    - name: metrics
+      port: {{ .Values.agent.service.port }}
+      targetPort: metrics
+{{- end }}
+---
+{{- if .Values.operator.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: joulie-operator-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: joulie-operator
+  annotations:
+    {{- toYaml .Values.operator.service.annotations | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: joulie-operator
+  ports:
+    - name: metrics
+      port: {{ .Values.operator.service.port }}
+      targetPort: metrics
+{{- end }}
+

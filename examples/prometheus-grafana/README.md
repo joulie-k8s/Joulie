@@ -10,7 +10,7 @@ It includes:
 
 ## Prerequisites
 
-- Joulie deployed with metrics enabled in `deploy/joulie.yaml`.
+- Joulie deployed (for example with `make install TAG=<tag>`).
 - Prometheus scraping from `joulie-system/joulie-agent-metrics:8080/metrics`.
 - Grafana running.
 
@@ -60,7 +60,7 @@ If your Prometheus release name or operator namespace differs, adjust those fiel
 
 ### Option B: plain Prometheus
 
-Use service annotations already in `deploy/joulie.yaml` or add static scrape config.
+Use service annotations from the Helm chart services or add static scrape config.
 
 ## 3) Grafana dashboard import
 

@@ -3,6 +3,8 @@
 #
 
 tmp/
+*.tgz
+*.tar.gz
 
 # Binaries for programs and plugins
 *.exe

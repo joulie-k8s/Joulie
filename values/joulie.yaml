@@ -1,0 +1,26 @@
+agent:
+  image:
+    repository: registry.cern.ch/mbunino/joulie/joulie-agent
+    tag: latest
+    pullPolicy: Always
+  env:
+    RECONCILE_INTERVAL: "20s"
+    METRICS_ADDR: ":8080"
+    SIMULATE_ONLY: "false"
+
+operator:
+  image:
+    repository: registry.cern.ch/mbunino/joulie/joulie-operator
+    tag: latest
+    pullPolicy: Always
+  env:
+    RECONCILE_INTERVAL: "1m"
+    METRICS_ADDR: ":8081"
+    NODE_SELECTOR: "joulie.io/managed=true"
+    RESERVED_LABEL_KEY: "joulie.io/reserved"
+    POWER_PROFILE_LABEL: "joulie.io/power-profile"
+    WORKLOAD_INTENT_LABEL: "joulie.io/workload-intent-class"
+    PERFORMANCE_INTENT_VALUE: "performance"
+    PERFORMANCE_CAP_WATTS: "5000"
+    ECO_CAP_WATTS: "120"
+

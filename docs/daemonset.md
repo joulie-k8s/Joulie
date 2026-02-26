@@ -2,9 +2,9 @@
 
 The agent runs as a privileged DaemonSet and applies/simulates node-level settings.
 
-## Manifest
+## Chart source
 
-Main manifest: `deploy/joulie.yaml`.
+Helm template: `charts/joulie/templates/agent-daemonset.yaml`.
 
 ## Required runtime settings
 

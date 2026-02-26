@@ -345,7 +345,11 @@ func runningIntentPodCountOnNode(
 }
 
 func buildPlan(nodes []string, interval time.Duration, perfCap, ecoCap float64) []NodeAssignment {
-	phase := int((time.Now().Unix() / int64(interval.Seconds())) % 2)
+	return buildPlanAt(nodes, interval, perfCap, ecoCap, time.Now())
+}
+
+func buildPlanAt(nodes []string, interval time.Duration, perfCap, ecoCap float64, now time.Time) []NodeAssignment {
+	phase := int((now.Unix() / int64(interval.Seconds())) % 2)
 	plan := make([]NodeAssignment, 0, len(nodes))
 	for i, n := range nodes {
 		profile := "performance"
