@@ -2,7 +2,7 @@
   "title": "Joulie Workload Intent Scheduling",
   "uid": "joulie-workload-intents",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "15s",
   "time": {
     "from": "now-30m",
@@ -29,7 +29,7 @@
         "allValue": ".*",
         "refresh": 1,
         "query": {
-          "query": "label_values(joulie_policy_cap_watts, node)",
+          "query": "label_values(joulie_operator_node_state, node)",
           "refId": "NodeVariableQuery"
         },
         "current": {
@@ -37,51 +37,79 @@
           "text": "All",
           "value": "$__all"
         }
-      },
-      {
-        "name": "perf_threshold",
-        "type": "textbox",
-        "label": "Perf Cap Threshold (W)",
-        "query": "1000",
-        "current": {
-          "text": "1000",
-          "value": "1000"
-        }
       }
     ]
   },
   "panels": [
     {
       "type": "timeseries",
-      "title": "Node Cap (W)",
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 7 },
+      "title": "FSM State by Node (Operator Metric)",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
       "targets": [
-        { "expr": "joulie_policy_cap_watts{node=~\"$node\"}", "legendFormat": "{{node}}" }
+        {
+          "expr": "joulie_operator_node_state{node=~\"$node\",state=\"ActivePerformance\"}",
+          "legendFormat": "{{node}} ActivePerformance"
+        },
+        {
+          "expr": "joulie_operator_node_state{node=~\"$node\",state=\"DrainingPerformance\"}",
+          "legendFormat": "{{node}} DrainingPerformance"
+        },
+        {
+          "expr": "joulie_operator_node_state{node=~\"$node\",state=\"ActiveEco\"}",
+          "legendFormat": "{{node}} ActiveEco"
+        }
       ]
     },
     {
       "type": "timeseries",
-      "title": "State Machine Signals (Derived)",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 7 },
+      "title": "State Transitions (5m)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "joulie_policy_cap_watts{node=~\"$node\"} >= bool $perf_threshold",
-          "legendFormat": "{{node}} ActivePerformance"
+          "expr": "increase(joulie_operator_state_transitions_total{node=~\"$node\",result=\"applied\"}[5m])",
+          "legendFormat": "{{node}} {{from_state}}->{{to_state}} applied"
         },
         {
-          "expr": "joulie_policy_cap_watts{node=~\"$node\"} < bool $perf_threshold",
-          "legendFormat": "{{node}} ActiveEco"
+          "expr": "increase(joulie_operator_state_transitions_total{node=~\"$node\",result=\"deferred\"}[5m])",
+          "legendFormat": "{{node}} {{from_state}}->{{to_state}} deferred"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Operator Profile vs Node Label (Side-by-side)",
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "joulie_operator_node_profile_label{node=~\"$node\",profile=\"performance\"}",
+          "legendFormat": "{{node}} operator=performance"
         },
         {
-          "expr": "0 * joulie_policy_cap_watts{node=~\"$node\"}",
-          "legendFormat": "{{node}} DrainingPerformance (placeholder)"
+          "expr": "joulie_operator_node_profile_label{node=~\"$node\",profile=\"eco\"}",
+          "legendFormat": "{{node}} operator=eco"
+        },
+        {
+          "expr": "joulie_operator_node_profile_label{node=~\"$node\",profile=\"draining-performance\"}",
+          "legendFormat": "{{node}} operator=draining-performance"
+        },
+        {
+          "expr": "kube_node_labels{node=~\"$node\",label_joulie_io_power_profile=\"performance\"}",
+          "legendFormat": "{{node}} label=performance"
+        },
+        {
+          "expr": "kube_node_labels{node=~\"$node\",label_joulie_io_power_profile=\"eco\"}",
+          "legendFormat": "{{node}} label=eco"
+        },
+        {
+          "expr": "kube_node_labels{node=~\"$node\",label_joulie_io_power_profile=\"draining-performance\"}",
+          "legendFormat": "{{node}} label=draining-performance"
         }
       ]
     },
     {
       "type": "timeseries",
       "title": "Pods by Intent Class and Node",
-      "gridPos": { "x": 0, "y": 7, "w": 24, "h": 8 },
+      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 8 },
       "targets": [
         {
           "expr": "sum by (node) ((kube_pod_labels{namespace=\"$namespace\",label_joulie_io_workload_intent_class=\"performance\"} == 1) * on (namespace,pod) group_left(node) kube_pod_info{namespace=\"$namespace\",node=~\"$node\"})",
@@ -100,7 +128,7 @@
     {
       "type": "timeseries",
       "title": "Pod Re-creations (5m)",
-      "gridPos": { "x": 0, "y": 15, "w": 12, "h": 7 },
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 7 },
       "targets": [
         {
           "expr": "sum by (label_joulie_io_workload_intent_class) (changes(kube_pod_status_phase{namespace=\"$namespace\",phase=\"Running\"}[5m]) * on(namespace,pod) group_left(label_joulie_io_workload_intent_class) kube_pod_labels{namespace=\"$namespace\",label_joulie_io_workload_intent_class!=\"\"})",
@@ -110,16 +138,12 @@
     },
     {
       "type": "timeseries",
-      "title": "Node Label View (if kube-state-metrics exposes node labels)",
-      "gridPos": { "x": 12, "y": 15, "w": 12, "h": 7 },
+      "title": "Node Cap (W)",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 7 },
       "targets": [
         {
-          "expr": "kube_node_labels{node=~\"$node\",label_joulie_io_power_profile=\"performance\"}",
-          "legendFormat": "{{node}} label=performance"
-        },
-        {
-          "expr": "kube_node_labels{node=~\"$node\",label_joulie_io_power_profile=\"eco\"}",
-          "legendFormat": "{{node}} label=eco"
+          "expr": "joulie_policy_cap_watts{node=~\"$node\"}",
+          "legendFormat": "{{node}}"
         }
       ]
     }

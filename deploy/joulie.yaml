@@ -24,7 +24,7 @@ rules:
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["joulie.io"]
-    resources: ["powerpolicies", "nodepowerprofiles"]
+    resources: ["nodepowerprofiles"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -48,6 +48,9 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["joulie.io"]
     resources: ["nodepowerprofiles"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
@@ -134,15 +137,25 @@ spec:
         - name: operator
           image: registry.cern.ch/mbunino/joulie/joulie-operator:latest
           imagePullPolicy: Always
+          ports:
+            - name: metrics
+              containerPort: 8081
+              protocol: TCP
           env:
             - name: RECONCILE_INTERVAL
               value: 1m
+            - name: METRICS_ADDR
+              value: :8081
             - name: NODE_SELECTOR
               value: joulie.io/managed=true
             - name: RESERVED_LABEL_KEY
               value: joulie.io/reserved
             - name: POWER_PROFILE_LABEL
               value: joulie.io/power-profile
+            - name: WORKLOAD_INTENT_LABEL
+              value: joulie.io/workload-intent-class
+            - name: PERFORMANCE_INTENT_VALUE
+              value: performance
             - name: PERFORMANCE_CAP_WATTS
               value: "5000"
             - name: ECO_CAP_WATTS
@@ -166,4 +179,23 @@ spec:
   ports:
     - name: metrics
       port: 8080
+      targetPort: metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: joulie-operator-metrics
+  namespace: joulie-system
+  labels:
+    app.kubernetes.io/name: joulie-operator
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8081"
+    prometheus.io/path: /metrics
+spec:
+  selector:
+    app.kubernetes.io/name: joulie-operator
+  ports:
+    - name: metrics
+      port: 8081
       targetPort: metrics

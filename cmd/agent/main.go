@@ -18,7 +18,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -26,7 +25,6 @@ import (
 )
 
 var (
-	policyGVR      = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "powerpolicies"}
 	profileNodeGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodepowerprofiles"}
 )
 
@@ -35,10 +33,8 @@ type HardwareInfo struct {
 	GPUVendors []string
 }
 
-type PowerPolicy struct {
+type DesiredState struct {
 	Name       string
-	Priority   int64
-	Selector   map[string]string
 	PowerWatts *float64
 }
 
@@ -264,14 +260,14 @@ func reconcileOnce(
 
 	hw := discoverHardware(node.Labels)
 
-	selected, source, err := resolveDesiredStateForNode(ctx, dyn, nodeName, node.Labels)
+	selected, source, err := resolveDesiredStateForNode(ctx, dyn, nodeName)
 	if err != nil {
 		return err
 	}
 	if selected == nil {
 		metrics.setBackendMode("none")
 		if *lastRaplKey != "" {
-			log.Printf("no matching policy for node %s; leaving current settings untouched", nodeName)
+			log.Printf("no NodePowerProfile found for node %s; leaving current settings untouched", nodeName)
 			*lastRaplKey = ""
 		}
 		return nil
@@ -730,29 +726,18 @@ func hasNFDGPUVendor(nodeLabels map[string]string, vendorHex string) bool {
 	return false
 }
 
-func resolveDesiredStateForNode(ctx context.Context, dyn dynamic.Interface, nodeName string, nodeLabels map[string]string) (*PowerPolicy, string, error) {
+func resolveDesiredStateForNode(ctx context.Context, dyn dynamic.Interface, nodeName string) (*DesiredState, string, error) {
 	np, err := getNodePowerProfile(ctx, dyn, nodeName)
 	if err != nil {
 		return nil, "", fmt.Errorf("get NodePowerProfile: %w", err)
 	}
 	if np != nil {
-		return &PowerPolicy{
+		return &DesiredState{
 			Name:       np.Name,
-			Priority:   1_000_000,
-			Selector:   map[string]string{},
 			PowerWatts: np.PowerWatts,
 		}, "nodepowerprofile", nil
 	}
-
-	policies, err := listPolicies(ctx, dyn)
-	if err != nil {
-		return nil, "", fmt.Errorf("list powerpolicies: %w", err)
-	}
-	selected := selectPolicyForNode(policies, nodeLabels)
-	if selected == nil {
-		return nil, "", nil
-	}
-	return selected, "powerpolicy", nil
+	return nil, "", nil
 }
 
 func getNodePowerProfile(ctx context.Context, dyn dynamic.Interface, nodeName string) (*NodePowerProfile, error) {
@@ -790,57 +775,6 @@ func parseNodePowerProfile(u unstructured.Unstructured) NodePowerProfile {
 		np.PowerWatts = &w
 	}
 	return np
-}
-
-func listPolicies(ctx context.Context, dyn dynamic.Interface) ([]PowerPolicy, error) {
-	ul, err := dyn.Resource(policyGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]PowerPolicy, 0, len(ul.Items))
-	for _, item := range ul.Items {
-		out = append(out, parsePolicy(item))
-	}
-	return out, nil
-}
-
-func parsePolicy(u unstructured.Unstructured) PowerPolicy {
-	p := PowerPolicy{Name: u.GetName(), Selector: map[string]string{}}
-
-	if v, ok, _ := unstructured.NestedInt64(u.Object, "spec", "priority"); ok {
-		p.Priority = v
-	}
-	if m, ok, _ := unstructured.NestedStringMap(u.Object, "spec", "selector", "matchLabels"); ok {
-		p.Selector = m
-	}
-	if w, ok, _ := unstructured.NestedFloat64(u.Object, "spec", "cpu", "packagePowerCapWatts"); ok {
-		p.PowerWatts = &w
-	} else if wi, ok, _ := unstructured.NestedInt64(u.Object, "spec", "cpu", "packagePowerCapWatts"); ok {
-		w := float64(wi)
-		p.PowerWatts = &w
-	}
-
-	return p
-}
-
-func selectPolicyForNode(policies []PowerPolicy, nodeLabels map[string]string) *PowerPolicy {
-	matches := make([]PowerPolicy, 0)
-	for _, p := range policies {
-		sel := labels.SelectorFromSet(labels.Set(p.Selector))
-		if sel.Matches(labels.Set(nodeLabels)) {
-			matches = append(matches, p)
-		}
-	}
-	if len(matches) == 0 {
-		return nil
-	}
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].Priority == matches[j].Priority {
-			return matches[i].Name < matches[j].Name
-		}
-		return matches[i].Priority > matches[j].Priority
-	})
-	return &matches[0]
 }
 
 func readInt64(path string) (int64, error) {

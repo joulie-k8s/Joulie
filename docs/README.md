@@ -4,7 +4,6 @@ This directory contains the minimal docs for the current PoC.
 
 ## What exists today
 
-- `PowerPolicy` CRD (cluster-scoped)
 - `NodePowerProfile` CRD (cluster-scoped)
 - `joulie-operator` Deployment (rule-based central assignment loop)
 - `joulie-agent` DaemonSet (node-local enforcer)
@@ -28,5 +27,4 @@ This directory contains the minimal docs for the current PoC.
 
 Current APIs are:
 
-- `PowerPolicy` (`powerpolicies.joulie.io`) for selector-based intent
 - `NodePowerProfile` (`nodepowerprofiles.joulie.io`) for operator-assigned node state

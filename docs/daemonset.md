@@ -31,7 +31,6 @@ nodeSelector:
 Agent needs read-only access to:
 
 - `nodes`
-- `powerpolicies.joulie.io`
 - `nodepowerprofiles.joulie.io`
 
 No write permissions are required in current implementation.
@@ -52,9 +51,8 @@ GPU vendor discovery hints:
 
 GPU limits are not enforced yet; labels are currently used for capability detection and logs.
 
-## Desired-state source order
+## Desired-state source
 
-On each node, agent resolves desired state in this order:
+On each node, agent resolves desired state only from:
 
-1. `NodePowerProfile` matching `spec.nodeName=<this-node>` (operator-driven path).
-2. Otherwise: highest-priority matching `PowerPolicy` selector.
+1. `NodePowerProfile` matching `spec.nodeName=<this-node>`.

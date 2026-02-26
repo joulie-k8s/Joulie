@@ -28,6 +28,7 @@ Check operator output:
 
 ```bash
 kubectl -n joulie-system logs deploy/joulie-operator --tail=200 | grep "assigned profiles"
+kubectl -n joulie-system logs deploy/joulie-operator --tail=200 | grep "transition deferred"
 kubectl get nodepowerprofiles -o wide
 kubectl get nodes -L joulie.io/power-profile
 ```
@@ -38,7 +39,10 @@ kubectl get nodes -L joulie.io/power-profile
 kubectl apply -f examples/workload-intent-classes/namespace.yaml
 kubectl apply -f examples/workload-intent-classes/deployments.yaml
 kubectl apply -f examples/workload-intent-classes/recycler.yaml
+kubectl apply -f examples/workload-intent-classes/servicemonitor-operator.yaml
 ```
+
+Note: `servicemonitor-operator.yaml` assumes Prometheus Operator release label `release: telemetry` in namespace `default`.
 
 What each workload expresses:
 
@@ -53,6 +57,8 @@ watch -n 5 'kubectl -n joulie-intent-demo get pods -o wide; echo; kubectl get no
 ```
 
 You should see pods recreated roughly every minute by the recycler, then placed according to the profile labels currently set by the operator.
+If a node is transitioning `ActivePerformance -> ActiveEco` and still has running `performance` intent workloads, the operator now defers the downgrade until those pods terminate.
+During defer, the node label is set to `joulie.io/power-profile=draining-performance`, so new `performance` pods stop landing there.
 
 ## 4) Grafana dashboard for this demo
 
@@ -69,13 +75,23 @@ kubectl port-forward svc/telemetry-grafana 5000:80 1>/dev/null &
 
 Dashboard highlights:
 
-- `Node Cap (W)` and `State Machine Signals (Derived)`:
-  - visualize `ActivePerformance` / `ActiveEco` transitions per node
-  - `DrainingPerformance` is a placeholder signal until explicit draining is implemented
+- `FSM State by Node (Operator Metric)`:
+  - visualize `ActivePerformance` / `DrainingPerformance` / `ActiveEco` per node
+- `State Transitions (5m)`:
+  - `applied` transitions and `deferred` transitions from operator guard logic
+- `Operator Profile vs Node Label (Side-by-side)`:
+  - compare operator-exported profile signal with actual `joulie.io/power-profile` node label value
 - `Pods by Intent Class and Node`:
   - shows how `performance`, `eco`, `flex` workloads land on nodes
 - `Pod Re-creations (5m)`:
   - confirms periodic recreation churn driving re-scheduling
+
+Quick operator metric sanity check:
+
+```bash
+kubectl -n joulie-system port-forward svc/joulie-operator-metrics 18081:8081
+curl -s localhost:18081/metrics | grep '^joulie_operator_' | head -n 30
+```
 
 ## 5) Cleanup
 

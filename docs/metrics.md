@@ -58,6 +58,20 @@ This metric can also be used to derive policy states in Grafana:
 - `joulie_reconcile_errors_total{node}` (counter)
   - Total reconcile-loop errors
 
+## Operator FSM Metrics
+
+- `joulie_operator_node_state{node,state}` (gauge)
+  - `state` values: `ActivePerformance`, `DrainingPerformance`, `ActiveEco`
+  - active state has value `1`, others `0`
+- `joulie_operator_node_profile_label{node,profile}` (gauge)
+  - operator view of node profile label (`profile` values: `performance`, `draining-performance`, `eco`)
+  - active profile has value `1`, other `0`
+- `joulie_operator_state_transitions_total{node,from_state,to_state,result}` (counter)
+  - transition events emitted by operator
+  - `result` values:
+    - `applied`: transition committed
+    - `deferred`: transition blocked/deferred by policy guard (for example performance-intent workloads still running)
+
 ## Notes
 
 - Metrics are pull-based; collection frequency depends on Prometheus scrape interval.

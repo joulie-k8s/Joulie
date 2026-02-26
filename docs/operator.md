@@ -36,6 +36,8 @@ To avoid contract violations during `ActivePerformance -> ActiveEco` moves, use 
 
 If safe condition never occurs, policy controls escalation (hold, timeout, force, or drain/evict strategy).
 
+Current implementation includes a basic guard: when target is `ActiveEco` but the node still runs pods labeled `joulie.io/workload-intent-class=performance`, downgrade is deferred and node remains in performance profile.
+
 ## Global inputs
 
 The operator policy has a cluster-wide view and should support:
@@ -78,16 +80,14 @@ Suggested interfaces:
 
 Future data-driven policies should use Prometheus (or other sources) through `ContextProvider`, not by changing agent APIs.
 
-## Migration path from current PoC
+## Current control path
 
-Current state is agent-driven (`PowerPolicy` self-selection per node).
+Current path is operator-driven:
 
-Migration path:
-
-1. Keep `PowerPolicy` as user intent surface.
-2. Introduce operator-owned node-scoped desired state (`NodePowerProfile`).
-3. Switch agents to consume only their node-scoped assignment.
-4. Add policy plugins incrementally (rule-based first, telemetry/AI later).
+1. Operator computes node assignments.
+2. Operator writes node-scoped desired state (`NodePowerProfile`).
+3. Agent consumes only its node-scoped assignment.
+4. Policy plugins can evolve independently (rule-based first, telemetry/AI later).
 
 ## Suggested deployment shape
 

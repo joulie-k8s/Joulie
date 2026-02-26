@@ -147,9 +147,8 @@ Note: GPU support will be implemented behind a device plugin interface so that C
 
 ## 5. Kubernetes API model (CRDs)
 
-The implementation currently uses two CRDs:
+The implementation currently uses:
 
-- `PowerPolicy` (cluster-scoped): selector-based intent.
 - `NodePowerProfile` (cluster-scoped): operator-assigned per-node desired state.
 
 Current preferred flow is operator-driven:
@@ -158,10 +157,6 @@ Current preferred flow is operator-driven:
 2. Operator writes one `NodePowerProfile` per managed node.
 3. Operator also updates node label `joulie.io/power-profile` to drive scheduler-aware placement.
 4. Agent reads local `NodePowerProfile` and applies (or simulates) actions.
-
-Optional selector mode for experiments:
-
-- operator can be bypassed and agent can evaluate `PowerPolicy` selectors directly.
 
 See:
 
