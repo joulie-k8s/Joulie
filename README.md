@@ -7,7 +7,9 @@
 - [DaemonSet Configuration](./docs/daemonset.md)
 - [CRD and Policy Model](./docs/policy.md)
 - [Operator Notes](./docs/operator.md)
+- [Metrics Reference](./docs/metrics.md)
 - [Example: stress-ng throttling](./examples/stress-ng-throttling/README.md)
+- [Example: Prometheus + Grafana](./examples/prometheus-grafana/README.md)
 
 ## 1. Motivation
 
