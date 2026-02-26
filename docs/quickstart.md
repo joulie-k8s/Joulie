@@ -63,7 +63,7 @@ make rollout TAG=<new-tag>
 
 ### A) Central operator mode (recommended first test)
 
-The operator writes `NodePowerProfile` assignments and swaps `eco`/`performance` across nodes every reconcile interval.
+The operator writes `NodePowerProfile` assignments and swaps `ActivePerformance`/`ActiveEco` across nodes every reconcile interval (profile mapping `performance`/`eco`).
 
 Configuration details and patch examples:
 

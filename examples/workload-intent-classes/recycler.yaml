@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pod-recycler
+  namespace: joulie-intent-demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-recycler
+  namespace: joulie-intent-demo
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pod-recycler
+  namespace: joulie-intent-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pod-recycler
+subjects:
+  - kind: ServiceAccount
+    name: pod-recycler
+    namespace: joulie-intent-demo
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: intent-pod-recycler
+  namespace: joulie-intent-demo
+spec:
+  schedule: "*/1 * * * *"
+  successfulJobsHistoryLimit: 0
+  failedJobsHistoryLimit: 0
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: pod-recycler
+          restartPolicy: Never
+          containers:
+            - name: kubectl
+              image: registry.cern.ch/docker.io/bitnami/kubectl:latest
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  kubectl delete pod -n joulie-intent-demo -l demo.joulie.io/recycle=true --ignore-not-found

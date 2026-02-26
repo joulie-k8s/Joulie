@@ -22,6 +22,7 @@ This directory contains the minimal docs for the current PoC.
 - [Example: stress-ng throttling](../examples/stress-ng-throttling/README.md)
 - [Example: Prometheus + Grafana](../examples/prometheus-grafana/README.md)
 - [Example: Operator Configuration](../examples/operator-configuration/README.md)
+- [Example: Workload Intent Classes](../examples/workload-intent-classes/README.md)
 
 ## Current naming
 

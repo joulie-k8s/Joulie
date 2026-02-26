@@ -98,7 +98,7 @@ Recommended panels/queries in this dashboard:
 
 Grafana interpretation:
 
-- `Assigned Cap by Node`: shows performance/eco switch decisions over time.
+- `Assigned Cap by Node`: shows `ActivePerformance`/`ActiveEco` switch decisions over time.
 - `Policy Reassignment Events`: shows how often operator is changing node profile.
 - `DVFS Throttle %` and `Average CPU Max Freq`: shows whether fallback is actively throttling.
 - `Observed vs EMA Power`: raw power estimate vs smoothed control signal.

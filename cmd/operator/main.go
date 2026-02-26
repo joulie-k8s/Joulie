@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -36,6 +38,7 @@ func main() {
 	reconcileEvery := durationEnv("RECONCILE_INTERVAL", time.Minute)
 	selector := envOrDefault("NODE_SELECTOR", "node-role.kubernetes.io/worker")
 	reservedLabel := envOrDefault("RESERVED_LABEL_KEY", "joulie.io/reserved")
+	profileLabel := envOrDefault("POWER_PROFILE_LABEL", "joulie.io/power-profile")
 	perfCap := floatEnv("PERFORMANCE_CAP_WATTS", 5000)
 	ecoCap := floatEnv("ECO_CAP_WATTS", 120)
 
@@ -59,7 +62,7 @@ func main() {
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		if err := reconcile(ctx, kube, dyn, parsedSelector, reservedLabel, reconcileEvery, perfCap, ecoCap); err != nil {
+		if err := reconcile(ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, reconcileEvery, perfCap, ecoCap); err != nil {
 			log.Printf("reconcile failed: %v", err)
 		}
 		cancel()
@@ -73,6 +76,7 @@ func reconcile(
 	dyn dynamic.Interface,
 	selector labels.Selector,
 	reservedLabel string,
+	profileLabel string,
 	interval time.Duration,
 	perfCap float64,
 	ecoCap float64,
@@ -104,6 +108,9 @@ func reconcile(
 	plan := buildPlan(eligible, interval, perfCap, ecoCap)
 	for _, a := range plan {
 		if err := upsertNodeProfile(ctx, dyn, a); err != nil {
+			return err
+		}
+		if err := upsertNodeProfileLabel(ctx, kube, profileLabel, a); err != nil {
 			return err
 		}
 	}
@@ -187,6 +194,24 @@ func upsertNodeProfile(ctx context.Context, dyn dynamic.Interface, a NodeAssignm
 	existing.Object["spec"] = obj.Object["spec"]
 	if _, err := res.Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("update NodePowerProfile %s: %w", name, err)
+	}
+	return nil
+}
+
+func upsertNodeProfileLabel(ctx context.Context, kube *kubernetes.Clientset, profileLabel string, a NodeAssignment) error {
+	patch := map[string]any{
+		"metadata": map[string]any{
+			"labels": map[string]string{
+				profileLabel: a.Profile,
+			},
+		},
+	}
+	rawPatch, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshal node label patch for %s: %w", a.NodeName, err)
+	}
+	if _, err := kube.CoreV1().Nodes().Patch(ctx, a.NodeName, types.MergePatchType, rawPatch, metav1.PatchOptions{}); err != nil {
+		return fmt.Errorf("patch node %s label %s=%s: %w", a.NodeName, profileLabel, a.Profile, err)
 	}
 	return nil
 }

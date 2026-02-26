@@ -15,6 +15,11 @@ Joulie agent exposes Prometheus metrics on `/metrics` (default `:8080`).
 - `joulie_policy_cap_watts{node,policy}` (gauge)
   - Current selected policy cap in watts
 
+This metric can also be used to derive policy states in Grafana:
+
+- high cap (for example `>= 1000W`) -> `ActivePerformance`
+- low cap (for example `< 1000W`) -> `ActiveEco`
+
 ## RAPL Power/Energy
 
 - `joulie_rapl_energy_uj{node,zone}` (gauge)

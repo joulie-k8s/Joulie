@@ -47,7 +47,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["nodes"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["joulie.io"]
     resources: ["nodepowerprofiles"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
@@ -141,6 +141,8 @@ spec:
               value: joulie.io/managed=true
             - name: RESERVED_LABEL_KEY
               value: joulie.io/reserved
+            - name: POWER_PROFILE_LABEL
+              value: joulie.io/power-profile
             - name: PERFORMANCE_CAP_WATTS
               value: "5000"
             - name: ECO_CAP_WATTS

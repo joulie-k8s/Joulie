@@ -11,6 +11,7 @@
 - [Example: stress-ng throttling](./examples/stress-ng-throttling/README.md)
 - [Example: Prometheus + Grafana](./examples/prometheus-grafana/README.md)
 - [Example: Operator Configuration](./examples/operator-configuration/README.md)
+- [Example: Workload Intent Classes](./examples/workload-intent-classes/README.md)
 
 ## 1. Motivation
 
@@ -48,7 +49,7 @@ Joulie has two planes:
 
 - **Policy Engine**
   - Reads telemetry (real or simulated) and datacentre topology.
-  - Computes the best “power state” for each node (e.g. ECO/BALANCED/PERF).
+  - Computes the best “power state” for each node (for example `ActiveEco` or `ActivePerformance`).
   - Produces desired state updates (CRDs or direct operator API).
 
 The policy engine may run:
@@ -65,14 +66,14 @@ The next milestone is to move from agent-selected policies to a central control 
 3. It writes desired state for each node.
 4. Agents enforce the assigned profile and report metrics.
 
-Initial profiles:
+Initial profile states:
 
-- `performance` (HPC): unconstrained node behavior.
-- `eco`: constrained node behavior (power/frequency throttling when needed).
+- `ActivePerformance` (mapped to profile `performance`): unconstrained node behavior.
+- `ActiveEco` (mapped to profile `eco`): constrained node behavior (power/frequency throttling when needed).
 
 Initial policy implementation (simple rule-based):
 
-- Example bootstrap scenario: two nodes, every minute swap profiles between nodes.
+- Example bootstrap scenario: two nodes, every minute swap states between nodes.
 
 Policy inputs (now and future):
 
@@ -82,6 +83,34 @@ Policy inputs (now and future):
 - Future data-driven inputs (Prometheus analytics, AI inference via KServe, etc.).
 
 Design goal: keep the policy engine extensible so custom policy modules can be added without changing the core operator loop.
+
+## 2.4 Scheduling-aware, scheduler-agnostic control
+
+Joulie can stay scheduler-agnostic while still influencing placement:
+
+- operator publishes node power-state labels (supply side),
+- workloads declare power intent classes via labels/affinity/taints-tolerations (demand side),
+- default Kubernetes scheduler keeps making placement decisions.
+
+Planned workload intent classes:
+
+- `performance`: requires performance-capable placement.
+- `eco`: requires eco placement.
+- `flex`: prefers eco but can run on performance when needed.
+
+The critical part is safe `ActivePerformance -> ActiveEco` transitions.
+Downgrades must not violate running workload requirements.
+
+Planned transition state machine:
+
+1. `ActivePerformance`: node runs performance profile and accepts performance workloads.
+2. `DrainingPerformance`: node keeps performance profile but stops accepting new performance workloads.
+3. `ActiveEco`: when no performance-required pods remain (or a force rule applies), operator commits eco profile.
+
+Responsibility split:
+
+- operator/policy decides transitions, guardrails, timeouts, and optional eviction/drain strategy,
+- agent applies requested profile and reports observed/applied/blocked state.
 
 ## 3. Design principles (PoC constraints)
 
@@ -125,13 +154,14 @@ The implementation currently uses two CRDs:
 
 Current preferred flow is operator-driven:
 
-1. Operator assigns each managed node a profile (`performance` or `eco`).
+1. Operator assigns each managed node a state (`ActivePerformance` or `ActiveEco`), mapped to profile (`performance` or `eco`).
 2. Operator writes one `NodePowerProfile` per managed node.
-3. Agent reads local `NodePowerProfile` and applies (or simulates) actions.
+3. Operator also updates node label `joulie.io/power-profile` to drive scheduler-aware placement.
+4. Agent reads local `NodePowerProfile` and applies (or simulates) actions.
 
-Alternative selector-based mode:
+Optional selector mode for experiments:
 
-- if no `NodePowerProfile` exists for a node, agent can still evaluate `PowerPolicy` selectors.
+- operator can be bypassed and agent can evaluate `PowerPolicy` selectors directly.
 
 See:
 

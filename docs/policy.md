@@ -19,15 +19,33 @@ CRD files:
 Policy should be modeled as a cluster-wide mapping:
 
 - input: cluster context at time `t`
-- output: `node -> power profile`
+- output: `node -> power state`
 
-Minimal profiles:
+Minimal states:
 
-- `performance` (HPC, unconstrained)
-- `eco` (energy-aware, throttling allowed)
+- `ActivePerformance` (mapped to profile `performance`)
+- `ActiveEco` (mapped to profile `eco`)
 
 Initial implementation should remain rule-based and deterministic.
 Future implementations can be telemetry-driven or model-driven.
+
+## Policy core: state machine + planner abstraction
+
+Policy should be structured as a planner over a transition state machine, not only as a direct cap assignment.
+
+Proposed minimal node states:
+
+- `ActivePerformance`
+- `DrainingPerformance`
+- `ActiveEco`
+
+Transition intent:
+
+- `ActiveEco -> ActivePerformance`: always allowed.
+- `ActivePerformance -> DrainingPerformance`: allowed when policy decides downgrade should start.
+- `DrainingPerformance -> ActiveEco`: only when guard condition is satisfied (for example no performance-required pods remain), or when a force rule triggers.
+
+This keeps downgrade behavior explicit and safe.
 
 ## Spec fields
 
@@ -48,12 +66,38 @@ On each node, agent resolves desired state as:
 5. Pick highest `spec.priority`.
 6. Use name as tiebreaker.
 
+## Scheduling-aware contract (policy-owned)
+
+The policy layer should own workload safety checks before downgrades:
+
+- performance-required workload on node: block or defer downgrade,
+- eco/flexible workloads only: allow downgrade.
+
+Node labels communicate supply (`joulie.io/power-profile=performance|eco`), while workload labels/affinity communicate demand.
+Default scheduler remains unchanged.
+
+### Workload intent classes
+
+Pods should declare intent with:
+
+- label key: `joulie.io/workload-intent-class`
+
+Supported classes:
+
+- `performance`: workload should run on nodes with performance supply.
+- `eco`: workload should run on nodes with eco supply.
+- `flex`: workload can run on either supply, with preference for eco when available.
+
+Reference example:
+
+- [Workload Intent Classes](../examples/workload-intent-classes/README.md)
+
 ## Simple starter policy (recommended)
 
 Bootstrap test policy:
 
 1. Select two non-reserved nodes.
-2. Assign `performance` to node A and `eco` to node B.
+2. Assign `ActivePerformance` to node A and `ActiveEco` to node B (profile mapping `performance`/`eco`).
 3. Every minute, swap assignments.
 4. Observe frequency/power metrics and verify profile transitions.
 
@@ -67,6 +111,14 @@ Policy modules should be able to consume:
 - schedules/time windows
 - telemetry (PUE, temperatures, hotspot signals)
 - external inference outputs (for example KServe model predictions)
+
+Recommended abstraction boundary for future-proofing:
+
+- `ContextProvider`: provides cluster/node/workload/time/telemetry snapshot.
+- `PolicyModule`: computes desired assignments/transitions from the context.
+- `ActuationAdapter`: writes assignments (`NodePowerProfile` and node labels).
+
+When data-driven policies are added, Prometheus should be integrated behind `ContextProvider` so policy APIs remain stable.
 
 ## Example
 
