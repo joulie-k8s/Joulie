@@ -25,10 +25,10 @@ This pushes:
 You can also do build+push+install in one command:
 
 ```bash
-make make-build-install TAG=<tag>
+make build-push-install TAG=<tag>
 ```
 
-If you use `make make-build-install`, you can skip step 2.
+If you use `make build-push-install`, you can skip step 2.
 
 ## 2. Install CRDs + components
 
@@ -39,6 +39,12 @@ make install TAG=<tag>
 ```
 
 This applies CRDs/manifests and sets both images to the requested tag.
+
+To remove Joulie components and CRD:
+
+```bash
+make uninstall
+```
 
 ## 3. Label nodes managed by the operator
 
@@ -59,11 +65,11 @@ kubectl label node <node2> joulie.io/managed=true --overwrite
 make rollout TAG=<new-tag>
 ```
 
-## 5. Choose a control mode
+## 5. Control mode
 
-### A) Central operator mode (recommended first test)
+### Central operator mode (single path)
 
-The operator writes `NodePowerProfile` assignments and swaps `eco`/`performance` across nodes every reconcile interval.
+The operator writes `NodePowerProfile` assignments and swaps `ActivePerformance`/`ActiveEco` across nodes every reconcile interval (profile mapping `performance`/`eco`).
 
 Configuration details and patch examples:
 
@@ -77,16 +83,9 @@ kubectl -n joulie-system logs deploy/joulie-operator --tail=100
 kubectl -n joulie-system logs -l app.kubernetes.io/name=joulie-agent --tail=100
 ```
 
-### B) Direct selector-based policy mode
-
-```bash
-kubectl apply -f config/samples/powerpolicy-amd-worker.yaml
-```
-
 ## 6. Verify
 
 ```bash
-kubectl get powerpolicies
 kubectl get nodepowerprofiles
 kubectl -n joulie-system get pods -o wide
 kubectl -n joulie-system logs -l app.kubernetes.io/name=joulie-agent --tail=100

@@ -1,0 +1,82 @@
+# Values file for Prometheus + Grafana (kube-prometheus-stack)
+
+crds:
+  upgradeJob:
+    image:
+      busybox:
+        registry: registry.cern.ch
+        repository: docker.io/busybox
+      kubectl:
+        registry: registry.cern.ch
+        repository: registry.k8s.io/kubectl
+alertmanager:
+  alertmanagerSpec:
+    image:
+      registry: registry.cern.ch
+      repository: quay.io/prometheus/alertmanager
+prometheusOperator:
+  admissionWebhooks:
+    deployment:
+      image:
+        registry: registry.cern.ch
+        repository: quay.io/prometheus-operator/admission-webhook
+    patch:
+      image:
+        registry: registry.cern.ch
+        repository: ghcr.io/jkroepke/kube-webhook-certgen
+  image:
+    registry: registry.cern.ch
+    repository: quay.io/prometheus-operator/prometheus-operator
+  prometheusConfigReloader:
+    image:
+      registry: registry.cern.ch
+      repository: quay.io/prometheus-operator/prometheus-config-reloader
+  thanosImage:
+    registry: registry.cern.ch
+    repository: quay.io/thanos/thanos
+prometheus:
+  prometheusSpec:
+    image:
+      registry: registry.cern.ch
+      repository: quay.io/prometheus/prometheus
+thanosRuler:
+  thanosRulerSpec:
+    image:
+      registry: registry.cern.ch
+      repository: quay.io/thanos/thanos
+grafana:
+  image:
+    registry: registry.cern.ch
+    repository: docker.io/grafana/grafana
+  sidecar:
+    image:
+      registry: registry.cern.ch
+      repository: docker.io/kiwigrid/k8s-sidecar
+    # Needed so sidecar containers can communicate with the Kubernetes API server.
+    # with the kube api server
+    skipTlsVerify: true
+    datasources:
+      # Keep it the default datasource
+      defaultDatasourceEnabled: true
+      isDefaultDatasource: true
+      # Point Grafana at the Prometheus service
+      url: "http://telemetry-kube-prometheus-prometheus.default.svc:9090"
+
+  initChownData:
+    image:
+      registry: registry.cern.ch
+      repository: docker.io/library/busybox
+  downloadDashboardsImage:
+    registry: registry.cern.ch
+    repository: docker.io/curlimages/curl
+prometheus-node-exporter:
+  image:
+    registry: registry.cern.ch
+    repository: quay.io/prometheus/node-exporter
+kube-state-metrics:
+  image:
+    registry: registry.cern.ch
+    repository: registry.k8s.io/kube-state-metrics/kube-state-metrics
+  # Expose selected node labels in kube_node_labels.
+  metricLabelsAllowlist:
+    - nodes=[joulie.io/power-profile]

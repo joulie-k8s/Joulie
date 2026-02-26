@@ -11,10 +11,32 @@ At each control step (for example every minute), the operator:
 3. Writes desired per-node state.
 4. Monitors outcomes and re-plans.
 
-Profiles start simple:
+States start simple:
 
-- `performance`: unconstrained / HPC-oriented.
-- `eco`: constrained / energy-saving.
+- `ActivePerformance` (mapped to profile `performance`): unconstrained / HPC-oriented.
+- `ActiveEco` (mapped to profile `eco`): constrained / energy-saving.
+
+## Control responsibility boundary
+
+Operator is the control-plane brain.
+Agent is an actuator/telemetry component.
+
+- Operator decides *what* should happen: profile assignments, transitions, safety rules, timing.
+- Agent decides only *how to apply* on host interfaces and reports result (`applied`, `blocked`, `error`).
+
+This keeps policy evolution independent from device-specific enforcement details.
+
+## Transition state machine (design baseline)
+
+To avoid contract violations during `ActivePerformance -> ActiveEco` moves, use two-phase downgrade:
+
+1. `ActivePerformance`
+2. `DrainingPerformance` (keep performance cap, stop admitting new performance workloads)
+3. `ActiveEco` (commit eco cap when safe condition is met)
+
+If safe condition never occurs, policy controls escalation (hold, timeout, force, or drain/evict strategy).
+
+Current implementation includes a basic guard: when target is `ActiveEco` but the node still runs pods labeled `joulie.io/workload-intent-class=performance`, downgrade is deferred and node remains in performance profile.
 
 ## Global inputs
 
@@ -30,7 +52,7 @@ The operator policy has a cluster-wide view and should support:
 Start with a deterministic rule-based policy for validation:
 
 - small set of target nodes (for example 2 nodes).
-- every `X` minutes, alternate assignments between `performance` and `eco`.
+- every `X` minutes, alternate assignments between `ActivePerformance` and `ActiveEco` (profile mapping `performance`/`eco`).
 
 This validates:
 
@@ -50,16 +72,22 @@ Keep policy logic pluggable:
 
 The core operator loop remains stable while policy modules evolve independently.
 
-## Migration path from current PoC
+Suggested interfaces:
 
-Current state is agent-driven (`PowerPolicy` self-selection per node).
+- `PolicyModule.Plan(context) -> node transitions`
+- `ContextProvider.Snapshot() -> cluster context`
+- `StateGuard.Check(node, transition) -> allowed/blocked(reason)`
 
-Migration path:
+Future data-driven policies should use Prometheus (or other sources) through `ContextProvider`, not by changing agent APIs.
 
-1. Keep `PowerPolicy` as user intent surface.
-2. Introduce operator-owned node-scoped desired state (`NodePowerProfile`).
-3. Switch agents to consume only their node-scoped assignment.
-4. Add policy plugins incrementally (rule-based first, telemetry/AI later).
+## Current control path
+
+Current path is operator-driven:
+
+1. Operator computes node assignments.
+2. Operator writes node-scoped desired state (`NodePowerProfile`).
+3. Agent consumes only its node-scoped assignment.
+4. Policy plugins can evolve independently (rule-based first, telemetry/AI later).
 
 ## Suggested deployment shape
 
@@ -67,3 +95,5 @@ Migration path:
 - ServiceAccount + RBAC (read nodes/metrics, write desired-state CRs).
 - Leader election.
 - Operator metrics endpoint (decisions, reassignments, errors, loop latency).
+
+Future operator metrics should also expose transition outcomes (`blocked`, `forced`, `completed`) to make policy behavior auditable in Grafana.

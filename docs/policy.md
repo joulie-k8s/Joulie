@@ -6,12 +6,10 @@ The implemented APIs are:
 
 - Group: `joulie.io`
 - Version: `v1alpha1`
-- `PowerPolicy` (`powerpolicies`, cluster-scoped) for selector-based intent
 - `NodePowerProfile` (`nodepowerprofiles`, cluster-scoped) for operator-assigned per-node desired state
 
 CRD files:
 
-- `config/crd/bases/joulie.io_powerpolicies.yaml`
 - `config/crd/bases/joulie.io_nodepowerprofiles.yaml`
 
 ## Conceptual model (next step)
@@ -19,41 +17,79 @@ CRD files:
 Policy should be modeled as a cluster-wide mapping:
 
 - input: cluster context at time `t`
-- output: `node -> power profile`
+- output: `node -> power state`
 
-Minimal profiles:
+Minimal states:
 
-- `performance` (HPC, unconstrained)
-- `eco` (energy-aware, throttling allowed)
+- `ActivePerformance` (mapped to profile `performance`)
+- `ActiveEco` (mapped to profile `eco`)
 
 Initial implementation should remain rule-based and deterministic.
 Future implementations can be telemetry-driven or model-driven.
 
-## Spec fields
+## Policy core: state machine + planner abstraction
 
-- `spec.priority` (int, default `0`)
-- `spec.selector.matchLabels` (required)
+Policy should be structured as a planner over a transition state machine, not only as a direct cap assignment.
+
+Proposed minimal node states:
+
+- `ActivePerformance`
+- `DrainingPerformance`
+- `ActiveEco`
+
+Transition intent:
+
+- `ActiveEco -> ActivePerformance`: always allowed.
+- `ActivePerformance -> DrainingPerformance`: allowed when policy decides downgrade should start.
+- `DrainingPerformance -> ActiveEco`: only when guard condition is satisfied (for example no performance-required pods remain), or when a force rule triggers.
+
+This keeps downgrade behavior explicit and safe.
+
+## `NodePowerProfile` fields (current)
+
+- `spec.nodeName` (required)
+- `spec.profile` (required, `performance|eco`)
 - `spec.cpu.packagePowerCapWatts` (optional, number)
-- `spec.gpu.enabled` (optional, bool; reserved)
-- `spec.gpu.powerLimitWatts` (optional, number; reserved)
+- `spec.policy.name` (optional, metadata string)
 
 ## Selection behavior (current)
 
-On each node, agent resolves desired state as:
+On each node, agent resolves desired state only from:
 
-1. `NodePowerProfile` for that node (`spec.nodeName == <node>`), if present.
-2. Otherwise fallback to `PowerPolicy`:
-3. List all `PowerPolicy` objects.
-4. Match selector against node labels.
-5. Pick highest `spec.priority`.
-6. Use name as tiebreaker.
+1. `NodePowerProfile` with `spec.nodeName == <node>`.
+
+## Scheduling-aware contract (policy-owned)
+
+The policy layer should own workload safety checks before downgrades:
+
+- performance-required workload on node: block or defer downgrade,
+- eco/flexible workloads only: allow downgrade.
+
+Node labels communicate supply (`joulie.io/power-profile=performance|draining-performance|eco`), while workload labels/affinity communicate demand.
+Default scheduler remains unchanged.
+
+### Workload intent classes
+
+Pods should declare intent with:
+
+- label key: `joulie.io/workload-intent-class`
+
+Supported classes:
+
+- `performance`: workload should run on nodes with performance supply.
+- `eco`: workload should run on nodes with eco supply.
+- `flex`: workload can run on either supply, with preference for eco when available.
+
+Reference example:
+
+- [Workload Intent Classes](../examples/workload-intent-classes/README.md)
 
 ## Simple starter policy (recommended)
 
 Bootstrap test policy:
 
 1. Select two non-reserved nodes.
-2. Assign `performance` to node A and `eco` to node B.
+2. Assign `ActivePerformance` to node A and `ActiveEco` to node B (profile mapping `performance`/`eco`).
 3. Every minute, swap assignments.
 4. Observe frequency/power metrics and verify profile transitions.
 
@@ -68,19 +104,26 @@ Policy modules should be able to consume:
 - telemetry (PUE, temperatures, hotspot signals)
 - external inference outputs (for example KServe model predictions)
 
+Recommended abstraction boundary for future-proofing:
+
+- `ContextProvider`: provides cluster/node/workload/time/telemetry snapshot.
+- `PolicyModule`: computes desired assignments/transitions from the context.
+- `ActuationAdapter`: writes assignments (`NodePowerProfile` and node labels).
+
+When data-driven policies are added, Prometheus should be integrated behind `ContextProvider` so policy APIs remain stable.
+
 ## Example
 
 ```yaml
 apiVersion: joulie.io/v1alpha1
-kind: PowerPolicy
+kind: NodePowerProfile
 metadata:
-  name: amd-worker-balanced
+  name: node-worker-01
 spec:
-  priority: 100
-  selector:
-    matchLabels:
-      feature.node.kubernetes.io/cpu-model.vendor_id: AMD
-      joulie.io/managed: "true"
+  nodeName: worker-01
+  profile: eco
   cpu:
     packagePowerCapWatts: 180
+  policy:
+    name: rule-swap-v1
 ```

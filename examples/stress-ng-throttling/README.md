@@ -15,15 +15,11 @@ On this platform, package power caps via writable RAPL limit files may be unavai
 
 - Joulie CRD + DaemonSet deployed.
 - NFD deployed.
-- One worker node labeled with:
-  - `feature.node.kubernetes.io/cpu-model.vendor_id=AMD`
 
-## 1. Pick and label target node
+## 1. Pick target node
 
 ```bash
-kubectl get nodes -L feature.node.kubernetes.io/cpu-model.vendor_id
 export TARGET_NODE=<amd-worker-node-name>
-kubectl label node "$TARGET_NODE" joulie.io/power-demo=target --overwrite
 ```
 
 ## 2. Deploy stress workload
@@ -36,19 +32,19 @@ kubectl -n joulie-examples get pod -o wide
 
 Make sure the pod runs on `TARGET_NODE`.
 
-## 3. Apply high baseline policy
+## 3. Apply high baseline node profile
 
 ```bash
-kubectl apply -f examples/stress-ng-throttling/powerpolicy-high.yaml
+sed "s/__TARGET_NODE__/$TARGET_NODE/" examples/stress-ng-throttling/nodepowerprofile-high.yaml | kubectl apply -f -
 kubectl -n joulie-examples logs -f deploy/stress-ng-demo
 ```
 
 The workload prints `stress-ng --metrics-brief` every ~25s.
 
-## 4. Apply low policy (throttle)
+## 4. Apply low node profile (throttle)
 
 ```bash
-kubectl apply -f examples/stress-ng-throttling/powerpolicy-low.yaml
+sed "s/__TARGET_NODE__/$TARGET_NODE/" examples/stress-ng-throttling/nodepowerprofile-low.yaml | kubectl apply -f -
 kubectl -n joulie-examples logs -f deploy/stress-ng-demo
 ```
 
@@ -98,7 +94,7 @@ If you kill the stress workload while low policy is still applied, frequencies m
 To bring frequencies up again, apply a less restrictive policy (or high policy):
 
 ```bash
-kubectl apply -f examples/stress-ng-throttling/powerpolicy-high.yaml
+sed "s/__TARGET_NODE__/$TARGET_NODE/" examples/stress-ng-throttling/nodepowerprofile-high.yaml | kubectl apply -f -
 ```
 
 Then monitor agent logs for `throttle-down` steps (meaning less throttling), and monitor host `scaling_max_freq` values rising.
@@ -112,9 +108,7 @@ sudo ../../scripts/restore-cpufreq.sh
 ## 8. Cleanup
 
 ```bash
-kubectl delete -f examples/stress-ng-throttling/powerpolicy-low.yaml --ignore-not-found
-kubectl delete -f examples/stress-ng-throttling/powerpolicy-high.yaml --ignore-not-found
+kubectl delete nodepowerprofile stress-ng-demo-profile --ignore-not-found
 kubectl delete -f examples/stress-ng-throttling/stress-ng-deployment.yaml --ignore-not-found
 kubectl delete -f examples/stress-ng-throttling/namespace.yaml --ignore-not-found
-kubectl label node "$TARGET_NODE" joulie.io/power-demo-
 ```

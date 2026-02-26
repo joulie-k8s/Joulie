@@ -1,0 +1,11 @@
+apiVersion: joulie.io/v1alpha1
+kind: NodePowerProfile
+metadata:
+  name: stress-ng-demo-profile
+spec:
+  nodeName: __TARGET_NODE__
+  profile: performance
+  cpu:
+    packagePowerCapWatts: 5000.0
+  policy:
+    name: stress-ng-demo-high
