@@ -1,9 +1,11 @@
 apiVersion: joulie.io/v1alpha1
 kind: NodePowerProfile
 metadata:
-  name: sim-http-demo-profile
+  name: sim-http-demo-profile-target-node
+  labels:
+    app.kubernetes.io/part-of: sim-http-demo
 spec:
-  nodeName: __TARGET_NODE__
+  nodeName: target-node
   profile: eco
   cpu:
     packagePowerCapWatts: 120

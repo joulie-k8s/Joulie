@@ -1,0 +1,19 @@
+classes:
+  - name: intel-default
+    matchLabels:
+      feature.node.kubernetes.io/cpu-model.vendor_id: Intel
+    model:
+      baseIdleW: 70
+      podW: 110
+      dvfsDropWPerPct: 1.6
+      raplHeadW: 5
+      defaultCapW: 5000
+  - name: amd-default
+    matchLabels:
+      feature.node.kubernetes.io/cpu-model.vendor_id: AMD
+    model:
+      baseIdleW: 80
+      podW: 120
+      dvfsDropWPerPct: 1.8
+      raplHeadW: 5
+      defaultCapW: 5000

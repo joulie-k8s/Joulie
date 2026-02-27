@@ -4,11 +4,13 @@ NAMESPACE ?= joulie-system
 HELM_RELEASE ?= joulie
 HELM_CHART ?= charts/joulie
 HELM_VALUES ?= values/joulie.yaml
+SIM_NAMESPACE ?= joulie-sim-demo
+SIM_IMAGE ?= joulie-simulator
 
 # Image names must follow joulie-<component>, where <component> matches cmd/<component>.
 IMAGES ?= joulie-agent joulie-operator
 
-.PHONY: help install uninstall build push build-push rollout build-push-rollout build-push-install print-images test test-examples
+.PHONY: help install uninstall build push build-push rollout build-push-rollout build-push-install print-images test test-examples simulator-build simulator-push simulator-build-push simulator-install simulator-build-push-deploy simulator-logs
 
 help:
 	@echo "Targets:"
@@ -22,6 +24,12 @@ help:
 	@echo "  make build-push-install TAG=<tag>     Build, push, install manifests, wait rollout"
 	@echo "  make test                             Run unit tests"
 	@echo "  make test-examples                    Validate example YAML manifests (kubectl dry-run client)"
+	@echo "  make simulator-build TAG=<tag>        Build simulator image"
+	@echo "  make simulator-push TAG=<tag>         Push simulator image"
+	@echo "  make simulator-build-push TAG=<tag>   Build and push simulator image"
+	@echo "  make simulator-install TAG=<tag>      Install simulator using existing image tag"
+	@echo "  make simulator-build-push-deploy TAG=<tag> Build/push/deploy simulator"
+	@echo "  make simulator-logs                   Tail simulator logs"
 	@echo "  make build IMAGE=<name> TAG=<tag>     Build a single image"
 	@echo "  make push IMAGE=<name> TAG=<tag>      Push a single image"
 
@@ -102,3 +110,26 @@ test-examples:
 		fi; \
 	done; \
 	echo "All example manifests validated."
+
+simulator-build:
+	docker build -f simulator/Dockerfile -t "$(REGISTRY)/$(SIM_IMAGE):$(TAG)" .
+
+simulator-push:
+	docker push "$(REGISTRY)/$(SIM_IMAGE):$(TAG)"
+
+simulator-build-push: simulator-build simulator-push
+
+simulator-install:
+	kubectl apply -f simulator/deploy/simulator.yaml || ( \
+		echo "Recreating simulator deployment due to immutable selector change"; \
+		kubectl -n "$(SIM_NAMESPACE)" delete deploy/joulie-telemetry-sim --ignore-not-found=true; \
+		kubectl apply -f simulator/deploy/simulator.yaml \
+	)
+	kubectl -n "$(SIM_NAMESPACE)" set image deploy/joulie-telemetry-sim \
+		simulator="$(REGISTRY)/$(SIM_IMAGE):$(TAG)"
+	kubectl -n "$(SIM_NAMESPACE)" rollout status deploy/joulie-telemetry-sim
+
+simulator-build-push-deploy: simulator-build-push simulator-install
+
+simulator-logs:
+	kubectl -n "$(SIM_NAMESPACE)" logs -f deploy/joulie-telemetry-sim

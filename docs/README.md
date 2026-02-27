@@ -20,6 +20,7 @@ This directory contains the minimal docs for the current PoC.
 - [Operator Notes](./operator.md)
 - [Input Telemetry and Actuation Interfaces](./telemetry.md)
 - [Metrics Reference](./metrics.md)
+- [Simulator Architecture](./simulator.md)
 - [Example: stress-ng throttling](../examples/stress-ng-throttling/README.md)
 - [Example: Prometheus + Grafana](../examples/prometheus-grafana/README.md)
 - [Example: Operator Configuration](../examples/operator-configuration/README.md)

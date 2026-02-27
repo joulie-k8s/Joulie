@@ -9,6 +9,7 @@
 - [Operator Notes](./docs/operator.md)
 - [Input Telemetry and Actuation Interfaces](./docs/telemetry.md)
 - [Metrics Reference](./docs/metrics.md)
+- [Simulator Architecture](./docs/simulator.md)
 - [Example: stress-ng throttling](./examples/stress-ng-throttling/README.md)
 - [Example: Prometheus + Grafana](./examples/prometheus-grafana/README.md)
 - [Example: Operator Configuration](./examples/operator-configuration/README.md)
@@ -113,6 +114,22 @@ Responsibility split:
 
 - operator/policy decides transitions, guardrails, timeouts, and optional eviction/drain strategy,
 - agent applies requested profile and reports observed/applied/blocked state.
+
+## 2.5 Simulator Integration (Hybrid)
+
+Joulie integrates with a simulator in a hybrid way:
+
+- Kubernetes remains the source of truth for pod placement/lifecycle.
+- Simulator derives synthetic hardware signals per node from observed pod/node state.
+- Agent reads telemetry and sends controls through `TelemetryProfile` HTTP endpoints.
+
+This keeps workload behavior realistic while virtualizing hardware telemetry/control.
+
+Simulator runtime lives under `simulator/`:
+
+- service code: `simulator/cmd/simulator`
+- container build: `simulator/Dockerfile`
+- deployment manifests: `simulator/deploy/`
 
 ## 3. Design principles (PoC constraints)
 

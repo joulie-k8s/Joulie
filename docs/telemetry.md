@@ -183,6 +183,11 @@ Target workflow:
 
 This provides a fair same-workload/same-telemetry benchmark between WAO and Joulie.
 
+Implementation notes are documented in:
+
+- `docs/simulator.md`
+- `simulator/README.md`
+
 ## Generic telemetry CRD (current + extension path)
 
 Current CRDs:
