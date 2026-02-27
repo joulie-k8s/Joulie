@@ -2,6 +2,11 @@
 
 Joulie agent exposes Prometheus metrics on `/metrics` (default `:8080`).
 
+This document is only for **exported observability metrics**.
+For **input telemetry and control interfaces** (real hardware vs simulated HTTP), see:
+
+- [Input Telemetry and Actuation Interfaces](./telemetry.md)
+
 ## Endpoint
 
 - Path: `/metrics`

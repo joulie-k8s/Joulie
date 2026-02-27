@@ -112,6 +112,10 @@ Recommended abstraction boundary for future-proofing:
 
 When data-driven policies are added, Prometheus should be integrated behind `ContextProvider` so policy APIs remain stable.
 
+Input telemetry/control provider design (host vs simulated HTTP) is documented in:
+
+- [Input Telemetry and Actuation Interfaces](./telemetry.md)
+
 ## Example
 
 ```yaml

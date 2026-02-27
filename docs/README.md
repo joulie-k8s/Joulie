@@ -17,6 +17,7 @@ This directory contains the minimal docs for the current PoC.
 - [DaemonSet Configuration](./daemonset.md)
 - [CRD and Policy Model](./policy.md)
 - [Operator Notes](./operator.md)
+- [Input Telemetry and Actuation Interfaces](./telemetry.md)
 - [Metrics Reference](./metrics.md)
 - [Example: stress-ng throttling](../examples/stress-ng-throttling/README.md)
 - [Example: Prometheus + Grafana](../examples/prometheus-grafana/README.md)

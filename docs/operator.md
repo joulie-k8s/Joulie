@@ -78,6 +78,10 @@ Suggested interfaces:
 - `ContextProvider.Snapshot() -> cluster context`
 - `StateGuard.Check(node, transition) -> allowed/blocked(reason)`
 
+Input source and actuation abstraction details are defined in:
+
+- [Input Telemetry and Actuation Interfaces](./telemetry.md)
+
 Future data-driven policies should use Prometheus (or other sources) through `ContextProvider`, not by changing agent APIs.
 
 ## Current control path
