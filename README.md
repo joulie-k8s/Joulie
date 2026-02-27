@@ -13,6 +13,7 @@
 - [Example: Prometheus + Grafana](./examples/prometheus-grafana/README.md)
 - [Example: Operator Configuration](./examples/operator-configuration/README.md)
 - [Example: Workload Intent Classes](./examples/workload-intent-classes/README.md)
+- [Example: Simulated Telemetry + Control (HTTP)](./examples/simulated-telemetry-control/README.md)
 
 ## 1. Motivation
 
@@ -151,6 +152,7 @@ Note: GPU support will be implemented behind a device plugin interface so that C
 The implementation currently uses:
 
 - `NodePowerProfile` (cluster-scoped): operator-assigned per-node desired state.
+- `TelemetryProfile` (cluster-scoped): telemetry source routing for node/cluster scopes.
 
 Current preferred flow is operator-driven:
 

@@ -25,10 +25,10 @@ helm repo update
 helm install telemetry prometheus-community/kube-prometheus-stack -f values/prometheus-grafana.yaml
 ```
 
-- operator reconcile interval configured (example `1m`):
+- operator reconcile interval configured (example `2m`):
 
 ```bash
-kubectl -n joulie-system set env deploy/joulie-operator RECONCILE_INTERVAL=1m
+kubectl -n joulie-system set env deploy/joulie-operator RECONCILE_INTERVAL=2m
 kubectl -n joulie-system rollout status deploy/joulie-operator
 ```
 

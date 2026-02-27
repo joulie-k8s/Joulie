@@ -118,7 +118,7 @@ func startMetricsServer(addr string) {
 
 func reconcile(
 	ctx context.Context,
-	kube *kubernetes.Clientset,
+	kube kubernetes.Interface,
 	dyn dynamic.Interface,
 	selector labels.Selector,
 	reservedLabel string,
@@ -248,7 +248,7 @@ func recordTransitionMetrics(a NodeAssignment) {
 
 func applyDowngradeGuards(
 	ctx context.Context,
-	kube *kubernetes.Clientset,
+	kube kubernetes.Interface,
 	plan []NodeAssignment,
 	currentProfiles map[string]string,
 	intentLabel string,
@@ -317,7 +317,7 @@ func applyDowngradeGuards(
 
 func runningIntentPodCountOnNode(
 	ctx context.Context,
-	kube *kubernetes.Clientset,
+	kube kubernetes.Interface,
 	nodeName string,
 	intentLabel string,
 	intentValue string,
@@ -427,7 +427,7 @@ func upsertNodeProfile(ctx context.Context, dyn dynamic.Interface, a NodeAssignm
 	return nil
 }
 
-func upsertNodeProfileLabel(ctx context.Context, kube *kubernetes.Clientset, profileLabel string, a NodeAssignment) error {
+func upsertNodeProfileLabel(ctx context.Context, kube kubernetes.Interface, profileLabel string, a NodeAssignment) error {
 	labelValue := a.Profile
 	if a.LabelProfile != "" {
 		labelValue = a.LabelProfile

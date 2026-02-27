@@ -5,6 +5,7 @@ This directory contains the minimal docs for the current PoC.
 ## What exists today
 
 - `NodePowerProfile` CRD (cluster-scoped)
+- `TelemetryProfile` CRD (cluster-scoped)
 - `joulie-operator` Deployment (rule-based central assignment loop)
 - `joulie-agent` DaemonSet (node-local enforcer)
 - NFD-based hardware discovery in agent
@@ -23,9 +24,11 @@ This directory contains the minimal docs for the current PoC.
 - [Example: Prometheus + Grafana](../examples/prometheus-grafana/README.md)
 - [Example: Operator Configuration](../examples/operator-configuration/README.md)
 - [Example: Workload Intent Classes](../examples/workload-intent-classes/README.md)
+- [Example: Simulated Telemetry + Control (HTTP)](../examples/simulated-telemetry-control/README.md)
 
 ## Current naming
 
 Current APIs are:
 
 - `NodePowerProfile` (`nodepowerprofiles.joulie.io`) for operator-assigned node state
+- `TelemetryProfile` (`telemetryprofiles.joulie.io`) for telemetry source configuration and control-state reporting

@@ -8,7 +8,7 @@ HELM_VALUES ?= values/joulie.yaml
 # Image names must follow joulie-<component>, where <component> matches cmd/<component>.
 IMAGES ?= joulie-agent joulie-operator
 
-.PHONY: help install uninstall build push build-push rollout build-push-rollout build-push-install print-images
+.PHONY: help install uninstall build push build-push rollout build-push-rollout build-push-install print-images test test-examples
 
 help:
 	@echo "Targets:"
@@ -20,6 +20,8 @@ help:
 	@echo "  make rollout TAG=<tag>                Update and roll out agent+operator images"
 	@echo "  make build-push-rollout TAG=<tag>     Build, push, update image, wait rollout"
 	@echo "  make build-push-install TAG=<tag>     Build, push, install manifests, wait rollout"
+	@echo "  make test                             Run unit tests"
+	@echo "  make test-examples                    Validate example YAML manifests (kubectl dry-run client)"
 	@echo "  make build IMAGE=<name> TAG=<tag>     Build a single image"
 	@echo "  make push IMAGE=<name> TAG=<tag>      Push a single image"
 
@@ -40,6 +42,7 @@ install:
 uninstall:
 	helm uninstall "$(HELM_RELEASE)" -n "$(NAMESPACE)" || true
 	kubectl delete crd nodepowerprofiles.joulie.io --ignore-not-found=true
+	kubectl delete crd telemetryprofiles.joulie.io --ignore-not-found=true
 
 build:
 	@for img in $(if $(IMAGE),$(IMAGE),$(IMAGES)); do \
@@ -75,3 +78,27 @@ build-push-install: build-push install
 	@echo "Waiting for rollout to complete"
 	kubectl -n "$(NAMESPACE)" rollout status daemonset/joulie-agent
 	kubectl -n "$(NAMESPACE)" rollout status deployment/joulie-operator
+
+test:
+	go test ./...
+
+test-examples:
+	@set -e; \
+	files=$$(find examples -type f -name '*.yaml' | sort); \
+	for f in $$files; do \
+		if ! grep -q '^apiVersion:' "$$f" || ! grep -q '^kind:' "$$f"; then \
+			echo "Skipping patch-like YAML $$f (no apiVersion/kind)"; \
+			continue; \
+		fi; \
+		echo "Validating $$f"; \
+		out=$$(kubectl apply --dry-run=client --validate=false -f "$$f" 2>&1 >/dev/null) || rc=$$?; \
+		if [ "$${rc:-0}" -ne 0 ]; then \
+			if echo "$$out" | grep -Eqi 'unable to recognize|failed to download openapi|couldn.t get current server API group list|connect: connection refused|the server could not find the requested resource'; then \
+				echo "Skipping server-dependent validation for $$f (cluster/API discovery unavailable)"; \
+				continue; \
+			fi; \
+			echo "$$out"; \
+			exit "$${rc:-1}"; \
+		fi; \
+	done; \
+	echo "All example manifests validated."

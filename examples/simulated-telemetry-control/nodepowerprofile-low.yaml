@@ -1,0 +1,9 @@
+apiVersion: joulie.io/v1alpha1
+kind: NodePowerProfile
+metadata:
+  name: sim-http-demo-profile
+spec:
+  nodeName: __TARGET_NODE__
+  profile: eco
+  cpu:
+    packagePowerCapWatts: 120

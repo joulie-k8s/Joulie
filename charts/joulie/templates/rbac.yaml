@@ -9,6 +9,12 @@ rules:
   - apiGroups: ["joulie.io"]
     resources: ["nodepowerprofiles"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["joulie.io"]
+    resources: ["telemetryprofiles"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["joulie.io"]
+    resources: ["telemetryprofiles/status"]
+    verbs: ["update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -37,6 +43,9 @@ rules:
   - apiGroups: ["joulie.io"]
     resources: ["nodepowerprofiles"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["joulie.io"]
+    resources: ["telemetryprofiles"]
+    verbs: ["get", "list", "watch", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -50,4 +59,3 @@ subjects:
   - kind: ServiceAccount
     name: joulie-operator
     namespace: {{ .Release.Namespace }}
-

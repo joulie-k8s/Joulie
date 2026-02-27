@@ -48,11 +48,12 @@ Expected signal families (generic, extensible):
   - requested/allocated CPU/GPU,
   - workload intent density.
 
-Provider backends can be:
+Provider backends can be selected per signal family:
 
+- `none` (not provided),
 - `host` (sysfs/vendor tooling on real nodes),
 - `http` (simulator endpoint),
-- `mixed` (combination per signal family).
+- `prometheus` (query-based pull for controller/global inputs).
 
 ## Normalized snapshot and quality flags
 
@@ -90,6 +91,18 @@ Expected result model:
 
 This is required so Joulie can compare desired vs applied behavior even in simulation.
 
+## DVFS control signal shape
+
+Current DVFS control intent is normalized as `throttlePct` (0-100), not a fixed Hz.
+
+Reason:
+
+- frequency domains and available frequency steps vary by CPU/vendor/platform,
+- a percentage is portable across heterogeneous nodes and simulator backends,
+- host-specific Hz writes remain an implementation detail of the `host` control backend.
+
+On real nodes, the agent still exports observed/max frequency metrics in kHz.
+
 ## Real-hardware mode
 
 Host implementation maps to current Linux/device interfaces:
@@ -101,6 +114,12 @@ Host implementation maps to current Linux/device interfaces:
 Current mount convention:
 
 - host `/sys` mounted in container at `/host-sys`.
+
+Agent backend selection is self-discovered:
+
+- if cpufreq files are present, host DVFS writes are enabled,
+- if cpufreq files are missing, host DVFS writes are disabled automatically,
+- if HTTP control is configured, DVFS intents are still applied through HTTP.
 
 ## Simulator mode (HTTP)
 
@@ -116,6 +135,42 @@ Minimum simulator contract:
 
 This enables closed-loop validation with no physical RAPL/DVFS/GPU devices.
 
+### Current HTTP input contract (implemented now)
+
+For DVFS observed-power input, the current agent implementation reads:
+
+- `GET <endpoint>` where `{node}` placeholder (if present) is replaced with node name.
+
+Accepted JSON forms:
+
+```json
+{ "packagePowerWatts": 245.3 }
+```
+
+or
+
+```json
+{ "cpu": { "packagePowerWatts": 245.3 } }
+```
+
+This is a minimal first contract and will evolve as telemetry coverage expands.
+
+### Current HTTP control contract (implemented now)
+
+Agent sends `POST <endpoint>` (with `{node}` replacement) with JSON payload:
+
+```json
+{
+  "node": "worker-01",
+  "action": "rapl.set_power_cap_watts | dvfs.set_throttle_pct",
+  "capWatts": 120.0,
+  "throttlePct": 20,
+  "ts": "2026-02-27T00:00:00Z"
+}
+```
+
+Simulator/backend applies it and returns success/failure.
+
 ## Simulator concept for WAO vs Joulie comparison
 
 Target workflow:
@@ -128,19 +183,29 @@ Target workflow:
 
 This provides a fair same-workload/same-telemetry benchmark between WAO and Joulie.
 
-## Future generic telemetry CRD (concept)
+## Generic telemetry CRD (current + extension path)
 
-Current CRD (`NodePowerProfile`) is for desired profile assignment only.
+Current CRDs:
 
-For richer data-driven policies, add a generic telemetry CRD family (future work), CPU+GPU extensible from day one. Conceptual shape:
+- `NodePowerProfile`: desired power profile assignment.
+- `TelemetryProfile`: telemetry source routing/configuration.
 
-- `NodeTelemetryProfile` (or equivalent):
-  - `spec.source.type`: `host|http|mixed`
-  - `spec.source.http.endpoint` (sim mode)
-  - `status.snapshot.cpu.*`
-  - `status.snapshot.gpu[*].*`
-  - `status.snapshot.thermal.*`
-  - `status.snapshot.context.*` (controller-relevant features)
-  - `status.snapshot.meta.timestamp/quality`
+Current ownership/consumption model:
 
-Key requirement: schema must be extensible by device family (CPU/GPU/accelerator) without breaking readers.
+- Operator writes `NodePowerProfile` (desired node target).
+- Agent reads `NodePowerProfile`.
+- Agent reads node-scoped `TelemetryProfile` to choose telemetry source/control backend.
+- Agent writes `TelemetryProfile.status.control.*` as applied/blocked/error feedback.
+
+At the moment, operator does not yet consume `TelemetryProfile` for decision logic; that is reserved for future policy extensions (cluster/global telemetry inputs).
+
+`TelemetryProfile` currently covers source routing (for example CPU from `host` or `http`) and is the basis for simulated input mode.
+It should be extended over time with CPU/GPU/thermal/context status snapshots while preserving schema compatibility.
+
+Current control routing in the same CRD:
+
+- `spec.controls.cpu.type`: `none|host|http`
+- `spec.controls.cpu.http.endpoint`: HTTP control sink for CPU intents
+- `spec.controls.cpu.http.mode`: `auto|rapl|dvfs`
+
+Key requirement: schema must remain extensible by device family (CPU/GPU/accelerator) without breaking readers.

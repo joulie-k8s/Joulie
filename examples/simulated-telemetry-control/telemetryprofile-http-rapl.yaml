@@ -1,0 +1,21 @@
+apiVersion: joulie.io/v1alpha1
+kind: TelemetryProfile
+metadata:
+  name: sim-http-demo
+spec:
+  target:
+    scope: node
+    nodeName: __TARGET_NODE__
+  sources:
+    cpu:
+      type: http
+      http:
+        endpoint: http://joulie-telemetry-sim.joulie-sim-demo.svc/telemetry/{node}
+        timeoutSeconds: 2
+  controls:
+    cpu:
+      type: http
+      http:
+        endpoint: http://joulie-telemetry-sim.joulie-sim-demo.svc/control/{node}
+        timeoutSeconds: 2
+        mode: rapl

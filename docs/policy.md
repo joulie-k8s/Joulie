@@ -7,10 +7,12 @@ The implemented APIs are:
 - Group: `joulie.io`
 - Version: `v1alpha1`
 - `NodePowerProfile` (`nodepowerprofiles`, cluster-scoped) for operator-assigned per-node desired state
+- `TelemetryProfile` (`telemetryprofiles`, cluster-scoped) for telemetry source configuration (node + cluster scope)
 
 CRD files:
 
 - `config/crd/bases/joulie.io_nodepowerprofiles.yaml`
+- `config/crd/bases/joulie.io_telemetryprofiles.yaml`
 
 ## Conceptual model (next step)
 
@@ -51,6 +53,18 @@ This keeps downgrade behavior explicit and safe.
 - `spec.profile` (required, `performance|eco`)
 - `spec.cpu.packagePowerCapWatts` (optional, number)
 - `spec.policy.name` (optional, metadata string)
+
+## `NodePowerProfile` vs `TelemetryProfile`
+
+- `NodePowerProfile` answers: **what** power profile/cap should be applied to a node.
+- `TelemetryProfile` answers: **how** the agent reads inputs and applies controls (host/http/prometheus routing by signal family).
+
+Current runtime flow:
+
+1. Operator sets `NodePowerProfile`.
+2. Agent reads local `NodePowerProfile`.
+3. Agent reads node-scoped `TelemetryProfile`.
+4. Agent enforces and reports status in `TelemetryProfile.status.control`.
 
 ## Selection behavior (current)
 
