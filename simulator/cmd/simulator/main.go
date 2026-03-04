@@ -1160,49 +1160,8 @@ func affinityForIntentClass(intent string) *corev1.Affinity {
 			},
 		}
 	default:
-		return &corev1.Affinity{
-			NodeAffinity: &corev1.NodeAffinity{
-				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-					NodeSelectorTerms: []corev1.NodeSelectorTerm{
-						{
-							MatchExpressions: []corev1.NodeSelectorRequirement{
-								{
-									Key:      "joulie.io/power-profile",
-									Operator: corev1.NodeSelectorOpIn,
-									Values:   []string{"eco", "performance"},
-								},
-							},
-						},
-					},
-				},
-				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.PreferredSchedulingTerm{
-					{
-						Weight: 100,
-						Preference: corev1.NodeSelectorTerm{
-							MatchExpressions: []corev1.NodeSelectorRequirement{
-								{
-									Key:      "joulie.io/power-profile",
-									Operator: corev1.NodeSelectorOpIn,
-									Values:   []string{"eco"},
-								},
-							},
-						},
-					},
-					{
-						Weight: 50,
-						Preference: corev1.NodeSelectorTerm{
-							MatchExpressions: []corev1.NodeSelectorRequirement{
-								{
-									Key:      "joulie.io/power-profile",
-									Operator: corev1.NodeSelectorOpIn,
-									Values:   []string{"performance"},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
+		// General/flexible class: no explicit power-profile affinity constraint.
+		return nil
 	}
 }
 

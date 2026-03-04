@@ -41,11 +41,28 @@ func main() {
 	var outPath string
 	var meanInterArrival float64
 	var seed int64
+	var perfRatio float64
+	var ecoRatio float64
+	var noAffinityOnly bool
 	flag.IntVar(&jobs, "jobs", 50, "number of jobs")
 	flag.StringVar(&outPath, "out", "trace.jsonl", "output JSONL path")
 	flag.Float64Var(&meanInterArrival, "mean-inter-arrival-sec", 5, "mean inter-arrival seconds")
 	flag.Int64Var(&seed, "seed", time.Now().UnixNano(), "rng seed")
+	flag.Float64Var(&perfRatio, "perf-ratio", 0.30, "ratio of performance-constrained jobs")
+	flag.Float64Var(&ecoRatio, "eco-ratio", 0.50, "ratio of eco-constrained jobs")
+	flag.BoolVar(&noAffinityOnly, "no-affinity-only", false, "if true, all jobs are generated without power-profile affinity")
 	flag.Parse()
+	if perfRatio < 0 {
+		perfRatio = 0
+	}
+	if ecoRatio < 0 {
+		ecoRatio = 0
+	}
+	if perfRatio+ecoRatio > 1 {
+		total := perfRatio + ecoRatio
+		perfRatio = perfRatio / total
+		ecoRatio = ecoRatio / total
+	}
 
 	f, err := os.Create(outPath)
 	if err != nil {
@@ -56,13 +73,20 @@ func main() {
 	defer w.Flush()
 
 	rng := rand.New(rand.NewSource(seed))
-	classes := []string{"performance", "eco"}
 	offset := 0.0
 	for i := 0; i < jobs; i++ {
 		offset += rng.ExpFloat64() * meanInterArrival
 		cpu := 1 + rng.Intn(8)
 		units := 600 + rng.Float64()*3000
-		class := classes[rng.Intn(len(classes))]
+		class := "general"
+		if !noAffinityOnly {
+			p := rng.Float64()
+			if p < perfRatio {
+				class = "performance"
+			} else if p < perfRatio+ecoRatio {
+				class = "eco"
+			}
+		}
 		rec := jobRecord{
 			Type:                "job",
 			SchemaVersion:       "v1",
@@ -123,22 +147,6 @@ func affinityForClass(class string) map[string]any {
 			},
 		}
 	default:
-		return map[string]any{
-			"nodeAffinity": map[string]any{
-				"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
-					"nodeSelectorTerms": []map[string]any{
-						{
-							"matchExpressions": []map[string]any{
-								{
-									"key":      "joulie.io/power-profile",
-									"operator": "In",
-									"values":   []string{"eco"},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
+		return nil
 	}
 }

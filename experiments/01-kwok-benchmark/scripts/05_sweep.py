@@ -7,6 +7,10 @@ import pathlib
 import subprocess
 import time
 
+import yaml
+
+DEFAULT_CONFIG = pathlib.Path("experiments/01-kwok-benchmark/configs/benchmark.yaml")
+
 
 def log(msg: str):
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -23,30 +27,97 @@ def run_with_env(cmd, env: dict, check=True):
     return subprocess.run(cmd, check=check, env=env)
 
 
-def generate_seed_trace(seed: int, jobs: int, mean_inter_arrival_sec: float) -> pathlib.Path:
+def load_config(path: pathlib.Path) -> dict:
+    if not path.exists():
+        raise SystemExit(f"config file not found: {path}")
+    data = yaml.safe_load(path.read_text())
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise SystemExit(f"invalid config format in {path}: top-level YAML must be a mapping")
+    return data
+
+
+def get_cfg(cfg: dict, *keys, default=None):
+    cur = cfg
+    for k in keys:
+        if not isinstance(cur, dict) or k not in cur:
+            return default
+        cur = cur[k]
+    return cur
+
+
+def to_baselines(raw) -> list[str]:
+    if raw is None:
+        return ["A", "B", "C"]
+    if isinstance(raw, str):
+        vals = [x.strip().upper() for x in raw.split(",") if x.strip()]
+    elif isinstance(raw, list):
+        vals = [str(x).strip().upper() for x in raw if str(x).strip()]
+    else:
+        raise SystemExit("baselines must be a comma-separated string or a list")
+    invalid = [b for b in vals if b not in {"A", "B", "C"}]
+    if invalid:
+        raise SystemExit(f"invalid baseline(s): {','.join(invalid)}; allowed values are A,B,C")
+    if not vals:
+        raise SystemExit("no baselines selected")
+    return vals
+
+
+def generate_seed_trace(
+    baseline: str,
+    seed: int,
+    jobs: int,
+    mean_inter_arrival_sec: float,
+    perf_ratio: float,
+    eco_ratio: float,
+) -> pathlib.Path:
     traces_dir = pathlib.Path("experiments/01-kwok-benchmark/results/traces")
     traces_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = traces_dir / f"seed_{seed}_jobs_{jobs}_mia_{str(mean_inter_arrival_sec).replace('.', '_')}.jsonl"
+    ratio_id = f"perf_{str(perf_ratio).replace('.', '_')}_eco_{str(eco_ratio).replace('.', '_')}"
+    if baseline == "A":
+        trace_name = (
+            f"seed_{seed}_jobs_{jobs}_mia_{str(mean_inter_arrival_sec).replace('.', '_')}_"
+            f"baseline_A_no_affinity.jsonl"
+        )
+    else:
+        trace_name = (
+            f"seed_{seed}_jobs_{jobs}_mia_{str(mean_inter_arrival_sec).replace('.', '_')}_"
+            f"{ratio_id}_baseline_{baseline}.jsonl"
+        )
+    trace_path = traces_dir / trace_name
     if trace_path.exists():
-        log(f"reusing existing seed trace seed={seed} file={trace_path}")
+        log(f"reusing existing seed trace baseline={baseline} seed={seed} file={trace_path}")
         return trace_path
-    log(f"generating seed trace seed={seed} jobs={jobs} mean_inter_arrival_sec={mean_inter_arrival_sec}")
-    run(
-        [
-            "go",
-            "run",
-            "./simulator/cmd/workloadgen",
-            "--jobs",
-            str(jobs),
-            "--seed",
-            str(seed),
-            "--out",
-            str(trace_path),
-            "--mean-inter-arrival-sec",
-            str(mean_inter_arrival_sec),
-        ],
-        check=True,
+    log(
+        f"generating seed trace baseline={baseline} seed={seed} jobs={jobs} "
+        f"mean_inter_arrival_sec={mean_inter_arrival_sec}"
     )
+    cmd = [
+        "go",
+        "run",
+        "./simulator/cmd/workloadgen",
+        "--jobs",
+        str(jobs),
+        "--seed",
+        str(seed),
+        "--out",
+        str(trace_path),
+        "--mean-inter-arrival-sec",
+        str(mean_inter_arrival_sec),
+    ]
+    if baseline == "A":
+        cmd.append("--no-affinity-only")
+    else:
+        cmd.extend(
+            [
+                "--perf-ratio",
+                str(perf_ratio),
+                "--eco-ratio",
+                str(eco_ratio),
+            ]
+        )
+    run(cmd, check=True)
     count = sum(1 for l in trace_path.read_text().splitlines() if l.strip())
     log(f"seed trace generated records={count} file={trace_path}")
     return trace_path
@@ -121,43 +192,90 @@ def wait_zero_active_workload_pods(timeout_sec: int):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--seeds", type=int, default=1)
-    ap.add_argument("--jobs", type=int, default=20)
-    ap.add_argument("--mean-inter-arrival-sec", type=float, default=0.05)
-    ap.add_argument("--timeout", type=int, default=240)
-    ap.add_argument("--settle-seconds", type=int, default=4)
-    ap.add_argument("--cleanup-timeout", type=int, default=45)
-    ap.add_argument(
-        "--baselines",
-        type=str,
-        default="A,B,C",
-        help="Comma-separated baselines to run (choices: A,B,C), e.g. C or A,C",
-    )
+    ap.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to benchmark YAML config")
+    ap.add_argument("--seeds", type=int, default=None)
+    ap.add_argument("--jobs", type=int, default=None)
+    ap.add_argument("--mean-inter-arrival-sec", type=float, default=None)
+    ap.add_argument("--timeout", type=int, default=None)
+    ap.add_argument("--settle-seconds", type=int, default=None)
+    ap.add_argument("--cleanup-timeout", type=int, default=None)
+    ap.add_argument("--perf-ratio", type=float, default=None)
+    ap.add_argument("--eco-ratio", type=float, default=None)
+    ap.add_argument("--baselines", type=str, default="")
     args = ap.parse_args()
 
-    baselines = [b.strip().upper() for b in args.baselines.split(",") if b.strip()]
-    invalid = [b for b in baselines if b not in {"A", "B", "C"}]
-    if invalid:
-        raise SystemExit(f"invalid baseline(s): {','.join(invalid)}; allowed values are A,B,C")
-    if not baselines:
-        raise SystemExit("no baselines selected; pass --baselines with at least one of A,B,C")
+    cfg_path = pathlib.Path(args.config)
+    cfg = load_config(cfg_path)
 
-    total_runs = len(baselines) * args.seeds
+    seeds = args.seeds if args.seeds is not None else int(get_cfg(cfg, "run", "seeds", default=1))
+    jobs = args.jobs if args.jobs is not None else int(get_cfg(cfg, "run", "jobs", default=20))
+    mean_inter_arrival_sec = (
+        args.mean_inter_arrival_sec
+        if args.mean_inter_arrival_sec is not None
+        else float(get_cfg(cfg, "run", "mean_inter_arrival_sec", default=0.05))
+    )
+    timeout = args.timeout if args.timeout is not None else int(get_cfg(cfg, "run", "timeout", default=240))
+    settle_seconds = (
+        args.settle_seconds if args.settle_seconds is not None else int(get_cfg(cfg, "run", "settle_seconds", default=4))
+    )
+    cleanup_timeout = (
+        args.cleanup_timeout
+        if args.cleanup_timeout is not None
+        else int(get_cfg(cfg, "run", "cleanup_timeout", default=45))
+    )
+    perf_ratio = (
+        args.perf_ratio if args.perf_ratio is not None else float(get_cfg(cfg, "workload", "perf_ratio", default=0.30))
+    )
+    eco_ratio = (
+        args.eco_ratio if args.eco_ratio is not None else float(get_cfg(cfg, "workload", "eco_ratio", default=0.50))
+    )
+
+    baselines_raw = args.baselines if args.baselines.strip() else get_cfg(cfg, "run", "baselines", default=["A", "B", "C"])
+    baselines = to_baselines(baselines_raw)
+
+    if perf_ratio < 0 or eco_ratio < 0:
+        raise SystemExit("perf_ratio and eco_ratio must be >= 0")
+    if perf_ratio + eco_ratio > 1:
+        raise SystemExit("perf_ratio + eco_ratio must be <= 1")
+
+    total_runs = len(baselines) * seeds
     done = 0
     log(
-        f"starting sweep baselines={','.join(baselines)} seeds={args.seeds} jobs={args.jobs} "
-        f"mean_inter_arrival_sec={args.mean_inter_arrival_sec} timeout={args.timeout}s total_runs={total_runs}"
+        f"starting sweep config={cfg_path} baselines={','.join(baselines)} seeds={seeds} jobs={jobs} "
+        f"mean_inter_arrival_sec={mean_inter_arrival_sec} timeout={timeout}s total_runs={total_runs}"
     )
-    reset_control_state()
+
+    install_env_base = os.environ.copy()
+
+    # Image and manifest config
+    install_env_base["JOULIE_REGISTRY"] = str(get_cfg(cfg, "images", "joulie_registry", default=install_env_base.get("JOULIE_REGISTRY", "registry.cern.ch/mbunino/joulie")))
+    install_env_base["JOULIE_TAG"] = str(get_cfg(cfg, "images", "joulie_tag", default=install_env_base.get("JOULIE_TAG", "latest")))
+    install_env_base["SIM_REGISTRY"] = str(get_cfg(cfg, "images", "sim_registry", default=install_env_base.get("SIM_REGISTRY", "registry.cern.ch/mbunino/joulie")))
+    install_env_base["SIM_IMAGE"] = str(get_cfg(cfg, "images", "sim_image", default=install_env_base.get("SIM_IMAGE", "joulie-simulator")))
+    install_env_base["SIM_TAG"] = str(get_cfg(cfg, "images", "sim_tag", default=install_env_base.get("SIM_TAG", "latest")))
+
+    simulator_manifest = get_cfg(cfg, "install", "simulator_manifest", default="")
+    if simulator_manifest:
+        install_env_base["SIMULATOR_MANIFEST"] = str(simulator_manifest)
+
+    # Policy config
+    install_env_base["STATIC_HP_FRAC"] = str(get_cfg(cfg, "policy", "static", "hp_frac", default=0.50))
+    install_env_base["QUEUE_HP_BASE_FRAC"] = str(get_cfg(cfg, "policy", "queue_aware", "hp_base_frac", default=0.60))
+    install_env_base["QUEUE_HP_MIN"] = str(get_cfg(cfg, "policy", "queue_aware", "hp_min", default=1))
+    install_env_base["QUEUE_HP_MAX"] = str(get_cfg(cfg, "policy", "queue_aware", "hp_max", default=5))
+    install_env_base["QUEUE_PERF_PER_HP_NODE"] = str(get_cfg(cfg, "policy", "queue_aware", "perf_per_hp_node", default=10))
+
     baseline_policy = {
         "B": "static_partition",
         "C": "queue_aware_v1",
     }
 
+    reset_control_state()
+
     for baseline in baselines:
         reset_control_state()
         log(f"installing components for baseline={baseline}")
-        install_env = os.environ.copy()
+        install_env = install_env_base.copy()
         if baseline in baseline_policy:
             install_env["POLICY_TYPE"] = baseline_policy[baseline]
         else:
@@ -172,17 +290,25 @@ def main():
             check=True,
         )
         cleanup_workload_pods()
-        wait_zero_active_workload_pods(args.cleanup_timeout)
-        log(f"policy settle sleep seconds={args.settle_seconds}")
-        time.sleep(args.settle_seconds)
-        for seed in range(1, args.seeds + 1):
+        wait_zero_active_workload_pods(cleanup_timeout)
+        log(f"policy settle sleep seconds={settle_seconds}")
+        time.sleep(settle_seconds)
+
+        for seed in range(1, seeds + 1):
             done += 1
             log(f"run {done}/{total_runs}: baseline={baseline} seed={seed}")
-            trace_file = generate_seed_trace(seed, args.jobs, args.mean_inter_arrival_sec)
+            trace_file = generate_seed_trace(
+                baseline=baseline,
+                seed=seed,
+                jobs=jobs,
+                mean_inter_arrival_sec=mean_inter_arrival_sec,
+                perf_ratio=perf_ratio,
+                eco_ratio=eco_ratio,
+            )
             cleanup_workload_pods()
-            wait_zero_active_workload_pods(args.cleanup_timeout)
-            log(f"pre-run settle sleep seconds={args.settle_seconds}")
-            time.sleep(args.settle_seconds)
+            wait_zero_active_workload_pods(cleanup_timeout)
+            log(f"pre-run settle sleep seconds={settle_seconds}")
+            time.sleep(settle_seconds)
             run(
                 [
                     "python3",
@@ -192,17 +318,18 @@ def main():
                     "--seed",
                     str(seed),
                     "--jobs",
-                    str(args.jobs),
+                    str(jobs),
                     "--mean-inter-arrival-sec",
-                    str(args.mean_inter_arrival_sec),
+                    str(mean_inter_arrival_sec),
                     "--timeout",
-                    str(args.timeout),
+                    str(timeout),
                     "--trace-file",
                     str(trace_file),
                 ],
                 check=True,
             )
             log(f"completed run {done}/{total_runs}: baseline={baseline} seed={seed}")
+
     log("sweep completed")
 
 

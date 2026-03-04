@@ -13,11 +13,26 @@ Workload scheduling in benchmark pods uses affinity on `joulie.io/power-profile`
 - `eco`: requires `joulie.io/power-profile=eco`
 - no power-profile affinity: implicit `flex` (general) placement
 
+Current generator behavior:
+
+- baseline `A`: all jobs are generated with no power-profile affinity (fully unconstrained on KWOK nodes),
+- baselines `B`/`C`: mixed jobs including constrained (`performance`, `eco`) and unconstrained (implicit flex/general).
+
 ## Baselines
 
 - `A`: simulator only (no operator/agent), proxy for all-HP / unconstrained.
 - `B`: simulator + Joulie with static partition-oriented config.
 - `C`: simulator + Joulie with queue-aware policy-oriented config.
+
+## Config file
+
+`configs/benchmark.yaml` contains:
+
+- run controls: baselines, seeds, jobs, inter-arrival, timeout, settle/cleanup,
+- workload mix: `perf_ratio`, `eco_ratio` (remaining fraction is no-affinity general),
+- policy controls: static and queue-aware parameters,
+- image/tag/registry overrides,
+- optional simulator manifest path.
 
 ## Artifacts per run
 
@@ -50,22 +65,46 @@ source .venv/bin/activate
 
 ## Quick run
 
+Benchmark run configuration is centralized in:
+
+- `configs/benchmark.yaml`
+
+Use two entry points.
+
+### 1) Environment + cluster setup
+
 From within this experiment directory:
 
 ```bash
 source .venv/bin/activate
+./scripts/10_setup_cluster.sh
+```
+
+Equivalent expanded commands run by `10_setup_cluster.sh`:
+
+```bash
 ./scripts/00_prereqs_check.sh
 ./scripts/01_create_cluster_kwokctl.sh
 ./scripts/02_apply_nodes.sh
 ```
 
+### 2) Benchmark sweep + collect + plot (YAML-configured)
+
 From the repo root:
 
 ```bash
-python3 experiments/01-kwok-benchmark/scripts/05_sweep.py --seeds 1 --jobs 20 --mean-inter-arrival-sec 0.05 --timeout 240 --settle-seconds 4
-python3 experiments/01-kwok-benchmark/scripts/06_collect.py
-python3 experiments/01-kwok-benchmark/scripts/07_plot.py
+source experiments/01-kwok-benchmark/.venv/bin/activate
+experiments/01-kwok-benchmark/scripts/20_run_benchmark.sh
 ```
+
+Optionally pass a custom config file path:
+
+```bash
+experiments/01-kwok-benchmark/scripts/20_run_benchmark.sh \
+  experiments/01-kwok-benchmark/configs/benchmark.yaml
+```
+
+`05_sweep.py` still accepts CLI overrides, but the default workflow is to edit `configs/benchmark.yaml` only.
 
 While the Joulie experiment is being run, you can watch the power profiles applied to the nodes with:
 
