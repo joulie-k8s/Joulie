@@ -19,11 +19,13 @@ Planned extension path:
 ## Components
 
 - `cmd/simulator/main.go`: HTTP simulator server
+- `pkg/hw/profile.go`: hardware profile schema + validation
 - `Dockerfile`: build `joulie-simulator` image
 - `deploy/simulator.yaml`: deployment + service + RBAC
 - `deploy/servicemonitor.yaml`: optional Prometheus scraping
 - `config/node-classes.yaml`: sample class mapping by node labels
-- `kind-small.yaml`: optional local kind cluster config
+- `cmd/workloadgen`: synthetic trace generator (`distribution -> trace`)
+- `cmd/traceextract`: trace normalizer/extractor helper (`input telemetry/export -> trace schema`)
 - `waok8s/`: external WAO code reference sandbox
 
 ## Build
@@ -117,6 +119,14 @@ classes:
       podW: 110
       dvfsDropWPerPct: 1.6
       defaultCapW: 5000
+      pMaxW: 420
+      alphaUtil: 1.1
+      betaFreq: 1.25
+      fMinMHz: 1200
+      fMaxMHz: 3200
+      raplCapMinW: 70
+      raplCapMaxW: 600
+      dvfsRampMs: 400
 ```
 
 ### Model parameters
@@ -132,3 +142,24 @@ then clamps to `[20W, capWatts + raplHeadW]`.
 - `dvfsDropWPerPct`: watts removed per DVFS throttle percent point.
 - `raplHeadW`: allowed overshoot above cap (`capWatts`) before clamp.
 - `defaultCapW`: initial cap for nodes before any control action.
+- `pMaxW`: max package power at full load/frequency.
+- `alphaUtil`: utilization non-linearity exponent.
+- `betaFreq`: frequency non-linearity exponent.
+- `fMinMHz`,`fMaxMHz`: frequency bounds to derive minimum frequency scale.
+- `raplCapMinW`,`raplCapMaxW`: cap guardrails.
+- `dvfsRampMs`: throttle-to-frequency ramp time constant.
+
+## Trace-Driven Batch Workload
+
+Set `SIM_WORKLOAD_TRACE_PATH` to a JSONL trace file. The simulator will:
+
+- load `type=job` records,
+- create workload Pods over time,
+- advance per-job progress based on node effective speed,
+- delete Pods when work completes.
+
+Minimal job record example:
+
+```json
+{"type":"job","schemaVersion":"v1","jobId":"job-1","submitTimeOffsetSec":2,"namespace":"default","podTemplate":{"labels":{"joulie.io/workload-intent-class":"performance"},"requests":{"cpu":"4","memory":"1Gi"}},"work":{"cpuUnits":1200},"sensitivity":{"cpu":1.0}}
+```

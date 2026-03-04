@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"math"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,6 +21,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -29,6 +32,22 @@ var (
 	profileNodeGVR    = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodepowerprofiles"}
 	telemetryNodeGVR  = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "telemetryprofiles"}
 	defaultHTTPTimout = 2 * time.Second
+
+	registerMetricsOnce sync.Once
+	backendModeMetric   *prometheus.GaugeVec
+	policyCapMetric     *prometheus.GaugeVec
+	raplEnergyMetric    *prometheus.GaugeVec
+	raplPowerMetric     *prometheus.GaugeVec
+	raplTotalMetric     *prometheus.GaugeVec
+	dvfsObservedMetric  *prometheus.GaugeVec
+	dvfsEMAMetric       *prometheus.GaugeVec
+	dvfsThrottleMetric  *prometheus.GaugeVec
+	dvfsTripAboveMetric *prometheus.GaugeVec
+	dvfsTripBelowMetric *prometheus.GaugeVec
+	dvfsCurFreqMetric   *prometheus.GaugeVec
+	dvfsMaxFreqMetric   *prometheus.GaugeVec
+	dvfsActionsMetric   *prometheus.CounterVec
+	reconcileErrMetric  *prometheus.CounterVec
 )
 
 type HardwareInfo struct {
@@ -95,6 +114,14 @@ type AgentMetrics struct {
 	reconcileErrorsTotal *prometheus.CounterVec
 }
 
+type NodeController struct {
+	nodeName     string
+	metrics      *AgentMetrics
+	dvfs         *DVFSController
+	simulateOnly bool
+	lastRaplKey  string
+}
+
 type DVFSController struct {
 	cpus []DVFSCpu
 
@@ -139,71 +166,88 @@ type HTTPControlClient struct {
 }
 
 func newAgentMetrics(node string) *AgentMetrics {
-	m := &AgentMetrics{
-		node: node,
-		backendMode: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	registerMetricsOnce.Do(func() {
+		backendModeMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_backend_mode",
 			Help: "Current backend mode (1 active) per node and mode",
-		}, []string{"node", "mode"}),
-		policyCapWatts: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node", "mode"})
+		policyCapMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_policy_cap_watts",
 			Help: "Current policy cap watts selected by the agent",
-		}, []string{"node", "policy"}),
-		raplEnergyUJ: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node", "policy"})
+		raplEnergyMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_rapl_energy_uj",
 			Help: "Latest RAPL energy reading in microjoules",
-		}, []string{"node", "zone"}),
-		raplPowerWatts: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node", "zone"})
+		raplPowerMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_rapl_estimated_power_watts",
 			Help: "Estimated per-zone RAPL power in watts",
-		}, []string{"node", "zone"}),
-		raplPackageTotalW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node", "zone"})
+		raplTotalMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_rapl_package_total_power_watts",
 			Help: "Estimated total package power watts (sum of package zones)",
-		}, []string{"node"}),
-		dvfsObservedPowerW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node"})
+		dvfsObservedMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_observed_power_watts",
 			Help: "Observed package power used by DVFS controller",
-		}, []string{"node"}),
-		dvfsEMAPowerW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node"})
+		dvfsEMAMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_ema_power_watts",
 			Help: "EMA package power used by DVFS controller",
-		}, []string{"node"}),
-		dvfsThrottlePct: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node"})
+		dvfsThrottleMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_throttle_pct",
 			Help: "Current DVFS throttle percent",
-		}, []string{"node"}),
-		dvfsTripAbove: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node"})
+		dvfsTripAboveMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_above_trip_count",
 			Help: "Consecutive above-threshold samples",
-		}, []string{"node"}),
-		dvfsTripBelow: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node"})
+		dvfsTripBelowMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_below_trip_count",
 			Help: "Consecutive below-threshold samples",
-		}, []string{"node"}),
-		dvfsCPUCurFreqKHz: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node"})
+		dvfsCurFreqMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_cpu_cur_freq_khz",
 			Help: "Current CPU/policy frequency in kHz",
-		}, []string{"node", "cpu"}),
-		dvfsCPUMaxFreqKHz: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node", "cpu"})
+		dvfsMaxFreqMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_cpu_max_freq_khz",
 			Help: "Current CPU/policy max frequency cap in kHz",
-		}, []string{"node", "cpu"}),
-		dvfsActionsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+		}, []string{"node", "cpu"})
+		dvfsActionsMetric = prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "joulie_dvfs_actions_total",
 			Help: "Total number of DVFS control actions",
-		}, []string{"node", "action"}),
-		reconcileErrorsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+		}, []string{"node", "action"})
+		reconcileErrMetric = prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "joulie_reconcile_errors_total",
 			Help: "Total reconcile errors",
-		}, []string{"node"}),
-	}
+		}, []string{"node"})
 
-	prometheus.MustRegister(
-		m.backendMode, m.policyCapWatts, m.raplEnergyUJ, m.raplPowerWatts, m.raplPackageTotalW,
-		m.dvfsObservedPowerW, m.dvfsEMAPowerW, m.dvfsThrottlePct, m.dvfsTripAbove, m.dvfsTripBelow,
-		m.dvfsCPUCurFreqKHz, m.dvfsCPUMaxFreqKHz, m.dvfsActionsTotal, m.reconcileErrorsTotal,
-	)
+		prometheus.MustRegister(
+			backendModeMetric, policyCapMetric, raplEnergyMetric, raplPowerMetric, raplTotalMetric,
+			dvfsObservedMetric, dvfsEMAMetric, dvfsThrottleMetric, dvfsTripAboveMetric, dvfsTripBelowMetric,
+			dvfsCurFreqMetric, dvfsMaxFreqMetric, dvfsActionsMetric, reconcileErrMetric,
+		)
+	})
+
+	m := &AgentMetrics{
+		node:                 node,
+		backendMode:          backendModeMetric,
+		policyCapWatts:       policyCapMetric,
+		raplEnergyUJ:         raplEnergyMetric,
+		raplPowerWatts:       raplPowerMetric,
+		raplPackageTotalW:    raplTotalMetric,
+		dvfsObservedPowerW:   dvfsObservedMetric,
+		dvfsEMAPowerW:        dvfsEMAMetric,
+		dvfsThrottlePct:      dvfsThrottleMetric,
+		dvfsTripAbove:        dvfsTripAboveMetric,
+		dvfsTripBelow:        dvfsTripBelowMetric,
+		dvfsCPUCurFreqKHz:    dvfsCurFreqMetric,
+		dvfsCPUMaxFreqKHz:    dvfsMaxFreqMetric,
+		dvfsActionsTotal:     dvfsActionsMetric,
+		reconcileErrorsTotal: reconcileErrMetric,
+	}
 	m.setBackendMode("none")
 	return m
 }
@@ -219,27 +263,132 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[joulie-agent] ")
 
-	nodeName := os.Getenv("NODE_NAME")
-	if nodeName == "" {
-		log.Fatal("NODE_NAME env var is required")
-	}
-
-	metrics := newAgentMetrics(nodeName)
+	mode := strings.ToLower(strings.TrimSpace(envOrDefault("AGENT_MODE", "daemonset")))
 	startMetricsServer()
+	switch mode {
+	case "daemonset":
+		runDaemonsetMode()
+	case "pool":
+		runPoolMode()
+	default:
+		log.Fatalf("unsupported AGENT_MODE=%q (expected daemonset|pool)", mode)
+	}
+}
 
+func runDaemonsetMode() {
+	nodeName := strings.TrimSpace(os.Getenv("NODE_NAME"))
+	if nodeName == "" {
+		log.Fatal("NODE_NAME env var is required in daemonset mode")
+	}
 	reconcileEvery := durationEnv("RECONCILE_INTERVAL", 20*time.Second)
 	simulateOnly := strings.EqualFold(strings.TrimSpace(os.Getenv("SIMULATE_ONLY")), "true")
-	dvfs, err := newDVFSControllerFromEnv(metrics)
+	controller, err := newNodeController(nodeName, simulateOnly)
 	if err != nil {
-		log.Printf("warning: DVFS controller disabled: %v", err)
-		dvfs = nil
+		log.Fatalf("init controller: %v", err)
 	}
+	kube, dyn := initKubeClients()
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := controller.reconcile(ctx, kube, dyn); err != nil {
+			controller.metrics.reconcileErrorsTotal.WithLabelValues(nodeName).Inc()
+			log.Printf("reconcile failed node=%s: %v", nodeName, err)
+		}
+		cancel()
+		time.Sleep(reconcileEvery)
+	}
+}
 
+func runPoolMode() {
+	reconcileEvery := durationEnv("RECONCILE_INTERVAL", 20*time.Second)
+	simulateOnly := strings.EqualFold(strings.TrimSpace(os.Getenv("SIMULATE_ONLY")), "true")
+	selectorExpr := envOrDefault("POOL_NODE_SELECTOR", "joulie.io/managed=true")
+	shards := intEnv("POOL_SHARDS", 1)
+	shardID := resolvePoolShardID()
+	if shards <= 0 {
+		log.Fatalf("invalid POOL_SHARDS=%d", shards)
+	}
+	if shardID < 0 || shardID >= shards {
+		log.Fatalf("invalid POOL_SHARD_ID=%d for POOL_SHARDS=%d", shardID, shards)
+	}
+	selector, err := labels.Parse(selectorExpr)
+	if err != nil {
+		log.Fatalf("invalid POOL_NODE_SELECTOR=%q: %v", selectorExpr, err)
+	}
+	kube, dyn := initKubeClients()
+	controllers := map[string]*NodeController{}
+	log.Printf("pool mode enabled selector=%q shards=%d shardID=%d interval=%s", selectorExpr, shards, shardID, reconcileEvery)
+
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		nodes, err := kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			cancel()
+			log.Printf("pool list nodes failed: %v", err)
+			time.Sleep(reconcileEvery)
+			continue
+		}
+		active := map[string]bool{}
+		for _, n := range nodes.Items {
+			if !selector.Matches(labels.Set(n.Labels)) {
+				continue
+			}
+			if !ownsNodeForShard(n.Name, shards, shardID) {
+				continue
+			}
+			active[n.Name] = true
+			c := controllers[n.Name]
+			if c == nil {
+				c, err = newNodeController(n.Name, simulateOnly)
+				if err != nil {
+					log.Printf("failed to init controller node=%s: %v", n.Name, err)
+					continue
+				}
+				controllers[n.Name] = c
+				log.Printf("controller started node=%s shard=%d/%d", n.Name, shardID, shards)
+			}
+			if err := c.reconcile(ctx, kube, dyn); err != nil {
+				c.metrics.reconcileErrorsTotal.WithLabelValues(c.nodeName).Inc()
+				log.Printf("reconcile failed node=%s: %v", c.nodeName, err)
+			}
+		}
+		for node := range controllers {
+			if active[node] {
+				continue
+			}
+			delete(controllers, node)
+			log.Printf("controller stopped node=%s shard=%d/%d", node, shardID, shards)
+		}
+		cancel()
+		time.Sleep(reconcileEvery)
+	}
+}
+
+func resolvePoolShardID() int {
+	if raw := strings.TrimSpace(os.Getenv("POOL_SHARD_ID")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil {
+			return v
+		}
+	}
+	podName := strings.TrimSpace(os.Getenv("POD_NAME"))
+	if podName == "" {
+		return 0
+	}
+	lastDash := strings.LastIndex(podName, "-")
+	if lastDash < 0 || lastDash+1 >= len(podName) {
+		return 0
+	}
+	v, err := strconv.Atoi(podName[lastDash+1:])
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func initKubeClients() (kubernetes.Interface, dynamic.Interface) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		log.Fatalf("in-cluster config: %v", err)
 	}
-
 	kube, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Fatalf("kube client: %v", err)
@@ -248,18 +397,35 @@ func main() {
 	if err != nil {
 		log.Fatalf("dynamic client: %v", err)
 	}
+	return kube, dyn
+}
 
-	var lastRaplKey string
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := reconcileOnce(ctx, kube, dyn, nodeName, dvfs, metrics, simulateOnly, &lastRaplKey)
-		cancel()
-		if err != nil {
-			metrics.reconcileErrorsTotal.WithLabelValues(nodeName).Inc()
-			log.Printf("reconcile failed: %v", err)
-		}
-		time.Sleep(reconcileEvery)
+func newNodeController(nodeName string, simulateOnly bool) (*NodeController, error) {
+	metrics := newAgentMetrics(nodeName)
+	dvfs, err := newDVFSControllerFromEnv(metrics)
+	if err != nil {
+		log.Printf("warning: DVFS controller disabled node=%s: %v", nodeName, err)
+		dvfs = nil
 	}
+	return &NodeController{
+		nodeName:     nodeName,
+		metrics:      metrics,
+		dvfs:         dvfs,
+		simulateOnly: simulateOnly,
+	}, nil
+}
+
+func (n *NodeController) reconcile(ctx context.Context, kube kubernetes.Interface, dyn dynamic.Interface) error {
+	return reconcileOnce(ctx, kube, dyn, n.nodeName, n.dvfs, n.metrics, n.simulateOnly, &n.lastRaplKey)
+}
+
+func ownsNodeForShard(nodeName string, shards, shardID int) bool {
+	if shards <= 1 {
+		return true
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(nodeName))
+	return int(h.Sum32()%uint32(shards)) == shardID
 }
 
 func startMetricsServer() {
@@ -1085,6 +1251,13 @@ func durationEnv(key string, def time.Duration) time.Duration {
 		if v, err := time.ParseDuration(s); err == nil {
 			return v
 		}
+	}
+	return def
+}
+
+func envOrDefault(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
 	}
 	return def
 }

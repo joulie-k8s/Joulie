@@ -18,6 +18,13 @@ The simulator is not a fake scheduler.
 
 This gives one source of truth for workload location: Kubernetes API.
 
+In KWOK mode:
+
+- API server and scheduler are real.
+- fake nodes and fake workload pods are API objects.
+- simulator drives telemetry and batch completion.
+- agent runs in `pool` mode with one logical loop per simulated node.
+
 ## Integration with Joulie
 
 ### `NodePowerProfile` (what)
@@ -43,6 +50,7 @@ In simulator mode:
   - returns simulated per-node telemetry (`cpu.packagePowerWatts`, throttle, cap, pod count).
 - `POST /control/{node}`
   - accepts actions like `rapl.set_power_cap_watts`, `dvfs.set_throttle_pct`.
+  - returns `result=applied|blocked|error`.
 - `GET /state/{node}`
   - returns current internal node state.
 - `GET /metrics`
@@ -59,6 +67,8 @@ The simulator exports:
 - per-node simulated cap/throttle/power,
 - per-node running pod count observed from Kubernetes.
 - per-node class assignment metric (`joulie_sim_node_class_info{node,class}`).
+- node utilization/frequency/cap metrics (`joulie_sim_node_cpu_util`, `joulie_sim_node_freq_scale`, `joulie_sim_node_rapl_cap_watts`).
+- batch metrics (`joulie_sim_job_submitted_total`, `joulie_sim_job_completed_total`, `joulie_sim_job_completion_seconds`).
 
 It also exposes debug endpoints:
 
@@ -89,49 +99,61 @@ Current simulator supports:
   - YAML file with classes (`matchLabels`) and model overrides.
   - used to map dynamic cluster node names to stable simulator behavior profiles.
 
-### Power model parameters
+### Hardware profile parameters
 
-Current simulated power model:
+Class model overrides now support:
 
-`power = baseIdleW + (runningPods * podW) - (throttlePct * dvfsDropWPerPct)`
+- `baseIdleW`, `pMaxW`
+- `alphaUtil`, `betaFreq`
+- `fMinMHz`, `fMaxMHz`
+- `raplCapMinW`, `raplCapMaxW`
+- `dvfsRampMs`
+- legacy fields (`podW`, `dvfsDropWPerPct`, `defaultCapW`, `raplHeadW`) remain supported.
 
-then clamped to `[20W, capWatts + raplHeadW]`.
+Hardware profile parsing and validation are implemented in:
 
-- `baseIdleW`: baseline node power.
-- `podW`: per-running-pod incremental power.
-- `dvfsDropWPerPct`: per-percent DVFS power reduction.
-- `raplHeadW`: temporary cap headroom.
-- `defaultCapW`: initial node cap before control actions.
+- `simulator/pkg/hw/profile.go`
 
-## Next iteration scope (agreed design)
+Invalid class/base profiles fail fast at simulator startup.
 
-### 1. Cluster + fake hardware bootstrap
+### Power model
 
-- Start from a scenario file (node count + per-node HW profile).
-- Create virtual cluster (`kind`/`k3d`/`k3s`).
-- Inject node capabilities (labels + extended resources), including fake GPUs.
-- Goal: scheduler must see realistic allocatable resources (for example GPU requests).
+The simulator computes:
 
-### 2. Workload simulation/replay
+`P = P_idle + (P_max - P_idle) * util^alpha * freqScale^beta`
 
-- Run real Kubernetes pods/jobs (so placement is real).
-- Initial mode: synthetic workload generator.
-- Future mode: replay workload traces from telemetry.
+Then applies:
 
-### 3. Runtime closed loop
+- DVFS ramp dynamics (`dvfsRampMs`) from target throttle to effective `freqScale`.
+- RAPL cap clamp via cap-aware `freqScale` solve.
+- cap saturation flag when cap is below achievable minimum.
 
-- Simulator watches pod allocation per node.
-- Simulator updates node telemetry state based on:
-  - current pod load on that node,
-  - latest control actions (`rapl.*`, `dvfs.*`).
-- Agent consumes telemetry via HTTP and writes controls via HTTP.
+Utilization comes from either:
 
-### 4. Batch-duration feedback model
+- trace-driven workload engine (preferred), or
+- fallback from running pod count.
 
-For batch workloads, duration must depend on throttling:
+### Workload trace and execution
 
-- jobs have virtual progress managed by simulator,
-- effective progress rate depends on simulated node performance,
-- stronger throttling -> slower progress -> longer completion time.
+Enable with:
 
-This keeps scheduling real while making control impact visible on job completion.
+- `SIM_WORKLOAD_TRACE_PATH=/path/to/trace.jsonl`
+
+The simulator loads `type=job` records, injects pods, and advances per-job CPU work units every tick.
+Completion time increases when DVFS/RAPL reduce node effective speed.
+
+Pod lifecycle currently uses delete-on-complete.
+
+Helper tools:
+
+- `simulator/cmd/workloadgen`: generate synthetic JSONL traces from distributions.
+- `simulator/cmd/traceextract`: normalize/extract input JSONL into simulator trace schema.
+
+## KWOK flow summary
+
+1. Create KWOK fake nodes with `type=kwok` and `joulie.io/managed=true`.
+2. Taint fake nodes with `kwok.x-k8s.io/node=fake:NoSchedule`.
+3. Run operator + simulator + agent pool on real node(s).
+4. Route `TelemetryProfile` to simulator HTTP.
+5. Inject trace workload (pods tolerate kwok taint + select `type=kwok`).
+6. Observe power/control/job-completion metrics.

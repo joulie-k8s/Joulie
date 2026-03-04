@@ -15,6 +15,7 @@
 - [Example: Operator Configuration](./examples/operator-configuration/README.md)
 - [Example: Workload Intent Classes](./examples/workload-intent-classes/README.md)
 - [Example: Simulated Telemetry + Control (HTTP)](./examples/simulated-telemetry-control/README.md)
+- [Example: KWOK Simulator (workload + power + agent pool)](./examples/simulator-kwok/README.md)
 
 ## 1. Motivation
 

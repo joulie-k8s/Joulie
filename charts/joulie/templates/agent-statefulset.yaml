@@ -1,21 +1,23 @@
-{{- if eq .Values.agent.mode "daemonset" }}
+{{- if eq .Values.agent.mode "pool" }}
 apiVersion: apps/v1
-kind: DaemonSet
+kind: StatefulSet
 metadata:
-  name: joulie-agent
+  name: joulie-agent-pool
   namespace: {{ .Release.Namespace }}
 spec:
+  serviceName: joulie-agent-metrics
+  replicas: {{ .Values.agent.pool.replicas }}
   selector:
     matchLabels:
       app.kubernetes.io/name: joulie-agent
+      app.kubernetes.io/component: pool
   template:
     metadata:
       labels:
         app.kubernetes.io/name: joulie-agent
+        app.kubernetes.io/component: pool
     spec:
       serviceAccountName: joulie-agent
-      hostNetwork: {{ .Values.agent.hostNetwork }}
-      dnsPolicy: {{ if .Values.agent.hostNetwork }}ClusterFirstWithHostNet{{ else }}ClusterFirst{{ end }}
       containers:
         - name: agent
           image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
@@ -25,25 +27,18 @@ spec:
               containerPort: {{ .Values.agent.service.port }}
               protocol: TCP
           env:
-            - name: NODE_NAME
+            - name: AGENT_MODE
+              value: "pool"
+            - name: POOL_NODE_SELECTOR
+              value: {{ .Values.agent.pool.nodeSelector | quote }}
+            - name: POOL_SHARDS
+              value: {{ (default .Values.agent.pool.replicas .Values.agent.pool.shards) | quote }}
+            - name: POD_NAME
               valueFrom:
                 fieldRef:
-                  fieldPath: spec.nodeName
+                  fieldPath: metadata.name
             {{- range $k, $v := .Values.agent.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
-          securityContext:
-            privileged: {{ .Values.agent.privileged }}
-            runAsUser: 0
-            runAsGroup: 0
-            allowPrivilegeEscalation: true
-          volumeMounts:
-            - name: host-sys
-              mountPath: /host-sys
-      volumes:
-        - name: host-sys
-          hostPath:
-            path: /sys
-            type: Directory
 {{- end }}

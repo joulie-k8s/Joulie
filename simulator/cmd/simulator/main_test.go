@@ -120,6 +120,7 @@ func TestRefreshNodeStateRespectsSelectorAndClass(t *testing.T) {
 	s := newSimulatorWithRegisterer(base, selector, classes, 200, prometheus.NewRegistry())
 	s.refreshNodeStateFromKubeData(
 		map[string]int{"node-a": 3, "node-b": 7},
+		nil,
 		map[string]map[string]string{
 			"node-a": {
 				"joulie.io/managed": "true",
@@ -193,6 +194,7 @@ func TestHandleDebugNodesIncludesClassAndSelection(t *testing.T) {
 	s := newSimulatorWithRegisterer(base, selector, classes, 50, prometheus.NewRegistry())
 	s.refreshNodeStateFromKubeData(
 		map[string]int{"node-a": 2, "node-b": 5},
+		nil,
 		map[string]map[string]string{
 			"node-a": {
 				"joulie.io/managed": "true",

@@ -155,6 +155,38 @@ or
 
 This is a minimal first contract and will evolve as telemetry coverage expands.
 
+Current simulator response shape (backward compatible):
+
+```json
+{
+  "node": "kwok-node-0",
+  "packagePowerWatts": 210.5,
+  "cpu": {
+    "packagePowerWatts": 210.5,
+    "utilization": 0.74,
+    "freqScale": 0.62,
+    "throttlePct": 35,
+    "capWatts": 180,
+    "raplCapWatts": 180,
+    "capSaturated": false
+  },
+  "gpu": {
+    "present": false,
+    "powerWatts": 0,
+    "utilization": 0
+  },
+  "pods": {
+    "running": 12,
+    "byIntentClass": {
+      "performance": 4,
+      "eco": 6,
+      "flex": 2
+    }
+  },
+  "ts": "2026-03-04T00:00:00Z"
+}
+```
+
 ### Current HTTP control contract (implemented now)
 
 Agent sends `POST <endpoint>` (with `{node}` replacement) with JSON payload:
@@ -170,6 +202,14 @@ Agent sends `POST <endpoint>` (with `{node}` replacement) with JSON payload:
 ```
 
 Simulator/backend applies it and returns success/failure.
+
+Current simulator response fields:
+
+- `result`: `applied|blocked|error`
+- `message`: backend message
+- `state`: best-effort post-state (`capWatts`, `throttlePct`, `freqScale`, ...)
+
+Unsupported GPU controls (`gpu.set_power_cap_watts`, `gpu.set_clock_policy`) currently return `blocked`.
 
 ## Simulator concept for WAO vs Joulie comparison
 

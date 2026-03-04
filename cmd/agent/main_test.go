@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -243,6 +244,44 @@ func TestControlClientFromTelemetry(t *testing.T) {
 	cfg.CPUControlType = "host"
 	if got := controlClientFromTelemetry(cfg, "node-a"); got != nil {
 		t.Fatalf("expected nil for host control type")
+	}
+}
+
+func TestOwnsNodeForShardDeterministic(t *testing.T) {
+	t.Parallel()
+	node := "kwok-node-17"
+	a := ownsNodeForShard(node, 7, 3)
+	b := ownsNodeForShard(node, 7, 3)
+	if a != b {
+		t.Fatalf("ownership must be deterministic for node=%s", node)
+	}
+}
+
+func TestOwnsNodeForShardDistributionSanity(t *testing.T) {
+	t.Parallel()
+	shards := 5
+	counts := make([]int, shards)
+	for i := 0; i < 500; i++ {
+		node := fmt.Sprintf("kwok-node-%d", i)
+		for shard := 0; shard < shards; shard++ {
+			if ownsNodeForShard(node, shards, shard) {
+				counts[shard]++
+				break
+			}
+		}
+	}
+	for shard, c := range counts {
+		if c < 60 || c > 140 {
+			t.Fatalf("unexpected shard skew shard=%d count=%d", shard, c)
+		}
+	}
+}
+
+func TestResolvePoolShardIDFromPodName(t *testing.T) {
+	t.Setenv("POOL_SHARD_ID", "")
+	t.Setenv("POD_NAME", "joulie-agent-pool-3")
+	if got := resolvePoolShardID(); got != 3 {
+		t.Fatalf("resolvePoolShardID=%d want=3", got)
 	}
 }
 
