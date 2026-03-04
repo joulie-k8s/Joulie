@@ -1,4 +1,4 @@
-# Joulie Simulator
+# Joulie Workload and Power Simulator
 
 This directory contains the simulator runtime used to test Joulie in virtual environments.
 

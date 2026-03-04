@@ -1,4 +1,4 @@
-# Simulator Architecture and Integration
+# Workload and Power Simulator
 
 This document defines the Joulie simulator design and how it integrates with Joulie.
 
