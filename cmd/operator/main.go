@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -26,6 +28,20 @@ import (
 )
 
 var profileGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodepowerprofiles"}
+
+const (
+	powerProfileLabelKey   = "joulie.io/power-profile"
+	profilePerformance     = "performance"
+	profileEco             = "eco"
+	profileDrainingPerf    = "draining-performance"
+	profileMaskPerformance = 1
+	profileMaskEco         = 2
+	profileMaskBoth        = profileMaskPerformance | profileMaskEco
+	workloadClassUnknown   = "unknown"
+	workloadClassGeneral   = "general"
+	workloadClassEcoOnly   = "eco-only"
+	workloadClassPerfOnly  = "performance-only"
+)
 
 type NodeAssignment struct {
 	NodeName      string
@@ -70,10 +86,14 @@ func main() {
 	selector := envOrDefault("NODE_SELECTOR", "node-role.kubernetes.io/worker")
 	reservedLabel := envOrDefault("RESERVED_LABEL_KEY", "joulie.io/reserved")
 	profileLabel := envOrDefault("POWER_PROFILE_LABEL", "joulie.io/power-profile")
-	intentLabel := envOrDefault("WORKLOAD_INTENT_LABEL", "joulie.io/workload-intent-class")
-	perfIntentValue := envOrDefault("PERFORMANCE_INTENT_VALUE", "performance")
 	perfCap := floatEnv("PERFORMANCE_CAP_WATTS", 5000)
 	ecoCap := floatEnv("ECO_CAP_WATTS", 120)
+	policyType := strings.ToLower(envOrDefault("POLICY_TYPE", "static_partition"))
+	staticHPFrac := floatEnv("STATIC_HP_FRAC", 0.50)
+	queueHPBaseFrac := floatEnv("QUEUE_HP_BASE_FRAC", 0.60)
+	queueHPMin := intEnv("QUEUE_HP_MIN", 1)
+	queueHPMax := intEnv("QUEUE_HP_MAX", 1000000)
+	queuePerfPerHPNode := intEnv("QUEUE_PERF_PER_HP_NODE", 10)
 
 	parsedSelector, err := labels.Parse(selector)
 	if err != nil {
@@ -96,7 +116,7 @@ func main() {
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		if err := reconcile(ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, intentLabel, perfIntentValue, reconcileEvery, perfCap, ecoCap); err != nil {
+		if err := reconcile(ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, reconcileEvery, perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode); err != nil {
 			log.Printf("reconcile failed: %v", err)
 		}
 		cancel()
@@ -123,11 +143,15 @@ func reconcile(
 	selector labels.Selector,
 	reservedLabel string,
 	profileLabel string,
-	intentLabel string,
-	perfIntentValue string,
 	interval time.Duration,
 	perfCap float64,
 	ecoCap float64,
+	policyType string,
+	staticHPFrac float64,
+	queueHPBaseFrac float64,
+	queueHPMin int,
+	queueHPMax int,
+	queuePerfPerHPNode int,
 ) error {
 	nodes, err := kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -155,13 +179,13 @@ func reconcile(
 		return nil
 	}
 
-	plan := buildPlan(eligible, interval, perfCap, ecoCap)
+	plan := buildPlanByPolicy(ctx, kube, policyType, eligible, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
 	for i := range plan {
 		plan[i].SourceProfile = currentProfileOrDefault(nodesByName[plan[i].NodeName])
 		plan[i].LabelProfile = plan[i].Profile
 		plan[i].State = profileToState(plan[i].Profile)
 	}
-	applyDowngradeGuards(ctx, kube, plan, nodesByName, intentLabel, perfIntentValue, perfCap, ecoCap)
+	applyDowngradeGuards(ctx, kube, plan, nodesByName, perfCap, ecoCap)
 	for _, a := range plan {
 		if err := upsertNodeProfile(ctx, dyn, a); err != nil {
 			return err
@@ -174,7 +198,7 @@ func reconcile(
 		recordTransitionMetrics(a)
 	}
 
-	log.Printf("assigned profiles interval=%s nodes=%d plan=%s", interval, len(eligible), summarizePlan(plan))
+	log.Printf("assigned profiles policy=%s interval=%s nodes=%d plan=%s", policyType, interval, len(eligible), summarizePlan(plan))
 	return nil
 }
 
@@ -251,8 +275,6 @@ func applyDowngradeGuards(
 	kube kubernetes.Interface,
 	plan []NodeAssignment,
 	currentProfiles map[string]string,
-	intentLabel string,
-	perfIntentValue string,
 	perfCap float64,
 	ecoCap float64,
 ) {
@@ -261,11 +283,11 @@ func applyDowngradeGuards(
 
 		current := currentProfiles[a.NodeName]
 		// If a node is already in draining, prioritize drain completion:
-		// as soon as performance-intent workloads on that node are gone, move to eco.
+		// as soon as performance-only workloads on that node are gone, move to eco.
 		if current == "draining-performance" {
-			count, err := runningIntentPodCountOnNode(ctx, kube, a.NodeName, intentLabel, perfIntentValue)
+			count, err := runningPerformanceSensitivePodCountOnNode(ctx, kube, a.NodeName)
 			if err != nil {
-				log.Printf("warning: cannot check workload intents on node=%s: %v", a.NodeName, err)
+				log.Printf("warning: cannot classify running pods on node=%s: %v", a.NodeName, err)
 				continue
 			}
 			if count == 0 {
@@ -285,7 +307,7 @@ func applyDowngradeGuards(
 			a.State = "DrainingPerformance"
 			a.LabelProfile = "draining-performance"
 			operatorStateTransitions.WithLabelValues(a.NodeName, "DrainingPerformance", "ActiveEco", "deferred").Inc()
-			log.Printf("transition deferred node=%s from=DrainingPerformance to=ActiveEco reason=running-intent-pods label=%s value=%s count=%d", a.NodeName, intentLabel, perfIntentValue, count)
+			log.Printf("transition deferred node=%s from=DrainingPerformance to=ActiveEco reason=running-performance-sensitive-pods count=%d", a.NodeName, count)
 			continue
 		}
 
@@ -295,9 +317,9 @@ func applyDowngradeGuards(
 		if current != "performance" {
 			continue
 		}
-		count, err := runningIntentPodCountOnNode(ctx, kube, a.NodeName, intentLabel, perfIntentValue)
+		count, err := runningPerformanceSensitivePodCountOnNode(ctx, kube, a.NodeName)
 		if err != nil {
-			log.Printf("warning: cannot check workload intents on node=%s: %v", a.NodeName, err)
+			log.Printf("warning: cannot classify running pods on node=%s: %v", a.NodeName, err)
 			continue
 		}
 		if count == 0 {
@@ -311,16 +333,14 @@ func applyDowngradeGuards(
 		a.State = "DrainingPerformance"
 		a.LabelProfile = "draining-performance"
 		operatorStateTransitions.WithLabelValues(a.NodeName, "ActivePerformance", "ActiveEco", "deferred").Inc()
-		log.Printf("transition deferred node=%s from=performance to=eco reason=running-intent-pods label=%s value=%s count=%d", a.NodeName, intentLabel, perfIntentValue, count)
+		log.Printf("transition deferred node=%s from=performance to=eco reason=running-performance-sensitive-pods count=%d", a.NodeName, count)
 	}
 }
 
-func runningIntentPodCountOnNode(
+func runningPerformanceSensitivePodCountOnNode(
 	ctx context.Context,
 	kube kubernetes.Interface,
 	nodeName string,
-	intentLabel string,
-	intentValue string,
 ) (int, error) {
 	pods, err := kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{
 		FieldSelector: "spec.nodeName=" + nodeName,
@@ -336,7 +356,7 @@ func runningIntentPodCountOnNode(
 		if p.Status.Phase == "Succeeded" || p.Status.Phase == "Failed" {
 			continue
 		}
-		if p.Labels[intentLabel] != intentValue {
+		if !isPerformanceSensitivePod(&p) {
 			continue
 		}
 		count++
@@ -346,6 +366,33 @@ func runningIntentPodCountOnNode(
 
 func buildPlan(nodes []string, interval time.Duration, perfCap, ecoCap float64) []NodeAssignment {
 	return buildPlanAt(nodes, interval, perfCap, ecoCap, time.Now())
+}
+
+func buildPlanByPolicy(
+	ctx context.Context,
+	kube kubernetes.Interface,
+	policyType string,
+	nodes []string,
+	interval time.Duration,
+	perfCap, ecoCap, staticHPFrac, queueHPBaseFrac float64,
+	queueHPMin, queueHPMax, queuePerfPerHPNode int,
+) []NodeAssignment {
+	switch policyType {
+	case "static_partition", "":
+		return buildStaticPlan(nodes, perfCap, ecoCap, staticHPFrac)
+	case "queue_aware_v1":
+		perfIntentPods, err := runningPerformanceSensitivePodCountAllNodes(ctx, kube)
+		if err != nil {
+			log.Printf("warning: cannot classify running pods for queue_aware_v1: %v; falling back to static fraction", err)
+			return buildStaticPlan(nodes, perfCap, ecoCap, queueHPBaseFrac)
+		}
+		return buildQueueAwarePlan(nodes, perfCap, ecoCap, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode, perfIntentPods)
+	case "rule_swap_v1":
+		return buildPlan(nodes, interval, perfCap, ecoCap)
+	default:
+		log.Printf("warning: unknown POLICY_TYPE=%q, falling back to static_partition", policyType)
+		return buildStaticPlan(nodes, perfCap, ecoCap, staticHPFrac)
+	}
 }
 
 func buildPlanAt(nodes []string, interval time.Duration, perfCap, ecoCap float64, now time.Time) []NodeAssignment {
@@ -374,6 +421,247 @@ func buildPlanAt(nodes []string, interval time.Duration, perfCap, ecoCap float64
 		}
 	}
 	return plan
+}
+
+func buildStaticPlan(nodes []string, perfCap, ecoCap, hpFrac float64) []NodeAssignment {
+	n := len(nodes)
+	if n == 0 {
+		return nil
+	}
+	if hpFrac < 0 {
+		hpFrac = 0
+	}
+	if hpFrac > 1 {
+		hpFrac = 1
+	}
+	hpCount := int(math.Round(float64(n) * hpFrac))
+	if hpCount < 0 {
+		hpCount = 0
+	}
+	if hpCount > n {
+		hpCount = n
+	}
+
+	plan := make([]NodeAssignment, 0, n)
+	for i, node := range nodes {
+		profile := "eco"
+		cap := ecoCap
+		if i < hpCount {
+			profile = "performance"
+			cap = perfCap
+		}
+		plan = append(plan, NodeAssignment{
+			NodeName:  node,
+			Profile:   profile,
+			CapWatts:  cap,
+			ManagedBy: "static-partition-v1",
+		})
+	}
+	return plan
+}
+
+func buildQueueAwarePlan(nodes []string, perfCap, ecoCap, hpBaseFrac float64, hpMin, hpMax, perfPerHPNode, perfIntentPods int) []NodeAssignment {
+	n := len(nodes)
+	if n == 0 {
+		return nil
+	}
+	if hpBaseFrac < 0 {
+		hpBaseFrac = 0
+	}
+	if hpBaseFrac > 1 {
+		hpBaseFrac = 1
+	}
+	if hpMin < 0 {
+		hpMin = 0
+	}
+	if hpMax <= 0 {
+		hpMax = n
+	}
+	if hpMax < hpMin {
+		hpMax = hpMin
+	}
+	if perfPerHPNode <= 0 {
+		perfPerHPNode = 1
+	}
+	baseCount := int(math.Round(float64(n) * hpBaseFrac))
+	queueNeed := int(math.Ceil(float64(perfIntentPods) / float64(perfPerHPNode)))
+	hpCount := baseCount
+	if queueNeed > hpCount {
+		hpCount = queueNeed
+	}
+	if hpCount < hpMin {
+		hpCount = hpMin
+	}
+	if hpCount > hpMax {
+		hpCount = hpMax
+	}
+	if hpCount > n {
+		hpCount = n
+	}
+	if hpCount < 0 {
+		hpCount = 0
+	}
+
+	plan := make([]NodeAssignment, 0, n)
+	for i, node := range nodes {
+		profile := "eco"
+		cap := ecoCap
+		if i < hpCount {
+			profile = "performance"
+			cap = perfCap
+		}
+		plan = append(plan, NodeAssignment{
+			NodeName:  node,
+			Profile:   profile,
+			CapWatts:  cap,
+			ManagedBy: "queue-aware-v1",
+		})
+	}
+	return plan
+}
+
+func runningPerformanceSensitivePodCountAllNodes(
+	ctx context.Context,
+	kube kubernetes.Interface,
+) (int, error) {
+	pods, err := kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, p := range pods.Items {
+		if p.DeletionTimestamp != nil {
+			continue
+		}
+		if p.Status.Phase == "Succeeded" || p.Status.Phase == "Failed" {
+			continue
+		}
+		if !isPerformanceSensitivePod(&p) {
+			continue
+		}
+		count++
+	}
+	return count, nil
+}
+
+func isPerformanceSensitivePod(p *corev1.Pod) bool {
+	class := classifyPodByScheduling(p)
+	return class == workloadClassPerfOnly || class == workloadClassUnknown
+}
+
+func classifyPodByScheduling(p *corev1.Pod) string {
+	mask, ok := resolvePodPowerProfileMask(&p.Spec)
+	if !ok || mask == 0 {
+		return workloadClassUnknown
+	}
+	// No explicit power-profile constraint resolves to both masks,
+	// which is treated as implicit flexible/general demand.
+	switch mask {
+	case profileMaskPerformance:
+		return workloadClassPerfOnly
+	case profileMaskEco:
+		return workloadClassEcoOnly
+	case profileMaskBoth:
+		return workloadClassGeneral
+	default:
+		return workloadClassUnknown
+	}
+}
+
+func resolvePodPowerProfileMask(spec *corev1.PodSpec) (int, bool) {
+	baseMask, ok := maskFromNodeSelector(spec.NodeSelector)
+	if !ok {
+		return 0, false
+	}
+	if spec.Affinity == nil || spec.Affinity.NodeAffinity == nil || spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		return baseMask, true
+	}
+	required := spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	if len(required.NodeSelectorTerms) == 0 {
+		return 0, false
+	}
+
+	overallMask := 0
+	for _, term := range required.NodeSelectorTerms {
+		termMask, ok := maskForNodeSelectorTerm(term, baseMask)
+		if !ok {
+			return 0, false
+		}
+		overallMask |= termMask
+	}
+	return overallMask, true
+}
+
+func maskFromNodeSelector(selector map[string]string) (int, bool) {
+	mask := profileMaskBoth
+	v, ok := selector[powerProfileLabelKey]
+	if !ok {
+		return mask, true
+	}
+	valMask, ok := maskFromProfileValue(v)
+	if !ok {
+		return 0, false
+	}
+	return mask & valMask, true
+}
+
+func maskForNodeSelectorTerm(term corev1.NodeSelectorTerm, baseMask int) (int, bool) {
+	mask := baseMask
+	for _, expr := range term.MatchExpressions {
+		if expr.Key != powerProfileLabelKey {
+			continue
+		}
+		switch expr.Operator {
+		case corev1.NodeSelectorOpIn:
+			inMask, ok := maskFromValues(expr.Values)
+			if !ok {
+				return 0, false
+			}
+			mask &= inMask
+		case corev1.NodeSelectorOpNotIn:
+			notInMask, ok := maskFromValues(expr.Values)
+			if !ok {
+				return 0, false
+			}
+			mask &^= notInMask
+		case corev1.NodeSelectorOpExists:
+			// no change to profile domain
+		case corev1.NodeSelectorOpDoesNotExist:
+			mask = 0
+		case corev1.NodeSelectorOpGt, corev1.NodeSelectorOpLt:
+			return 0, false
+		default:
+			return 0, false
+		}
+	}
+	return mask, true
+}
+
+func maskFromValues(values []string) (int, bool) {
+	mask := 0
+	for _, v := range values {
+		profileMask, ok := maskFromProfileValue(v)
+		if !ok {
+			continue
+		}
+		mask |= profileMask
+	}
+	// values were specified but none are recognized power-profile classes.
+	if len(values) > 0 && mask == 0 {
+		return 0, true
+	}
+	return mask, true
+}
+
+func maskFromProfileValue(v string) (int, bool) {
+	switch strings.TrimSpace(v) {
+	case profilePerformance, profileDrainingPerf:
+		return profileMaskPerformance, true
+	case profileEco:
+		return profileMaskEco, true
+	default:
+		return 0, false
+	}
 }
 
 func summarizePlan(plan []NodeAssignment) string {
@@ -474,6 +762,15 @@ func durationEnv(key string, def time.Duration) time.Duration {
 func floatEnv(key string, def float64) float64 {
 	if s := strings.TrimSpace(os.Getenv(key)); s != "" {
 		if v, err := strconv.ParseFloat(s, 64); err == nil {
+			return v
+		}
+	}
+	return def
+}
+
+func intEnv(key string, def int) int {
+	if s := strings.TrimSpace(os.Getenv(key)); s != "" {
+		if v, err := strconv.Atoi(s); err == nil {
 			return v
 		}
 	}

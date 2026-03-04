@@ -77,7 +77,7 @@ From Kubernetes API:
 
 - Managed nodes: Nodes matching label selector `joulie.io/managed=true` (or existing selector used in your system)
 - Pods to classify:
-  - `intentClass` label, e.g. `joulie.io/workload-intent-class=performance|eco|flex`
+  - scheduling class, e.g. `performance|eco`
   - Pod Phase: Pending/Running
   - Node assignment: `spec.nodeName` (set by scheduler)
 

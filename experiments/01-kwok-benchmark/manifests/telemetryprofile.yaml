@@ -1,0 +1,23 @@
+apiVersion: joulie.io/v1alpha1
+kind: TelemetryProfile
+metadata:
+  name: benchmark-sim-target-node
+  labels:
+    app.kubernetes.io/part-of: kwok-benchmark
+spec:
+  target:
+    scope: node
+    nodeName: target-node
+  sources:
+    cpu:
+      type: http
+      http:
+        endpoint: http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node}
+        timeoutSeconds: 2
+  controls:
+    cpu:
+      type: http
+      http:
+        endpoint: http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}
+        timeoutSeconds: 2
+        mode: dvfs

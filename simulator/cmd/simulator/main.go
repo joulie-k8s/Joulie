@@ -815,7 +815,7 @@ func listRunningPodsDetailed(ctx context.Context, kube kubernetes.Interface) ([]
 			Namespace:   p.Namespace,
 			Name:        p.Name,
 			Node:        p.Spec.NodeName,
-			IntentClass: p.Labels["joulie.io/workload-intent-class"],
+			IntentClass: classifyClassFromPodSpec(&p.Spec),
 			JobID:       p.Annotations["sim.joulie.io/jobId"],
 		})
 	}
@@ -972,12 +972,10 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 		if jobID == "" {
 			continue
 		}
-		class := "flex"
+		class := "general"
 		if podTpl, ok := rec["podTemplate"].(map[string]any); ok {
-			if labelsRaw, ok := podTpl["labels"].(map[string]any); ok {
-				if v, ok := labelsRaw["joulie.io/workload-intent-class"].(string); ok && strings.TrimSpace(v) != "" {
-					class = v
-				}
+			if affinityRaw, ok := podTpl["affinity"].(map[string]any); ok {
+				class = classifyClassFromAffinityMap(affinityRaw)
 			}
 		}
 		requestedCPU := 1.0
@@ -1077,8 +1075,7 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 				Name:      j.PodName,
 				Namespace: j.Namespace,
 				Labels: map[string]string{
-					"joulie.io/workload-intent-class": j.Class,
-					"app.kubernetes.io/part-of":       "joulie-sim-workload",
+					"app.kubernetes.io/part-of": "joulie-sim-workload",
 				},
 				Annotations: map[string]string{
 					"sim.joulie.io/jobId": j.JobID,
@@ -1086,6 +1083,7 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 			},
 			Spec: corev1.PodSpec{
 				RestartPolicy: corev1.RestartPolicyNever,
+				Affinity:      affinityForIntentClass(j.Class),
 				Containers: []corev1.Container{
 					{
 						Name:  "work",
@@ -1121,6 +1119,160 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 		j.SubmittedAt = now
 		s.jobSubmitted.WithLabelValues(j.Class).Inc()
 	}
+}
+
+func affinityForIntentClass(intent string) *corev1.Affinity {
+	switch intent {
+	case "performance":
+		return &corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{
+						{
+							MatchExpressions: []corev1.NodeSelectorRequirement{
+								{
+									Key:      "joulie.io/power-profile",
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{"performance"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	case "eco":
+		return &corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{
+						{
+							MatchExpressions: []corev1.NodeSelectorRequirement{
+								{
+									Key:      "joulie.io/power-profile",
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{"eco"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	default:
+		return &corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{
+						{
+							MatchExpressions: []corev1.NodeSelectorRequirement{
+								{
+									Key:      "joulie.io/power-profile",
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{"eco", "performance"},
+								},
+							},
+						},
+					},
+				},
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.PreferredSchedulingTerm{
+					{
+						Weight: 100,
+						Preference: corev1.NodeSelectorTerm{
+							MatchExpressions: []corev1.NodeSelectorRequirement{
+								{
+									Key:      "joulie.io/power-profile",
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{"eco"},
+								},
+							},
+						},
+					},
+					{
+						Weight: 50,
+						Preference: corev1.NodeSelectorTerm{
+							MatchExpressions: []corev1.NodeSelectorRequirement{
+								{
+									Key:      "joulie.io/power-profile",
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{"performance"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+}
+
+func classifyClassFromPodSpec(spec *corev1.PodSpec) string {
+	// No power-profile scheduling constraint means implicit flexible/general class.
+	if spec == nil || spec.Affinity == nil || spec.Affinity.NodeAffinity == nil || spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		return "general"
+	}
+	required := spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	perfAllowed := false
+	ecoAllowed := false
+	for _, term := range required.NodeSelectorTerms {
+		termPerf := true
+		termEco := true
+		for _, expr := range term.MatchExpressions {
+			if expr.Key != "joulie.io/power-profile" {
+				continue
+			}
+			switch expr.Operator {
+			case corev1.NodeSelectorOpIn:
+				termPerf = false
+				termEco = false
+				for _, v := range expr.Values {
+					if v == "performance" || v == "draining-performance" {
+						termPerf = true
+					}
+					if v == "eco" {
+						termEco = true
+					}
+				}
+			case corev1.NodeSelectorOpNotIn:
+				for _, v := range expr.Values {
+					if v == "performance" || v == "draining-performance" {
+						termPerf = false
+					}
+					if v == "eco" {
+						termEco = false
+					}
+				}
+			case corev1.NodeSelectorOpDoesNotExist:
+				termPerf = false
+				termEco = false
+			}
+		}
+		perfAllowed = perfAllowed || termPerf
+		ecoAllowed = ecoAllowed || termEco
+	}
+	switch {
+	case perfAllowed && !ecoAllowed:
+		return "performance"
+	case ecoAllowed && !perfAllowed:
+		return "eco"
+	default:
+		return "general"
+	}
+}
+
+func classifyClassFromAffinityMap(affinityRaw map[string]any) string {
+	b, err := json.Marshal(map[string]any{"affinity": affinityRaw})
+	if err != nil {
+		return "general"
+	}
+	var wrapper struct {
+		Affinity *corev1.Affinity `json:"affinity"`
+	}
+	if err := json.Unmarshal(b, &wrapper); err != nil {
+		return "general"
+	}
+	spec := &corev1.PodSpec{Affinity: wrapper.Affinity}
+	return classifyClassFromPodSpec(spec)
 }
 
 func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Interface, dt float64, now time.Time) {

@@ -15,6 +15,36 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 )
 
+func podWithRequiredPowerProfile(name, nodeName, profile string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "ns1",
+		},
+		Spec: corev1.PodSpec{
+			NodeName: nodeName,
+			Affinity: &corev1.Affinity{
+				NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{
+							{
+								MatchExpressions: []corev1.NodeSelectorRequirement{
+									{
+										Key:      "joulie.io/power-profile",
+										Operator: corev1.NodeSelectorOpIn,
+										Values:   []string{profile},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+}
+
 func TestSanitizeName(t *testing.T) {
 	t.Parallel()
 	got := sanitizeName("Node_A/1")
@@ -78,41 +108,111 @@ func TestBuildPlanAtSingleNodeAlternatesProfile(t *testing.T) {
 	}
 }
 
-func TestRunningIntentPodCountOnNodeFiltersCorrectly(t *testing.T) {
+func TestClassifyPodBySchedulingCornerCases(t *testing.T) {
+	t.Parallel()
+	mkRequired := func(op corev1.NodeSelectorOperator, values ...string) corev1.Pod {
+		return corev1.Pod{
+			Spec: corev1.PodSpec{
+				Affinity: &corev1.Affinity{
+					NodeAffinity: &corev1.NodeAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+							NodeSelectorTerms: []corev1.NodeSelectorTerm{
+								{
+									MatchExpressions: []corev1.NodeSelectorRequirement{
+										{Key: "joulie.io/power-profile", Operator: op, Values: values},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+	mkRequiredOr := func(lhs, rhs []string) corev1.Pod {
+		return corev1.Pod{
+			Spec: corev1.PodSpec{
+				Affinity: &corev1.Affinity{
+					NodeAffinity: &corev1.NodeAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+							NodeSelectorTerms: []corev1.NodeSelectorTerm{
+								{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "joulie.io/power-profile", Operator: corev1.NodeSelectorOpIn, Values: lhs}}},
+								{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "joulie.io/power-profile", Operator: corev1.NodeSelectorOpIn, Values: rhs}}},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name string
+		pod  corev1.Pod
+		want string
+	}{
+		{name: "no constraints is general", pod: corev1.Pod{Spec: corev1.PodSpec{}}, want: workloadClassGeneral},
+		{name: "node selector performance only", pod: corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"joulie.io/power-profile": "performance"}}}, want: workloadClassPerfOnly},
+		{name: "node selector eco only", pod: corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"joulie.io/power-profile": "eco"}}}, want: workloadClassEcoOnly},
+		{name: "node selector draining treated as performance-only", pod: corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"joulie.io/power-profile": "draining-performance"}}}, want: workloadClassPerfOnly},
+		{name: "required affinity in performance", pod: mkRequired(corev1.NodeSelectorOpIn, "performance"), want: workloadClassPerfOnly},
+		{name: "required affinity in eco", pod: mkRequired(corev1.NodeSelectorOpIn, "eco"), want: workloadClassEcoOnly},
+		{name: "required affinity in both is general", pod: mkRequired(corev1.NodeSelectorOpIn, "eco", "performance"), want: workloadClassGeneral},
+		{name: "or terms perf or eco is general", pod: mkRequiredOr([]string{"performance"}, []string{"eco"}), want: workloadClassGeneral},
+		{name: "notin eco means performance only", pod: mkRequired(corev1.NodeSelectorOpNotIn, "eco"), want: workloadClassPerfOnly},
+		{name: "notin performance means eco only", pod: mkRequired(corev1.NodeSelectorOpNotIn, "performance"), want: workloadClassEcoOnly},
+		{name: "does-not-exist on power-profile is unknown", pod: mkRequired(corev1.NodeSelectorOpDoesNotExist), want: workloadClassUnknown},
+		{name: "gt operator on power-profile is unknown", pod: mkRequired(corev1.NodeSelectorOpGt, "1"), want: workloadClassUnknown},
+		{name: "unknown node selector value is unknown", pod: corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"joulie.io/power-profile": "ultra"}}}, want: workloadClassUnknown},
+		{
+			name: "contradicting node selector and affinity is unknown",
+			pod: corev1.Pod{Spec: corev1.PodSpec{
+				NodeSelector: map[string]string{"joulie.io/power-profile": "performance"},
+				Affinity: &corev1.Affinity{
+					NodeAffinity: &corev1.NodeAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+							NodeSelectorTerms: []corev1.NodeSelectorTerm{
+								{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "joulie.io/power-profile", Operator: corev1.NodeSelectorOpIn, Values: []string{"eco"}}}},
+							},
+						},
+					},
+				},
+			}},
+			want: workloadClassUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := classifyPodByScheduling(&tt.pod); got != tt.want {
+				t.Fatalf("classifyPodByScheduling=%q want=%q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunningPerformanceSensitivePodCountOnNodeFiltersCorrectly(t *testing.T) {
 	t.Parallel()
 	client := k8sfake.NewSimpleClientset(
+		podWithRequiredPowerProfile("p1", "node-a", "performance"),
+		podWithRequiredPowerProfile("p2", "node-a", "eco"),
 		&corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "p1",
-				Namespace: "ns1",
-				Labels:    map[string]string{"joulie.io/workload-intent-class": "performance"},
-			},
-			Spec:   corev1.PodSpec{NodeName: "node-a"},
-			Status: corev1.PodStatus{Phase: corev1.PodRunning},
-		},
+			ObjectMeta: metav1.ObjectMeta{Name: "p3", Namespace: "ns1"},
+			Spec:       corev1.PodSpec{NodeName: "node-a"},
+			Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+		}, // general, should not be counted
 		&corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "p2",
-				Namespace: "ns1",
-				Labels:    map[string]string{"joulie.io/workload-intent-class": "eco"},
-			},
-			Spec:   corev1.PodSpec{NodeName: "node-a"},
-			Status: corev1.PodStatus{Phase: corev1.PodRunning},
-		},
-		&corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "p3",
-				Namespace: "ns1",
-				Labels:    map[string]string{"joulie.io/workload-intent-class": "performance"},
-			},
-			Spec:   corev1.PodSpec{NodeName: "node-a"},
-			Status: corev1.PodStatus{Phase: corev1.PodSucceeded},
-		},
+			ObjectMeta: metav1.ObjectMeta{Name: "p4", Namespace: "ns1"},
+			Spec:       podWithRequiredPowerProfile("x", "node-a", "performance").Spec,
+			Status:     corev1.PodStatus{Phase: corev1.PodSucceeded},
+		}, // terminal, ignored
 	)
 
-	count, err := runningIntentPodCountOnNode(context.Background(), client, "node-a", "joulie.io/workload-intent-class", "performance")
+	count, err := runningPerformanceSensitivePodCountOnNode(context.Background(), client, "node-a")
 	if err != nil {
-		t.Fatalf("runningIntentPodCountOnNode error: %v", err)
+		t.Fatalf("runningPerformanceSensitivePodCountOnNode error: %v", err)
 	}
 	if count != 1 {
 		t.Fatalf("count=%d want=1", count)
@@ -122,15 +222,7 @@ func TestRunningIntentPodCountOnNodeFiltersCorrectly(t *testing.T) {
 func TestApplyDowngradeGuardsDefersPerformanceToEcoWhenPerfPodsExist(t *testing.T) {
 	t.Parallel()
 	client := k8sfake.NewSimpleClientset(
-		&corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "perf",
-				Namespace: "ns1",
-				Labels:    map[string]string{"joulie.io/workload-intent-class": "performance"},
-			},
-			Spec:   corev1.PodSpec{NodeName: "node-a"},
-			Status: corev1.PodStatus{Phase: corev1.PodRunning},
-		},
+		podWithRequiredPowerProfile("perf", "node-a", "performance"),
 	)
 	plan := []NodeAssignment{{
 		NodeName:  "node-a",
@@ -140,7 +232,7 @@ func TestApplyDowngradeGuardsDefersPerformanceToEcoWhenPerfPodsExist(t *testing.
 	}}
 	current := map[string]string{"node-a": "performance"}
 
-	applyDowngradeGuards(context.Background(), client, plan, current, "joulie.io/workload-intent-class", "performance", 5000, 120)
+	applyDowngradeGuards(context.Background(), client, plan, current, 5000, 120)
 
 	if plan[0].Profile != "performance" || plan[0].State != "DrainingPerformance" || plan[0].LabelProfile != "draining-performance" {
 		t.Fatalf("unexpected plan after defer: %#v", plan[0])
@@ -160,7 +252,7 @@ func TestApplyDowngradeGuardsDrainCompleteTransitionsToEco(t *testing.T) {
 	}}
 	current := map[string]string{"node-a": "draining-performance"}
 
-	applyDowngradeGuards(context.Background(), client, plan, current, "joulie.io/workload-intent-class", "performance", 5000, 120)
+	applyDowngradeGuards(context.Background(), client, plan, current, 5000, 120)
 
 	if plan[0].Profile != "eco" || plan[0].State != "ActiveEco" || plan[0].LabelProfile != "eco" || plan[0].CapWatts != 120 {
 		t.Fatalf("unexpected plan after drain completion: %#v", plan[0])
@@ -247,11 +339,15 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 		selector,
 		"joulie.io/reserved",
 		"joulie.io/power-profile",
-		"joulie.io/workload-intent-class",
-		"performance",
 		time.Minute,
 		5000,
 		120,
+		"rule_swap_v1",
+		0.6,
+		0.6,
+		1,
+		5,
+		10,
 	); err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
@@ -278,5 +374,119 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 	}
 	if perf != 1 || eco != 1 {
 		t.Fatalf("unexpected node labels perf=%d eco=%d", perf, eco)
+	}
+}
+
+func TestBuildStaticPlan(t *testing.T) {
+	t.Parallel()
+	nodes := []string{"node-a", "node-b", "node-c", "node-d", "node-e"}
+	plan := buildStaticPlan(nodes, 5000, 120, 0.6)
+	if len(plan) != len(nodes) {
+		t.Fatalf("len(plan)=%d", len(plan))
+	}
+	perf, eco := 0, 0
+	for _, a := range plan {
+		if a.Profile == "performance" {
+			perf++
+		}
+		if a.Profile == "eco" {
+			eco++
+		}
+	}
+	if perf != 3 || eco != 2 {
+		t.Fatalf("unexpected mix perf=%d eco=%d", perf, eco)
+	}
+}
+
+func TestBuildQueueAwarePlan(t *testing.T) {
+	t.Parallel()
+	nodes := []string{"node-a", "node-b", "node-c", "node-d", "node-e"}
+
+	// Base 60% of 5 => 3 performance nodes at idle.
+	plan := buildQueueAwarePlan(nodes, 5000, 120, 0.6, 1, 5, 10, 0)
+	perf := 0
+	for _, a := range plan {
+		if a.Profile == "performance" {
+			perf++
+		}
+	}
+	if perf != 3 {
+		t.Fatalf("idle perf nodes=%d want=3", perf)
+	}
+
+	// 40 performance-intent pods with perfPerHPNode=10 => 4 performance nodes.
+	plan = buildQueueAwarePlan(nodes, 5000, 120, 0.6, 1, 5, 10, 40)
+	perf = 0
+	for _, a := range plan {
+		if a.Profile == "performance" {
+			perf++
+		}
+	}
+	if perf != 4 {
+		t.Fatalf("loaded perf nodes=%d want=4", perf)
+	}
+}
+
+func TestBuildPlanByPolicyQueueAware(t *testing.T) {
+	t.Parallel()
+	client := k8sfake.NewSimpleClientset(
+		podWithRequiredPowerProfile("perf-1", "node-a", "performance"),
+		podWithRequiredPowerProfile("perf-2", "node-b", "performance"),
+	)
+	nodes := []string{"node-a", "node-b", "node-c"}
+	plan := buildPlanByPolicy(
+		context.Background(),
+		client,
+		"queue_aware_v1",
+		nodes,
+		time.Minute,
+		5000,
+		120,
+		0.6,
+		0.34,
+		1,
+		3,
+		2,
+	)
+
+	perf := 0
+	for _, a := range plan {
+		if a.Profile == "performance" {
+			perf++
+		}
+	}
+	// queueNeed=ceil(2/2)=1, base=round(3*0.34)=1 => 1 perf node.
+	if perf != 1 {
+		t.Fatalf("perf nodes=%d want=1 plan=%#v", perf, plan)
+	}
+}
+
+func TestBuildPlanByPolicyUnknownFallsBackToStatic(t *testing.T) {
+	t.Parallel()
+	client := k8sfake.NewSimpleClientset()
+	nodes := []string{"node-a", "node-b", "node-c", "node-d"}
+	plan := buildPlanByPolicy(
+		context.Background(),
+		client,
+		"unknown_policy",
+		nodes,
+		time.Minute,
+		5000,
+		120,
+		0.5,
+		0.5,
+		1,
+		4,
+		10,
+	)
+
+	perf := 0
+	for _, a := range plan {
+		if a.Profile == "performance" {
+			perf++
+		}
+	}
+	if perf != 2 {
+		t.Fatalf("perf nodes=%d want=2 (50/50 static fallback)", perf)
 	}
 }

@@ -155,7 +155,7 @@ or
 
 This is a minimal first contract and will evolve as telemetry coverage expands.
 
-Current simulator response shape (backward compatible):
+Current simulator response shape:
 
 ```json
 {
@@ -179,8 +179,7 @@ Current simulator response shape (backward compatible):
     "running": 12,
     "byIntentClass": {
       "performance": 4,
-      "eco": 6,
-      "flex": 2
+      "eco": 6
     }
   },
   "ts": "2026-03-04T00:00:00Z"
@@ -245,7 +244,7 @@ Current ownership/consumption model:
 At the moment, operator does not yet consume `TelemetryProfile` for decision logic; that is reserved for future policy extensions (cluster/global telemetry inputs).
 
 `TelemetryProfile` currently covers source routing (for example CPU from `host` or `http`) and is the basis for simulated input mode.
-It should be extended over time with CPU/GPU/thermal/context status snapshots while preserving schema compatibility.
+It should be extended over time with CPU/GPU/thermal/context status snapshots.
 
 Current control routing in the same CRD:
 

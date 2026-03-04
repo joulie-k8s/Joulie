@@ -108,7 +108,6 @@ Class model overrides now support:
 - `fMinMHz`, `fMaxMHz`
 - `raplCapMinW`, `raplCapMaxW`
 - `dvfsRampMs`
-- legacy fields (`podW`, `dvfsDropWPerPct`, `defaultCapW`, `raplHeadW`) remain supported.
 
 Hardware profile parsing and validation are implemented in:
 
@@ -128,10 +127,7 @@ Then applies:
 - RAPL cap clamp via cap-aware `freqScale` solve.
 - cap saturation flag when cap is below achievable minimum.
 
-Utilization comes from either:
-
-- trace-driven workload engine (preferred), or
-- fallback from running pod count.
+Utilization comes from trace-driven workload engine.
 
 ### Workload trace and execution
 
@@ -157,3 +153,7 @@ Helper tools:
 4. Route `TelemetryProfile` to simulator HTTP.
 5. Inject trace workload (pods tolerate kwok taint + select `type=kwok`).
 6. Observe power/control/job-completion metrics.
+
+For exact equations and control/workload update math:
+
+- [Simulator Algorithms](./simulator-algorithms.md)

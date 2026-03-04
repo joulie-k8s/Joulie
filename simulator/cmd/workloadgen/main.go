@@ -22,7 +22,7 @@ type jobRecord struct {
 }
 
 type podTemplateRec struct {
-	Labels   map[string]string `json:"labels"`
+	Affinity map[string]any    `json:"affinity,omitempty"`
 	Requests map[string]string `json:"requests"`
 }
 
@@ -56,7 +56,7 @@ func main() {
 	defer w.Flush()
 
 	rng := rand.New(rand.NewSource(seed))
-	classes := []string{"performance", "eco", "flex"}
+	classes := []string{"performance", "eco"}
 	offset := 0.0
 	for i := 0; i < jobs; i++ {
 		offset += rng.ExpFloat64() * meanInterArrival
@@ -70,7 +70,7 @@ func main() {
 			SubmitTimeOffsetSec: offset,
 			Namespace:           "default",
 			PodTemplate: podTemplateRec{
-				Labels:   map[string]string{"joulie.io/workload-intent-class": class},
+				Affinity: affinityForClass(class),
 				Requests: map[string]string{"cpu": fmt.Sprintf("%d", cpu), "memory": "1Gi"},
 			},
 			Work: workRec{CPUUnits: units, GPUUnits: 0},
@@ -81,5 +81,64 @@ func main() {
 		}
 		b, _ := json.Marshal(rec)
 		_, _ = w.Write(append(b, '\n'))
+	}
+}
+
+func affinityForClass(class string) map[string]any {
+	switch class {
+	case "performance":
+		return map[string]any{
+			"nodeAffinity": map[string]any{
+				"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
+					"nodeSelectorTerms": []map[string]any{
+						{
+							"matchExpressions": []map[string]any{
+								{
+									"key":      "joulie.io/power-profile",
+									"operator": "In",
+									"values":   []string{"performance"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	case "eco":
+		return map[string]any{
+			"nodeAffinity": map[string]any{
+				"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
+					"nodeSelectorTerms": []map[string]any{
+						{
+							"matchExpressions": []map[string]any{
+								{
+									"key":      "joulie.io/power-profile",
+									"operator": "In",
+									"values":   []string{"eco"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	default:
+		return map[string]any{
+			"nodeAffinity": map[string]any{
+				"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
+					"nodeSelectorTerms": []map[string]any{
+						{
+							"matchExpressions": []map[string]any{
+								{
+									"key":      "joulie.io/power-profile",
+									"operator": "In",
+									"values":   []string{"eco"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
 	}
 }

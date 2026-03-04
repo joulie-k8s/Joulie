@@ -63,7 +63,7 @@ Agent usage:
 ## 1. Deploy simulator
 
 ```bash
-kubectl apply -f examples/simulated-telemetry-control/namespace.yaml
+kubectl apply -f examples/05-simulated-telemetry-control/namespace.yaml
 make simulator-install TAG=<simulator-tag>
 kubectl -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim
 kubectl -n joulie-sim-demo get pods,svc,endpoints
@@ -72,7 +72,7 @@ kubectl -n joulie-sim-demo get pods,svc,endpoints
 Enable Prometheus scraping of simulator metrics:
 
 ```bash
-kubectl apply -f examples/simulated-telemetry-control/servicemonitor-simulator.yaml
+kubectl apply -f examples/05-simulated-telemetry-control/servicemonitor-simulator.yaml
 ```
 
 If your Prometheus release label/namespace differs, adapt `release` and `metadata.namespace`
@@ -110,7 +110,7 @@ kubectl delete nodepowerprofiles -l app.kubernetes.io/part-of=sim-http-demo --ig
 
 ```bash
 for n in $(kubectl get nodes -l joulie.io/managed=true -o jsonpath='{.items[*].metadata.name}'); do
-  sed "s/target-node/$n/g" examples/simulated-telemetry-control/nodepowerprofile-low.yaml | kubectl apply -f -
+  sed "s/target-node/$n/g" examples/05-simulated-telemetry-control/nodepowerprofile-low.yaml | kubectl apply -f -
 done
 
 kubectl get nodepowerprofiles -l app.kubernetes.io/part-of=sim-http-demo -o wide
@@ -120,7 +120,7 @@ kubectl get nodepowerprofiles -l app.kubernetes.io/part-of=sim-http-demo -o wide
 
 ```bash
 for n in $(kubectl get nodes -l joulie.io/managed=true -o jsonpath='{.items[*].metadata.name}'); do
-  sed "s/target-node/$n/g" examples/simulated-telemetry-control/telemetryprofile-http-rapl.yaml | kubectl apply -f -
+  sed "s/target-node/$n/g" examples/05-simulated-telemetry-control/telemetryprofile-http-rapl.yaml | kubectl apply -f -
 done
 
 kubectl get telemetryprofiles -l app.kubernetes.io/part-of=sim-http-demo
@@ -162,7 +162,7 @@ You should see lines like:
 
 ```bash
 for n in $(kubectl get nodes -l joulie.io/managed=true -o jsonpath='{.items[*].metadata.name}'); do
-  sed "s/target-node/$n/g" examples/simulated-telemetry-control/telemetryprofile-http-dvfs.yaml | kubectl apply -f -
+  sed "s/target-node/$n/g" examples/05-simulated-telemetry-control/telemetryprofile-http-dvfs.yaml | kubectl apply -f -
 done
 ```
 
@@ -179,7 +179,7 @@ kubectl get telemetryprofiles -l app.kubernetes.io/part-of=sim-http-demo \
 
 Import this dashboard JSON manually in Grafana:
 
-- `examples/simulated-telemetry-control/dashboard-simulated-telemetry.json`
+- `examples/05-simulated-telemetry-control/dashboard-simulated-telemetry.json`
 
 It shows:
 
@@ -194,7 +194,7 @@ It shows:
 ```bash
 kubectl delete telemetryprofiles -l app.kubernetes.io/part-of=sim-http-demo --ignore-not-found
 kubectl delete nodepowerprofiles -l app.kubernetes.io/part-of=sim-http-demo --ignore-not-found
-kubectl delete -f examples/simulated-telemetry-control/servicemonitor-simulator.yaml --ignore-not-found
+kubectl delete -f examples/05-simulated-telemetry-control/servicemonitor-simulator.yaml --ignore-not-found
 kubectl delete -f simulator/deploy/simulator.yaml --ignore-not-found
-kubectl delete -f examples/simulated-telemetry-control/namespace.yaml --ignore-not-found
+kubectl delete -f examples/05-simulated-telemetry-control/namespace.yaml --ignore-not-found
 ```

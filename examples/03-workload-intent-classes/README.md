@@ -1,11 +1,11 @@
-# Example: Workload Intent Classes on 2 Virtualized Workers
+# Example: Workload Scheduling Classes on 2 Virtualized Workers
 
 This example demonstrates scheduler adaptation to Joulie profile flips even when RAPL/DVFS enforcement is unavailable.
 
 You will run:
 
 - operator policy loop that flips node profiles every `N` minutes,
-- three Deployments with workload intent classes (`performance`, `eco`, `flex`),
+- two Deployments with scheduling classes (`performance`, `eco`) expressed via node affinity,
 - a recycler CronJob that periodically deletes pods so new pods are rescheduled against the latest node profile.
 
 ## 1) Preconditions
@@ -53,10 +53,10 @@ kubectl -n joulie-system set env deploy/joulie-operator RECONCILE_INTERVAL=2m
 kubectl -n joulie-system rollout status deploy/joulie-operator
 
 # deploy workloads + recycler + operator ServiceMonitor
-kubectl apply -f examples/workload-intent-classes/namespace.yaml
-kubectl apply -f examples/workload-intent-classes/deployments.yaml
-kubectl apply -f examples/workload-intent-classes/recycler.yaml
-kubectl apply -f examples/workload-intent-classes/servicemonitor-operator.yaml
+kubectl apply -f examples/03-workload-intent-classes/namespace.yaml
+kubectl apply -f examples/03-workload-intent-classes/deployments.yaml
+kubectl apply -f examples/03-workload-intent-classes/recycler.yaml
+kubectl apply -f examples/03-workload-intent-classes/servicemonitor-operator.yaml
 
 # sanity checks
 kubectl get nodepowerprofiles -o wide
@@ -73,11 +73,11 @@ watch -n 5 'kubectl -n joulie-intent-demo get pods -o wide; echo; kubectl get no
 
 Note: `servicemonitor-operator.yaml` assumes Prometheus Operator release label `release: telemetry` in namespace `default`.
 
-What each workload expresses:
+What each workload expresses (single source of truth is affinity):
 
 - `performance`: hard requires `joulie.io/power-profile=performance`
 - `eco`: hard requires `joulie.io/power-profile=eco`
-- `flex`: soft prefers `eco`, can run on `performance`
+- no power-profile affinity: implicit `flex` (general) scheduling class
 
 ## 3) Observe pod movement across nodes
 
@@ -86,7 +86,7 @@ watch -n 5 'kubectl -n joulie-intent-demo get pods -o wide; echo; kubectl get no
 ```
 
 You should see pods recreated roughly every minute by the recycler, then placed according to the profile labels currently set by the operator.
-If a node is transitioning `ActivePerformance -> ActiveEco` and still has running `performance` intent workloads, the operator now defers the downgrade until those pods terminate.
+If a node is transitioning `ActivePerformance -> ActiveEco` and still has running `performance`-class workloads (classified from pod scheduling constraints), the operator now defers the downgrade until those pods terminate.
 During defer, the node label is set to `joulie.io/power-profile=draining-performance`, so new `performance` pods stop landing there.
 
 ## 4) Grafana dashboard for this demo
@@ -110,8 +110,8 @@ Dashboard highlights:
   - `applied` transitions and `deferred` transitions from operator guard logic
 - `Kubernetes Node Label Profile (kube_node_labels)`:
   - actual `joulie.io/power-profile` label value from Kubernetes
-- `Pods by Intent Class and Node`:
-  - shows how `performance`, `eco`, `flex` workloads land on nodes
+- `Pods by Node`:
+  - shows how workload pods land on nodes as profiles flip
 - `Pod Re-creations (5m)`:
   - confirms periodic recreation churn driving re-scheduling
 

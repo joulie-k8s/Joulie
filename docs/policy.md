@@ -47,6 +47,10 @@ Transition intent:
 
 This keeps downgrade behavior explicit and safe.
 
+Detailed algorithm definitions for implemented policies are documented in:
+
+- [Policy Algorithms](./policies.md)
+
 ## `NodePowerProfile` fields (current)
 
 - `spec.nodeName` (required)
@@ -77,26 +81,28 @@ On each node, agent resolves desired state only from:
 The policy layer should own workload safety checks before downgrades:
 
 - performance-required workload on node: block or defer downgrade,
-- eco/flexible workloads only: allow downgrade.
+- eco workloads only: allow downgrade.
 
-Node labels communicate supply (`joulie.io/power-profile=performance|draining-performance|eco`), while workload labels/affinity communicate demand.
+Node labels communicate supply (`joulie.io/power-profile=performance|draining-performance|eco`), while workload scheduling constraints communicate demand.
 Default scheduler remains unchanged.
 
-### Workload intent classes
+### Workload scheduling classes
 
-Pods should declare intent with:
-
-- label key: `joulie.io/workload-intent-class`
-
-Supported classes:
+Supported classes (derived by policy from pod scheduling constraints):
 
 - `performance`: workload should run on nodes with performance supply.
 - `eco`: workload should run on nodes with eco supply.
-- `flex`: workload can run on either supply, with preference for eco when available.
+- `flex` (implicit): no power-profile scheduling constraint; policy treats it as general/flexible demand.
+
+Classification source of truth:
+
+- `spec.nodeSelector` and `spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution`
+- key: `joulie.io/power-profile`
+- if no power-profile constraint exists, classification is implicit `flex` (general).
 
 Reference example:
 
-- [Workload Intent Classes](../examples/workload-intent-classes/README.md)
+- [Workload Scheduling Classes](../examples/03-workload-intent-classes/README.md)
 
 ## Simple starter policy (recommended)
 

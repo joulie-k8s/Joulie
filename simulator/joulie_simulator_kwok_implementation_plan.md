@@ -43,7 +43,7 @@ The plan is structured so you can scale to hundreds/thousands of simulated nodes
     - pod injection (create Pods at submit times),
     - per-pod progress and completion (slows down under caps/throttling),
     - utilization time series (optional) to support rich workloads/replay.
-- **Example**: new `examples/simulator-kwok/` showing end-to-end setup:
+- **Example**: new `examples/06-simulator-kwok/` showing end-to-end setup:
   - create cluster + install KWOK (or use `kwokctl create cluster`),
   - create N fake nodes with desired allocatable + labels (including NFD-like labels),
   - install simulator + operator + agent(pool),
@@ -265,13 +265,13 @@ GPU-ready:
 - Extend telemetry schema to include `gpu.*` fields, but keep them zero/default until implemented.
 - Keep internal model extensible: `DeviceState` map keyed by family `cpu|gpu`.
 
-### 5.4 HTTP API schema (extend, remain backward compatible)
+### 5.4 HTTP API schema (extend)
 
 Current minimal accepted telemetry JSON forms include:
 
 - `{ "packagePowerWatts": 245.3 }` or `{ "cpu": { "packagePowerWatts": 245.3 } }`
 
-Update simulator responses to always include the structured form, but keep the top-level shortcut for backward compatibility.
+Update simulator responses to always include the structured form.
 
 **Telemetry response (suggested):**
 
@@ -294,7 +294,7 @@ Update simulator responses to always include the structured form, but keep the t
   },
   "pods": {
     "running": 12,
-    "byIntentClass": {"performance": 4, "eco": 6, "flex": 2}
+    "byIntentClass": {"performance": 4, "eco": 6}
   }
 }
 ```
@@ -420,7 +420,7 @@ Start with **delete-on-complete**:
 
 Optionally later:
 
-- patch `status.phase=Succeeded` for Job compatibility (requires more RBAC and careful ownership).
+- patch `status.phase=Succeeded` for Job lifecycle handling (requires more RBAC and careful ownership).
 
 ### 5.6 Simulator watches cluster state
 
@@ -527,7 +527,7 @@ Also keep a simpler simulator label namespace for matching:
 
 ## 8. Example under `examples/` (must be added)
 
-Create: `examples/simulator-kwok/`
+Create: `examples/06-simulator-kwok/`
 
 ### 8.1 Contents
 
@@ -580,7 +580,7 @@ Update the following files:
     - required env vars,
     - sharding behavior.
 - `docs/quickstart.md`
-  - add a short “Simulator (KWOK)” section linking to `examples/simulator-kwok/README.md`.
+  - add a short “Simulator (KWOK)” section linking to `examples/06-simulator-kwok/README.md`.
 
 ---
 
@@ -593,7 +593,7 @@ Update the following files:
 5) Implement **workload trace schema** + loader.
 6) Implement **workload injector** (create Pods from trace) + tolerations/affinity for fake nodes.
 7) Implement **batch execution engine** (progress + completion).
-8) Build the **examples/simulator-kwok/** end-to-end demo.
+8) Build the **examples/06-simulator-kwok/** end-to-end demo.
 9) Update docs.
 
 ---

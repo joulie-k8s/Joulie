@@ -13,7 +13,6 @@ spec:
       labels:
         app: perf-intent
         demo.joulie.io/recycle: "true"
-        joulie.io/workload-intent-class: performance
     spec:
       affinity:
         nodeAffinity:
@@ -42,7 +41,6 @@ spec:
       labels:
         app: eco-intent
         demo.joulie.io/recycle: "true"
-        joulie.io/workload-intent-class: eco
     spec:
       affinity:
         nodeAffinity:
@@ -52,42 +50,6 @@ spec:
                   - key: joulie.io/power-profile
                     operator: In
                     values: ["eco"]
-      containers:
-        - name: app
-          image: registry.cern.ch/registry.k8s.io/pause:3.10
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: flex-intent
-  namespace: joulie-intent-demo
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: flex-intent
-  template:
-    metadata:
-      labels:
-        app: flex-intent
-        demo.joulie.io/recycle: "true"
-        joulie.io/workload-intent-class: flex
-    spec:
-      affinity:
-        nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 80
-              preference:
-                matchExpressions:
-                  - key: joulie.io/power-profile
-                    operator: In
-                    values: ["eco"]
-            - weight: 20
-              preference:
-                matchExpressions:
-                  - key: joulie.io/power-profile
-                    operator: In
-                    values: ["performance"]
       containers:
         - name: app
           image: registry.cern.ch/registry.k8s.io/pause:3.10
