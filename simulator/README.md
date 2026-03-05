@@ -96,7 +96,7 @@ curl -s localhost:18080/metrics | egrep 'joulie_sim_controls_total|joulie_sim_re
 See:
 
 - `examples/05-simulated-telemetry-control/README.md`
-- `https://matbun.github.io/joulie/docs/simulator/simulator/`
+- `https://joulie-k8s.github.io/Joulie/docs/simulator/simulator/`
 
 ## Node Discovery and Class Mapping
 

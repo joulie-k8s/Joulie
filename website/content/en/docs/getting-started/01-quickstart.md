@@ -114,7 +114,7 @@ The operator writes `NodePowerProfile` assignments and swaps `ActivePerformance`
 
 Configuration details and patch examples:
 
-- [Operator Configuration Example](https://github.com/matbun/joulie/tree/main/examples/04-operator-configuration/README.md)
+- [Operator Configuration Example](https://github.com/joulie-k8s/Joulie/tree/main/examples/04-operator-configuration/README.md)
 
 Verify:
 
@@ -146,4 +146,4 @@ kubectl get nodes --show-labels | grep 'joulie.io/managed=true'
 
 For fake-node workload + power simulation (real scheduler, fake KWOK nodes, operator real, agent pool mode), use:
 
-- [KWOK Simulator Example](https://github.com/matbun/joulie/tree/main/examples/06-simulator-kwok/README.md)
+- [KWOK Simulator Example](https://github.com/joulie-k8s/Joulie/tree/main/examples/06-simulator-kwok/README.md)

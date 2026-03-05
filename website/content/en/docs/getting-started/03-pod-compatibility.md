@@ -107,4 +107,4 @@ Do not set power-profile affinity. Kubernetes can schedule it on either eco or p
 
 Reference manifests:
 
-- [Example 03 workloads](https://github.com/matbun/joulie/blob/main/examples/03-workload-intent-classes/deployments.yaml)
+- [Example 03 workloads](https://github.com/joulie-k8s/Joulie/blob/main/examples/03-workload-intent-classes/deployments.yaml)

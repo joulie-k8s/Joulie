@@ -105,7 +105,7 @@ Classification source of truth:
 
 Reference example:
 
-- [Workload Scheduling Classes](https://github.com/matbun/joulie/tree/main/examples/03-workload-intent-classes/README.md)
+- [Workload Scheduling Classes](https://github.com/joulie-k8s/Joulie/tree/main/examples/03-workload-intent-classes/README.md)
 
 ## Simple starter policy (recommended)
 

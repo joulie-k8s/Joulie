@@ -16,7 +16,7 @@ linkTitle: Joulie
   <a class="btn btn-lg btn-primary me-2 mb-2" href="./docs/">
     Read The Docs
   </a>
-  <a class="btn btn-lg btn-secondary mb-2" href="https://github.com/matbun/joulie" target="_blank" rel="noopener">
+  <a class="btn btn-lg btn-secondary mb-2" href="https://github.com/joulie-k8s/Joulie" target="_blank" rel="noopener">
     GitHub
   </a>
 </div>
@@ -45,7 +45,7 @@ Joulie provides a controller and node agent for profile-based power management, 
         <div class="mb-3 h1"><i class="fas fa-vial"></i></div>
         <h4 class="h3">Experiments</h4>
         <p class="flex-grow-1">Benchmark and analysis harnesses.</p>
-        <p class="mb-0"><a href="https://github.com/matbun/joulie/tree/main/experiments">Read more</a></p>
+        <p class="mb-0"><a href="https://github.com/joulie-k8s/Joulie/tree/main/experiments">Read more</a></p>
       </div>
     </div>
   </div>
@@ -55,7 +55,7 @@ Joulie provides a controller and node agent for profile-based power management, 
         <div class="mb-3 h1"><i class="fas fa-code"></i></div>
         <h4 class="h3">Examples</h4>
         <p class="flex-grow-1">Runnable manifests and walkthroughs.</p>
-        <p class="mb-0"><a href="https://github.com/matbun/joulie/tree/main/examples">Read more</a></p>
+        <p class="mb-0"><a href="https://github.com/joulie-k8s/Joulie/tree/main/examples">Read more</a></p>
       </div>
     </div>
   </div>

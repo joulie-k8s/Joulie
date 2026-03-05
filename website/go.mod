@@ -1,4 +1,4 @@
-module github.com/matbun/joulie/website
+module github.com/joulie-k8s/Joulie/website
 
 go 1.22
 

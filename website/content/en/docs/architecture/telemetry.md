@@ -227,7 +227,7 @@ This provides a fair same-workload/same-telemetry benchmark between WAO and Joul
 
 Implementation notes are documented in:
 
-- `https://matbun.github.io/joulie/docs/simulator/simulator/`
+- `https://joulie-k8s.github.io/Joulie/docs/simulator/simulator/`
 - `simulator/README.md`
 
 ## Generic telemetry CRD (current + extension path)

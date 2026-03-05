@@ -1,9 +1,9 @@
 # Joulie
 
-[![CI](https://github.com/matbun/joulie/actions/workflows/ci.yml/badge.svg)](https://github.com/matbun/joulie/actions/workflows/ci.yml)
-[![Release](https://github.com/matbun/joulie/actions/workflows/release.yml/badge.svg)](https://github.com/matbun/joulie/actions/workflows/release.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/matbun/joulie)](https://goreportcard.com/report/github.com/matbun/joulie)
-[![Go Reference](https://pkg.go.dev/badge/github.com/matbun/joulie.svg)](https://pkg.go.dev/github.com/matbun/joulie)
+[![CI](https://github.com/joulie-k8s/Joulie/actions/workflows/ci.yml/badge.svg)](https://github.com/joulie-k8s/Joulie/actions/workflows/ci.yml)
+[![Release](https://github.com/joulie-k8s/Joulie/actions/workflows/release.yml/badge.svg)](https://github.com/joulie-k8s/Joulie/actions/workflows/release.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/joulie-k8s/Joulie)](https://goreportcard.com/report/github.com/joulie-k8s/Joulie)
+[![Go Reference](https://pkg.go.dev/badge/github.com/joulie-k8s/Joulie.svg)](https://pkg.go.dev/github.com/joulie-k8s/Joulie)
 
 Kubernetes-native node-level power orchestration.
 
@@ -13,9 +13,9 @@ Kubernetes-native node-level power orchestration.
 
 ## Documentation
 
-- Website (GitHub Pages): [matbun.github.io/joulie](https://matbun.github.io/joulie/)
+- Website (GitHub Pages): [joulie-k8s.github.io/Joulie](https://joulie-k8s.github.io/Joulie/)
 - Docs source (Hugo + Docsy): [website/](./website/)
-- Pod compatibility guide: [docs/getting-started/workload-compatibility](https://matbun.github.io/joulie/docs/getting-started/workload-compatibility/)
+- Pod compatibility guide: [docs/getting-started/workload-compatibility](https://joulie-k8s.github.io/Joulie/docs/getting-started/workload-compatibility/)
 
 ## Quickstart
 
@@ -57,4 +57,4 @@ Joulie uses Kubernetes scheduling constraints as workload intent source:
 
 See full manifest examples in docs page:
 
-- [Pod compatibility guide](https://matbun.github.io/joulie/docs/getting-started/workload-compatibility/)
+- [Pod compatibility guide](https://joulie-k8s.github.io/Joulie/docs/getting-started/workload-compatibility/)

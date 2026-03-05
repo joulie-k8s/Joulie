@@ -1,4 +1,4 @@
-baseURL: https://matbun.github.io/joulie/
+baseURL: https://joulie-k8s.github.io/Joulie/
 languageCode: en-us
 title: Joulie
 contentDir: content/en
@@ -10,8 +10,8 @@ module:
     - path: github.com/google/docsy/dependencies
 
 params:
-  github_repo: https://github.com/matbun/joulie
-  github_project_repo: https://github.com/matbun/joulie
+  github_repo: https://github.com/joulie-k8s/Joulie
+  github_project_repo: https://github.com/joulie-k8s/Joulie
   offlineSearch: true
 
   ui:
@@ -30,11 +30,11 @@ menu:
       url: /docs/
       weight: 10
     - name: Examples
-      url: https://github.com/matbun/joulie/tree/main/examples
+      url: https://github.com/joulie-k8s/Joulie/tree/main/examples
       weight: 20
     - name: Experiments
-      url: https://github.com/matbun/joulie/tree/main/experiments
+      url: https://github.com/joulie-k8s/Joulie/tree/main/experiments
       weight: 30
     - name: GitHub
-      url: https://github.com/matbun/joulie
+      url: https://github.com/joulie-k8s/Joulie
       weight: 40

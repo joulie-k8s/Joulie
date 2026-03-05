@@ -43,13 +43,13 @@ hugo server --disableFastRender
 
 Open:
 
-- `http://localhost:1313/joulie/`
+- `http://localhost:1313/Joulie/`
 
 ## Build locally
 
 ```bash
 cd website
-hugo --gc --minify --baseURL http://localhost:1313/joulie/
+hugo --gc --minify --baseURL http://localhost:1313/Joulie/
 ```
 
 Output is generated in:
@@ -60,7 +60,7 @@ Output is generated in:
 
 ```bash
 cd website
-hugo --gc --minify --baseURL https://matbun.github.io/joulie/
+hugo --gc --minify --baseURL https://joulie-k8s.github.io/Joulie/
 ```
 
 ## Troubleshooting
@@ -84,4 +84,4 @@ hugo server --disableFastRender
 
 Then open exactly:
 
-- `http://localhost:1313/joulie/`
+- `http://localhost:1313/Joulie/`
