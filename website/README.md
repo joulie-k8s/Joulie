@@ -17,7 +17,7 @@ This directory contains the documentation website.
 - Go (module support enabled)
 - Hugo **extended**
 
-Check versions:
+Check packages versions:
 
 ```bash
 go version
