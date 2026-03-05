@@ -44,6 +44,8 @@ func main() {
 	var perfRatio float64
 	var ecoRatio float64
 	var noAffinityOnly bool
+	var cpuUnitsMin float64
+	var cpuUnitsMax float64
 	flag.IntVar(&jobs, "jobs", 50, "number of jobs")
 	flag.StringVar(&outPath, "out", "trace.jsonl", "output JSONL path")
 	flag.Float64Var(&meanInterArrival, "mean-inter-arrival-sec", 5, "mean inter-arrival seconds")
@@ -51,6 +53,8 @@ func main() {
 	flag.Float64Var(&perfRatio, "perf-ratio", 0.30, "ratio of performance-constrained jobs")
 	flag.Float64Var(&ecoRatio, "eco-ratio", 0.50, "ratio of eco-constrained jobs")
 	flag.BoolVar(&noAffinityOnly, "no-affinity-only", false, "if true, all jobs are generated without power-profile affinity")
+	flag.Float64Var(&cpuUnitsMin, "cpu-units-min", 600, "minimum cpu work units per job")
+	flag.Float64Var(&cpuUnitsMax, "cpu-units-max", 3600, "maximum cpu work units per job")
 	flag.Parse()
 	if perfRatio < 0 {
 		perfRatio = 0
@@ -62,6 +66,12 @@ func main() {
 		total := perfRatio + ecoRatio
 		perfRatio = perfRatio / total
 		ecoRatio = ecoRatio / total
+	}
+	if cpuUnitsMin <= 0 {
+		cpuUnitsMin = 1
+	}
+	if cpuUnitsMax < cpuUnitsMin {
+		cpuUnitsMax = cpuUnitsMin
 	}
 
 	f, err := os.Create(outPath)
@@ -77,7 +87,7 @@ func main() {
 	for i := 0; i < jobs; i++ {
 		offset += rng.ExpFloat64() * meanInterArrival
 		cpu := 1 + rng.Intn(8)
-		units := 600 + rng.Float64()*3000
+		units := cpuUnitsMin + rng.Float64()*(cpuUnitsMax-cpuUnitsMin)
 		class := "general"
 		if !noAffinityOnly {
 			p := rng.Float64()

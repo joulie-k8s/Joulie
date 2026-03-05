@@ -7,7 +7,7 @@ JOULIE_REGISTRY=${JOULIE_REGISTRY:-registry.cern.ch/mbunino/joulie}
 JOULIE_TAG=${JOULIE_TAG:-latest}
 SIM_REGISTRY=${SIM_REGISTRY:-registry.cern.ch/mbunino/joulie}
 SIM_IMAGE=${SIM_IMAGE:-joulie-simulator}
-SIM_TAG=${SIM_TAG:-latest}
+SIM_TAG=${SIM_TAG:-}
 POLICY_TYPE=${POLICY_TYPE:-static_partition}
 STATIC_HP_FRAC=${STATIC_HP_FRAC:-0.50}
 QUEUE_HP_BASE_FRAC=${QUEUE_HP_BASE_FRAC:-0.60}
@@ -15,11 +15,21 @@ QUEUE_HP_MIN=${QUEUE_HP_MIN:-1}
 QUEUE_HP_MAX=${QUEUE_HP_MAX:-5}
 QUEUE_PERF_PER_HP_NODE=${QUEUE_PERF_PER_HP_NODE:-10}
 SIMULATOR_MANIFEST=${SIMULATOR_MANIFEST:-}
+SIM_BASE_SPEED_PER_CORE=${SIM_BASE_SPEED_PER_CORE:-}
+
+actual_image_from_workload() {
+  local ns=$1
+  local kindname=$2
+  kubectl -n "$ns" get "$kindname" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true
+}
 
 if [[ "$BASELINE" == "B" ]]; then
   POLICY_TYPE=static_partition
 elif [[ "$BASELINE" == "C" ]]; then
   POLICY_TYPE=queue_aware_v1
+elif [[ "$BASELINE" == "A" ]]; then
+  POLICY_TYPE=static_partition
+  STATIC_HP_FRAC=1.0
 fi
 
 if [[ -z "$SIMULATOR_MANIFEST" ]]; then
@@ -33,14 +43,24 @@ if [[ -z "$SIMULATOR_MANIFEST" ]]; then
 fi
 
 kubectl apply -f "$SIMULATOR_MANIFEST"
-kubectl -n joulie-sim-demo set image deploy/joulie-telemetry-sim \
-  simulator="${SIM_REGISTRY}/${SIM_IMAGE}:${SIM_TAG}"
+if [[ -n "${SIM_TAG}" ]]; then
+  echo "simulator image override requested: ${SIM_REGISTRY}/${SIM_IMAGE}:${SIM_TAG}"
+  kubectl -n joulie-sim-demo set image deploy/joulie-telemetry-sim \
+    simulator="${SIM_REGISTRY}/${SIM_IMAGE}:${SIM_TAG}"
+else
+  echo "SIM_TAG is empty; keeping simulator image from manifest"
+fi
+if [[ -n "${SIM_BASE_SPEED_PER_CORE}" ]]; then
+  echo "simulator speed override requested: SIM_BASE_SPEED_PER_CORE=${SIM_BASE_SPEED_PER_CORE}"
+  kubectl -n joulie-sim-demo set env deploy/joulie-telemetry-sim \
+    SIM_BASE_SPEED_PER_CORE="${SIM_BASE_SPEED_PER_CORE}"
+fi
 kubectl -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim
-
-if [[ "$BASELINE" == "A" ]]; then
-  echo "baseline A selected: simulator only (no operator/agent)"
-  helm uninstall joulie -n joulie-system >/dev/null 2>&1 || true
-  exit 0
+SIM_ACTUAL_IMAGE=$(actual_image_from_workload "joulie-sim-demo" "deploy/joulie-telemetry-sim")
+echo "simulator deployment image in use: ${SIM_ACTUAL_IMAGE}"
+if [[ -n "${SIM_BASE_SPEED_PER_CORE}" ]]; then
+  SIM_ACTUAL_SPEED=$(kubectl -n joulie-sim-demo get deploy/joulie-telemetry-sim -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="SIM_BASE_SPEED_PER_CORE")].value}')
+  echo "simulator speed in use: SIM_BASE_SPEED_PER_CORE=${SIM_ACTUAL_SPEED}"
 fi
 
 cat > /tmp/benchmark-values.yaml <<'YAML'
@@ -92,6 +112,8 @@ sed -i \
 helm upgrade --install joulie "$ROOT/../../charts/joulie" -n joulie-system --create-namespace -f /tmp/benchmark-values.yaml
 kubectl -n joulie-system rollout status deploy/joulie-operator
 kubectl -n joulie-system rollout status statefulset/joulie-agent-pool
+OP_ACTUAL_IMAGE=$(actual_image_from_workload "joulie-system" "deploy/joulie-operator")
+AGENT_ACTUAL_IMAGE=$(actual_image_from_workload "joulie-system" "statefulset/joulie-agent-pool")
 
 for n in $(kubectl get nodes -l joulie.io/managed=true -o jsonpath='{.items[*].metadata.name}'); do
   sed "s/target-node/$n/g" "$ROOT/manifests/telemetryprofile.yaml" | kubectl apply -f -
@@ -99,6 +121,13 @@ done
 
 echo "components installed for baseline ${BASELINE}"
 echo "operator policy: ${POLICY_TYPE} (STATIC_HP_FRAC=${STATIC_HP_FRAC})"
-echo "simulator image: ${SIM_REGISTRY}/${SIM_IMAGE}:${SIM_TAG}"
-echo "agent image: ${JOULIE_REGISTRY}/joulie-agent:${JOULIE_TAG}"
-echo "operator image: ${JOULIE_REGISTRY}/joulie-operator:${JOULIE_TAG}"
+if [[ -n "${SIM_TAG}" ]]; then
+  echo "simulator configured image: ${SIM_REGISTRY}/${SIM_IMAGE}:${SIM_TAG}"
+else
+  echo "simulator configured image: from manifest"
+fi
+echo "agent configured image: ${JOULIE_REGISTRY}/joulie-agent:${JOULIE_TAG}"
+echo "operator configured image: ${JOULIE_REGISTRY}/joulie-operator:${JOULIE_TAG}"
+echo "simulator image in use: ${SIM_ACTUAL_IMAGE}"
+echo "agent image in use: ${AGENT_ACTUAL_IMAGE}"
+echo "operator image in use: ${OP_ACTUAL_IMAGE}"

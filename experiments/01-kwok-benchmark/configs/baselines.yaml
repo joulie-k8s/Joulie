@@ -1,7 +1,8 @@
 baselines:
   A:
-    description: no_joulie_all_hp
-    installJoulie: false
+    description: static_partition_all_hp
+    installJoulie: true
+    policyConfig: policy_static.yaml
   B:
     description: static_partition_60_40
     installJoulie: true

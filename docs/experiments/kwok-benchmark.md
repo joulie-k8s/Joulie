@@ -8,7 +8,7 @@ This document describes the first benchmark harness implementation under:
 
 The benchmark focuses on repeatable comparisons of scheduler+control behavior across baselines:
 
-- baseline A: no Joulie control path,
+- baseline A: Joulie deployed with static all-HP policy (`hp_frac=1.0`),
 - baseline B: static partition style,
 - baseline C: queue-aware style.
 

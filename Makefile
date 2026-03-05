@@ -10,7 +10,7 @@ SIM_IMAGE ?= joulie-simulator
 # Image names must follow joulie-<component>, where <component> matches cmd/<component>.
 IMAGES ?= joulie-agent joulie-operator
 
-.PHONY: help install uninstall build push build-push rollout build-push-rollout build-push-install print-images test test-examples simulator-build simulator-push simulator-build-push simulator-install simulator-build-push-deploy simulator-logs
+.PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-examples simulator-build simulator-push simulator-build-push simulator-install simulator-build-push-deploy simulator-logs
 
 help:
 	@echo "Targets:"
@@ -19,6 +19,7 @@ help:
 	@echo "  make build TAG=<tag>                  Build all images"
 	@echo "  make push TAG=<tag>                   Push all images"
 	@echo "  make build-push TAG=<tag>             Build and push all images"
+	@echo "  make build-push-all TAG=<tag>         Build and push agent+operator+simulator"
 	@echo "  make rollout TAG=<tag>                Update and roll out agent+operator images"
 	@echo "  make build-push-rollout TAG=<tag>     Build, push, update image, wait rollout"
 	@echo "  make build-push-install TAG=<tag>     Build, push, install manifests, wait rollout"
@@ -66,6 +67,8 @@ push:
 	done
 
 build-push: build push
+
+build-push-all: build-push simulator-build-push
 
 rollout:
 	@echo "Rolling out helm release $(HELM_RELEASE) in namespace $(NAMESPACE)"

@@ -20,7 +20,7 @@ Current generator behavior:
 
 ## Baselines
 
-- `A`: simulator only (no operator/agent), proxy for all-HP / unconstrained.
+- `A`: simulator + Joulie with static all-HP policy (`hp_frac=1.0`), using affinity-free workload pods.
 - `B`: simulator + Joulie with static partition-oriented config.
 - `C`: simulator + Joulie with queue-aware policy-oriented config.
 
@@ -29,10 +29,14 @@ Current generator behavior:
 `configs/benchmark.yaml` contains:
 
 - run controls: baselines, seeds, jobs, inter-arrival, timeout, settle/cleanup,
-- workload mix: `perf_ratio`, `eco_ratio` (remaining fraction is no-affinity general),
+- workload mix: `perf_ratio`, `eco_ratio` (remaining fraction is no-affinity general), plus `cpu_units_min/max`,
+- simulator speed control: `simulator.base_speed_per_core` (higher value = faster job completion),
 - policy controls: static and queue-aware parameters,
 - image/tag/registry overrides,
 - optional simulator manifest path.
+
+Note: in `configs/benchmark.yaml`, `images.sim_tag: ""` means "do not override image tag, use the simulator image pinned in the manifest".
+For the `20_run_benchmark.sh` flow, `configs/benchmark.yaml` is the single source of truth for benchmark/image/policy configuration.
 
 ## Artifacts per run
 
@@ -93,6 +97,7 @@ Equivalent expanded commands run by `10_setup_cluster.sh`:
 From the repo root:
 
 ```bash
+export JOULIE_TAG=dev0.0.11 SIM_TAG=dev0.0.11
 source experiments/01-kwok-benchmark/.venv/bin/activate
 experiments/01-kwok-benchmark/scripts/20_run_benchmark.sh
 ```
@@ -143,7 +148,7 @@ export QUEUE_PERF_PER_HP_NODE=10
 
 `05_sweep.py` manages policy per baseline automatically:
 
-- `A` -> `no-profile` (simulator only, operator/agent not installed)
+- `A` -> `static_partition` with `STATIC_HP_FRAC=1.0`
 - `B` -> `static_partition`
 - `C` -> `queue_aware_v1`
 

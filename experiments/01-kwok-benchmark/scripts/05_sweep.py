@@ -71,6 +71,8 @@ def generate_seed_trace(
     mean_inter_arrival_sec: float,
     perf_ratio: float,
     eco_ratio: float,
+    cpu_units_min: float,
+    cpu_units_max: float,
 ) -> pathlib.Path:
     traces_dir = pathlib.Path("experiments/01-kwok-benchmark/results/traces")
     traces_dir.mkdir(parents=True, exist_ok=True)
@@ -105,6 +107,10 @@ def generate_seed_trace(
         str(trace_path),
         "--mean-inter-arrival-sec",
         str(mean_inter_arrival_sec),
+        "--cpu-units-min",
+        str(cpu_units_min),
+        "--cpu-units-max",
+        str(cpu_units_max),
     ]
     if baseline == "A":
         cmd.append("--no-affinity-only")
@@ -201,6 +207,8 @@ def main():
     ap.add_argument("--cleanup-timeout", type=int, default=None)
     ap.add_argument("--perf-ratio", type=float, default=None)
     ap.add_argument("--eco-ratio", type=float, default=None)
+    ap.add_argument("--cpu-units-min", type=float, default=None)
+    ap.add_argument("--cpu-units-max", type=float, default=None)
     ap.add_argument("--baselines", type=str, default="")
     args = ap.parse_args()
 
@@ -229,6 +237,16 @@ def main():
     eco_ratio = (
         args.eco_ratio if args.eco_ratio is not None else float(get_cfg(cfg, "workload", "eco_ratio", default=0.50))
     )
+    cpu_units_min = (
+        args.cpu_units_min
+        if args.cpu_units_min is not None
+        else float(get_cfg(cfg, "workload", "cpu_units_min", default=600.0))
+    )
+    cpu_units_max = (
+        args.cpu_units_max
+        if args.cpu_units_max is not None
+        else float(get_cfg(cfg, "workload", "cpu_units_max", default=3600.0))
+    )
 
     baselines_raw = args.baselines if args.baselines.strip() else get_cfg(cfg, "run", "baselines", default=["A", "B", "C"])
     baselines = to_baselines(baselines_raw)
@@ -237,6 +255,10 @@ def main():
         raise SystemExit("perf_ratio and eco_ratio must be >= 0")
     if perf_ratio + eco_ratio > 1:
         raise SystemExit("perf_ratio + eco_ratio must be <= 1")
+    if cpu_units_min <= 0:
+        raise SystemExit("cpu_units_min must be > 0")
+    if cpu_units_max < cpu_units_min:
+        raise SystemExit("cpu_units_max must be >= cpu_units_min")
 
     total_runs = len(baselines) * seeds
     done = 0
@@ -248,11 +270,11 @@ def main():
     install_env_base = os.environ.copy()
 
     # Image and manifest config
-    install_env_base["JOULIE_REGISTRY"] = str(get_cfg(cfg, "images", "joulie_registry", default=install_env_base.get("JOULIE_REGISTRY", "registry.cern.ch/mbunino/joulie")))
-    install_env_base["JOULIE_TAG"] = str(get_cfg(cfg, "images", "joulie_tag", default=install_env_base.get("JOULIE_TAG", "latest")))
-    install_env_base["SIM_REGISTRY"] = str(get_cfg(cfg, "images", "sim_registry", default=install_env_base.get("SIM_REGISTRY", "registry.cern.ch/mbunino/joulie")))
-    install_env_base["SIM_IMAGE"] = str(get_cfg(cfg, "images", "sim_image", default=install_env_base.get("SIM_IMAGE", "joulie-simulator")))
-    install_env_base["SIM_TAG"] = str(get_cfg(cfg, "images", "sim_tag", default=install_env_base.get("SIM_TAG", "latest")))
+    install_env_base["JOULIE_REGISTRY"] = str(get_cfg(cfg, "images", "joulie_registry", default="registry.cern.ch/mbunino/joulie"))
+    install_env_base["JOULIE_TAG"] = str(get_cfg(cfg, "images", "joulie_tag", default="latest"))
+    install_env_base["SIM_REGISTRY"] = str(get_cfg(cfg, "images", "sim_registry", default="registry.cern.ch/mbunino/joulie"))
+    install_env_base["SIM_IMAGE"] = str(get_cfg(cfg, "images", "sim_image", default="joulie-simulator"))
+    install_env_base["SIM_TAG"] = str(get_cfg(cfg, "images", "sim_tag", default=""))
 
     simulator_manifest = get_cfg(cfg, "install", "simulator_manifest", default="")
     if simulator_manifest:
@@ -264,8 +286,17 @@ def main():
     install_env_base["QUEUE_HP_MIN"] = str(get_cfg(cfg, "policy", "queue_aware", "hp_min", default=1))
     install_env_base["QUEUE_HP_MAX"] = str(get_cfg(cfg, "policy", "queue_aware", "hp_max", default=5))
     install_env_base["QUEUE_PERF_PER_HP_NODE"] = str(get_cfg(cfg, "policy", "queue_aware", "perf_per_hp_node", default=10))
+    install_env_base["SIM_BASE_SPEED_PER_CORE"] = str(get_cfg(cfg, "simulator", "base_speed_per_core", default=1.0))
+    log(
+        "configured images "
+        f"sim={install_env_base['SIM_REGISTRY']}/{install_env_base['SIM_IMAGE']}"
+        + (f":{install_env_base['SIM_TAG']}" if install_env_base["SIM_TAG"] else " (manifest-tag)")
+        + f" operator={install_env_base['JOULIE_REGISTRY']}/joulie-operator:{install_env_base['JOULIE_TAG']}"
+        + f" agent={install_env_base['JOULIE_REGISTRY']}/joulie-agent:{install_env_base['JOULIE_TAG']}"
+    )
 
     baseline_policy = {
+        "A": "static_partition",
         "B": "static_partition",
         "C": "queue_aware_v1",
     }
@@ -280,6 +311,8 @@ def main():
             install_env["POLICY_TYPE"] = baseline_policy[baseline]
         else:
             install_env.pop("POLICY_TYPE", None)
+        if baseline == "A":
+            install_env["STATIC_HP_FRAC"] = "1.0"
         run_with_env(
             [
                 "bash",
@@ -304,6 +337,8 @@ def main():
                 mean_inter_arrival_sec=mean_inter_arrival_sec,
                 perf_ratio=perf_ratio,
                 eco_ratio=eco_ratio,
+                cpu_units_min=cpu_units_min,
+                cpu_units_max=cpu_units_max,
             )
             cleanup_workload_pods()
             wait_zero_active_workload_pods(cleanup_timeout)
