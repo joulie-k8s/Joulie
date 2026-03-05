@@ -1,0 +1,28 @@
+apiVersion: joulie.io/v1alpha1
+kind: TelemetryProfile
+metadata:
+  name: worker-01-telemetry
+spec:
+  target:
+    scope: node
+    nodeName: worker-01
+  sources:
+    cpu:
+      type: host
+    gpu:
+      type: none
+    thermal:
+      type: http
+      http:
+        endpoint: http://simulator.local/v1/thermal/{node}
+        timeoutSeconds: 3
+    context:
+      type: prometheus
+      prometheus:
+        endpoint: http://prometheus.default.svc:9090
+        query: up
+  controls:
+    cpu:
+      type: host
+    gpu:
+      type: none

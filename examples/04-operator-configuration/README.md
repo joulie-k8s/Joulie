@@ -9,8 +9,21 @@ Operator reads these env vars:
 - `RECONCILE_INTERVAL` (default `1m`)
 - `NODE_SELECTOR` (default in manifest: `joulie.io/managed=true`)
 - `RESERVED_LABEL_KEY` (default `joulie.io/reserved`)
+- `POLICY_TYPE` (default `static_partition`)
+- `STATIC_HP_FRAC` (default `0.50`)
+- `QUEUE_HP_BASE_FRAC` (default `0.60`)
+- `QUEUE_HP_MIN` (default `1`)
+- `QUEUE_HP_MAX` (default `1000000`)
+- `QUEUE_PERF_PER_HP_NODE` (default `10`)
 - `PERFORMANCE_CAP_WATTS` (default `5000`)
 - `ECO_CAP_WATTS` (default `120`)
+
+Policy notes:
+
+- `static_partition`: production-safe baseline split.
+- `queue_aware_v1`: adjusts HP node count based on performance-intent pressure.
+- `rule_swap_v1`: debug-only policy for control-loop validation.
+- unknown `POLICY_TYPE` falls back to `static_partition`.
 
 ## 1) Label managed and reserved nodes
 
@@ -28,7 +41,7 @@ Use the provided patch file:
 
 ```bash
 kubectl -n joulie-system patch deployment joulie-operator --type merge \
-  --patch-file examples/operator-configuration/operator-env-patch.yaml
+  --patch-file examples/04-operator-configuration/operator-env-patch.yaml
 kubectl -n joulie-system rollout status deployment/joulie-operator
 ```
 
@@ -43,9 +56,9 @@ You should see periodic assignment logs and one `NodePowerProfile` per eligible 
 
 ## 4) Visualize in Grafana
 
-Prerequisite: Prometheus/Grafana wiring from [Prometheus + Grafana example](../prometheus-grafana/README.md).
+Prerequisite: Prometheus/Grafana wiring from [Prometheus + Grafana example](../02-prometheus-grafana/README.md).
 
-Make sure to deploy the service monitor for Joulie as shown [in this page](../prometheus-grafana/servicemonitor.yaml).
+Make sure to deploy the service monitor for Joulie as shown [in this page](../02-prometheus-grafana/servicemonitor.yaml).
 
 Import dashboard JSON in Grafana:
 

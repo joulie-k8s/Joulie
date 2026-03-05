@@ -1,0 +1,136 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: joulie-sim-demo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: joulie-simulator-node-classes
+  namespace: joulie-sim-demo
+data:
+  node-classes.yaml: |
+    classes:
+      - name: intel-kwok
+        matchLabels:
+          feature.node.kubernetes.io/cpu-model.vendor_id: Intel
+        model:
+          baseIdleW: 65
+          pMaxW: 420
+          alphaUtil: 1.1
+          betaFreq: 1.25
+          fMinMHz: 1200
+          fMaxMHz: 3200
+          raplCapMinW: 70
+          raplCapMaxW: 600
+          dvfsRampMs: 400
+          defaultCapW: 500
+      - name: amd-kwok
+        matchLabels:
+          feature.node.kubernetes.io/cpu-model.vendor_id: AMD
+        model:
+          baseIdleW: 75
+          pMaxW: 460
+          alphaUtil: 1.2
+          betaFreq: 1.35
+          fMinMHz: 1200
+          fMaxMHz: 3400
+          raplCapMinW: 70
+          raplCapMaxW: 650
+          dvfsRampMs: 500
+          defaultCapW: 550
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: joulie-simulator
+  namespace: joulie-sim-demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: joulie-simulator
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: joulie-simulator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: joulie-simulator
+subjects:
+  - kind: ServiceAccount
+    name: joulie-simulator
+    namespace: joulie-sim-demo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: joulie-telemetry-sim
+  namespace: joulie-sim-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: joulie-telemetry-sim
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: joulie-telemetry-sim
+    spec:
+      serviceAccountName: joulie-simulator
+      containers:
+        - name: simulator
+          image: registry.cern.ch/mbunino/joulie/joulie-simulator:dev0.0.4
+          imagePullPolicy: Always
+          env:
+            - name: SIM_ADDR
+              value: ":18080"
+            - name: SIM_K8S_POD_WATCH
+              value: "true"
+            - name: SIM_POLL_INTERVAL
+              value: "10s"
+            - name: SIM_EVENT_BUFFER
+              value: "1000"
+            - name: SIM_NODE_SELECTOR
+              value: "joulie.io/managed=true"
+            - name: SIM_NODE_CLASS_CONFIG
+              value: "/etc/joulie-sim/node-classes.yaml"
+            - name: SIM_WORKLOAD_TRACE_PATH
+              value: "/etc/joulie-sim-trace/trace.jsonl"
+          ports:
+            - name: http
+              containerPort: 18080
+          volumeMounts:
+            - name: node-classes
+              mountPath: /etc/joulie-sim
+              readOnly: true
+            - name: workload-trace
+              mountPath: /etc/joulie-sim-trace
+              readOnly: true
+      volumes:
+        - name: node-classes
+          configMap:
+            name: joulie-simulator-node-classes
+        - name: workload-trace
+          configMap:
+            name: joulie-simulator-workload-trace
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: joulie-telemetry-sim
+  namespace: joulie-sim-demo
+spec:
+  selector:
+    app.kubernetes.io/name: joulie-telemetry-sim
+  ports:
+    - name: http
+      port: 80
+      targetPort: 18080

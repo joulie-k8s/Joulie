@@ -36,7 +36,8 @@ To avoid contract violations during `ActivePerformance -> ActiveEco` moves, use 
 
 If safe condition never occurs, policy controls escalation (hold, timeout, force, or drain/evict strategy).
 
-Current implementation includes a basic guard: when target is `ActiveEco` but the node still runs pods labeled `joulie.io/workload-intent-class=performance`, downgrade is deferred and node remains in performance profile.
+Current implementation includes a basic guard: when target is `ActiveEco` but the node still runs pods classified as performance-only from scheduling constraints (`nodeSelector`/required `nodeAffinity` on `joulie.io/power-profile`), downgrade is deferred and node remains in performance profile.
+Pods with no power-profile scheduling constraint are classified as implicit `flex` (general), not performance-only.
 
 ## Global inputs
 
@@ -47,20 +48,26 @@ The operator policy has a cluster-wide view and should support:
 - telemetry-driven rules: temperatures, PUE, hotspot indicators, power trends.
 - future data-driven policies: Prometheus-fed models, external inference (for example KServe).
 
-## Minimal first policy
+## Current policies
 
-Start with a deterministic rule-based policy for validation:
+Current operator policy modules in `cmd/operator/main.go`:
 
-- small set of target nodes (for example 2 nodes).
-- every `X` minutes, alternate assignments between `ActivePerformance` and `ActiveEco` (profile mapping `performance`/`eco`).
+- `static_partition`:
+  - deterministic split of managed nodes into `performance` and `eco`;
+  - controlled by `STATIC_HP_FRAC` (default `0.50` -> 50/50 split).
+- `queue_aware_v1`:
+  - starts from a base high-performance share (`QUEUE_HP_BASE_FRAC`);
+  - raises high-performance node count when cluster-wide performance-only pod pressure grows (derived from scheduling constraints);
+  - bounded by `QUEUE_HP_MIN`/`QUEUE_HP_MAX` and scaled by `QUEUE_PERF_PER_HP_NODE`.
+- `rule_swap_v1`:
+  - alternates eco/performance assignment across the first nodes on each reconcile tick;
+  - kept only as a debugging policy to validate transitions and control-loop wiring.
 
-This validates:
+Defaults and fallback:
 
-- end-to-end control loop.
-- remote assignment propagation.
-- observed effect in metrics.
-
-Current implementation includes this baseline policy as `rule-swap-v1` in `cmd/operator/main.go`.
+- default `POLICY_TYPE` is `static_partition`;
+- default `STATIC_HP_FRAC` is `0.50` (50/50 split);
+- unknown `POLICY_TYPE` falls back to `static_partition` (not swap).
 
 ## Extensibility model
 
@@ -77,6 +84,10 @@ Suggested interfaces:
 - `PolicyModule.Plan(context) -> node transitions`
 - `ContextProvider.Snapshot() -> cluster context`
 - `StateGuard.Check(node, transition) -> allowed/blocked(reason)`
+
+Input source and actuation abstraction details are defined in:
+
+- [Input Telemetry and Actuation Interfaces](./telemetry.md)
 
 Future data-driven policies should use Prometheus (or other sources) through `ContextProvider`, not by changing agent APIs.
 

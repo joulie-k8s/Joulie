@@ -1,10 +1,16 @@
-# DaemonSet Configuration
+# Agent Runtime Modes
 
-The agent runs as a privileged DaemonSet and applies/simulates node-level settings.
+The agent supports two runtime modes:
 
-## Chart source
+- `daemonset`: real-hardware mode, one pod per real node.
+- `pool`: simulation mode, one pod hosts many logical per-node controllers.
 
-Helm template: `charts/joulie/templates/agent-daemonset.yaml`.
+Chart templates:
+
+- `charts/joulie/templates/agent-daemonset.yaml`
+- `charts/joulie/templates/agent-statefulset.yaml`
+
+## DaemonSet mode (real hardware)
 
 ## Required runtime settings
 
@@ -13,11 +19,40 @@ Helm template: `charts/joulie/templates/agent-daemonset.yaml`.
   - host path `/sys` -> container path `/host-sys`
 - Env:
   - `NODE_NAME` from `spec.nodeName`
+  - `AGENT_MODE=daemonset` (default)
   - optional `RECONCILE_INTERVAL` (default `20s`)
   - optional `SIMULATE_ONLY=true` (skip host writes, log requested actions)
   - optional `METRICS_ADDR` (default `:8080`)
 
-## Scheduling scope
+## Pool mode (KWOK / simulation)
+
+Pool mode preserves per-node semantics but shards logical node controllers across replicas.
+
+Required env vars:
+
+- `AGENT_MODE=pool`
+- `POOL_NODE_SELECTOR` (for example `joulie.io/managed=true`)
+- `POOL_SHARDS` (total shards)
+- `POOL_SHARD_ID` (or `POD_NAME` from StatefulSet ordinal)
+
+Sharding function:
+
+- `owns(node) = fnv32(nodeName) % POOL_SHARDS == POOL_SHARD_ID`
+
+In chart values:
+
+```yaml
+agent:
+  mode: pool
+  pool:
+    replicas: 2
+    shards: 2
+    nodeSelector: "joulie.io/managed=true"
+```
+
+Use `daemonset` mode for real `/host-sys` enforcement and `pool` mode for KWOK-scale simulation.
+
+## Scheduling scope (daemonset)
 
 Current manifest is broad by default (no nodeSelector). To scope it, add node selector/affinity if desired:
 
@@ -28,12 +63,13 @@ nodeSelector:
 
 ## RBAC
 
-Agent needs read-only access to:
+Agent needs:
 
 - `nodes`
 - `nodepowerprofiles.joulie.io`
+- `telemetryprofiles.joulie.io` (read + status update in current implementation)
 
-No write permissions are required in current implementation.
+Pool mode uses the same API permissions.
 
 ## NFD labels used by agent
 

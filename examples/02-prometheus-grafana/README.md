@@ -48,7 +48,7 @@ kubectl port-forward svc/telemetry-grafana 5000:80 1>/dev/null &
 ### Option A: Prometheus Operator (ServiceMonitor)
 
 ```bash
-kubectl apply -f examples/prometheus-grafana/servicemonitor.yaml
+kubectl apply -f examples/02-prometheus-grafana/servicemonitor.yaml
 ```
 
 The provided manifest is set for a Prometheus installation named `telemetry`:

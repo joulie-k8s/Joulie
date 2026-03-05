@@ -19,8 +19,5 @@ operator:
     NODE_SELECTOR: "joulie.io/managed=true"
     RESERVED_LABEL_KEY: "joulie.io/reserved"
     POWER_PROFILE_LABEL: "joulie.io/power-profile"
-    WORKLOAD_INTENT_LABEL: "joulie.io/workload-intent-class"
-    PERFORMANCE_INTENT_VALUE: "performance"
     PERFORMANCE_CAP_WATTS: "5000"
     ECO_CAP_WATTS: "120"
-

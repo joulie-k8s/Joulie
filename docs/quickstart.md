@@ -108,7 +108,7 @@ The operator writes `NodePowerProfile` assignments and swaps `ActivePerformance`
 
 Configuration details and patch examples:
 
-- [Operator Configuration Example](../examples/operator-configuration/README.md)
+- [Operator Configuration Example](../examples/04-operator-configuration/README.md)
 
 Verify:
 
@@ -135,3 +135,9 @@ If operator logs show `no eligible nodes matched selector`, verify node labels:
 ```bash
 kubectl get nodes --show-labels | grep 'joulie.io/managed=true'
 ```
+
+## 8. Simulator (KWOK)
+
+For fake-node workload + power simulation (real scheduler, fake KWOK nodes, operator real, agent pool mode), use:
+
+- [KWOK Simulator Example](../examples/06-simulator-kwok/README.md)

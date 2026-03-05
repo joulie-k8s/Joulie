@@ -7,10 +7,12 @@ The implemented APIs are:
 - Group: `joulie.io`
 - Version: `v1alpha1`
 - `NodePowerProfile` (`nodepowerprofiles`, cluster-scoped) for operator-assigned per-node desired state
+- `TelemetryProfile` (`telemetryprofiles`, cluster-scoped) for telemetry source configuration (node + cluster scope)
 
 CRD files:
 
 - `config/crd/bases/joulie.io_nodepowerprofiles.yaml`
+- `config/crd/bases/joulie.io_telemetryprofiles.yaml`
 
 ## Conceptual model (next step)
 
@@ -45,12 +47,28 @@ Transition intent:
 
 This keeps downgrade behavior explicit and safe.
 
+Detailed algorithm definitions for implemented policies are documented in:
+
+- [Policy Algorithms](./policies.md)
+
 ## `NodePowerProfile` fields (current)
 
 - `spec.nodeName` (required)
 - `spec.profile` (required, `performance|eco`)
 - `spec.cpu.packagePowerCapWatts` (optional, number)
 - `spec.policy.name` (optional, metadata string)
+
+## `NodePowerProfile` vs `TelemetryProfile`
+
+- `NodePowerProfile` answers: **what** power profile/cap should be applied to a node.
+- `TelemetryProfile` answers: **how** the agent reads inputs and applies controls (host/http/prometheus routing by signal family).
+
+Current runtime flow:
+
+1. Operator sets `NodePowerProfile`.
+2. Agent reads local `NodePowerProfile`.
+3. Agent reads node-scoped `TelemetryProfile`.
+4. Agent enforces and reports status in `TelemetryProfile.status.control`.
 
 ## Selection behavior (current)
 
@@ -63,26 +81,28 @@ On each node, agent resolves desired state only from:
 The policy layer should own workload safety checks before downgrades:
 
 - performance-required workload on node: block or defer downgrade,
-- eco/flexible workloads only: allow downgrade.
+- eco workloads only: allow downgrade.
 
-Node labels communicate supply (`joulie.io/power-profile=performance|draining-performance|eco`), while workload labels/affinity communicate demand.
+Node labels communicate supply (`joulie.io/power-profile=performance|draining-performance|eco`), while workload scheduling constraints communicate demand.
 Default scheduler remains unchanged.
 
-### Workload intent classes
+### Workload scheduling classes
 
-Pods should declare intent with:
-
-- label key: `joulie.io/workload-intent-class`
-
-Supported classes:
+Supported classes (derived by policy from pod scheduling constraints):
 
 - `performance`: workload should run on nodes with performance supply.
 - `eco`: workload should run on nodes with eco supply.
-- `flex`: workload can run on either supply, with preference for eco when available.
+- `flex` (implicit): no power-profile scheduling constraint; policy treats it as general/flexible demand.
+
+Classification source of truth:
+
+- `spec.nodeSelector` and `spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution`
+- key: `joulie.io/power-profile`
+- if no power-profile constraint exists, classification is implicit `flex` (general).
 
 Reference example:
 
-- [Workload Intent Classes](../examples/workload-intent-classes/README.md)
+- [Workload Scheduling Classes](../examples/03-workload-intent-classes/README.md)
 
 ## Simple starter policy (recommended)
 
@@ -111,6 +131,10 @@ Recommended abstraction boundary for future-proofing:
 - `ActuationAdapter`: writes assignments (`NodePowerProfile` and node labels).
 
 When data-driven policies are added, Prometheus should be integrated behind `ContextProvider` so policy APIs remain stable.
+
+Input telemetry/control provider design (host vs simulated HTTP) is documented in:
+
+- [Input Telemetry and Actuation Interfaces](./telemetry.md)
 
 ## Example
 

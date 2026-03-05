@@ -7,11 +7,18 @@
 - [DaemonSet Configuration](./docs/daemonset.md)
 - [CRD and Policy Model](./docs/policy.md)
 - [Operator Notes](./docs/operator.md)
+- [Input Telemetry and Actuation Interfaces](./docs/telemetry.md)
 - [Metrics Reference](./docs/metrics.md)
-- [Example: stress-ng throttling](./examples/stress-ng-throttling/README.md)
-- [Example: Prometheus + Grafana](./examples/prometheus-grafana/README.md)
-- [Example: Operator Configuration](./examples/operator-configuration/README.md)
-- [Example: Workload Intent Classes](./examples/workload-intent-classes/README.md)
+- [Simulator Architecture](./docs/simulator.md)
+- [Examples Index](./examples/README.md)
+- [Example: stress-ng throttling](./examples/01-stress-ng-throttling/README.md)
+- [Example: Prometheus + Grafana](./examples/02-prometheus-grafana/README.md)
+- [Example: Operator Configuration](./examples/04-operator-configuration/README.md)
+- [Example: Workload Scheduling Classes](./examples/03-workload-intent-classes/README.md)
+- [Example: Simulated Telemetry + Control (HTTP)](./examples/05-simulated-telemetry-control/README.md)
+- [Example: KWOK Simulator (workload + power + agent pool)](./examples/06-simulator-kwok/README.md)
+- [Experiments Index](./experiments/README.md)
+- [Experiment: KWOK Benchmark](./docs/experiments/kwok-benchmark.md)
 
 ## 1. Motivation
 
@@ -89,14 +96,19 @@ Design goal: keep the policy engine extensible so custom policy modules can be a
 Joulie can stay scheduler-agnostic while still influencing placement:
 
 - operator publishes node power-state labels (supply side),
-- workloads declare power intent classes via labels/affinity/taints-tolerations (demand side),
+- workloads declare demand through Kubernetes scheduling constraints (`nodeSelector`/`nodeAffinity`) on `joulie.io/power-profile`,
 - default Kubernetes scheduler keeps making placement decisions.
 
-Planned workload intent classes:
+Single source of truth is scheduling constraints:
+
+- `performance`: constrained to `joulie.io/power-profile=performance`
+- `eco`: constrained to `joulie.io/power-profile=eco`
+- no power-profile affinity/selector: implicitly treated as flexible demand (`flex`/general)
+
+Planned workload demand classes:
 
 - `performance`: requires performance-capable placement.
 - `eco`: requires eco placement.
-- `flex`: prefers eco but can run on performance when needed.
 
 The critical part is safe `ActivePerformance -> ActiveEco` transitions.
 Downgrades must not violate running workload requirements.
@@ -111,6 +123,22 @@ Responsibility split:
 
 - operator/policy decides transitions, guardrails, timeouts, and optional eviction/drain strategy,
 - agent applies requested profile and reports observed/applied/blocked state.
+
+## 2.5 Simulator Integration (Hybrid)
+
+Joulie integrates with a simulator in a hybrid way:
+
+- Kubernetes remains the source of truth for pod placement/lifecycle.
+- Simulator derives synthetic hardware signals per node from observed pod/node state.
+- Agent reads telemetry and sends controls through `TelemetryProfile` HTTP endpoints.
+
+This keeps workload behavior realistic while virtualizing hardware telemetry/control.
+
+Simulator runtime lives under `simulator/`:
+
+- service code: `simulator/cmd/simulator`
+- container build: `simulator/Dockerfile`
+- deployment manifests: `simulator/deploy/`
 
 ## 3. Design principles (PoC constraints)
 
@@ -150,6 +178,7 @@ Note: GPU support will be implemented behind a device plugin interface so that C
 The implementation currently uses:
 
 - `NodePowerProfile` (cluster-scoped): operator-assigned per-node desired state.
+- `TelemetryProfile` (cluster-scoped): telemetry source routing for node/cluster scopes.
 
 Current preferred flow is operator-driven:
 

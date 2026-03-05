@@ -397,11 +397,6 @@
           "expr": "sum by (node) ((kube_pod_status_phase{namespace=\"$namespace\",phase=\"Running\",pod=~\"eco-intent-.*\"} == 1) * on(namespace,pod) group_left(node) kube_pod_info{namespace=\"$namespace\",node=~\"$node\"})",
           "legendFormat": "{{node}} eco",
           "refId": "B"
-        },
-        {
-          "expr": "sum by (node) ((kube_pod_status_phase{namespace=\"$namespace\",phase=\"Running\",pod=~\"flex-intent-.*\"} == 1) * on(namespace,pod) group_left(node) kube_pod_info{namespace=\"$namespace\",node=~\"$node\"})",
-          "legendFormat": "{{node}} flex",
-          "refId": "C"
         }
       ],
       "title": "Running Pods on Selected Node by Intent Class",
@@ -487,22 +482,12 @@
       "pluginVersion": "12.4.0",
       "targets": [
         {
-          "expr": "sum by (node) ((kube_pod_labels{namespace=\"$namespace\",label_joulie_io_workload_intent_class=\"performance\"} == 1) * on (namespace,pod) group_left(node) kube_pod_info{namespace=\"$namespace\",node=~\"$node\"})",
-          "legendFormat": "{{node}} performance",
-          "refId": "A"
-        },
-        {
-          "expr": "sum by (node) ((kube_pod_labels{namespace=\"$namespace\",label_joulie_io_workload_intent_class=\"eco\"} == 1) * on (namespace,pod) group_left(node) kube_pod_info{namespace=\"$namespace\",node=~\"$node\"})",
-          "legendFormat": "{{node}} eco",
-          "refId": "B"
-        },
-        {
-          "expr": "sum by (node) ((kube_pod_labels{namespace=\"$namespace\",label_joulie_io_workload_intent_class=\"flex\"} == 1) * on (namespace,pod) group_left(node) kube_pod_info{namespace=\"$namespace\",node=~\"$node\"})",
-          "legendFormat": "{{node}} flex",
+          "expr": "sum by (node) ((kube_pod_status_phase{namespace=\"$namespace\",phase=\"Running\"} == 1) * on (namespace,pod) group_left(node) kube_pod_info{namespace=\"$namespace\",node=~\"$node\"})",
+          "legendFormat": "{{node}}",
           "refId": "C"
         }
       ],
-      "title": "Pods by Intent Class and Node",
+      "title": "Pods by Node",
       "type": "timeseries"
     },
     {
@@ -585,8 +570,8 @@
       "pluginVersion": "12.4.0",
       "targets": [
         {
-          "expr": "sum by (label_joulie_io_workload_intent_class) (changes(kube_pod_status_phase{namespace=\"$namespace\",phase=\"Running\"}[5m]) * on(namespace,pod) group_left(label_joulie_io_workload_intent_class) kube_pod_labels{namespace=\"$namespace\",label_joulie_io_workload_intent_class!=\"\"})",
-          "legendFormat": "{{label_joulie_io_workload_intent_class}}",
+          "expr": "sum(changes(kube_pod_status_phase{namespace=\"$namespace\",phase=\"Running\"}[5m]))",
+          "legendFormat": "total",
           "refId": "A"
         }
       ],

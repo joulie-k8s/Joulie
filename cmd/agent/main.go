@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"math"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -18,6 +21,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -25,7 +29,25 @@ import (
 )
 
 var (
-	profileNodeGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodepowerprofiles"}
+	profileNodeGVR    = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodepowerprofiles"}
+	telemetryNodeGVR  = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "telemetryprofiles"}
+	defaultHTTPTimout = 2 * time.Second
+
+	registerMetricsOnce sync.Once
+	backendModeMetric   *prometheus.GaugeVec
+	policyCapMetric     *prometheus.GaugeVec
+	raplEnergyMetric    *prometheus.GaugeVec
+	raplPowerMetric     *prometheus.GaugeVec
+	raplTotalMetric     *prometheus.GaugeVec
+	dvfsObservedMetric  *prometheus.GaugeVec
+	dvfsEMAMetric       *prometheus.GaugeVec
+	dvfsThrottleMetric  *prometheus.GaugeVec
+	dvfsTripAboveMetric *prometheus.GaugeVec
+	dvfsTripBelowMetric *prometheus.GaugeVec
+	dvfsCurFreqMetric   *prometheus.GaugeVec
+	dvfsMaxFreqMetric   *prometheus.GaugeVec
+	dvfsActionsMetric   *prometheus.CounterVec
+	reconcileErrMetric  *prometheus.CounterVec
 )
 
 type HardwareInfo struct {
@@ -44,6 +66,19 @@ type NodePowerProfile struct {
 	Profile    string
 	PowerWatts *float64
 	PolicyName string
+}
+
+type TelemetryConfig struct {
+	Name                  string
+	NodeName              string
+	TargetScope           string
+	CPUSourceType         string
+	HTTPEndpoint          string
+	TimeoutSeconds        int
+	CPUControlType        string
+	ControlHTTPEndpoint   string
+	ControlTimeoutSeconds int
+	ControlMode           string
 }
 
 type DVFSCpu struct {
@@ -79,6 +114,14 @@ type AgentMetrics struct {
 	reconcileErrorsTotal *prometheus.CounterVec
 }
 
+type NodeController struct {
+	nodeName     string
+	metrics      *AgentMetrics
+	dvfs         *DVFSController
+	simulateOnly bool
+	lastRaplKey  string
+}
+
 type DVFSController struct {
 	cpus []DVFSCpu
 
@@ -102,74 +145,109 @@ type DVFSController struct {
 
 	warned  bool
 	metrics *AgentMetrics
+
+	powerReader PowerReader
+}
+
+type PowerReader interface {
+	ReadPowerWatts() (float64, bool, error)
+}
+
+type HTTPPowerReader struct {
+	endpoint string
+	nodeName string
+	client   *http.Client
+}
+
+type HTTPControlClient struct {
+	endpoint string
+	nodeName string
+	client   *http.Client
 }
 
 func newAgentMetrics(node string) *AgentMetrics {
-	m := &AgentMetrics{
-		node: node,
-		backendMode: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	registerMetricsOnce.Do(func() {
+		backendModeMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_backend_mode",
 			Help: "Current backend mode (1 active) per node and mode",
-		}, []string{"node", "mode"}),
-		policyCapWatts: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node", "mode"})
+		policyCapMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_policy_cap_watts",
 			Help: "Current policy cap watts selected by the agent",
-		}, []string{"node", "policy"}),
-		raplEnergyUJ: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node", "policy"})
+		raplEnergyMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_rapl_energy_uj",
 			Help: "Latest RAPL energy reading in microjoules",
-		}, []string{"node", "zone"}),
-		raplPowerWatts: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node", "zone"})
+		raplPowerMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_rapl_estimated_power_watts",
 			Help: "Estimated per-zone RAPL power in watts",
-		}, []string{"node", "zone"}),
-		raplPackageTotalW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node", "zone"})
+		raplTotalMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_rapl_package_total_power_watts",
 			Help: "Estimated total package power watts (sum of package zones)",
-		}, []string{"node"}),
-		dvfsObservedPowerW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node"})
+		dvfsObservedMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_observed_power_watts",
 			Help: "Observed package power used by DVFS controller",
-		}, []string{"node"}),
-		dvfsEMAPowerW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node"})
+		dvfsEMAMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_ema_power_watts",
 			Help: "EMA package power used by DVFS controller",
-		}, []string{"node"}),
-		dvfsThrottlePct: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node"})
+		dvfsThrottleMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_throttle_pct",
 			Help: "Current DVFS throttle percent",
-		}, []string{"node"}),
-		dvfsTripAbove: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node"})
+		dvfsTripAboveMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_above_trip_count",
 			Help: "Consecutive above-threshold samples",
-		}, []string{"node"}),
-		dvfsTripBelow: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node"})
+		dvfsTripBelowMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_below_trip_count",
 			Help: "Consecutive below-threshold samples",
-		}, []string{"node"}),
-		dvfsCPUCurFreqKHz: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node"})
+		dvfsCurFreqMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_cpu_cur_freq_khz",
 			Help: "Current CPU/policy frequency in kHz",
-		}, []string{"node", "cpu"}),
-		dvfsCPUMaxFreqKHz: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		}, []string{"node", "cpu"})
+		dvfsMaxFreqMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "joulie_dvfs_cpu_max_freq_khz",
 			Help: "Current CPU/policy max frequency cap in kHz",
-		}, []string{"node", "cpu"}),
-		dvfsActionsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+		}, []string{"node", "cpu"})
+		dvfsActionsMetric = prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "joulie_dvfs_actions_total",
 			Help: "Total number of DVFS control actions",
-		}, []string{"node", "action"}),
-		reconcileErrorsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+		}, []string{"node", "action"})
+		reconcileErrMetric = prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "joulie_reconcile_errors_total",
 			Help: "Total reconcile errors",
-		}, []string{"node"}),
-	}
+		}, []string{"node"})
 
-	prometheus.MustRegister(
-		m.backendMode, m.policyCapWatts, m.raplEnergyUJ, m.raplPowerWatts, m.raplPackageTotalW,
-		m.dvfsObservedPowerW, m.dvfsEMAPowerW, m.dvfsThrottlePct, m.dvfsTripAbove, m.dvfsTripBelow,
-		m.dvfsCPUCurFreqKHz, m.dvfsCPUMaxFreqKHz, m.dvfsActionsTotal, m.reconcileErrorsTotal,
-	)
+		prometheus.MustRegister(
+			backendModeMetric, policyCapMetric, raplEnergyMetric, raplPowerMetric, raplTotalMetric,
+			dvfsObservedMetric, dvfsEMAMetric, dvfsThrottleMetric, dvfsTripAboveMetric, dvfsTripBelowMetric,
+			dvfsCurFreqMetric, dvfsMaxFreqMetric, dvfsActionsMetric, reconcileErrMetric,
+		)
+	})
+
+	m := &AgentMetrics{
+		node:                 node,
+		backendMode:          backendModeMetric,
+		policyCapWatts:       policyCapMetric,
+		raplEnergyUJ:         raplEnergyMetric,
+		raplPowerWatts:       raplPowerMetric,
+		raplPackageTotalW:    raplTotalMetric,
+		dvfsObservedPowerW:   dvfsObservedMetric,
+		dvfsEMAPowerW:        dvfsEMAMetric,
+		dvfsThrottlePct:      dvfsThrottleMetric,
+		dvfsTripAbove:        dvfsTripAboveMetric,
+		dvfsTripBelow:        dvfsTripBelowMetric,
+		dvfsCPUCurFreqKHz:    dvfsCurFreqMetric,
+		dvfsCPUMaxFreqKHz:    dvfsMaxFreqMetric,
+		dvfsActionsTotal:     dvfsActionsMetric,
+		reconcileErrorsTotal: reconcileErrMetric,
+	}
 	m.setBackendMode("none")
 	return m
 }
@@ -185,27 +263,132 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[joulie-agent] ")
 
-	nodeName := os.Getenv("NODE_NAME")
-	if nodeName == "" {
-		log.Fatal("NODE_NAME env var is required")
-	}
-
-	metrics := newAgentMetrics(nodeName)
+	mode := strings.ToLower(strings.TrimSpace(envOrDefault("AGENT_MODE", "daemonset")))
 	startMetricsServer()
+	switch mode {
+	case "daemonset":
+		runDaemonsetMode()
+	case "pool":
+		runPoolMode()
+	default:
+		log.Fatalf("unsupported AGENT_MODE=%q (expected daemonset|pool)", mode)
+	}
+}
 
+func runDaemonsetMode() {
+	nodeName := strings.TrimSpace(os.Getenv("NODE_NAME"))
+	if nodeName == "" {
+		log.Fatal("NODE_NAME env var is required in daemonset mode")
+	}
 	reconcileEvery := durationEnv("RECONCILE_INTERVAL", 20*time.Second)
 	simulateOnly := strings.EqualFold(strings.TrimSpace(os.Getenv("SIMULATE_ONLY")), "true")
-	dvfs, err := newDVFSControllerFromEnv(metrics)
+	controller, err := newNodeController(nodeName, simulateOnly)
 	if err != nil {
-		log.Printf("warning: DVFS controller disabled: %v", err)
-		dvfs = nil
+		log.Fatalf("init controller: %v", err)
 	}
+	kube, dyn := initKubeClients()
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := controller.reconcile(ctx, kube, dyn); err != nil {
+			controller.metrics.reconcileErrorsTotal.WithLabelValues(nodeName).Inc()
+			log.Printf("reconcile failed node=%s: %v", nodeName, err)
+		}
+		cancel()
+		time.Sleep(reconcileEvery)
+	}
+}
 
+func runPoolMode() {
+	reconcileEvery := durationEnv("RECONCILE_INTERVAL", 20*time.Second)
+	simulateOnly := strings.EqualFold(strings.TrimSpace(os.Getenv("SIMULATE_ONLY")), "true")
+	selectorExpr := envOrDefault("POOL_NODE_SELECTOR", "joulie.io/managed=true")
+	shards := intEnv("POOL_SHARDS", 1)
+	shardID := resolvePoolShardID()
+	if shards <= 0 {
+		log.Fatalf("invalid POOL_SHARDS=%d", shards)
+	}
+	if shardID < 0 || shardID >= shards {
+		log.Fatalf("invalid POOL_SHARD_ID=%d for POOL_SHARDS=%d", shardID, shards)
+	}
+	selector, err := labels.Parse(selectorExpr)
+	if err != nil {
+		log.Fatalf("invalid POOL_NODE_SELECTOR=%q: %v", selectorExpr, err)
+	}
+	kube, dyn := initKubeClients()
+	controllers := map[string]*NodeController{}
+	log.Printf("pool mode enabled selector=%q shards=%d shardID=%d interval=%s", selectorExpr, shards, shardID, reconcileEvery)
+
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		nodes, err := kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			cancel()
+			log.Printf("pool list nodes failed: %v", err)
+			time.Sleep(reconcileEvery)
+			continue
+		}
+		active := map[string]bool{}
+		for _, n := range nodes.Items {
+			if !selector.Matches(labels.Set(n.Labels)) {
+				continue
+			}
+			if !ownsNodeForShard(n.Name, shards, shardID) {
+				continue
+			}
+			active[n.Name] = true
+			c := controllers[n.Name]
+			if c == nil {
+				c, err = newNodeController(n.Name, simulateOnly)
+				if err != nil {
+					log.Printf("failed to init controller node=%s: %v", n.Name, err)
+					continue
+				}
+				controllers[n.Name] = c
+				log.Printf("controller started node=%s shard=%d/%d", n.Name, shardID, shards)
+			}
+			if err := c.reconcile(ctx, kube, dyn); err != nil {
+				c.metrics.reconcileErrorsTotal.WithLabelValues(c.nodeName).Inc()
+				log.Printf("reconcile failed node=%s: %v", c.nodeName, err)
+			}
+		}
+		for node := range controllers {
+			if active[node] {
+				continue
+			}
+			delete(controllers, node)
+			log.Printf("controller stopped node=%s shard=%d/%d", node, shardID, shards)
+		}
+		cancel()
+		time.Sleep(reconcileEvery)
+	}
+}
+
+func resolvePoolShardID() int {
+	if raw := strings.TrimSpace(os.Getenv("POOL_SHARD_ID")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil {
+			return v
+		}
+	}
+	podName := strings.TrimSpace(os.Getenv("POD_NAME"))
+	if podName == "" {
+		return 0
+	}
+	lastDash := strings.LastIndex(podName, "-")
+	if lastDash < 0 || lastDash+1 >= len(podName) {
+		return 0
+	}
+	v, err := strconv.Atoi(podName[lastDash+1:])
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func initKubeClients() (kubernetes.Interface, dynamic.Interface) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		log.Fatalf("in-cluster config: %v", err)
 	}
-
 	kube, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Fatalf("kube client: %v", err)
@@ -214,18 +397,35 @@ func main() {
 	if err != nil {
 		log.Fatalf("dynamic client: %v", err)
 	}
+	return kube, dyn
+}
 
-	var lastRaplKey string
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := reconcileOnce(ctx, kube, dyn, nodeName, dvfs, metrics, simulateOnly, &lastRaplKey)
-		cancel()
-		if err != nil {
-			metrics.reconcileErrorsTotal.WithLabelValues(nodeName).Inc()
-			log.Printf("reconcile failed: %v", err)
-		}
-		time.Sleep(reconcileEvery)
+func newNodeController(nodeName string, simulateOnly bool) (*NodeController, error) {
+	metrics := newAgentMetrics(nodeName)
+	dvfs, err := newDVFSControllerFromEnv(metrics)
+	if err != nil {
+		log.Printf("warning: DVFS controller disabled node=%s: %v", nodeName, err)
+		dvfs = nil
 	}
+	return &NodeController{
+		nodeName:     nodeName,
+		metrics:      metrics,
+		dvfs:         dvfs,
+		simulateOnly: simulateOnly,
+	}, nil
+}
+
+func (n *NodeController) reconcile(ctx context.Context, kube kubernetes.Interface, dyn dynamic.Interface) error {
+	return reconcileOnce(ctx, kube, dyn, n.nodeName, n.dvfs, n.metrics, n.simulateOnly, &n.lastRaplKey)
+}
+
+func ownsNodeForShard(nodeName string, shards, shardID int) bool {
+	if shards <= 1 {
+		return true
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(nodeName))
+	return int(h.Sum32()%uint32(shards)) == shardID
 }
 
 func startMetricsServer() {
@@ -245,7 +445,7 @@ func startMetricsServer() {
 
 func reconcileOnce(
 	ctx context.Context,
-	kube *kubernetes.Clientset,
+	kube kubernetes.Interface,
 	dyn dynamic.Interface,
 	nodeName string,
 	dvfs *DVFSController,
@@ -264,8 +464,19 @@ func reconcileOnce(
 	if err != nil {
 		return err
 	}
+
+	telemetry, err := resolveTelemetryConfigForNode(ctx, dyn, nodeName)
+	if err != nil {
+		return err
+	}
+	controlClient := controlClientFromTelemetry(telemetry, nodeName)
+	if dvfs != nil {
+		dvfs.SetPowerReaderForTelemetry(telemetry, nodeName)
+	}
+
 	if selected == nil {
 		metrics.setBackendMode("none")
+		_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nodeName, "none", "none", "no NodePowerProfile selected")
 		if *lastRaplKey != "" {
 			log.Printf("no NodePowerProfile found for node %s; leaving current settings untouched", nodeName)
 			*lastRaplKey = ""
@@ -284,23 +495,41 @@ func reconcileOnce(
 
 	if simulateOnly {
 		metrics.setBackendMode("none")
+		_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nodeName, "none", "applied", "simulate-only mode")
 		log.Printf("simulate-only mode: would apply policy=%s cap=%.2fW on node=%s", selected.Name, *selected.PowerWatts, nodeName)
 		return nil
 	}
 
-	appliedRapl, raplFiles, err := applyRAPLPackageCap(hw, *selected.PowerWatts)
-	if err != nil {
-		return err
+	preferDVFS := telemetry != nil && telemetry.CPUControlType == "http" && telemetry.ControlMode == "dvfs"
+	appliedRapl := false
+	raplFiles := 0
+	if !preferDVFS {
+		if controlClient != nil {
+			if err := controlClient.ApplyCPUControl("rapl.set_power_cap_watts", *selected.PowerWatts, -1); err == nil {
+				appliedRapl = true
+				raplFiles = 1
+			} else {
+				log.Printf("warning: HTTP RAPL control failed for node=%s: %v (trying fallback backend)", nodeName, err)
+			}
+		} else {
+			appliedRapl, raplFiles, err = applyRAPLPackageCap(hw, *selected.PowerWatts)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	if appliedRapl {
 		metrics.setBackendMode("rapl")
+		_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nodeName, "rapl", "applied", "RAPL package cap applied")
 		key := fmt.Sprintf("%s|rapl|%.2f", selected.Name, *selected.PowerWatts)
 		if key != *lastRaplKey {
 			log.Printf("applied policy=%s backend=rapl cap=%.2fW files=%d cpuVendor=%s", selected.Name, *selected.PowerWatts, raplFiles, hw.CPUVendor)
 			*lastRaplKey = key
 		}
-		dvfs.warned = false
-		if dvfs.Active() {
+		if dvfs != nil {
+			dvfs.warned = false
+		}
+		if dvfs != nil && dvfs.Active() {
 			if restored, rerr := dvfs.RestoreAllMax(); rerr != nil {
 				log.Printf("warning: could not fully restore DVFS fallback state after RAPL became available: %v", rerr)
 			} else if restored > 0 {
@@ -313,17 +542,25 @@ func reconcileOnce(
 	*lastRaplKey = ""
 	metrics.setBackendMode("dvfs")
 	if dvfs == nil {
+		_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nodeName, "none", "blocked", "RAPL unavailable and DVFS disabled")
 		log.Printf("warning: no enforce backend available for node=%s policy=%s (RAPL unavailable and DVFS disabled); recording desired state only", nodeName, selected.Name)
+		return nil
+	}
+	if controlClient == nil && !dvfs.HasHostControl() {
+		_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nodeName, "none", "blocked", "RAPL unavailable, no cpufreq host control, and no HTTP control backend")
+		log.Printf("warning: no enforce backend available for node=%s policy=%s (RAPL unavailable, no cpufreq host control, no HTTP control backend); recording desired state only", nodeName, selected.Name)
 		return nil
 	}
 	if raplFiles == 0 && !dvfs.warned {
 		log.Printf("warning: RAPL power-limit files not available on node %s (vendor=%s); using DVFS fallback controller", nodeName, hw.CPUVendor)
 		dvfs.warned = true
 	}
-	action, err := dvfs.Reconcile(*selected.PowerWatts)
+	action, err := dvfs.Reconcile(*selected.PowerWatts, controlClient)
 	if err != nil {
+		_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nodeName, "dvfs", "error", err.Error())
 		return fmt.Errorf("dvfs fallback failed: %w", err)
 	}
+	_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nodeName, "dvfs", "applied", action)
 	if action != "" {
 		log.Printf("dvfs-control node=%s policy=%s cap=%.2fW %s", nodeName, selected.Name, *selected.PowerWatts, action)
 	}
@@ -482,7 +719,7 @@ func newDVFSControllerFromEnv(metrics *AgentMetrics) (*DVFSController, error) {
 		return nil, err
 	}
 	if len(cpus) == 0 {
-		return nil, fmt.Errorf("no cpufreq scaling_max_freq files found under /host-sys/devices/system/cpu")
+		log.Printf("warning: no cpufreq files found under /host-sys/devices/system/cpu; host DVFS writes disabled, HTTP control can still be used")
 	}
 	return &DVFSController{
 		cpus:        cpus,
@@ -502,7 +739,11 @@ func (d *DVFSController) Active() bool {
 	return d.throttlePct > 0
 }
 
-func (d *DVFSController) Reconcile(capWatts float64) (string, error) {
+func (d *DVFSController) HasHostControl() bool {
+	return len(d.cpus) > 0
+}
+
+func (d *DVFSController) Reconcile(capWatts float64, controlClient *HTTPControlClient) (string, error) {
 	if capWatts <= 0 {
 		return "", nil
 	}
@@ -551,7 +792,7 @@ func (d *DVFSController) Reconcile(capWatts float64) (string, error) {
 		d.throttlePct = minInt(100, d.throttlePct+d.stepPct)
 		d.aboveCount = 0
 		d.lastAction = now
-		written, err := d.applyThrottlePct(d.throttlePct)
+		written, err := d.applyThrottlePct(d.throttlePct, controlClient, capWatts)
 		if err != nil {
 			return "", err
 		}
@@ -566,7 +807,7 @@ func (d *DVFSController) Reconcile(capWatts float64) (string, error) {
 		d.throttlePct = maxInt(0, d.throttlePct-d.stepPct)
 		d.belowCount = 0
 		d.lastAction = now
-		written, err := d.applyThrottlePct(d.throttlePct)
+		written, err := d.applyThrottlePct(d.throttlePct, controlClient, capWatts)
 		if err != nil {
 			return "", err
 		}
@@ -580,8 +821,105 @@ func (d *DVFSController) Reconcile(capWatts float64) (string, error) {
 	return fmt.Sprintf("mode=dvfs-fallback observed=%.2fW ema=%.2fW throttlePct=%d action=hold", powerW, d.emaPowerW, d.throttlePct), nil
 }
 
+func (d *DVFSController) SetPowerReaderForTelemetry(cfg *TelemetryConfig, nodeName string) {
+	if cfg == nil || cfg.CPUSourceType == "" || cfg.CPUSourceType == "host" {
+		d.powerReader = nil
+		return
+	}
+	if cfg.CPUSourceType != "http" {
+		d.powerReader = nil
+		return
+	}
+	if cfg.HTTPEndpoint == "" {
+		d.powerReader = nil
+		return
+	}
+	timeout := defaultHTTPTimout
+	if cfg.TimeoutSeconds > 0 {
+		timeout = time.Duration(cfg.TimeoutSeconds) * time.Second
+	}
+	d.powerReader = &HTTPPowerReader{
+		endpoint: cfg.HTTPEndpoint,
+		nodeName: nodeName,
+		client:   &http.Client{Timeout: timeout},
+	}
+}
+
+func controlClientFromTelemetry(cfg *TelemetryConfig, nodeName string) *HTTPControlClient {
+	if cfg == nil || cfg.CPUControlType != "http" || cfg.ControlHTTPEndpoint == "" {
+		return nil
+	}
+	timeout := defaultHTTPTimout
+	if cfg.ControlTimeoutSeconds > 0 {
+		timeout = time.Duration(cfg.ControlTimeoutSeconds) * time.Second
+	}
+	return &HTTPControlClient{
+		endpoint: cfg.ControlHTTPEndpoint,
+		nodeName: nodeName,
+		client:   &http.Client{Timeout: timeout},
+	}
+}
+
+func (h *HTTPPowerReader) ReadPowerWatts() (float64, bool, error) {
+	url := strings.ReplaceAll(h.endpoint, "{node}", h.nodeName)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return 0, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, false, fmt.Errorf("telemetry endpoint status=%d", resp.StatusCode)
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return 0, false, err
+	}
+	if v, ok := extractFloat(payload, "packagePowerWatts"); ok {
+		return v, true, nil
+	}
+	if cpuRaw, ok := payload["cpu"].(map[string]any); ok {
+		if v, ok := extractFloat(cpuRaw, "packagePowerWatts"); ok {
+			return v, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+func (h *HTTPControlClient) ApplyCPUControl(action string, capWatts float64, throttlePct int) error {
+	url := strings.ReplaceAll(h.endpoint, "{node}", h.nodeName)
+	reqBody := map[string]any{
+		"node":        h.nodeName,
+		"action":      action,
+		"capWatts":    capWatts,
+		"throttlePct": throttlePct,
+		"ts":          time.Now().UTC().Format(time.RFC3339),
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("control endpoint status=%d", resp.StatusCode)
+	}
+	return nil
+}
+
 func (d *DVFSController) RestoreAllMax() (int, error) {
-	written, err := d.applyThrottlePct(0)
+	written, err := d.applyThrottlePct(0, nil, 0)
 	if err == nil {
 		d.throttlePct = 0
 		d.metrics.dvfsThrottlePct.WithLabelValues(d.metrics.node).Set(0)
@@ -590,11 +928,20 @@ func (d *DVFSController) RestoreAllMax() (int, error) {
 	return written, err
 }
 
-func (d *DVFSController) applyThrottlePct(pct int) (int, error) {
+func (d *DVFSController) applyThrottlePct(pct int, controlClient *HTTPControlClient, capWatts float64) (int, error) {
 	if pct < 0 || pct > 100 {
 		return 0, fmt.Errorf("invalid throttle pct %d", pct)
 	}
+	if controlClient != nil {
+		if err := controlClient.ApplyCPUControl("dvfs.set_throttle_pct", capWatts, pct); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	}
 	count := len(d.cpus)
+	if count == 0 {
+		return 0, fmt.Errorf("no cpufreq scaling_max_freq files found under /host-sys/devices/system/cpu")
+	}
 	throttleCount := int(math.Ceil(float64(count) * float64(pct) / 100.0))
 	written := 0
 	for i, c := range d.cpus {
@@ -623,6 +970,9 @@ func (d *DVFSController) updateCPUFreqMetrics() {
 }
 
 func (d *DVFSController) readPowerWatts() (float64, bool, error) {
+	if d.powerReader != nil {
+		return d.powerReader.ReadPowerWatts()
+	}
 	files, err := energyFiles()
 	if err != nil {
 		return 0, false, err
@@ -740,6 +1090,14 @@ func resolveDesiredStateForNode(ctx context.Context, dyn dynamic.Interface, node
 	return nil, "", nil
 }
 
+func resolveTelemetryConfigForNode(ctx context.Context, dyn dynamic.Interface, nodeName string) (*TelemetryConfig, error) {
+	cfg, err := getTelemetryProfileForNode(ctx, dyn, nodeName)
+	if err != nil {
+		return nil, fmt.Errorf("get TelemetryProfile: %w", err)
+	}
+	return cfg, nil
+}
+
 func getNodePowerProfile(ctx context.Context, dyn dynamic.Interface, nodeName string) (*NodePowerProfile, error) {
 	ul, err := dyn.Resource(profileNodeGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -752,6 +1110,23 @@ func getNodePowerProfile(ctx context.Context, dyn dynamic.Interface, nodeName st
 		np := parseNodePowerProfile(item)
 		if np.NodeName == nodeName {
 			return &np, nil
+		}
+	}
+	return nil, nil
+}
+
+func getTelemetryProfileForNode(ctx context.Context, dyn dynamic.Interface, nodeName string) (*TelemetryConfig, error) {
+	ul, err := dyn.Resource(telemetryNodeGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	for _, item := range ul.Items {
+		cfg := parseTelemetryProfile(item)
+		if cfg.TargetScope == "node" && cfg.NodeName == nodeName {
+			return &cfg, nil
 		}
 	}
 	return nil, nil
@@ -777,6 +1152,88 @@ func parseNodePowerProfile(u unstructured.Unstructured) NodePowerProfile {
 	return np
 }
 
+func parseTelemetryProfile(u unstructured.Unstructured) TelemetryConfig {
+	out := TelemetryConfig{Name: u.GetName()}
+	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "target", "scope"); ok {
+		out.TargetScope = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "target", "nodeName"); ok {
+		out.NodeName = v
+	}
+	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "sources", "cpu", "type"); ok {
+		out.CPUSourceType = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "sources", "cpu", "http", "endpoint"); ok {
+		out.HTTPEndpoint = strings.TrimSpace(v)
+	}
+	if v, ok, _ := unstructured.NestedInt64(u.Object, "spec", "sources", "cpu", "http", "timeoutSeconds"); ok {
+		out.TimeoutSeconds = int(v)
+	}
+	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "controls", "cpu", "type"); ok {
+		out.CPUControlType = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "controls", "cpu", "http", "endpoint"); ok {
+		out.ControlHTTPEndpoint = strings.TrimSpace(v)
+	}
+	if v, ok, _ := unstructured.NestedInt64(u.Object, "spec", "controls", "cpu", "http", "timeoutSeconds"); ok {
+		out.ControlTimeoutSeconds = int(v)
+	}
+	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "controls", "cpu", "http", "mode"); ok {
+		out.ControlMode = strings.ToLower(strings.TrimSpace(v))
+	}
+	return out
+}
+
+func updateTelemetryControlStatus(ctx context.Context, dyn dynamic.Interface, cfg *TelemetryConfig, nodeName, backend, result, message string) error {
+	if cfg == nil || cfg.Name == "" {
+		return nil
+	}
+	res := dyn.Resource(telemetryNodeGVR)
+	obj, err := res.Get(ctx, cfg.Name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if sc, ok, _ := unstructured.NestedString(obj.Object, "spec", "target", "scope"); ok && sc != "node" {
+		return nil
+	}
+	if nn, ok, _ := unstructured.NestedString(obj.Object, "spec", "target", "nodeName"); ok && nn != nodeName {
+		return nil
+	}
+	_ = unstructured.SetNestedField(obj.Object, backend, "status", "control", "cpu", "backend")
+	_ = unstructured.SetNestedField(obj.Object, result, "status", "control", "cpu", "result")
+	_ = unstructured.SetNestedField(obj.Object, message, "status", "control", "cpu", "message")
+	_ = unstructured.SetNestedField(obj.Object, time.Now().UTC().Format(time.RFC3339), "status", "control", "cpu", "updatedAt")
+	_, err = res.UpdateStatus(ctx, obj, metav1.UpdateOptions{})
+	if err == nil {
+		return nil
+	}
+	_, err = res.Update(ctx, obj, metav1.UpdateOptions{})
+	return err
+}
+
+func extractFloat(m map[string]any, key string) (float64, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch vv := v.(type) {
+	case float64:
+		return vv, true
+	case int:
+		return float64(vv), true
+	case int64:
+		return float64(vv), true
+	case json.Number:
+		f, err := vv.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return f, true
+	default:
+		return 0, false
+	}
+}
+
 func readInt64(path string) (int64, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -794,6 +1251,13 @@ func durationEnv(key string, def time.Duration) time.Duration {
 		if v, err := time.ParseDuration(s); err == nil {
 			return v
 		}
+	}
+	return def
+}
+
+func envOrDefault(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
 	}
 	return def
 }
