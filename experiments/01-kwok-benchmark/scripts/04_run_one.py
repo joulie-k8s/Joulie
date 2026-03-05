@@ -117,7 +117,14 @@ def wait_completion(timeout_sec: int, poll_log_sec: int):
     return False
 
 
-def collect_artifacts(run_dir: pathlib.Path, baseline: str, seed: int, start_ts: float, trace_path: pathlib.Path):
+def collect_artifacts(
+    run_dir: pathlib.Path,
+    baseline: str,
+    seed: int,
+    start_ts: float,
+    trace_path: pathlib.Path,
+    time_scale: float,
+):
     log("collecting artifacts")
     (run_dir / "trace.jsonl").write_text(trace_path.read_text())
 
@@ -157,7 +164,7 @@ def collect_artifacts(run_dir: pathlib.Path, baseline: str, seed: int, start_ts:
         "baseline": baseline,
         "seed": seed,
         "trace_sha256": summary["trace_sha256"],
-        "timeScale": 60,
+        "timeScale": time_scale,
     }
     (run_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
     log(f"artifacts written to {run_dir}")
@@ -172,6 +179,7 @@ def main():
     ap.add_argument("--mean-inter-arrival-sec", default=0.05, type=float)
     ap.add_argument("--poll-log-sec", default=3, type=int)
     ap.add_argument("--trace-file", default="", type=str)
+    ap.add_argument("--time-scale", default=60.0, type=float)
     args = ap.parse_args()
 
     run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"_b{args.baseline}_s{args.seed}"
@@ -197,7 +205,7 @@ def main():
     if not done:
         print("timeout waiting for completion", file=sys.stderr)
 
-    collect_artifacts(run_dir, args.baseline, args.seed, start_ts, trace_path)
+    collect_artifacts(run_dir, args.baseline, args.seed, start_ts, trace_path, args.time_scale)
     log(f"run completed run_id={run_id}")
 
 

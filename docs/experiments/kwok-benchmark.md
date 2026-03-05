@@ -20,6 +20,7 @@ The setup keeps real scheduling semantics while using fake KWOK nodes and simula
 - Fake nodes are tainted and selected by workload pods.
 - Simulator injects and advances batch work from trace input.
 - Experiment scripts orchestrate install/run/collect/plot.
+- A/B/C workload fairness is preserved by generating a canonical per-seed trace and deriving baseline A by stripping only power-profile affinity.
 
 ## What is measured now
 

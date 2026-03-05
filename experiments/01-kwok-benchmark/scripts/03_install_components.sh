@@ -16,6 +16,10 @@ QUEUE_HP_MAX=${QUEUE_HP_MAX:-5}
 QUEUE_PERF_PER_HP_NODE=${QUEUE_PERF_PER_HP_NODE:-10}
 SIMULATOR_MANIFEST=${SIMULATOR_MANIFEST:-}
 SIM_BASE_SPEED_PER_CORE=${SIM_BASE_SPEED_PER_CORE:-}
+PERFORMANCE_CAP_WATTS=${PERFORMANCE_CAP_WATTS:-500}
+ECO_CAP_WATTS=${ECO_CAP_WATTS:-140}
+OPERATOR_RECONCILE_INTERVAL=${OPERATOR_RECONCILE_INTERVAL:-20s}
+AGENT_RECONCILE_INTERVAL=${AGENT_RECONCILE_INTERVAL:-10s}
 
 actual_image_from_workload() {
   local ns=$1
@@ -81,7 +85,7 @@ agent:
     shards: 2
     nodeSelector: "joulie.io/managed=true"
   env:
-    RECONCILE_INTERVAL: "10s"
+    RECONCILE_INTERVAL: "REPLACE_AGENT_RECONCILE_INTERVAL"
     METRICS_ADDR: ":8080"
     SIMULATE_ONLY: "false"
 operator:
@@ -95,10 +99,10 @@ operator:
     QUEUE_HP_MIN: "REPLACE_QUEUE_HP_MIN"
     QUEUE_HP_MAX: "REPLACE_QUEUE_HP_MAX"
     QUEUE_PERF_PER_HP_NODE: "REPLACE_QUEUE_PERF_PER_HP_NODE"
-    RECONCILE_INTERVAL: "20s"
+    RECONCILE_INTERVAL: "REPLACE_OPERATOR_RECONCILE_INTERVAL"
     NODE_SELECTOR: "joulie.io/managed=true"
-    ECO_CAP_WATTS: "140"
-    PERFORMANCE_CAP_WATTS: "500"
+    ECO_CAP_WATTS: "REPLACE_ECO_CAP_WATTS"
+    PERFORMANCE_CAP_WATTS: "REPLACE_PERFORMANCE_CAP_WATTS"
 YAML
 
 sed -i \
@@ -112,6 +116,10 @@ sed -i \
   -e "s|REPLACE_QUEUE_HP_MIN|${QUEUE_HP_MIN}|g" \
   -e "s|REPLACE_QUEUE_HP_MAX|${QUEUE_HP_MAX}|g" \
   -e "s|REPLACE_QUEUE_PERF_PER_HP_NODE|${QUEUE_PERF_PER_HP_NODE}|g" \
+  -e "s|REPLACE_PERFORMANCE_CAP_WATTS|${PERFORMANCE_CAP_WATTS}|g" \
+  -e "s|REPLACE_ECO_CAP_WATTS|${ECO_CAP_WATTS}|g" \
+  -e "s|REPLACE_OPERATOR_RECONCILE_INTERVAL|${OPERATOR_RECONCILE_INTERVAL}|g" \
+  -e "s|REPLACE_AGENT_RECONCILE_INTERVAL|${AGENT_RECONCILE_INTERVAL}|g" \
   /tmp/benchmark-values.yaml
 
 helm upgrade --install joulie "$ROOT/../../charts/joulie" -n joulie-system --create-namespace -f /tmp/benchmark-values.yaml
@@ -126,6 +134,8 @@ done
 
 echo "components installed for baseline ${BASELINE}"
 echo "operator policy: ${POLICY_TYPE} (STATIC_HP_FRAC=${STATIC_HP_FRAC})"
+echo "operator caps: performance=${PERFORMANCE_CAP_WATTS}W eco=${ECO_CAP_WATTS}W"
+echo "reconcile intervals: operator=${OPERATOR_RECONCILE_INTERVAL} agent=${AGENT_RECONCILE_INTERVAL}"
 if [[ -n "${SIM_TAG}" ]]; then
   echo "simulator configured image: ${SIM_REGISTRY}/${SIM_IMAGE}:${SIM_TAG}"
 else

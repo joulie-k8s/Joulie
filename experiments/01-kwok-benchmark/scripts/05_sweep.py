@@ -64,8 +64,7 @@ def to_baselines(raw) -> list[str]:
     return vals
 
 
-def generate_seed_trace(
-    baseline: str,
+def generate_canonical_seed_trace(
     seed: int,
     jobs: int,
     mean_inter_arrival_sec: float,
@@ -77,22 +76,17 @@ def generate_seed_trace(
     traces_dir = pathlib.Path("experiments/01-kwok-benchmark/results/traces")
     traces_dir.mkdir(parents=True, exist_ok=True)
     ratio_id = f"perf_{str(perf_ratio).replace('.', '_')}_eco_{str(eco_ratio).replace('.', '_')}"
-    if baseline == "A":
-        trace_name = (
-            f"seed_{seed}_jobs_{jobs}_mia_{str(mean_inter_arrival_sec).replace('.', '_')}_"
-            f"baseline_A_no_affinity.jsonl"
-        )
-    else:
-        trace_name = (
-            f"seed_{seed}_jobs_{jobs}_mia_{str(mean_inter_arrival_sec).replace('.', '_')}_"
-            f"{ratio_id}_baseline_{baseline}.jsonl"
-        )
+    units_id = f"cpuu_{str(cpu_units_min).replace('.', '_')}_{str(cpu_units_max).replace('.', '_')}"
+    trace_name = (
+        f"seed_{seed}_jobs_{jobs}_mia_{str(mean_inter_arrival_sec).replace('.', '_')}_"
+        f"{ratio_id}_{units_id}_canonical.jsonl"
+    )
     trace_path = traces_dir / trace_name
     if trace_path.exists():
-        log(f"reusing existing seed trace baseline={baseline} seed={seed} file={trace_path}")
+        log(f"reusing canonical seed trace seed={seed} file={trace_path}")
         return trace_path
     log(
-        f"generating seed trace baseline={baseline} seed={seed} jobs={jobs} "
+        f"generating canonical seed trace seed={seed} jobs={jobs} "
         f"mean_inter_arrival_sec={mean_inter_arrival_sec}"
     )
     cmd = [
@@ -112,21 +106,43 @@ def generate_seed_trace(
         "--cpu-units-max",
         str(cpu_units_max),
     ]
-    if baseline == "A":
-        cmd.append("--no-affinity-only")
-    else:
-        cmd.extend(
-            [
-                "--perf-ratio",
-                str(perf_ratio),
-                "--eco-ratio",
-                str(eco_ratio),
-            ]
-        )
+    cmd.extend(
+        [
+            "--perf-ratio",
+            str(perf_ratio),
+            "--eco-ratio",
+            str(eco_ratio),
+        ]
+    )
     run(cmd, check=True)
     count = sum(1 for l in trace_path.read_text().splitlines() if l.strip())
-    log(f"seed trace generated records={count} file={trace_path}")
+    log(f"canonical seed trace generated records={count} file={trace_path}")
     return trace_path
+
+
+def derive_baseline_trace(baseline: str, canonical_trace: pathlib.Path, strip_affinity_for_a: bool) -> pathlib.Path:
+    traces_dir = canonical_trace.parent
+    out_name = canonical_trace.name.replace("_canonical.jsonl", f"_baseline_{baseline}.jsonl")
+    out_path = traces_dir / out_name
+    if out_path.exists():
+        return out_path
+    if baseline != "A" or not strip_affinity_for_a:
+        out_path.write_text(canonical_trace.read_text())
+        return out_path
+
+    # Baseline A: same exact jobs/timing/work, only remove power-profile affinity constraints.
+    lines = []
+    for raw in canonical_trace.read_text().splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        rec = json.loads(raw)
+        pod_tpl = rec.get("podTemplate")
+        if isinstance(pod_tpl, dict):
+            pod_tpl.pop("affinity", None)
+        lines.append(json.dumps(rec, separators=(",", ":")))
+    out_path.write_text("\n".join(lines) + ("\n" if lines else ""))
+    return out_path
 
 
 def cleanup_workload_pods():
@@ -231,6 +247,7 @@ def main():
         if args.cleanup_timeout is not None
         else int(get_cfg(cfg, "run", "cleanup_timeout", default=45))
     )
+    time_scale = float(get_cfg(cfg, "run", "time_scale", default=60.0))
     perf_ratio = (
         args.perf_ratio if args.perf_ratio is not None else float(get_cfg(cfg, "workload", "perf_ratio", default=0.30))
     )
@@ -247,6 +264,7 @@ def main():
         if args.cpu_units_max is not None
         else float(get_cfg(cfg, "workload", "cpu_units_max", default=3600.0))
     )
+    baseline_a_strip_affinity = bool(get_cfg(cfg, "workload", "baseline_a_strip_affinity", default=True))
 
     baselines_raw = args.baselines if args.baselines.strip() else get_cfg(cfg, "run", "baselines", default=["A", "B", "C"])
     baselines = to_baselines(baselines_raw)
@@ -264,7 +282,7 @@ def main():
     done = 0
     log(
         f"starting sweep config={cfg_path} baselines={','.join(baselines)} seeds={seeds} jobs={jobs} "
-        f"mean_inter_arrival_sec={mean_inter_arrival_sec} timeout={timeout}s total_runs={total_runs}"
+        f"mean_inter_arrival_sec={mean_inter_arrival_sec} timeout={timeout}s time_scale={time_scale} total_runs={total_runs}"
     )
 
     install_env_base = os.environ.copy()
@@ -286,6 +304,10 @@ def main():
     install_env_base["QUEUE_HP_MIN"] = str(get_cfg(cfg, "policy", "queue_aware", "hp_min", default=1))
     install_env_base["QUEUE_HP_MAX"] = str(get_cfg(cfg, "policy", "queue_aware", "hp_max", default=5))
     install_env_base["QUEUE_PERF_PER_HP_NODE"] = str(get_cfg(cfg, "policy", "queue_aware", "perf_per_hp_node", default=10))
+    install_env_base["PERFORMANCE_CAP_WATTS"] = str(get_cfg(cfg, "policy", "caps", "performance_watts", default=500))
+    install_env_base["ECO_CAP_WATTS"] = str(get_cfg(cfg, "policy", "caps", "eco_watts", default=140))
+    install_env_base["OPERATOR_RECONCILE_INTERVAL"] = str(get_cfg(cfg, "policy", "loop", "operator_reconcile_interval", default="20s"))
+    install_env_base["AGENT_RECONCILE_INTERVAL"] = str(get_cfg(cfg, "policy", "loop", "agent_reconcile_interval", default="10s"))
     install_env_base["SIM_BASE_SPEED_PER_CORE"] = str(get_cfg(cfg, "simulator", "base_speed_per_core", default=1.0))
     log(
         "configured images "
@@ -293,6 +315,14 @@ def main():
         + (f":{install_env_base['SIM_TAG']}" if install_env_base["SIM_TAG"] else " (manifest-tag)")
         + f" operator={install_env_base['JOULIE_REGISTRY']}/joulie-operator:{install_env_base['JOULIE_TAG']}"
         + f" agent={install_env_base['JOULIE_REGISTRY']}/joulie-agent:{install_env_base['JOULIE_TAG']}"
+    )
+    log(
+        "configured policy "
+        f"caps(perf={install_env_base['PERFORMANCE_CAP_WATTS']}W eco={install_env_base['ECO_CAP_WATTS']}W) "
+        f"static.hp_frac={install_env_base['STATIC_HP_FRAC']} "
+        f"queue(base={install_env_base['QUEUE_HP_BASE_FRAC']} min={install_env_base['QUEUE_HP_MIN']} "
+        f"max={install_env_base['QUEUE_HP_MAX']} perf_per_hp={install_env_base['QUEUE_PERF_PER_HP_NODE']}) "
+        f"loops(op={install_env_base['OPERATOR_RECONCILE_INTERVAL']} agent={install_env_base['AGENT_RECONCILE_INTERVAL']})"
     )
 
     baseline_policy = {
@@ -327,8 +357,7 @@ def main():
         for seed in range(1, seeds + 1):
             done += 1
             log(f"run {done}/{total_runs}: baseline={baseline} seed={seed}")
-            trace_file = generate_seed_trace(
-                baseline=baseline,
+            canonical_trace = generate_canonical_seed_trace(
                 seed=seed,
                 jobs=jobs,
                 mean_inter_arrival_sec=mean_inter_arrival_sec,
@@ -337,6 +366,12 @@ def main():
                 cpu_units_min=cpu_units_min,
                 cpu_units_max=cpu_units_max,
             )
+            trace_file = derive_baseline_trace(
+                baseline=baseline,
+                canonical_trace=canonical_trace,
+                strip_affinity_for_a=baseline_a_strip_affinity,
+            )
+            log(f"using baseline trace file={trace_file}")
             cleanup_workload_pods()
             wait_zero_active_workload_pods(cleanup_timeout)
             log(f"pre-run settle sleep seconds={settle_seconds}")
@@ -355,6 +390,8 @@ def main():
                     str(mean_inter_arrival_sec),
                     "--timeout",
                     str(timeout),
+                    "--time-scale",
+                    str(time_scale),
                     "--trace-file",
                     str(trace_file),
                 ],

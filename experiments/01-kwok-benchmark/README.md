@@ -13,10 +13,11 @@ Workload scheduling in benchmark pods uses affinity on `joulie.io/power-profile`
 - `eco`: requires `joulie.io/power-profile=eco`
 - no power-profile affinity: implicit `flex` (general) placement
 
-Current generator behavior:
+Current trace behavior:
 
-- baseline `A`: all jobs are generated with no power-profile affinity (fully unconstrained on KWOK nodes),
-- baselines `B`/`C`: mixed jobs including constrained (`performance`, `eco`) and unconstrained (implicit flex/general).
+- per-seed canonical trace is generated once and reused across baselines,
+- baseline `A` is derived from that canonical trace by stripping only power-profile affinity,
+- baselines `B`/`C` use the canonical trace as generated.
 
 ## Baselines
 
@@ -29,9 +30,11 @@ Current generator behavior:
 `configs/benchmark.yaml` contains:
 
 - run controls: baselines, seeds, jobs, inter-arrival, timeout, settle/cleanup,
+- run scaling: `run.time_scale` used in run metadata and derived simulated-time metrics,
 - workload mix: `perf_ratio`, `eco_ratio` (remaining fraction is no-affinity general), plus `cpu_units_min/max`,
+- baseline A comparability: `baseline_a_strip_affinity` removes only affinity from a canonical seed trace while keeping submit/work/request values identical,
 - simulator speed control: `simulator.base_speed_per_core` (higher value = faster job completion),
-- policy controls: static and queue-aware parameters,
+- policy controls: caps (`performance_watts`, `eco_watts`), control-loop intervals, static and queue-aware parameters,
 - image/tag/registry overrides,
 - optional simulator manifest path.
 
@@ -98,7 +101,6 @@ Equivalent expanded commands run by `10_setup_cluster.sh`:
 From the repo root:
 
 ```bash
-export JOULIE_TAG=dev0.0.11 SIM_TAG=dev0.0.11
 source experiments/01-kwok-benchmark/.venv/bin/activate
 experiments/01-kwok-benchmark/scripts/20_run_benchmark.sh
 ```
@@ -120,15 +122,6 @@ watch -n 5 'kubectl get nodepowerprofiles -o wide; echo; kubectl get nodes -L ty
 
 However, in the no-Joulie baseline no power profiles will be applied to the nodes!
 
-## Image tags (simple overrides)
-
-Set tags via env vars before running `03_install_components.sh` / `05_sweep.py`:
-
-```bash
-export JOULIE_TAG=dev0.0.3
-export SIM_TAG=dev0.0.3
-```
-
 You can manually check that the right containers were used by running:
 
 ```bash
@@ -136,7 +129,7 @@ kubectl get pods -A -o=jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.m
 | egrep 'joulie-(agent|operator)|joulie-telemetry-sim'
 ```
 
-Policy override for manual component installs (when running `03_install_components.sh` directly):
+Policy/image override for manual component installs (when running `03_install_components.sh` directly):
 
 ```bash
 export POLICY_TYPE=static_partition
@@ -145,6 +138,8 @@ export QUEUE_HP_BASE_FRAC=0.60
 export QUEUE_HP_MIN=1
 export QUEUE_HP_MAX=5
 export QUEUE_PERF_PER_HP_NODE=10
+export JOULIE_TAG=dev0.0.13
+export SIM_TAG=dev0.0.13
 ```
 
 `05_sweep.py` manages policy per baseline automatically:
@@ -155,18 +150,13 @@ export QUEUE_PERF_PER_HP_NODE=10
 
 `rule_swap_v1` is kept only for debugging and should not be used as benchmark default.
 
-Optional registry/image overrides:
+Optional registry/image overrides for manual install script:
 
 ```bash
 export JOULIE_REGISTRY=registry.cern.ch/mbunino/joulie
 export SIM_REGISTRY=registry.cern.ch/mbunino/joulie
 export SIM_IMAGE=joulie-simulator
 ```
-
-Fast-debug defaults in scripts:
-
-- `05_sweep.py`: `--seeds 1 --jobs 20 --mean-inter-arrival-sec 0.05 --timeout 240 --settle-seconds 4`
-- `04_run_one.py`: `--jobs 20 --mean-inter-arrival-sec 0.05 --timeout 240`
 
 `01_create_cluster_kwokctl.sh` uses `manifests/kind-cluster.yaml` by default.
 Override with:
@@ -189,7 +179,6 @@ KIND_CLUSTER_CONFIG=/path/to/kind-config.yaml ./scripts/01_create_cluster_kwokct
 ## Notes
 
 - This is the first benchmark harness implementation.
-- Energy in `summary.csv` is estimated from simulator telemetry debug events and converted to simulated time using `time_scale`.
 - Energy in `summary.csv` now prefers simulator-integrated energy (`sim_debug_energy.json`) and falls back to debug telemetry events if unavailable.
 - Throughput-vs-energy and energy-vs-makespan tradeoff plots are generated from `summary.csv`.
 - If a run has missing `sim_debug_events.json` telemetry entries, energy fields can be empty for that run.

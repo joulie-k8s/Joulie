@@ -1,7 +1,0 @@
-jobs: 200
-intentSplit:
-  performance: 0.30
-  eco: 0.70
-cpuChoices: [1, 2, 4, 8, 16]
-meanInterArrivalSec: 2.0
-seed: 42

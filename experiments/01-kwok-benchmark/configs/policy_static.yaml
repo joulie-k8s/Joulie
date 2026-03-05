@@ -1,9 +1,0 @@
-operator:
-  policy:
-    type: static_partition
-    timeScale: 60
-    tickSimSeconds: 20
-    staticPartition:
-      hpFrac: 0.60
-      hysteresisHoldSimSeconds: 60
-      nodeCooldownSimSeconds: 300
