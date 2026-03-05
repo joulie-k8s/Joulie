@@ -2,11 +2,13 @@ name: Docs Preview
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened]
     paths:
       - "website/**"
       - ".github/workflows/docs-preview.yml"
       - "README.md"
+  pull_request_target:
+    types: [closed]
 
 permissions:
   contents: write
@@ -18,7 +20,7 @@ concurrency:
 
 jobs:
   preview:
-    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     env:
       HUGO_VERSION: 0.157.0
@@ -40,6 +42,16 @@ jobs:
         with:
           hugo-version: ${{ env.HUGO_VERSION }}
           extended: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install PostCSS toolchain
+        working-directory: website
+        run: |
+          npm install --no-save postcss postcss-cli autoprefixer
 
       - name: Build preview site
         working-directory: website
@@ -70,7 +82,7 @@ jobs:
           edit-mode: replace
 
   cleanup:
-    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
     runs-on: ubuntu-latest
     env:
       PREVIEW_DIR: previews/pr-${{ github.event.pull_request.number }}
