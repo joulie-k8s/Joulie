@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Getting Started on Joulie</title><link>https://matbun.github.io/Joulie/previews/pr-18/docs/getting-started/</link><description>Recent content in Getting Started on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://matbun.github.io/Joulie/previews/pr-18/docs/getting-started/index.xml" rel="self" type="application/rss+xml"/><item><title>Quickstart</title><link>https://matbun.github.io/Joulie/previews/pr-18/docs/getting-started/quickstart/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/Joulie/previews/pr-18/docs/getting-started/quickstart/</guid><description>&lt;h2 id="prerequisites"&gt;Prerequisites&lt;/h2&gt;
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Getting Started on Joulie</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/</link><description>Recent content in Getting Started on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/index.xml" rel="self" type="application/rss+xml"/><item><title>Quickstart</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/quickstart/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/quickstart/</guid><description>&lt;h2 id="prerequisites"&gt;Prerequisites&lt;/h2&gt;
 &lt;ul&gt;
 &lt;li&gt;Kubernetes cluster with worker nodes&lt;/li&gt;
 &lt;li&gt;Node Feature Discovery (NFD) deployed&lt;/li&gt;
@@ -18,7 +18,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; --create-namespace &lt;span style="color:#ae81ff"&gt;\
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; -f values/joulie.yaml
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id="2-install-from-source-when-developing"&gt;2. Install from source (when developing)&lt;/h2&gt;
-&lt;p&gt;If you changed source code, from repo root:&lt;/p&gt;</description></item><item><title>Agent Runtime Modes</title><link>https://matbun.github.io/Joulie/previews/pr-18/docs/getting-started/daemonset/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/Joulie/previews/pr-18/docs/getting-started/daemonset/</guid><description>&lt;p&gt;The agent supports two runtime modes:&lt;/p&gt;
+&lt;p&gt;If you changed source code, from repo root:&lt;/p&gt;</description></item><item><title>Agent Runtime Modes</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/daemonset/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/daemonset/</guid><description>&lt;p&gt;The agent supports two runtime modes:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;code&gt;daemonset&lt;/code&gt;: real-hardware mode, one pod per real node.&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;pool&lt;/code&gt;: simulation mode, one pod hosts many logical per-node controllers.&lt;/li&gt;
@@ -48,7 +48,7 @@
 &lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id="pool-mode-kwok--simulation"&gt;Pool mode (KWOK / simulation)&lt;/h2&gt;
-&lt;p&gt;Pool mode preserves per-node semantics but shards logical node controllers across replicas.&lt;/p&gt;</description></item><item><title>Pod Compatibility for Joulie</title><link>https://matbun.github.io/Joulie/previews/pr-18/docs/getting-started/workload-compatibility/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/Joulie/previews/pr-18/docs/getting-started/workload-compatibility/</guid><description>&lt;p&gt;Joulie uses Kubernetes scheduling constraints as the single source of truth for workload placement intent.&lt;/p&gt;
+&lt;p&gt;Pool mode preserves per-node semantics but shards logical node controllers across replicas.&lt;/p&gt;</description></item><item><title>Pod Compatibility for Joulie</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/workload-compatibility/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/workload-compatibility/</guid><description>&lt;p&gt;Joulie uses Kubernetes scheduling constraints as the single source of truth for workload placement intent.&lt;/p&gt;
 &lt;p&gt;Power profile supply is exposed on node label:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;code&gt;joulie.io/power-profile=performance&lt;/code&gt;&lt;/li&gt;
