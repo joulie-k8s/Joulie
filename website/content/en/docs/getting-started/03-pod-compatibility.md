@@ -1,6 +1,9 @@
----
-title: "Pod Compatibility for Joulie"
----
++++
+title = "Pod Compatibility for Joulie"
+linkTitle = "Pod Compatibility"
+slug = "workload-compatibility"
+weight = 3
++++
 
 Joulie uses Kubernetes scheduling constraints as the single source of truth for workload placement intent.
 

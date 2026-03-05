@@ -15,7 +15,7 @@ Kubernetes-native node-level power orchestration.
 
 - Website (GitHub Pages): [matbun.github.io/joulie](https://matbun.github.io/joulie/)
 - Docs source (Hugo + Docsy): [website/](./website/)
-- Pod compatibility guide: [docs/simulator/workload-compatibility](https://matbun.github.io/joulie/docs/simulator/workload-compatibility/)
+- Pod compatibility guide: [docs/getting-started/workload-compatibility](https://matbun.github.io/joulie/docs/getting-started/workload-compatibility/)
 
 ## Quickstart
 
@@ -57,4 +57,4 @@ Joulie uses Kubernetes scheduling constraints as workload intent source:
 
 See full manifest examples in docs page:
 
-- [Pod compatibility guide](https://matbun.github.io/joulie/docs/simulator/workload-compatibility/)
+- [Pod compatibility guide](https://matbun.github.io/joulie/docs/getting-started/workload-compatibility/)
