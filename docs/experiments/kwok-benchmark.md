@@ -8,7 +8,7 @@ This document describes the first benchmark harness implementation under:
 
 The benchmark focuses on repeatable comparisons of scheduler+control behavior across baselines:
 
-- baseline A: Joulie deployed with static all-HP policy (`hp_frac=1.0`),
+- baseline A: no Joulie control path (simulator only),
 - baseline B: static partition style,
 - baseline C: queue-aware style.
 
@@ -30,6 +30,7 @@ Current harness outputs:
 - per-run workload size (`jobs_total`),
 - throughput metrics (`jobs/wall-sec`, `jobs/sim-sec`, `jobs/sim-hour`),
 - estimated simulated-time energy from simulator telemetry events (`energy_sim_joules_est`, `energy_sim_kwh_est`),
+- robust simulator-integrated energy export over all managed nodes (`sim_debug_energy.json`) used as primary energy source,
 - estimated average cluster power (`avg_cluster_power_w_est`),
 - run metadata (baseline, seed, commit, trace hash),
 - cluster snapshots/logs for debugging.

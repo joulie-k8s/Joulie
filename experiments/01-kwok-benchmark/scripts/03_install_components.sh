@@ -27,9 +27,6 @@ if [[ "$BASELINE" == "B" ]]; then
   POLICY_TYPE=static_partition
 elif [[ "$BASELINE" == "C" ]]; then
   POLICY_TYPE=queue_aware_v1
-elif [[ "$BASELINE" == "A" ]]; then
-  POLICY_TYPE=static_partition
-  STATIC_HP_FRAC=1.0
 fi
 
 if [[ -z "$SIMULATOR_MANIFEST" ]]; then
@@ -61,6 +58,14 @@ echo "simulator deployment image in use: ${SIM_ACTUAL_IMAGE}"
 if [[ -n "${SIM_BASE_SPEED_PER_CORE}" ]]; then
   SIM_ACTUAL_SPEED=$(kubectl -n joulie-sim-demo get deploy/joulie-telemetry-sim -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="SIM_BASE_SPEED_PER_CORE")].value}')
   echo "simulator speed in use: SIM_BASE_SPEED_PER_CORE=${SIM_ACTUAL_SPEED}"
+fi
+
+if [[ "$BASELINE" == "A" ]]; then
+  echo "baseline A selected: simulator only (no operator/agent)"
+  helm uninstall joulie -n joulie-system >/dev/null 2>&1 || true
+  echo "operator image in use: n/a (baseline A)"
+  echo "agent image in use: n/a (baseline A)"
+  exit 0
 fi
 
 cat > /tmp/benchmark-values.yaml <<'YAML'

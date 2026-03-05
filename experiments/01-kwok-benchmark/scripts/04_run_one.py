@@ -126,13 +126,15 @@ def collect_artifacts(run_dir: pathlib.Path, baseline: str, seed: int, start_ts:
     try:
         nodes = urlopen("http://127.0.0.1:18080/debug/nodes", timeout=3).read().decode()
         events = urlopen("http://127.0.0.1:18080/debug/events", timeout=3).read().decode()
+        energy = urlopen("http://127.0.0.1:18080/debug/energy", timeout=3).read().decode()
     except Exception:
-        nodes, events = "{}", "{}"
+        nodes, events, energy = "{}", "{}", "{}"
     finally:
         pf.terminate()
 
     (run_dir / "sim_debug_nodes.json").write_text(nodes)
     (run_dir / "sim_debug_events.json").write_text(events)
+    (run_dir / "sim_debug_energy.json").write_text(energy)
 
     (run_dir / "pods.json").write_text(run(["kubectl", "get", "pods", "-A", "-o", "json"], capture=True).stdout)
     (run_dir / "nodepowerprofiles.yaml").write_text(run(["kubectl", "get", "nodepowerprofiles", "-o", "yaml"], capture=True, check=False).stdout)

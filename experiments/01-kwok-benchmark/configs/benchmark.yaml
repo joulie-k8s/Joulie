@@ -27,10 +27,10 @@ policy:
 
 images:
   joulie_registry: registry.cern.ch/mbunino/joulie
-  joulie_tag: dev0.0.12
+  joulie_tag: dev0.0.13
   sim_registry: registry.cern.ch/mbunino/joulie
   sim_image: joulie-simulator
-  sim_tag: dev0.0.12
+  sim_tag: dev0.0.13
 
 install:
   # Optional explicit path to simulator manifest.

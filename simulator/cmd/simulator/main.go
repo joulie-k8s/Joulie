@@ -100,6 +100,9 @@ type simulator struct {
 	classes    []simNodeClass
 	events     []simEvent
 	eventMax   int
+	energyJByNode map[string]float64
+	energyTotalJ  float64
+	energyLastTs  time.Time
 
 	requestsTotal   *prometheus.CounterVec
 	requestDuration *prometheus.HistogramVec
@@ -174,6 +177,7 @@ func main() {
 	mux.HandleFunc("/state/", s.handleState)
 	mux.HandleFunc("/debug/nodes", s.handleDebugNodes)
 	mux.HandleFunc("/debug/events", s.handleDebugEvents)
+	mux.HandleFunc("/debug/energy", s.handleDebugEnergy)
 
 	log.Printf("listening on %s", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
@@ -198,6 +202,7 @@ func newSimulatorWithRegisterer(model simModel, selector labels.Selector, classe
 		selector:   selector,
 		classes:    classes,
 		eventMax:   eventMax,
+		energyJByNode: map[string]float64{},
 		requestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "joulie_sim_requests_total",
 			Help: "Total simulator HTTP requests",
@@ -318,7 +323,11 @@ func (s *simulator) modelForNode(node string) simModel {
 
 func (s *simulator) nodePower(node string, st *nodeState) float64 {
 	model := s.modelForNode(node)
-	s.updateNodeDynamics(node, st)
+	return s.nodePowerWithModel(st, model)
+}
+
+func (s *simulator) nodePowerWithModel(st *nodeState, model simModel) float64 {
+	s.updateNodeDynamicsWithModel(st, model)
 	util := clamp01(st.CPUUtil)
 	freq := clamp01(st.FreqScale)
 	alpha := model.AlphaUtil
@@ -625,9 +634,59 @@ func (s *simulator) handleDebugEvents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *simulator) handleDebugEnergy(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	status := http.StatusOK
+	defer s.observeRequest("debug_energy", r.Method, &status, start)
+	if r.Method != http.MethodGet {
+		status = http.StatusMethodNotAllowed
+		http.Error(w, "method not allowed", status)
+		return
+	}
+	s.mu.RLock()
+	perNode := map[string]float64{}
+	for node, v := range s.energyJByNode {
+		perNode[node] = v
+	}
+	total := s.energyTotalJ
+	last := s.energyLastTs
+	s.mu.RUnlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"totalJoules": total,
+		"byNodeJoules": perNode,
+		"lastUpdated":  last.Format(time.RFC3339Nano),
+	})
+}
+
 func (s *simulator) observeRequest(route, method string, status *int, start time.Time) {
 	s.requestsTotal.WithLabelValues(route, method, strconv.Itoa(*status)).Inc()
 	s.requestDuration.WithLabelValues(route, method).Observe(time.Since(start).Seconds())
+}
+
+func (s *simulator) accumulateEnergy(dt float64) {
+	if dt <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for node, st := range s.state {
+		if st == nil {
+			continue
+		}
+		model := s.model
+		if m, ok := s.nodeModels[node]; ok {
+			model = m
+		}
+		p := s.nodePowerWithModel(st, model)
+		e := p * dt
+		if e <= 0 {
+			continue
+		}
+		s.energyJByNode[node] += e
+		s.energyTotalJ += e
+	}
+	s.energyLastTs = time.Now().UTC()
 }
 
 func (s *simulator) startPodPolling(interval time.Duration) {
@@ -916,6 +975,10 @@ func solveFreqScaleForCap(model simModel, util, capW float64) float64 {
 
 func (s *simulator) updateNodeDynamics(node string, st *nodeState) {
 	model := s.modelForNode(node)
+	s.updateNodeDynamicsWithModel(st, model)
+}
+
+func (s *simulator) updateNodeDynamicsWithModel(st *nodeState, model simModel) {
 	targetScale := 1.0 - clamp01(float64(st.TargetThrottlePct)/100.0)
 	now := time.Now().UTC()
 	last := st.LastUpdate
@@ -1051,6 +1114,7 @@ func (s *simulator) startWorkloadLoop(interval time.Duration) {
 			dt = interval.Seconds()
 		}
 		last = now
+		s.accumulateEnergy(dt)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		s.injectTraceJobs(ctx, kube, now)
 		s.advanceJobProgress(ctx, kube, dt, now)

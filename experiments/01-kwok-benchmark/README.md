@@ -20,7 +20,7 @@ Current generator behavior:
 
 ## Baselines
 
-- `A`: simulator + Joulie with static all-HP policy (`hp_frac=1.0`), using affinity-free workload pods.
+- `A`: simulator only (no operator/agent), using affinity-free workload pods (Joulie-free baseline).
 - `B`: simulator + Joulie with static partition-oriented config.
 - `C`: simulator + Joulie with queue-aware policy-oriented config.
 
@@ -49,6 +49,7 @@ Each run writes to `results/<run_id>/`:
 - `nodepowerprofiles.yaml`
 - operator/agent/simulator logs
 - simulator debug snapshots
+  - `sim_debug_energy.json` (simulator-integrated energy over all managed nodes)
 
 ## Python setup (venv)
 
@@ -148,7 +149,7 @@ export QUEUE_PERF_PER_HP_NODE=10
 
 `05_sweep.py` manages policy per baseline automatically:
 
-- `A` -> `static_partition` with `STATIC_HP_FRAC=1.0`
+- `A` -> simulator-only / no policy (operator+agent not installed)
 - `B` -> `static_partition`
 - `C` -> `queue_aware_v1`
 
@@ -189,5 +190,6 @@ KIND_CLUSTER_CONFIG=/path/to/kind-config.yaml ./scripts/01_create_cluster_kwokct
 
 - This is the first benchmark harness implementation.
 - Energy in `summary.csv` is estimated from simulator telemetry debug events and converted to simulated time using `time_scale`.
+- Energy in `summary.csv` now prefers simulator-integrated energy (`sim_debug_energy.json`) and falls back to debug telemetry events if unavailable.
 - Throughput-vs-energy and energy-vs-makespan tradeoff plots are generated from `summary.csv`.
 - If a run has missing `sim_debug_events.json` telemetry entries, energy fields can be empty for that run.

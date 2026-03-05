@@ -296,7 +296,6 @@ def main():
     )
 
     baseline_policy = {
-        "A": "static_partition",
         "B": "static_partition",
         "C": "queue_aware_v1",
     }
@@ -311,8 +310,6 @@ def main():
             install_env["POLICY_TYPE"] = baseline_policy[baseline]
         else:
             install_env.pop("POLICY_TYPE", None)
-        if baseline == "A":
-            install_env["STATIC_HP_FRAC"] = "1.0"
         run_with_env(
             [
                 "bash",

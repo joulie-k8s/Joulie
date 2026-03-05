@@ -104,6 +104,15 @@ def integrate_energy_joules_from_events(events_doc: dict, time_scale: float):
     return energy_sim_j, len(events), telemetry_count
 
 
+def energy_from_debug_energy(debug_energy_doc: dict, time_scale: float):
+    if not isinstance(debug_energy_doc, dict):
+        return None
+    total_j = to_float(debug_energy_doc.get("totalJoules"))
+    if total_j is None:
+        return None
+    return total_j * max(0.0, time_scale)
+
+
 def collect_one_run(run_dir: pathlib.Path):
     run_summary = load_json_file(run_dir / "run_summary.json") or {}
     metadata = load_json_file(run_dir / "metadata.json") or {}
@@ -129,9 +138,15 @@ def collect_one_run(run_dir: pathlib.Path):
         throughput_sim = jobs_total / sim_seconds if sim_seconds > 0 else None
         throughput_sim_hour = throughput_sim * 3600 if throughput_sim is not None else None
 
-    energy_sim_j, sim_event_count, telemetry_event_count = integrate_energy_joules_from_events(
-        load_json_file(run_dir / "sim_debug_events.json"), time_scale
-    )
+    sim_event_count = 0
+    telemetry_event_count = 0
+    energy_sim_j = energy_from_debug_energy(load_json_file(run_dir / "sim_debug_energy.json"), time_scale)
+    energy_source = "debug_energy"
+    if energy_sim_j is None:
+        energy_sim_j, sim_event_count, telemetry_event_count = integrate_energy_joules_from_events(
+            load_json_file(run_dir / "sim_debug_events.json"), time_scale
+        )
+        energy_source = "debug_events" if energy_sim_j is not None else "none"
 
     avg_cluster_power_w = None
     if energy_sim_j is not None and sim_seconds and sim_seconds > 0:
@@ -152,6 +167,7 @@ def collect_one_run(run_dir: pathlib.Path):
         "energy_sim_joules_est": energy_sim_j,
         "energy_sim_kwh_est": (energy_sim_j / 3_600_000.0) if energy_sim_j is not None else None,
         "avg_cluster_power_w_est": avg_cluster_power_w,
+        "energy_source": energy_source,
         "sim_event_count": sim_event_count,
         "telemetry_event_count": telemetry_event_count,
         "trace_sha256": run_summary.get("trace_sha256", ""),
