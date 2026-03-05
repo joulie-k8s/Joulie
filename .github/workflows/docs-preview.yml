@@ -2,13 +2,7 @@ name: Docs Preview
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - "website/**"
-      - ".github/workflows/docs-preview.yml"
-      - "README.md"
-  pull_request_target:
-    types: [closed]
+    types: [opened, synchronize, reopened, closed]
 
 permissions:
   contents: write
@@ -20,12 +14,13 @@ concurrency:
 
 jobs:
   preview:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     env:
       HUGO_VERSION: 0.157.0
+      PAGES_SITE_PATH: joulie
       PREVIEW_DIR: previews/pr-${{ github.event.pull_request.number }}
-      PREVIEW_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/previews/pr-${{ github.event.pull_request.number }}/
+      PREVIEW_URL: https://${{ github.repository_owner }}.github.io/${{ env.PAGES_SITE_PATH }}/previews/pr-${{ github.event.pull_request.number }}/
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -82,7 +77,7 @@ jobs:
           edit-mode: replace
 
   cleanup:
-    if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
+    if: github.event.action == 'closed'
     runs-on: ubuntu-latest
     env:
       PREVIEW_DIR: previews/pr-${{ github.event.pull_request.number }}
