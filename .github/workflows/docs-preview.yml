@@ -14,13 +14,12 @@ concurrency:
 
 jobs:
   preview:
-    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     env:
       HUGO_VERSION: 0.157.0
-      PAGES_SITE_PATH: joulie
       PREVIEW_DIR: previews/pr-${{ github.event.pull_request.number }}
-      PREVIEW_URL: https://${{ github.repository_owner }}.github.io/${{ env.PAGES_SITE_PATH }}/previews/pr-${{ github.event.pull_request.number }}/
+      PREVIEW_URL: https://${{ github.repository_owner }}.github.io/joulie/previews/pr-${{ github.event.pull_request.number }}/
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,6 +55,7 @@ jobs:
           hugo --gc --minify --baseURL "${{ env.PREVIEW_URL }}"
 
       - name: Deploy preview to gh-pages
+        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -66,6 +66,7 @@ jobs:
           force_orphan: false
 
       - name: Comment preview URL
+        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
