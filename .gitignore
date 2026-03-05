@@ -48,3 +48,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Hugo / Docsy local build artifacts
+website/public/
+website/resources/
+website/.hugo_build.lock

@@ -1,4 +1,7 @@
-# Input Telemetry and Actuation Interfaces
+---
+title: "Input Telemetry and Actuation Interfaces"
+---
+
 
 This document defines Joulie's **internal input interfaces** for telemetry and control.
 
@@ -224,7 +227,7 @@ This provides a fair same-workload/same-telemetry benchmark between WAO and Joul
 
 Implementation notes are documented in:
 
-- `docs/simulator.md`
+- `https://matbun.github.io/joulie/docs/simulator/simulator/`
 - `simulator/README.md`
 
 ## Generic telemetry CRD (current + extension path)

@@ -1,4 +1,7 @@
-# CRD and Policy Model
+---
+title: "CRD and Policy Model"
+---
+
 
 ## CRD
 
@@ -49,7 +52,7 @@ This keeps downgrade behavior explicit and safe.
 
 Detailed algorithm definitions for implemented policies are documented in:
 
-- [Policy Algorithms](./policies.md)
+- [Policy Algorithms](./policies/)
 
 ## `NodePowerProfile` fields (current)
 
@@ -92,17 +95,17 @@ Supported classes (derived by policy from pod scheduling constraints):
 
 - `performance`: workload should run on nodes with performance supply.
 - `eco`: workload should run on nodes with eco supply.
-- `flex` (implicit): no power-profile scheduling constraint; policy treats it as general/flexible demand.
+- unconstrained (implicit): no power-profile scheduling constraint; policy treats it as general demand.
 
 Classification source of truth:
 
 - `spec.nodeSelector` and `spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution`
 - key: `joulie.io/power-profile`
-- if no power-profile constraint exists, classification is implicit `flex` (general).
+- if no power-profile constraint exists, classification is implicit unconstrained (general).
 
 Reference example:
 
-- [Workload Scheduling Classes](../examples/03-workload-intent-classes/README.md)
+- [Workload Scheduling Classes](https://github.com/matbun/joulie/tree/main/examples/03-workload-intent-classes/README.md)
 
 ## Simple starter policy (recommended)
 
@@ -134,7 +137,7 @@ When data-driven policies are added, Prometheus should be integrated behind `Con
 
 Input telemetry/control provider design (host vs simulated HTTP) is documented in:
 
-- [Input Telemetry and Actuation Interfaces](./telemetry.md)
+- [Input Telemetry and Actuation Interfaces](./telemetry/)
 
 ## Example
 

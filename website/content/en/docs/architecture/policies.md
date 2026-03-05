@@ -1,4 +1,7 @@
-# Policy Algorithms
+---
+title: "Policy Algorithms"
+---
+
 
 This page documents the controller policy algorithms implemented in `cmd/operator/main.go`.
 
@@ -8,7 +11,7 @@ Policy demand classification is derived from pod scheduling constraints on `joul
 
 - `performance-only`: pod can run only on `performance`/`draining-performance`.
 - `eco-only`: pod can run only on `eco`.
-- `general` (implicit flex): no explicit power-profile constraint, or both profiles allowed.
+- `general` (implicit unconstrained): no explicit power-profile constraint, or both profiles allowed.
 - `unknown`: unsupported/ambiguous constraint shape.
 
 For safety, `unknown` is treated as performance-sensitive in downgrade guards.
