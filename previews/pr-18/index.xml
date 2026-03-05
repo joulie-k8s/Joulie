@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Joulie</title><link>https://matbun.github.io/joulie/previews/pr-18/</link><description>Recent content on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://matbun.github.io/joulie/previews/pr-18/index.xml" rel="self" type="application/rss+xml"/><item><title>Quickstart</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/quickstart/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/quickstart/</guid><description>&lt;h2 id="prerequisites"&gt;Prerequisites&lt;/h2&gt;
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Joulie</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/</link><description>Recent content on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://joulie-k8s.github.io/Joulie/previews/pr-18/index.xml" rel="self" type="application/rss+xml"/><item><title>Quickstart</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/getting-started/quickstart/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/getting-started/quickstart/</guid><description>&lt;h2 id="prerequisites"&gt;Prerequisites&lt;/h2&gt;
 &lt;ul&gt;
 &lt;li&gt;Kubernetes cluster with worker nodes&lt;/li&gt;
 &lt;li&gt;Node Feature Discovery (NFD) deployed&lt;/li&gt;
@@ -18,7 +18,7 @@
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; --create-namespace &lt;span style="color:#ae81ff"&gt;\
 &lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; -f values/joulie.yaml
 &lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id="2-install-from-source-when-developing"&gt;2. Install from source (when developing)&lt;/h2&gt;
-&lt;p&gt;If you changed source code, from repo root:&lt;/p&gt;</description></item><item><title>Agent Runtime Modes</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/daemonset/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/daemonset/</guid><description>&lt;p&gt;The agent supports two runtime modes:&lt;/p&gt;
+&lt;p&gt;If you changed source code, from repo root:&lt;/p&gt;</description></item><item><title>Agent Runtime Modes</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/getting-started/daemonset/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/getting-started/daemonset/</guid><description>&lt;p&gt;The agent supports two runtime modes:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;code&gt;daemonset&lt;/code&gt;: real-hardware mode, one pod per real node.&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;pool&lt;/code&gt;: simulation mode, one pod hosts many logical per-node controllers.&lt;/li&gt;
@@ -48,7 +48,7 @@
 &lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id="pool-mode-kwok--simulation"&gt;Pool mode (KWOK / simulation)&lt;/h2&gt;
-&lt;p&gt;Pool mode preserves per-node semantics but shards logical node controllers across replicas.&lt;/p&gt;</description></item><item><title>Pod Compatibility for Joulie</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/workload-compatibility/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/getting-started/workload-compatibility/</guid><description>&lt;p&gt;Joulie uses Kubernetes scheduling constraints as the single source of truth for workload placement intent.&lt;/p&gt;
+&lt;p&gt;Pool mode preserves per-node semantics but shards logical node controllers across replicas.&lt;/p&gt;</description></item><item><title>Pod Compatibility for Joulie</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/getting-started/workload-compatibility/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/getting-started/workload-compatibility/</guid><description>&lt;p&gt;Joulie uses Kubernetes scheduling constraints as the single source of truth for workload placement intent.&lt;/p&gt;
 &lt;p&gt;Power profile supply is exposed on node label:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;code&gt;joulie.io/power-profile=performance&lt;/code&gt;&lt;/li&gt;
@@ -217,7 +217,7 @@
 &lt;/div&gt;
 &lt;/div&gt;
 &lt;h2 id="unconstrained-pod"&gt;Unconstrained Pod&lt;/h2&gt;
-&lt;p&gt;Do not set power-profile affinity. Kubernetes can schedule it on either eco or performance nodes.&lt;/p&gt;</description></item><item><title>CRD and Policy Model</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/policy/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/policy/</guid><description>&lt;h2 id="crd"&gt;CRD&lt;/h2&gt;
+&lt;p&gt;Do not set power-profile affinity. Kubernetes can schedule it on either eco or performance nodes.&lt;/p&gt;</description></item><item><title>CRD and Policy Model</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/policy/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/policy/</guid><description>&lt;h2 id="crd"&gt;CRD&lt;/h2&gt;
 &lt;p&gt;The implemented APIs are:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;Group: &lt;code&gt;joulie.io&lt;/code&gt;&lt;/li&gt;
@@ -242,7 +242,7 @@
 &lt;li&gt;&lt;code&gt;ActiveEco&lt;/code&gt; (mapped to profile &lt;code&gt;eco&lt;/code&gt;)&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;Initial implementation should remain rule-based and deterministic.
-Future implementations can be telemetry-driven or model-driven.&lt;/p&gt;</description></item><item><title>Input Telemetry and Actuation Interfaces</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/telemetry/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/telemetry/</guid><description>&lt;p&gt;This document defines Joulie&amp;rsquo;s &lt;strong&gt;internal input interfaces&lt;/strong&gt; for telemetry and control.&lt;/p&gt;
+Future implementations can be telemetry-driven or model-driven.&lt;/p&gt;</description></item><item><title>Input Telemetry and Actuation Interfaces</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/telemetry/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/telemetry/</guid><description>&lt;p&gt;This document defines Joulie&amp;rsquo;s &lt;strong&gt;internal input interfaces&lt;/strong&gt; for telemetry and control.&lt;/p&gt;
 &lt;p&gt;Important distinction:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;this is &lt;strong&gt;not&lt;/strong&gt; about Prometheus metrics exposed by Joulie,&lt;/li&gt;
@@ -256,7 +256,7 @@ Future implementations can be telemetry-driven or model-driven.&lt;/p&gt;</descr
 &lt;li&gt;Avoid policy/API churn when moving from rule-based to data-driven policies.&lt;/li&gt;
 &lt;/ol&gt;
 &lt;h2 id="core-model-simple"&gt;Core model (simple)&lt;/h2&gt;
-&lt;p&gt;Joulie uses:&lt;/p&gt;</description></item><item><title>KWOK Benchmark Experiment</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/experiments/kwok-benchmark/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/experiments/kwok-benchmark/</guid><description>&lt;p&gt;This document describes the first benchmark harness implementation under:&lt;/p&gt;
+&lt;p&gt;Joulie uses:&lt;/p&gt;</description></item><item><title>KWOK Benchmark Experiment</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/experiments/kwok-benchmark/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/experiments/kwok-benchmark/</guid><description>&lt;p&gt;This document describes the first benchmark harness implementation under:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;code&gt;experiments/01-kwok-benchmark/&lt;/code&gt;&lt;/li&gt;
 &lt;/ul&gt;
@@ -277,7 +277,7 @@ Future implementations can be telemetry-driven or model-driven.&lt;/p&gt;</descr
 &lt;li&gt;A/B/C workload fairness is preserved by generating a canonical per-seed trace and deriving baseline A by stripping only power-profile affinity.&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id="what-is-measured-now"&gt;What is measured now&lt;/h2&gt;
-&lt;p&gt;Current harness outputs:&lt;/p&gt;</description></item><item><title>Metrics Reference</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/metrics/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/metrics/</guid><description>&lt;p&gt;Joulie agent exposes Prometheus metrics on &lt;code&gt;/metrics&lt;/code&gt; (default &lt;code&gt;:8080&lt;/code&gt;).&lt;/p&gt;
+&lt;p&gt;Current harness outputs:&lt;/p&gt;</description></item><item><title>Metrics Reference</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/metrics/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/metrics/</guid><description>&lt;p&gt;Joulie agent exposes Prometheus metrics on &lt;code&gt;/metrics&lt;/code&gt; (default &lt;code&gt;:8080&lt;/code&gt;).&lt;/p&gt;
 &lt;p&gt;This document is only for &lt;strong&gt;exported observability metrics&lt;/strong&gt;.
 For &lt;strong&gt;input telemetry and control interfaces&lt;/strong&gt; (real hardware vs simulated HTTP), see:&lt;/p&gt;
 &lt;ul&gt;
@@ -302,7 +302,7 @@ For &lt;strong&gt;input telemetry and control interfaces&lt;/strong&gt; (real ha
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;This metric can also be used to derive policy states in Grafana:&lt;/p&gt;</description></item><item><title>Operator Notes</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/operator/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/operator/</guid><description>&lt;h2 id="target-concept"&gt;Target concept&lt;/h2&gt;
+&lt;p&gt;This metric can also be used to derive policy states in Grafana:&lt;/p&gt;</description></item><item><title>Operator Notes</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/operator/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/operator/</guid><description>&lt;h2 id="target-concept"&gt;Target concept&lt;/h2&gt;
 &lt;p&gt;Joulie should evolve into a centralized operator that owns the global optimization loop.&lt;/p&gt;
 &lt;p&gt;At each control step (for example every minute), the operator:&lt;/p&gt;
 &lt;ol&gt;
@@ -318,7 +318,7 @@ For &lt;strong&gt;input telemetry and control interfaces&lt;/strong&gt; (real ha
 &lt;/ul&gt;
 &lt;h2 id="control-responsibility-boundary"&gt;Control responsibility boundary&lt;/h2&gt;
 &lt;p&gt;Operator is the control-plane brain.
-Agent is an actuator/telemetry component.&lt;/p&gt;</description></item><item><title>Policy Algorithms</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/policies/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/policies/</guid><description>&lt;p&gt;This page documents the controller policy algorithms implemented in &lt;code&gt;cmd/operator/main.go&lt;/code&gt;.&lt;/p&gt;
+Agent is an actuator/telemetry component.&lt;/p&gt;</description></item><item><title>Policy Algorithms</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/policies/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/policies/</guid><description>&lt;p&gt;This page documents the controller policy algorithms implemented in &lt;code&gt;cmd/operator/main.go&lt;/code&gt;.&lt;/p&gt;
 &lt;h2 id="classification-input"&gt;Classification Input&lt;/h2&gt;
 &lt;p&gt;Policy demand classification is derived from pod scheduling constraints on &lt;code&gt;joulie.io/power-profile&lt;/code&gt;:&lt;/p&gt;
 &lt;ul&gt;
@@ -337,7 +337,7 @@ Agent is an actuator/telemetry component.&lt;/p&gt;</description></item><item><t
 &lt;li&gt;Write &lt;code&gt;NodePowerProfile&lt;/code&gt; and update node label &lt;code&gt;joulie.io/power-profile&lt;/code&gt;.&lt;/li&gt;
 &lt;/ol&gt;
 &lt;h2 id="static_partition"&gt;&lt;code&gt;static_partition&lt;/code&gt;&lt;/h2&gt;
-&lt;p&gt;Goal: deterministic fixed HP/LP split.&lt;/p&gt;</description></item><item><title>Simulator Algorithms</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/simulator/simulator-algorithms/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/simulator/simulator-algorithms/</guid><description>&lt;p&gt;This page documents the core simulator math and control/workload update loop implemented in &lt;code&gt;simulator/cmd/simulator/main.go&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;Goal: deterministic fixed HP/LP split.&lt;/p&gt;</description></item><item><title>Simulator Algorithms</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/simulator/simulator-algorithms/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/simulator/simulator-algorithms/</guid><description>&lt;p&gt;This page documents the core simulator math and control/workload update loop implemented in &lt;code&gt;simulator/cmd/simulator/main.go&lt;/code&gt;.&lt;/p&gt;
 &lt;h2 id="per-node-state"&gt;Per-Node State&lt;/h2&gt;
 &lt;p&gt;Each simulated node tracks:&lt;/p&gt;
 &lt;ul&gt;
@@ -359,7 +359,7 @@ Agent is an actuator/telemetry component.&lt;/p&gt;</description></item><item><t
 &lt;li&gt;&lt;code&gt;alpha = AlphaUtil&lt;/code&gt; (defaults to 1 if invalid)&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;beta = BetaFreq&lt;/code&gt; (defaults to 1 if invalid)&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;Then applies bounds/cap handling:&lt;/p&gt;</description></item><item><title>Workload and Power Simulator</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/simulator/simulator/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/simulator/simulator/</guid><description>&lt;p&gt;This document defines the Joulie simulator design and how it integrates with Joulie.&lt;/p&gt;
+&lt;p&gt;Then applies bounds/cap handling:&lt;/p&gt;</description></item><item><title>Workload and Power Simulator</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/simulator/simulator/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/simulator/simulator/</guid><description>&lt;p&gt;This document defines the Joulie simulator design and how it integrates with Joulie.&lt;/p&gt;
 &lt;h2 id="goals"&gt;Goals&lt;/h2&gt;
 &lt;ul&gt;
 &lt;li&gt;Keep Kubernetes scheduling real (real pod placement/lifecycle).&lt;/li&gt;

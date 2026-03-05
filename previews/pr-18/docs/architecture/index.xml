@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Architecture on Joulie</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/</link><description>Recent content in Architecture on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://matbun.github.io/joulie/previews/pr-18/docs/architecture/index.xml" rel="self" type="application/rss+xml"/><item><title>CRD and Policy Model</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/policy/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/policy/</guid><description>&lt;h2 id="crd"&gt;CRD&lt;/h2&gt;
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Architecture on Joulie</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/</link><description>Recent content in Architecture on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/index.xml" rel="self" type="application/rss+xml"/><item><title>CRD and Policy Model</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/policy/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/policy/</guid><description>&lt;h2 id="crd"&gt;CRD&lt;/h2&gt;
 &lt;p&gt;The implemented APIs are:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;Group: &lt;code&gt;joulie.io&lt;/code&gt;&lt;/li&gt;
@@ -23,7 +23,7 @@
 &lt;li&gt;&lt;code&gt;ActiveEco&lt;/code&gt; (mapped to profile &lt;code&gt;eco&lt;/code&gt;)&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;Initial implementation should remain rule-based and deterministic.
-Future implementations can be telemetry-driven or model-driven.&lt;/p&gt;</description></item><item><title>Input Telemetry and Actuation Interfaces</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/telemetry/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/telemetry/</guid><description>&lt;p&gt;This document defines Joulie&amp;rsquo;s &lt;strong&gt;internal input interfaces&lt;/strong&gt; for telemetry and control.&lt;/p&gt;
+Future implementations can be telemetry-driven or model-driven.&lt;/p&gt;</description></item><item><title>Input Telemetry and Actuation Interfaces</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/telemetry/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/telemetry/</guid><description>&lt;p&gt;This document defines Joulie&amp;rsquo;s &lt;strong&gt;internal input interfaces&lt;/strong&gt; for telemetry and control.&lt;/p&gt;
 &lt;p&gt;Important distinction:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;this is &lt;strong&gt;not&lt;/strong&gt; about Prometheus metrics exposed by Joulie,&lt;/li&gt;
@@ -37,7 +37,7 @@ Future implementations can be telemetry-driven or model-driven.&lt;/p&gt;</descr
 &lt;li&gt;Avoid policy/API churn when moving from rule-based to data-driven policies.&lt;/li&gt;
 &lt;/ol&gt;
 &lt;h2 id="core-model-simple"&gt;Core model (simple)&lt;/h2&gt;
-&lt;p&gt;Joulie uses:&lt;/p&gt;</description></item><item><title>Metrics Reference</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/metrics/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/metrics/</guid><description>&lt;p&gt;Joulie agent exposes Prometheus metrics on &lt;code&gt;/metrics&lt;/code&gt; (default &lt;code&gt;:8080&lt;/code&gt;).&lt;/p&gt;
+&lt;p&gt;Joulie uses:&lt;/p&gt;</description></item><item><title>Metrics Reference</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/metrics/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/metrics/</guid><description>&lt;p&gt;Joulie agent exposes Prometheus metrics on &lt;code&gt;/metrics&lt;/code&gt; (default &lt;code&gt;:8080&lt;/code&gt;).&lt;/p&gt;
 &lt;p&gt;This document is only for &lt;strong&gt;exported observability metrics&lt;/strong&gt;.
 For &lt;strong&gt;input telemetry and control interfaces&lt;/strong&gt; (real hardware vs simulated HTTP), see:&lt;/p&gt;
 &lt;ul&gt;
@@ -62,7 +62,7 @@ For &lt;strong&gt;input telemetry and control interfaces&lt;/strong&gt; (real ha
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;This metric can also be used to derive policy states in Grafana:&lt;/p&gt;</description></item><item><title>Operator Notes</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/operator/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/operator/</guid><description>&lt;h2 id="target-concept"&gt;Target concept&lt;/h2&gt;
+&lt;p&gt;This metric can also be used to derive policy states in Grafana:&lt;/p&gt;</description></item><item><title>Operator Notes</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/operator/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/operator/</guid><description>&lt;h2 id="target-concept"&gt;Target concept&lt;/h2&gt;
 &lt;p&gt;Joulie should evolve into a centralized operator that owns the global optimization loop.&lt;/p&gt;
 &lt;p&gt;At each control step (for example every minute), the operator:&lt;/p&gt;
 &lt;ol&gt;
@@ -78,7 +78,7 @@ For &lt;strong&gt;input telemetry and control interfaces&lt;/strong&gt; (real ha
 &lt;/ul&gt;
 &lt;h2 id="control-responsibility-boundary"&gt;Control responsibility boundary&lt;/h2&gt;
 &lt;p&gt;Operator is the control-plane brain.
-Agent is an actuator/telemetry component.&lt;/p&gt;</description></item><item><title>Policy Algorithms</title><link>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/policies/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://matbun.github.io/joulie/previews/pr-18/docs/architecture/policies/</guid><description>&lt;p&gt;This page documents the controller policy algorithms implemented in &lt;code&gt;cmd/operator/main.go&lt;/code&gt;.&lt;/p&gt;
+Agent is an actuator/telemetry component.&lt;/p&gt;</description></item><item><title>Policy Algorithms</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/policies/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/policies/</guid><description>&lt;p&gt;This page documents the controller policy algorithms implemented in &lt;code&gt;cmd/operator/main.go&lt;/code&gt;.&lt;/p&gt;
 &lt;h2 id="classification-input"&gt;Classification Input&lt;/h2&gt;
 &lt;p&gt;Policy demand classification is derived from pod scheduling constraints on &lt;code&gt;joulie.io/power-profile&lt;/code&gt;:&lt;/p&gt;
 &lt;ul&gt;
