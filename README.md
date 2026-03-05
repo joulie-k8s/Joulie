@@ -1,9 +1,5 @@
 # Joulie
 
-<p align="center">
-  <img src="./website/static/images/logo.png" alt="Joulie logo" width="180">
-</p>
-
 [![CI](https://github.com/matbun/joulie/actions/workflows/ci.yml/badge.svg)](https://github.com/matbun/joulie/actions/workflows/ci.yml)
 [![Release](https://github.com/matbun/joulie/actions/workflows/release.yml/badge.svg)](https://github.com/matbun/joulie/actions/workflows/release.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/matbun/joulie)](https://goreportcard.com/report/github.com/matbun/joulie)
@@ -11,10 +7,15 @@
 
 Kubernetes-native node-level power orchestration.
 
+<p align="center">
+  <img src="./website/static/images/logo.png" alt="Joulie logo" width="180">
+</p>
+
 ## Documentation
 
-- Website (GitHub Pages): `https://matbun.github.io/joulie/`
-- Docs source (Hugo + Docsy): [`website/`](./website/)
+- Website (GitHub Pages): [matbun.github.io/joulie](https://matbun.github.io/joulie/)
+- Docs source (Hugo + Docsy): [website/](./website/)
+- Pod compatibility guide: [docs/simulator/workload-compatibility](https://matbun.github.io/joulie/docs/simulator/workload-compatibility/)
 
 ## Quickstart
 
@@ -24,13 +25,13 @@ Kubernetes-native node-level power orchestration.
 make build-push TAG=<tag>
 ```
 
-2. Install chart:
+1. Install chart:
 
 ```bash
 make install TAG=<tag>
 ```
 
-3. Label managed nodes:
+1. Label managed nodes:
 
 ```bash
 kubectl label node <node1> joulie.io/managed=true --overwrite
@@ -56,4 +57,4 @@ Joulie uses Kubernetes scheduling constraints as workload intent source:
 
 See full manifest examples in docs page:
 
-- `https://matbun.github.io/joulie/docs/workload-compatibility/`
+- [Pod compatibility guide](https://matbun.github.io/joulie/docs/simulator/workload-compatibility/)
