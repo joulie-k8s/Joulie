@@ -14,7 +14,7 @@ Visit the docs page at [joulie-k8s.github.io/Joulie](https://joulie-k8s.github.i
 - [`charts/joulie`](./charts/joulie): Helm chart
 - [`cmd/agent`](./cmd/agent): node agent
 - [`cmd/operator`](./cmd/operator): control loop
-- [`simulator/`](./simulator): telemetry/control simulator
+- [`simulator/`](./simulator): workload and power simulator (telemetry and control)
 - [`examples/`](./examples): runnable examples
 - [`experiments/`](./experiments): benchmark experiments
 
