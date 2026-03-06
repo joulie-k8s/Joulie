@@ -1,5 +1,6 @@
 ---
 title: "Workload and Power Simulator"
+weight: 10
 ---
 
 
@@ -159,4 +160,4 @@ Helper tools:
 
 For exact equations and control/workload update math:
 
-- [Simulator Algorithms](./simulator-algorithms/)
+- [Simulator Algorithms]({{< relref "/docs/simulator/simulator-algorithms.md" >}})

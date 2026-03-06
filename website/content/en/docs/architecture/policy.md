@@ -52,7 +52,7 @@ This keeps downgrade behavior explicit and safe.
 
 Detailed algorithm definitions for implemented policies are documented in:
 
-- [Policy Algorithms](./policies/)
+- [Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}})
 
 ## `NodePowerProfile` fields (current)
 
@@ -137,7 +137,7 @@ When data-driven policies are added, Prometheus should be integrated behind `Con
 
 Input telemetry/control provider design (host vs simulated HTTP) is documented in:
 
-- [Input Telemetry and Actuation Interfaces](./telemetry/)
+- [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
 
 ## Example
 

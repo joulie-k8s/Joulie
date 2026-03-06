@@ -13,6 +13,20 @@ params:
   github_repo: https://github.com/joulie-k8s/Joulie
   github_project_repo: https://github.com/joulie-k8s/Joulie
   offlineSearch: true
+  copyright: "Joulie Authors"
+  version_menu: "Version"
+  versions:
+    - version: "stable"
+      url: "/Joulie/stable/"
+    - version: "main"
+      url: "/Joulie/main/"
+
+  links:
+    user:
+      - name: GitHub
+        url: https://github.com/joulie-k8s/Joulie
+        icon: fab fa-github
+        desc: Source code and issues
 
   ui:
     sidebar_menu_compact: true

@@ -90,7 +90,7 @@ Suggested interfaces:
 
 Input source and actuation abstraction details are defined in:
 
-- [Input Telemetry and Actuation Interfaces](./telemetry/)
+- [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
 
 Future data-driven policies should use Prometheus (or other sources) through `ContextProvider`, not by changing agent APIs.
 
