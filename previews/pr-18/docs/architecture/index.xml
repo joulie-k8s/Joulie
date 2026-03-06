@@ -41,7 +41,7 @@ Future implementations can be telemetry-driven or model-driven.&lt;/p&gt;</descr
 &lt;p&gt;This document is only for &lt;strong&gt;exported observability metrics&lt;/strong&gt;.
 For &lt;strong&gt;input telemetry and control interfaces&lt;/strong&gt; (real hardware vs simulated HTTP), see:&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;&lt;a href="./telemetry/"&gt;Input Telemetry and Actuation Interfaces&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-18/docs/architecture/telemetry/"&gt;Input Telemetry and Actuation Interfaces&lt;/a&gt;&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id="endpoint"&gt;Endpoint&lt;/h2&gt;
 &lt;ul&gt;
