@@ -1,4 +1,10 @@
-# Agent Runtime Modes
++++
+title = "Agent Runtime Modes"
+linkTitle = "Agent Runtime Modes"
+slug = "daemonset"
+weight = 2
++++
+
 
 The agent supports two runtime modes:
 

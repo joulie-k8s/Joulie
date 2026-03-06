@@ -1,4 +1,8 @@
-# Simulator Algorithms
+---
+title: "Simulator Algorithms"
+weight: 20
+---
+
 
 This page documents the core simulator math and control/workload update loop implemented in `simulator/cmd/simulator/main.go`.
 
@@ -105,6 +109,6 @@ Simulator also derives class from pod scheduling constraints:
 
 - `performance`
 - `eco`
-- `general` (implicit flex when unconstrained)
+- `general` (implicit unconstrained)
 
 This is used for debug counters and completion metrics labeling.

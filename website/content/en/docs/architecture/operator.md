@@ -1,4 +1,7 @@
-# Operator Notes
+---
+title: "Operator Notes"
+---
+
 
 ## Target concept
 
@@ -37,7 +40,7 @@ To avoid contract violations during `ActivePerformance -> ActiveEco` moves, use 
 If safe condition never occurs, policy controls escalation (hold, timeout, force, or drain/evict strategy).
 
 Current implementation includes a basic guard: when target is `ActiveEco` but the node still runs pods classified as performance-only from scheduling constraints (`nodeSelector`/required `nodeAffinity` on `joulie.io/power-profile`), downgrade is deferred and node remains in performance profile.
-Pods with no power-profile scheduling constraint are classified as implicit `flex` (general), not performance-only.
+Pods with no power-profile scheduling constraint are classified as implicit unconstrained (general), not performance-only.
 
 ## Global inputs
 
@@ -87,7 +90,7 @@ Suggested interfaces:
 
 Input source and actuation abstraction details are defined in:
 
-- [Input Telemetry and Actuation Interfaces](./telemetry.md)
+- [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
 
 Future data-driven policies should use Prometheus (or other sources) through `ContextProvider`, not by changing agent APIs.
 

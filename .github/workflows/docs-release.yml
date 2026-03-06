@@ -1,0 +1,241 @@
+name: Docs Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to publish (e.g. v0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gh-pages-publish
+  cancel-in-progress: false
+
+jobs:
+  deploy-release:
+    runs-on: ubuntu-latest
+    env:
+      HUGO_VERSION: 0.157.0
+      SITE_ROOT_PATH: /${{ github.event.repository.name }}
+    steps:
+      - name: Resolve release version
+        id: vars
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "version is required" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_url=https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/versions/$VERSION/" >> "$GITHUB_OUTPUT"
+          echo "stable_url=https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/stable/" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.vars.outputs.version }}
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: website/go.mod
+
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: ${{ env.HUGO_VERSION }}
+          extended: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install PostCSS toolchain
+        working-directory: website
+        run: |
+          npm install --no-save postcss postcss-cli autoprefixer
+
+      - name: Resolve Hugo modules
+        working-directory: website
+        run: |
+          hugo mod get github.com/google/docsy@latest
+          hugo mod get github.com/google/docsy/dependencies@latest
+
+      - name: Generate Docsy versions config
+        env:
+          ROOT_PATH: /${{ github.event.repository.name }}
+          OUT_FILE: ${{ runner.temp }}/docsy-versions.yaml
+          GH_REPO: ${{ github.repository }}
+          CURRENT_VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          set -euo pipefail
+          MANIFEST="${RUNNER_TEMP}/versions.json"
+          rm -f "$MANIFEST"
+          git clone --depth 1 --branch gh-pages "https://github.com/${GH_REPO}.git" "${RUNNER_TEMP}/gh-pages" >/dev/null 2>&1 || true
+          if [ -f "${RUNNER_TEMP}/gh-pages/versions.json" ]; then
+            cp "${RUNNER_TEMP}/gh-pages/versions.json" "$MANIFEST"
+          fi
+          python3 - <<'PY'
+          import json, os, pathlib
+
+          root = os.environ["ROOT_PATH"]
+          current = os.environ["CURRENT_VERSION"].strip()
+          out = pathlib.Path(os.environ["OUT_FILE"])
+          manifest = pathlib.Path(os.environ["RUNNER_TEMP"]) / "versions.json"
+
+          entries = []
+          if manifest.exists():
+              try:
+                  data = json.loads(manifest.read_text())
+                  for e in data.get("versions", []):
+                      n = str(e.get("name", "")).strip()
+                      p = str(e.get("path", "")).strip()
+                      if n and p:
+                          entries.append((n, p))
+              except Exception:
+                  pass
+
+          extras = [(n, p) for (n, p) in entries if n not in {"stable", "main", current}]
+          final = [("stable", f"{root}/stable/"), ("main", f"{root}/main/")]
+          if current:
+              final.append((current, f"{root}/versions/{current}/"))
+          final += extras
+
+          dedup = []
+          seen = set()
+          for n, p in final:
+              if n in seen:
+                  continue
+              seen.add(n)
+              dedup.append((n, p))
+
+          lines = ["params:", "  version_menu: \"Version\"", "  versions:"]
+          for n, p in dedup:
+              lines.append(f"    - version: {json.dumps(n)}")
+              lines.append(f"      url: {json.dumps(p)}")
+          out.write_text("\n".join(lines) + "\n")
+          print(out)
+          PY
+
+      - name: Build versioned docs
+        working-directory: website
+        run: |
+          hugo --gc --minify \
+            --baseURL "${{ steps.vars.outputs.version_url }}" \
+            --config "hugo.yaml,${{ runner.temp }}/docsy-versions.yaml" \
+            --destination ../public-version
+
+      - name: Build stable docs
+        working-directory: website
+        run: |
+          hugo --gc --minify \
+            --baseURL "${{ steps.vars.outputs.stable_url }}" \
+            --config "hugo.yaml,${{ runner.temp }}/docsy-versions.yaml" \
+            --destination ../public-stable
+
+      - name: Deploy versioned docs to gh-pages/versions/${{ steps.vars.outputs.version }}
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: public-version
+          destination_dir: versions/${{ steps.vars.outputs.version }}
+          keep_files: true
+          force_orphan: false
+
+      - name: Deploy stable docs to gh-pages/stable
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: public-stable
+          destination_dir: stable
+          keep_files: true
+          force_orphan: false
+
+      - name: Update root redirect and versions manifest
+        run: |
+          set -euo pipefail
+
+          git clone --depth 1 --branch gh-pages \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            gh-pages
+
+          cd gh-pages
+
+          touch .nojekyll
+
+          cat > index.html <<EOF2
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta http-equiv="refresh" content="0; url=stable/">
+              <title>Redirecting...</title>
+              <link rel="canonical" href="stable/">
+            </head>
+            <body>
+              <p>Redirecting to <a href="stable/">stable docs</a>.</p>
+            </body>
+          </html>
+          EOF2
+
+          cat > 404.html <<EOF2
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <title>Page not found</title>
+            </head>
+            <body>
+              <h1>Page not found</h1>
+              <p>Try the <a href="stable/">stable docs</a> or the <a href="main/">main docs</a>.</p>
+            </body>
+          </html>
+          EOF2
+
+          FILE="versions.json"
+          ROOT="${{ env.SITE_ROOT_PATH }}"
+          VERSION_NAME="${{ steps.vars.outputs.version }}"
+
+          if [ ! -f "$FILE" ]; then
+            printf '{"default":"stable","versions":[{"name":"stable","path":"%s/stable/"},{"name":"main","path":"%s/main/"},{"name":"%s","path":"%s/versions/%s/"}]}' \
+              "$ROOT" "$ROOT" "$VERSION_NAME" "$ROOT" "$VERSION_NAME" > "$FILE"
+          else
+            tmp="$(mktemp)"
+            jq \
+              --arg stable "$ROOT/stable/" \
+              --arg main "$ROOT/main/" \
+              --arg version_name "$VERSION_NAME" \
+              --arg version_path "$ROOT/versions/$VERSION_NAME/" '
+              .default = "stable"
+              | .versions = (
+                  [{"name":"stable","path":$stable}]
+                  + [{"name":"main","path":$main}]
+                  + [{"name":$version_name,"path":$version_path}]
+                  + ((.versions // []) | map(select(.name != "stable" and .name != "main" and .name != $version_name)))
+                )
+            ' "$FILE" > "$tmp"
+            mv "$tmp" "$FILE"
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .nojekyll index.html 404.html versions.json
+          if ! git diff --cached --quiet; then
+            git commit -m "docs: publish ${VERSION_NAME}"
+            git push
+          fi

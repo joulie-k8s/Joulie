@@ -1,4 +1,8 @@
-# Workload and Power Simulator
+---
+title: "Workload and Power Simulator"
+weight: 10
+---
+
 
 This document defines the Joulie simulator design and how it integrates with Joulie.
 
@@ -156,4 +160,4 @@ Helper tools:
 
 For exact equations and control/workload update math:
 
-- [Simulator Algorithms](./simulator-algorithms.md)
+- [Simulator Algorithms]({{< relref "/docs/simulator/simulator-algorithms.md" >}})

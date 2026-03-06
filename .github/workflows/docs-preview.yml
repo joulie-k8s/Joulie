@@ -1,0 +1,166 @@
+name: Docs Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    paths:
+      - "website/**"
+      - ".github/workflows/docs-preview.yml"
+      - ".github/workflows/docs-main.yml"
+      - ".github/workflows/docs-release.yml"
+      - "README.md"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: gh-pages-publish
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    env:
+      HUGO_VERSION: 0.157.0
+      PREVIEW_DIR: previews/pr-${{ github.event.pull_request.number }}
+      PREVIEW_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/previews/pr-${{ github.event.pull_request.number }}/
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: website/go.mod
+
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: ${{ env.HUGO_VERSION }}
+          extended: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install PostCSS toolchain
+        working-directory: website
+        run: |
+          npm install --no-save postcss postcss-cli autoprefixer
+
+      - name: Generate Docsy versions config
+        env:
+          ROOT_PATH: /${{ github.event.repository.name }}
+          OUT_FILE: ${{ runner.temp }}/docsy-versions.yaml
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          MANIFEST="${RUNNER_TEMP}/versions.json"
+          rm -f "$MANIFEST"
+          git clone --depth 1 --branch gh-pages "https://github.com/${GH_REPO}.git" "${RUNNER_TEMP}/gh-pages" >/dev/null 2>&1 || true
+          if [ -f "${RUNNER_TEMP}/gh-pages/versions.json" ]; then
+            cp "${RUNNER_TEMP}/gh-pages/versions.json" "$MANIFEST"
+          fi
+          python3 - <<'PY'
+          import json, os, pathlib
+
+          root = os.environ["ROOT_PATH"]
+          out = pathlib.Path(os.environ["OUT_FILE"])
+          manifest = pathlib.Path(os.environ["RUNNER_TEMP"]) / "versions.json"
+
+          entries = []
+          if manifest.exists():
+              try:
+                  data = json.loads(manifest.read_text())
+                  for e in data.get("versions", []):
+                      n = str(e.get("name", "")).strip()
+                      p = str(e.get("path", "")).strip()
+                      if n and p:
+                          entries.append((n, p))
+              except Exception:
+                  pass
+
+          extras = [(n, p) for (n, p) in entries if n not in {"stable", "main"}]
+          final = [("stable", f"{root}/stable/"), ("main", f"{root}/main/")] + extras
+
+          dedup = []
+          seen = set()
+          for n, p in final:
+              if n in seen:
+                  continue
+              seen.add(n)
+              dedup.append((n, p))
+
+          lines = ["params:", "  version_menu: \"Version\"", "  versions:"]
+          for n, p in dedup:
+              lines.append(f"    - version: {json.dumps(n)}")
+              lines.append(f"      url: {json.dumps(p)}")
+          out.write_text("\n".join(lines) + "\n")
+          print(out)
+          PY
+
+      - name: Build preview site
+        working-directory: website
+        run: |
+          hugo mod get github.com/google/docsy@latest
+          hugo mod get github.com/google/docsy/dependencies@latest
+          hugo --gc --minify --baseURL "${{ env.PREVIEW_URL }}" --config "hugo.yaml,${{ runner.temp }}/docsy-versions.yaml"
+
+      - name: Deploy preview to gh-pages
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: website/public
+          destination_dir: ${{ env.PREVIEW_DIR }}
+          keep_files: true
+          force_orphan: false
+
+      - name: Comment preview URL
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body-includes: "<!-- docs-preview-comment -->"
+          body: |
+            <!-- docs-preview-comment -->
+            Docs preview is ready:
+            ${{ env.PREVIEW_URL }}
+          edit-mode: replace
+
+  cleanup:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    env:
+      PREVIEW_DIR: previews/pr-${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          fetch-depth: 0
+        continue-on-error: true
+
+      - name: Remove preview directory
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          if [ ! -d .git ]; then
+            echo "gh-pages branch does not exist yet; nothing to clean."
+            exit 0
+          fi
+          rm -rf "${{ env.PREVIEW_DIR }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No preview directory to remove."
+            exit 0
+          fi
+          git commit -m "docs: remove preview for PR #${{ github.event.pull_request.number }}"
+          git push
