@@ -1,0 +1,140 @@
+name: Docs Main
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "website/**"
+      - ".github/workflows/docs-main.yml"
+      - ".github/workflows/docs-release.yml"
+      - ".github/workflows/docs-preview.yml"
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gh-pages-publish
+  cancel-in-progress: false
+
+jobs:
+  deploy-main:
+    runs-on: ubuntu-latest
+    env:
+      HUGO_VERSION: 0.157.0
+      SITE_ROOT_PATH: /${{ github.event.repository.name }}
+      MAIN_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/main/
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: website/go.mod
+
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: ${{ env.HUGO_VERSION }}
+          extended: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install PostCSS toolchain
+        working-directory: website
+        run: |
+          npm install --no-save postcss postcss-cli autoprefixer
+
+      - name: Build main docs
+        working-directory: website
+        run: |
+          hugo mod get github.com/google/docsy@latest
+          hugo mod get github.com/google/docsy/dependencies@latest
+          hugo --gc --minify --baseURL "${{ env.MAIN_URL }}"
+
+      - name: Deploy main docs to gh-pages/main
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: website/public
+          destination_dir: main
+          keep_files: true
+          force_orphan: false
+
+      - name: Ensure bootstrap files and versions manifest
+        run: |
+          set -euo pipefail
+
+          git clone --depth 1 --branch gh-pages \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            gh-pages
+
+          cd gh-pages
+
+          touch .nojekyll
+
+          if [ ! -f index.html ]; then
+            cat > index.html <<EOF2
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <meta http-equiv="refresh" content="0; url=main/">
+              <title>Redirecting...</title>
+              <link rel="canonical" href="main/">
+            </head>
+            <body>
+              <p>Redirecting to <a href="main/">main docs</a>.</p>
+            </body>
+          </html>
+          EOF2
+          fi
+
+          if [ ! -f 404.html ]; then
+            cat > 404.html <<EOF2
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8">
+              <title>Page not found</title>
+            </head>
+            <body>
+              <h1>Page not found</h1>
+              <p>Try the <a href="main/">main docs</a>.</p>
+            </body>
+          </html>
+          EOF2
+          fi
+
+          FILE="versions.json"
+          ROOT="${{ env.SITE_ROOT_PATH }}"
+
+          if [ ! -f "$FILE" ]; then
+            printf '{"default":"main","versions":[{"name":"main","path":"%s/main/"}]}' "$ROOT" > "$FILE"
+          else
+            tmp="$(mktemp)"
+            jq --arg main "$ROOT/main/" '
+              .default = (.default // "main")
+              | .versions = (
+                  [{"name":"main","path":$main}]
+                  + ((.versions // []) | map(select(.name != "main")))
+                )
+            ' "$FILE" > "$tmp"
+            mv "$tmp" "$FILE"
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .nojekyll index.html 404.html versions.json
+          if ! git diff --cached --quiet; then
+            git commit -m "docs: update main docs metadata"
+            git push
+          fi

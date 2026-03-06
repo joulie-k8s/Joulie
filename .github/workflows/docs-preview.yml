@@ -3,14 +3,20 @@ name: Docs Preview
 on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
+    paths:
+      - "website/**"
+      - ".github/workflows/docs-preview.yml"
+      - ".github/workflows/docs-main.yml"
+      - ".github/workflows/docs-release.yml"
+      - "README.md"
 
 permissions:
   contents: write
   pull-requests: write
 
 concurrency:
-  group: docs-preview-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: gh-pages-publish
+  cancel-in-progress: false
 
 jobs:
   preview:
@@ -88,9 +94,15 @@ jobs:
         with:
           ref: gh-pages
           fetch-depth: 0
+        continue-on-error: true
 
       - name: Remove preview directory
+        if: github.event.pull_request.head.repo.full_name == github.repository
         run: |
+          if [ ! -d .git ]; then
+            echo "gh-pages branch does not exist yet; nothing to clean."
+            exit 0
+          fi
           rm -rf "${{ env.PREVIEW_DIR }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

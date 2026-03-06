@@ -63,6 +63,21 @@ cd website
 hugo --gc --minify --baseURL https://joulie-k8s.github.io/Joulie/
 ```
 
+## GitHub Pages layout
+
+This repository publishes docs to the `gh-pages` branch with multiple sub-sites:
+
+- `https://joulie-k8s.github.io/Joulie/main/` (main branch docs)
+- `https://joulie-k8s.github.io/Joulie/stable/` (latest release docs)
+- `https://joulie-k8s.github.io/Joulie/versions/<tag>/` (versioned release docs)
+- `https://joulie-k8s.github.io/Joulie/previews/pr-<n>/` (PR previews)
+
+Workflows:
+
+- `.github/workflows/docs-main.yml`
+- `.github/workflows/docs-release.yml`
+- `.github/workflows/docs-preview.yml`
+
 ## Troubleshooting
 
 If modules are missing or stale:
