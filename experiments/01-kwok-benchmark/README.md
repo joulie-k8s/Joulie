@@ -11,7 +11,7 @@ Workload scheduling in benchmark pods uses affinity on `joulie.io/power-profile`
 
 - `performance`: requires `joulie.io/power-profile=performance`
 - `eco`: requires `joulie.io/power-profile=eco`
-- no power-profile affinity: implicit `flex` (general) placement
+- no power-profile affinity: implicit general placement
 
 Current trace behavior:
 
@@ -169,6 +169,8 @@ KIND_CLUSTER_CONFIG=/path/to/kind-config.yaml ./scripts/01_create_cluster_kwokct
 
 - Run dirs: `results/<run_id>/...`
 - Aggregated CSV: `results/summary.csv`
+- Analysis report: [`REPORT.md`](./REPORT.md)
+- Report snapshot assets (commit-friendly): [`assets/`](./assets/)
 - Plots: `results/plots/*.png`
   - `runtime_distribution.png`
   - `throughput_vs_energy.png`
