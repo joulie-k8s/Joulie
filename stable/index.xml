@@ -1,0 +1,376 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Joulie</title><link>https://joulie-k8s.github.io/Joulie/stable/</link><description>Recent content on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://joulie-k8s.github.io/Joulie/stable/index.xml" rel="self" type="application/rss+xml"/><item><title>Quickstart</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/quickstart/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/quickstart/</guid><description>&lt;h2 id="prerequisites"&gt;Prerequisites&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes cluster with worker nodes&lt;/li&gt;
+&lt;li&gt;Node Feature Discovery (NFD) deployed&lt;/li&gt;
+&lt;li&gt;Access to push images to &lt;code&gt;registry.cern.ch/mbunino/joulie&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Optional for real enforcement: nodes exposing writable power interfaces
+&lt;ul&gt;
+&lt;li&gt;RAPL power limit files, or&lt;/li&gt;
+&lt;li&gt;cpufreq sysfs interfaces&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="1-install-from-release-recommended"&gt;1. Install from release (recommended)&lt;/h2&gt;
+&lt;p&gt;Install directly from OCI chart release:&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;helm upgrade --install joulie oci://registry.cern.ch/mbunino/joulie/joulie &lt;span style="color:#ae81ff"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; --version &amp;lt;version&amp;gt; &lt;span style="color:#ae81ff"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; -n joulie-system &lt;span style="color:#ae81ff"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; --create-namespace &lt;span style="color:#ae81ff"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; -f values/joulie.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;h2 id="2-install-from-source-when-developing"&gt;2. Install from source (when developing)&lt;/h2&gt;
+&lt;p&gt;If you changed source code, from repo root:&lt;/p&gt;</description></item><item><title>Agent Runtime Modes</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/daemonset/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/daemonset/</guid><description>&lt;p&gt;The agent supports two runtime modes:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;daemonset&lt;/code&gt;: real-hardware mode, one pod per real node.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;pool&lt;/code&gt;: simulation mode, one pod hosts many logical per-node controllers.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Chart templates:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;charts/joulie/templates/agent-daemonset.yaml&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;charts/joulie/templates/agent-statefulset.yaml&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="daemonset-mode-real-hardware"&gt;DaemonSet mode (real hardware)&lt;/h2&gt;
+&lt;h2 id="required-runtime-settings"&gt;Required runtime settings&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;securityContext.privileged: true&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Host mount:
+&lt;ul&gt;
+&lt;li&gt;host path &lt;code&gt;/sys&lt;/code&gt; -&amp;gt; container path &lt;code&gt;/host-sys&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;Env:
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;NODE_NAME&lt;/code&gt; from &lt;code&gt;spec.nodeName&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;AGENT_MODE=daemonset&lt;/code&gt; (default)&lt;/li&gt;
+&lt;li&gt;optional &lt;code&gt;RECONCILE_INTERVAL&lt;/code&gt; (default &lt;code&gt;20s&lt;/code&gt;)&lt;/li&gt;
+&lt;li&gt;optional &lt;code&gt;SIMULATE_ONLY=true&lt;/code&gt; (skip host writes, log requested actions)&lt;/li&gt;
+&lt;li&gt;optional &lt;code&gt;METRICS_ADDR&lt;/code&gt; (default &lt;code&gt;:8080&lt;/code&gt;)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="pool-mode-kwok--simulation"&gt;Pool mode (KWOK / simulation)&lt;/h2&gt;
+&lt;p&gt;Pool mode preserves per-node semantics but shards logical node controllers across replicas.&lt;/p&gt;</description></item><item><title>Pod Compatibility for Joulie</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/workload-compatibility/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/workload-compatibility/</guid><description>&lt;p&gt;Joulie uses Kubernetes scheduling constraints as the single source of truth for workload placement intent.&lt;/p&gt;
+&lt;p&gt;Power profile supply is exposed on node label:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie.io/power-profile=performance&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie.io/power-profile=eco&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie.io/power-profile=draining-performance&lt;/code&gt; (transition state)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Workload behavior:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;performance&lt;/code&gt; workload: require &lt;code&gt;joulie.io/power-profile=performance&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;eco&lt;/code&gt; workload: require &lt;code&gt;joulie.io/power-profile=eco&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;unconstrained workload: no power-profile affinity, can run on either profile&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="base-pod-spec"&gt;Base Pod Spec&lt;/h2&gt;
+&lt;div class="highlight"&gt;&lt;div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;"&gt;
+&lt;table style="border-spacing:0;padding:0;margin:0;border:0;"&gt;&lt;tr&gt;&lt;td style="vertical-align:top;padding:0;margin:0;border:0;"&gt;
+&lt;pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;"&gt;&lt;code&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 1
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 2
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 3
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 4
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 5
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 6
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 7
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 8
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 9
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;10
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;11
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;12
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;13
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;14
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;15
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;16
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;17
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%"&gt;
+&lt;pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;&lt;span style="color:#f92672"&gt;apiVersion&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;apps/v1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;&lt;span style="color:#f92672"&gt;kind&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;Deployment&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;&lt;span style="color:#f92672"&gt;metadata&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;name&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;my-workload&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;&lt;span style="color:#f92672"&gt;spec&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;replicas&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;selector&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;matchLabels&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;app&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;my-workload&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;template&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;metadata&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;labels&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;app&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;my-workload&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;spec&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;containers&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; - &lt;span style="color:#f92672"&gt;name&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;app&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;image&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;ghcr.io/example/app:latest&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;h2 id="performance-only-pod-lines-to-add"&gt;Performance-only Pod (lines to add)&lt;/h2&gt;
+&lt;div class="highlight"&gt;&lt;div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;display:grid;"&gt;
+&lt;table style="border-spacing:0;padding:0;margin:0;border:0;"&gt;&lt;tr&gt;&lt;td style="vertical-align:top;padding:0;margin:0;border:0;"&gt;
+&lt;pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;display:grid;"&gt;&lt;code&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 1
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 2
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 3
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 4
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 5
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 6
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 7
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 8
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 9
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;10
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;11
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;12
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;13
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;14
+&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;15
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;16
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;17
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;18
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;19
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;20
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;21
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;22
+&lt;/span&gt;&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;23
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;24
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;25
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%"&gt;
+&lt;pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;display:grid;"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;&lt;span style="color:#f92672"&gt;apiVersion&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;apps/v1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;&lt;span style="color:#f92672"&gt;kind&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;Deployment&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;&lt;span style="color:#f92672"&gt;metadata&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;name&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;my-workload&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;&lt;span style="color:#f92672"&gt;spec&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;replicas&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;selector&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;matchLabels&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;app&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;my-workload&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;template&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;metadata&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;labels&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;app&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;my-workload&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;spec&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;affinity&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;nodeAffinity&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;requiredDuringSchedulingIgnoredDuringExecution&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;nodeSelectorTerms&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; - &lt;span style="color:#f92672"&gt;matchExpressions&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; - &lt;span style="color:#f92672"&gt;key&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;joulie.io/power-profile&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;operator&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;In&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;values&lt;/span&gt;: [&lt;span style="color:#e6db74"&gt;&amp;#34;performance&amp;#34;&lt;/span&gt;]
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;containers&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; - &lt;span style="color:#f92672"&gt;name&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;app&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;image&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;ghcr.io/example/app:latest&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;h2 id="eco-only-pod-lines-to-add"&gt;Eco-only Pod (lines to add)&lt;/h2&gt;
+&lt;div class="highlight"&gt;&lt;div style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;display:grid;"&gt;
+&lt;table style="border-spacing:0;padding:0;margin:0;border:0;"&gt;&lt;tr&gt;&lt;td style="vertical-align:top;padding:0;margin:0;border:0;"&gt;
+&lt;pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;display:grid;"&gt;&lt;code&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 1
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 2
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 3
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 4
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 5
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 6
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 7
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 8
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt; 9
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;10
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;11
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;12
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;13
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;14
+&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;15
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;16
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;17
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;18
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;19
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;20
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;21
+&lt;/span&gt;&lt;/span&gt;&lt;span style="background-color:#3c3d38"&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;22
+&lt;/span&gt;&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;23
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;24
+&lt;/span&gt;&lt;span style="white-space:pre;-webkit-user-select:none;user-select:none;margin-right:0.4em;padding:0 0.4em 0 0.4em;color:#7f7f7f"&gt;25
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td style="vertical-align:top;padding:0;margin:0;border:0;;width:100%"&gt;
+&lt;pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;display:grid;"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;&lt;span style="color:#f92672"&gt;apiVersion&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;apps/v1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;&lt;span style="color:#f92672"&gt;kind&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;Deployment&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;&lt;span style="color:#f92672"&gt;metadata&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;name&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;my-workload&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;&lt;span style="color:#f92672"&gt;spec&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;replicas&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;selector&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;matchLabels&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;app&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;my-workload&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;template&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;metadata&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;labels&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;app&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;my-workload&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;spec&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;affinity&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;nodeAffinity&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;requiredDuringSchedulingIgnoredDuringExecution&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;nodeSelectorTerms&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; - &lt;span style="color:#f92672"&gt;matchExpressions&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; - &lt;span style="color:#f92672"&gt;key&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;joulie.io/power-profile&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;operator&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;In&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex; background-color:#3c3d38"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;values&lt;/span&gt;: [&lt;span style="color:#e6db74"&gt;&amp;#34;eco&amp;#34;&lt;/span&gt;]
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;containers&lt;/span&gt;:
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; - &lt;span style="color:#f92672"&gt;name&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;app&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; &lt;span style="color:#f92672"&gt;image&lt;/span&gt;: &lt;span style="color:#ae81ff"&gt;ghcr.io/example/app:latest&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;
+&lt;h2 id="unconstrained-pod"&gt;Unconstrained Pod&lt;/h2&gt;
+&lt;p&gt;Do not set power-profile affinity. Kubernetes can schedule it on either eco or performance nodes.&lt;/p&gt;</description></item><item><title>Workload and Power Simulator</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/simulator/simulator/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/simulator/simulator/</guid><description>&lt;p&gt;This document defines the Joulie simulator design and how it integrates with Joulie.&lt;/p&gt;
+&lt;h2 id="goals"&gt;Goals&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;Keep Kubernetes scheduling real (real pod placement/lifecycle).&lt;/li&gt;
+&lt;li&gt;Simulate hardware telemetry and control interfaces (RAPL/DVFS now, GPU later).&lt;/li&gt;
+&lt;li&gt;Provide reproducible, comparable experiments across Joulie and WAO.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="design-choice-hybrid-simulation"&gt;Design choice: hybrid simulation&lt;/h2&gt;
+&lt;p&gt;The simulator is not a fake scheduler.&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Pod placement and pod lifetime stay real in Kubernetes.&lt;/li&gt;
+&lt;li&gt;Simulator reads cluster state (pods/nodes) and derives synthetic hardware state per node.&lt;/li&gt;
+&lt;li&gt;Joulie reads telemetry and sends control intents through HTTP endpoints.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;This gives one source of truth for workload location: Kubernetes API.&lt;/p&gt;</description></item><item><title>Simulator Algorithms</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/simulator/simulator-algorithms/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/simulator/simulator-algorithms/</guid><description>&lt;p&gt;This page documents the core simulator math and control/workload update loop implemented in &lt;code&gt;simulator/cmd/simulator/main.go&lt;/code&gt;.&lt;/p&gt;
+&lt;h2 id="per-node-state"&gt;Per-Node State&lt;/h2&gt;
+&lt;p&gt;Each simulated node tracks:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;CapWatts&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;TargetThrottlePct&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ThrottlePct&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;FreqScale&lt;/code&gt; in &lt;code&gt;[f_min/f_max, 1]&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;CPUUtil&lt;/code&gt; in &lt;code&gt;[0,1]&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;CapSaturated&lt;/code&gt; flag&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="power-model"&gt;Power Model&lt;/h2&gt;
+&lt;p&gt;At telemetry/control update time, simulator computes power:&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;P = P_idle + (P_max - P_idle) * util^alpha * freqScale^beta&lt;/code&gt;&lt;/p&gt;
+&lt;p&gt;Where:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;P_idle = BaseIdleW&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;P_max = PMaxW&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;util = clamp(CPUUtil, 0, 1)&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;alpha = AlphaUtil&lt;/code&gt; (defaults to 1 if invalid)&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;beta = BetaFreq&lt;/code&gt; (defaults to 1 if invalid)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Then applies bounds/cap handling:&lt;/p&gt;</description></item><item><title>CRD and Policy Model</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/policy/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/policy/</guid><description>&lt;h2 id="crd"&gt;CRD&lt;/h2&gt;
+&lt;p&gt;The implemented APIs are:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Group: &lt;code&gt;joulie.io&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Version: &lt;code&gt;v1alpha1&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;NodePowerProfile&lt;/code&gt; (&lt;code&gt;nodepowerprofiles&lt;/code&gt;, cluster-scoped) for operator-assigned per-node desired state&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;TelemetryProfile&lt;/code&gt; (&lt;code&gt;telemetryprofiles&lt;/code&gt;, cluster-scoped) for telemetry source configuration (node + cluster scope)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;CRD files:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;config/crd/bases/joulie.io_nodepowerprofiles.yaml&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;config/crd/bases/joulie.io_telemetryprofiles.yaml&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="conceptual-model-next-step"&gt;Conceptual model (next step)&lt;/h2&gt;
+&lt;p&gt;Policy should be modeled as a cluster-wide mapping:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;input: cluster context at time &lt;code&gt;t&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;output: &lt;code&gt;node -&amp;gt; power state&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Minimal states:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;ActivePerformance&lt;/code&gt; (mapped to profile &lt;code&gt;performance&lt;/code&gt;)&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ActiveEco&lt;/code&gt; (mapped to profile &lt;code&gt;eco&lt;/code&gt;)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Initial implementation should remain rule-based and deterministic.
+Future implementations can be telemetry-driven or model-driven.&lt;/p&gt;</description></item><item><title>Input Telemetry and Actuation Interfaces</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/telemetry/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/telemetry/</guid><description>&lt;p&gt;This document defines Joulie&amp;rsquo;s &lt;strong&gt;internal input interfaces&lt;/strong&gt; for telemetry and control.&lt;/p&gt;
+&lt;p&gt;Important distinction:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;this is &lt;strong&gt;not&lt;/strong&gt; about Prometheus metrics exposed by Joulie,&lt;/li&gt;
+&lt;li&gt;this is about how Joulie components &lt;strong&gt;consume input data&lt;/strong&gt; and &lt;strong&gt;apply controls&lt;/strong&gt;.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="goals"&gt;Goals&lt;/h2&gt;
+&lt;ol&gt;
+&lt;li&gt;Run against real hardware in bare metal clusters.&lt;/li&gt;
+&lt;li&gt;Run in virtual/simulated clusters (kind/kwok) with the same control logic.&lt;/li&gt;
+&lt;li&gt;Keep APIs generic enough for CPU + GPU + future signals.&lt;/li&gt;
+&lt;li&gt;Avoid policy/API churn when moving from rule-based to data-driven policies.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id="core-model-simple"&gt;Core model (simple)&lt;/h2&gt;
+&lt;p&gt;Joulie uses:&lt;/p&gt;</description></item><item><title>KWOK Benchmark Experiment</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/experiments/kwok-benchmark/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/experiments/kwok-benchmark/</guid><description>&lt;p&gt;This document describes the first benchmark harness implementation under:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;experiments/01-kwok-benchmark/&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="motivation"&gt;Motivation&lt;/h2&gt;
+&lt;p&gt;The benchmark focuses on repeatable comparisons of scheduler+control behavior across baselines:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;baseline A: no Joulie control path (simulator only),&lt;/li&gt;
+&lt;li&gt;baseline B: static partition style,&lt;/li&gt;
+&lt;li&gt;baseline C: queue-aware style.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;The setup keeps real scheduling semantics while using fake KWOK nodes and simulator-driven telemetry/control effects.&lt;/p&gt;
+&lt;h2 id="assumptions"&gt;Assumptions&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes scheduler and API are real.&lt;/li&gt;
+&lt;li&gt;Fake nodes are tainted and selected by workload pods.&lt;/li&gt;
+&lt;li&gt;Simulator injects and advances batch work from trace input.&lt;/li&gt;
+&lt;li&gt;Experiment scripts orchestrate install/run/collect/plot.&lt;/li&gt;
+&lt;li&gt;A/B/C workload fairness is preserved by generating a canonical per-seed trace and deriving baseline A by stripping only power-profile affinity.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="what-is-measured-now"&gt;What is measured now&lt;/h2&gt;
+&lt;p&gt;Current harness outputs:&lt;/p&gt;</description></item><item><title>Metrics Reference</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/metrics/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/metrics/</guid><description>&lt;p&gt;Joulie agent exposes Prometheus metrics on &lt;code&gt;/metrics&lt;/code&gt; (default &lt;code&gt;:8080&lt;/code&gt;).&lt;/p&gt;
+&lt;p&gt;This document is only for &lt;strong&gt;exported observability metrics&lt;/strong&gt;.
+For &lt;strong&gt;input telemetry and control interfaces&lt;/strong&gt; (real hardware vs simulated HTTP), see:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://joulie-k8s.github.io/Joulie/stable/docs/architecture/telemetry/"&gt;Input Telemetry and Actuation Interfaces&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="endpoint"&gt;Endpoint&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;Path: &lt;code&gt;/metrics&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Address: &lt;code&gt;METRICS_ADDR&lt;/code&gt; env var (default &lt;code&gt;:8080&lt;/code&gt;)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="backendpolicy"&gt;Backend/Policy&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_backend_mode{node,mode}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;mode&lt;/code&gt; values: &lt;code&gt;none&lt;/code&gt;, &lt;code&gt;rapl&lt;/code&gt;, &lt;code&gt;dvfs&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Active mode has value &lt;code&gt;1&lt;/code&gt;, others &lt;code&gt;0&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_policy_cap_watts{node,policy}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;Current selected policy cap in watts&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;This metric can also be used to derive policy states in Grafana:&lt;/p&gt;</description></item><item><title>Operator Notes</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/operator/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/operator/</guid><description>&lt;h2 id="target-concept"&gt;Target concept&lt;/h2&gt;
+&lt;p&gt;Joulie should evolve into a centralized operator that owns the global optimization loop.&lt;/p&gt;
+&lt;p&gt;At each control step (for example every minute), the operator:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Reads cluster-wide context.&lt;/li&gt;
+&lt;li&gt;Decides node-to-power-profile assignments.&lt;/li&gt;
+&lt;li&gt;Writes desired per-node state.&lt;/li&gt;
+&lt;li&gt;Monitors outcomes and re-plans.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;States start simple:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;ActivePerformance&lt;/code&gt; (mapped to profile &lt;code&gt;performance&lt;/code&gt;): unconstrained / HPC-oriented.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ActiveEco&lt;/code&gt; (mapped to profile &lt;code&gt;eco&lt;/code&gt;): constrained / energy-saving.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="control-responsibility-boundary"&gt;Control responsibility boundary&lt;/h2&gt;
+&lt;p&gt;Operator is the control-plane brain.
+Agent is an actuator/telemetry component.&lt;/p&gt;</description></item><item><title>Policy Algorithms</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/policies/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/policies/</guid><description>&lt;p&gt;This page documents the controller policy algorithms implemented in &lt;code&gt;cmd/operator/main.go&lt;/code&gt;.&lt;/p&gt;
+&lt;h2 id="classification-input"&gt;Classification Input&lt;/h2&gt;
+&lt;p&gt;Policy demand classification is derived from pod scheduling constraints on &lt;code&gt;joulie.io/power-profile&lt;/code&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;performance-only&lt;/code&gt;: pod can run only on &lt;code&gt;performance&lt;/code&gt;/&lt;code&gt;draining-performance&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;eco-only&lt;/code&gt;: pod can run only on &lt;code&gt;eco&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;general&lt;/code&gt; (implicit unconstrained): no explicit power-profile constraint, or both profiles allowed.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;unknown&lt;/code&gt;: unsupported/ambiguous constraint shape.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;For safety, &lt;code&gt;unknown&lt;/code&gt; is treated as performance-sensitive in downgrade guards.&lt;/p&gt;
+&lt;h2 id="shared-reconcile-flow"&gt;Shared Reconcile Flow&lt;/h2&gt;
+&lt;p&gt;Each reconcile tick:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Select eligible nodes from &lt;code&gt;NODE_SELECTOR&lt;/code&gt;, excluding reserved and unschedulable nodes.&lt;/li&gt;
+&lt;li&gt;Build a desired plan with the selected policy.&lt;/li&gt;
+&lt;li&gt;Apply downgrade guard (can convert planned &lt;code&gt;eco&lt;/code&gt; to &lt;code&gt;draining-performance&lt;/code&gt;/&lt;code&gt;performance&lt;/code&gt;).&lt;/li&gt;
+&lt;li&gt;Write &lt;code&gt;NodePowerProfile&lt;/code&gt; and update node label &lt;code&gt;joulie.io/power-profile&lt;/code&gt;.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id="static_partition"&gt;&lt;code&gt;static_partition&lt;/code&gt;&lt;/h2&gt;
+&lt;p&gt;Goal: deterministic fixed HP/LP split.&lt;/p&gt;</description></item></channel></rss>
