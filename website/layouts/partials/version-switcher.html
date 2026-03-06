@@ -1,0 +1,53 @@
+<div class="joulie-version-switcher">
+  <label for="joulie-version-select" class="visually-hidden">Docs version</label>
+  <select id="joulie-version-select" aria-label="Docs version">
+    <option value="">main</option>
+  </select>
+</div>
+
+<script>
+  (function () {
+    const select = document.getElementById("joulie-version-select");
+    if (!select) return;
+
+    const pathParts = window.location.pathname.split("/").filter(Boolean);
+    const repoSegment = pathParts.length > 0 ? pathParts[0] : "";
+    const repoRoot = repoSegment ? `/${repoSegment}/` : "/";
+    const manifestURL = `${repoRoot}versions.json`;
+
+    function setSelected(versions) {
+      const current = window.location.pathname;
+      let matched = versions.find((v) => current.startsWith(v.path));
+      if (!matched) matched = versions.find((v) => v.name === "main");
+      if (matched) select.value = matched.path;
+    }
+
+    fetch(manifestURL, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("manifest not found"))))
+      .then((data) => {
+        const versions = Array.isArray(data.versions) ? data.versions : [{ name: "main", path: repoRoot }];
+        select.innerHTML = "";
+        versions.forEach((v) => {
+          const opt = document.createElement("option");
+          opt.value = v.path;
+          opt.textContent = v.name;
+          select.appendChild(opt);
+        });
+        setSelected(versions);
+      })
+      .catch(() => {
+        select.innerHTML = "";
+        const fallback = document.createElement("option");
+        fallback.value = repoRoot;
+        fallback.textContent = "main";
+        select.appendChild(fallback);
+        select.value = repoRoot;
+      });
+
+    select.addEventListener("change", () => {
+      if (select.value) {
+        window.location.href = select.value;
+      }
+    });
+  })();
+</script>

@@ -10,19 +10,18 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
-  group: pages
+  group: docs-main
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     env:
       HUGO_VERSION: 0.157.0
+      SITE_ROOT: /Joulie/
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,29 +49,47 @@ jobs:
         run: |
           npm install --no-save postcss postcss-cli autoprefixer
 
-      - name: Configure GitHub Pages
-        id: pages
-        uses: actions/configure-pages@v5
-
       - name: Build site
         working-directory: website
         run: |
           hugo mod get github.com/google/docsy@latest
           hugo mod get github.com/google/docsy/dependencies@latest
-          hugo --gc --minify --baseURL "${{ steps.pages.outputs.base_url }}/"
+          hugo --gc --minify --baseURL "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Deploy main docs to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: website/public
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: website/public
+          destination_dir: .
+          keep_files: true
+          force_orphan: false
 
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Ensure versions manifest exists and has main
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch gh-pages "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gh-pages
+          cd gh-pages
+          FILE="versions.json"
+          ROOT_PATH="${{ env.SITE_ROOT }}"
+          if [ ! -f "$FILE" ]; then
+            echo '{"default":"main","versions":[{"name":"main","path":"'"$ROOT_PATH"'"}]}' > "$FILE"
+          else
+            tmp="$(mktemp)"
+            jq --arg root "$ROOT_PATH" '
+              .default = "main"
+              | .versions = (
+                  ((.versions // []) | map(select(.name != "main")))
+                  | [{"name":"main","path":$root}] + .
+                )
+            ' "$FILE" > "$tmp"
+            mv "$tmp" "$FILE"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$FILE"
+          if ! git diff --cached --quiet; then
+            git commit -m "docs: ensure versions manifest"
+            git push
+          fi
