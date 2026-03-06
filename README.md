@@ -7,10 +7,6 @@
 
 Kubernetes-native node-level power orchestration.
 
-<p align="center">
-  <img src="./website/static/images/logo.png" alt="Joulie logo" width="180">
-</p>
-
 Visit the docs page at [joulie-k8s.github.io/Joulie](https://joulie-k8s.github.io/Joulie/)
 
 ## Repository Layout
