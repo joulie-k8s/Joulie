@@ -4,4 +4,4 @@ linkTitle: "Simulator"
 weight: 30
 ---
 
-Simulator architecture and algorithms.
+Workload and power simulator architecture and algorithms.
