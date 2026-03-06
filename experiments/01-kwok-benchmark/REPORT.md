@@ -33,6 +33,19 @@ Loaded from simulator manifest configmap:
 - `intel-kwok`: `BaseIdleW=65`, `PMaxW=420`, `AlphaUtil=1.1`, `BetaFreq=1.25`, `FMin/FMax=1200/3200`, `DefaultCapW=500`.
 - `amd-kwok`: `BaseIdleW=75`, `PMaxW=460`, `AlphaUtil=1.2`, `BetaFreq=1.35`, `FMin/FMax=1200/3400`, `DefaultCapW=550`.
 
+Variable meaning:
+
+- `BaseIdleW`: modeled CPU package idle power floor (Watts).
+- `PMaxW`: modeled package power at full dynamic load before capping (Watts).
+- `AlphaUtil`: exponent controlling how strongly power grows with utilization.
+- `BetaFreq`: exponent controlling how strongly power grows with frequency scale.
+- `FMin/FMax`: min/max CPU frequency bounds used to derive feasible frequency scale.
+- `DefaultCapW`: default initial package power cap for a node class.
+
+Power-model details are documented in:
+
+- https://joulie-k8s.github.io/Joulie/docs/simulator/simulator-algorithms/
+
 Nodes are assigned classes by label `feature.node.kubernetes.io/cpu-model.vendor_id`.
 
 ### 1.3 Run configuration used

@@ -31,6 +31,18 @@ Mapped by node labels to two classes:
 - `intel-kwok`: `BaseIdleW=65`, `PMaxW=420`, `AlphaUtil=1.1`, `BetaFreq=1.25`, `FMin/FMax=1200/3200`
 - `amd-kwok`: `BaseIdleW=75`, `PMaxW=460`, `AlphaUtil=1.2`, `BetaFreq=1.35`, `FMin/FMax=1200/3400`
 
+Variable meaning:
+
+- `BaseIdleW`: modeled CPU package idle power floor (Watts)
+- `PMaxW`: modeled package power at full dynamic load before capping (Watts)
+- `AlphaUtil`: exponent controlling how strongly power grows with utilization
+- `BetaFreq`: exponent controlling how strongly power grows with frequency scale
+- `FMin/FMax`: min/max CPU frequency bounds used to derive feasible frequency scale
+
+Full power-model details are documented in:
+
+- [Simulator Algorithms]({{< relref "/docs/simulator/simulator-algorithms.md" >}})
+
 ### Run configuration
 
 - seeds: `3`
