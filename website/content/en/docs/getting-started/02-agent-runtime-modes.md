@@ -2,7 +2,7 @@
 title = "Agent Runtime Modes"
 linkTitle = "Agent Runtime Modes"
 slug = "daemonset"
-weight = 2
+weight = 4
 +++
 
 
@@ -18,7 +18,7 @@ Chart templates:
 
 ## DaemonSet mode (real hardware)
 
-## Required runtime settings
+### Required runtime settings
 
 - `securityContext.privileged: true`
 - Host mount:
@@ -58,14 +58,34 @@ agent:
 
 Use `daemonset` mode for real `/host-sys` enforcement and `pool` mode for KWOK-scale simulation.
 
-## Scheduling scope (daemonset)
+## Managed node selector
 
-Current manifest is broad by default (no nodeSelector). To scope it, add node selector/affinity if desired:
+- `joulie.io/managed=true`
+
+This label always defines operator managed scope.
+For agent runtime scope:
+
+- Pool mode:
+  - uses `POOL_NODE_SELECTOR` (default chart value: `joulie.io/managed=true`).
+- DaemonSet mode:
+  - chart template is broad by default (no `nodeSelector`),
+  - add a DaemonSet `nodeSelector` if you want strict alignment with managed scope.
+
+For DaemonSet strict alignment:
 
 ```yaml
 nodeSelector:
   joulie.io/managed: "true"
 ```
+
+For pool mode selector:
+
+- `POOL_NODE_SELECTOR=joulie.io/managed=true`
+
+Expected behavior:
+
+- nodes without `joulie.io/managed=true` are outside operator policy scope;
+- with DaemonSet strict nodeSelector configured, agent pods also run only on managed nodes.
 
 ## RBAC
 

@@ -2,9 +2,11 @@
 title = "Quickstart"
 linkTitle = "Quickstart"
 slug = "quickstart"
-weight = 1
+weight = 2
 +++
 
+This page is the fastest path to run Joulie.
+For conceptual context first, read [Core Concepts]({{< relref "/docs/getting-started/00-core-concepts.md" >}}).
 
 ## Prerequisites
 
@@ -103,27 +105,38 @@ make uninstall
 make rollout TAG=<new-tag>
 ```
 
-## Control mode
+## Joulie operator and agents
 
-Joulie control is based on a simple desired-state loop:
+Joulie control is a desired-state loop:
 
-- the operator computes a per-node desired state and writes it as `NodePowerProfile`,
-- nodes are treated as `ActivePerformance` or `ActiveEco` (with optional draining transitions),
-- the agent on each node reads desired state plus telemetry/control config and enforces caps/throttling.
+- operator decides per-node target state and writes `NodePowerProfile`,
+- node labels (`joulie.io/power-profile`) expose current supply to the scheduler,
+- agent enforces node-local controls from desired state and telemetry/control profile.
 
-See architecture details:
+Meaning of the key node labels:
 
-- [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
-- [Operator]({{< relref "/docs/architecture/operator.md" >}})
-- [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
+- `joulie.io/managed=true`
+  - node is in Joulie operator scope (eligible for policy decisions)
+- `joulie.io/power-profile=performance`
+  - node currently offers high-performance supply
+- `joulie.io/power-profile=draining-performance`
+  - temporary transition state during safe downgrade (`performance -> eco`)
+- `joulie.io/power-profile=eco`
+  - node currently offers low-power supply (resources are throttled according to the selected policy)
+
+Read the architecture path after this quickstart:
+
+1. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
+2. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}})
+3. [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
 
 Architecture overview:
 
 <img src='{{< relURL "images/joulie-arch.png" >}}' alt="Joulie architecture overview">
 
-### Central operator mode (single path)
+### Central operator mode
 
-The operator writes `NodePowerProfile` assignments and swaps `ActivePerformance`/`ActiveEco` across nodes every reconcile interval (profile mapping `performance`/`eco`).
+The operator continuously writes `NodePowerProfile` assignments from the active policy (for example static partition or queue-aware), mapping desired states to node profiles (`performance`/`eco`).
 
 Configuration details:
 
@@ -140,17 +153,14 @@ kubectl -n joulie-system logs deploy/joulie-operator --tail=100
 kubectl -n joulie-system logs -l app.kubernetes.io/name=joulie-agent --tail=100
 ```
 
-### Verify
+Look for log lines containing desired-state source and enforcement/fallback actions.
+
+Also verify installed images:
 
 ```bash
-kubectl get nodepowerprofiles
-kubectl -n joulie-system get pods -o wide
-kubectl -n joulie-system logs -l app.kubernetes.io/name=joulie-agent --tail=100
 kubectl -n joulie-system get pods \
   -o custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[0].image,IMAGEID:.status.containerStatuses[0].imageID
 ```
-
-Look for log lines containing desired-state source and enforcement/fallback actions.
 
 If operator logs show `no eligible nodes matched selector`, verify node labels:
 
@@ -160,8 +170,16 @@ kubectl get nodes --show-labels | grep 'joulie.io/managed=true'
 
 ## Workload and Power Simulator
 
-For fake-node workload + power simulation (real scheduler, fake KWOK nodes, real operator, agent pool mode), see:
+For fake-node workload + power simulation (real scheduler, fake [KWOK](https://kwok.sigs.k8s.io/) nodes, real operator, agent pool mode), see:
 
 - [Simulator Overview]({{< relref "/docs/simulator/simulator.md" >}})
-- [Simulator Algorithms]({{< relref "/docs/simulator/simulator-algorithms.md" >}})
+- [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
+- [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
 - [KWOK Simulator Example](https://github.com/joulie-k8s/Joulie/tree/main/examples/06-simulator-kwok)
+
+## Next step
+
+Continue with:
+
+1. [Pod Compatibility for Joulie]({{< relref "/docs/getting-started/03-pod-compatibility.md" >}})
+2. [Agent Runtime Modes]({{< relref "/docs/getting-started/02-agent-runtime-modes.md" >}})
