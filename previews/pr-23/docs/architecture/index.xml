@@ -1,100 +1,253 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Architecture on Joulie</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/</link><description>Recent content in Architecture on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/index.xml" rel="self" type="application/rss+xml"/><item><title>CRD and Policy Model</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/policy/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/policy/</guid><description>&lt;h2 id="crd"&gt;CRD&lt;/h2&gt;
-&lt;p&gt;The implemented APIs are:&lt;/p&gt;
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Architecture on Joulie</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/</link><description>Recent content in Architecture on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/index.xml" rel="self" type="application/rss+xml"/><item><title>CRD and Policy Model</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/policy/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/policy/</guid><description>&lt;p&gt;This page defines Joulie&amp;rsquo;s core contract:&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;Group: &lt;code&gt;joulie.io&lt;/code&gt;&lt;/li&gt;
-&lt;li&gt;Version: &lt;code&gt;v1alpha1&lt;/code&gt;&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;NodePowerProfile&lt;/code&gt; (&lt;code&gt;nodepowerprofiles&lt;/code&gt;, cluster-scoped) for operator-assigned per-node desired state&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;TelemetryProfile&lt;/code&gt; (&lt;code&gt;telemetryprofiles&lt;/code&gt;, cluster-scoped) for telemetry source configuration (node + cluster scope)&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;demand&lt;/strong&gt; comes from pod scheduling constraints,&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;supply&lt;/strong&gt; is exposed by node power-profile labels,&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;desired state&lt;/strong&gt; is published through &lt;code&gt;NodePowerProfile&lt;/code&gt;.&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;CRD files:&lt;/p&gt;
+&lt;h2 id="apis"&gt;APIs&lt;/h2&gt;
+&lt;p&gt;Group/version:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie.io/v1alpha1&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;CRDs:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;NodePowerProfile&lt;/code&gt; (&lt;code&gt;nodepowerprofiles&lt;/code&gt;, cluster-scoped)&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;TelemetryProfile&lt;/code&gt; (&lt;code&gt;telemetryprofiles&lt;/code&gt;, cluster-scoped)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;CRD definitions live in:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;code&gt;config/crd/bases/joulie.io_nodepowerprofiles.yaml&lt;/code&gt;&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;config/crd/bases/joulie.io_telemetryprofiles.yaml&lt;/code&gt;&lt;/li&gt;
 &lt;/ul&gt;
-&lt;h2 id="conceptual-model-next-step"&gt;Conceptual model (next step)&lt;/h2&gt;
-&lt;p&gt;Policy should be modeled as a cluster-wide mapping:&lt;/p&gt;
+&lt;h2 id="demand-model-workloads"&gt;Demand model (workloads)&lt;/h2&gt;
+&lt;p&gt;Workload class is inferred from Kubernetes scheduling constraints on key:&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;input: cluster context at time &lt;code&gt;t&lt;/code&gt;&lt;/li&gt;
-&lt;li&gt;output: &lt;code&gt;node -&amp;gt; power state&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie.io/power-profile&lt;/code&gt;&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;Minimal states:&lt;/p&gt;
+&lt;p&gt;Classification:&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;&lt;code&gt;ActivePerformance&lt;/code&gt; (mapped to profile &lt;code&gt;performance&lt;/code&gt;)&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;ActiveEco&lt;/code&gt; (mapped to profile &lt;code&gt;eco&lt;/code&gt;)&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;Initial implementation should remain rule-based and deterministic.
-Future implementations can be telemetry-driven or model-driven.&lt;/p&gt;</description></item><item><title>Input Telemetry and Actuation Interfaces</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/telemetry/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/telemetry/</guid><description>&lt;p&gt;This document defines Joulie&amp;rsquo;s &lt;strong&gt;internal input interfaces&lt;/strong&gt; for telemetry and control.&lt;/p&gt;
-&lt;p&gt;Important distinction:&lt;/p&gt;
+&lt;li&gt;&lt;code&gt;performance&lt;/code&gt; demand:
 &lt;ul&gt;
-&lt;li&gt;this is &lt;strong&gt;not&lt;/strong&gt; about Prometheus metrics exposed by Joulie,&lt;/li&gt;
-&lt;li&gt;this is about how Joulie components &lt;strong&gt;consume input data&lt;/strong&gt; and &lt;strong&gt;apply controls&lt;/strong&gt;.&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id="goals"&gt;Goals&lt;/h2&gt;
-&lt;ol&gt;
-&lt;li&gt;Run against real hardware in bare metal clusters.&lt;/li&gt;
-&lt;li&gt;Run in virtual/simulated clusters (kind/kwok) with the same control logic.&lt;/li&gt;
-&lt;li&gt;Keep APIs generic enough for CPU + GPU + future signals.&lt;/li&gt;
-&lt;li&gt;Avoid policy/API churn when moving from rule-based to data-driven policies.&lt;/li&gt;
-&lt;/ol&gt;
-&lt;h2 id="core-model-simple"&gt;Core model (simple)&lt;/h2&gt;
-&lt;p&gt;Joulie uses:&lt;/p&gt;</description></item><item><title>Metrics Reference</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/metrics/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/metrics/</guid><description>&lt;p&gt;Joulie agent exposes Prometheus metrics on &lt;code&gt;/metrics&lt;/code&gt; (default &lt;code&gt;:8080&lt;/code&gt;).&lt;/p&gt;
-&lt;p&gt;This document is only for &lt;strong&gt;exported observability metrics&lt;/strong&gt;.
-For &lt;strong&gt;input telemetry and control interfaces&lt;/strong&gt; (real hardware vs simulated HTTP), see:&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/telemetry/"&gt;Input Telemetry and Actuation Interfaces&lt;/a&gt;&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id="endpoint"&gt;Endpoint&lt;/h2&gt;
-&lt;ul&gt;
-&lt;li&gt;Path: &lt;code&gt;/metrics&lt;/code&gt;&lt;/li&gt;
-&lt;li&gt;Address: &lt;code&gt;METRICS_ADDR&lt;/code&gt; env var (default &lt;code&gt;:8080&lt;/code&gt;)&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id="backendpolicy"&gt;Backend/Policy&lt;/h2&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;code&gt;joulie_backend_mode{node,mode}&lt;/code&gt; (gauge)
-&lt;ul&gt;
-&lt;li&gt;&lt;code&gt;mode&lt;/code&gt; values: &lt;code&gt;none&lt;/code&gt;, &lt;code&gt;rapl&lt;/code&gt;, &lt;code&gt;dvfs&lt;/code&gt;&lt;/li&gt;
-&lt;li&gt;Active mode has value &lt;code&gt;1&lt;/code&gt;, others &lt;code&gt;0&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;pod requires &lt;code&gt;joulie.io/power-profile=performance&lt;/code&gt;&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
-&lt;li&gt;&lt;code&gt;joulie_policy_cap_watts{node,policy}&lt;/code&gt; (gauge)
+&lt;li&gt;&lt;code&gt;eco&lt;/code&gt; demand:
 &lt;ul&gt;
-&lt;li&gt;Current selected policy cap in watts&lt;/li&gt;
+&lt;li&gt;pod requires &lt;code&gt;joulie.io/power-profile=eco&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;general&lt;/code&gt; demand:
+&lt;ul&gt;
+&lt;li&gt;no explicit power-profile requirement (unconstrained)&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;This metric can also be used to derive policy states in Grafana:&lt;/p&gt;</description></item><item><title>Operator Notes</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/operator/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/operator/</guid><description>&lt;h2 id="target-concept"&gt;Target concept&lt;/h2&gt;
-&lt;p&gt;Joulie should evolve into a centralized operator that owns the global optimization loop.&lt;/p&gt;
-&lt;p&gt;At each control step (for example every minute), the operator:&lt;/p&gt;
+&lt;p&gt;Classification source is affinity/selector, not a custom intent label.&lt;/p&gt;</description></item><item><title>Joulie Operator</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/operator/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/operator/</guid><description>&lt;p&gt;The operator is Joulie&amp;rsquo;s cluster-level decision engine.&lt;/p&gt;
+&lt;p&gt;It does not write host power interfaces directly.
+Instead, it decides desired node states and publishes them through Kubernetes objects and labels.&lt;/p&gt;
+&lt;h2 id="responsibilities"&gt;Responsibilities&lt;/h2&gt;
+&lt;p&gt;At each reconcile tick, the operator:&lt;/p&gt;
 &lt;ol&gt;
-&lt;li&gt;Reads cluster-wide context.&lt;/li&gt;
-&lt;li&gt;Decides node-to-power-profile assignments.&lt;/li&gt;
-&lt;li&gt;Writes desired per-node state.&lt;/li&gt;
-&lt;li&gt;Monitors outcomes and re-plans.&lt;/li&gt;
+&lt;li&gt;selects eligible managed nodes,&lt;/li&gt;
+&lt;li&gt;classifies workload demand from pod scheduling constraints,&lt;/li&gt;
+&lt;li&gt;runs a policy algorithm to compute a plan,&lt;/li&gt;
+&lt;li&gt;applies transition guards for safe downgrades,&lt;/li&gt;
+&lt;li&gt;writes desired node targets (&lt;code&gt;NodePowerProfile&lt;/code&gt;) and node supply labels.&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;States start simple:&lt;/p&gt;
+&lt;p&gt;The agent then enforces those targets node-by-node.&lt;/p&gt;</description></item><item><title>Joulie Agent</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/agent/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/agent/</guid><description>&lt;p&gt;The agent is Joulie&amp;rsquo;s node-side enforcement component.&lt;/p&gt;
+&lt;p&gt;It consumes desired state and applies node-local controls through configured backends.&lt;/p&gt;
+&lt;h2 id="responsibilities"&gt;Responsibilities&lt;/h2&gt;
+&lt;p&gt;At each reconcile tick, the agent:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;identifies its node scope (single node in daemonset mode, sharded set in pool mode),&lt;/li&gt;
+&lt;li&gt;reads desired target (&lt;code&gt;NodePowerProfile&lt;/code&gt;) for each owned node,&lt;/li&gt;
+&lt;li&gt;reads telemetry/control routing (&lt;code&gt;TelemetryProfile&lt;/code&gt;),&lt;/li&gt;
+&lt;li&gt;applies controls (host or HTTP),&lt;/li&gt;
+&lt;li&gt;exports metrics and status.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id="inputs-and-outputs"&gt;Inputs and outputs&lt;/h2&gt;
+&lt;p&gt;Inputs:&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;&lt;code&gt;ActivePerformance&lt;/code&gt; (mapped to profile &lt;code&gt;performance&lt;/code&gt;): unconstrained / HPC-oriented.&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;ActiveEco&lt;/code&gt; (mapped to profile &lt;code&gt;eco&lt;/code&gt;): constrained / energy-saving.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;NodePowerProfile&lt;/code&gt; for desired profile/cap&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;TelemetryProfile&lt;/code&gt; for source/control backend selection&lt;/li&gt;
+&lt;li&gt;node capability hints (for example NFD labels)&lt;/li&gt;
 &lt;/ul&gt;
-&lt;h2 id="control-responsibility-boundary"&gt;Control responsibility boundary&lt;/h2&gt;
-&lt;p&gt;Operator is the control-plane brain.
-Agent is an actuator/telemetry component.&lt;/p&gt;</description></item><item><title>Policy Algorithms</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/policies/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/policies/</guid><description>&lt;p&gt;This page documents the controller policy algorithms implemented in &lt;code&gt;cmd/operator/main.go&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;Outputs:&lt;/p&gt;</description></item><item><title>Policy Algorithms</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/policies/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/policies/</guid><description>&lt;p&gt;This page documents the controller policy algorithms implemented in &lt;code&gt;cmd/operator/main.go&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;Use this page after:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/policy/"&gt;CRD and Policy Model&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/operator/"&gt;Joulie Operator&lt;/a&gt;&lt;/li&gt;
+&lt;/ol&gt;
 &lt;h2 id="classification-input"&gt;Classification Input&lt;/h2&gt;
 &lt;p&gt;Policy demand classification is derived from pod scheduling constraints on &lt;code&gt;joulie.io/power-profile&lt;/code&gt;:&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;&lt;code&gt;performance-only&lt;/code&gt;: pod can run only on &lt;code&gt;performance&lt;/code&gt;/&lt;code&gt;draining-performance&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;performance-only&lt;/code&gt;: pod can run only on &lt;code&gt;performance&lt;/code&gt; (and transitional &lt;code&gt;draining-performance&lt;/code&gt;).&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;eco-only&lt;/code&gt;: pod can run only on &lt;code&gt;eco&lt;/code&gt;.&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;general&lt;/code&gt; (implicit unconstrained): no explicit power-profile constraint, or both profiles allowed.&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;unknown&lt;/code&gt;: unsupported/ambiguous constraint shape.&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;For safety, &lt;code&gt;unknown&lt;/code&gt; is treated as performance-sensitive in downgrade guards.&lt;/p&gt;
-&lt;h2 id="shared-reconcile-flow"&gt;Shared Reconcile Flow&lt;/h2&gt;
-&lt;p&gt;Each reconcile tick:&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;Select eligible nodes from &lt;code&gt;NODE_SELECTOR&lt;/code&gt;, excluding reserved and unschedulable nodes.&lt;/li&gt;
-&lt;li&gt;Build a desired plan with the selected policy.&lt;/li&gt;
-&lt;li&gt;Apply downgrade guard (can convert planned &lt;code&gt;eco&lt;/code&gt; to &lt;code&gt;draining-performance&lt;/code&gt;/&lt;code&gt;performance&lt;/code&gt;).&lt;/li&gt;
-&lt;li&gt;Write &lt;code&gt;NodePowerProfile&lt;/code&gt; and update node label &lt;code&gt;joulie.io/power-profile&lt;/code&gt;.&lt;/li&gt;
-&lt;/ol&gt;
-&lt;h2 id="static_partition"&gt;&lt;code&gt;static_partition&lt;/code&gt;&lt;/h2&gt;
-&lt;p&gt;Goal: deterministic fixed HP/LP split.&lt;/p&gt;</description></item></channel></rss>
+&lt;p&gt;For safety, &lt;code&gt;unknown&lt;/code&gt; is treated as performance-sensitive in downgrade guards.&lt;/p&gt;</description></item><item><title>Input Telemetry and Actuation Interfaces</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/telemetry/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/telemetry/</guid><description>&lt;p&gt;This page describes runtime IO contracts:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;how Joulie reads telemetry inputs,&lt;/li&gt;
+&lt;li&gt;how Joulie sends control intents.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;It is not the &lt;code&gt;/metrics&lt;/code&gt; exposition contract.
+For exported metrics, see &lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/metrics/"&gt;Metrics Reference&lt;/a&gt;.&lt;/p&gt;
+&lt;h2 id="why-this-abstraction-exists"&gt;Why this abstraction exists&lt;/h2&gt;
+&lt;p&gt;Joulie must run in two worlds with the same control logic:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;real hardware clusters,&lt;/li&gt;
+&lt;li&gt;simulator/KWOK clusters.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;So agent/operator logic depends on provider interfaces, not directly on sysfs or simulator HTTP shape.&lt;/p&gt;
+&lt;h2 id="telemetry-provider-model"&gt;Telemetry provider model&lt;/h2&gt;
+&lt;p&gt;Telemetry input can come from:&lt;/p&gt;</description></item><item><title>Metrics Reference</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/metrics/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/metrics/</guid><description>&lt;p&gt;Joulie exposes Prometheus metrics from multiple components.&lt;/p&gt;
+&lt;p&gt;This page covers &lt;strong&gt;operator + agent&lt;/strong&gt; metrics.
+Simulator metrics are documented separately in:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/simulator/metrics/"&gt;Simulator Metrics&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;For telemetry/control input interfaces (host/http routing), see:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-23/docs/architecture/telemetry/"&gt;Input Telemetry and Actuation Interfaces&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="endpoints-by-component"&gt;Endpoints by component&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;Agent:
+&lt;ul&gt;
+&lt;li&gt;path: &lt;code&gt;/metrics&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;default address: &lt;code&gt;:8080&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;env override: &lt;code&gt;METRICS_ADDR&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;Operator:
+&lt;ul&gt;
+&lt;li&gt;path: &lt;code&gt;/metrics&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;default address: &lt;code&gt;:8081&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;env override: &lt;code&gt;METRICS_ADDR&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="agent-metrics"&gt;Agent metrics&lt;/h2&gt;
+&lt;h3 id="backend-and-selected-cap"&gt;Backend and selected cap&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_backend_mode{node,mode}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;mode&lt;/code&gt;: &lt;code&gt;none|rapl|dvfs&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;active mode is &lt;code&gt;1&lt;/code&gt;, others &lt;code&gt;0&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_policy_cap_watts{node,policy}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;current selected policy cap in watts&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="rapl-powerenergy"&gt;RAPL power/energy&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_rapl_energy_uj{node,zone}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;latest raw RAPL energy counter in microjoules&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_rapl_estimated_power_watts{node,zone}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;per-zone estimated power from energy deltas&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_rapl_package_total_power_watts{node}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;sum of package-level estimated power&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="dvfs-controller"&gt;DVFS controller&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_observed_power_watts{node}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;observed package power used by DVFS controller&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_ema_power_watts{node}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;EMA-smoothed power used for decisions&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_throttle_pct{node}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;current throttle percentage&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_above_trip_count{node}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;consecutive above-threshold samples&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_below_trip_count{node}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;consecutive below-threshold samples&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_actions_total{node,action}&lt;/code&gt; (counter)
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;action&lt;/code&gt;: &lt;code&gt;throttle_up|throttle_down&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="cpu-frequency-observability"&gt;CPU frequency observability&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_cpu_cur_freq_khz{node,cpu}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;current CPU/policy frequency in kHz&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_cpu_max_freq_khz{node,cpu}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;enforced max frequency cap in kHz&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="reliability"&gt;Reliability&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_reconcile_errors_total{node}&lt;/code&gt; (counter)
+&lt;ul&gt;
+&lt;li&gt;reconcile-loop errors&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="operator-metrics"&gt;Operator metrics&lt;/h2&gt;
+&lt;h3 id="fsm-state-and-profile-label"&gt;FSM state and profile label&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_operator_node_state{node,state}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;state&lt;/code&gt;: &lt;code&gt;ActivePerformance|DrainingPerformance|ActiveEco&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;active state is &lt;code&gt;1&lt;/code&gt;, others &lt;code&gt;0&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_operator_node_profile_label{node,profile}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;operator-applied node label view&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;profile&lt;/code&gt;: &lt;code&gt;performance|draining-performance|eco&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;active profile is &lt;code&gt;1&lt;/code&gt;, others &lt;code&gt;0&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="transition-accounting"&gt;Transition accounting&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_operator_state_transitions_total{node,from_state,to_state,result}&lt;/code&gt; (counter)
+&lt;ul&gt;
+&lt;li&gt;transition events emitted by operator&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;result&lt;/code&gt;:
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;applied&lt;/code&gt;: transition committed&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;deferred&lt;/code&gt;: transition blocked/deferred by safeguards&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="notes"&gt;Notes&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;Metrics are pull-based; values depend on scrape interval.&lt;/li&gt;
+&lt;li&gt;Highest cardinality is usually per-CPU frequency series.&lt;/li&gt;
+&lt;/ul&gt;</description></item></channel></rss>
