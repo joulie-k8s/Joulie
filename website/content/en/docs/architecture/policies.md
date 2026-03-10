@@ -1,15 +1,21 @@
 ---
 title: "Policy Algorithms"
+weight: 40
 ---
 
 
 This page documents the controller policy algorithms implemented in `cmd/operator/main.go`.
 
+Use this page after:
+
+1. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
+2. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}})
+
 ## Classification Input
 
 Policy demand classification is derived from pod scheduling constraints on `joulie.io/power-profile`:
 
-- `performance-only`: pod can run only on `performance`/`draining-performance`.
+- `performance-only`: pod can run only on `performance` (and transitional `draining-performance`).
 - `eco-only`: pod can run only on `eco`.
 - `general` (implicit unconstrained): no explicit power-profile constraint, or both profiles allowed.
 - `unknown`: unsupported/ambiguous constraint shape.
@@ -22,7 +28,7 @@ Each reconcile tick:
 
 1. Select eligible nodes from `NODE_SELECTOR`, excluding reserved and unschedulable nodes.
 2. Build a desired plan with the selected policy.
-3. Apply downgrade guard (can convert planned `eco` to `draining-performance`/`performance`).
+3. Apply downgrade guard (can keep planned `eco` nodes in high-cap draining mode until safe).
 4. Write `NodePowerProfile` and update node label `joulie.io/power-profile`.
 
 ## `static_partition`
@@ -94,8 +100,7 @@ When planned profile is `eco` on a node currently `performance`:
 1. Count active performance-sensitive pods on that node.
 2. If count > 0:
    - keep cap/profile as `performance`,
-   - set label profile to `draining-performance`.
+   - set node label profile to `draining-performance`,
+   - record transition as deferred in operator FSM/metrics.
 3. If count == 0:
    - allow transition to `eco`.
-
-If node is already `draining-performance`, the same check decides whether to complete drain or remain draining.

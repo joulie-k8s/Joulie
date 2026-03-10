@@ -1,150 +1,69 @@
 ---
 title: "Input Telemetry and Actuation Interfaces"
+weight: 50
 ---
 
+This page describes runtime IO contracts:
 
-This document defines Joulie's **internal input interfaces** for telemetry and control.
+- how Joulie reads telemetry inputs,
+- how Joulie sends control intents.
 
-Important distinction:
+It is not the `/metrics` exposition contract.
+For exported metrics, see [Metrics Reference]({{< relref "/docs/architecture/metrics.md" >}}).
 
-- this is **not** about Prometheus metrics exposed by Joulie,
-- this is about how Joulie components **consume input data** and **apply controls**.
+## Why this abstraction exists
 
-## Goals
+Joulie must run in two worlds with the same control logic:
 
-1. Run against real hardware in bare metal clusters.
-2. Run in virtual/simulated clusters (kind/kwok) with the same control logic.
-3. Keep APIs generic enough for CPU + GPU + future signals.
-4. Avoid policy/API churn when moving from rule-based to data-driven policies.
+- real hardware clusters,
+- simulator/KWOK clusters.
 
-## Core model (simple)
+So agent/operator logic depends on provider interfaces, not directly on sysfs or simulator HTTP shape.
 
-Joulie uses:
+## Telemetry provider model
 
-- one `TelemetryProvider` abstraction for **input metrics** (for both agent and controller),
-- one `ControlProvider` abstraction for **actuation/state readback** (agent-side).
+Telemetry input can come from:
 
-Why this split:
-
-- both agent and controller need input telemetry (different subsets),
-- only agent needs low-level control application (RAPL/DVFS/GPU writes).
-
-## TelemetryProvider (shared input abstraction)
-
-`TelemetryProvider` should be usable by:
-
-- agent (node-local signals like RAPL/DVFS/GPU state),
-- controller (cluster/global signals like Prometheus aggregates, weather, grid carbon).
-
-Expected signal families (generic, extensible):
-
-- CPU:
-  - package power,
-  - frequency/utilization state.
-- GPU (future-ready):
-  - power/utilization/clocks/thermal state.
-- thermal/facility:
-  - inlet/outlet temperatures,
-  - hotspot indicators,
-  - PUE / energy mix / grid carbon (controller-level inputs).
-- workload context:
-  - requested/allocated CPU/GPU,
-  - workload intent density.
-
-Provider backends can be selected per signal family:
-
-- `none` (not provided),
-- `host` (sysfs/vendor tooling on real nodes),
+- `host` (real node interfaces),
 - `http` (simulator endpoint),
-- `prometheus` (query-based pull for controller/global inputs).
+- `prometheus` (cluster-level inputs, future expansion),
+- `none`.
 
-## Normalized snapshot and quality flags
+Quality handling should distinguish `fresh`, `stale`, and `missing` samples so policy can degrade safely.
 
-`TelemetryProvider` should return normalized values with metadata:
+## Control provider model
 
-- value,
-- timestamp,
-- quality flag.
+Control outputs are routed by backend:
 
-Quality flags:
+- `host`: write real interfaces (RAPL/cpufreq),
+- `http`: send intents to simulator,
+- `none`.
 
-- `fresh`: recent enough for control decisions,
-- `stale`: older than policy TTL (may be used with caution),
-- `missing`: unavailable/failed.
+Result semantics:
 
-This allows policy logic to degrade safely instead of failing hard when some inputs are delayed.
+- `applied`
+- `blocked`
+- `error`
 
-## ControlProvider (agent-side actuation abstraction)
+This allows desired vs applied behavior auditing.
 
-Expected operations:
+## Current CPU control intents
 
-- CPU:
-  - set/read package cap,
-  - set/read DVFS bounds.
-- GPU (future):
-  - set/read power cap,
-  - set/read clock policy.
+Supported intent actions:
 
-Expected result model:
+- `rapl.set_power_cap_watts`
+- `dvfs.set_throttle_pct`
 
-- `applied`,
-- `blocked` (unsupported / permissions / policy guard),
-- `error` (runtime failure),
-- plus observed post-state.
+DVFS intent is normalized as `throttlePct` (`0..100`) to stay portable across heterogeneous CPUs.
+Backend-specific frequency writes remain implementation details.
 
-This is required so Joulie can compare desired vs applied behavior even in simulation.
+## Current HTTP contracts
 
-## DVFS control signal shape
+Telemetry endpoint:
 
-Current DVFS control intent is normalized as `throttlePct` (0-100), not a fixed Hz.
+- `GET /telemetry/{node}`
 
-Reason:
-
-- frequency domains and available frequency steps vary by CPU/vendor/platform,
-- a percentage is portable across heterogeneous nodes and simulator backends,
-- host-specific Hz writes remain an implementation detail of the `host` control backend.
-
-On real nodes, the agent still exports observed/max frequency metrics in kHz.
-
-## Real-hardware mode
-
-Host implementation maps to current Linux/device interfaces:
-
-- RAPL: read `energy_uj`, write `constraint_0_power_limit_uw`,
-- DVFS: read/write `scaling_*_freq` / `cpuinfo_*_freq`,
-- future GPU backends via vendor APIs/tools.
-
-Current mount convention:
-
-- host `/sys` mounted in container at `/host-sys`.
-
-Agent backend selection is self-discovered:
-
-- if cpufreq files are present, host DVFS writes are enabled,
-- if cpufreq files are missing, host DVFS writes are disabled automatically,
-- if HTTP control is configured, DVFS intents are still applied through HTTP.
-
-## Simulator mode (HTTP)
-
-HTTP implementation reads/writes through a simulator service.
-
-Minimum simulator contract:
-
-1. expose telemetry per node (CPU now, GPU-ready schema),
-2. expose global/context telemetry (weather/grid carbon/prometheus-derived features),
-3. accept control intents (RAPL/DVFS/GPU),
-4. return applied state + status,
-5. evolve telemetry over time based on workload allocation and controls.
-
-This enables closed-loop validation with no physical RAPL/DVFS/GPU devices.
-
-### Current HTTP input contract (implemented now)
-
-For DVFS observed-power input, the current agent implementation reads:
-
-- `GET <endpoint>` where `{node}` placeholder (if present) is replaced with node name.
-
-Accepted JSON forms:
+Accepted minimal payloads include:
 
 ```json
 { "packagePowerWatts": 245.3 }
@@ -156,103 +75,49 @@ or
 { "cpu": { "packagePowerWatts": 245.3 } }
 ```
 
-This is a minimal first contract and will evolve as telemetry coverage expands.
+Control endpoint:
 
-Current simulator response shape:
+- `POST /control/{node}`
 
-```json
-{
-  "node": "kwok-node-0",
-  "packagePowerWatts": 210.5,
-  "cpu": {
-    "packagePowerWatts": 210.5,
-    "utilization": 0.74,
-    "freqScale": 0.62,
-    "throttlePct": 35,
-    "capWatts": 180,
-    "raplCapWatts": 180,
-    "capSaturated": false
-  },
-  "gpu": {
-    "present": false,
-    "powerWatts": 0,
-    "utilization": 0
-  },
-  "pods": {
-    "running": 12,
-    "byIntentClass": {
-      "performance": 4,
-      "eco": 6
-    }
-  },
-  "ts": "2026-03-04T00:00:00Z"
-}
-```
-
-### Current HTTP control contract (implemented now)
-
-Agent sends `POST <endpoint>` (with `{node}` replacement) with JSON payload:
+Example request:
 
 ```json
 {
   "node": "worker-01",
-  "action": "rapl.set_power_cap_watts | dvfs.set_throttle_pct",
-  "capWatts": 120.0,
+  "action": "dvfs.set_throttle_pct",
   "throttlePct": 20,
   "ts": "2026-02-27T00:00:00Z"
 }
 ```
 
-Simulator/backend applies it and returns success/failure.
+Expected response includes:
 
-Current simulator response fields:
+- `result` (`applied|blocked|error`)
+- `message`
+- `state` (best-effort post-state)
 
-- `result`: `applied|blocked|error`
-- `message`: backend message
-- `state`: best-effort post-state (`capWatts`, `throttlePct`, `freqScale`, ...)
+## Current host contracts
 
-Unsupported GPU controls (`gpu.set_power_cap_watts`, `gpu.set_clock_policy`) currently return `blocked`.
+Agent host mode uses Linux interfaces:
 
-## Simulator concept for WAO vs Joulie comparison
+- RAPL energy/power cap files
+- cpufreq files for observed and enforced frequency bounds
 
-Target workflow:
+Current deployment convention mounts host `/sys` into container `/host-sys`.
 
-1. Simulator receives a cluster template (node hardware profiles/capabilities).
-2. Simulator receives workload allocation state from Kubernetes/scheduler.
-3. Simulator computes telemetry trajectories per node + global context.
-4. WAO/Joulie read those metrics via their telemetry paths.
-5. Joulie writes control intents; simulator reflects their impact on future telemetry.
+## CRD integration
 
-This provides a fair same-workload/same-telemetry benchmark between WAO and Joulie.
+Current runtime responsibilities:
 
-Implementation notes are documented in:
+- operator writes `NodePowerProfile` targets,
+- agent reads `NodePowerProfile` for desired state,
+- agent reads node-scoped `TelemetryProfile` for source/control routing,
+- agent writes control status under `TelemetryProfile.status.control`.
 
-- `https://joulie-k8s.github.io/Joulie/docs/simulator/simulator/`
-- `simulator/README.md`
+## Next step
 
-## Generic telemetry CRD (current + extension path)
+To see simulator-side algorithm details using these interfaces, read:
 
-Current CRDs:
-
-- `NodePowerProfile`: desired power profile assignment.
-- `TelemetryProfile`: telemetry source routing/configuration.
-
-Current ownership/consumption model:
-
-- Operator writes `NodePowerProfile` (desired node target).
-- Agent reads `NodePowerProfile`.
-- Agent reads node-scoped `TelemetryProfile` to choose telemetry source/control backend.
-- Agent writes `TelemetryProfile.status.control.*` as applied/blocked/error feedback.
-
-At the moment, operator does not yet consume `TelemetryProfile` for decision logic; that is reserved for future policy extensions (cluster/global telemetry inputs).
-
-`TelemetryProfile` currently covers source routing (for example CPU from `host` or `http`) and is the basis for simulated input mode.
-It should be extended over time with CPU/GPU/thermal/context status snapshots.
-
-Current control routing in the same CRD:
-
-- `spec.controls.cpu.type`: `none|host|http`
-- `spec.controls.cpu.http.endpoint`: HTTP control sink for CPU intents
-- `spec.controls.cpu.http.mode`: `auto|rapl|dvfs`
-
-Key requirement: schema must remain extensible by device family (CPU/GPU/accelerator) without breaking readers.
+- [Workload and Power Simulator]({{< relref "/docs/simulator/simulator.md" >}})
+- [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
+- [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})

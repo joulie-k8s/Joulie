@@ -6,6 +6,27 @@ weight: 10
 
 This document defines the Joulie simulator design and how it integrates with Joulie.
 
+## Architecture at a glance
+
+The simulator extends the same control path used on real nodes:
+
+1. Operator writes desired node profile (`NodePowerProfile`).
+2. Agent reads desired state and sends control intents.
+3. Simulator emulates telemetry/control behavior per node and exposes HTTP endpoints.
+4. Next reconcile loop reacts to updated simulated state.
+
+<img src='{{< relURL "images/joulie-arch-simulator.png" >}}' alt="Joulie simulator architecture overview">
+
+The diagram shows the end-to-end loop:
+
+- Kubernetes keeps scheduling and pod lifecycle as source of truth.
+- Joulie operator writes desired node states (`NodePowerProfile`).
+- Agent (pool or daemonset mode) translates desired state into control intents.
+- Simulator receives control intents and updates per-node hardware model state.
+- Simulator exposes telemetry back to the agent through HTTP, closing the loop.
+
+This separation lets you validate control policies with realistic scheduler behavior while simulating hardware dynamics.
+
 ## Goals
 
 - Keep Kubernetes scheduling real (real pod placement/lifecycle).
@@ -22,12 +43,47 @@ The simulator is not a fake scheduler.
 
 This gives one source of truth for workload location: Kubernetes API.
 
-In KWOK mode:
+In [KWOK](https://kwok.sigs.k8s.io/) mode:
 
 - API server and scheduler are real.
 - fake nodes and fake workload pods are API objects.
 - simulator drives telemetry and batch completion.
 - agent runs in `pool` mode with one logical loop per simulated node.
+
+## Large virtual clusters with [kind](https://kind.sigs.k8s.io/) + [KWOK](https://kwok.sigs.k8s.io/)
+
+You are not constrained to a large real hardware cluster to evaluate Joulie policies.
+
+With [kind](https://kind.sigs.k8s.io/) + [KWOK](https://kwok.sigs.k8s.io/) you can:
+
+- keep a real Kubernetes control plane and scheduler,
+- attach many fake worker nodes,
+- run real operator/agent/simulator control loops,
+- scale experiments to many nodes and pods with low hardware cost.
+
+This is the model used in the benchmark experiment:
+
+- [KWOK Benchmark Experiment]({{< relref "/docs/experiments/kwok-benchmark.md" >}})
+
+Typical flow:
+
+1. Create [kind](https://kind.sigs.k8s.io/) cluster (real control-plane + worker runtime nodes).
+2. Add many [KWOK](https://kwok.sigs.k8s.io/) fake nodes labeled `joulie.io/managed=true`.
+3. Deploy simulator + agent pool + operator.
+4. Run workload traces and observe throughput/energy behavior.
+
+Practical scripts are in:
+
+- `experiments/01-kwok-benchmark/scripts/10_setup_cluster.sh`
+- `experiments/01-kwok-benchmark/scripts/20_run_benchmark.sh`
+
+Example run:
+
+```bash
+source experiments/01-kwok-benchmark/.venv/bin/activate
+experiments/01-kwok-benchmark/scripts/10_setup_cluster.sh
+experiments/01-kwok-benchmark/scripts/20_run_benchmark.sh
+```
 
 ## Integration with Joulie
 
@@ -64,33 +120,45 @@ In simulator mode:
 
 ## Simulator observability
 
-The simulator exports:
-
-- request counters and latency by route/method/status,
-- control action counters by node/action,
-- per-node simulated cap/throttle/power,
-- per-node running pod count observed from Kubernetes.
-- per-node class assignment metric (`joulie_sim_node_class_info{node,class}`).
-- node utilization/frequency/cap metrics (`joulie_sim_node_cpu_util`, `joulie_sim_node_freq_scale`, `joulie_sim_node_rapl_cap_watts`).
-- batch metrics (`joulie_sim_job_submitted_total`, `joulie_sim_job_completed_total`, `joulie_sim_job_completion_seconds`).
-
-It also exposes debug endpoints:
+The simulator exposes Prometheus metrics and debug endpoints:
 
 - `GET /debug/nodes`: node selection/class/model + current node state.
 - `GET /debug/events`: recent telemetry/control events (ring buffer).
+- `GET /debug/energy`: integrated simulated energy totals.
 
-## Code layout
+Detailed metric names and labels are documented in:
 
-- `simulator/cmd/simulator/main.go`: simulator binary
-- `simulator/Dockerfile`: simulator container build
-- `simulator/deploy/simulator.yaml`: namespace, RBAC, deployment, service
-- `simulator/deploy/servicemonitor.yaml`: optional Prometheus scraping
+- [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})
 
-## Deployment model
+## Installation
 
-Use a separate simulator image and deployment.
+Use a separate simulator deployment (`joulie-telemetry-sim`) in namespace `joulie-sim-demo`.
 
-This keeps Joulie runtime clean while enabling controlled experiments.
+### Build and push image
+
+From repo root:
+
+```bash
+make simulator-build TAG=<tag>
+make simulator-push TAG=<tag>
+```
+
+### Deploy to cluster
+
+Use the default manifest:
+
+```bash
+kubectl apply -f simulator/deploy/simulator.yaml
+kubectl -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim
+```
+
+Or install with dynamic image tag override:
+
+```bash
+make simulator-install TAG=<tag>
+```
+
+This keeps simulator lifecycle independent from operator/agent lifecycle.
 
 ### Node scope and class mapping
 
@@ -151,13 +219,14 @@ Helper tools:
 
 ## KWOK flow summary
 
-1. Create KWOK fake nodes with `type=kwok` and `joulie.io/managed=true`.
+1. Create [KWOK](https://kwok.sigs.k8s.io/) fake nodes with `type=kwok` and `joulie.io/managed=true`.
 2. Taint fake nodes with `kwok.x-k8s.io/node=fake:NoSchedule`.
 3. Run operator + simulator + agent pool on real node(s).
 4. Route `TelemetryProfile` to simulator HTTP.
 5. Inject trace workload (pods tolerate kwok taint + select `type=kwok`).
 6. Observe power/control/job-completion metrics.
 
-For exact equations and control/workload update math:
+Algorithm details are split in:
 
-- [Simulator Algorithms]({{< relref "/docs/simulator/simulator-algorithms.md" >}})
+- [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
+- [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})

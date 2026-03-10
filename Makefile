@@ -10,7 +10,7 @@ SIM_IMAGE ?= joulie-simulator
 # Image names must follow joulie-<component>, where <component> matches cmd/<component>.
 IMAGES ?= joulie-agent joulie-operator
 
-.PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-examples simulator-build simulator-push simulator-build-push simulator-install simulator-build-push-deploy simulator-logs
+.PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-examples simulator-build simulator-push simulator-build-push simulator-install simulator-build-push-deploy simulator-logs docs-serve
 
 help:
 	@echo "Targets:"
@@ -31,6 +31,7 @@ help:
 	@echo "  make simulator-install TAG=<tag>      Install simulator using existing image tag"
 	@echo "  make simulator-build-push-deploy TAG=<tag> Build/push/deploy simulator"
 	@echo "  make simulator-logs                   Tail simulator logs"
+	@echo "  make docs-serve                       Start Hugo docs server (website/)"
 	@echo "  make build IMAGE=<name> TAG=<tag>     Build a single image"
 	@echo "  make push IMAGE=<name> TAG=<tag>      Push a single image"
 
@@ -136,3 +137,6 @@ simulator-build-push-deploy: simulator-build-push simulator-install
 
 simulator-logs:
 	kubectl -n "$(SIM_NAMESPACE)" logs -f deploy/joulie-telemetry-sim
+
+docs-serve:
+	cd website && hugo server --disableFastRender --ignoreCache --noHTTPCache

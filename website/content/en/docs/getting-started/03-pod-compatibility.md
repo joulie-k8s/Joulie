@@ -10,8 +10,8 @@ Joulie uses Kubernetes scheduling constraints as the single source of truth for 
 Power profile supply is exposed on node label:
 
 - `joulie.io/power-profile=performance`
+- `joulie.io/power-profile=draining-performance` (temporary transition state)
 - `joulie.io/power-profile=eco`
-- `joulie.io/power-profile=draining-performance` (transition state)
 
 Workload behavior:
 
@@ -104,6 +104,12 @@ spec:
 ## Unconstrained Pod
 
 Do not set power-profile affinity. Kubernetes can schedule it on either eco or performance nodes.
+
+Note on transitions:
+
+- during `performance -> eco` safeguard phase, operator may set node label to `draining-performance`;
+- strict `performance` and strict `eco` affinity pods do not match that temporary label;
+- this helps avoid admitting new strict placements while a node is draining.
 
 Reference manifests:
 

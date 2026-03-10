@@ -14,14 +14,14 @@ The benchmark compares three baselines:
 - `B`: Joulie with static partition policy
 - `C`: Joulie with queue-aware policy
 
-It evaluates throughput/makespan vs energy under real Kubernetes scheduling with KWOK nodes and simulated power control.
+It evaluates throughput/makespan vs energy under real Kubernetes scheduling with [KWOK](https://kwok.sigs.k8s.io/) nodes and simulated power control.
 
 ## Experimental setup
 
 ### Cluster and nodes
 
-- kind control-plane + worker (real control plane)
-- 5 managed KWOK nodes (`kwok-node-0..4`)
+- [kind](https://kind.sigs.k8s.io/) control-plane + worker (real control plane)
+- 5 managed [KWOK](https://kwok.sigs.k8s.io/) nodes (`kwok-node-0..4`)
 - workload pods target KWOK nodes via selector + toleration
 
 ### Hardware models in simulator
@@ -41,7 +41,7 @@ Variable meaning:
 
 Full power-model details are documented in:
 
-- [Simulator Algorithms]({{< relref "/docs/simulator/simulator-algorithms.md" >}})
+- [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
 
 ### Run configuration
 
@@ -74,7 +74,7 @@ Per-seed canonical workload class counts:
   - `hpCount = clamp(max(baseCount, queueNeed), hpMin, hpMax, N)`
 - downgrade guard:
   - `performance -> eco` deferred if performance-sensitive pods still run on node
-  - node marked `draining-performance` until safe
+  - node remains `performance` until safe (deferred transition tracked in operator state/metrics)
 
 ### Simulator energy and slowdown model
 
