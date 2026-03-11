@@ -84,6 +84,11 @@ def get_node_labels(node: str) -> dict[str, str]:
     return dict(labels)
 
 
+def get_node_resource_version(node: str) -> str:
+    out = kubectl(["get", "node", node, "-o", "json"], capture=True).stdout
+    return json.loads(out)["metadata"].get("resourceVersion", "")
+
+
 def wait_node_label(node: str, key: str, val: str, timeout_sec: int = 120) -> None:
     wait_until(
         lambda: get_node_labels(node).get(key) == val,
@@ -231,8 +236,35 @@ def eco_affinity_with_draining_false() -> str:
     )
 
 
+def eco_affinity_in_eco() -> str:
+    return textwrap.indent(
+        textwrap.dedent(
+            """\
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                  - matchExpressions:
+                    - key: joulie.io/power-profile
+                      operator: In
+                      values: ["eco"]
+            """
+        ),
+        "  ",
+    )
+
+
 def install_joulie() -> None:
     log("installing joulie chart")
+    agent_repo = os.getenv("JOULIE_AGENT_IMAGE_REPOSITORY", "").strip()
+    agent_tag = os.getenv("JOULIE_AGENT_IMAGE_TAG", "").strip()
+    operator_repo = os.getenv("JOULIE_OPERATOR_IMAGE_REPOSITORY", "").strip()
+    operator_tag = os.getenv("JOULIE_OPERATOR_IMAGE_TAG", "").strip()
+    if not (agent_repo and agent_tag and operator_repo and operator_tag):
+        raise RuntimeError(
+            "missing required image overrides: JOULIE_AGENT_IMAGE_REPOSITORY/JOULIE_AGENT_IMAGE_TAG/"
+            "JOULIE_OPERATOR_IMAGE_REPOSITORY/JOULIE_OPERATOR_IMAGE_TAG"
+        )
     helm(
         [
             "upgrade",
@@ -256,6 +288,18 @@ def install_joulie() -> None:
             "operator.env.POLICY_TYPE=static_partition",
             "--set",
             "operator.env.STATIC_HP_FRAC=1",
+            "--set",
+            f"agent.image.repository={agent_repo}",
+            "--set",
+            f"agent.image.tag={agent_tag}",
+            "--set",
+            "agent.image.pullPolicy=Always",
+            "--set",
+            f"operator.image.repository={operator_repo}",
+            "--set",
+            f"operator.image.tag={operator_tag}",
+            "--set",
+            "operator.image.pullPolicy=Always",
         ]
     )
     wait_rollout("joulie-system", "deploy/joulie-operator")
@@ -369,7 +413,7 @@ def apply_telemetry_profile(node: str) -> None:
                   http:
                     endpoint: http://joulie-http-mock.joulie-it.svc.cluster.local:8080/control/{{node}}
                     timeoutSeconds: 3
-                    mode: auto
+                    mode: dvfs
             """
         )
     )
@@ -397,7 +441,9 @@ def dump_debug() -> None:
     log("collecting debug data")
     cmds = [
         ["kubectl", "get", "nodes", "-o", "wide", "--show-labels"],
+        ["kubectl", "describe", "nodes"],
         ["kubectl", "get", "pods", "-A", "-o", "wide"],
+        ["kubectl", "describe", "pods", "-A"],
         ["kubectl", "get", "events", "-A", "--sort-by=.lastTimestamp"],
         ["kubectl", "get", "nodepowerprofiles", "-o", "yaml"],
         ["kubectl", "get", "telemetryprofiles", "-o", "yaml"],
@@ -426,6 +472,9 @@ def test_boot_and_install() -> Ctx:
     node = wait_ready_node(timeout_sec=300)
     kubectl(["label", "node", node, "joulie.io/managed=true", "--overwrite"])
     install_joulie()
+    # Explicit CRD checks from integration plan.
+    kubectl(["get", "crd", "nodepowerprofiles.joulie.io"])
+    kubectl(["get", "crd", "telemetryprofiles.joulie.io"])
     kubectl(["create", "ns", "joulie-it"], check=False)
     return Ctx(node=node)
 
@@ -436,10 +485,10 @@ def test_telemetry_http(ctx: Ctx) -> None:
     apply_telemetry_profile(ctx.node)
     time.sleep(12)
     stats = get_mock_stats()
+    if stats.get("get", 0) <= 0:
+        raise AssertionError(f"expected telemetry GETs > 0, stats={stats}")
     if stats.get("post", 0) <= 0:
         raise AssertionError(f"expected control POSTs > 0, stats={stats}")
-    if stats.get("get", 0) <= 0:
-        log(f"telemetry GET count is 0 in this run (expected with HTTP control auto/RAPL path), stats={stats}")
 
 
 def test_fsm_and_labels(ctx: Ctx) -> None:
@@ -478,10 +527,8 @@ def test_legacy_migration(ctx: Ctx) -> None:
     labels = get_node_labels(ctx.node)
     profile = labels.get("joulie.io/power-profile")
     draining = labels.get("joulie.io/draining")
-    # Accept both implementations:
-    # - New FSM: profile=eco (+ optional draining true/false)
-    # - Legacy: profile may remain draining-performance while guard is active
-    if profile not in ("eco", "draining-performance"):
+    # Post-change contract: legacy label must be normalized to eco.
+    if profile != "eco":
         raise AssertionError(f"unexpected power-profile after legacy migration: {profile}")
     if draining not in ("true", "false", None):
         raise AssertionError(f"invalid draining label value after legacy migration: {draining}")
@@ -510,7 +557,23 @@ def test_scheduling(ctx: Ctx) -> None:
     wait_pod_pending("joulie-it", "sch-perf-on-eco")
     delete_pod("joulie-it", "sch-perf-on-eco")
 
+    # eco-only In[eco] schedules on eco
+    delete_pod("joulie-it", "sch-eco-on-eco")
+    apply_yaml(mk_pod_yaml("sch-eco-on-eco", affinity=eco_affinity_in_eco()))
+    wait_pod_phase("joulie-it", "sch-eco-on-eco", "Running")
+    delete_pod("joulie-it", "sch-eco-on-eco")
+
+    # eco-only In[eco] does not schedule on performance
+    set_static_hp_frac("1")
+    wait_node_label(ctx.node, "joulie.io/power-profile", "performance")
+    delete_pod("joulie-it", "sch-eco-on-perf")
+    apply_yaml(mk_pod_yaml("sch-eco-on-perf", affinity=eco_affinity_in_eco()))
+    wait_pod_pending("joulie-it", "sch-eco-on-perf")
+    delete_pod("joulie-it", "sch-eco-on-perf")
+
     # eco + draining=false excludes draining nodes
+    set_static_hp_frac("0")
+    wait_node_label(ctx.node, "joulie.io/power-profile", "eco")
     kubectl(
         [
             "label",
@@ -531,10 +594,8 @@ def test_scheduling(ctx: Ctx) -> None:
 
 def test_classification_matrix(ctx: Ctx) -> None:
     log("IT-CLS-*")
-    set_static_hp_frac("0")
-    wait_node_label(ctx.node, "joulie.io/power-profile", "eco")
-    wait_node_draining_false(ctx.node)
-
+    # Keep only schedulable matrix entries in single-node k3s integration.
+    # Richer corner cases remain unit-tested in operator tests.
     cases: list[tuple[str, str, bool, dict[str, str] | None]] = [
         ("cls-01-notin-eco", perf_affinity_notin_eco(), True, None),
         (
@@ -580,7 +641,6 @@ def test_classification_matrix(ctx: Ctx) -> None:
             False,
             None,
         ),
-        ("cls-12-eco-only", eco_affinity_with_draining_false(), False, None),
         (
             "cls-13-unrelated-required",
             textwrap.indent(
@@ -620,39 +680,42 @@ def test_classification_matrix(ctx: Ctx) -> None:
             False,
             None,
         ),
-        (
-            "cls-23-selector-plus-eco-affinity",
-            textwrap.indent(
-                textwrap.dedent(
-                    """\
-                    affinity:
-                      nodeAffinity:
-                        requiredDuringSchedulingIgnoredDuringExecution:
-                          nodeSelectorTerms:
-                          - matchExpressions:
-                            - key: joulie.io/power-profile
-                              operator: In
-                              values: ["eco"]
-                    """
-                ),
-                "  ",
-            ),
-            True,
-            {"joulie.io/power-profile": "performance"},
-        ),
     ]
 
     for name, affinity, expect_perf, selector in cases:
         delete_pod("joulie-it", name)
-        # pin to node to ensure pod is on node for classification even if unschedulable by affinity.
-        apply_yaml(mk_pod_yaml(name, affinity=affinity, node_name=ctx.node, node_selector=selector))
+        set_static_hp_frac("1")
+        wait_node_label(ctx.node, "joulie.io/power-profile", "performance")
+        wait_node_draining_false(ctx.node)
+        apply_yaml(mk_pod_yaml(name, affinity=affinity, node_selector=selector))
         wait_pod_phase("joulie-it", name, "Running")
+        set_static_hp_frac("0")
         if expect_perf:
-            wait_node_label(ctx.node, "joulie.io/draining", "true")
+            wait_node_guarded_transition(ctx.node)
         else:
-            wait_node_label(ctx.node, "joulie.io/draining", "false")
+            wait_node_eco_ready(ctx.node)
         delete_pod("joulie-it", name)
-        wait_node_label(ctx.node, "joulie.io/draining", "false")
+        wait_node_eco_ready(ctx.node)
+
+
+def test_fsm_idempotency(ctx: Ctx) -> None:
+    log("IT-FSM-05")
+    set_static_hp_frac("1")
+    wait_node_label(ctx.node, "joulie.io/power-profile", "performance")
+    wait_node_draining_false(ctx.node)
+    labels_before = get_node_labels(ctx.node)
+    rv_before = get_node_resource_version(ctx.node)
+    # Reconcile interval is 5s in test install; wait >2 cycles.
+    time.sleep(12)
+    labels_after = get_node_labels(ctx.node)
+    rv_after = get_node_resource_version(ctx.node)
+    if labels_before.get("joulie.io/power-profile") != labels_after.get("joulie.io/power-profile"):
+        raise AssertionError("power-profile label flapped across idle reconciles")
+    if labels_after.get("joulie.io/draining", "false") != "false":
+        raise AssertionError("draining label should remain false in steady performance mode")
+    # Best effort idempotency check: node object should not churn without changes.
+    if rv_before != rv_after:
+        raise AssertionError(f"node resourceVersion changed without requested state change: {rv_before} -> {rv_after}")
 
 
 def main() -> int:
@@ -660,11 +723,10 @@ def main() -> int:
         ctx = test_boot_and_install()
         test_telemetry_http(ctx)
         test_fsm_and_labels(ctx)
+        test_fsm_idempotency(ctx)
         test_legacy_migration(ctx)
         test_scheduling(ctx)
-        # NOTE: full classification matrix is covered by operator unit tests.
-        # In single-node k3s integration, strict affinity cases that intentionally
-        # contradict live node labels are unschedulable by design.
+        test_classification_matrix(ctx)
         log("all integration tests passed")
         return 0
     except Exception as e:

@@ -23,6 +23,7 @@ Prerequisites:
 
 - Docker or Podman runtime
 - `dagger` CLI
+- `CERN_REGISTRY_USER` and `CERN_REGISTRY_PASSWORD` exported in your shell
 
 From repo root:
 
@@ -33,14 +34,21 @@ From repo root:
 Or directly:
 
 ```bash
-dagger -m ./ci call integration --source=.
+dagger -m ./ci call integration \
+  --source=. \
+  --username env:CERN_REGISTRY_USER \
+  --password env:CERN_REGISTRY_PASSWORD
 ```
 
 From within `ci/`:
 
 ```bash
-dagger call integration --source=..
+dagger call integration --source=.. --username env:CERN_REGISTRY_USER --password env:CERN_REGISTRY_PASSWORD
 ```
+
+The pipeline builds `agent` and `operator` images from this repo and publishes them
+to the CERN registry with a `dev-*` tag, then installs Helm using those exact tags.
+`latest` is never used by integration tests.
 
 ## What the suite validates
 

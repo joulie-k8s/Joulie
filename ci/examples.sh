@@ -5,7 +5,10 @@ set -euo pipefail
 # Requires: dagger CLI + Docker/Podman runtime.
 
 # From repo root:
-dagger -m ./ci call integration --source=.
+dagger -m ./ci call integration \
+  --source=. \
+  --username env:CERN_REGISTRY_USER \
+  --password env:CERN_REGISTRY_PASSWORD
 
 # From within ci/ (matches the itwinai pattern with parent context):
-# dagger call integration --source=..
+# dagger call integration --source=.. --username env:CERN_REGISTRY_USER --password env:CERN_REGISTRY_PASSWORD
