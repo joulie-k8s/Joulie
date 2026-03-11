@@ -109,8 +109,7 @@ def is_guarded_transition(node: str) -> bool:
     labels = get_node_labels(node)
     profile = labels.get("joulie.io/power-profile", "")
     draining = labels.get("joulie.io/draining", "")
-    # New FSM: eco + draining=true. Legacy FSM: draining-performance profile label.
-    return profile == "draining-performance" or (profile == "eco" and draining == "true")
+    return profile == "eco" and draining == "true"
 
 
 def wait_node_guarded_transition(node: str, timeout_sec: int = 120) -> None:
@@ -143,6 +142,7 @@ def assert_node_label(node: str, key: str, expected: str) -> None:
 
 def delete_pod(ns: str, name: str) -> None:
     kubectl(["-n", ns, "delete", "pod", name, "--ignore-not-found=true", "--wait=true", "--timeout=90s"], check=False)
+    wait_pod_gone(ns, name, timeout_sec=90)
 
 
 def wait_pod_phase(ns: str, name: str, phase: str, timeout_sec: int = 120) -> None:
@@ -158,6 +158,27 @@ def wait_pod_phase(ns: str, name: str, phase: str, timeout_sec: int = 120) -> No
 
 def wait_pod_pending(ns: str, name: str, timeout_sec: int = 120) -> None:
     wait_pod_phase(ns, name, "Pending", timeout_sec)
+
+
+def wait_pod_gone(ns: str, name: str, timeout_sec: int = 120) -> None:
+    def _ok() -> bool:
+        out = kubectl(["-n", ns, "get", "pod", name], check=False, capture=True)
+        return out.returncode != 0
+
+    wait_until(_ok, timeout_sec=timeout_sec, desc=f"pod {ns}/{name} gone")
+
+
+def wait_pod_unschedulable_reason(ns: str, name: str, contains: str, timeout_sec: int = 120) -> None:
+    needle = contains.lower()
+
+    def _ok() -> bool:
+        out = kubectl(["-n", ns, "describe", "pod", name], check=False, capture=True)
+        if out.returncode != 0:
+            return False
+        text = out.stdout.lower()
+        return ("failedscheduling" in text) and (needle in text)
+
+    wait_until(_ok, timeout_sec=timeout_sec, desc=f"pod {ns}/{name} unschedulable contains '{contains}'")
 
 
 def mk_pod_yaml(
@@ -520,22 +541,31 @@ def test_fsm_and_labels(ctx: Ctx) -> None:
     wait_node_draining_false(ctx.node)
 
 
-def test_legacy_migration(ctx: Ctx) -> None:
-    log("IT-FSM-06")
-    kubectl(["label", "node", ctx.node, "joulie.io/power-profile=draining-performance", "--overwrite"])
+def test_fsm_toggle_under_eco(ctx: Ctx) -> None:
+    log("IT-FSM-07")
     set_static_hp_frac("0")
-    labels = get_node_labels(ctx.node)
-    profile = labels.get("joulie.io/power-profile")
-    draining = labels.get("joulie.io/draining")
-    # Post-change contract: legacy label must be normalized to eco.
-    if profile != "eco":
-        raise AssertionError(f"unexpected power-profile after legacy migration: {profile}")
-    if draining not in ("true", "false", None):
-        raise AssertionError(f"invalid draining label value after legacy migration: {draining}")
+    wait_node_eco_ready(ctx.node)
+
+    delete_pod("joulie-it", "perf-toggle")
+    apply_yaml(mk_pod_yaml("perf-toggle", affinity=perf_affinity_notin_eco(), node_name=ctx.node))
+    wait_pod_phase("joulie-it", "perf-toggle", "Running")
+    wait_node_guarded_transition(ctx.node)
+
+    delete_pod("joulie-it", "perf-toggle")
+    wait_node_eco_ready(ctx.node)
 
 
 def test_scheduling(ctx: Ctx) -> None:
     log("IT-SCH-*")
+    set_static_hp_frac("1")
+    wait_node_label(ctx.node, "joulie.io/power-profile", "performance")
+
+    # perf NotIn eco schedules on unlabeled node too
+    delete_pod("joulie-it", "sch-perf-on-unlabeled")
+    kubectl(["label", "node", ctx.node, "joulie.io/power-profile-"], check=False)
+    apply_yaml(mk_pod_yaml("sch-perf-on-unlabeled", affinity=perf_affinity_notin_eco()))
+    wait_pod_phase("joulie-it", "sch-perf-on-unlabeled", "Running")
+    delete_pod("joulie-it", "sch-perf-on-unlabeled")
     set_static_hp_frac("1")
     wait_node_label(ctx.node, "joulie.io/power-profile", "performance")
 
@@ -547,14 +577,11 @@ def test_scheduling(ctx: Ctx) -> None:
 
     # perf NotIn eco does not schedule on eco
     set_static_hp_frac("0")
-    wait_until(
-        lambda: get_node_labels(ctx.node).get("joulie.io/power-profile") in ("eco", "draining-performance"),
-        timeout_sec=120,
-        desc=f"node {ctx.node} in eco-class profile space",
-    )
+    wait_node_label(ctx.node, "joulie.io/power-profile", "eco")
     delete_pod("joulie-it", "sch-perf-on-eco")
     apply_yaml(mk_pod_yaml("sch-perf-on-eco", affinity=perf_affinity_notin_eco()))
     wait_pod_pending("joulie-it", "sch-perf-on-eco")
+    wait_pod_unschedulable_reason("joulie-it", "sch-perf-on-eco", "affinity")
     delete_pod("joulie-it", "sch-perf-on-eco")
 
     # eco-only In[eco] schedules on eco
@@ -569,6 +596,7 @@ def test_scheduling(ctx: Ctx) -> None:
     delete_pod("joulie-it", "sch-eco-on-perf")
     apply_yaml(mk_pod_yaml("sch-eco-on-perf", affinity=eco_affinity_in_eco()))
     wait_pod_pending("joulie-it", "sch-eco-on-perf")
+    wait_pod_unschedulable_reason("joulie-it", "sch-eco-on-perf", "affinity")
     delete_pod("joulie-it", "sch-eco-on-perf")
 
     # eco + draining=false excludes draining nodes
@@ -587,6 +615,7 @@ def test_scheduling(ctx: Ctx) -> None:
     delete_pod("joulie-it", "sch-eco-on-draining")
     apply_yaml(mk_pod_yaml("sch-eco-on-draining", affinity=eco_affinity_with_draining_false()))
     wait_pod_pending("joulie-it", "sch-eco-on-draining")
+    wait_pod_unschedulable_reason("joulie-it", "sch-eco-on-draining", "affinity")
     kubectl(["label", "node", ctx.node, "joulie.io/draining=false", "--overwrite"])
     wait_pod_phase("joulie-it", "sch-eco-on-draining", "Running")
     delete_pod("joulie-it", "sch-eco-on-draining")
@@ -594,10 +623,33 @@ def test_scheduling(ctx: Ctx) -> None:
 
 def test_classification_matrix(ctx: Ctx) -> None:
     log("IT-CLS-*")
-    # Keep only schedulable matrix entries in single-node k3s integration.
-    # Richer corner cases remain unit-tested in operator tests.
-    cases: list[tuple[str, str, bool, dict[str, str] | None]] = [
-        ("cls-01-notin-eco", perf_affinity_notin_eco(), True, None),
+    # name, affinity, expect_perf, selector, force_node_name, expect_apply_ok
+    cases: list[tuple[str, str, bool, dict[str, str] | None, bool, bool]] = [
+        ("cls-01-notin-eco", perf_affinity_notin_eco(), True, None, False, True),
+        (
+            "cls-02-notin-eco-plus-extra",
+            textwrap.indent(
+                textwrap.dedent(
+                    """\
+                    affinity:
+                      nodeAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution:
+                          nodeSelectorTerms:
+                          - matchExpressions:
+                            - key: joulie.io/power-profile
+                              operator: NotIn
+                              values: ["eco"]
+                            - key: kubernetes.io/arch
+                              operator: Exists
+                    """
+                ),
+                "  ",
+            ),
+            True,
+            None,
+            False,
+            True,
+        ),
         (
             "cls-03-in-performance",
             textwrap.indent(
@@ -617,9 +669,37 @@ def test_classification_matrix(ctx: Ctx) -> None:
             ),
             True,
             None,
+            False,
+            True,
         ),
-        ("cls-04-selector-performance", "", True, {"joulie.io/power-profile": "performance"}),
-        ("cls-10-best-effort", "", False, None),
+        ("cls-04-selector-performance", "", True, {"joulie.io/power-profile": "performance"}, False, True),
+        (
+            "cls-05-or-terms-one-excludes-eco",
+            textwrap.indent(
+                textwrap.dedent(
+                    """\
+                    affinity:
+                      nodeAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution:
+                          nodeSelectorTerms:
+                          - matchExpressions:
+                            - key: joulie.io/power-profile
+                              operator: In
+                              values: ["eco"]
+                          - matchExpressions:
+                            - key: joulie.io/power-profile
+                              operator: NotIn
+                              values: ["eco"]
+                    """
+                ),
+                "  ",
+            ),
+            True,
+            None,
+            True,
+            True,
+        ),
+        ("cls-10-best-effort", "", False, None, False, True),
         (
             "cls-11-preferred-only",
             textwrap.indent(
@@ -640,6 +720,30 @@ def test_classification_matrix(ctx: Ctx) -> None:
             ),
             False,
             None,
+            False,
+            True,
+        ),
+        (
+            "cls-12-in-eco-only",
+            textwrap.indent(
+                textwrap.dedent(
+                    """\
+                    affinity:
+                      nodeAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution:
+                          nodeSelectorTerms:
+                          - matchExpressions:
+                            - key: joulie.io/power-profile
+                              operator: In
+                              values: ["eco"]
+                    """
+                ),
+                "  ",
+            ),
+            False,
+            None,
+            True,
+            True,
         ),
         (
             "cls-13-unrelated-required",
@@ -660,9 +764,11 @@ def test_classification_matrix(ctx: Ctx) -> None:
             ),
             False,
             None,
+            False,
+            True,
         ),
         (
-            "cls-14-exists-profile",
+            "cls-14-exists-profile-key",
             textwrap.indent(
                 textwrap.dedent(
                     """\
@@ -679,17 +785,171 @@ def test_classification_matrix(ctx: Ctx) -> None:
             ),
             False,
             None,
+            True,
+            True,
         ),
+        (
+            "cls-14-doesnotexist-profile-key",
+            textwrap.indent(
+                textwrap.dedent(
+                    """\
+                    affinity:
+                      nodeAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution:
+                          nodeSelectorTerms:
+                          - matchExpressions:
+                            - key: joulie.io/power-profile
+                              operator: DoesNotExist
+                    """
+                ),
+                "  ",
+            ),
+            False,
+            None,
+            False,
+            True,
+        ),
+        (
+            "cls-15-conflicting-or-terms",
+            textwrap.indent(
+                textwrap.dedent(
+                    """\
+                    affinity:
+                      nodeAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution:
+                          nodeSelectorTerms:
+                          - matchExpressions:
+                            - key: joulie.io/power-profile
+                              operator: In
+                              values: ["eco"]
+                          - matchExpressions:
+                            - key: joulie.io/power-profile
+                              operator: NotIn
+                              values: ["eco"]
+                    """
+                ),
+                "  ",
+            ),
+            True,
+            None,
+            True,
+            True,
+        ),
+        (
+            "cls-20-notin-eco-plus-other",
+            textwrap.indent(
+                textwrap.dedent(
+                    """\
+                    affinity:
+                      nodeAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution:
+                          nodeSelectorTerms:
+                          - matchExpressions:
+                            - key: joulie.io/power-profile
+                              operator: NotIn
+                              values: ["eco", "somethingElse"]
+                    """
+                ),
+                "  ",
+            ),
+            True,
+            None,
+            False,
+            True,
+        ),
+        (
+            "cls-21-multi-expr-across-terms",
+            textwrap.indent(
+                textwrap.dedent(
+                    """\
+                    affinity:
+                      nodeAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution:
+                          nodeSelectorTerms:
+                          - matchExpressions:
+                            - key: joulie.io/power-profile
+                              operator: In
+                              values: ["eco"]
+                            - key: kubernetes.io/os
+                              operator: In
+                              values: ["linux"]
+                          - matchExpressions:
+                            - key: joulie.io/power-profile
+                              operator: NotIn
+                              values: ["eco"]
+                    """
+                ),
+                "  ",
+            ),
+            True,
+            None,
+            True,
+            True,
+        ),
+        (
+            "cls-22-empty-values-notin",
+            textwrap.indent(
+                textwrap.dedent(
+                    """\
+                    affinity:
+                      nodeAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution:
+                          nodeSelectorTerms:
+                          - matchExpressions:
+                            - key: joulie.io/power-profile
+                              operator: NotIn
+                              values: []
+                    """
+                ),
+                "  ",
+            ),
+            False,
+            None,
+            False,
+            False,
+        ),
+        (
+            "cls-23-selector-plus-eco-required",
+            textwrap.indent(
+                textwrap.dedent(
+                    """\
+                    affinity:
+                      nodeAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution:
+                          nodeSelectorTerms:
+                          - matchExpressions:
+                            - key: joulie.io/power-profile
+                              operator: In
+                              values: ["eco"]
+                    """
+                ),
+                "  ",
+            ),
+            True,
+            {"joulie.io/power-profile": "performance"},
+            True,
+            True,
+        ),
+        ("cls-24-node-name-no-constraints", "", False, None, True, True),
     ]
 
-    for name, affinity, expect_perf, selector in cases:
+    for name, affinity, expect_perf, selector, force_node_name, expect_apply_ok in cases:
         delete_pod("joulie-it", name)
-        set_static_hp_frac("1")
-        wait_node_label(ctx.node, "joulie.io/power-profile", "performance")
-        wait_node_draining_false(ctx.node)
-        apply_yaml(mk_pod_yaml(name, affinity=affinity, node_selector=selector))
-        wait_pod_phase("joulie-it", name, "Running")
         set_static_hp_frac("0")
+        wait_node_eco_ready(ctx.node)
+        node_name = ctx.node if force_node_name else ""
+        manifest = mk_pod_yaml(name, affinity=affinity, node_name=node_name, node_selector=selector)
+        out = kubectl(["apply", "-f", "-"], stdin=manifest, check=False, capture=True)
+        if not expect_apply_ok:
+            # Kubernetes should reject empty values for In/NotIn, but behavior can vary.
+            # If rejected, classification cannot apply and draining must stay false.
+            if out.returncode != 0:
+                wait_node_eco_ready(ctx.node)
+                continue
+        if out.returncode != 0:
+            err = (out.stderr or out.stdout or "").strip()
+            raise AssertionError(f"{name}: apply failed unexpectedly: {err}")
+        wait_pod_phase("joulie-it", name, "Running")
         if expect_perf:
             wait_node_guarded_transition(ctx.node)
         else:
@@ -723,8 +983,8 @@ def main() -> int:
         ctx = test_boot_and_install()
         test_telemetry_http(ctx)
         test_fsm_and_labels(ctx)
+        test_fsm_toggle_under_eco(ctx)
         test_fsm_idempotency(ctx)
-        test_legacy_migration(ctx)
         test_scheduling(ctx)
         test_classification_matrix(ctx)
         log("all integration tests passed")

@@ -1,13 +1,23 @@
+"""Dagger module entrypoints for Joulie CI integration testing.
+
+This module builds local Joulie binaries into container images, publishes them
+to a registry with `dev*` tags, starts a k3s test cluster, and runs the
+integration suite against the freshly built artifacts.
+"""
+
 from __future__ import annotations
 
 import uuid
+from typing import Annotated
 
 import dagger
-from dagger import dag, function, object_type
+from dagger import Doc, dag, function, object_type
 
 
 @object_type
 class JoulieCi:
+    """Dagger object exposing CI integration workflows for Joulie."""
+
     async def _publish_component_image(
         self,
         source: dagger.Directory,
@@ -17,22 +27,33 @@ class JoulieCi:
         username: dagger.Secret,
         password: dagger.Secret,
     ) -> str:
+        """Build and publish one component image from repo source.
+
+        Args:
+            source: Repository source directory.
+            component: Component name (`agent` or `operator`).
+            registry_repo: Registry repository prefix.
+            tag: Image tag (must start with `dev` in integration flow).
+            username: Registry username secret.
+            password: Registry password/token secret.
+
+        Returns:
+            Fully qualified image reference that was published.
+        """
         host = registry_repo.split("/")[0]
         user = await username.plaintext()
 
         builder = (
             dag.container()
-            .from_("golang:1.22")
+            .from_("golang:1.23")
             .with_workdir("/src")
             .with_mounted_directory("/src", source)
+            .with_exec(["go", "version"])
             .with_exec(["go", "mod", "download"])
-            .with_exec(
-                [
-                    "sh",
-                    "-lc",
-                    f"CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/joulie ./cmd/{component}",
-                ]
-            )
+            .with_env_variable("CGO_ENABLED", "0")
+            .with_env_variable("GOOS", "linux")
+            .with_env_variable("GOARCH", "amd64")
+            .with_exec(["go", "build", "-o", "/out/joulie", f"./cmd/{component}"])
         )
         runtime = (
             dag.container()
@@ -48,14 +69,21 @@ class JoulieCi:
     @function
     async def integration(
         self,
-        source: dagger.Directory,
-        username: dagger.Secret,
-        password: dagger.Secret,
-        registry_repo: str = "registry.cern.ch/mbunino/joulie",
-        tag: str = "",
+        source: Annotated[dagger.Directory, Doc("Repository source directory mounted at /src inside the CI container.")],
+        username: Annotated[dagger.Secret, Doc("Registry username secret used to authenticate image pushes.")],
+        password: Annotated[dagger.Secret, Doc("Registry password/token secret used to authenticate image pushes.")],
+        registry_repo: Annotated[str, Doc("Target OCI repository prefix (without component suffix).")] = "registry.cern.ch/mbunino/joulie",
+        tag: Annotated[str, Doc("Image tag to publish and deploy. Must start with 'dev'. Auto-generated when empty.")] = "",
     ) -> str:
         """
-        Run Joulie integration tests on a lightweight k3s cluster started as a Dagger service.
+        Build/push local Joulie images and run the k3s integration suite.
+
+        Workflow:
+        1. Build `agent` and `operator` images from current repo source.
+        2. Publish images to `registry_repo` using a `dev*` tag.
+        3. Start a k3s service via the Daggerverse k3s module.
+        4. Install Joulie Helm chart with the freshly published images.
+        5. Execute integration tests and return runner stdout.
         """
         if not tag:
             tag = f"dev-{uuid.uuid4().hex[:12]}"
@@ -65,29 +93,10 @@ class JoulieCi:
         agent_ref = await self._publish_component_image(source, "agent", registry_repo, tag, username, password)
         operator_ref = await self._publish_component_image(source, "operator", registry_repo, tag, username, password)
 
-        run_id = uuid.uuid4().hex
-        k3s_state = dag.cache_volume(f"joulie-ci-k3s-state-{run_id}")
-        k3s_out = dag.cache_volume(f"joulie-ci-k3s-out-{run_id}")
-
-        k3s = (
-            dag.container()
-            .from_("rancher/k3s:v1.30.4-k3s1")
-            .with_mounted_cache("/var/lib/rancher/k3s", k3s_state)
-            .with_mounted_cache("/output", k3s_out)
-            .with_exposed_port(6443)
-            .with_exec(
-                [
-                    "server",
-                    "--disable=traefik",
-                    "--snapshotter=native",
-                    "--write-kubeconfig=/output/kubeconfig.yaml",
-                    "--write-kubeconfig-mode=644",
-                ],
-                use_entrypoint=True,
-                insecure_root_capabilities=True,
-            )
-            .as_service()
-        )
+        k3s_mod = dag.k3_s("joulie-ci")
+        k3s = k3s_mod.server()
+        await k3s.start()
+        kubeconfig = k3s_mod.config(local=False)
 
         kubectl_version = "v1.31.2"
         helm_version = "v3.16.1"
@@ -125,7 +134,8 @@ class JoulieCi:
                 ]
             )
             .with_mounted_directory("/src", source)
-            .with_mounted_cache("/k3s-output", k3s_out)
+            .with_file("/tmp/kubeconfig.yaml", kubeconfig)
+            .with_env_variable("KUBECONFIG", "/tmp/kubeconfig.yaml")
             .with_service_binding("k3s", k3s)
             .with_env_variable("JOULIE_AGENT_IMAGE_REPOSITORY", f"{registry_repo}/joulie-agent")
             .with_env_variable("JOULIE_AGENT_IMAGE_TAG", tag)

@@ -1,5 +1,16 @@
 {
   "name": "joulie-ci",
-  "sdk": "python",
-  "source": "src"
+  "engineVersion": "v0.20.1",
+  "sdk": {
+    "source": "python"
+  },
+  "dependencies": [
+    {
+      "name": "k3s",
+      "source": "github.com/marcosnils/daggerverse/k3s@k3s/v0.1.10",
+      "pin": "28eea1fcf3b6ecb38a628186107760acd717442f"
+    }
+  ],
+  "source": "src",
+  "disableDefaultFunctionCaching": true
 }

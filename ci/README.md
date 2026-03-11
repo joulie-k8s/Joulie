@@ -2,7 +2,7 @@
 
 This folder contains a Dagger-based integration test harness for Joulie.
 
-It starts a lightweight **k3s** cluster as a Dagger service, installs Joulie via Helm from the local repo, and runs integration tests focused on:
+It starts a lightweight **k3s** cluster as a Dagger service using the Daggerverse k3s module (`github.com/marcosnils/daggerverse/k3s`), installs Joulie via Helm from the local repo, and runs integration tests focused on:
 
 - FSM transitions and node labels (`joulie.io/power-profile`, `joulie.io/draining`)
 - scheduling behavior under affinity constraints
@@ -61,9 +61,13 @@ Implemented tests currently cover:
   - perf -> eco with perf pod present (`draining=true`)
   - draining clear when perf pod is gone (`draining=false`)
   - eco -> perf (`draining=false`)
-  - legacy `draining-performance` migration handling
 - scheduler-level checks for:
-  - perf pods (`NotIn ["eco"]`)
+  - perf pods (`NotIn ["eco"]`) on both unlabeled and `performance` nodes
   - eco-only pods with `draining=false`
+- exhaustive classification matrix (`IT-CLS-*`) including:
+  - required affinity / nodeSelector variants
+  - OR-term semantics
+  - preference-only vs required constraints
+  - `spec.nodeName` fallback to validate classification even when scheduler would keep pods Pending
 
 On failure, the runner dumps cluster state and controller logs for debugging.
