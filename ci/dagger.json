@@ -1,0 +1,5 @@
+{
+  "name": "joulie-ci",
+  "sdk": "python",
+  "source": "src"
+}
