@@ -61,8 +61,8 @@ func TestProfileMapping(t *testing.T) {
 	if got := currentProfileOrDefault("weird"); got != "unknown" {
 		t.Fatalf("currentProfileOrDefault unknown: got=%q", got)
 	}
-	if got := profileToState("draining-performance"); got != "DrainingPerformance" {
-		t.Fatalf("profileToState draining: got=%q", got)
+	if got := assignmentState("eco", true); got != "DrainingPerformance" {
+		t.Fatalf("assignmentState draining: got=%q", got)
 	}
 }
 
@@ -154,18 +154,17 @@ func TestClassifyPodBySchedulingCornerCases(t *testing.T) {
 		{name: "no constraints is general", pod: corev1.Pod{Spec: corev1.PodSpec{}}, want: workloadClassGeneral},
 		{name: "node selector performance only", pod: corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"joulie.io/power-profile": "performance"}}}, want: workloadClassPerfOnly},
 		{name: "node selector eco only", pod: corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"joulie.io/power-profile": "eco"}}}, want: workloadClassEcoOnly},
-		{name: "node selector draining treated as performance-only", pod: corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"joulie.io/power-profile": "draining-performance"}}}, want: workloadClassPerfOnly},
 		{name: "required affinity in performance", pod: mkRequired(corev1.NodeSelectorOpIn, "performance"), want: workloadClassPerfOnly},
 		{name: "required affinity in eco", pod: mkRequired(corev1.NodeSelectorOpIn, "eco"), want: workloadClassEcoOnly},
 		{name: "required affinity in both is general", pod: mkRequired(corev1.NodeSelectorOpIn, "eco", "performance"), want: workloadClassGeneral},
-		{name: "or terms perf or eco is general", pod: mkRequiredOr([]string{"performance"}, []string{"eco"}), want: workloadClassGeneral},
+		{name: "or terms perf or eco treated as performance-only by conservative rule", pod: mkRequiredOr([]string{"performance"}, []string{"eco"}), want: workloadClassPerfOnly},
 		{name: "notin eco means performance only", pod: mkRequired(corev1.NodeSelectorOpNotIn, "eco"), want: workloadClassPerfOnly},
-		{name: "notin performance means eco only", pod: mkRequired(corev1.NodeSelectorOpNotIn, "performance"), want: workloadClassEcoOnly},
-		{name: "does-not-exist on power-profile is unknown", pod: mkRequired(corev1.NodeSelectorOpDoesNotExist), want: workloadClassUnknown},
-		{name: "gt operator on power-profile is unknown", pod: mkRequired(corev1.NodeSelectorOpGt, "1"), want: workloadClassUnknown},
-		{name: "unknown node selector value is unknown", pod: corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"joulie.io/power-profile": "ultra"}}}, want: workloadClassUnknown},
+		{name: "notin performance is general", pod: mkRequired(corev1.NodeSelectorOpNotIn, "performance"), want: workloadClassGeneral},
+		{name: "does-not-exist on power-profile is general", pod: mkRequired(corev1.NodeSelectorOpDoesNotExist), want: workloadClassGeneral},
+		{name: "gt operator on power-profile is general", pod: mkRequired(corev1.NodeSelectorOpGt, "1"), want: workloadClassGeneral},
+		{name: "unknown node selector value is general", pod: corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"joulie.io/power-profile": "ultra"}}}, want: workloadClassGeneral},
 		{
-			name: "contradicting node selector and affinity is unknown",
+			name: "contradicting node selector and affinity is performance-only per compat selector",
 			pod: corev1.Pod{Spec: corev1.PodSpec{
 				NodeSelector: map[string]string{"joulie.io/power-profile": "performance"},
 				Affinity: &corev1.Affinity{
@@ -178,7 +177,7 @@ func TestClassifyPodBySchedulingCornerCases(t *testing.T) {
 					},
 				},
 			}},
-			want: workloadClassUnknown,
+			want: workloadClassPerfOnly,
 		},
 	}
 
@@ -219,7 +218,7 @@ func TestRunningPerformanceSensitivePodCountOnNodeFiltersCorrectly(t *testing.T)
 	}
 }
 
-func TestApplyDowngradeGuardsDefersPerformanceToEcoWhenPerfPodsExist(t *testing.T) {
+func TestApplyDowngradeGuardsSetsDrainingWhenPerfPodsExist(t *testing.T) {
 	t.Parallel()
 	client := k8sfake.NewSimpleClientset(
 		podWithRequiredPowerProfile("perf", "node-a", "performance"),
@@ -232,30 +231,71 @@ func TestApplyDowngradeGuardsDefersPerformanceToEcoWhenPerfPodsExist(t *testing.
 	}}
 	current := map[string]string{"node-a": "performance"}
 
-	applyDowngradeGuards(context.Background(), client, plan, current, 5000, 120)
+	applyDowngradeGuards(context.Background(), client, plan, current)
 
-	if plan[0].Profile != "performance" || plan[0].State != "DrainingPerformance" || plan[0].LabelProfile != "draining-performance" {
-		t.Fatalf("unexpected plan after defer: %#v", plan[0])
+	if plan[0].Profile != "eco" || plan[0].State != "DrainingPerformance" || !plan[0].Draining {
+		t.Fatalf("unexpected plan after guard: %#v", plan[0])
 	}
 }
 
-func TestApplyDowngradeGuardsDrainCompleteTransitionsToEco(t *testing.T) {
+func TestApplyDowngradeGuardsClearsDrainingWhenNoPerfPods(t *testing.T) {
 	t.Parallel()
 	client := k8sfake.NewSimpleClientset()
 	plan := []NodeAssignment{{
-		NodeName:     "node-a",
-		Profile:      "performance",
-		CapWatts:     5000,
-		ManagedBy:    "rule-swap-v1",
-		LabelProfile: "draining-performance",
-		State:        "DrainingPerformance",
+		NodeName:  "node-a",
+		Profile:   "eco",
+		CapWatts:  120,
+		ManagedBy: "rule-swap-v1",
+		Draining:  true,
+		State:     "DrainingPerformance",
 	}}
-	current := map[string]string{"node-a": "draining-performance"}
+	current := map[string]string{"node-a": "eco"}
 
-	applyDowngradeGuards(context.Background(), client, plan, current, 5000, 120)
+	applyDowngradeGuards(context.Background(), client, plan, current)
 
-	if plan[0].Profile != "eco" || plan[0].State != "ActiveEco" || plan[0].LabelProfile != "eco" || plan[0].CapWatts != 120 {
-		t.Fatalf("unexpected plan after drain completion: %#v", plan[0])
+	if plan[0].Profile != "eco" || plan[0].State != "ActiveEco" || plan[0].Draining {
+		t.Fatalf("unexpected plan after guard clear: %#v", plan[0])
+	}
+}
+
+func TestNormalizeNodeLabelsLegacyMigration(t *testing.T) {
+	t.Parallel()
+	prof, draining := normalizeNodeLabels("draining-performance", "")
+	if prof != "eco" || !draining {
+		t.Fatalf("legacy migration failed got profile=%s draining=%v", prof, draining)
+	}
+}
+
+func TestComputeDesiredLabelsMatrix(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		desired      string
+		perfPods     int
+		wantProfile  string
+		wantDraining bool
+	}{
+		{name: "eco no perf pods", desired: "eco", perfPods: 0, wantProfile: "eco", wantDraining: false},
+		{name: "eco with perf pods", desired: "eco", perfPods: 1, wantProfile: "eco", wantDraining: true},
+		{name: "performance no perf pods", desired: "performance", perfPods: 0, wantProfile: "performance", wantDraining: false},
+		{name: "performance with perf pods", desired: "performance", perfPods: 3, wantProfile: "performance", wantDraining: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotProfile, gotDraining := computeDesiredLabels(tt.desired, tt.perfPods)
+			if gotProfile != tt.wantProfile || gotDraining != tt.wantDraining {
+				t.Fatalf("computeDesiredLabels(%q,%d)=(%q,%v) want=(%q,%v)", tt.desired, tt.perfPods, gotProfile, gotDraining, tt.wantProfile, tt.wantDraining)
+			}
+		})
+	}
+}
+
+func TestComputeDesiredLabelsIdempotent(t *testing.T) {
+	t.Parallel()
+	firstProfile, firstDraining := computeDesiredLabels("eco", 2)
+	secondProfile, secondDraining := computeDesiredLabels(firstProfile, 2)
+	if firstProfile != secondProfile || firstDraining != secondDraining {
+		t.Fatalf("idempotency failed first=(%q,%v) second=(%q,%v)", firstProfile, firstDraining, secondProfile, secondDraining)
 	}
 }
 
@@ -301,21 +341,47 @@ func TestUpsertNodeProfileCreateAndUpdate(t *testing.T) {
 	}
 }
 
-func TestUpsertNodeProfileLabel(t *testing.T) {
+func TestUpsertNodeLabels(t *testing.T) {
 	t.Parallel()
 	client := k8sfake.NewSimpleClientset(
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a", Labels: map[string]string{}}},
 	)
-	a := NodeAssignment{NodeName: "node-a", Profile: "performance", LabelProfile: "draining-performance"}
-	if err := upsertNodeProfileLabel(context.Background(), client, "joulie.io/power-profile", a); err != nil {
-		t.Fatalf("upsertNodeProfileLabel failed: %v", err)
+	a := NodeAssignment{NodeName: "node-a", Profile: "eco", Draining: true}
+	if err := upsertNodeLabels(context.Background(), client, "joulie.io/power-profile", "joulie.io/draining", a); err != nil {
+		t.Fatalf("upsertNodeLabels failed: %v", err)
 	}
 	n, err := client.CoreV1().Nodes().Get(context.Background(), "node-a", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get node: %v", err)
 	}
-	if got := n.Labels["joulie.io/power-profile"]; got != "draining-performance" {
-		t.Fatalf("label=%s want=draining-performance", got)
+	if got := n.Labels["joulie.io/power-profile"]; got != "eco" {
+		t.Fatalf("label=%s want=eco", got)
+	}
+	if got := n.Labels["joulie.io/draining"]; got != "true" {
+		t.Fatalf("draining=%s want=true", got)
+	}
+}
+
+func TestUpsertNodeLabelsIsIdempotent(t *testing.T) {
+	t.Parallel()
+	client := k8sfake.NewSimpleClientset(
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{
+			Name: "node-a",
+			Labels: map[string]string{
+				"joulie.io/power-profile": "eco",
+				"joulie.io/draining":      "false",
+			},
+		}},
+	)
+	a := NodeAssignment{NodeName: "node-a", Profile: "eco", Draining: false}
+	before := len(client.Actions())
+	if err := upsertNodeLabels(context.Background(), client, "joulie.io/power-profile", "joulie.io/draining", a); err != nil {
+		t.Fatalf("upsertNodeLabels failed: %v", err)
+	}
+	after := len(client.Actions())
+	// Idempotent call should do only a GET and skip PATCH.
+	if got := after - before; got != 1 {
+		t.Fatalf("action delta=%d want=1 (get only)", got)
 	}
 }
 
@@ -339,6 +405,7 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 		selector,
 		"joulie.io/reserved",
 		"joulie.io/power-profile",
+		"joulie.io/draining",
 		time.Minute,
 		5000,
 		120,
@@ -370,6 +437,9 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 			perf++
 		case "eco":
 			eco++
+		}
+		if _, ok := n.Labels["joulie.io/draining"]; !ok {
+			t.Fatalf("missing draining label on node %s", n.Name)
 		}
 	}
 	if perf != 1 || eco != 1 {

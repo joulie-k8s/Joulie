@@ -296,8 +296,8 @@
           "refId": "A"
         },
         {
-          "expr": "((max by(node) (kube_node_labels{node=~\"$node\",label_joulie_io_power_profile=\"draining-performance\"}) > bool 0) or on(node) (0 * max by(node) (joulie_operator_node_state{node=~\"$node\"})))",
-          "legendFormat": "{{node}} draining-performance (0/1)",
+          "expr": "((max by(node) (kube_node_labels{node=~\"$node\",label_joulie_io_draining=\"true\"}) > bool 0) or on(node) (0 * max by(node) (joulie_operator_node_state{node=~\"$node\"})))",
+          "legendFormat": "{{node}} draining=true (0/1)",
           "refId": "B"
         },
         {

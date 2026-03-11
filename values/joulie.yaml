@@ -3,6 +3,9 @@ agent:
     repository: registry.cern.ch/mbunino/joulie/joulie-agent
     tag: latest
     pullPolicy: Always
+  daemonset:
+    nodeSelector:
+      joulie.io/managed: "true"
   env:
     RECONCILE_INTERVAL: "20s"
     METRICS_ADDR: ":8080"

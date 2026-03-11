@@ -34,7 +34,8 @@ Workload class is inferred from Kubernetes scheduling constraints on key:
 Classification:
 
 - `performance` demand:
-  - pod requires `joulie.io/power-profile=performance`
+  - pod excludes eco in required scheduling constraints (recommended pattern: `NotIn ["eco"]`)
+  - compatibility path: explicit `nodeSelector` `joulie.io/power-profile=performance`
 - `eco` demand:
   - pod requires `joulie.io/power-profile=eco`
 - `general` demand:
@@ -46,13 +47,14 @@ Classification source is affinity/selector, not a custom intent label.
 
 Node supply is represented by label:
 
-- `joulie.io/power-profile=performance|draining-performance|eco`
+- `joulie.io/power-profile=performance|eco`
+- `joulie.io/draining=true|false`
 
 Semantics:
 
 - `performance`: full-performance supply
-- `draining-performance`: temporary transition supply during safe downgrade
 - `eco`: low-power supply
+- `draining=true`: transition safeguard active while node is moving toward eco
 
 ## Desired-state object: `NodePowerProfile`
 

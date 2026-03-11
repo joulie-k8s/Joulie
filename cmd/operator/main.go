@@ -31,12 +31,9 @@ var profileGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alp
 
 const (
 	powerProfileLabelKey   = "joulie.io/power-profile"
+	drainingLabelKey       = "joulie.io/draining"
 	profilePerformance     = "performance"
 	profileEco             = "eco"
-	profileDrainingPerf    = "draining-performance"
-	profileMaskPerformance = 1
-	profileMaskEco         = 2
-	profileMaskBoth        = profileMaskPerformance | profileMaskEco
 	workloadClassUnknown   = "unknown"
 	workloadClassGeneral   = "general"
 	workloadClassEcoOnly   = "eco-only"
@@ -49,7 +46,8 @@ type NodeAssignment struct {
 	CapWatts      float64
 	ManagedBy     string
 	SourceProfile string
-	LabelProfile  string
+	SourceDrain   bool
+	Draining      bool
 	State         string
 }
 
@@ -86,6 +84,7 @@ func main() {
 	selector := envOrDefault("NODE_SELECTOR", "node-role.kubernetes.io/worker")
 	reservedLabel := envOrDefault("RESERVED_LABEL_KEY", "joulie.io/reserved")
 	profileLabel := envOrDefault("POWER_PROFILE_LABEL", "joulie.io/power-profile")
+	drainingLabel := envOrDefault("DRAINING_LABEL", drainingLabelKey)
 	perfCap := floatEnv("PERFORMANCE_CAP_WATTS", 5000)
 	ecoCap := floatEnv("ECO_CAP_WATTS", 120)
 	policyType := strings.ToLower(envOrDefault("POLICY_TYPE", "static_partition"))
@@ -116,7 +115,7 @@ func main() {
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		if err := reconcile(ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, reconcileEvery, perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode); err != nil {
+		if err := reconcile(ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, drainingLabel, reconcileEvery, perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode); err != nil {
 			log.Printf("reconcile failed: %v", err)
 		}
 		cancel()
@@ -143,6 +142,7 @@ func reconcile(
 	selector labels.Selector,
 	reservedLabel string,
 	profileLabel string,
+	drainingLabel string,
 	interval time.Duration,
 	perfCap float64,
 	ecoCap float64,
@@ -160,8 +160,11 @@ func reconcile(
 
 	eligible := make([]string, 0)
 	nodesByName := make(map[string]string, len(nodes.Items))
+	drainingByName := make(map[string]bool, len(nodes.Items))
 	for _, n := range nodes.Items {
-		nodesByName[n.Name] = n.Labels[profileLabel]
+		prof, draining := normalizeNodeLabels(n.Labels[profileLabel], n.Labels[drainingLabel])
+		nodesByName[n.Name] = prof
+		drainingByName[n.Name] = draining
 		if n.Spec.Unschedulable {
 			continue
 		}
@@ -182,19 +185,20 @@ func reconcile(
 	plan := buildPlanByPolicy(ctx, kube, policyType, eligible, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
 	for i := range plan {
 		plan[i].SourceProfile = currentProfileOrDefault(nodesByName[plan[i].NodeName])
-		plan[i].LabelProfile = plan[i].Profile
-		plan[i].State = profileToState(plan[i].Profile)
+		plan[i].SourceDrain = drainingByName[plan[i].NodeName]
+		plan[i].Draining = false
+		plan[i].State = assignmentState(plan[i].Profile, plan[i].Draining)
 	}
-	applyDowngradeGuards(ctx, kube, plan, nodesByName, perfCap, ecoCap)
+	applyDowngradeGuards(ctx, kube, plan, nodesByName)
 	for _, a := range plan {
 		if err := upsertNodeProfile(ctx, dyn, a); err != nil {
 			return err
 		}
-		if err := upsertNodeProfileLabel(ctx, kube, profileLabel, a); err != nil {
+		if err := upsertNodeLabels(ctx, kube, profileLabel, drainingLabel, a); err != nil {
 			return err
 		}
 		recordNodeStateMetrics(a.NodeName, a.State)
-		recordNodeProfileLabelMetrics(a.NodeName, a.LabelProfile)
+		recordNodeProfileLabelMetrics(a.NodeName, a.Profile)
 		recordTransitionMetrics(a)
 	}
 
@@ -203,20 +207,21 @@ func reconcile(
 }
 
 func currentProfileOrDefault(in string) string {
-	if in == "performance" || in == "eco" || in == "draining-performance" {
+	if in == profilePerformance || in == profileEco {
 		return in
 	}
 	return "unknown"
 }
 
-func profileToState(profile string) string {
-	switch profile {
-	case "performance":
-		return "ActivePerformance"
-	case "eco":
-		return "ActiveEco"
-	case "draining-performance":
+func assignmentState(profile string, draining bool) string {
+	if draining {
 		return "DrainingPerformance"
+	}
+	switch profile {
+	case profilePerformance:
+		return "ActivePerformance"
+	case profileEco:
+		return "ActiveEco"
 	default:
 		return "Unknown"
 	}
@@ -243,26 +248,21 @@ func recordNodeStateMetrics(nodeName, state string) {
 func recordNodeProfileLabelMetrics(nodeName, profile string) {
 	perf := 0.0
 	eco := 0.0
-	draining := 0.0
-	if profile == "performance" {
+	if profile == profilePerformance {
 		perf = 1
 	}
-	if profile == "eco" {
+	if profile == profileEco {
 		eco = 1
 	}
-	if profile == "draining-performance" {
-		draining = 1
-	}
-	operatorNodeProfileLabel.WithLabelValues(nodeName, "performance").Set(perf)
-	operatorNodeProfileLabel.WithLabelValues(nodeName, "eco").Set(eco)
-	operatorNodeProfileLabel.WithLabelValues(nodeName, "draining-performance").Set(draining)
+	operatorNodeProfileLabel.WithLabelValues(nodeName, profilePerformance).Set(perf)
+	operatorNodeProfileLabel.WithLabelValues(nodeName, profileEco).Set(eco)
 }
 
 func recordTransitionMetrics(a NodeAssignment) {
-	fromState := profileToState(a.SourceProfile)
+	fromState := assignmentState(a.SourceProfile, a.SourceDrain)
 	toState := a.State
 	if toState == "" {
-		toState = profileToState(a.Profile)
+		toState = assignmentState(a.Profile, a.Draining)
 	}
 	if fromState == "Unknown" || toState == "Unknown" || fromState == toState {
 		return
@@ -275,65 +275,46 @@ func applyDowngradeGuards(
 	kube kubernetes.Interface,
 	plan []NodeAssignment,
 	currentProfiles map[string]string,
-	perfCap float64,
-	ecoCap float64,
 ) {
 	for i := range plan {
 		a := &plan[i]
-
+		if a.Profile != profileEco {
+			a.Profile, a.Draining = computeDesiredLabels(a.Profile, 0)
+			a.State = assignmentState(a.Profile, a.Draining)
+			continue
+		}
 		current := currentProfiles[a.NodeName]
-		// If a node is already in draining, prioritize drain completion:
-		// as soon as performance-only workloads on that node are gone, move to eco.
-		if current == "draining-performance" {
-			count, err := runningPerformanceSensitivePodCountOnNode(ctx, kube, a.NodeName)
-			if err != nil {
-				log.Printf("warning: cannot classify running pods on node=%s: %v", a.NodeName, err)
-				continue
-			}
-			if count == 0 {
-				a.Profile = "eco"
-				a.CapWatts = ecoCap
-				a.ManagedBy = "rule-swap-v1-drain-complete"
-				a.State = "ActiveEco"
-				a.LabelProfile = "eco"
-				log.Printf("drain completed node=%s transition=DrainingPerformance->ActiveEco", a.NodeName)
-				continue
-			}
-
-			// Still draining: keep high cap and keep node unattractive for new performance pods.
-			a.Profile = "performance"
-			a.CapWatts = perfCap
-			a.ManagedBy = "rule-swap-v1-draining"
-			a.State = "DrainingPerformance"
-			a.LabelProfile = "draining-performance"
-			operatorStateTransitions.WithLabelValues(a.NodeName, "DrainingPerformance", "ActiveEco", "deferred").Inc()
-			log.Printf("transition deferred node=%s from=DrainingPerformance to=ActiveEco reason=running-performance-sensitive-pods count=%d", a.NodeName, count)
-			continue
-		}
-
-		if a.Profile != "eco" {
-			continue
-		}
-		if current != "performance" {
-			continue
+		if current != profilePerformance && current != profileEco {
+			// New/unknown node state; mark draining based on current pod mix.
 		}
 		count, err := runningPerformanceSensitivePodCountOnNode(ctx, kube, a.NodeName)
 		if err != nil {
 			log.Printf("warning: cannot classify running pods on node=%s: %v", a.NodeName, err)
 			continue
 		}
-		if count == 0 {
-			continue
+		a.Profile, a.Draining = computeDesiredLabels(a.Profile, count)
+		a.State = assignmentState(a.Profile, a.Draining)
+		if a.Draining {
+			operatorStateTransitions.WithLabelValues(a.NodeName, "ActivePerformance", "ActiveEco", "deferred").Inc()
+			log.Printf("transition guarded node=%s desired=eco draining=true reason=running-performance-sensitive-pods count=%d", a.NodeName, count)
 		}
+	}
+}
 
-		// Keep node at performance until performance-intent workloads drain.
-		a.Profile = "performance"
-		a.CapWatts = perfCap
-		a.ManagedBy = "rule-swap-v1-draining"
-		a.State = "DrainingPerformance"
-		a.LabelProfile = "draining-performance"
-		operatorStateTransitions.WithLabelValues(a.NodeName, "ActivePerformance", "ActiveEco", "deferred").Inc()
-		log.Printf("transition deferred node=%s from=performance to=eco reason=running-performance-sensitive-pods count=%d", a.NodeName, count)
+// computeDesiredLabels maps desired profile + running performance-sensitive pods
+// to node labels.
+// Rules:
+// - desired performance => (performance, draining=false)
+// - desired eco + perfPods>0 => (eco, draining=true)
+// - desired eco + perfPods=0 => (eco, draining=false)
+func computeDesiredLabels(desiredProfile string, perfPods int) (string, bool) {
+	switch currentProfileOrDefault(desiredProfile) {
+	case profilePerformance:
+		return profilePerformance, false
+	case profileEco:
+		return profileEco, perfPods > 0
+	default:
+		return "unknown", false
 	}
 }
 
@@ -545,123 +526,89 @@ func runningPerformanceSensitivePodCountAllNodes(
 }
 
 func isPerformanceSensitivePod(p *corev1.Pod) bool {
-	class := classifyPodByScheduling(p)
-	return class == workloadClassPerfOnly || class == workloadClassUnknown
+	return podExcludesEco(p)
 }
 
 func classifyPodByScheduling(p *corev1.Pod) string {
-	mask, ok := resolvePodPowerProfileMask(&p.Spec)
-	if !ok || mask == 0 {
-		return workloadClassUnknown
-	}
-	// No explicit power-profile constraint resolves to both masks,
-	// which is treated as implicit flexible/general demand.
-	switch mask {
-	case profileMaskPerformance:
+	if podExcludesEco(p) {
 		return workloadClassPerfOnly
-	case profileMaskEco:
+	}
+	if podIsEcoOnly(p) {
 		return workloadClassEcoOnly
-	case profileMaskBoth:
-		return workloadClassGeneral
-	default:
-		return workloadClassUnknown
 	}
+	return workloadClassGeneral
 }
 
-func resolvePodPowerProfileMask(spec *corev1.PodSpec) (int, bool) {
-	baseMask, ok := maskFromNodeSelector(spec.NodeSelector)
-	if !ok {
-		return 0, false
+func podExcludesEco(p *corev1.Pod) bool {
+	// Compatibility path: explicit selector on profile=performance.
+	if strings.TrimSpace(p.Spec.NodeSelector[powerProfileLabelKey]) == profilePerformance {
+		return true
 	}
-	if spec.Affinity == nil || spec.Affinity.NodeAffinity == nil || spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-		return baseMask, true
+	required := p.Spec.Affinity
+	if required == nil || required.NodeAffinity == nil || required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		return false
 	}
-	required := spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
-	if len(required.NodeSelectorTerms) == 0 {
-		return 0, false
-	}
-
-	overallMask := 0
-	for _, term := range required.NodeSelectorTerms {
-		termMask, ok := maskForNodeSelectorTerm(term, baseMask)
-		if !ok {
-			return 0, false
-		}
-		overallMask |= termMask
-	}
-	return overallMask, true
-}
-
-func maskFromNodeSelector(selector map[string]string) (int, bool) {
-	mask := profileMaskBoth
-	v, ok := selector[powerProfileLabelKey]
-	if !ok {
-		return mask, true
-	}
-	valMask, ok := maskFromProfileValue(v)
-	if !ok {
-		return 0, false
-	}
-	return mask & valMask, true
-}
-
-func maskForNodeSelectorTerm(term corev1.NodeSelectorTerm, baseMask int) (int, bool) {
-	mask := baseMask
-	for _, expr := range term.MatchExpressions {
-		if expr.Key != powerProfileLabelKey {
-			continue
-		}
-		switch expr.Operator {
-		case corev1.NodeSelectorOpIn:
-			inMask, ok := maskFromValues(expr.Values)
-			if !ok {
-				return 0, false
+	for _, term := range required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
+		for _, expr := range term.MatchExpressions {
+			if expr.Key != powerProfileLabelKey {
+				continue
 			}
-			mask &= inMask
-		case corev1.NodeSelectorOpNotIn:
-			notInMask, ok := maskFromValues(expr.Values)
-			if !ok {
-				return 0, false
+			switch expr.Operator {
+			case corev1.NodeSelectorOpNotIn:
+				if containsString(expr.Values, profileEco) {
+					return true
+				}
+			case corev1.NodeSelectorOpIn:
+				if len(expr.Values) > 0 && !containsString(expr.Values, profileEco) {
+					return true
+				}
 			}
-			mask &^= notInMask
-		case corev1.NodeSelectorOpExists:
-			// no change to profile domain
-		case corev1.NodeSelectorOpDoesNotExist:
-			mask = 0
-		case corev1.NodeSelectorOpGt, corev1.NodeSelectorOpLt:
-			return 0, false
-		default:
-			return 0, false
 		}
 	}
-	return mask, true
+	return false
 }
 
-func maskFromValues(values []string) (int, bool) {
-	mask := 0
-	for _, v := range values {
-		profileMask, ok := maskFromProfileValue(v)
-		if !ok {
-			continue
+func podIsEcoOnly(p *corev1.Pod) bool {
+	if strings.TrimSpace(p.Spec.NodeSelector[powerProfileLabelKey]) == profileEco {
+		return true
+	}
+	required := p.Spec.Affinity
+	if required == nil || required.NodeAffinity == nil || required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		return false
+	}
+	for _, term := range required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
+		for _, expr := range term.MatchExpressions {
+			if expr.Key != powerProfileLabelKey {
+				continue
+			}
+			if expr.Operator == corev1.NodeSelectorOpIn && len(expr.Values) > 0 && !containsString(expr.Values, profilePerformance) && containsString(expr.Values, profileEco) {
+				return true
+			}
 		}
-		mask |= profileMask
 	}
-	// values were specified but none are recognized power-profile classes.
-	if len(values) > 0 && mask == 0 {
-		return 0, true
-	}
-	return mask, true
+	return false
 }
 
-func maskFromProfileValue(v string) (int, bool) {
-	switch strings.TrimSpace(v) {
-	case profilePerformance, profileDrainingPerf:
-		return profileMaskPerformance, true
-	case profileEco:
-		return profileMaskEco, true
-	default:
-		return 0, false
+func containsString(in []string, v string) bool {
+	for _, x := range in {
+		if strings.TrimSpace(x) == v {
+			return true
+		}
 	}
+	return false
+}
+
+func normalizeNodeLabels(profileVal, drainingVal string) (string, bool) {
+	// Legacy migration: draining-performance -> eco + draining=true.
+	if strings.TrimSpace(profileVal) == "draining-performance" {
+		return profileEco, true
+	}
+	prof := currentProfileOrDefault(profileVal)
+	draining := strings.EqualFold(strings.TrimSpace(drainingVal), "true")
+	if prof == "unknown" {
+		return prof, false
+	}
+	return prof, draining
 }
 
 func summarizePlan(plan []NodeAssignment) string {
@@ -715,15 +662,26 @@ func upsertNodeProfile(ctx context.Context, dyn dynamic.Interface, a NodeAssignm
 	return nil
 }
 
-func upsertNodeProfileLabel(ctx context.Context, kube kubernetes.Interface, profileLabel string, a NodeAssignment) error {
+func upsertNodeLabels(ctx context.Context, kube kubernetes.Interface, profileLabel, drainingLabel string, a NodeAssignment) error {
 	labelValue := a.Profile
-	if a.LabelProfile != "" {
-		labelValue = a.LabelProfile
+	drainingValue := "false"
+	if a.Draining {
+		drainingValue = "true"
+	}
+	node, err := kube.CoreV1().Nodes().Get(ctx, a.NodeName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get node %s before patch: %w", a.NodeName, err)
+	}
+	currentProfile := strings.TrimSpace(node.Labels[profileLabel])
+	currentDraining := strings.TrimSpace(node.Labels[drainingLabel])
+	if currentProfile == labelValue && currentDraining == drainingValue {
+		return nil
 	}
 	patch := map[string]any{
 		"metadata": map[string]any{
 			"labels": map[string]string{
-				profileLabel: labelValue,
+				profileLabel:  labelValue,
+				drainingLabel: drainingValue,
 			},
 		},
 	}
@@ -732,7 +690,7 @@ func upsertNodeProfileLabel(ctx context.Context, kube kubernetes.Interface, prof
 		return fmt.Errorf("marshal node label patch for %s: %w", a.NodeName, err)
 	}
 	if _, err := kube.CoreV1().Nodes().Patch(ctx, a.NodeName, types.MergePatchType, rawPatch, metav1.PatchOptions{}); err != nil {
-		return fmt.Errorf("patch node %s label %s=%s: %w", a.NodeName, profileLabel, labelValue, err)
+		return fmt.Errorf("patch node %s labels %s=%s %s=%s: %w", a.NodeName, profileLabel, labelValue, drainingLabel, drainingValue, err)
 	}
 	return nil
 }

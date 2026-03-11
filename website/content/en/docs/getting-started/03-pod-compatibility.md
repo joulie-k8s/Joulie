@@ -10,16 +10,19 @@ Joulie uses Kubernetes scheduling constraints as the single source of truth for 
 Power profile supply is exposed on node label:
 
 - `joulie.io/power-profile=performance`
-- `joulie.io/power-profile=draining-performance` (temporary transition state)
 - `joulie.io/power-profile=eco`
+- `joulie.io/draining=true|false` (independent transition flag)
 
 Workload behavior:
 
-- `performance` workload: require `joulie.io/power-profile=performance`
+- `performance` workload (recommended): require `joulie.io/power-profile NotIn ["eco"]`
 - `eco` workload: require `joulie.io/power-profile=eco`
 - unconstrained workload: no power-profile affinity, can run on either profile
 
-## Base Pod Spec
+## Best-effort Pod (unconstrained, starting point)
+
+This is the default and recommended starting spec.
+Do not set power-profile affinity: Kubernetes can schedule the pod on either eco or performance nodes.
 
 {{< highlight yaml "linenos=table" >}}
 apiVersion: apps/v1
@@ -41,7 +44,7 @@ spec:
         image: ghcr.io/example/app:latest
 {{< /highlight >}}
 
-## Performance-only Pod (lines to add)
+## Performance Pod (recommended, lines to add)
 
 {{< highlight yaml "linenos=table,hl_lines=15-22" >}}
 apiVersion: apps/v1
@@ -64,14 +67,28 @@ spec:
             nodeSelectorTerms:
             - matchExpressions:
               - key: joulie.io/power-profile
-                operator: In
-                values: ["performance"]
+                operator: NotIn
+                values: ["eco"]
       containers:
       - name: app
         image: ghcr.io/example/app:latest
 {{< /highlight >}}
 
-## Eco-only Pod (lines to add)
+Why this is recommended:
+
+- it avoids eco nodes while still allowing high-performance nodes which are not managed by Joulie;
+- explicitly requiring `performance` can exclude unlabeled nodes that are still valid for performance workloads and are managed by Joulie.
+
+## Eco-only Pod (advanced, lines to add)
+
+This is an advanced/rare pattern.
+Use it only when you explicitly need jobs to run on eco supply.
+In most cases, users should either:
+
+- use `NotIn ["eco"]` for performance-sensitive pods, or
+- keep pods unconstrained (best-effort) and let Joulie manage power behavior.
+
+If you choose eco-only, adding `joulie.io/draining=false` avoids nodes in transition from performance to eco, which are labelled with `joulie.io/power-profile=eco` but still have a performance power profile (`DrainingPerformance` state).
 
 {{< highlight yaml "linenos=table,hl_lines=15-22" >}}
 apiVersion: apps/v1
@@ -96,20 +113,13 @@ spec:
               - key: joulie.io/power-profile
                 operator: In
                 values: ["eco"]
+              - key: joulie.io/draining
+                operator: In
+                values: ["false"]
       containers:
       - name: app
         image: ghcr.io/example/app:latest
 {{< /highlight >}}
-
-## Unconstrained Pod
-
-Do not set power-profile affinity. Kubernetes can schedule it on either eco or performance nodes.
-
-Note on transitions:
-
-- during `performance -> eco` safeguard phase, operator may set node label to `draining-performance`;
-- strict `performance` and strict `eco` affinity pods do not match that temporary label;
-- this helps avoid admitting new strict placements while a node is draining.
 
 Reference manifests:
 

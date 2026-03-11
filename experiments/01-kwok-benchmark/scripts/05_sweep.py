@@ -222,7 +222,7 @@ def main():
     ap.add_argument("--settle-seconds", type=int, default=None)
     ap.add_argument("--cleanup-timeout", type=int, default=None)
     ap.add_argument("--perf-ratio", type=float, default=None)
-    ap.add_argument("--eco-ratio", type=float, default=None)
+    ap.add_argument("--eco-ratio", type=float, default=None, help="must be 0 for this benchmark profile")
     ap.add_argument("--cpu-units-min", type=float, default=None)
     ap.add_argument("--cpu-units-max", type=float, default=None)
     ap.add_argument("--baselines", type=str, default="")
@@ -252,7 +252,7 @@ def main():
         args.perf_ratio if args.perf_ratio is not None else float(get_cfg(cfg, "workload", "perf_ratio", default=0.30))
     )
     eco_ratio = (
-        args.eco_ratio if args.eco_ratio is not None else float(get_cfg(cfg, "workload", "eco_ratio", default=0.50))
+        args.eco_ratio if args.eco_ratio is not None else float(get_cfg(cfg, "workload", "eco_ratio", default=0.00))
     )
     cpu_units_min = (
         args.cpu_units_min

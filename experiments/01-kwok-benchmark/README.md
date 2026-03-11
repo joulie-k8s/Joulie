@@ -9,9 +9,15 @@ This experiment harness measures throughput/latency vs energy-control behavior i
 
 Workload scheduling in benchmark pods uses affinity on `joulie.io/power-profile`:
 
-- `performance`: requires `joulie.io/power-profile=performance`
-- `eco`: requires `joulie.io/power-profile=eco`
+- `performance`: requires `joulie.io/power-profile NotIn ["eco"]`
 - no power-profile affinity: implicit general placement
+
+Benchmark policy intentionally generates only:
+
+- performance-constrained pods (`perf_ratio`)
+- unconstrained pods (remaining ratio)
+
+Strict eco-only workload generation is disabled (`eco_ratio=0`) to avoid benchmark-side placement artifacts.
 
 Current trace behavior:
 
@@ -31,7 +37,7 @@ Current trace behavior:
 
 - run controls: baselines, seeds, jobs, inter-arrival, timeout, settle/cleanup,
 - run scaling: `run.time_scale` used in run metadata and derived simulated-time metrics,
-- workload mix: `perf_ratio`, `eco_ratio` (remaining fraction is no-affinity general), plus `cpu_units_min/max`,
+- workload mix: `perf_ratio` (remaining fraction is no-affinity general), plus `cpu_units_min/max`,
 - baseline A comparability: `baseline_a_strip_affinity` removes only affinity from a canonical seed trace while keeping submit/work/request values identical,
 - simulator speed control: `simulator.base_speed_per_core` (higher value = faster job completion),
 - policy controls: caps (`performance_watts`, `eco_watts`), control-loop intervals, static and queue-aware parameters,

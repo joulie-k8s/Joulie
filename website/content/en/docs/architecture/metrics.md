@@ -80,7 +80,7 @@ For telemetry/control input interfaces (host/http routing), see:
   - active state is `1`, others `0`
 - `joulie_operator_node_profile_label{node,profile}` (gauge)
   - operator-applied node label view
-  - `profile`: `performance|draining-performance|eco`
+  - `profile`: `performance|eco`
   - active profile is `1`, others `0`
 
 ### Transition accounting

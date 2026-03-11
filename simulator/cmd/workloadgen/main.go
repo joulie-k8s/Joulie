@@ -51,7 +51,7 @@ func main() {
 	flag.Float64Var(&meanInterArrival, "mean-inter-arrival-sec", 5, "mean inter-arrival seconds")
 	flag.Int64Var(&seed, "seed", time.Now().UnixNano(), "rng seed")
 	flag.Float64Var(&perfRatio, "perf-ratio", 0.30, "ratio of performance-constrained jobs")
-	flag.Float64Var(&ecoRatio, "eco-ratio", 0.50, "ratio of eco-constrained jobs")
+	flag.Float64Var(&ecoRatio, "eco-ratio", 0.00, "ratio of eco-constrained jobs (advanced; default disabled)")
 	flag.BoolVar(&noAffinityOnly, "no-affinity-only", false, "if true, all jobs are generated without power-profile affinity")
 	flag.Float64Var(&cpuUnitsMin, "cpu-units-min", 600, "minimum cpu work units per job")
 	flag.Float64Var(&cpuUnitsMax, "cpu-units-max", 3600, "maximum cpu work units per job")
@@ -129,8 +129,8 @@ func affinityForClass(class string) map[string]any {
 							"matchExpressions": []map[string]any{
 								{
 									"key":      "joulie.io/power-profile",
-									"operator": "In",
-									"values":   []string{"performance"},
+									"operator": "NotIn",
+									"values":   []string{"eco"},
 								},
 							},
 						},
@@ -149,6 +149,11 @@ func affinityForClass(class string) map[string]any {
 									"key":      "joulie.io/power-profile",
 									"operator": "In",
 									"values":   []string{"eco"},
+								},
+								{
+									"key":      "joulie.io/draining",
+									"operator": "In",
+									"values":   []string{"false"},
 								},
 							},
 						},

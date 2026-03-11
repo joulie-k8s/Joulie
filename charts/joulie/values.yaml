@@ -13,6 +13,9 @@ agent:
     RECONCILE_INTERVAL: "20s"
     METRICS_ADDR: ":8080"
     SIMULATE_ONLY: "false"
+  daemonset:
+    nodeSelector:
+      joulie.io/managed: "true"
   pool:
     replicas: 2
     nodeSelector: "joulie.io/managed=true"

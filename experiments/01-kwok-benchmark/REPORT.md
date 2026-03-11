@@ -127,7 +127,7 @@ In this run:
 
 ### 2.4 Downgrade guard / draining
 
-When a node should go `performance -> eco`, downgrade is deferred if performance-sensitive pods are still running there. Node is labeled `draining-performance` until they finish.
+When a node should go `performance -> eco`, operator sets `joulie.io/power-profile=eco` and marks `joulie.io/draining=true` while performance-sensitive pods are still running there.
 
 ---
 

@@ -16,6 +16,10 @@ spec:
       serviceAccountName: joulie-agent
       hostNetwork: {{ .Values.agent.hostNetwork }}
       dnsPolicy: {{ if .Values.agent.hostNetwork }}ClusterFirstWithHostNet{{ else }}ClusterFirst{{ end }}
+      {{- with .Values.agent.daemonset.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+      {{- end }}
       containers:
         - name: agent
           image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"

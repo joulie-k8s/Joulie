@@ -41,7 +41,7 @@ Outputs:
   - intended for KWOK/simulator scale runs
 
 Both modes should use the same managed-node selector contract (`joulie.io/managed=true`).
-In practice, pool mode enforces this through `POOL_NODE_SELECTOR`; DaemonSet mode requires explicit `nodeSelector` if you want strict alignment.
+In practice, pool mode enforces this through `POOL_NODE_SELECTOR`, and DaemonSet mode is restricted by default with `agent.daemonset.nodeSelector.joulie.io/managed=true`.
 
 Detailed deployment/runtime configuration is documented in:
 
@@ -139,15 +139,15 @@ Prevent a node from dropping to eco while it still runs workloads that require p
    - classify active pods from scheduling constraints (`joulie.io/power-profile` affinity/selector),
    - detect whether performance-constrained pods are still running on `N`.
 3. If performance-constrained pods are present:
-   - transition is deferred (internal operator FSM drain/defer phase),
-   - operator keeps node target/supply effectively performance-facing.
+   - operator keeps desired profile as `eco`,
+   - operator marks node `joulie.io/draining=true`.
 4. Agent reconciles:
-   - sees performance-facing desired target,
-   - keeps enforcing performance cap/control backend behavior.
+   - sees desired profile from `NodePowerProfile`,
+   - enforces the desired eco/performance target through configured backend.
 5. On later reconcile ticks, operator re-checks safeguard.
 6. When no blocking performance-constrained pods remain:
-   - operator commits eco target for `N`,
-   - agent enforces eco cap/control on next reconcile.
+   - operator keeps profile `eco` and sets `joulie.io/draining=false`.
+   - agent continues enforcing desired target on next reconcile.
 
 ### Transition FSM (with conditions)
 
@@ -168,11 +168,9 @@ stateDiagram-v2
 Interpretation:
 
 - `DrainingPerformance` is the operator transition state.
-- In `DrainingPerformance`, agent keeps enforcing performance-facing target.
-- In `DrainingPerformance`, operator sets a temporary node label: `joulie.io/power-profile=draining-performance`.
-- This temporary label is intentional: it is neither `performance` nor `eco`, so it prevents new strict `performance` and strict `eco` pods from matching that node during transition.
-- Goal: let blocking performance-sensitive pods drain without admitting new strict placements that would prolong or break the transition.
-- Transition to `ActiveEco` only occurs when safeguard condition becomes true (`perf-constrained pods == 0`).
+- In `DrainingPerformance`, operator sets `joulie.io/power-profile=eco` and `joulie.io/draining=true`.
+- `joulie.io/draining=true` signals transition guard activity; advanced eco-only constraints can exclude draining nodes.
+- Transition to non-draining eco (`draining=false`) occurs when safeguard condition becomes true (`perf-constrained pods == 0`).
 
 Transition conditions:
 

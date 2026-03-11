@@ -1196,8 +1196,8 @@ func affinityForIntentClass(intent string) *corev1.Affinity {
 							MatchExpressions: []corev1.NodeSelectorRequirement{
 								{
 									Key:      "joulie.io/power-profile",
-									Operator: corev1.NodeSelectorOpIn,
-									Values:   []string{"performance"},
+									Operator: corev1.NodeSelectorOpNotIn,
+									Values:   []string{"eco"},
 								},
 							},
 						},
@@ -1216,6 +1216,11 @@ func affinityForIntentClass(intent string) *corev1.Affinity {
 									Key:      "joulie.io/power-profile",
 									Operator: corev1.NodeSelectorOpIn,
 									Values:   []string{"eco"},
+								},
+								{
+									Key:      "joulie.io/draining",
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{"false"},
 								},
 							},
 						},
@@ -1248,19 +1253,19 @@ func classifyClassFromPodSpec(spec *corev1.PodSpec) string {
 			case corev1.NodeSelectorOpIn:
 				termPerf = false
 				termEco = false
-				for _, v := range expr.Values {
-					if v == "performance" || v == "draining-performance" {
-						termPerf = true
-					}
+					for _, v := range expr.Values {
+						if v == "performance" {
+							termPerf = true
+						}
 					if v == "eco" {
 						termEco = true
 					}
 				}
 			case corev1.NodeSelectorOpNotIn:
-				for _, v := range expr.Values {
-					if v == "performance" || v == "draining-performance" {
-						termPerf = false
-					}
+					for _, v := range expr.Values {
+						if v == "performance" {
+							termPerf = false
+						}
 					if v == "eco" {
 						termEco = false
 					}

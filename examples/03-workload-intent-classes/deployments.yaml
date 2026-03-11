@@ -20,8 +20,8 @@ spec:
             nodeSelectorTerms:
               - matchExpressions:
                   - key: joulie.io/power-profile
-                    operator: In
-                    values: ["performance"]
+                    operator: NotIn
+                    values: ["eco"]
       containers:
         - name: app
           image: registry.cern.ch/registry.k8s.io/pause:3.10
