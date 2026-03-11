@@ -10,7 +10,7 @@ run:
 
 workload:
   perf_ratio: 0.20
-  eco_ratio: 0.30
+  eco_ratio: 0.00
   cpu_units_min: 800
   cpu_units_max: 4000
   baseline_a_strip_affinity: true

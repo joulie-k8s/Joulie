@@ -1196,8 +1196,8 @@ func affinityForIntentClass(intent string) *corev1.Affinity {
 							MatchExpressions: []corev1.NodeSelectorRequirement{
 								{
 									Key:      "joulie.io/power-profile",
-									Operator: corev1.NodeSelectorOpIn,
-									Values:   []string{"performance"},
+									Operator: corev1.NodeSelectorOpNotIn,
+									Values:   []string{"eco"},
 								},
 							},
 						},
@@ -1216,6 +1216,11 @@ func affinityForIntentClass(intent string) *corev1.Affinity {
 									Key:      "joulie.io/power-profile",
 									Operator: corev1.NodeSelectorOpIn,
 									Values:   []string{"eco"},
+								},
+								{
+									Key:      "joulie.io/draining",
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{"false"},
 								},
 							},
 						},
