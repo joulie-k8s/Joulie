@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Experiments on Joulie</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-26/docs/experiments/</link><description>Recent content in Experiments on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://joulie-k8s.github.io/Joulie/previews/pr-26/docs/experiments/index.xml" rel="self" type="application/rss+xml"/><item><title>KWOK Benchmark Experiment</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-26/docs/experiments/kwok-benchmark/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-26/docs/experiments/kwok-benchmark/</guid><description>&lt;p&gt;This page reports the current benchmark results from the first experiment in:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://github.com/joulie-k8s/Joulie/tree/main/experiments/01-kwok-benchmark"&gt;&lt;code&gt;experiments/01-kwok-benchmark/&lt;/code&gt;&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="scope"&gt;Scope&lt;/h2&gt;
+&lt;p&gt;The benchmark compares three baselines:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;A&lt;/code&gt;: simulator only (Joulie-free)&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;B&lt;/code&gt;: Joulie with static partition policy&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;C&lt;/code&gt;: Joulie with queue-aware policy&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;It evaluates throughput/makespan vs energy under real Kubernetes scheduling with &lt;a href="https://kwok.sigs.k8s.io/"&gt;KWOK&lt;/a&gt; nodes and simulated power control.&lt;/p&gt;
+&lt;h2 id="experimental-setup"&gt;Experimental setup&lt;/h2&gt;
+&lt;h3 id="cluster-and-nodes"&gt;Cluster and nodes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://kind.sigs.k8s.io/"&gt;kind&lt;/a&gt; control-plane + worker (real control plane)&lt;/li&gt;
+&lt;li&gt;5 managed &lt;a href="https://kwok.sigs.k8s.io/"&gt;KWOK&lt;/a&gt; nodes (&lt;code&gt;kwok-node-0..4&lt;/code&gt;)&lt;/li&gt;
+&lt;li&gt;workload pods target KWOK nodes via selector + toleration&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="hardware-models-in-simulator"&gt;Hardware models in simulator&lt;/h3&gt;
+&lt;p&gt;Mapped by node labels to two classes:&lt;/p&gt;</description></item></channel></rss>
