@@ -37,19 +37,20 @@ This separation keeps policy logic portable while actuator details stay node-loc
    - unconstrained
 4. Run policy (`static_partition`, `queue_aware_v1`, or debug `rule_swap_v1`).
 5. For planned `performance -> eco` transitions, run downgrade guard:
-   - if performance-only pods are still present on node, defer downgrade
-   - move node label/state to `draining-performance` until safe
-6. Persist desired state through `NodePowerProfile` and update node label `joulie.io/power-profile`.
+   - keep `profile=eco` as desired supply
+   - set `joulie.io/draining=true` while performance-sensitive pods are still present
+6. Persist desired state through `NodePowerProfile` and update node labels:
+   - `joulie.io/power-profile`
+   - `joulie.io/draining`
 
 ## Node state model
 
-Joulie models three scheduler-facing supply states:
+Joulie models two scheduler-facing supply states:
 
 - `performance`
-- `draining-performance`
 - `eco`
 
-`draining-performance` means "target eco, but downgrade currently deferred by guard conditions."
+`DrainingPerformance` is an internal operator FSM state tracked while `profile=eco` and `joulie.io/draining=true`.
 
 ## Why this model
 

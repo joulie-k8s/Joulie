@@ -42,8 +42,11 @@ Joulie is currently a PoC focused on Kubernetes-native control loops and simulat
 Node supply is represented through `joulie.io/power-profile`:
 
 - `performance`
-- `draining-performance` (temporary transition label)
 - `eco`
+
+Transition state is exposed independently through:
+
+- `joulie.io/draining=true|false`
 
 Workload demand is inferred from pod scheduling constraints:
 

@@ -62,30 +62,26 @@ Use `daemonset` mode for real `/host-sys` enforcement and `pool` mode for KWOK-s
 
 - `joulie.io/managed=true`
 
-This label always defines operator managed scope.
-For agent runtime scope:
+This label defines managed scope for both operator and agent by default.
 
 - Pool mode:
-  - uses `POOL_NODE_SELECTOR` (default chart value: `joulie.io/managed=true`).
+  - uses `POOL_NODE_SELECTOR` (chart default: `joulie.io/managed=true`).
 - DaemonSet mode:
-  - chart template is broad by default (no `nodeSelector`),
-  - add a DaemonSet `nodeSelector` if you want strict alignment with managed scope.
+  - chart default sets `agent.daemonset.nodeSelector.joulie.io/managed: "true"`.
 
-For DaemonSet strict alignment:
-
-```yaml
-nodeSelector:
-  joulie.io/managed: "true"
-```
-
-For pool mode selector:
-
-- `POOL_NODE_SELECTOR=joulie.io/managed=true`
-
-Expected behavior:
+Default behavior:
 
 - nodes without `joulie.io/managed=true` are outside operator policy scope;
-- with DaemonSet strict nodeSelector configured, agent pods also run only on managed nodes.
+- no DaemonSet agent pod is scheduled on unlabeled nodes.
+
+Override example (if you need a different scope):
+
+```yaml
+agent:
+  daemonset:
+    nodeSelector:
+      custom.scope/energy-managed: "true"
+```
 
 ## RBAC
 

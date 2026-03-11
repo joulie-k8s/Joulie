@@ -1248,19 +1248,19 @@ func classifyClassFromPodSpec(spec *corev1.PodSpec) string {
 			case corev1.NodeSelectorOpIn:
 				termPerf = false
 				termEco = false
-				for _, v := range expr.Values {
-					if v == "performance" || v == "draining-performance" {
-						termPerf = true
-					}
+					for _, v := range expr.Values {
+						if v == "performance" {
+							termPerf = true
+						}
 					if v == "eco" {
 						termEco = true
 					}
 				}
 			case corev1.NodeSelectorOpNotIn:
-				for _, v := range expr.Values {
-					if v == "performance" || v == "draining-performance" {
-						termPerf = false
-					}
+					for _, v := range expr.Values {
+						if v == "performance" {
+							termPerf = false
+						}
 					if v == "eco" {
 						termEco = false
 					}

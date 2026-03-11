@@ -44,6 +44,7 @@ kubectl label node <node-b> joulie.io/managed=true --overwrite
 ```
 
 If this is missing, operator logs will show `no eligible nodes matched selector`.
+By default, the agent DaemonSet uses the same selector scope (`joulie.io/managed=true`), so unlabeled nodes will not run agent pods.
 
 ## Install from source (when developing)
 
@@ -119,10 +120,10 @@ Meaning of the key node labels:
   - node is in Joulie operator scope (eligible for policy decisions)
 - `joulie.io/power-profile=performance`
   - node currently offers high-performance supply
-- `joulie.io/power-profile=draining-performance`
-  - temporary transition state during safe downgrade (`performance -> eco`)
 - `joulie.io/power-profile=eco`
   - node currently offers low-power supply (resources are throttled according to the selected policy)
+- `joulie.io/draining=true|false`
+  - transition flag used while moving toward eco under safeguards
 
 Read the architecture path after this quickstart:
 

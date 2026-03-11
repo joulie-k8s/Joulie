@@ -9,7 +9,7 @@ This experiment harness measures throughput/latency vs energy-control behavior i
 
 Workload scheduling in benchmark pods uses affinity on `joulie.io/power-profile`:
 
-- `performance`: requires `joulie.io/power-profile=performance`
+- `performance`: requires `joulie.io/power-profile NotIn ["eco"]`
 - `eco`: requires `joulie.io/power-profile=eco`
 - no power-profile affinity: implicit general placement
 

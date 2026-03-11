@@ -161,5 +161,5 @@ Set `SIM_WORKLOAD_TRACE_PATH` to a JSONL trace file. The simulator will:
 Minimal job record example:
 
 ```json
-{"type":"job","schemaVersion":"v1","jobId":"job-1","submitTimeOffsetSec":2,"namespace":"default","podTemplate":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"joulie.io/power-profile","operator":"In","values":["performance"]}]}]}}},"requests":{"cpu":"4","memory":"1Gi"}},"work":{"cpuUnits":1200},"sensitivity":{"cpu":1.0}}
+{"type":"job","schemaVersion":"v1","jobId":"job-1","submitTimeOffsetSec":2,"namespace":"default","podTemplate":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"joulie.io/power-profile","operator":"NotIn","values":["eco"]}]}]}}},"requests":{"cpu":"4","memory":"1Gi"}},"work":{"cpuUnits":1200},"sensitivity":{"cpu":1.0}}
 ```

@@ -15,12 +15,9 @@ Use this page after:
 
 Policy demand classification is derived from pod scheduling constraints on `joulie.io/power-profile`:
 
-- `performance-only`: pod can run only on `performance` (and transitional `draining-performance`).
+- `performance-only`: pod excludes eco in required scheduling constraints.
 - `eco-only`: pod can run only on `eco`.
 - `general` (implicit unconstrained): no explicit power-profile constraint, or both profiles allowed.
-- `unknown`: unsupported/ambiguous constraint shape.
-
-For safety, `unknown` is treated as performance-sensitive in downgrade guards.
 
 ## Shared Reconcile Flow
 
@@ -28,8 +25,8 @@ Each reconcile tick:
 
 1. Select eligible nodes from `NODE_SELECTOR`, excluding reserved and unschedulable nodes.
 2. Build a desired plan with the selected policy.
-3. Apply downgrade guard (can keep planned `eco` nodes in high-cap draining mode until safe).
-4. Write `NodePowerProfile` and update node label `joulie.io/power-profile`.
+3. Apply downgrade guard (sets `draining=true` while blocking pods still run).
+4. Write `NodePowerProfile` and update node labels (`joulie.io/power-profile`, `joulie.io/draining`).
 
 ## `static_partition`
 
@@ -99,8 +96,9 @@ When planned profile is `eco` on a node currently `performance`:
 
 1. Count active performance-sensitive pods on that node.
 2. If count > 0:
-   - keep cap/profile as `performance`,
-   - set node label profile to `draining-performance`,
+   - keep desired profile as `eco`,
+   - set node label `joulie.io/draining=true`,
    - record transition as deferred in operator FSM/metrics.
 3. If count == 0:
-   - allow transition to `eco`.
+   - keep desired profile `eco`,
+   - set node label `joulie.io/draining=false`.

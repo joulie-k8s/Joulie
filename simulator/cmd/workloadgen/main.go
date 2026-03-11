@@ -129,8 +129,8 @@ func affinityForClass(class string) map[string]any {
 							"matchExpressions": []map[string]any{
 								{
 									"key":      "joulie.io/power-profile",
-									"operator": "In",
-									"values":   []string{"performance"},
+									"operator": "NotIn",
+									"values":   []string{"eco"},
 								},
 							},
 						},

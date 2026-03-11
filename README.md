@@ -26,10 +26,10 @@ High-level architecture:
   <img src="./website/static/images/joulie-arch.png" alt="Joulie architecture" width="900">
 </p>
 
-Current workload compatibility model (intent via scheduling constraints on node affinity):
+Current workload compatibility model (single source of truth: pod scheduling constraints):
 
-- `performance` workloads: require `joulie.io/power-profile=performance`
-- `eco` workloads: require `joulie.io/power-profile=eco`
+- performance-sensitive workloads (recommended): require `joulie.io/power-profile NotIn ["eco"]`
+- eco-only workloads (advanced): require `joulie.io/power-profile=eco` (optionally `joulie.io/draining=false`)
 - unconstrained workloads: no power-profile affinity
 
 ## Repository Layout
