@@ -76,8 +76,8 @@ spec:
 
 Why this is recommended:
 
-- it avoids eco nodes while still allowing unlabeled/unmanaged high-performance nodes;
-- explicitly requiring `performance` can exclude unlabeled nodes that are still valid for performance workloads.
+- it avoids eco nodes while still allowing high-performance nodes which are not managed by Joulie;
+- explicitly requiring `performance` can exclude unlabeled nodes that are still valid for performance workloads and are managed by Joulie.
 
 ## Eco-only Pod (advanced, lines to add)
 
