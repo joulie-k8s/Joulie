@@ -52,35 +52,37 @@ to the CERN registry with a `dev-*` tag, then installs Helm using those exact ta
 
 ## Scope Selection
 
-Integration scope is controlled by `IT_SCOPE`:
+Integration scope is controlled by the Dagger argument `--it-scope` (forwarded to runner env `IT_SCOPE`):
 
-- `gpu-only` (default): run only boot/install + telemetry/GPU smoke checks.
-- `all` (or `full`): run the full integration suite.
+- `all` (default; `full` alias): run the full integration suite.
+- `gpu-only`: run only boot/install + telemetry/GPU smoke checks.
 
 Examples:
 
 ```bash
-IT_SCOPE=gpu-only dagger -m ./ci call integration \
+dagger -m ./ci call integration \
   --source=. \
+  --it-scope all \
   --username env:CERN_REGISTRY_USER \
   --password env:CERN_REGISTRY_PASSWORD
 ```
 
 ```bash
-IT_SCOPE=all dagger -m ./ci call integration \
+dagger -m ./ci call integration \
   --source=. \
+  --it-scope gpu-only \
   --username env:CERN_REGISTRY_USER \
   --password env:CERN_REGISTRY_PASSWORD
 ```
 
 ## Test list (one line each)
 
-Always executed (`IT_SCOPE=gpu-only` and `IT_SCOPE=all`):
+Always executed:
 
 - `IT-BOOT-01 / IT-HELM-01` (`test_boot_and_install`): waits for a ready node, installs Joulie via Helm, verifies CRDs, creates `joulie-it`, and installs shared HTTP mock + TelemetryProfile.
 - `IT-TP-01` (`test_telemetry_http`): validates telemetry/control HTTP plumbing by asserting mock GET/POST counters increase; on non-GPU nodes it validates graceful GPU-control degradation instead of hard failure.
 
-Executed only with `IT_SCOPE=all` (or `full`):
+Executed in full scope (`IT_SCOPE=all` or `full`):
 
 - `IT-CLS-*` (`test_classification_matrix`): runs the classification matrix across affinity/nodeSelector patterns and validates expected draining/eco behavior, including unschedulable edge cases.
 - `IT-FSM-*` (`test_fsm_and_labels`): verifies main FSM transitions (`performance` <-> `eco`) and `draining` behavior with perf and best-effort workloads.
@@ -90,8 +92,8 @@ Executed only with `IT_SCOPE=all` (or `full`):
 
 Current execution order in `integration_runner.py` is:
 
+- `all/full` (default): `IT-BOOT-01/IT-HELM-01` -> `IT-TP-01` -> `IT-CLS-*` -> `IT-FSM-*` -> `IT-FSM-07` -> `IT-FSM-05` -> `IT-SCH-*`
 - `gpu-only`: `IT-BOOT-01/IT-HELM-01` -> `IT-TP-01`
-- `all/full`: `IT-BOOT-01/IT-HELM-01` -> `IT-TP-01` -> `IT-CLS-*` -> `IT-FSM-*` -> `IT-FSM-07` -> `IT-FSM-05` -> `IT-SCH-*`
 
 ## Runtime notes
 

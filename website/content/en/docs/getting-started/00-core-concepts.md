@@ -24,7 +24,7 @@ Joulie is currently a PoC focused on Kubernetes-native control loops and simulat
   - writes desired state as `NodePowerProfile`
 - **Agent** (`cmd/agent`): node-level actuator
   - reads desired state and telemetry configuration
-  - enforces power controls (CPU now, GPU path planned)
+  - enforces power controls (CPU + GPU)
   - exports metrics/status
 - **Simulator** (`simulator/`): digital-twin execution environment
   - keeps scheduling real, simulates telemetry/control behavior

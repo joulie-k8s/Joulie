@@ -64,13 +64,18 @@ Main fields:
 
 - `spec.nodeName` (required)
 - `spec.profile` (required, `performance|eco`)
-- `spec.cpu.packagePowerCapPctOfMax` (optional, preferred normalized policy)
-- `spec.cpu.packagePowerCapWatts` (optional, absolute override)
+- `spec.cpu.packagePowerCapWatts` (optional, absolute cap)
+- `spec.cpu.packagePowerCapPctOfMax` (optional, normalized policy intent)
 - `spec.gpu.powerCap` (optional):
   - `scope` (`perGpu`)
   - `capWattsPerGpu` (absolute)
   - `capPctOfMax` (percentage)
 - `spec.policy.name` (optional, provenance/debug)
+
+CPU precedence in agent runtime:
+
+1. `packagePowerCapWatts` if present
+2. otherwise `packagePowerCapPctOfMax`
 
 Example:
 

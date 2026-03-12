@@ -568,6 +568,54 @@ func TestApplyThrottlePctHostWrites(t *testing.T) {
 	}
 }
 
+func TestApplyCPUPercentIntentHTTP(t *testing.T) {
+	t.Parallel()
+	var seen map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	d := &DVFSController{
+		powerReader: powerReaderStub{power: 250, ok: true},
+	}
+	c := &HTTPControlClient{
+		endpoint: srv.URL + "/control/{node}",
+		nodeName: "node-a",
+		client:   srv.Client(),
+	}
+	backend, result, msg, err := applyCPUPercentIntent(100, c, d, nil)
+	if err != nil {
+		t.Fatalf("applyCPUPercentIntent err: %v", err)
+	}
+	if backend != "dvfs" || result != "applied" {
+		t.Fatalf("unexpected backend/result: %s/%s", backend, result)
+	}
+	if !strings.Contains(msg, "throttle=0%") {
+		t.Fatalf("unexpected msg: %q", msg)
+	}
+	if got, _ := seen["action"].(string); got != "dvfs.set_throttle_pct" {
+		t.Fatalf("unexpected action: %v", seen["action"])
+	}
+	if got, _ := seen["throttlePct"].(float64); got != 0 {
+		t.Fatalf("unexpected throttlePct: %v", seen["throttlePct"])
+	}
+}
+
+func TestApplyCPUPercentIntentBlockedWithoutBackends(t *testing.T) {
+	t.Parallel()
+	backend, result, _, err := applyCPUPercentIntent(60, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if backend != "none" || result != "blocked" {
+		t.Fatalf("unexpected backend/result: %s/%s", backend, result)
+	}
+}
+
 func TestResolveDesiredStateAndTelemetryConfig(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()

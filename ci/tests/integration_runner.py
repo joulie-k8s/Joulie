@@ -1101,7 +1101,7 @@ def test_fsm_idempotency(ctx: Ctx) -> None:
 
 def main() -> int:
     try:
-        scope = os.getenv("IT_SCOPE", "gpu-only").strip().lower()
+        scope = os.getenv("IT_SCOPE", "all").strip().lower()
         log(f"integration scope: {scope}")
         ctx = test_boot_and_install()
         test_telemetry_http(ctx)
@@ -1114,7 +1114,7 @@ def main() -> int:
         elif scope in ("gpu", "gpu-only", "gpu_only"):
             log("non-GPU suites temporarily disabled (IT_SCOPE=gpu-only)")
         else:
-            raise RuntimeError(f"unknown IT_SCOPE={scope!r}; expected gpu-only or all")
+            raise RuntimeError(f"unknown IT_SCOPE={scope!r}; expected all/full or gpu-only")
         log("all integration tests passed")
         return 0
     except Exception as e:

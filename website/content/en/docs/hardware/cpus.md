@@ -9,13 +9,13 @@ Joulie supports node-level CPU power capping through `NodePowerProfile` intents 
 
 CPU intent is defined in `NodePowerProfile.spec.cpu`:
 
-- `packagePowerCapPctOfMax` (preferred, normalized profile intent)
-- `packagePowerCapWatts` (optional absolute override)
+- `packagePowerCapWatts` (optional absolute cap)
+- `packagePowerCapPctOfMax` (optional normalized profile intent)
 
 Precedence:
 
-1. `packagePowerCapPctOfMax` for heterogeneous fleets
-2. `packagePowerCapWatts` when explicit absolute capping is required
+1. `packagePowerCapWatts` if present
+2. otherwise `packagePowerCapPctOfMax`
 
 ## Policy behavior
 
@@ -25,7 +25,8 @@ CPU cap values are generated per profile and written into `NodePowerProfile`:
 - performance profile typically maps to a higher cap (often 100%)
 - eco profile maps to a lower cap
 
-For heterogeneous nodes, percentage-based intent is recommended so each node resolves caps according to its own hardware limits.
+For heterogeneous nodes, percentage-based intent remains useful because each node resolves normalized intent using node-local capabilities.
+If percentage intent cannot be converted to watts (for example missing RAPL range), the agent applies a DVFS percent fallback path when possible.
 
 ## Driver/back-end semantics
 

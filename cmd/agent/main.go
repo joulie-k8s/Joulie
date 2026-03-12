@@ -582,6 +582,13 @@ func reconcileOnce(
 	}
 
 	if cpuCapWatts == nil {
+		if selected.PowerPctOfMax != nil {
+			backend, result, msg, err := applyCPUPercentIntent(*selected.PowerPctOfMax, controlClient, dvfs, metrics)
+			_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nodeName, backend, result, msg)
+			if err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
@@ -696,6 +703,72 @@ func resolveCPUCapFromPct(ctx context.Context, pct float64) (float64, string, bo
 	}
 	_ = ctx
 	return target, fmt.Sprintf("min=%.2fW max=%.2fW", minW, maxW), true
+}
+
+func applyCPUPercentIntent(
+	pct float64,
+	controlClient *HTTPControlClient,
+	dvfs *DVFSController,
+	metrics *AgentMetrics,
+) (string, string, string, error) {
+	if pct <= 0 {
+		return "none", "blocked", "cpu cap pct must be > 0", nil
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	throttlePct := int(math.Round(100.0 - pct))
+
+	targetWatts := 0.0
+	if dvfs != nil {
+		if observed, ok, err := dvfs.readPowerWatts(); err != nil {
+			log.Printf("warning: unable to read telemetry power for pct intent: %v", err)
+		} else if ok {
+			targetWatts = (pct / 100.0) * observed
+		}
+	}
+
+	msg := fmt.Sprintf("applied cpu cap pct=%.2f%% via dvfs throttle=%d%%", pct, throttlePct)
+	if targetWatts > 0 {
+		msg = fmt.Sprintf("%s target=%.2fW", msg, targetWatts)
+	}
+
+	if controlClient != nil {
+		if err := controlClient.ApplyCPUControl("dvfs.set_throttle_pct", targetWatts, throttlePct); err != nil {
+			log.Printf("warning: HTTP dvfs control failed for pct intent: %v", err)
+			if dvfs == nil || !dvfs.HasHostControl() {
+				return "none", "error", fmt.Sprintf("dvfs http control failed: %v", err), err
+			}
+		} else {
+			if metrics != nil {
+				metrics.setBackendMode("dvfs")
+			}
+			if dvfs != nil {
+				dvfs.throttlePct = throttlePct
+				if dvfs.metrics != nil {
+					dvfs.metrics.dvfsThrottlePct.WithLabelValues(dvfs.metrics.node).Set(float64(throttlePct))
+				}
+			}
+			return "dvfs", "applied", msg, nil
+		}
+	}
+
+	if dvfs == nil || !dvfs.HasHostControl() {
+		return "none", "blocked", "pct intent unresolved and no dvfs backend available", nil
+	}
+	written, err := dvfs.applyThrottlePct(throttlePct, nil, targetWatts)
+	if err != nil {
+		return "dvfs", "error", err.Error(), err
+	}
+	dvfs.throttlePct = throttlePct
+	if dvfs.metrics != nil {
+		dvfs.metrics.dvfsThrottlePct.WithLabelValues(dvfs.metrics.node).Set(float64(throttlePct))
+	}
+	dvfs.updateCPUFreqMetrics()
+	if metrics != nil {
+		metrics.setBackendMode("dvfs")
+	}
+	return "dvfs", "applied", fmt.Sprintf("%s cpus=%d", msg, written), nil
 }
 
 func readRAPLPackageCapRangeWatts() (maxW float64, minW float64, ok bool) {

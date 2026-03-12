@@ -44,6 +44,7 @@ Result semantics:
 - `applied`
 - `blocked`
 - `error`
+- `none` (no intent selected for that control path)
 
 This allows desired vs applied behavior auditing.
 
@@ -136,6 +137,10 @@ Current runtime responsibilities:
 - agent reads `NodePowerProfile` for desired state,
 - agent reads node-scoped `TelemetryProfile` for source/control routing,
 - agent writes control status under `TelemetryProfile.status.control`.
+
+Note:
+
+- hardware capability snapshots may be written under `TelemetryProfile.status.hardware` on compatible CRD/schema versions.
 
 ## Next step
 

@@ -62,9 +62,13 @@ This separation keeps policy logic centralized in the operator and actuator logi
 
 The agent enforces CPU power intent with this backend order:
 
-1. Try RAPL package cap first (`rapl.set_power_cap_watts` via HTTP control backend, or host RAPL files).
-2. If RAPL is unavailable/fails, switch to DVFS fallback controller.
-3. If RAPL becomes available again later, restore DVFS throttle and return to RAPL mode.
+1. Resolve desired CPU cap:
+   - use `packagePowerCapWatts` when present,
+   - otherwise try to resolve `packagePowerCapPctOfMax` to watts from node-local cap range.
+2. If watts are available, try RAPL first (`rapl.set_power_cap_watts` via HTTP control backend, or host RAPL files).
+3. If RAPL is unavailable/fails, switch to DVFS fallback controller.
+4. If percentage intent cannot be resolved to watts, apply a DVFS percent fallback path (`dvfs.set_throttle_pct`) when available.
+5. If RAPL becomes available again later, restore DVFS throttle and return to RAPL mode.
 
 Backend selection is visible in metric `joulie_backend_mode{mode=none|rapl|dvfs}`.
 
@@ -200,7 +204,7 @@ The agent now supports node-level GPU cap intents:
 - resolves `NodePowerProfile.spec.gpu.powerCap`,
 - computes `capWattsPerGpu` from `capPctOfMax` when needed,
 - applies `gpu.set_power_cap_watts` via HTTP control backend or host backend,
-- writes status in `TelemetryProfile.status.control.gpu` with `applied|blocked|error`.
+- writes status in `TelemetryProfile.status.control.gpu` with `applied|blocked|error|none`.
 
 Host backends are vendor-aware:
 

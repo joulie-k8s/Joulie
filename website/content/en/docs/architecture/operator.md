@@ -43,6 +43,28 @@ This separation keeps policy logic portable while actuator details stay node-loc
    - `joulie.io/power-profile`
    - `joulie.io/draining`
 
+## Power intent configuration knobs
+
+Operator intent emission is controlled by env vars:
+
+- CPU:
+  - `CPU_WRITE_ABSOLUTE_CAPS` (`true|false`)
+  - `CPU_PERFORMANCE_CAP_PCT_OF_MAX`
+  - `CPU_ECO_CAP_PCT_OF_MAX`
+  - `PERFORMANCE_CAP_WATTS`
+  - `ECO_CAP_WATTS`
+- GPU:
+  - `GPU_PERFORMANCE_CAP_PCT_OF_MAX`
+  - `GPU_ECO_CAP_PCT_OF_MAX`
+  - `GPU_WRITE_ABSOLUTE_CAPS` (`true|false`)
+  - `GPU_MODEL_CAPS_JSON`
+  - `GPU_PRODUCT_LABEL_KEYS`
+
+High-level behavior:
+
+- when `*_WRITE_ABSOLUTE_CAPS=false`, operator writes normalized percentage intent,
+- when `*_WRITE_ABSOLUTE_CAPS=true`, operator writes absolute watts intent.
+
 ## Node state model
 
 Joulie models two scheduler-facing supply states:

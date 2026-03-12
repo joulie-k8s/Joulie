@@ -107,7 +107,7 @@ GPU vendor discovery hints:
 - `feature.node.kubernetes.io/pci-8086.present` (Intel)
 - and class-specific forms like `pci-0300_<vendor>.present` / `pci-0302_<vendor>.present`
 
-GPU limits are not enforced yet; labels are currently used for capability detection and logs.
+GPU labels are used for capability detection, and GPU cap intents are enforced when a supported backend is available.
 
 ## Desired-state source
 
