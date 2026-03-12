@@ -42,17 +42,30 @@ class JoulieCi:
         """
         host = registry_repo.split("/")[0]
         user = await username.plaintext()
+        go_mod_cache = dag.cache_volume("joulie-go-mod-cache")
+        go_build_cache = dag.cache_volume("joulie-go-build-cache")
 
-        builder = (
+        go_base = (
             dag.container()
             .from_("golang:1.23")
             .with_workdir("/src")
-            .with_mounted_directory("/src", source)
-            .with_exec(["go", "version"])
-            .with_exec(["go", "mod", "download"])
             .with_env_variable("CGO_ENABLED", "0")
             .with_env_variable("GOOS", "linux")
             .with_env_variable("GOARCH", "amd64")
+            .with_env_variable("GOMODCACHE", "/go/pkg/mod")
+            .with_env_variable("GOCACHE", "/root/.cache/go-build")
+            .with_mounted_cache("/go/pkg/mod", go_mod_cache)
+            .with_mounted_cache("/root/.cache/go-build", go_build_cache)
+        )
+        deps = (
+            go_base
+            .with_file("/src/go.mod", source.file("go.mod"))
+            .with_file("/src/go.sum", source.file("go.sum"))
+            .with_exec(["go", "mod", "download"])
+        )
+        builder = (
+            deps
+            .with_mounted_directory("/src", source)
             .with_exec(["go", "build", "-o", "/out/joulie", f"./cmd/{component}"])
         )
         runtime = (
@@ -90,53 +103,34 @@ class JoulieCi:
         if not tag.startswith("dev"):
             raise ValueError("integration image tag must start with 'dev'")
 
-        agent_ref = await self._publish_component_image(source, "agent", registry_repo, tag, username, password)
-        operator_ref = await self._publish_component_image(source, "operator", registry_repo, tag, username, password)
-
         k3s_mod = dag.k3_s("joulie-ci")
         k3s = k3s_mod.server()
-        await k3s.start()
+        started_k3s = await k3s.start()
+        agent_ref = await self._publish_component_image(source, "agent", registry_repo, tag, username, password)
+        operator_ref = await self._publish_component_image(source, "operator", registry_repo, tag, username, password)
         kubeconfig = k3s_mod.config(local=False)
 
-        kubectl_version = "v1.31.2"
-        helm_version = "v3.16.1"
+        helm_cli = dag.helm().with_kubeconfig_file(kubeconfig)
         client = (
-            dag.container()
-            .from_("python:3.12-slim")
-            .with_exec(["apt-get", "update"])
+            helm_cli.container()
             .with_exec(
                 [
-                    "apt-get",
-                    "install",
-                    "-y",
-                    "--no-install-recommends",
+                    "apk",
+                    "add",
+                    "--no-cache",
                     "bash",
-                    "curl",
+                    "python3",
+                    "py3-pip",
                     "ca-certificates",
                     "git",
                     "sed",
-                ]
-            )
-            .with_exec(
-                [
-                    "sh",
-                    "-lc",
-                    f"curl -fsSL -o /usr/local/bin/kubectl "
-                    f"https://dl.k8s.io/release/{kubectl_version}/bin/linux/amd64/kubectl && chmod +x /usr/local/bin/kubectl",
-                ]
-            )
-            .with_exec(
-                [
-                    "sh",
-                    "-lc",
-                    f"curl -fsSL https://get.helm.sh/helm-{helm_version}-linux-amd64.tar.gz "
-                    "| tar -xz -C /tmp && mv /tmp/linux-amd64/helm /usr/local/bin/helm && chmod +x /usr/local/bin/helm",
+                    "kubectl",
                 ]
             )
             .with_mounted_directory("/src", source)
             .with_file("/tmp/kubeconfig.yaml", kubeconfig)
             .with_env_variable("KUBECONFIG", "/tmp/kubeconfig.yaml")
-            .with_service_binding("k3s", k3s)
+            .with_service_binding("k3s", started_k3s)
             .with_env_variable("JOULIE_AGENT_IMAGE_REPOSITORY", f"{registry_repo}/joulie-agent")
             .with_env_variable("JOULIE_AGENT_IMAGE_TAG", tag)
             .with_env_variable("JOULIE_OPERATOR_IMAGE_REPOSITORY", f"{registry_repo}/joulie-operator")

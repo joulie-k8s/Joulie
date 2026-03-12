@@ -328,6 +328,20 @@ def install_joulie() -> None:
 
 
 def set_static_hp_frac(frac: str) -> None:
+    out = kubectl(["-n", "joulie-system", "get", "deploy/joulie-operator", "-o", "json"], capture=True)
+    deploy = json.loads(out.stdout)
+    env = (
+        deploy.get("spec", {})
+        .get("template", {})
+        .get("spec", {})
+        .get("containers", [{}])[0]
+        .get("env", [])
+    )
+    current = next((item.get("value", "") for item in env if item.get("name") == "STATIC_HP_FRAC"), "")
+    if current == frac:
+        log(f"STATIC_HP_FRAC already {frac}; skipping rollout")
+        return
+
     kubectl(["-n", "joulie-system", "set", "env", "deploy/joulie-operator", f"STATIC_HP_FRAC={frac}"])
     wait_rollout("joulie-system", "deploy/joulie-operator")
 
@@ -547,12 +561,12 @@ def test_fsm_toggle_under_eco(ctx: Ctx) -> None:
     wait_node_eco_ready(ctx.node)
 
     delete_pod("joulie-it", "perf-toggle")
-    apply_yaml(mk_pod_yaml("perf-toggle", affinity=perf_affinity_notin_eco(), node_name=ctx.node))
-    wait_pod_phase("joulie-it", "perf-toggle", "Running")
-    wait_node_guarded_transition(ctx.node)
+    apply_yaml(mk_pod_yaml("perf-toggle", affinity=perf_affinity_notin_eco()))
+    wait_pod_pending("joulie-it", "perf-toggle")
+    wait_pod_unschedulable_reason("joulie-it", "perf-toggle", "affinity")
+    wait_node_eco_ready(ctx.node)
 
     delete_pod("joulie-it", "perf-toggle")
-    wait_node_eco_ready(ctx.node)
 
 
 def test_scheduling(ctx: Ctx) -> None:
@@ -625,7 +639,7 @@ def test_classification_matrix(ctx: Ctx) -> None:
     log("IT-CLS-*")
     # name, affinity, expect_perf, selector, force_node_name, expect_apply_ok
     cases: list[tuple[str, str, bool, dict[str, str] | None, bool, bool]] = [
-        ("cls-01-notin-eco", perf_affinity_notin_eco(), True, None, False, True),
+        ("cls-01-notin-eco", perf_affinity_notin_eco(), True, None, True, True),
         (
             "cls-02-notin-eco-plus-extra",
             textwrap.indent(
@@ -647,7 +661,7 @@ def test_classification_matrix(ctx: Ctx) -> None:
             ),
             True,
             None,
-            False,
+            True,
             True,
         ),
         (
@@ -669,10 +683,10 @@ def test_classification_matrix(ctx: Ctx) -> None:
             ),
             True,
             None,
-            False,
+            True,
             True,
         ),
-        ("cls-04-selector-performance", "", True, {"joulie.io/power-profile": "performance"}, False, True),
+        ("cls-04-selector-performance", "", True, {"joulie.io/power-profile": "performance"}, True, True),
         (
             "cls-05-or-terms-one-excludes-eco",
             textwrap.indent(
@@ -854,7 +868,7 @@ def test_classification_matrix(ctx: Ctx) -> None:
             ),
             True,
             None,
-            False,
+            True,
             True,
         ),
         (

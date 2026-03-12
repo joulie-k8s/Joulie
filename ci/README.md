@@ -58,16 +58,28 @@ Implemented tests currently cover:
 - operator/agent readiness
 - TelemetryProfile HTTP GET/POST plumbing against in-cluster mock service
 - FSM behavior for:
+  - baseline reconciliation to `performance` (`draining=false`)
   - perf -> eco with perf pod present (`draining=true`)
   - draining clear when perf pod is gone (`draining=false`)
   - eco -> perf (`draining=false`)
+  - desired `eco` + perf-constrained pod remains unschedulable (affinity mismatch), preserving eco state
+  - idempotency check (labels stable, no unexpected node resourceVersion churn)
 - scheduler-level checks for:
   - perf pods (`NotIn ["eco"]`) on both unlabeled and `performance` nodes
+  - perf pods (`NotIn ["eco"]`) blocked on `eco` nodes
+  - eco-only pods (`In ["eco"]`) run on eco and are blocked on performance
   - eco-only pods with `draining=false`
 - exhaustive classification matrix (`IT-CLS-*`) including:
   - required affinity / nodeSelector variants
   - OR-term semantics
   - preference-only vs required constraints
-  - `spec.nodeName` fallback to validate classification even when scheduler would keep pods Pending
+  - invalid/edge cases (e.g. empty values)
+  - `spec.nodeName` fallback for perf-intent cases that are unschedulable in single-node eco setups
+
+## Runtime notes
+
+- Profile transitions in tests are driven via operator env (`STATIC_HP_FRAC`) updates.
+- A rollout is triggered only when the requested value actually changes; no-op updates are skipped.
+- Classification matrix cases that rely on perf intent under eco use `spec.nodeName` when needed so classification can still be validated.
 
 On failure, the runner dumps cluster state and controller logs for debugging.
