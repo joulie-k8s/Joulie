@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -46,6 +47,10 @@ func main() {
 	var noAffinityOnly bool
 	var cpuUnitsMin float64
 	var cpuUnitsMax float64
+	var gpuRatio float64
+	var gpuUnitsMin float64
+	var gpuUnitsMax float64
+	var gpuRequestPerJob float64
 	flag.IntVar(&jobs, "jobs", 50, "number of jobs")
 	flag.StringVar(&outPath, "out", "trace.jsonl", "output JSONL path")
 	flag.Float64Var(&meanInterArrival, "mean-inter-arrival-sec", 5, "mean inter-arrival seconds")
@@ -55,6 +60,10 @@ func main() {
 	flag.BoolVar(&noAffinityOnly, "no-affinity-only", false, "if true, all jobs are generated without power-profile affinity")
 	flag.Float64Var(&cpuUnitsMin, "cpu-units-min", 600, "minimum cpu work units per job")
 	flag.Float64Var(&cpuUnitsMax, "cpu-units-max", 3600, "maximum cpu work units per job")
+	flag.Float64Var(&gpuRatio, "gpu-ratio", 0.0, "ratio of jobs with GPU work")
+	flag.Float64Var(&gpuUnitsMin, "gpu-units-min", 500, "minimum gpu work units per GPU job")
+	flag.Float64Var(&gpuUnitsMax, "gpu-units-max", 2500, "maximum gpu work units per GPU job")
+	flag.Float64Var(&gpuRequestPerJob, "gpu-request", 1, "GPU request for GPU jobs")
 	flag.Parse()
 	if perfRatio < 0 {
 		perfRatio = 0
@@ -88,6 +97,12 @@ func main() {
 		offset += rng.ExpFloat64() * meanInterArrival
 		cpu := 1 + rng.Intn(8)
 		units := cpuUnitsMin + rng.Float64()*(cpuUnitsMax-cpuUnitsMin)
+		gpuUnits := 0.0
+		requests := map[string]string{"cpu": fmt.Sprintf("%d", cpu), "memory": "1Gi"}
+		if rng.Float64() < gpuRatio {
+			gpuUnits = gpuUnitsMin + rng.Float64()*(gpuUnitsMax-gpuUnitsMin)
+			requests["nvidia.com/gpu"] = strconv.FormatFloat(gpuRequestPerJob, 'f', -1, 64)
+		}
 		class := "general"
 		if !noAffinityOnly {
 			p := rng.Float64()
@@ -105,9 +120,9 @@ func main() {
 			Namespace:           "default",
 			PodTemplate: podTemplateRec{
 				Affinity: affinityForClass(class),
-				Requests: map[string]string{"cpu": fmt.Sprintf("%d", cpu), "memory": "1Gi"},
+				Requests: requests,
 			},
-			Work: workRec{CPUUnits: units, GPUUnits: 0},
+			Work: workRec{CPUUnits: units, GPUUnits: gpuUnits},
 			Sensitivity: sensitivityRec{
 				CPU: 0.8 + rng.Float64()*0.2,
 				GPU: 1,

@@ -193,15 +193,21 @@ For policy-side details, see:
 1. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}})
 2. [Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}})
 
-## GPU path and DCGM (future)
+## GPU path
 
-Current implementation detects GPU vendor hints (NFD labels) and logs capabilities, but does not apply GPU caps yet.
+The agent now supports node-level GPU cap intents:
 
-Planned extension:
+- resolves `NodePowerProfile.spec.gpu.powerCap`,
+- computes `capWattsPerGpu` from `capPctOfMax` when needed,
+- applies `gpu.set_power_cap_watts` via HTTP control backend or host backend,
+- writes status in `TelemetryProfile.status.control.gpu` with `applied|blocked|error`.
 
-- add GPU control backend(s) (for example NVML/DCGM path),
-- keep same desired-state/enforcement contract style (`applied|blocked|error`),
-- expose GPU control/telemetry metrics similarly to CPU.
+Host backends are vendor-aware:
+
+- NVIDIA path (NVIDIA tooling/NVML-compatible power limits),
+- AMD path (ROCm SMI power-limit controls).
+
+If backend support is unavailable on a node, the result is reported as `blocked`.
 
 ## Next step
 

@@ -360,7 +360,7 @@ def install_http_mock() -> None:
               server.py: |
                 import json
                 from http.server import BaseHTTPRequestHandler, HTTPServer
-                STATS = {"get": 0, "post": 0}
+                STATS = {"get": 0, "post": 0, "gpu_post": 0}
                 class H(BaseHTTPRequestHandler):
                     def do_GET(self):
                         if self.path.startswith("/telemetry/"):
@@ -375,6 +375,13 @@ def install_http_mock() -> None:
                     def do_POST(self):
                         if self.path.startswith("/control/"):
                             STATS["post"] += 1
+                            try:
+                                raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+                                payload = json.loads(raw.decode() or "{}")
+                                if payload.get("action") == "gpu.set_power_cap_watts":
+                                    STATS["gpu_post"] += 1
+                            except Exception:
+                                pass
                             self.send_response(200); self.end_headers()
                         else:
                             self.send_response(404); self.end_headers()
@@ -449,6 +456,12 @@ def apply_telemetry_profile(node: str) -> None:
                     endpoint: http://joulie-http-mock.joulie-it.svc.cluster.local:8080/control/{{node}}
                     timeoutSeconds: 3
                     mode: dvfs
+                gpu:
+                  type: http
+                  http:
+                    endpoint: http://joulie-http-mock.joulie-it.svc.cluster.local:8080/control/{{node}}
+                    timeoutSeconds: 3
+                    mode: powercap
             """
         )
     )
@@ -470,6 +483,29 @@ def get_mock_stats() -> dict[str, Any]:
         raise RuntimeError("timeout reading http-mock /stats via port-forward")
     finally:
         proc.terminate()
+
+
+def patch_node_gpu_cap(node: str, cap_watts_per_gpu: int) -> None:
+    out = kubectl(["get", "nodepowerprofiles", "-o", "json"], capture=True).stdout
+    items = json.loads(out).get("items", [])
+    name = None
+    for item in items:
+        if item.get("spec", {}).get("nodeName") == node:
+            name = item.get("metadata", {}).get("name")
+            break
+    if not name:
+        raise RuntimeError(f"nodepowerprofile for node {node} not found")
+    patch = {
+        "spec": {
+            "gpu": {
+                "powerCap": {
+                    "scope": "perGpu",
+                    "capWattsPerGpu": cap_watts_per_gpu,
+                }
+            }
+        }
+    }
+    kubectl(["patch", "nodepowerprofile", name, "--type=merge", "-p", json.dumps(patch)])
 
 
 def dump_debug() -> None:
@@ -524,6 +560,11 @@ def test_telemetry_http(ctx: Ctx) -> None:
         raise AssertionError(f"expected telemetry GETs > 0, stats={stats}")
     if stats.get("post", 0) <= 0:
         raise AssertionError(f"expected control POSTs > 0, stats={stats}")
+    patch_node_gpu_cap(ctx.node, 200)
+    time.sleep(10)
+    stats = get_mock_stats()
+    if stats.get("gpu_post", 0) <= 0:
+        raise AssertionError(f"expected gpu control POSTs > 0, stats={stats}")
 
 
 def test_fsm_and_labels(ctx: Ctx) -> None:

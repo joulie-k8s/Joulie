@@ -1,13 +1,11 @@
 apiVersion: joulie.io/v1alpha1
 kind: TelemetryProfile
 metadata:
-  name: sim-http-target-node
-  labels:
-    app.kubernetes.io/part-of: sim-kwok-demo
+  name: sim-http-TARGET_NODE
 spec:
   target:
     scope: node
-    nodeName: target-node
+    nodeName: TARGET_NODE
   sources:
     cpu:
       type: http

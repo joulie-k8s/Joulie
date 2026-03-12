@@ -10,11 +10,9 @@ The simulator lets you run Joulie without host RAPL/DVFS interfaces while preser
 - Simulator converts pod placement/load into synthetic node telemetry.
 - Joulie agent reads/writes via HTTP interfaces configured with `TelemetryProfile`.
 
-Planned extension path:
+GPU support is validated in simulator mode only (no bare-metal GPU validation yet).
 
-- scenario-driven cluster bootstrap (including fake GPU resources),
-- synthetic/replayed workload generation,
-- batch progress model where throttling increases job completion time.
+Current scope includes CPU and GPU-cap simulation with trace-driven completion slowdown.
 
 ## Components
 
@@ -96,6 +94,7 @@ curl -s localhost:18080/metrics | egrep 'joulie_sim_controls_total|joulie_sim_re
 See:
 
 - `examples/05-simulated-telemetry-control/README.md`
+- `examples/simulator-gpu-powercaps/README.md`
 - `https://joulie-k8s.github.io/Joulie/docs/simulator/simulator/`
 
 ## Node Discovery and Class Mapping

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matbun/joulie/simulator/pkg/hw"
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -78,6 +79,115 @@ func TestHandleControlAndTelemetry(t *testing.T) {
 	}
 	if cpu["capWatts"].(float64) != 120 {
 		t.Fatalf("expected capWatts=120 got %v", cpu["capWatts"])
+	}
+}
+
+func TestHandleGPUControlAndTelemetry(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{
+			BaseIdleW:   90,
+			PodW:        80,
+			DvfsDropW:   1,
+			RaplHeadW:   5,
+			DefaultCapW: 5000,
+			GPU: hw.GPUProfile{
+				Vendor:            "nvidia",
+				Product:           "L40S",
+				Count:             4,
+				IdleWattsPerGPU:   30,
+				MaxWattsPerGPU:    350,
+				MinCapWattsPerGPU: 200,
+				CapApplyTauMS:     300,
+				ComputeGamma:      1.0,
+				MemoryEpsilon:     0.2,
+				MemoryGamma:       1.2,
+				PowerModel: hw.GPUPowerModel{
+					AlphaUtil: 1.0,
+					BetaCap:   1.0,
+				},
+			},
+		},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+
+	body := `{"action":"gpu.set_power_cap_watts","capWattsPerGpu":220}`
+	req := httptest.NewRequest(http.MethodPost, "/control/node-gpu", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	s.handleControl(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("control status=%d", w.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/telemetry/node-gpu", nil)
+	w2 := httptest.NewRecorder()
+	s.handleTelemetry(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("telemetry status=%d", w2.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(w2.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode telemetry: %v", err)
+	}
+	gpu, ok := payload["gpu"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing gpu payload")
+	}
+	if !gpu["present"].(bool) {
+		t.Fatalf("expected gpu.present=true")
+	}
+	if gpu["capWattsPerGpuTarget"].(float64) != 220 {
+		t.Fatalf("unexpected gpu target cap: %v", gpu["capWattsPerGpuTarget"])
+	}
+	applied := gpu["capWattsPerGpuApplied"].(float64)
+	if applied < 220 || applied > 350 {
+		t.Fatalf("unexpected gpu applied cap after settling start: %v", applied)
+	}
+}
+
+func TestGPUCapSettlingIsNotInstant(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{
+			BaseIdleW:   90,
+			PodW:        80,
+			DvfsDropW:   1,
+			RaplHeadW:   5,
+			DefaultCapW: 5000,
+			GPU: hw.GPUProfile{
+				Vendor:            "nvidia",
+				Product:           "L40S",
+				Count:             1,
+				IdleWattsPerGPU:   30,
+				MaxWattsPerGPU:    350,
+				MinCapWattsPerGPU: 200,
+				CapApplyTauMS:     2000,
+				ComputeGamma:      1.0,
+				MemoryEpsilon:     0.2,
+				MemoryGamma:       1.2,
+				PowerModel:        hw.GPUPowerModel{AlphaUtil: 1.0, BetaCap: 1.0},
+			},
+		},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+
+	body := `{"action":"gpu.set_power_cap_watts","capWattsPerGpu":220}`
+	req := httptest.NewRequest(http.MethodPost, "/control/node-gpu", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	s.handleControl(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("control status=%d", w.Code)
+	}
+	st := s.getNode("node-gpu")
+	if st.GPUTargetCapWattsPerGpu != 220 {
+		t.Fatalf("target cap=%v", st.GPUTargetCapWattsPerGpu)
+	}
+	if st.GPUCapWattsPerGpu <= 220 {
+		t.Fatalf("expected applied cap to settle gradually, got=%v", st.GPUCapWattsPerGpu)
 	}
 }
 

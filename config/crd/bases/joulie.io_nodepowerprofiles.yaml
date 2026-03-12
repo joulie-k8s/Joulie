@@ -34,6 +34,26 @@ spec:
                     packagePowerCapWatts:
                       type: number
                       minimum: 1
+                    packagePowerCapPctOfMax:
+                      type: number
+                      exclusiveMinimum: true
+                      maximum: 100
+                gpu:
+                  type: object
+                  properties:
+                    powerCap:
+                      type: object
+                      properties:
+                        scope:
+                          type: string
+                          enum: ["perGpu"]
+                        capWattsPerGpu:
+                          type: number
+                          minimum: 1
+                        capPctOfMax:
+                          type: number
+                          exclusiveMinimum: true
+                          maximum: 100
                 policy:
                   type: object
                   properties:
@@ -52,3 +72,9 @@ spec:
         - name: CPU-Watts
           type: number
           jsonPath: .spec.cpu.packagePowerCapWatts
+        - name: GPU-Watts
+          type: number
+          jsonPath: .spec.gpu.powerCap.capWattsPerGpu
+        - name: GPU-Pct
+          type: number
+          jsonPath: .spec.gpu.powerCap.capPctOfMax

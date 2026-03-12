@@ -64,7 +64,12 @@ Main fields:
 
 - `spec.nodeName` (required)
 - `spec.profile` (required, `performance|eco`)
-- `spec.cpu.packagePowerCapWatts` (optional)
+- `spec.cpu.packagePowerCapPctOfMax` (optional, preferred normalized policy)
+- `spec.cpu.packagePowerCapWatts` (optional, absolute override)
+- `spec.gpu.powerCap` (optional):
+  - `scope` (`perGpu`)
+  - `capWattsPerGpu` (absolute)
+  - `capPctOfMax` (percentage)
 - `spec.policy.name` (optional, provenance/debug)
 
 Example:
@@ -78,7 +83,7 @@ spec:
   nodeName: worker-01
   profile: eco
   cpu:
-    packagePowerCapWatts: 180
+    packagePowerCapPctOfMax: 60
   policy:
     name: static_partition
 ```

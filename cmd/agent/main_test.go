@@ -796,3 +796,102 @@ func TestReconcileOnceSimulateOnlyWritesAppliedStatus(t *testing.T) {
 		t.Fatalf("unexpected status backend=%q result=%q msg=%q", backend, result, msg)
 	}
 }
+
+func TestDetectGPUVendor(t *testing.T) {
+	old := commandRunner
+	defer func() { commandRunner = old }()
+
+	commandRunner = fakeCommandRunner{
+		responses: map[string]fakeCommandResult{
+			"nvidia-smi -L": {out: "GPU 0: L40S"},
+		},
+	}
+	if got := detectGPUVendor(context.Background(), map[string]string{
+		"feature.node.kubernetes.io/pci-10de.present": "true",
+	}); got != "nvidia" {
+		t.Fatalf("vendor=%q want=nvidia", got)
+	}
+
+	commandRunner = fakeCommandRunner{
+		responses: map[string]fakeCommandResult{
+			"nvidia-smi -L":              {err: errors.New("not found")},
+			"rocm-smi --showproductname": {out: "card0"},
+		},
+	}
+	if got := detectGPUVendor(context.Background(), map[string]string{
+		"feature.node.kubernetes.io/pci-1002.present": "true",
+	}); got != "amd" {
+		t.Fatalf("vendor=%q want=amd", got)
+	}
+}
+
+func TestResolveGPUCapPerDevice(t *testing.T) {
+	t.Parallel()
+	devs := []GPUDevice{
+		{Index: 0, MinCapWatts: 200, MaxCapWatts: 350},
+		{Index: 1, MinCapWatts: 200, MaxCapWatts: 350},
+	}
+	pct := 60.0
+	got, _, ok := resolveGPUCapPerDevice(&GPUPowerCap{CapPctOfMax: &pct}, devs)
+	if !ok || got != 210 {
+		t.Fatalf("resolved cap got=%v ok=%v want=210/true", got, ok)
+	}
+}
+
+func TestApplyGPUIntentHTTP(t *testing.T) {
+	old := commandRunner
+	defer func() { commandRunner = old }()
+	commandRunner = fakeCommandRunner{
+		responses: map[string]fakeCommandResult{
+			"nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits": {
+				out: "0, 200, 350, 300, 250, NVIDIA L40S\n",
+			},
+			"nvidia-smi -L": {out: "GPU 0: NVIDIA L40S"},
+		},
+	}
+
+	var seen map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	client := &HTTPControlClient{
+		endpoint: srv.URL + "/control/{node}",
+		nodeName: "node-a",
+		client:   srv.Client(),
+	}
+	w := 220.0
+	backend, result, _, _, err := applyGPUIntent(context.Background(), "node-a", map[string]string{}, &GPUPowerCap{CapWattsPerGPU: &w}, client)
+	if err != nil {
+		t.Fatalf("applyGPUIntent err: %v", err)
+	}
+	if backend != "http" || result != "applied" {
+		t.Fatalf("unexpected backend/result %s/%s", backend, result)
+	}
+	if seen["action"] != "gpu.set_power_cap_watts" {
+		t.Fatalf("unexpected action payload: %#v", seen)
+	}
+}
+
+type fakeCommandResult struct {
+	out string
+	err error
+}
+
+type fakeCommandRunner struct {
+	responses map[string]fakeCommandResult
+}
+
+func (f fakeCommandRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	key := name
+	if len(args) > 0 {
+		key += " " + strings.Join(args, " ")
+	}
+	if r, ok := f.responses[key]; ok {
+		return []byte(r.out), r.err
+	}
+	return nil, fmt.Errorf("unexpected command: %s", key)
+}

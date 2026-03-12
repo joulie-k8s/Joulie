@@ -1,0 +1,22 @@
+agent:
+  mode: pool
+  hostNetwork: false
+  privileged: false
+  env:
+    RECONCILE_INTERVAL: "8s"
+    METRICS_ADDR: ":8080"
+    SIMULATE_ONLY: "false"
+  pool:
+    replicas: 2
+    shards: 2
+    nodeSelector: "joulie.io/managed=true"
+
+operator:
+  env:
+    RECONCILE_INTERVAL: "20s"
+    NODE_SELECTOR: "joulie.io/managed=true"
+    ECO_CAP_WATTS: "120"
+    PERFORMANCE_CAP_WATTS: "500"
+    GPU_PERFORMANCE_CAP_PCT_OF_MAX: "100"
+    GPU_ECO_CAP_PCT_OF_MAX: "60"
+    GPU_WRITE_ABSOLUTE_CAPS: "false"

@@ -8,3 +8,4 @@ This directory contains runnable Joulie examples, ordered by setup complexity.
 - [04-operator-configuration](./04-operator-configuration/README.md): tune operator policies and control-loop env settings.
 - [05-simulated-telemetry-control](./05-simulated-telemetry-control/README.md): run agent telemetry/control against simulator HTTP endpoints.
 - [06-simulator-kwok](./06-simulator-kwok/README.md): mixed real+KWOK setup with simulator-driven workload and power behavior.
+- [simulator-gpu-powercaps](./simulator-gpu-powercaps/README.md): heterogeneous GPU simulation (NVIDIA + AMD) with node-level GPU cap effects on power and completion time.

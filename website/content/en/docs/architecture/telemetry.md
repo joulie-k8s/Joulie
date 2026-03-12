@@ -57,6 +57,22 @@ Supported intent actions:
 DVFS intent is normalized as `throttlePct` (`0..100`) to stay portable across heterogeneous CPUs.
 Backend-specific frequency writes remain implementation details.
 
+## GPU control intent
+
+Supported GPU intent action:
+
+- `gpu.set_power_cap_watts`
+
+Payload:
+
+- `capWattsPerGpu`
+
+Semantics:
+
+- node-level intent is translated to per-device enforcement,
+- same cap is applied to all GPUs on the node,
+- result is reported as `applied|blocked|error` in `TelemetryProfile.status.control.gpu`.
+
 ## Current HTTP contracts
 
 Telemetry endpoint:
@@ -102,6 +118,13 @@ Agent host mode uses Linux interfaces:
 
 - RAPL energy/power cap files
 - cpufreq files for observed and enforced frequency bounds
+
+GPU host control backends:
+
+- NVIDIA path: NVIDIA tooling/NVML-compatible power-limit controls
+- AMD path: ROCm SMI power-limit controls where supported
+
+If a GPU backend is unavailable on a node, result is `blocked` (not silent success).
 
 Current deployment convention mounts host `/sys` into container `/host-sys`.
 

@@ -30,25 +30,38 @@ import (
 var profileGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodepowerprofiles"}
 
 const (
-	powerProfileLabelKey   = "joulie.io/power-profile"
-	drainingLabelKey       = "joulie.io/draining"
-	profilePerformance     = "performance"
-	profileEco             = "eco"
-	workloadClassUnknown   = "unknown"
-	workloadClassGeneral   = "general"
-	workloadClassEcoOnly   = "eco-only"
-	workloadClassPerfOnly  = "performance-only"
+	powerProfileLabelKey  = "joulie.io/power-profile"
+	drainingLabelKey      = "joulie.io/draining"
+	profilePerformance    = "performance"
+	profileEco            = "eco"
+	workloadClassUnknown  = "unknown"
+	workloadClassGeneral  = "general"
+	workloadClassEcoOnly  = "eco-only"
+	workloadClassPerfOnly = "performance-only"
 )
 
 type NodeAssignment struct {
-	NodeName      string
-	Profile       string
-	CapWatts      float64
-	ManagedBy     string
-	SourceProfile string
-	SourceDrain   bool
-	Draining      bool
-	State         string
+	NodeName       string
+	Profile        string
+	CapWatts       float64
+	CPUCapPctOfMax *float64
+	GPU            *GPUCapIntent
+	ManagedBy      string
+	SourceProfile  string
+	SourceDrain    bool
+	Draining       bool
+	State          string
+}
+
+type GPUCapIntent struct {
+	Scope          string
+	CapWattsPerGPU *float64
+	CapPctOfMax    *float64
+}
+
+type GPUModelCaps struct {
+	MinCapWatts float64 `json:"minCapWatts"`
+	MaxCapWatts float64 `json:"maxCapWatts"`
 }
 
 var (
@@ -87,12 +100,23 @@ func main() {
 	drainingLabel := envOrDefault("DRAINING_LABEL", drainingLabelKey)
 	perfCap := floatEnv("PERFORMANCE_CAP_WATTS", 5000)
 	ecoCap := floatEnv("ECO_CAP_WATTS", 120)
+	cpuPerfCapPct := floatEnv("CPU_PERFORMANCE_CAP_PCT_OF_MAX", 100)
+	cpuEcoCapPct := floatEnv("CPU_ECO_CAP_PCT_OF_MAX", 60)
+	cpuWriteAbsolute := boolEnv("CPU_WRITE_ABSOLUTE_CAPS", false)
 	policyType := strings.ToLower(envOrDefault("POLICY_TYPE", "static_partition"))
 	staticHPFrac := floatEnv("STATIC_HP_FRAC", 0.50)
 	queueHPBaseFrac := floatEnv("QUEUE_HP_BASE_FRAC", 0.60)
 	queueHPMin := intEnv("QUEUE_HP_MIN", 1)
 	queueHPMax := intEnv("QUEUE_HP_MAX", 1000000)
 	queuePerfPerHPNode := intEnv("QUEUE_PERF_PER_HP_NODE", 10)
+	gpuPerfCapPct := floatEnv("GPU_PERFORMANCE_CAP_PCT_OF_MAX", 100)
+	gpuEcoCapPct := floatEnv("GPU_ECO_CAP_PCT_OF_MAX", 60)
+	gpuWriteAbsolute := boolEnv("GPU_WRITE_ABSOLUTE_CAPS", false)
+	gpuModelCaps := parseGPUModelCaps(envOrDefault("GPU_MODEL_CAPS_JSON", "{}"))
+	gpuProductLabelKeys := parseCSVList(envOrDefault(
+		"GPU_PRODUCT_LABEL_KEYS",
+		"joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product,amd.com/gpu.family",
+	))
 
 	parsedSelector, err := labels.Parse(selector)
 	if err != nil {
@@ -115,7 +139,12 @@ func main() {
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		if err := reconcile(ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, drainingLabel, reconcileEvery, perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode); err != nil {
+		if err := reconcile(
+			ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, drainingLabel, reconcileEvery,
+			perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
+			cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
+			gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys,
+		); err != nil {
 			log.Printf("reconcile failed: %v", err)
 		}
 		cancel()
@@ -152,6 +181,14 @@ func reconcile(
 	queueHPMin int,
 	queueHPMax int,
 	queuePerfPerHPNode int,
+	cpuPerfCapPct float64,
+	cpuEcoCapPct float64,
+	cpuWriteAbsolute bool,
+	gpuPerfCapPct float64,
+	gpuEcoCapPct float64,
+	gpuWriteAbsolute bool,
+	gpuModelCaps map[string]GPUModelCaps,
+	gpuProductLabelKeys []string,
 ) error {
 	nodes, err := kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -160,8 +197,11 @@ func reconcile(
 
 	eligible := make([]string, 0)
 	nodesByName := make(map[string]string, len(nodes.Items))
+	nodeObjs := make(map[string]*corev1.Node, len(nodes.Items))
 	drainingByName := make(map[string]bool, len(nodes.Items))
 	for _, n := range nodes.Items {
+		node := n
+		nodeObjs[n.Name] = &node
 		prof, draining := normalizeNodeLabels(n.Labels[profileLabel], n.Labels[drainingLabel])
 		nodesByName[n.Name] = prof
 		drainingByName[n.Name] = draining
@@ -188,6 +228,18 @@ func reconcile(
 		plan[i].SourceDrain = drainingByName[plan[i].NodeName]
 		plan[i].Draining = false
 		plan[i].State = assignmentState(plan[i].Profile, plan[i].Draining)
+		if cpuWriteAbsolute {
+			plan[i].CPUCapPctOfMax = nil
+		} else {
+			pct := cpuEcoCapPct
+			if plan[i].Profile == profilePerformance {
+				pct = cpuPerfCapPct
+			}
+			plan[i].CPUCapPctOfMax = floatPtr(pct)
+		}
+		if n := nodeObjs[plan[i].NodeName]; n != nil {
+			plan[i].GPU = computeGPUIntentForNode(*n, plan[i].Profile, gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys)
+		}
 	}
 	applyDowngradeGuards(ctx, kube, plan, nodesByName)
 	for _, a := range plan {
@@ -599,10 +651,6 @@ func containsString(in []string, v string) bool {
 }
 
 func normalizeNodeLabels(profileVal, drainingVal string) (string, bool) {
-	// Legacy migration: draining-performance -> eco + draining=true.
-	if strings.TrimSpace(profileVal) == "draining-performance" {
-		return profileEco, true
-	}
 	prof := currentProfileOrDefault(profileVal)
 	draining := strings.EqualFold(strings.TrimSpace(drainingVal), "true")
 	if prof == "unknown" {
@@ -614,13 +662,156 @@ func normalizeNodeLabels(profileVal, drainingVal string) (string, bool) {
 func summarizePlan(plan []NodeAssignment) string {
 	parts := make([]string, 0, len(plan))
 	for _, p := range plan {
-		parts = append(parts, fmt.Sprintf("%s=%s(%.1fW)", p.NodeName, p.Profile, p.CapWatts))
+		gpuPart := ""
+		if p.GPU != nil {
+			if p.GPU.CapWattsPerGPU != nil {
+				gpuPart = fmt.Sprintf(",gpu=%.1fW", *p.GPU.CapWattsPerGPU)
+			} else if p.GPU.CapPctOfMax != nil {
+				gpuPart = fmt.Sprintf(",gpu=%.1f%%", *p.GPU.CapPctOfMax)
+			}
+		}
+		cpuPart := fmt.Sprintf("%.1fW", p.CapWatts)
+		if p.CPUCapPctOfMax != nil {
+			cpuPart = fmt.Sprintf("%.1f%%", *p.CPUCapPctOfMax)
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s(cpu=%s%s)", p.NodeName, p.Profile, cpuPart, gpuPart))
 	}
 	return strings.Join(parts, ",")
 }
 
+func computeGPUIntentForNode(
+	node corev1.Node,
+	profile string,
+	gpuPerfCapPct float64,
+	gpuEcoCapPct float64,
+	gpuWriteAbsolute bool,
+	gpuModelCaps map[string]GPUModelCaps,
+	gpuProductLabelKeys []string,
+) *GPUCapIntent {
+	if discoverGPUCount(node) <= 0 {
+		return nil
+	}
+	capPct := gpuEcoCapPct
+	if profile == profilePerformance {
+		capPct = gpuPerfCapPct
+	}
+	if capPct <= 0 {
+		return nil
+	}
+	intent := &GPUCapIntent{
+		Scope:       "perGpu",
+		CapPctOfMax: floatPtr(capPct),
+	}
+	if !gpuWriteAbsolute {
+		return intent
+	}
+	product := resolveGPUProduct(node.Labels, gpuProductLabelKeys)
+	if product == "" {
+		return intent
+	}
+	caps, ok := gpuModelCaps[product]
+	if !ok || caps.MaxCapWatts <= 0 {
+		return intent
+	}
+	minW := caps.MinCapWatts
+	if minW <= 0 {
+		minW = 1
+	}
+	abs := (capPct / 100.0) * caps.MaxCapWatts
+	if abs < minW {
+		abs = minW
+	}
+	if abs > caps.MaxCapWatts {
+		abs = caps.MaxCapWatts
+	}
+	intent.CapWattsPerGPU = floatPtr(abs)
+	return intent
+}
+
+func discoverGPUCount(node corev1.Node) int64 {
+	var total int64
+	for k, q := range node.Status.Allocatable {
+		key := strings.ToLower(string(k))
+		if key == "nvidia.com/gpu" || key == "amd.com/gpu" || key == "gpu.intel.com/i915" || strings.HasSuffix(key, "/gpu") {
+			total += q.Value()
+		}
+	}
+	return total
+}
+
+func resolveGPUProduct(nodeLabels map[string]string, keys []string) string {
+	for _, k := range keys {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		if v := strings.TrimSpace(nodeLabels[key]); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func parseGPUModelCaps(raw string) map[string]GPUModelCaps {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return map[string]GPUModelCaps{}
+	}
+	out := map[string]GPUModelCaps{}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		log.Printf("warning: invalid GPU_MODEL_CAPS_JSON: %v", err)
+		return map[string]GPUModelCaps{}
+	}
+	return out
+}
+
+func parseCSVList(in string) []string {
+	parts := strings.Split(in, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		v := strings.TrimSpace(p)
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func floatPtr(v float64) *float64 {
+	vv := v
+	return &vv
+}
+
 func upsertNodeProfile(ctx context.Context, dyn dynamic.Interface, a NodeAssignment) error {
 	name := fmt.Sprintf("node-%s", sanitizeName(a.NodeName))
+	spec := map[string]any{
+		"nodeName": a.NodeName,
+		"profile":  a.Profile,
+		"policy": map[string]any{
+			"name": a.ManagedBy,
+		},
+	}
+	cpu := map[string]any{}
+	if a.CPUCapPctOfMax != nil {
+		cpu["packagePowerCapPctOfMax"] = *a.CPUCapPctOfMax
+	} else {
+		cpu["packagePowerCapWatts"] = a.CapWatts
+	}
+	spec["cpu"] = cpu
+	if a.GPU != nil {
+		powerCap := map[string]any{
+			"scope": "perGpu",
+		}
+		if a.GPU.CapWattsPerGPU != nil {
+			powerCap["capWattsPerGpu"] = *a.GPU.CapWattsPerGPU
+		}
+		if a.GPU.CapPctOfMax != nil {
+			powerCap["capPctOfMax"] = *a.GPU.CapPctOfMax
+		}
+		spec["gpu"] = map[string]any{
+			"powerCap": powerCap,
+		}
+	}
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "joulie.io/v1alpha1",
 		"kind":       "NodePowerProfile",
@@ -630,16 +821,7 @@ func upsertNodeProfile(ctx context.Context, dyn dynamic.Interface, a NodeAssignm
 				"joulie.io/managed-by": "operator",
 			},
 		},
-		"spec": map[string]any{
-			"nodeName": a.NodeName,
-			"profile":  a.Profile,
-			"cpu": map[string]any{
-				"packagePowerCapWatts": a.CapWatts,
-			},
-			"policy": map[string]any{
-				"name": a.ManagedBy,
-			},
-		},
+		"spec": spec,
 	}}
 
 	res := dyn.Resource(profileGVR)
@@ -731,6 +913,13 @@ func intEnv(key string, def int) int {
 		if v, err := strconv.Atoi(s); err == nil {
 			return v
 		}
+	}
+	return def
+}
+
+func boolEnv(key string, def bool) bool {
+	if s := strings.TrimSpace(os.Getenv(key)); s != "" {
+		return strings.EqualFold(s, "true") || s == "1" || strings.EqualFold(s, "yes")
 	}
 	return def
 }

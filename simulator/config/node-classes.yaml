@@ -8,6 +8,16 @@ classes:
       dvfsDropWPerPct: 1.6
       raplHeadW: 5
       defaultCapW: 5000
+      gpu:
+        vendor: nvidia
+        product: NVIDIA-L40S
+        count: 4
+        idleWattsPerGpu: 30
+        maxWattsPerGpu: 350
+        minCapWattsPerGpu: 200
+        powerModel:
+          alphaUtil: 1.0
+          betaCap: 1.0
   - name: amd-default
     matchLabels:
       feature.node.kubernetes.io/cpu-model.vendor_id: AMD
@@ -17,3 +27,13 @@ classes:
       dvfsDropWPerPct: 1.8
       raplHeadW: 5
       defaultCapW: 5000
+      gpu:
+        vendor: amd
+        product: AMD-Radeon-PRO-W7900
+        count: 4
+        idleWattsPerGpu: 25
+        maxWattsPerGpu: 295
+        minCapWattsPerGpu: 200
+        powerModel:
+          alphaUtil: 1.0
+          betaCap: 1.0

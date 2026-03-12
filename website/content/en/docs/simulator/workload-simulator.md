@@ -39,9 +39,13 @@ Each job tracks:
 - requested CPU cores `C_req`,
 - total work `CPUUnitsTotal`,
 - remaining work `CPUUnitsRemaining`,
-- CPU sensitivity `S_cpu` in `[0,1]`.
+- CPU sensitivity `S_cpu` in `[0,1]`,
+- requested GPUs `G_req` (optional),
+- total/remaining GPU work (`GPUUnitsTotal`, `GPUUnitsRemaining`),
+- GPU sensitivity `S_gpu` in `[0,1]`.
 
 Node effective speed factor comes from power simulator output (`FreqScale`).
+GPU jobs also use a GPU speed factor derived from per-GPU cap ratio.
 
 Per-job speed on node:
 
@@ -55,9 +59,13 @@ State update:
 
 `CPUUnitsRemaining -= progress`
 
+For GPU work:
+
+`GPUUnitsRemaining -= gpuProgress`
+
 Completion condition:
 
-- job completes when `CPUUnitsRemaining <= 0`,
+- job completes when both `CPUUnitsRemaining <= 0` and `GPUUnitsRemaining <= 0`,
 - pod is deleted on completion.
 
 ## Slowdown estimate under throttling

@@ -1,0 +1,204 @@
+catalogVersion: v1
+cpuModels:
+  AMD_EPYC_9654:
+    provenance: exact+official
+    official:
+      vendor: amd
+      baseGHz: 2.4
+      boostGHz: 3.7
+      tdpW: 360
+      cTdpRangeW: [320, 400]
+      driverFamily: amd-pstate
+    measuredCurves:
+      node2S:
+        source: specpower
+        points:
+          - {loadPct: 0, powerW: 128}
+          - {loadPct: 10, powerW: 257}
+          - {loadPct: 20, powerW: 300}
+          - {loadPct: 30, powerW: 340}
+          - {loadPct: 40, powerW: 378}
+          - {loadPct: 50, powerW: 410}
+          - {loadPct: 60, powerW: 442}
+          - {loadPct: 70, powerW: 498}
+          - {loadPct: 80, powerW: 577}
+          - {loadPct: 90, powerW: 697}
+          - {loadPct: 100, powerW: 817}
+  AMD_EPYC_9655:
+    provenance: exact+official
+    official:
+      vendor: amd
+      baseGHz: 2.6
+      boostGHz: 4.5
+      tdpW: 400
+      cTdpRangeW: [320, 400]
+      driverFamily: amd-pstate
+    measuredCurves:
+      node2S:
+        source: specpower
+        points:
+          - {loadPct: 0, powerW: 138}
+          - {loadPct: 10, powerW: 297}
+          - {loadPct: 20, powerW: 367}
+          - {loadPct: 30, powerW: 438}
+          - {loadPct: 40, powerW: 515}
+          - {loadPct: 50, powerW: 593}
+          - {loadPct: 60, powerW: 661}
+          - {loadPct: 70, powerW: 710}
+          - {loadPct: 80, powerW: 771}
+          - {loadPct: 90, powerW: 812}
+          - {loadPct: 100, powerW: 861}
+  AMD_EPYC_9965:
+    provenance: exact+official
+    official:
+      vendor: amd
+      baseGHz: 2.25
+      boostGHz: 3.7
+      tdpW: 500
+      cTdpRangeW: [450, 500]
+      driverFamily: amd-pstate
+    measuredCurves:
+      node2S:
+        source: specpower
+        points:
+          - {loadPct: 0, powerW: 157}
+          - {loadPct: 10, powerW: 265}
+          - {loadPct: 20, powerW: 314}
+          - {loadPct: 30, powerW: 362}
+          - {loadPct: 40, powerW: 412}
+          - {loadPct: 50, powerW: 461}
+          - {loadPct: 60, powerW: 503}
+          - {loadPct: 70, powerW: 544}
+          - {loadPct: 80, powerW: 587}
+          - {loadPct: 90, powerW: 661}
+          - {loadPct: 100, powerW: 800}
+  AMD_EPYC_9534:
+    provenance: official+proxy
+    official:
+      vendor: amd
+      baseGHz: 2.45
+      boostGHz: 3.7
+      tdpW: 280
+      cTdpRangeW: [240, 300]
+      driverFamily: amd-pstate
+    proxyFrom:
+      family: AMD_EPYC_9654
+      method: tdp+freq-normalized
+  AMD_EPYC_9375F:
+    provenance: official+proxy
+    official:
+      vendor: amd
+      baseGHz: 3.8
+      boostGHz: 4.8
+      tdpW: 320
+      cTdpRangeW: [320, 400]
+      driverFamily: amd-pstate
+    proxyFrom:
+      family: AMD_EPYC_9655
+      method: tdp+freq-normalized+high-load-steepness
+  INTEL_XEON_GOLD_6530:
+    provenance: official+proxy
+    official:
+      vendor: intel
+      baseGHz: 2.1
+      boostGHz: 4.0
+      tdpW: 270
+      driverFamily: intel_pstate
+    proxyFrom:
+      family: XEON_GEN5_GENERIC
+      method: tdp+freq-normalized
+
+gpuModels:
+  NVIDIA_H100_NVL:
+    provenance: official+runtime+literature
+    official:
+      vendor: nvidia
+      maxBoardPowerW: 400
+  NVIDIA_H100_SXM:
+    provenance: official+runtime+literature
+    official:
+      vendor: nvidia
+      maxBoardPowerW: 700
+  NVIDIA_L40S:
+    provenance: official+runtime+literature
+    official:
+      vendor: nvidia
+      maxBoardPowerW: 350
+  AMD_INSTINCT_MI300X:
+    provenance: official+runtime+literature
+    official:
+      vendor: amd
+      maxBoardPowerW: 750
+  AMD_RADEON_PRO_W7900:
+    provenance: official+runtime+literature
+    official:
+      vendor: amd
+      maxBoardPowerW: 295
+
+nodeClasses:
+  nvidia-h100-nvl:
+    count: 12
+    cpuModel: AMD_EPYC_9654
+    cpuSockets: 2
+    coresPerCpu: 96
+    memoryGiB: 1536
+    networkGbps: 100
+    gpuModel: NVIDIA_H100_NVL
+    gpusPerNode: 8
+  nvidia-h100-sxm:
+    count: 6
+    cpuModel: INTEL_XEON_GOLD_6530
+    cpuSockets: 2
+    coresPerCpu: 32
+    memoryGiB: 1024
+    networkGbps: 400
+    gpuModel: NVIDIA_H100_SXM
+    gpusPerNode: 4
+  nvidia-l40s:
+    count: 7
+    cpuModel: AMD_EPYC_9534
+    cpuSockets: 2
+    coresPerCpu: 64
+    memoryGiB: 1536
+    networkGbps: 200
+    gpuModel: NVIDIA_L40S
+    gpusPerNode: 4
+  amd-mi300x:
+    count: 2
+    cpuModel: AMD_EPYC_9534
+    cpuSockets: 2
+    coresPerCpu: 64
+    memoryGiB: 1536
+    networkGbps: 200
+    gpuModel: AMD_INSTINCT_MI300X
+    gpusPerNode: 8
+  amd-w7900:
+    count: 6
+    cpuModel: AMD_EPYC_9534
+    cpuSockets: 2
+    coresPerCpu: 64
+    memoryGiB: 770
+    networkGbps: 200
+    gpuModel: AMD_RADEON_PRO_W7900
+    gpusPerNode: 4
+  cpu-high-core:
+    count: 2
+    cpuModel: AMD_EPYC_9965
+    cpuSockets: 2
+    coresPerCpu: 192
+    memoryGiB: 1536
+    networkGbps: 100
+  cpu-high-frequency:
+    count: 2
+    cpuModel: AMD_EPYC_9375F
+    cpuSockets: 2
+    coresPerCpu: 32
+    memoryGiB: 770
+    networkGbps: 100
+  cpu-intensive:
+    count: 4
+    cpuModel: AMD_EPYC_9655
+    cpuSockets: 2
+    coresPerCpu: 96
+    memoryGiB: 1536
+    networkGbps: 100

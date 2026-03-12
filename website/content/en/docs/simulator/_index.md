@@ -15,7 +15,8 @@ Use simulator docs after you are familiar with the core operator/agent control l
 1. [Workload and Power Simulator]({{< relref "/docs/simulator/simulator.md" >}})
 2. [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
 3. [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
-4. [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})
+4. [Hardware Modeling]({{< relref "/docs/simulator/hardware-modeling.md" >}})
+5. [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})
 
 ## Simulator architecture diagram
 

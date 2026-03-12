@@ -6,6 +6,10 @@ spec:
   nodeName: worker-0
   profile: eco
   cpu:
-    packagePowerCapWatts: 120
+    packagePowerCapPctOfMax: 60
+  gpu:
+    powerCap:
+      scope: perGpu
+      capPctOfMax: 60
   policy:
     name: manual-sample

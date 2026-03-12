@@ -124,3 +124,11 @@ spec:
 Reference manifests:
 
 - [Example 03 workloads](https://github.com/joulie-k8s/Joulie/blob/main/examples/03-workload-intent-classes/deployments.yaml)
+
+## GPU resource requests
+
+GPU scheduling resources (`nvidia.com/gpu`, `amd.com/gpu`) are independent from Joulie power-profile labels.
+
+- request GPU resources as usual in pod/container resources,
+- keep Joulie intent guidance based on power-profile constraints (`NotIn ["eco"]` for performance-sensitive workloads),
+- remember Joulie GPU capping is node-level (not per-container GPU slicing).
