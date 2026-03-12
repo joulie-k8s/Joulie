@@ -68,4 +68,4 @@ Joulie GPU capping is node-level and not a GPU slicing API.
 
 See:
 
-- `examples/simulator-gpu-powercaps/`
+- `examples/07 - simulator-gpu-powercaps/`

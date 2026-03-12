@@ -240,4 +240,4 @@ Algorithm details are split in:
 
 Related example:
 
-- `examples/simulator-gpu-powercaps/`
+- `examples/07 - simulator-gpu-powercaps/`

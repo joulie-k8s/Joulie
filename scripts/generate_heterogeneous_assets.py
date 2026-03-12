@@ -15,8 +15,8 @@ Usage:
   python scripts/generate_heterogeneous_assets.py \
     --input inventory.xlsx \
     --sheet Nodes \
-    --out-nodes examples/simulator-gpu-powercaps/manifests/00-kwok-nodes.yaml \
-    --out-classes examples/simulator-gpu-powercaps/manifests/10-node-classes.yaml \
+    --out-nodes "examples/07 - simulator-gpu-powercaps/manifests/00-kwok-nodes.yaml" \
+    --out-classes "examples/07 - simulator-gpu-powercaps/manifests/10-node-classes.yaml" \
     --out-catalog simulator/catalog/hardware.generated.yaml
 """
 
