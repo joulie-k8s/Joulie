@@ -951,7 +951,25 @@ def test_classification_matrix(ctx: Ctx) -> None:
         delete_pod("joulie-it", name)
         set_static_hp_frac("0")
         wait_node_eco_ready(ctx.node)
-        node_name = ctx.node if force_node_name else ""
+
+        # These cases are logically unschedulable in this single-node setup under
+        # the matrix's default eco supply:
+        # - cls-23: nodeSelector=performance + required affinity In[eco]
+        # - cls-14-doesnotexist: required DoesNotExist on power-profile while node is labeled
+        # Keep them as scheduler/classification edge checks, but don't require Running.
+        skip_running_validation = name in {
+            "cls-23-selector-plus-eco-required",
+            "cls-14-doesnotexist-profile-key",
+        }
+
+        # For perf-intent cases that should be runnable in this single-node matrix,
+        # temporarily expose performance supply so scheduler/kubelet can admit them.
+        if expect_perf and not skip_running_validation:
+            kubectl(["label", "node", ctx.node, "joulie.io/power-profile=performance", "--overwrite"])
+        else:
+            kubectl(["label", "node", ctx.node, "joulie.io/power-profile=eco", "--overwrite"])
+
+        node_name = ctx.node if (force_node_name and not skip_running_validation) else ""
         manifest = mk_pod_yaml(name, affinity=affinity, node_name=node_name, node_selector=selector)
         out = kubectl(["apply", "-f", "-"], stdin=manifest, check=False, capture=True)
         if not expect_apply_ok:
@@ -963,6 +981,14 @@ def test_classification_matrix(ctx: Ctx) -> None:
         if out.returncode != 0:
             err = (out.stderr or out.stdout or "").strip()
             raise AssertionError(f"{name}: apply failed unexpectedly: {err}")
+
+        if skip_running_validation:
+            wait_pod_pending("joulie-it", name)
+            wait_pod_unschedulable_reason("joulie-it", name, "affinity")
+            delete_pod("joulie-it", name)
+            wait_node_eco_ready(ctx.node)
+            continue
+
         wait_pod_phase("joulie-it", name, "Running")
         if expect_perf:
             wait_node_guarded_transition(ctx.node)
@@ -995,12 +1021,12 @@ def test_fsm_idempotency(ctx: Ctx) -> None:
 def main() -> int:
     try:
         ctx = test_boot_and_install()
+        test_classification_matrix(ctx)
         test_telemetry_http(ctx)
         test_fsm_and_labels(ctx)
         test_fsm_toggle_under_eco(ctx)
         test_fsm_idempotency(ctx)
         test_scheduling(ctx)
-        test_classification_matrix(ctx)
         log("all integration tests passed")
         return 0
     except Exception as e:
