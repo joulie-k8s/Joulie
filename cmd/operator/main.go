@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -65,6 +66,9 @@ type GPUModelCaps struct {
 }
 
 var (
+	gpuIntentWarningMu   sync.Mutex
+	gpuIntentWarningSeen = map[string]struct{}{}
+
 	operatorNodeState = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "joulie_operator_node_state",
@@ -239,6 +243,15 @@ func reconcile(
 		}
 		if n := nodeObjs[plan[i].NodeName]; n != nil {
 			plan[i].GPU = computeGPUIntentForNode(*n, plan[i].Profile, gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys)
+			if discoverGPUCount(*n) > 0 && plan[i].GPU == nil {
+				reason := "no GPU cap configured"
+				if plan[i].Profile == profilePerformance && gpuPerfCapPct <= 0 {
+					reason = "GPU_PERFORMANCE_CAP_PCT_OF_MAX <= 0"
+				} else if plan[i].Profile != profilePerformance && gpuEcoCapPct <= 0 {
+					reason = "GPU_ECO_CAP_PCT_OF_MAX <= 0"
+				}
+				warnNoGPUIntentOnce(plan[i].NodeName, plan[i].Profile, reason)
+			}
 		}
 	}
 	applyDowngradeGuards(ctx, kube, plan, nodesByName)
@@ -780,6 +793,18 @@ func parseCSVList(in string) []string {
 func floatPtr(v float64) *float64 {
 	vv := v
 	return &vv
+}
+
+func warnNoGPUIntentOnce(nodeName, profile, reason string) {
+	key := nodeName + "|" + profile + "|" + reason
+	gpuIntentWarningMu.Lock()
+	if _, ok := gpuIntentWarningSeen[key]; ok {
+		gpuIntentWarningMu.Unlock()
+		return
+	}
+	gpuIntentWarningSeen[key] = struct{}{}
+	gpuIntentWarningMu.Unlock()
+	log.Printf("warning: node=%s profile=%s has allocatable GPUs but no gpu.powerCap intent (%s); continuing without GPU control", nodeName, profile, reason)
 }
 
 func upsertNodeProfile(ctx context.Context, dyn dynamic.Interface, a NodeAssignment) error {

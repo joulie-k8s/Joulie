@@ -15,6 +15,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -864,7 +865,15 @@ func TestApplyGPUIntentHTTP(t *testing.T) {
 		client:   srv.Client(),
 	}
 	w := 220.0
-	backend, result, _, _, err := applyGPUIntent(context.Background(), "node-a", map[string]string{}, &GPUPowerCap{CapWattsPerGPU: &w}, client)
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+			},
+		},
+	}
+	backend, result, _, _, err := applyGPUIntent(context.Background(), node, &GPUPowerCap{CapWattsPerGPU: &w}, client)
 	if err != nil {
 		t.Fatalf("applyGPUIntent err: %v", err)
 	}
@@ -873,6 +882,27 @@ func TestApplyGPUIntentHTTP(t *testing.T) {
 	}
 	if seen["action"] != "gpu.set_power_cap_watts" {
 		t.Fatalf("unexpected action payload: %#v", seen)
+	}
+}
+
+func TestApplyGPUIntentBlockedOnNonGPUNode(t *testing.T) {
+	t.Parallel()
+	w := 220.0
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+	}
+	backend, result, msg, observed, err := applyGPUIntent(context.Background(), node, &GPUPowerCap{CapWattsPerGPU: &w}, nil)
+	if err != nil {
+		t.Fatalf("applyGPUIntent err: %v", err)
+	}
+	if backend != "none" || result != "blocked" {
+		t.Fatalf("unexpected backend/result %s/%s", backend, result)
+	}
+	if msg != "node has no allocatable GPU resources" {
+		t.Fatalf("unexpected msg: %q", msg)
+	}
+	if observed == nil || observed["allocatableGPUs"] != 0 {
+		t.Fatalf("unexpected observed payload: %#v", observed)
 	}
 }
 

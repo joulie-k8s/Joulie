@@ -19,6 +19,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -566,13 +567,18 @@ func reconcileOnce(
 	}
 
 	if selected.GPU != nil {
-		backend, result, msg, observed, err := applyGPUIntent(ctx, nodeName, node.Labels, selected.GPU, gpuControlClient)
+		backend, result, msg, observed, err := applyGPUIntent(ctx, node, selected.GPU, gpuControlClient)
 		_ = updateTelemetryGPUStatus(ctx, dyn, telemetry, nodeName, backend, result, msg, observed)
 		if err != nil {
 			return err
 		}
 	} else {
-		_ = updateTelemetryGPUStatus(ctx, dyn, telemetry, nodeName, "none", "none", "no GPU cap intent", nil)
+		msg := "no GPU cap intent"
+		if allocatableGPUCount(node) > 0 {
+			msg = "no GPU cap intent for GPU node; leaving current GPU state unchanged"
+			log.Printf("warning: node=%s has allocatable GPUs but NodePowerProfile has no gpu.powerCap; leaving GPU state unchanged", nodeName)
+		}
+		_ = updateTelemetryGPUStatus(ctx, dyn, telemetry, nodeName, "none", "none", msg, nil)
 	}
 
 	if cpuCapWatts == nil {
@@ -729,13 +735,25 @@ func readRAPLPackageCapRangeWatts() (maxW float64, minW float64, ok bool) {
 
 func applyGPUIntent(
 	ctx context.Context,
-	nodeName string,
-	nodeLabels map[string]string,
+	node *corev1.Node,
 	intent *GPUPowerCap,
 	httpClient *HTTPControlClient,
 ) (string, string, string, map[string]any, error) {
 	if intent == nil {
 		return "none", "none", "no GPU cap intent", nil, nil
+	}
+	nodeName := ""
+	nodeLabels := map[string]string{}
+	if node != nil {
+		nodeName = node.Name
+		nodeLabels = node.Labels
+	}
+	if allocatableGPUCount(node) <= 0 {
+		return "none", "blocked", "node has no allocatable GPU resources", map[string]any{
+			"node":              nodeName,
+			"allocatableGPUs":   0,
+			"requestedGPUIntent": true,
+		}, nil
 	}
 	vendor := detectGPUVendor(ctx, nodeLabels)
 	if vendor == "none" {
@@ -780,6 +798,20 @@ func applyGPUIntent(
 	default:
 		return "none", "blocked", fmt.Sprintf("unsupported gpu vendor %q", vendor), observed, nil
 	}
+}
+
+func allocatableGPUCount(node *corev1.Node) int64 {
+	if node == nil {
+		return 0
+	}
+	var total int64
+	for k, q := range node.Status.Allocatable {
+		key := strings.ToLower(string(k))
+		if key == "nvidia.com/gpu" || key == "amd.com/gpu" || key == "gpu.intel.com/i915" || strings.HasSuffix(key, "/gpu") {
+			total += q.Value()
+		}
+	}
+	return total
 }
 
 func resolveGPUCapPerDevice(intent *GPUPowerCap, devices []GPUDevice) (float64, string, bool) {
