@@ -28,7 +28,8 @@
 &lt;ul&gt;
 &lt;li&gt;&lt;code&gt;performance&lt;/code&gt; demand:
 &lt;ul&gt;
-&lt;li&gt;pod requires &lt;code&gt;joulie.io/power-profile=performance&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;pod excludes eco in required scheduling constraints (recommended pattern: &lt;code&gt;NotIn [&amp;quot;eco&amp;quot;]&lt;/code&gt;)&lt;/li&gt;
+&lt;li&gt;compatibility path: explicit &lt;code&gt;nodeSelector&lt;/code&gt; &lt;code&gt;joulie.io/power-profile=performance&lt;/code&gt;&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;li&gt;&lt;code&gt;eco&lt;/code&gt; demand:
@@ -81,12 +82,20 @@ Instead, it decides desired node states and publishes them through Kubernetes ob
 &lt;h2 id="classification-input"&gt;Classification Input&lt;/h2&gt;
 &lt;p&gt;Policy demand classification is derived from pod scheduling constraints on &lt;code&gt;joulie.io/power-profile&lt;/code&gt;:&lt;/p&gt;
 &lt;ul&gt;
-&lt;li&gt;&lt;code&gt;performance-only&lt;/code&gt;: pod can run only on &lt;code&gt;performance&lt;/code&gt; (and transitional &lt;code&gt;draining-performance&lt;/code&gt;).&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;performance-only&lt;/code&gt;: pod excludes eco in required scheduling constraints.&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;eco-only&lt;/code&gt;: pod can run only on &lt;code&gt;eco&lt;/code&gt;.&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;general&lt;/code&gt; (implicit unconstrained): no explicit power-profile constraint, or both profiles allowed.&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;unknown&lt;/code&gt;: unsupported/ambiguous constraint shape.&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;For safety, &lt;code&gt;unknown&lt;/code&gt; is treated as performance-sensitive in downgrade guards.&lt;/p&gt;</description></item><item><title>Input Telemetry and Actuation Interfaces</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/telemetry/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/telemetry/</guid><description>&lt;p&gt;This page describes runtime IO contracts:&lt;/p&gt;
+&lt;h2 id="shared-reconcile-flow"&gt;Shared Reconcile Flow&lt;/h2&gt;
+&lt;p&gt;Each reconcile tick:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Select eligible nodes from &lt;code&gt;NODE_SELECTOR&lt;/code&gt;, excluding reserved and unschedulable nodes.&lt;/li&gt;
+&lt;li&gt;Build a desired plan with the selected policy.&lt;/li&gt;
+&lt;li&gt;Apply downgrade guard (sets &lt;code&gt;draining=true&lt;/code&gt; while blocking pods still run).&lt;/li&gt;
+&lt;li&gt;Write &lt;code&gt;NodePowerProfile&lt;/code&gt; and update node labels (&lt;code&gt;joulie.io/power-profile&lt;/code&gt;, &lt;code&gt;joulie.io/draining&lt;/code&gt;).&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id="static_partition"&gt;&lt;code&gt;static_partition&lt;/code&gt;&lt;/h2&gt;
+&lt;p&gt;Goal: deterministic fixed HP/LP split.&lt;/p&gt;</description></item><item><title>Input Telemetry and Actuation Interfaces</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/telemetry/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/telemetry/</guid><description>&lt;p&gt;This page describes runtime IO contracts:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;how Joulie reads telemetry inputs,&lt;/li&gt;
 &lt;li&gt;how Joulie sends control intents.&lt;/li&gt;
@@ -227,7 +236,7 @@ Simulator metrics are documented separately in:&lt;/p&gt;
 &lt;li&gt;&lt;code&gt;joulie_operator_node_profile_label{node,profile}&lt;/code&gt; (gauge)
 &lt;ul&gt;
 &lt;li&gt;operator-applied node label view&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;profile&lt;/code&gt;: &lt;code&gt;performance|draining-performance|eco&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;profile&lt;/code&gt;: &lt;code&gt;performance|eco&lt;/code&gt;&lt;/li&gt;
 &lt;li&gt;active profile is &lt;code&gt;1&lt;/code&gt;, others &lt;code&gt;0&lt;/code&gt;&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
