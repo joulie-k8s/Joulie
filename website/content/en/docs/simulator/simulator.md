@@ -236,7 +236,7 @@ Algorithm details are split in:
 
 - [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
 - [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
-- [Hardware Modeling]({{< relref "/docs/simulator/hardware-modeling.md" >}})
+- [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})
 
 Related example:
 

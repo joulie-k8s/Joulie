@@ -44,7 +44,7 @@ Joulie distinguishes:
 - exact measured curves (for selected CPU node classes, e.g. SPECpower-backed)
 - proxy/inferred curves where direct public measured curves are unavailable
 
-See [Hardware Modeling]({{< relref "/docs/simulator/hardware-modeling.md" >}}) for full model provenance and references.
+See [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) for full model provenance and references.
 
 ## Scheduling guidance
 
@@ -59,4 +59,4 @@ This classification drives operator profile assignment; CPU capping is then enfo
 
 - [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
 - [Joulie Agent]({{< relref "/docs/architecture/agent.md" >}})
-- [Hardware Modeling]({{< relref "/docs/simulator/hardware-modeling.md" >}})
+- [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})

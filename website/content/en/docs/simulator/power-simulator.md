@@ -7,7 +7,7 @@ This page describes the simulator runtime mechanics (control/state/energy paths)
 
 The canonical physical model, provenance, and hardware assumptions are documented in:
 
-- [Hardware Modeling]({{< relref "/docs/simulator/hardware-modeling.md" >}})
+- [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})
 
 For workload progression semantics:
 
@@ -40,7 +40,7 @@ Supported control actions:
 ## Model source of truth
 
 This page intentionally avoids duplicating formulas and hardware assumptions.
-Use [Hardware Modeling]({{< relref "/docs/simulator/hardware-modeling.md" >}}) as source of truth for:
+Use [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) as source of truth for:
 
 - measured vs proxy curves,
 - CPU/GPU workload-class behavior,

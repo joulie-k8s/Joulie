@@ -8,6 +8,9 @@ This page describes runtime IO contracts:
 - how Joulie reads telemetry inputs,
 - how Joulie sends control intents.
 
+If you want the CRD-level summary first, read [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}}).
+This page is the detailed runtime reference for the `TelemetryProfile` contract.
+
 It is not the `/metrics` exposition contract.
 For exported metrics, see [Metrics Reference]({{< relref "/docs/architecture/metrics.md" >}}).
 
@@ -19,6 +22,15 @@ Joulie must run in two worlds with the same control logic:
 - simulator/KWOK clusters.
 
 So agent/operator logic depends on provider interfaces, not directly on sysfs or simulator HTTP shape.
+
+## `TelemetryProfile` in one sentence
+
+`TelemetryProfile` tells the agent which telemetry backend to read from and which control backend to write to for a given node or scope.
+
+Conceptually:
+
+- `NodePowerProfile` defines the target
+- `TelemetryProfile` defines the wiring
 
 ## Telemetry provider model
 
@@ -138,9 +150,8 @@ Current runtime responsibilities:
 - agent reads node-scoped `TelemetryProfile` for source/control routing,
 - agent writes control status under `TelemetryProfile.status.control`.
 
-Note:
-
-- hardware capability snapshots may be written under `TelemetryProfile.status.hardware` on compatible CRD/schema versions.
+Today, the stable documented status contract is `TelemetryProfile.status.control`.
+If additional diagnostic snapshots are present in some environments, treat them as auxiliary rather than core API contract.
 
 ## Next step
 

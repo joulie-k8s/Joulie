@@ -90,7 +90,7 @@ In most cases, users should either:
 
 If you choose eco-only, adding `joulie.io/draining=false` avoids nodes in transition from performance to eco, which are labelled with `joulie.io/power-profile=eco` but still have a performance power profile (`DrainingPerformance` state).
 
-{{< highlight yaml "linenos=table,hl_lines=15-22" >}}
+{{< highlight yaml "linenos=table,hl_lines=15-25" >}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

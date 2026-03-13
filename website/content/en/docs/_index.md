@@ -26,7 +26,7 @@ Core mental model used across all pages:
 - [Architecture]({{< relref "/docs/architecture/_index.md" >}})
   - operator/agent roles, CRDs, policy model, telemetry/control interfaces
 - [Hardware]({{< relref "/docs/hardware/_index.md" >}})
-  - GPU support model, heterogeneity strategy, runtime caveats
+  - CPU and GPU support model, heterogeneity strategy, runtime caveats
 - [Simulator]({{< relref "/docs/simulator/_index.md" >}})
   - digital-twin behavior, algorithms, integration model
 - [Experiments]({{< relref "/docs/experiments/_index.md" >}})

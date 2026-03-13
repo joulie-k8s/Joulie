@@ -7,6 +7,9 @@ The agent is Joulie's node-side enforcement component.
 
 It consumes desired state and applies node-local controls through configured backends.
 
+If the operator decides "this node should now behave like eco" or "this node should stay performance",
+the agent is the component that turns that intent into concrete control actions.
+
 ## Responsibilities
 
 At each reconcile tick, the agent:
@@ -30,6 +33,8 @@ Outputs:
 - control actions on host interfaces or simulator HTTP
 - status updates (`TelemetryProfile.status.control`)
 - Prometheus metrics (`/metrics`)
+
+This makes the agent the execution layer of the architecture: it does not plan policy, but it does make policy observable.
 
 ## Runtime modes
 
@@ -58,7 +63,7 @@ It enforces operator intent and reports what happened:
 
 This separation keeps policy logic centralized in the operator and actuator logic localized in the agent.
 
-## CPU enforcement algorithm (current)
+## CPU enforcement algorithm
 
 The agent enforces CPU power intent with this backend order:
 
@@ -72,7 +77,9 @@ The agent enforces CPU power intent with this backend order:
 
 Backend selection is visible in metric `joulie_backend_mode{mode=none|rapl|dvfs}`.
 
-## DVFS fallback control loop
+In short, the agent prefers direct power control when it can, and falls back to DVFS when it cannot.
+
+### DVFS fallback control loop
 
 When DVFS fallback is active, each reconcile tick:
 
@@ -103,7 +110,7 @@ Main tunables:
 - `DVFS_STEP_PCT`
 - `DVFS_MIN_FREQ_KHZ`
 
-## DVFS actuation details
+### DVFS actuation details
 
 - Host mode:
   - write cpufreq `scaling_max_freq` files.
@@ -118,6 +125,28 @@ Throttle state and actions are exported in:
 - `joulie_dvfs_below_trip_count`
 - `joulie_dvfs_actions_total{action=throttle_up|throttle_down}`
 
+## GPU power cap
+
+The agent also supports node-level GPU cap intents:
+
+- resolves `NodePowerProfile.spec.gpu.powerCap`,
+- computes `capWattsPerGpu` from `capPctOfMax` when needed,
+- applies `gpu.set_power_cap_watts` via HTTP control backend or host backend,
+- writes status in `TelemetryProfile.status.control.gpu` with `applied|blocked|error|none`.
+
+Host backends are vendor-aware:
+
+- NVIDIA path (NVIDIA tooling/NVML-compatible power limits),
+- AMD path (ROCm SMI power-limit controls).
+
+If backend support is unavailable on a node, the result is reported as `blocked`.
+
+This keeps GPU behavior aligned with CPU behavior:
+
+- intent is still accepted,
+- enforcement is attempted through the best available backend,
+- failures are reported per node instead of breaking the whole control loop.
+
 ## Performance -> eco transition and safeguards
 
 This transition is safety-critical and is split between operator policy logic and agent enforcement.
@@ -127,7 +156,7 @@ This transition is safety-critical and is split between operator policy logic an
 - Operator:
   - decides whether a node is allowed to downgrade from performance to eco,
   - runs safeguard checks,
-  - keeps/changes published desired state accordingly.
+  - publishes desired state and scheduler-facing labels accordingly.
 - Agent:
   - enforces whatever desired state is currently published for that node,
   - does not bypass safeguards on its own.
@@ -172,7 +201,7 @@ stateDiagram-v2
 Interpretation:
 
 - `DrainingPerformance` is the operator transition state.
-- In `DrainingPerformance`, operator sets `joulie.io/power-profile=eco` and `joulie.io/draining=true`.
+- In `DrainingPerformance`, operator publishes eco as desired state and sets `joulie.io/draining=true`.
 - `joulie.io/draining=true` signals transition guard activity; advanced eco-only constraints can exclude draining nodes.
 - Transition to non-draining eco (`draining=false`) occurs when safeguard condition becomes true (`perf-constrained pods == 0`).
 
@@ -192,28 +221,15 @@ Transition conditions:
 
 Current behavior is defer-until-safe (no forced eviction in this path).
 
+The practical takeaway is that the agent stays simple on purpose:
+it continuously enforces the latest published target, while the operator owns the logic for when a target is safe to publish.
+
 For policy-side details, see:
 
 1. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}})
 2. [Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}})
 
-## GPU path
-
-The agent now supports node-level GPU cap intents:
-
-- resolves `NodePowerProfile.spec.gpu.powerCap`,
-- computes `capWattsPerGpu` from `capPctOfMax` when needed,
-- applies `gpu.set_power_cap_watts` via HTTP control backend or host backend,
-- writes status in `TelemetryProfile.status.control.gpu` with `applied|blocked|error|none`.
-
-Host backends are vendor-aware:
-
-- NVIDIA path (NVIDIA tooling/NVML-compatible power limits),
-- AMD path (ROCm SMI power-limit controls).
-
-If backend support is unavailable on a node, the result is reported as `blocked`.
-
-## Next step
+## Next steps
 
 1. [Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}})
 2. [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})

@@ -27,4 +27,5 @@ If you are new, first read:
 3. [Joulie Agent]({{< relref "/docs/architecture/agent.md" >}})
 4. [Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}})
 5. [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
-6. [Metrics Reference]({{< relref "/docs/architecture/metrics.md" >}})
+6. [Hardware Modeling and Physical Power Model]({{< relref "/docs/hardware/hardware-modeling.md" >}})
+7. [Metrics Reference]({{< relref "/docs/architecture/metrics.md" >}})
