@@ -828,6 +828,20 @@ func applyGPUIntent(
 			"requestedGPUIntent": true,
 		}, nil
 	}
+
+	// For HTTP control backends (e.g., simulator), absolute caps can be sent
+	// without host GPU inventory/driver tools on the agent container.
+	if httpClient != nil && intent.CapWattsPerGPU != nil && *intent.CapWattsPerGPU > 0 {
+		capPerGPU := *intent.CapWattsPerGPU
+		observed := map[string]any{
+			"capWattsPerGpu": capPerGPU,
+		}
+		if err := httpClient.ApplyGPUControl("gpu.set_power_cap_watts", capPerGPU); err != nil {
+			return "http", "error", err.Error(), observed, nil
+		}
+		return "http", "applied", fmt.Sprintf("applied gpu cap %.1fW", capPerGPU), observed, nil
+	}
+
 	vendor := detectGPUVendor(ctx, nodeLabels)
 	if vendor == "none" {
 		return "none", "blocked", "no supported GPU backend detected", map[string]any{"vendor": "none"}, nil

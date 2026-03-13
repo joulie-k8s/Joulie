@@ -101,6 +101,7 @@ type simJob struct {
 	SensitivityCPU    float64
 	CPUWorkClass      string
 	RequestedGPUs     float64
+	GPUResourceName   string
 	GPUUnitsTotal     float64
 	GPUUnitsRemaining float64
 	SensitivityGPU    float64
@@ -1453,19 +1454,38 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 		}
 		requestedCPU := 1.0
 		requestedGPUs := 0.0
+		gpuResourceName := ""
 		if podTpl, ok := rec["podTemplate"].(map[string]any); ok {
 			if reqRaw, ok := podTpl["requests"].(map[string]any); ok {
 				if cpuRaw, ok := reqRaw["cpu"].(string); ok {
 					requestedCPU = parseCPURequestOrDefault(cpuRaw, 1.0)
 				}
-				if gpuRaw, ok := reqRaw["nvidia.com/gpu"].(string); ok {
-					requestedGPUs = parseCPURequestOrDefault(gpuRaw, 0)
+				gpuReqOrder := []struct {
+					key         string
+					resourceKey string
+				}{
+					{key: "nvidia.com/gpu", resourceKey: "nvidia.com/gpu"},
+					{key: "amd.com/gpu", resourceKey: "amd.com/gpu"},
+					{key: "gpu", resourceKey: "nvidia.com/gpu"},
 				}
-				if gpuRaw, ok := reqRaw["amd.com/gpu"].(string); ok && requestedGPUs == 0 {
-					requestedGPUs = parseCPURequestOrDefault(gpuRaw, 0)
-				}
-				if gpuRaw, ok := reqRaw["gpu"].(string); ok && requestedGPUs == 0 {
-					requestedGPUs = parseCPURequestOrDefault(gpuRaw, 0)
+				for _, gpuReq := range gpuReqOrder {
+					raw, ok := reqRaw[gpuReq.key]
+					if !ok {
+						continue
+					}
+					rawStr, ok := raw.(string)
+					if !ok {
+						log.Printf("warning: trace line %d job=%s has non-string %s request; skipping GPU request", lineNum, jobID, gpuReq.key)
+						break
+					}
+					gpuQty, ok := parseIntegerResourceRequest(rawStr)
+					if !ok {
+						log.Printf("warning: trace line %d job=%s has non-integer %s request=%q; skipping GPU request", lineNum, jobID, gpuReq.key, rawStr)
+						break
+					}
+					requestedGPUs = gpuQty
+					gpuResourceName = gpuReq.resourceKey
+					break
 				}
 			}
 		}
@@ -1518,6 +1538,7 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 			SensitivityCPU:    sensCPU,
 			CPUWorkClass:      cpuWorkClass,
 			RequestedGPUs:     requestedGPUs,
+			GPUResourceName:   gpuResourceName,
 			GPUUnitsTotal:     gpuUnits,
 			GPUUnitsRemaining: gpuUnits,
 			SensitivityGPU:    sensGPU,
@@ -1618,7 +1639,23 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 			},
 		}
 		if j.RequestedGPUs > 0 {
-			pod.Spec.Containers[0].Resources.Requests[corev1.ResourceName("nvidia.com/gpu")] = resource.MustParse(strconv.FormatFloat(j.RequestedGPUs, 'f', -1, 64))
+			gpuResourceName := j.GPUResourceName
+			if gpuResourceName == "" {
+				gpuResourceName = "nvidia.com/gpu"
+			}
+			gpuQty := resource.MustParse(strconv.FormatFloat(j.RequestedGPUs, 'f', -1, 64))
+			pod.Spec.Containers[0].Resources.Requests[corev1.ResourceName(gpuResourceName)] = gpuQty
+			if pod.Spec.Containers[0].Resources.Limits == nil {
+				pod.Spec.Containers[0].Resources.Limits = corev1.ResourceList{}
+			}
+			// Extended resources must be set in limits; request-only is rejected.
+			pod.Spec.Containers[0].Resources.Limits[corev1.ResourceName(gpuResourceName)] = gpuQty
+			switch gpuResourceName {
+			case "nvidia.com/gpu":
+				pod.Spec.NodeSelector["feature.node.kubernetes.io/pci-10de.present"] = "true"
+			case "amd.com/gpu":
+				pod.Spec.NodeSelector["feature.node.kubernetes.io/pci-1002.present"] = "true"
+			}
 		}
 		if _, err := kube.CoreV1().Pods(j.Namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
 			if !apierrors.IsAlreadyExists(err) {
@@ -1874,6 +1911,18 @@ func parseCPURequestOrDefault(v string, def float64) float64 {
 		return def
 	}
 	return f
+}
+
+func parseIntegerResourceRequest(v string) (float64, bool) {
+	q, err := resource.ParseQuantity(v)
+	if err != nil {
+		return 0, false
+	}
+	i, ok := q.AsInt64()
+	if !ok || i <= 0 {
+		return 0, false
+	}
+	return float64(i), true
 }
 
 func sanitizeK8sName(in string) string {

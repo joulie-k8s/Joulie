@@ -642,6 +642,56 @@ func TestComputeGPUIntentFallsBackWhenModelMissing(t *testing.T) {
 	}
 }
 
+func TestComputeGPUIntentReturnsNilWithoutAllocatableGPU(t *testing.T) {
+	t.Parallel()
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "cpu-only"},
+		Status:     corev1.NodeStatus{Allocatable: corev1.ResourceList{}},
+	}
+	intent := computeGPUIntentForNode(node, profilePerformance, 100, 60, false, nil, []string{"joulie.io/gpu.product"})
+	if intent != nil {
+		t.Fatalf("expected nil intent for non-GPU node, got %#v", intent)
+	}
+}
+
+func TestComputeGPUIntentReturnsNilWhenPctDisabled(t *testing.T) {
+	t.Parallel()
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1"},
+		Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceName("nvidia.com/gpu"): resourceMustParse("1"),
+			},
+		},
+	}
+	intent := computeGPUIntentForNode(node, profileEco, 100, 0, false, nil, []string{"joulie.io/gpu.product"})
+	if intent != nil {
+		t.Fatalf("expected nil intent when eco gpu pct is disabled, got %#v", intent)
+	}
+}
+
+func TestParseGPUModelCapsInvalidJSON(t *testing.T) {
+	t.Parallel()
+	got := parseGPUModelCaps("{")
+	if len(got) != 0 {
+		t.Fatalf("expected empty map on invalid json, got=%#v", got)
+	}
+}
+
+func TestDiscoverGPUCountCustomSuffix(t *testing.T) {
+	t.Parallel()
+	node := corev1.Node{
+		Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceName("vendor.example/gpu"): resourceMustParse("3"),
+			},
+		},
+	}
+	if got := discoverGPUCount(node); got != 3 {
+		t.Fatalf("discoverGPUCount=%d want=3", got)
+	}
+}
+
 func resourceMustParse(v string) resource.Quantity {
 	return resource.MustParse(v)
 }

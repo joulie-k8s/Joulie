@@ -954,6 +954,68 @@ func TestApplyGPUIntentBlockedOnNonGPUNode(t *testing.T) {
 	}
 }
 
+func TestApplyGPUIntentHTTPAbsoluteBypassesInventory(t *testing.T) {
+	old := commandRunner
+	defer func() { commandRunner = old }()
+	// No command responses configured: inventory would fail if invoked.
+	commandRunner = fakeCommandRunner{responses: map[string]fakeCommandResult{}}
+
+	var seen map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := &HTTPControlClient{
+		endpoint: srv.URL + "/control/{node}",
+		nodeName: "node-a",
+		client:   srv.Client(),
+	}
+	w := 250.0
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+			},
+		},
+	}
+
+	backend, result, msg, observed, err := applyGPUIntent(context.Background(), node, &GPUPowerCap{CapWattsPerGPU: &w}, client)
+	if err != nil {
+		t.Fatalf("applyGPUIntent err: %v", err)
+	}
+	if backend != "http" || result != "applied" {
+		t.Fatalf("unexpected backend/result %s/%s", backend, result)
+	}
+	if !strings.Contains(msg, "applied gpu cap") {
+		t.Fatalf("unexpected msg: %q", msg)
+	}
+	if observed == nil || observed["capWattsPerGpu"] != 250.0 {
+		t.Fatalf("unexpected observed payload: %#v", observed)
+	}
+	if seen["action"] != "gpu.set_power_cap_watts" {
+		t.Fatalf("unexpected action payload: %#v", seen)
+	}
+}
+
+func TestResolveGPUCapPerDeviceFailsWhenPctNeedsUnknownMax(t *testing.T) {
+	t.Parallel()
+	pct := 70.0
+	_, msg, ok := resolveGPUCapPerDevice(&GPUPowerCap{CapPctOfMax: &pct}, []GPUDevice{
+		{Index: 0, MinCapWatts: 150, MaxCapWatts: 0},
+	})
+	if ok {
+		t.Fatalf("expected failure when max cap is unavailable")
+	}
+	if !strings.Contains(msg, "cannot resolve capPctOfMax") {
+		t.Fatalf("unexpected msg: %q", msg)
+	}
+}
+
 type fakeCommandResult struct {
 	out string
 	err error

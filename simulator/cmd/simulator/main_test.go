@@ -14,6 +14,7 @@ import (
 	"github.com/matbun/joulie/simulator/pkg/hw"
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
@@ -188,6 +189,204 @@ func TestGPUCapSettlingIsNotInstant(t *testing.T) {
 	}
 	if st.GPUCapWattsPerGpu <= 220 {
 		t.Fatalf("expected applied cap to settle gradually, got=%v", st.GPUCapWattsPerGpu)
+	}
+}
+
+func TestInjectTraceJobsSetsExtendedResourceLimits(t *testing.T) {
+	now := time.Now()
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+	s.workload = &workloadEngine{
+		startTime: now.Add(-2 * time.Second),
+		jobs: []*simJob{
+			{
+				JobID:             "gpu-1",
+				Class:             "general",
+				Namespace:         "default",
+				SubmitOffsetSec:   0,
+				RequestedCPUCores: 2,
+				RequestedGPUs:     1,
+				PodName:           "sim-gpu-1",
+			},
+		},
+	}
+
+	kube := k8sfake.NewSimpleClientset()
+	s.injectTraceJobs(context.Background(), kube, now)
+	pod, err := kube.CoreV1().Pods("default").Get(context.Background(), "sim-gpu-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get injected pod: %v", err)
+	}
+	req := pod.Spec.Containers[0].Resources.Requests[corev1.ResourceName("nvidia.com/gpu")]
+	lim := pod.Spec.Containers[0].Resources.Limits[corev1.ResourceName("nvidia.com/gpu")]
+	if req.Cmp(resource.MustParse("1")) != 0 {
+		t.Fatalf("gpu request=%s want=1", req.String())
+	}
+	if lim.Cmp(resource.MustParse("1")) != 0 {
+		t.Fatalf("gpu limit=%s want=1", lim.String())
+	}
+}
+
+func TestInjectTraceJobsUsesAMDResourceAndSelector(t *testing.T) {
+	now := time.Now()
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+	s.workload = &workloadEngine{
+		startTime: now.Add(-2 * time.Second),
+		jobs: []*simJob{
+			{
+				JobID:             "gpu-amd-1",
+				Class:             "general",
+				Namespace:         "default",
+				SubmitOffsetSec:   0,
+				RequestedCPUCores: 2,
+				RequestedGPUs:     2,
+				GPUResourceName:   "amd.com/gpu",
+				PodName:           "sim-gpu-amd-1",
+			},
+		},
+	}
+
+	kube := k8sfake.NewSimpleClientset()
+	s.injectTraceJobs(context.Background(), kube, now)
+	pod, err := kube.CoreV1().Pods("default").Get(context.Background(), "sim-gpu-amd-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get injected pod: %v", err)
+	}
+	req := pod.Spec.Containers[0].Resources.Requests[corev1.ResourceName("amd.com/gpu")]
+	lim := pod.Spec.Containers[0].Resources.Limits[corev1.ResourceName("amd.com/gpu")]
+	if req.Cmp(resource.MustParse("2")) != 0 {
+		t.Fatalf("amd gpu request=%s want=2", req.String())
+	}
+	if lim.Cmp(resource.MustParse("2")) != 0 {
+		t.Fatalf("amd gpu limit=%s want=2", lim.String())
+	}
+	if got := pod.Spec.NodeSelector["feature.node.kubernetes.io/pci-1002.present"]; got != "true" {
+		t.Fatalf("expected AMD selector, got=%q selectors=%v", got, pod.Spec.NodeSelector)
+	}
+}
+
+func TestInjectTraceJobsAddsKWOKToleration(t *testing.T) {
+	now := time.Now()
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+	s.workload = &workloadEngine{
+		startTime: now.Add(-2 * time.Second),
+		jobs: []*simJob{
+			{
+				JobID:             "cpu-1",
+				Class:             "general",
+				Namespace:         "default",
+				SubmitOffsetSec:   0,
+				RequestedCPUCores: 1,
+				PodName:           "sim-cpu-1",
+			},
+		},
+	}
+
+	kube := k8sfake.NewSimpleClientset()
+	s.injectTraceJobs(context.Background(), kube, now)
+	pod, err := kube.CoreV1().Pods("default").Get(context.Background(), "sim-cpu-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get injected pod: %v", err)
+	}
+	found := false
+	for _, tol := range pod.Spec.Tolerations {
+		if tol.Key == "kwok.x-k8s.io/node" && tol.Value == "fake" && tol.Effect == corev1.TaintEffectNoSchedule {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected kwok toleration in injected pod: %#v", pod.Spec.Tolerations)
+	}
+}
+
+func TestInitWorkloadEngineFromTraceParsesGPUResourceKey(t *testing.T) {
+	now := time.Now()
+	trace := strings.Join([]string{
+		`{"type":"job","jobId":"nvidia-job","submitTimeOffsetSec":0,"podTemplate":{"requests":{"cpu":"1","nvidia.com/gpu":"2"}}}`,
+		`{"type":"job","jobId":"amd-job","submitTimeOffsetSec":0,"podTemplate":{"requests":{"cpu":"1","amd.com/gpu":"1"}}}`,
+		`{"type":"job","jobId":"generic-job","submitTimeOffsetSec":0,"podTemplate":{"requests":{"cpu":"1","gpu":"3"}}}`,
+	}, "\n")
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	if err := os.WriteFile(path, []byte(trace), 0o644); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+	if err := s.initWorkloadEngineFromTrace(path); err != nil {
+		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	}
+	if len(s.workload.jobs) != 3 {
+		t.Fatalf("jobs=%d want=3", len(s.workload.jobs))
+	}
+
+	byID := map[string]*simJob{}
+	for _, j := range s.workload.jobs {
+		byID[j.JobID] = j
+	}
+	if byID["nvidia-job"].GPUResourceName != "nvidia.com/gpu" || byID["nvidia-job"].RequestedGPUs != 2 {
+		t.Fatalf("unexpected nvidia job: %+v", byID["nvidia-job"])
+	}
+	if byID["amd-job"].GPUResourceName != "amd.com/gpu" || byID["amd-job"].RequestedGPUs != 1 {
+		t.Fatalf("unexpected amd job: %+v", byID["amd-job"])
+	}
+	if byID["generic-job"].GPUResourceName != "nvidia.com/gpu" || byID["generic-job"].RequestedGPUs != 3 {
+		t.Fatalf("unexpected generic job: %+v", byID["generic-job"])
+	}
+	if s.workload.startTime.Before(now.Add(-2 * time.Second)) {
+		t.Fatalf("unexpected start time too old: %v", s.workload.startTime)
+	}
+}
+
+func TestInitWorkloadEngineFromTraceRejectsNonIntegerGPURequest(t *testing.T) {
+	trace := `{"type":"job","jobId":"bad-gpu","submitTimeOffsetSec":0,"podTemplate":{"requests":{"cpu":"1","nvidia.com/gpu":"0.5"}}}`
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	if err := os.WriteFile(path, []byte(trace), 0o644); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+	if err := s.initWorkloadEngineFromTrace(path); err != nil {
+		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	}
+	if len(s.workload.jobs) != 1 {
+		t.Fatalf("jobs=%d want=1", len(s.workload.jobs))
+	}
+	job := s.workload.jobs[0]
+	if job.RequestedGPUs != 0 {
+		t.Fatalf("RequestedGPUs=%v want=0", job.RequestedGPUs)
+	}
+	if job.GPUResourceName != "" {
+		t.Fatalf("GPUResourceName=%q want empty", job.GPUResourceName)
 	}
 }
 

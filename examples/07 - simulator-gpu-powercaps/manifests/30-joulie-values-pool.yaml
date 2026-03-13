@@ -19,4 +19,5 @@ operator:
     PERFORMANCE_CAP_WATTS: "500"
     GPU_PERFORMANCE_CAP_PCT_OF_MAX: "100"
     GPU_ECO_CAP_PCT_OF_MAX: "60"
-    GPU_WRITE_ABSOLUTE_CAPS: "false"
+    GPU_WRITE_ABSOLUTE_CAPS: "true"
+    GPU_MODEL_CAPS_JSON: '{"NVIDIA-L40S":{"minCapWatts":200,"maxCapWatts":350},"AMD-Radeon-PRO-W7900":{"minCapWatts":200,"maxCapWatts":295}}'
