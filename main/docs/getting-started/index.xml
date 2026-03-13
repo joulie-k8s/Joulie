@@ -18,7 +18,7 @@
 &lt;li&gt;&lt;strong&gt;Agent&lt;/strong&gt; (&lt;code&gt;cmd/agent&lt;/code&gt;): node-level actuator
 &lt;ul&gt;
 &lt;li&gt;reads desired state and telemetry configuration&lt;/li&gt;
-&lt;li&gt;enforces power controls (CPU now, GPU path planned)&lt;/li&gt;
+&lt;li&gt;enforces power controls (CPU + GPU)&lt;/li&gt;
 &lt;li&gt;exports metrics/status&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;

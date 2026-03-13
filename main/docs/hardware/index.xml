@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Hardware on Joulie</title><link>https://joulie-k8s.github.io/Joulie/main/docs/hardware/</link><description>Recent content in Hardware on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://joulie-k8s.github.io/Joulie/main/docs/hardware/index.xml" rel="self" type="application/rss+xml"/><item><title>CPU Support and Power Capping</title><link>https://joulie-k8s.github.io/Joulie/main/docs/hardware/cpus/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/main/docs/hardware/cpus/</guid><description>&lt;p&gt;Joulie supports node-level CPU power capping through &lt;code&gt;NodePowerProfile&lt;/code&gt; intents enforced by the agent.&lt;/p&gt;
+&lt;h2 id="contract-model"&gt;Contract model&lt;/h2&gt;
+&lt;p&gt;CPU intent is defined in &lt;code&gt;NodePowerProfile.spec.cpu&lt;/code&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;packagePowerCapWatts&lt;/code&gt; (optional absolute cap)&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;packagePowerCapPctOfMax&lt;/code&gt; (optional normalized profile intent)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Precedence:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;code&gt;packagePowerCapWatts&lt;/code&gt; if present&lt;/li&gt;
+&lt;li&gt;otherwise &lt;code&gt;packagePowerCapPctOfMax&lt;/code&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id="policy-behavior"&gt;Policy behavior&lt;/h2&gt;
+&lt;p&gt;Operator profile assignment remains &lt;code&gt;performance&lt;/code&gt; vs &lt;code&gt;eco&lt;/code&gt;.
+CPU cap values are generated per profile and written into &lt;code&gt;NodePowerProfile&lt;/code&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;performance profile typically maps to a higher cap (often 100%)&lt;/li&gt;
+&lt;li&gt;eco profile maps to a lower cap&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;For heterogeneous nodes, percentage-based intent remains useful because each node resolves normalized intent using node-local capabilities.
+If percentage intent cannot be converted to watts (for example missing RAPL range), the agent applies a DVFS percent fallback path when possible.&lt;/p&gt;</description></item><item><title>GPU Support (NVIDIA + AMD)</title><link>https://joulie-k8s.github.io/Joulie/main/docs/hardware/gpus/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/main/docs/hardware/gpus/</guid><description>&lt;p&gt;Joulie supports node-level GPU power-cap intents for NVIDIA and AMD.&lt;/p&gt;
+&lt;h2 id="validation-status"&gt;Validation status&lt;/h2&gt;
+&lt;p&gt;GPU support has been validated in simulator mode only (no bare-metal GPU access yet).
+The host code paths are designed to work on bare metal (NVIDIA + AMD) when GPU nodes are available.&lt;/p&gt;
+&lt;h2 id="contract-model"&gt;Contract model&lt;/h2&gt;
+&lt;p&gt;&lt;code&gt;NodePowerProfile.spec.gpu.powerCap&lt;/code&gt; defines a per-GPU cap intent:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;scope: perGpu&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;capWattsPerGpu&lt;/code&gt; (absolute, optional)&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;capPctOfMax&lt;/code&gt; (percentage, optional)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Precedence:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;code&gt;capWattsPerGpu&lt;/code&gt; if present&lt;/li&gt;
+&lt;li&gt;otherwise &lt;code&gt;capPctOfMax&lt;/code&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;The same cap is applied uniformly to all GPUs on the node.&lt;/p&gt;</description></item><item><title>Hardware Modeling and Physical Power Model</title><link>https://joulie-k8s.github.io/Joulie/main/docs/hardware/hardware-modeling/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/main/docs/hardware/hardware-modeling/</guid><description>&lt;p&gt;This page documents how Joulie models CPUs and GPUs across the project using a mix of:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;official vendor specifications and management APIs&lt;/strong&gt;,&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;public measured power curves&lt;/strong&gt;, and&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;explicit proxy models&lt;/strong&gt; where public exact curves are not yet available.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;It serves two closely related purposes:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;for the &lt;strong&gt;agent&lt;/strong&gt;, it describes the hardware assumptions used to resolve caps, interpret device limits, and reason about how throttling affects attainable performance&lt;/li&gt;
+&lt;li&gt;for the &lt;strong&gt;simulator&lt;/strong&gt;, it describes the physical model used to turn utilization and control actions into simulated power and slowdown&lt;/li&gt;
+&lt;/ul&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;Validation status&lt;/strong&gt;&lt;/p&gt;</description></item></channel></rss>
