@@ -1136,6 +1136,15 @@ def test_classification_matrix(ctx: Ctx) -> None:
         "cls-14-doesnotexist-profile-key",
     }
 
+    # Cases that require the eco_node to be in eco BEFORE the pod can schedule.
+    # These cannot use the nodeName bypass because k3s 1.34+ enforces nodeAffinity
+    # at the kubelet level even for nodeName pods.  Strategy: set frac=0 first,
+    # wait for eco_node to become eco, then apply and verify the pod runs and the
+    # node stays eco (confirming the pod is not classified as perf-intent).
+    eco_first_cases = {
+        "cls-12-in-eco-only",
+    }
+
     for name, affinity, expect_perf, selector, force_node_name, expect_apply_ok in cases:
         delete_pod("joulie-it", name)
 
@@ -1164,6 +1173,21 @@ def test_classification_matrix(ctx: Ctx) -> None:
             kubectl(["apply", "-f", "-"], stdin=manifest)
             wait_pod_pending("joulie-it", name)
             wait_pod_unschedulable_reason("joulie-it", name, "affinity")
+            delete_pod("joulie-it", name)
+            wait_node_eco_ready(ctx.eco_node)
+            continue
+
+        # ── Cases requiring eco_node to be eco before the pod can schedule ──
+        # k3s 1.34+ enforces nodeAffinity at the kubelet level even for nodeName
+        # pods, so we cannot force an In[eco] pod onto a performance node.
+        # Set frac=0 first, wait for eco transition, then apply normally.
+        if name in eco_first_cases:
+            set_static_hp_frac("0")
+            wait_node_eco_ready(ctx.eco_node)
+            manifest = mk_pod_yaml(name, affinity=affinity, node_selector=selector)
+            kubectl(["apply", "-f", "-"], stdin=manifest)
+            wait_pod_phase("joulie-it", name, "Running")
+            wait_node_eco_ready(ctx.eco_node)
             delete_pod("joulie-it", name)
             wait_node_eco_ready(ctx.eco_node)
             continue
