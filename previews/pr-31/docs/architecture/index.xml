@@ -97,6 +97,7 @@ the agent is the component that turns that intent into concrete control actions.
 &lt;li&gt;Select eligible nodes from &lt;code&gt;NODE_SELECTOR&lt;/code&gt;, excluding reserved and unschedulable nodes.&lt;/li&gt;
 &lt;li&gt;Build a hardware view from &lt;code&gt;NodeHardware&lt;/code&gt; when available, otherwise from node labels/inventory fallback.&lt;/li&gt;
 &lt;li&gt;Sort eligible nodes by normalized compute density (highest first).&lt;/li&gt;
+&lt;li&gt;Preserve at least one performance-capable node per discovered hardware family whenever the requested HP count allows it.&lt;/li&gt;
 &lt;li&gt;Build a desired plan with the selected policy.&lt;/li&gt;
 &lt;li&gt;Apply downgrade guard (sets &lt;code&gt;draining=true&lt;/code&gt; while blocking pods still run).&lt;/li&gt;
 &lt;li&gt;Write &lt;code&gt;NodePowerProfile&lt;/code&gt; and update node labels (&lt;code&gt;joulie.io/power-profile&lt;/code&gt;, &lt;code&gt;joulie.io/draining&lt;/code&gt;).&lt;/li&gt;
