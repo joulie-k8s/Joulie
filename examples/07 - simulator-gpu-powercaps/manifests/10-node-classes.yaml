@@ -1,12 +1,12 @@
 classes:
   - name: gpu-class-1
     matchLabels:
-      joulie.io/gpu.product: "NVIDIA H100 NVL"
+      joulie.io/gpu.product: "NVIDIA-H100-NVL"
     model:
       gpu:
         vendor: nvidia
         product: "NVIDIA H100 NVL"
-        count: 4
+        count: 8
         idleWattsPerGpu: 30
         maxWattsPerGpu: 400
         minCapWattsPerGpu: 200
@@ -15,7 +15,7 @@ classes:
           betaCap: 1.0
   - name: gpu-class-2
     matchLabels:
-      joulie.io/gpu.product: "NVIDIA H100 80GB HBM3"
+      joulie.io/gpu.product: "NVIDIA-H100-80GB-HBM3"
     model:
       gpu:
         vendor: nvidia
@@ -29,7 +29,7 @@ classes:
           betaCap: 1.0
   - name: gpu-class-3
     matchLabels:
-      joulie.io/gpu.product: "NVIDIA L40S"
+      joulie.io/gpu.product: "NVIDIA-L40S"
     model:
       gpu:
         vendor: nvidia
@@ -43,12 +43,12 @@ classes:
           betaCap: 1.0
   - name: gpu-class-4
     matchLabels:
-      joulie.io/gpu.product: "AMD Instinct MI300X"
+      joulie.io/gpu.product: "AMD-Instinct-MI300X"
     model:
       gpu:
         vendor: amd
         product: "AMD Instinct MI300X"
-        count: 4
+        count: 8
         idleWattsPerGpu: 30
         maxWattsPerGpu: 750
         minCapWattsPerGpu: 350
@@ -57,7 +57,7 @@ classes:
           betaCap: 1.0
   - name: gpu-class-5
     matchLabels:
-      joulie.io/gpu.product: "AMD Radeon PRO W7900"
+      joulie.io/gpu.product: "AMD-Radeon-PRO-W7900"
     model:
       gpu:
         vendor: amd

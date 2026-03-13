@@ -21,10 +21,24 @@ def parse_iso_utc(ts: str):
         return None
 
 
-def count_trace_jobs(trace_path: pathlib.Path) -> int:
+def count_trace_records(trace_path: pathlib.Path) -> tuple[int, int]:
     if not trace_path.exists():
-        return 0
-    return sum(1 for line in trace_path.read_text().splitlines() if line.strip())
+        return 0, 0
+    jobs = 0
+    workloads = 0
+    for line in trace_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if rec.get("type", "job") == "workload":
+            workloads += 1
+        elif rec.get("type", "job") == "job":
+            jobs += 1
+    return jobs, workloads
 
 
 def parse_run_id_fallback(run_dir: pathlib.Path):
@@ -126,7 +140,7 @@ def collect_one_run(run_dir: pathlib.Path):
     if time_scale is None or time_scale <= 0:
         time_scale = 1.0
 
-    jobs_total = count_trace_jobs(run_dir / "trace.jsonl")
+    jobs_total, workloads_total = count_trace_records(run_dir / "trace.jsonl")
 
     sim_seconds = None
     throughput_wall = None
@@ -161,6 +175,7 @@ def collect_one_run(run_dir: pathlib.Path):
         "time_scale": time_scale,
         "sim_seconds": sim_seconds,
         "jobs_total": jobs_total,
+        "workloads_total": workloads_total,
         "throughput_jobs_per_wall_sec": throughput_wall,
         "throughput_jobs_per_sim_sec": throughput_sim,
         "throughput_jobs_per_sim_hour": throughput_sim_hour,

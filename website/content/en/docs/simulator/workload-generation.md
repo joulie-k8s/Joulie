@@ -81,6 +81,8 @@ The generator now emits two kinds of JSONL records:
 The simulator currently consumes the `type=job` records directly and ignores `type=workload` metadata records.
 The workload metadata is still useful for inspection, debugging, and future calibration tooling.
 
+In benchmark experiments, there can also be a post-generation retargeting step. For example, experiment 02 keeps the canonical logical trace produced by `workloadgen`, then rewrites only the pod-level placement constraints so the runnable jobs land on concrete heterogeneous KWOK nodes present in the benchmark cluster. That retargeting does not change the logical workload shape, work units, or submission timing; it only makes the generated jobs hardware-aware for that specific cluster instance.
+
 ### Logical workload record
 
 Example:
@@ -108,6 +110,10 @@ The generator follows a hierarchical sampling path:
 5. sample shared workload profile,
 6. sample pod structure and per-role resource requests,
 7. expand the logical workload into runnable pod-level jobs.
+
+When a benchmark or integration harness needs to bind those jobs to a specific synthetic cluster inventory, it can add an eighth step:
+
+8. retarget pod-level placement to the concrete nodes or hardware families available in the current test cluster.
 
 ## Arrival model
 
@@ -184,6 +190,8 @@ This follows the key shape reported in Helios:
 
 - single-GPU jobs dominate job count,
 - but larger jobs dominate GPU-time.
+
+For small debug benchmarks, the generator distribution is usually combined with a family-aware retargeting pass so at least the major GPU families in the synthetic cluster are exercised, even when the total job count is intentionally small.
 
 ## Duration model
 

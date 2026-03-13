@@ -72,10 +72,13 @@ fi
 if [[ -n "$SIM_TAG" ]]; then
   kubectl -n joulie-sim-demo set image deploy/joulie-telemetry-sim simulator="${SIM_REGISTRY}/${SIM_IMAGE}:${SIM_TAG}"
 fi
-kubectl -n joulie-sim-demo patch deploy/joulie-telemetry-sim --type='json' -p='[
-  {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"hardware-catalog","mountPath":"/etc/joulie-sim-catalog","readOnly":true}},
-  {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"hardware-catalog","configMap":{"name":"joulie-simulator-hardware-catalog"}}}
-]' || true
+HAS_HW_CATALOG=$(kubectl -n joulie-sim-demo get deploy/joulie-telemetry-sim -o jsonpath='{range .spec.template.spec.volumes[*]}{.name}{"\n"}{end}' 2>/dev/null | grep -xc 'hardware-catalog' || true)
+if [[ "$HAS_HW_CATALOG" == "0" ]]; then
+  kubectl -n joulie-sim-demo patch deploy/joulie-telemetry-sim --type='json' -p='[
+    {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"hardware-catalog","mountPath":"/etc/joulie-sim-catalog","readOnly":true}},
+    {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"hardware-catalog","configMap":{"name":"joulie-simulator-hardware-catalog"}}}
+  ]'
+fi
 kubectl -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim
 SIM_ACTUAL_IMAGE=$(actual_image_from_workload "joulie-sim-demo" "deploy/joulie-telemetry-sim")
 

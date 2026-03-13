@@ -138,14 +138,21 @@ experiments/02-heterogeneous-benchmark/scripts/20_run_benchmark.sh
 The benchmark config lives in:
 
 - [benchmark.yaml](configs/benchmark.yaml)
+- [benchmark-debug.yaml](configs/benchmark-debug.yaml)
 
 It controls:
 
 - baselines and seeds,
-- workload mix, including GPU-job ratio and GPU work units,
+- workload mix, including GPU-workload ratio, placement intent ratios, and burst shaping,
 - policy parameters,
 - simulator speed/image settings,
 - kind config overrides.
+
+The repository also ships a lightweight debug profile:
+
+- [benchmark-debug.yaml](configs/benchmark-debug.yaml)
+
+That profile is meant for fast iteration on the existing `kind` cluster and keeps each baseline close to about one minute on the current simulator settings.
 
 Artifacts are written under:
 
@@ -158,6 +165,16 @@ including:
 - aggregated `results/summary.csv`,
 - aggregated `results/baseline_summary.csv` with mean/std/95% CI-style summaries across repeated seeds,
 - plots under `results/plots/`.
+
+If you want a clean debug run without stale aborted runs mixed into the summaries, use:
+
+```bash
+CLEAN_RESULTS=true \
+experiments/02-heterogeneous-benchmark/scripts/20_run_benchmark.sh \
+  experiments/02-heterogeneous-benchmark/configs/benchmark-debug.yaml
+```
+
+`CLEAN_RESULTS=true` removes old per-run result directories, plots, traces, and aggregate CSVs before starting the new sweep.
 
 ## Current scope
 
@@ -183,12 +200,56 @@ What it still does not provide yet is a polished report layer equivalent to:
 
 The core benchmark machinery now exists; the next refinement is a more curated experiment report and interpretation layer for the heterogeneous results.
 
+## Trace format note
+
+The benchmark now uses the newer workload generator trace format.
+
+Generated traces can contain both:
+
+- `type=workload`
+  - logical workload metadata records
+- `type=job`
+  - pod-expanded runnable records consumed by the simulator
+
+For this experiment:
+
+- runtime behavior is driven by `type=job` records,
+- benchmark trace statistics count runnable jobs rather than raw JSONL lines,
+- baseline A still derives from the same canonical trace by stripping only power-profile affinity from `type=job` records.
+
+## Placement targeting in experiment 02
+
+The generator itself produces logical AI workload traces and pod-expanded runnable jobs, but it does not know about the concrete KWOK nodes in the benchmark cluster.
+
+Experiment 02 therefore adds a second step during the sweep:
+
+1. generate a canonical trace with `workloadgen`,
+2. retarget `type=job` records onto the currently available KWOK nodes,
+3. derive baseline-specific traces from that retargeted canonical trace.
+
+The current retargeting logic is intentionally **family-first**:
+
+- CPU-only jobs are first spread across CPU families,
+- GPU jobs are first spread across GPU product families,
+- only then are additional jobs reused across more node instances in those families.
+
+This keeps the debug benchmark lightweight while still making sure the heterogeneous hardware families are actually exercised.
+
+In other words:
+
+- all fake nodes from `cluster-nodes.yaml` are created,
+- the debug profile aims to cover all major hardware families,
+- but it does not guarantee that every individual fake node instance receives a job in the lightweight run.
+
+If you need one-pod-per-node-instance coverage, use a heavier benchmark config than the debug profile.
+
 ## Notes
 
 - The first heterogeneous policy version reasons on CPU and GPU density only.
 - Unknown hardware uses per-device fallback.
 - `NodeHardware` is not hand-authored in this experiment; it is published by the agent.
 - This experiment is intended to be the benchmark-facing consumer of the shared hardware inventory and physical model.
+- The benchmark scripts can reuse an already existing `kind` cluster via the cluster-setup scripts; recreating the cluster is not required for the debug profile.
 
 ## Known caveats
 

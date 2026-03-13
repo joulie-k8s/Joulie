@@ -43,7 +43,9 @@ def safe_capture(cmd):
 
 def trace_stats(trace_path: pathlib.Path) -> dict:
     stats = {
-        "records": 0,
+        "records_total": 0,
+        "workloads": 0,
+        "jobs": 0,
         "gpu_jobs": 0,
         "perf_jobs": 0,
         "eco_jobs": 0,
@@ -53,11 +55,18 @@ def trace_stats(trace_path: pathlib.Path) -> dict:
         line = line.strip()
         if not line:
             continue
-        stats["records"] += 1
+        stats["records_total"] += 1
         try:
             rec = json.loads(line)
         except json.JSONDecodeError:
             continue
+        rec_type = rec.get("type", "job")
+        if rec_type == "workload":
+            stats["workloads"] += 1
+            continue
+        if rec_type != "job":
+            continue
+        stats["jobs"] += 1
         pod_tpl = rec.get("podTemplate", {})
         req = pod_tpl.get("requests", {}) if isinstance(pod_tpl, dict) else {}
         if isinstance(req, dict) and any(k in req for k in ("nvidia.com/gpu", "amd.com/gpu", "gpu")):

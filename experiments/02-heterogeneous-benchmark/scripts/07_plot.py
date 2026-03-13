@@ -49,7 +49,7 @@ def plot_runtime_distribution(df: pd.DataFrame):
     groups = [d[d["baseline"] == b][metric].values for b in baselines]
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    box = ax.boxplot(groups, labels=baselines, patch_artist=True, showfliers=True)
+    box = ax.boxplot(groups, tick_labels=baselines, patch_artist=True, showfliers=True)
     for patch, b in zip(box["boxes"], baselines):
         patch.set_facecolor(BASELINE_COLORS.get(b, "#cccccc"))
         patch.set_alpha(0.45)
@@ -192,6 +192,89 @@ def plot_baseline_summary_bars(df: pd.DataFrame):
     plt.close(fig)
 
 
+def relative_to_baseline_a(df: pd.DataFrame) -> pd.DataFrame:
+    needed = ["seed", "baseline", "energy_sim_kwh_est", "throughput_jobs_per_sim_hour", "wall_seconds"]
+    d = df.dropna(subset=[c for c in needed if c in df.columns]).copy()
+    if d.empty:
+        return pd.DataFrame()
+    a = d[d["baseline"] == "A"][
+        ["seed", "energy_sim_kwh_est", "throughput_jobs_per_sim_hour", "wall_seconds"]
+    ].rename(
+        columns={
+            "energy_sim_kwh_est": "energy_a",
+            "throughput_jobs_per_sim_hour": "throughput_a",
+            "wall_seconds": "wall_a",
+        }
+    )
+    merged = d.merge(a, on="seed", how="inner")
+    merged = merged[merged["baseline"] != "A"].copy()
+    if merged.empty:
+        return merged
+    merged["energy_savings_pct"] = 100.0 * (1.0 - merged["energy_sim_kwh_est"] / merged["energy_a"])
+    merged["throughput_slowdown_pct"] = 100.0 * (1.0 - merged["throughput_jobs_per_sim_hour"] / merged["throughput_a"])
+    merged["makespan_increase_pct"] = 100.0 * (merged["wall_seconds"] / merged["wall_a"] - 1.0)
+    return merged
+
+
+def plot_relative_tradeoff_scatter(df: pd.DataFrame):
+    d = relative_to_baseline_a(df)
+    if d.empty:
+        return
+    fig, ax = plt.subplots(figsize=(8.5, 5.5))
+    for b in sorted(d["baseline"].unique(), key=lambda x: BASELINE_ORDER.index(x) if x in BASELINE_ORDER else 999):
+        grp = d[d["baseline"] == b]
+        ax.scatter(
+            grp["throughput_slowdown_pct"],
+            grp["energy_savings_pct"],
+            label=f"baseline {b} vs A",
+            s=64,
+            alpha=0.85,
+            color=BASELINE_COLORS.get(b, None),
+        )
+    ax.axhline(0, color="#888888", linewidth=0.8)
+    ax.axvline(0, color="#888888", linewidth=0.8)
+    ax.set_xlabel("Throughput slowdown vs baseline A (%)")
+    ax.set_ylabel("Energy savings vs baseline A (%)")
+    ax.set_title("Energy Savings vs Throughput Slowdown")
+    ax.grid(alpha=0.2)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(PLOTS / "relative_tradeoff_vs_a.png", dpi=170)
+    plt.close(fig)
+
+
+def plot_relative_tradeoff_bars(df: pd.DataFrame):
+    d = relative_to_baseline_a(df)
+    if d.empty:
+        return
+    summary = d.groupby("baseline", as_index=False).agg(
+        energy_savings_pct=("energy_savings_pct", "mean"),
+        throughput_slowdown_pct=("throughput_slowdown_pct", "mean"),
+        makespan_increase_pct=("makespan_increase_pct", "mean"),
+    )
+    summary.sort_values("baseline", key=baseline_sort_key, inplace=True)
+
+    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.5))
+    metrics = [
+        ("energy_savings_pct", "Mean Energy Savings vs A (%)"),
+        ("throughput_slowdown_pct", "Mean Throughput Slowdown vs A (%)"),
+        ("makespan_increase_pct", "Mean Makespan Increase vs A (%)"),
+    ]
+    for ax, (col, title) in zip(axes, metrics):
+        xs = summary["baseline"].values
+        vals = summary[col].values
+        colors = [BASELINE_COLORS.get(x, "#888888") for x in xs]
+        ax.bar(xs, vals, color=colors, alpha=0.82)
+        ax.axhline(0, color="#888888", linewidth=0.8)
+        ax.set_title(title)
+        ax.set_xlabel("Baseline")
+        ax.grid(axis="y", alpha=0.2)
+    fig.suptitle("Relative Tradeoffs Against Baseline A")
+    fig.tight_layout()
+    fig.savefig(PLOTS / "relative_tradeoff_bars_vs_a.png", dpi=170)
+    plt.close(fig)
+
+
 def main():
     summary = RESULTS / "summary.csv"
     if not summary.exists():
@@ -218,6 +301,8 @@ def main():
     plot_throughput_vs_energy(df)
     plot_energy_vs_makespan(df)
     plot_baseline_summary_bars(df)
+    plot_relative_tradeoff_scatter(df)
+    plot_relative_tradeoff_bars(df)
 
     print(f"plots written to {PLOTS}")
 

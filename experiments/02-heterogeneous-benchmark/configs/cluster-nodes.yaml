@@ -1,74 +1,90 @@
 nodes:
-  - node_name: kwok-h100-nvl-0
+  - node_name_prefix: kwok-h100-nvl
+    replicas: 12
     vendor: nvidia
     product: NVIDIA H100 NVL
     cpu: AMD EPYC 9654 96-Core Processor
     cpu_sockets: 2
+    cpu_cores: 192
     memory_gib: 1536
-    gpu_count: 4
+    gpu_count: 8
     gpu_min_cap_watts: 200
     gpu_max_cap_watts: 400
 
-  - node_name: kwok-h100-sxm-0
+  - node_name_prefix: kwok-h100-sxm
+    replicas: 6
     vendor: nvidia
     product: NVIDIA H100 80GB HBM3
     cpu: INTEL(R) XEON(R) GOLD 6530
     cpu_sockets: 2
-    memory_gib: 2048
-    gpu_count: 8
+    cpu_cores: 64
+    memory_gib: 1024
+    gpu_count: 4
     gpu_min_cap_watts: 350
     gpu_max_cap_watts: 700
 
-  - node_name: kwok-l40s-0
+  - node_name_prefix: kwok-l40s
+    replicas: 7
     vendor: nvidia
     product: NVIDIA L40S
     cpu: AMD EPYC 9534 64-Core Processor
     cpu_sockets: 2
-    memory_gib: 512
+    cpu_cores: 128
+    memory_gib: 1536
     gpu_count: 4
     gpu_min_cap_watts: 200
     gpu_max_cap_watts: 350
 
-  - node_name: kwok-mi300x-0
+  - node_name_prefix: kwok-mi300x
+    replicas: 2
     vendor: amd
     product: AMD Instinct MI300X
     cpu: AMD EPYC 9534 64-Core Processor
     cpu_sockets: 2
+    cpu_cores: 128
     memory_gib: 1536
     gpu_count: 8
     gpu_min_cap_watts: 350
     gpu_max_cap_watts: 750
 
-  - node_name: kwok-w7900-0
+  - node_name_prefix: kwok-w7900
+    replicas: 6
     vendor: amd
     product: AMD Radeon PRO W7900
     cpu: AMD EPYC 9534 64-Core Processor
     cpu_sockets: 2
-    memory_gib: 256
+    cpu_cores: 128
+    memory_gib: 770
     gpu_count: 4
     gpu_min_cap_watts: 200
     gpu_max_cap_watts: 295
 
-  - node_name: kwok-cpu-9965-0
+  - node_name_prefix: kwok-cpu-highcore
+    replicas: 2
     vendor: none
     product: ""
     cpu: AMD EPYC 9965 192-Core Processor
     cpu_sockets: 2
-    memory_gib: 1024
+    cpu_cores: 384
+    memory_gib: 1536
     gpu_count: 0
 
-  - node_name: kwok-cpu-9375f-0
+  - node_name_prefix: kwok-cpu-highfreq
+    replicas: 2
     vendor: none
     product: ""
     cpu: AMD EPYC 9375F 32-Core Processor
     cpu_sockets: 2
-    memory_gib: 512
+    cpu_cores: 64
+    memory_gib: 770
     gpu_count: 0
 
-  - node_name: kwok-cpu-9655-0
+  - node_name_prefix: kwok-cpu-intensive
+    replicas: 4
     vendor: none
     product: ""
     cpu: AMD EPYC 9655 96-Core Processor
     cpu_sockets: 2
-    memory_gib: 1024
+    cpu_cores: 192
+    memory_gib: 1536
     gpu_count: 0

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 import sys
 from collections import OrderedDict
 from pathlib import Path
@@ -123,22 +124,137 @@ def norm(row: dict[str, str], key: str, default: str = "") -> str:
     return default
 
 
+def first_nonempty(row: dict[str, str], *keys: str, default: str = "") -> str:
+    for key in keys:
+        val = norm(row, key)
+        if val:
+            return val
+    return default
+
+
+def parse_intish(value: str, default: int = 0) -> int:
+    if value is None:
+        return default
+    txt = str(value).strip()
+    if not txt:
+        return default
+    txt = txt.replace(",", "")
+    try:
+        return int(float(txt))
+    except ValueError:
+        return default
+
+
+def parse_memory_gib(value: str, default: int = 64) -> int:
+    txt = str(value or "").strip().upper().replace(" ", "")
+    if not txt:
+        return default
+    m = re.match(r"^([0-9]+(?:\.[0-9]+)?)([TGM]I?B?)?$", txt)
+    if not m:
+        return default
+    qty = float(m.group(1))
+    unit = (m.group(2) or "G").upper()
+    if unit.startswith("T"):
+        qty *= 1024
+    elif unit.startswith("M"):
+        qty /= 1024
+    return max(1, int(round(qty)))
+
+
+def slugify(value: str) -> str:
+    out = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return out or "node"
+
+
+def label_safe(value: str) -> str:
+    txt = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip("-.")
+    return txt or "unknown"
+
+
+def yaml_list(items: list[str]) -> str:
+    quoted = [f'"{item}"' for item in items if item]
+    return "[" + ", ".join(quoted) + "]"
+
+
+def expand_inventory_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    expanded: list[dict[str, str]] = []
+    for row in rows:
+        replicas = parse_intish(first_nonempty(row, "replicas", "nodes", default="1"), 1)
+        node_name = norm(row, "node_name")
+        node_name_prefix = first_nonempty(row, "node_name_prefix", "node/type", "description")
+        if not node_name and node_name_prefix:
+            node_name_prefix = slugify(node_name_prefix)
+        elif node_name and not node_name_prefix:
+            node_name_prefix = re.sub(r"-\d+$", "", node_name)
+        if not node_name and not node_name_prefix:
+            node_name_prefix = "kwok-node"
+        for idx in range(replicas):
+            item = dict(row)
+            if not node_name:
+                item["node_name"] = f"{node_name_prefix}-{idx}"
+            elif replicas == 1:
+                item["node_name"] = node_name
+            else:
+                item["node_name"] = f"{node_name_prefix}-{idx}"
+            expanded.append(item)
+    return expanded
+
+
+def normalize_inventory_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for raw in rows:
+        product = first_nonempty(raw, "product", "nvidia.com/gpu.product")
+        cpu_model = first_nonempty(raw, "cpu_model", "cpu")
+        cpu_sockets = first_nonempty(raw, "cpu_sockets", "sockets", default="2")
+        cpu_cores = first_nonempty(raw, "cpu_cores", "cores", default="")
+        memory_gib = first_nonempty(raw, "memory_gib", "ram")
+        gpu_count = first_nonempty(raw, "gpu_count", "gpu", default="0")
+        vendor = norm(raw, "vendor", "").lower()
+        if not vendor:
+            if product:
+                vendor = "amd" if "amd" in product.lower() else "nvidia"
+            else:
+                vendor = "none"
+        normalized.append(
+            {
+                **raw,
+                "vendor": vendor,
+                "product": product,
+                "cpu": cpu_model,
+                "cpu_sockets": str(parse_intish(cpu_sockets, 2)),
+                "cpu_cores": str(parse_intish(cpu_cores, 16)),
+                "memory_gib": str(parse_memory_gib(memory_gib, 64)),
+                "gpu_count": str(parse_intish(gpu_count, 0)),
+                "gpu_min_cap_watts": first_nonempty(raw, "gpu_min_cap_watts", default=""),
+                "gpu_max_cap_watts": first_nonempty(raw, "gpu_max_cap_watts", default=""),
+            }
+        )
+    return expand_inventory_rows(normalized)
+
+
 def make_kwok_node(row: dict[str, str]) -> str:
     name = norm(row, "node_name")
     vendor = norm(row, "vendor", "none").lower()
     product = norm(row, "product")
-    cpu = norm(row, "cpu", "16")
+    cpu_model = norm(row, "cpu")
+    cpu_model_label = label_safe(cpu_model)
+    gpu_model_label = label_safe(product)
+    cpu_cores = norm(row, "cpu_cores", "16")
     mem = norm(row, "memory_gib", "64")
     gpu_count = norm(row, "gpu_count", "0")
+    has_gpu = gpu_count not in {"", "0"}
 
     labels = [
         '    type: kwok',
         '    joulie.io/managed: "true"',
-        f'    joulie.io/hw.cpu-model: "{norm(row, "cpu")}"' if norm(row, "cpu") else None,
+        f'    joulie.io/node-name: "{name}"',
+        f'    joulie.io/hw.cpu-model: "{cpu_model_label}"' if cpu_model else None,
+        f'    joulie.io/hw.cpu-cores: "{cpu_cores}"',
         f'    joulie.io/hw.cpu-sockets: "{norm(row, "cpu_sockets", "2")}"',
-        f'    joulie.io/hw.gpu-model: "{product}"' if product else None,
+        f'    joulie.io/hw.gpu-model: "{gpu_model_label}"' if product else None,
         f'    joulie.io/hw.gpu-count: "{gpu_count}"',
-        f'    joulie.io/gpu.product: "{product}"' if product else None,
+        f'    joulie.io/hw.kind: "{"gpu" if has_gpu else "cpu-only"}"',
+        f'    joulie.io/gpu.product: "{gpu_model_label}"' if product else None,
     ]
     alloc_gpu_lines: list[str] = []
     if vendor == "nvidia" and gpu_count not in {"", "0"}:
@@ -156,6 +272,8 @@ def make_kwok_node(row: dict[str, str]) -> str:
         f"  name: {name}",
         "  annotations:",
         "    kwok.x-k8s.io/node: fake",
+        f'    joulie.io/raw.cpu-model: "{cpu_model}"' if cpu_model else None,
+        f'    joulie.io/raw.gpu-product: "{product}"' if product else None,
         "  labels:",
         *labels,
         "spec:",
@@ -165,16 +283,17 @@ def make_kwok_node(row: dict[str, str]) -> str:
         "      effect: NoSchedule",
         "status:",
         "  allocatable:",
-        f'    cpu: "{cpu}"',
+        f'    cpu: "{cpu_cores}"',
         *alloc_gpu_lines,
         f'    memory: "{mem}Gi"',
         '    pods: "110"',
         "  capacity:",
-        f'    cpu: "{cpu}"',
+        f'    cpu: "{cpu_cores}"',
         *alloc_gpu_lines,
         f'    memory: "{mem}Gi"',
         '    pods: "110"',
     ]
+    block = [line for line in block if line is not None]
     return "\n".join(block)
 
 
@@ -191,22 +310,24 @@ def make_class_rows(rows: list[dict[str, str]]) -> str:
         classes[key] = {
             "vendor": vendor,
             "product": product,
+            "count": norm(row, "gpu_count", "1"),
             "min": norm(row, "gpu_min_cap_watts", "200"),
             "max": norm(row, "gpu_max_cap_watts", "350"),
         }
 
     out = ["classes:"]
     for idx, (_, item) in enumerate(classes.items(), start=1):
+        product_label = label_safe(item["product"])
         out.extend(
             [
                 f"  - name: gpu-class-{idx}",
                 "    matchLabels:",
-                f'      joulie.io/gpu.product: "{item["product"]}"',
+                f'      joulie.io/gpu.product: "{product_label}"',
                 "    model:",
                 "      gpu:",
                 f'        vendor: {item["vendor"]}',
                 f'        product: "{item["product"]}"',
-                "        count: 4",
+                f'        count: {item["count"]}',
                 "        idleWattsPerGpu: 30",
                 f'        maxWattsPerGpu: {item["max"]}',
                 f'        minCapWattsPerGpu: {item["min"]}',
@@ -236,7 +357,7 @@ def make_catalog_rows(rows: list[dict[str, str]]) -> str:
         out.extend(
             [
                 f"  {key}:",
-                f'    aliases: ["{cpu}"]',
+                f"    aliases: {yaml_list([cpu, label_safe(cpu)])}",
                 "    provenance: generated-from-inventory",
                 "    official:",
                 f'      vendor: {item["vendor"] or "unknown"}',
@@ -262,7 +383,7 @@ def make_catalog_rows(rows: list[dict[str, str]]) -> str:
         out.extend(
             [
                 f"  {product.replace('-', '_').replace(' ', '_')}:",
-                f'    aliases: ["{product}"]',
+                f"    aliases: {yaml_list([product, label_safe(product)])}",
                 "    provenance: generated-from-inventory",
                 "    official:",
                 f'      vendor: {item["vendor"]}',
@@ -281,7 +402,7 @@ def main() -> int:
     ap.add_argument("--out-catalog", type=Path, default=None)
     args = ap.parse_args()
 
-    rows = load_rows(args.input, args.sheet)
+    rows = normalize_inventory_rows(load_rows(args.input, args.sheet))
     if not rows:
         raise RuntimeError("no inventory rows found")
 

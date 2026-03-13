@@ -6,6 +6,7 @@ import os
 import pathlib
 import subprocess
 import time
+from collections import deque
 
 import yaml
 
@@ -71,24 +72,28 @@ def generate_canonical_seed_trace(
     perf_ratio: float,
     eco_ratio: float,
     gpu_ratio: float,
-    gpu_units_min: float,
-    gpu_units_max: float,
     gpu_request_per_job: float,
-    cpu_units_min: float,
-    cpu_units_max: float,
+    burst_day_probability: float,
+    burst_mean_jobs: float,
+    burst_multiplier: float,
+    emit_workload_records: bool,
+    work_scale: float,
 ) -> pathlib.Path:
     traces_dir = pathlib.Path("experiments/02-heterogeneous-benchmark/results/traces")
     traces_dir.mkdir(parents=True, exist_ok=True)
     ratio_id = f"perf_{str(perf_ratio).replace('.', '_')}_eco_{str(eco_ratio).replace('.', '_')}"
-    units_id = (
-        f"cpuu_{str(cpu_units_min).replace('.', '_')}_{str(cpu_units_max).replace('.', '_')}"
-        f"_gpur_{str(gpu_ratio).replace('.', '_')}"
-        f"_gpuu_{str(gpu_units_min).replace('.', '_')}_{str(gpu_units_max).replace('.', '_')}"
+    workload_id = (
+        f"gpur_{str(gpu_ratio).replace('.', '_')}"
         f"_greq_{str(gpu_request_per_job).replace('.', '_')}"
+        f"_burstp_{str(burst_day_probability).replace('.', '_')}"
+        f"_burstm_{str(burst_multiplier).replace('.', '_')}"
+        f"_burstjobs_{str(burst_mean_jobs).replace('.', '_')}"
+        f"_meta_{'on' if emit_workload_records else 'off'}"
+        f"_wscale_{str(work_scale).replace('.', '_')}"
     )
     trace_name = (
         f"seed_{seed}_jobs_{jobs}_mia_{str(mean_inter_arrival_sec).replace('.', '_')}_"
-        f"{ratio_id}_{units_id}_canonical.jsonl"
+        f"{ratio_id}_{workload_id}_canonical.jsonl"
     )
     trace_path = traces_dir / trace_name
     if trace_path.exists():
@@ -110,10 +115,6 @@ def generate_canonical_seed_trace(
         str(trace_path),
         "--mean-inter-arrival-sec",
         str(mean_inter_arrival_sec),
-        "--cpu-units-min",
-        str(cpu_units_min),
-        "--cpu-units-max",
-        str(cpu_units_max),
     ]
     cmd.extend(
         [
@@ -123,23 +124,252 @@ def generate_canonical_seed_trace(
             str(eco_ratio),
             "--gpu-ratio",
             str(gpu_ratio),
-            "--gpu-units-min",
-            str(gpu_units_min),
-            "--gpu-units-max",
-            str(gpu_units_max),
             "--gpu-request",
             str(gpu_request_per_job),
+            "--burst-day-probability",
+            str(burst_day_probability),
+            "--burst-mean-jobs",
+            str(burst_mean_jobs),
+            "--burst-multiplier",
+            str(burst_multiplier),
+            "--emit-workload-records",
+            str(emit_workload_records).lower(),
         ]
     )
     run(cmd, check=True)
+    if work_scale != 1.0:
+        scaled_lines = []
+        for raw in trace_path.read_text().splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            rec = json.loads(raw)
+            if rec.get("type", "job") == "job":
+                work = rec.get("work")
+                if isinstance(work, dict):
+                    if "cpuUnits" in work:
+                        work["cpuUnits"] = float(work["cpuUnits"]) * work_scale
+                    if "gpuUnits" in work:
+                        work["gpuUnits"] = float(work["gpuUnits"]) * work_scale
+            scaled_lines.append(json.dumps(rec, separators=(",", ":")))
+        trace_path.write_text("\n".join(scaled_lines) + ("\n" if scaled_lines else ""))
     count = sum(1 for l in trace_path.read_text().splitlines() if l.strip())
     log(f"canonical seed trace generated records={count} file={trace_path}")
     return trace_path
 
 
+def load_kwok_nodes() -> list[dict]:
+    out = run(["kubectl", "get", "nodes", "-l", "type=kwok", "-o", "json"], capture=True)
+    items = json.loads(out.stdout).get("items", [])
+    nodes = []
+    for item in items:
+        meta = item.get("metadata", {})
+        labels = meta.get("labels", {}) or {}
+        alloc = ((item.get("status", {}) or {}).get("allocatable", {}) or {})
+        name = meta.get("name", "")
+        gpu_product = labels.get("joulie.io/gpu.product", "")
+        gpu_count = int(labels.get("joulie.io/hw.gpu-count", alloc.get("nvidia.com/gpu", alloc.get("amd.com/gpu", "0"))) or 0)
+        vendor = "none"
+        if "nvidia.com/gpu" in alloc or labels.get("feature.node.kubernetes.io/pci-10de.present") == "true":
+            vendor = "nvidia"
+        elif "amd.com/gpu" in alloc or labels.get("feature.node.kubernetes.io/pci-1002.present") == "true":
+            vendor = "amd"
+        nodes.append(
+            {
+                "name": name,
+                "vendor": vendor,
+                "gpu_product": gpu_product,
+                "gpu_count": gpu_count,
+                "cpu_model": labels.get("joulie.io/hw.cpu-model", ""),
+                "cpu_only": gpu_count <= 0,
+            }
+        )
+    return nodes
+
+
+def rotate_pick(pool: deque[dict]) -> dict:
+    item = pool[0]
+    pool.rotate(-1)
+    return item
+
+
+def build_family_first_pool(nodes: list[dict], family_key: str) -> deque[dict]:
+    by_family: dict[str, list[dict]] = {}
+    for node in nodes:
+        family = str(node.get(family_key) or "")
+        by_family.setdefault(family, []).append(node)
+    ordered: list[dict] = []
+    seen_names: set[str] = set()
+    for family in sorted(by_family):
+        first = by_family[family][0]
+        ordered.append(first)
+        seen_names.add(first["name"])
+    for node in nodes:
+        if node["name"] in seen_names:
+            continue
+        ordered.append(node)
+    return deque(ordered)
+
+
+def ensure_required_term(affinity: dict | None) -> dict:
+    if not isinstance(affinity, dict):
+        affinity = {}
+    node_affinity = affinity.setdefault("nodeAffinity", {})
+    required = node_affinity.setdefault("requiredDuringSchedulingIgnoredDuringExecution", {})
+    terms = required.setdefault("nodeSelectorTerms", [])
+    if not isinstance(terms, list) or not terms:
+        terms = [{"matchExpressions": []}]
+        required["nodeSelectorTerms"] = terms
+    return affinity
+
+
+def add_required_expr(affinity: dict | None, expr: dict) -> dict:
+    affinity = ensure_required_term(affinity)
+    terms = affinity["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"]
+    for term in terms:
+        exprs = term.setdefault("matchExpressions", [])
+        if not any(e.get("key") == expr.get("key") for e in exprs if isinstance(e, dict)):
+            exprs.append(expr)
+    return affinity
+
+
+def strip_power_profile_affinity(affinity: dict | None) -> dict | None:
+    if not isinstance(affinity, dict):
+        return affinity
+    node_aff = affinity.get("nodeAffinity")
+    if not isinstance(node_aff, dict):
+        return affinity
+    required = node_aff.get("requiredDuringSchedulingIgnoredDuringExecution")
+    if not isinstance(required, dict):
+        return affinity
+    terms = required.get("nodeSelectorTerms")
+    if not isinstance(terms, list):
+        return affinity
+    keep_terms = []
+    for term in terms:
+        if not isinstance(term, dict):
+            continue
+        exprs = term.get("matchExpressions", [])
+        if not isinstance(exprs, list):
+            continue
+        kept_exprs = [
+            e
+            for e in exprs
+            if isinstance(e, dict) and e.get("key") not in {"joulie.io/power-profile", "joulie.io/draining"}
+        ]
+        if kept_exprs:
+            keep_terms.append({"matchExpressions": kept_exprs})
+    if keep_terms:
+        required["nodeSelectorTerms"] = keep_terms
+        return affinity
+    node_aff.pop("requiredDuringSchedulingIgnoredDuringExecution", None)
+    if not node_aff:
+        affinity.pop("nodeAffinity", None)
+    return affinity or None
+
+
+def retarget_trace_for_cluster(trace_path: pathlib.Path) -> pathlib.Path:
+    nodes = load_kwok_nodes()
+    gpu_nodes = [n for n in nodes if not n["cpu_only"]]
+    nvidia_nodes = build_family_first_pool([n for n in gpu_nodes if n["vendor"] == "nvidia"], "gpu_product")
+    amd_nodes = build_family_first_pool([n for n in gpu_nodes if n["vendor"] == "amd"], "gpu_product")
+    cpu_nodes = build_family_first_pool([n for n in nodes if n["cpu_only"]], "cpu_model")
+    if not gpu_nodes or not cpu_nodes:
+        raise SystemExit("expected both GPU and CPU-only KWOK nodes to exist before generating the benchmark trace")
+
+    out_path = trace_path.with_name(trace_path.stem + "_targeted.jsonl")
+    if out_path.exists():
+        return out_path
+
+    total_job_count = 0
+    gpu_job_count = 0
+    cpu_job_count = 0
+    gpu_vendor_toggle = deque(["nvidia", "amd"]) if amd_nodes else deque(["nvidia"])
+    lines = []
+    for raw in trace_path.read_text().splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        rec = json.loads(raw)
+        if rec.get("type", "job") != "job":
+            lines.append(json.dumps(rec, separators=(",", ":")))
+            continue
+
+        total_job_count += 1
+        pod_tpl = rec.get("podTemplate")
+        if not isinstance(pod_tpl, dict):
+            lines.append(json.dumps(rec, separators=(",", ":")))
+            continue
+        req = pod_tpl.get("requests")
+        if not isinstance(req, dict):
+            lines.append(json.dumps(rec, separators=(",", ":")))
+            continue
+
+        gpu_qty = None
+        gpu_key = None
+        for key in ("nvidia.com/gpu", "amd.com/gpu", "gpu"):
+            if key in req:
+                gpu_key = key
+                gpu_qty = req[key]
+                break
+
+        affinity = pod_tpl.get("affinity")
+        if gpu_key is None:
+            cpu_job_count += 1
+            target = rotate_pick(cpu_nodes)
+            pod_tpl["affinity"] = add_required_expr(
+                affinity,
+                {"key": "joulie.io/node-name", "operator": "In", "values": [target["name"]]},
+            )
+        else:
+            gpu_job_count += 1
+            vendor = gpu_vendor_toggle[0]
+            gpu_vendor_toggle.rotate(-1)
+            if vendor == "amd" and amd_nodes:
+                target = rotate_pick(amd_nodes)
+                req.pop(gpu_key, None)
+                req["amd.com/gpu"] = gpu_qty
+            else:
+                target = rotate_pick(nvidia_nodes)
+                req.pop(gpu_key, None)
+                req["nvidia.com/gpu"] = gpu_qty
+            affinity = add_required_expr(
+                affinity,
+                {"key": "joulie.io/node-name", "operator": "In", "values": [target["name"]]},
+            )
+            affinity = add_required_expr(
+                affinity,
+                {"key": "joulie.io/gpu.product", "operator": "In", "values": [target["gpu_product"]]},
+            )
+            pod_tpl["affinity"] = affinity
+
+        lines.append(json.dumps(rec, separators=(",", ":")))
+
+    out_path.write_text("\n".join(lines) + ("\n" if lines else ""))
+    log(
+        "retargeted canonical trace "
+        f"jobs_total={total_job_count} gpu_jobs={gpu_job_count} cpu_jobs={cpu_job_count} "
+        f"gpu_nodes={len(gpu_nodes)} cpu_nodes={len(cpu_nodes)}"
+    )
+    if gpu_job_count < len(gpu_nodes):
+        log(
+            "warning: GPU job count is lower than GPU node count; "
+            "some GPU nodes will not receive work in this run"
+        )
+    if cpu_job_count < len(cpu_nodes):
+        log(
+            "warning: CPU-only job count is lower than CPU-only node count; "
+            "some CPU-only nodes will not receive work in this run"
+        )
+    return out_path
+
+
 def derive_baseline_trace(baseline: str, canonical_trace: pathlib.Path, strip_affinity_for_a: bool) -> pathlib.Path:
     traces_dir = canonical_trace.parent
-    out_name = canonical_trace.name.replace("_canonical.jsonl", f"_baseline_{baseline}.jsonl")
+    stem = canonical_trace.stem
+    if stem.endswith("_targeted"):
+        stem = stem[:-len("_targeted")]
+    out_name = f"{stem}_baseline_{baseline}.jsonl"
     out_path = traces_dir / out_name
     if out_path.exists():
         return out_path
@@ -156,7 +386,9 @@ def derive_baseline_trace(baseline: str, canonical_trace: pathlib.Path, strip_af
         rec = json.loads(raw)
         pod_tpl = rec.get("podTemplate")
         if isinstance(pod_tpl, dict):
-            pod_tpl.pop("affinity", None)
+            pod_tpl["affinity"] = strip_power_profile_affinity(pod_tpl.get("affinity"))
+            if not pod_tpl.get("affinity"):
+                pod_tpl.pop("affinity", None)
         lines.append(json.dumps(rec, separators=(",", ":")))
     out_path.write_text("\n".join(lines) + ("\n" if lines else ""))
     return out_path
@@ -182,8 +414,15 @@ def cleanup_workload_pods():
 
 def reset_control_state():
     log("resetting control state (profiles + node power labels)")
-    run(["kubectl", "delete", "nodepowerprofiles", "--all", "--ignore-not-found"], check=False)
-    run(["kubectl", "delete", "telemetryprofiles", "--all", "--ignore-not-found"], check=False)
+    resources = {"nodepowerprofiles": "nodepowerprofiles.joulie.io", "telemetryprofiles": "telemetryprofiles.joulie.io"}
+    available = set(
+        line.strip()
+        for line in run(["kubectl", "api-resources", "-o", "name"], capture=True, check=False).stdout.splitlines()
+        if line.strip()
+    )
+    for short, full in resources.items():
+        if short in available or full in available:
+            run(["kubectl", "delete", short, "--all", "--ignore-not-found"], check=False)
     run(
         [
             "kubectl",
@@ -241,11 +480,11 @@ def main():
     ap.add_argument("--perf-ratio", type=float, default=None)
     ap.add_argument("--eco-ratio", type=float, default=None, help="must be 0 for this benchmark profile")
     ap.add_argument("--gpu-ratio", type=float, default=None)
-    ap.add_argument("--gpu-units-min", type=float, default=None)
-    ap.add_argument("--gpu-units-max", type=float, default=None)
     ap.add_argument("--gpu-request-per-job", type=float, default=None)
-    ap.add_argument("--cpu-units-min", type=float, default=None)
-    ap.add_argument("--cpu-units-max", type=float, default=None)
+    ap.add_argument("--burst-day-probability", type=float, default=None)
+    ap.add_argument("--burst-mean-jobs", type=float, default=None)
+    ap.add_argument("--burst-multiplier", type=float, default=None)
+    ap.add_argument("--emit-workload-records", type=str, default="")
     ap.add_argument("--baselines", type=str, default="")
     args = ap.parse_args()
 
@@ -278,31 +517,33 @@ def main():
     gpu_ratio = (
         args.gpu_ratio if args.gpu_ratio is not None else float(get_cfg(cfg, "workload", "gpu_ratio", default=0.00))
     )
-    gpu_units_min = (
-        args.gpu_units_min
-        if args.gpu_units_min is not None
-        else float(get_cfg(cfg, "workload", "gpu_units_min", default=500.0))
-    )
-    gpu_units_max = (
-        args.gpu_units_max
-        if args.gpu_units_max is not None
-        else float(get_cfg(cfg, "workload", "gpu_units_max", default=2500.0))
-    )
     gpu_request_per_job = (
         args.gpu_request_per_job
         if args.gpu_request_per_job is not None
         else float(get_cfg(cfg, "workload", "gpu_request_per_job", default=1.0))
     )
-    cpu_units_min = (
-        args.cpu_units_min
-        if args.cpu_units_min is not None
-        else float(get_cfg(cfg, "workload", "cpu_units_min", default=600.0))
+    burst_day_probability = (
+        args.burst_day_probability
+        if args.burst_day_probability is not None
+        else float(get_cfg(cfg, "workload", "burst_day_probability", default=0.25))
     )
-    cpu_units_max = (
-        args.cpu_units_max
-        if args.cpu_units_max is not None
-        else float(get_cfg(cfg, "workload", "cpu_units_max", default=3600.0))
+    burst_mean_jobs = (
+        args.burst_mean_jobs
+        if args.burst_mean_jobs is not None
+        else float(get_cfg(cfg, "workload", "burst_mean_jobs", default=8.0))
     )
+    burst_multiplier = (
+        args.burst_multiplier
+        if args.burst_multiplier is not None
+        else float(get_cfg(cfg, "workload", "burst_multiplier", default=2.0))
+    )
+    emit_workload_records_raw = (
+        args.emit_workload_records
+        if args.emit_workload_records.strip()
+        else get_cfg(cfg, "workload", "emit_workload_records", default=True)
+    )
+    emit_workload_records = str(emit_workload_records_raw).strip().lower() not in {"false", "0", "no"}
+    work_scale = float(get_cfg(cfg, "workload", "work_scale", default=1.0))
     baseline_a_strip_affinity = bool(get_cfg(cfg, "workload", "baseline_a_strip_affinity", default=True))
 
     baselines_raw = args.baselines if args.baselines.strip() else get_cfg(cfg, "run", "baselines", default=["A", "B", "C"])
@@ -314,14 +555,16 @@ def main():
         raise SystemExit("gpu_ratio must be in [0,1]")
     if perf_ratio + eco_ratio > 1:
         raise SystemExit("perf_ratio + eco_ratio must be <= 1")
-    if gpu_units_min < 0 or gpu_units_max < gpu_units_min:
-        raise SystemExit("gpu_units_min/max must satisfy 0 <= min <= max")
     if gpu_request_per_job < 0:
         raise SystemExit("gpu_request_per_job must be >= 0")
-    if cpu_units_min <= 0:
-        raise SystemExit("cpu_units_min must be > 0")
-    if cpu_units_max < cpu_units_min:
-        raise SystemExit("cpu_units_max must be >= cpu_units_min")
+    if burst_day_probability < 0 or burst_day_probability > 1:
+        raise SystemExit("burst_day_probability must be in [0,1]")
+    if burst_mean_jobs < 0:
+        raise SystemExit("burst_mean_jobs must be >= 0")
+    if burst_multiplier < 1:
+        raise SystemExit("burst_multiplier must be >= 1")
+    if work_scale <= 0:
+        raise SystemExit("work_scale must be > 0")
 
     total_runs = len(baselines) * seeds
     done = 0
@@ -414,12 +657,14 @@ def main():
                 perf_ratio=perf_ratio,
                 eco_ratio=eco_ratio,
                 gpu_ratio=gpu_ratio,
-                gpu_units_min=gpu_units_min,
-                gpu_units_max=gpu_units_max,
                 gpu_request_per_job=gpu_request_per_job,
-                cpu_units_min=cpu_units_min,
-                cpu_units_max=cpu_units_max,
+                burst_day_probability=burst_day_probability,
+                burst_mean_jobs=burst_mean_jobs,
+                burst_multiplier=burst_multiplier,
+                emit_workload_records=emit_workload_records,
+                work_scale=work_scale,
             )
+            canonical_trace = retarget_trace_for_cluster(canonical_trace)
             trace_file = derive_baseline_trace(
                 baseline=baseline,
                 canonical_trace=canonical_trace,
