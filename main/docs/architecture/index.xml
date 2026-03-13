@@ -2,6 +2,7 @@
 &lt;ul&gt;
 &lt;li&gt;&lt;strong&gt;demand&lt;/strong&gt; comes from pod scheduling constraints,&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;supply&lt;/strong&gt; is exposed by node power-profile labels,&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;discovered hardware&lt;/strong&gt; is published through &lt;code&gt;NodeHardware&lt;/code&gt;,&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;desired state&lt;/strong&gt; is published through &lt;code&gt;NodePowerProfile&lt;/code&gt;.&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id="apis"&gt;APIs&lt;/h2&gt;
@@ -11,11 +12,13 @@
 &lt;/ul&gt;
 &lt;p&gt;CRDs:&lt;/p&gt;
 &lt;ul&gt;
+&lt;li&gt;&lt;code&gt;NodeHardware&lt;/code&gt; (&lt;code&gt;nodehardwares&lt;/code&gt;, cluster-scoped)&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;NodePowerProfile&lt;/code&gt; (&lt;code&gt;nodepowerprofiles&lt;/code&gt;, cluster-scoped)&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;TelemetryProfile&lt;/code&gt; (&lt;code&gt;telemetryprofiles&lt;/code&gt;, cluster-scoped)&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;CRD definitions live in:&lt;/p&gt;
 &lt;ul&gt;
+&lt;li&gt;&lt;code&gt;config/crd/bases/joulie.io_nodehardwares.yaml&lt;/code&gt;&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;config/crd/bases/joulie.io_nodepowerprofiles.yaml&lt;/code&gt;&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;config/crd/bases/joulie.io_telemetryprofiles.yaml&lt;/code&gt;&lt;/li&gt;
 &lt;/ul&gt;
@@ -35,6 +38,7 @@
 &lt;li&gt;&lt;code&gt;eco&lt;/code&gt; demand:
 &lt;ul&gt;
 &lt;li&gt;pod requires &lt;code&gt;joulie.io/power-profile=eco&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;advanced pattern: also exclude &lt;code&gt;joulie.io/draining=true&lt;/code&gt; with &lt;code&gt;NotIn [&amp;quot;true&amp;quot;]&lt;/code&gt;&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;li&gt;&lt;code&gt;general&lt;/code&gt; demand:
@@ -52,6 +56,8 @@ which nodes should currently supply &lt;code&gt;performance&lt;/code&gt; capacit
 &lt;p&gt;At each reconcile tick, the operator:&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;selects eligible managed nodes,&lt;/li&gt;
+&lt;li&gt;reads &lt;code&gt;NodeHardware&lt;/code&gt; when available and falls back to node labels when it is not,&lt;/li&gt;
+&lt;li&gt;resolves hardware identity against the shared inventory,&lt;/li&gt;
 &lt;li&gt;classifies workload demand from pod scheduling constraints,&lt;/li&gt;
 &lt;li&gt;runs a policy algorithm to compute a plan,&lt;/li&gt;
 &lt;li&gt;applies transition guards for safe downgrades,&lt;/li&gt;
@@ -65,6 +71,8 @@ the agent is the component that turns that intent into concrete control actions.
 &lt;p&gt;At each reconcile tick, the agent:&lt;/p&gt;
 &lt;ol&gt;
 &lt;li&gt;identifies its node scope (single node in daemonset mode, sharded set in pool mode),&lt;/li&gt;
+&lt;li&gt;discovers local CPU/GPU hardware and runtime control capability,&lt;/li&gt;
+&lt;li&gt;publishes &lt;code&gt;NodeHardware&lt;/code&gt; for each owned node,&lt;/li&gt;
 &lt;li&gt;reads desired target (&lt;code&gt;NodePowerProfile&lt;/code&gt;) for each owned node,&lt;/li&gt;
 &lt;li&gt;reads telemetry/control routing (&lt;code&gt;TelemetryProfile&lt;/code&gt;),&lt;/li&gt;
 &lt;li&gt;applies controls (host or HTTP),&lt;/li&gt;
@@ -81,19 +89,11 @@ the agent is the component that turns that intent into concrete control actions.
 &lt;p&gt;Policy demand classification is derived from pod scheduling constraints on &lt;code&gt;joulie.io/power-profile&lt;/code&gt;:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;code&gt;performance-only&lt;/code&gt;: pod excludes eco in required scheduling constraints.&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;eco-only&lt;/code&gt;: pod can run only on &lt;code&gt;eco&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;eco-only&lt;/code&gt;: pod can run only on &lt;code&gt;eco&lt;/code&gt;; advanced eco-only placement should also exclude &lt;code&gt;joulie.io/draining=true&lt;/code&gt;.&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;general&lt;/code&gt; (implicit unconstrained): no explicit power-profile constraint, or both profiles allowed.&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id="shared-reconcile-flow"&gt;Shared Reconcile Flow&lt;/h2&gt;
-&lt;p&gt;Each reconcile tick:&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;Select eligible nodes from &lt;code&gt;NODE_SELECTOR&lt;/code&gt;, excluding reserved and unschedulable nodes.&lt;/li&gt;
-&lt;li&gt;Build a desired plan with the selected policy.&lt;/li&gt;
-&lt;li&gt;Apply downgrade guard (sets &lt;code&gt;draining=true&lt;/code&gt; while blocking pods still run).&lt;/li&gt;
-&lt;li&gt;Write &lt;code&gt;NodePowerProfile&lt;/code&gt; and update node labels (&lt;code&gt;joulie.io/power-profile&lt;/code&gt;, &lt;code&gt;joulie.io/draining&lt;/code&gt;).&lt;/li&gt;
-&lt;/ol&gt;
-&lt;h2 id="static_partition"&gt;&lt;code&gt;static_partition&lt;/code&gt;&lt;/h2&gt;
-&lt;p&gt;Goal: deterministic fixed HP/LP split.&lt;/p&gt;</description></item><item><title>Input Telemetry and Actuation Interfaces</title><link>https://joulie-k8s.github.io/Joulie/main/docs/architecture/telemetry/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/main/docs/architecture/telemetry/</guid><description>&lt;p&gt;This page describes runtime IO contracts:&lt;/p&gt;
+&lt;p&gt;Each reconcile tick:&lt;/p&gt;</description></item><item><title>Input Telemetry and Actuation Interfaces</title><link>https://joulie-k8s.github.io/Joulie/main/docs/architecture/telemetry/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/main/docs/architecture/telemetry/</guid><description>&lt;p&gt;This page describes runtime IO contracts:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;how Joulie reads telemetry inputs,&lt;/li&gt;
 &lt;li&gt;how Joulie sends control intents.&lt;/li&gt;
@@ -250,6 +250,16 @@ Simulator metrics are documented separately in:&lt;/p&gt;
 &lt;li&gt;&lt;code&gt;deferred&lt;/code&gt;: transition blocked/deferred by safeguards&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="heterogeneous-planning"&gt;Heterogeneous planning&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_operator_node_compute_density{node,component}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;normalized per-node density signal used for heterogeneous planning&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;component&lt;/code&gt;: &lt;code&gt;cpu|gpu&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;higher values mean the operator considers that node relatively denser for that subsystem&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;/ul&gt;

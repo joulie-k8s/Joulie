@@ -45,5 +45,5 @@ The host code paths are designed to work on bare metal (NVIDIA + AMD) when GPU n
 &lt;li&gt;for the &lt;strong&gt;agent&lt;/strong&gt;, it describes the hardware assumptions used to resolve caps, interpret device limits, and reason about how throttling affects attainable performance&lt;/li&gt;
 &lt;li&gt;for the &lt;strong&gt;simulator&lt;/strong&gt;, it describes the physical model used to turn utilization and control actions into simulated power and slowdown&lt;/li&gt;
 &lt;/ul&gt;
-&lt;blockquote&gt;
-&lt;p&gt;&lt;strong&gt;Validation status&lt;/strong&gt;&lt;/p&gt;</description></item></channel></rss>
+&lt;h2 id="quick-summary"&gt;Quick summary&lt;/h2&gt;
+&lt;p&gt;If you want the short version before the details:&lt;/p&gt;</description></item></channel></rss>
