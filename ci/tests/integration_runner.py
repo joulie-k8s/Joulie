@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Integration test runner for a 2-node k3s cluster.
 
-Node layout (deterministic, set via --node-name in the Dagger CI module):
-  k3s-server   → always stays in performance (operator family-floor node)
-  k3s-worker-0 → transitions to eco when STATIC_HP_FRAC=0
+The Dagger CI setup registers two stable node names:
+  - k3s-server
+  - k3s-worker-0
 
-With STATIC_HP_FRAC=0 and two same-family nodes the operator keeps exactly one
-node in performance (the family floor) and puts the other in eco.  The operator
-sorts by compute density then lexicographically, so "k3s-server" < "k3s-worker-0"
-→ server is always the floor node.
+The tests no longer assume which one will be the performance-floor node when
+STATIC_HP_FRAC=0. Instead, they discover the actual split from the operator's
+labels after install and use that as the runtime perf/eco mapping.
 """
 from __future__ import annotations
 
@@ -22,8 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 # Stable node names registered by the Dagger CI k3s setup.
-PERF_NODE = "k3s-server"
-ECO_NODE = "k3s-worker-0"
+EXPECTED_NODES = ("k3s-server", "k3s-worker-0")
 
 
 def log(msg: str) -> None:
@@ -109,11 +107,6 @@ def get_node_labels(node: str) -> dict[str, str]:
     return dict(labels)
 
 
-def get_node_resource_version(node: str) -> str:
-    out = kubectl(["get", "node", node, "-o", "json"], capture=True).stdout
-    return json.loads(out)["metadata"].get("resourceVersion", "")
-
-
 def wait_node_label(node: str, key: str, val: str, timeout_sec: int = 120) -> None:
     wait_until(
         lambda: get_node_labels(node).get(key) == val,
@@ -157,6 +150,36 @@ def wait_node_eco_ready(node: str, timeout_sec: int = 120) -> None:
         timeout_sec=timeout_sec,
         desc=f"node {node} eco ready (non-draining)",
     )
+
+
+def discover_perf_and_eco_nodes(nodes: list[str], timeout_sec: int = 120) -> tuple[str, str]:
+    """Return (perf_node, eco_node) once operator labels settle under frac=0."""
+
+    def _split() -> tuple[str, str] | None:
+        perf: list[str] = []
+        eco: list[str] = []
+        for node in nodes:
+            labels = get_node_labels(node)
+            profile = labels.get("joulie.io/power-profile", "")
+            draining = labels.get("joulie.io/draining", "false")
+            if profile == "performance" and draining == "false":
+                perf.append(node)
+            elif profile == "eco" and draining in ("false", ""):
+                eco.append(node)
+        if len(perf) == 1 and len(eco) == 1:
+            return perf[0], eco[0]
+        return None
+
+    result: tuple[str, str] | None = None
+
+    def _ok() -> bool:
+        nonlocal result
+        result = _split()
+        return result is not None
+
+    wait_until(_ok, timeout_sec=timeout_sec, desc="one performance node and one eco node")
+    assert result is not None
+    return result
 
 
 def assert_node_label(node: str, key: str, expected: str) -> None:
@@ -261,7 +284,7 @@ def perf_affinity_notin_eco() -> str:
     )
 
 
-def eco_affinity_with_draining_false() -> str:
+def eco_affinity_not_draining_true() -> str:
     return textwrap.indent(
         textwrap.dedent(
             """\
@@ -274,8 +297,8 @@ def eco_affinity_with_draining_false() -> str:
                       operator: In
                       values: ["eco"]
                     - key: joulie.io/draining
-                      operator: In
-                      values: ["false"]
+                      operator: NotIn
+                      values: ["true"]
             """
         ),
         "  ",
@@ -571,8 +594,8 @@ def dump_debug() -> None:
 class Ctx:
     """Test context holding the two cluster node names.
 
-    perf_node  – always stays in performance (operator family floor).
-    eco_node   – transitions to eco when STATIC_HP_FRAC=0.
+    perf_node  – current family-floor node under STATIC_HP_FRAC=0.
+    eco_node   – current eco-capable node under STATIC_HP_FRAC=0.
     node       – alias for eco_node kept for clarity in test code.
     """
     perf_node: str
@@ -594,21 +617,28 @@ def test_boot_and_install() -> Ctx:
     nodes = wait_ready_nodes(count=2, timeout_sec=300)
     log(f"ready nodes: {nodes}")
 
-    for expected in (PERF_NODE, ECO_NODE):
+    for expected in EXPECTED_NODES:
         if expected not in nodes:
             raise RuntimeError(
                 f"expected node {expected!r} not present; got {nodes}. "
-                "Check that --node-name flags in the Dagger k3s setup match PERF_NODE/ECO_NODE constants."
+                "Check that --node-name flags in the Dagger k3s setup match EXPECTED_NODES."
             )
 
-    for node in (PERF_NODE, ECO_NODE):
+    for node in EXPECTED_NODES:
         kubectl(["label", "node", node, "joulie.io/managed=true", "--overwrite"])
 
     install_joulie()
     kubectl(["get", "crd", "nodepowerprofiles.joulie.io"])
     kubectl(["get", "crd", "telemetryprofiles.joulie.io"])
     kubectl(["create", "ns", "joulie-it"], check=False)
-    return Ctx(perf_node=PERF_NODE, eco_node=ECO_NODE)
+    set_static_hp_frac("0")
+    perf_node, eco_node = discover_perf_and_eco_nodes(list(EXPECTED_NODES))
+    log(f"discovered runtime node split: perf_node={perf_node}, eco_node={eco_node}")
+    set_static_hp_frac("1")
+    for node in EXPECTED_NODES:
+        wait_node_label(node, "joulie.io/power-profile", "performance")
+        wait_node_draining_false(node)
+    return Ctx(perf_node=perf_node, eco_node=eco_node)
 
 
 def test_telemetry_http(ctx: Ctx) -> None:
@@ -655,8 +685,8 @@ def test_fsm_and_labels(ctx: Ctx) -> None:
     wait_node_draining_false(ctx.eco_node)
 
     # eco_node is in performance; place a perf-intent pod there.
-    # nodeName bypasses the scheduler (kubelet still runs the pod) so the pod
-    # lands on eco_node regardless of its affinity.
+    # nodeName directly assigns the pod to eco_node so we can observe how the
+    # operator reacts on the node that should transition to eco when frac=0.
     delete_pod("joulie-it", "perf-a")
     apply_yaml(mk_pod_yaml("perf-a", affinity=perf_affinity_notin_eco(), node_name=ctx.eco_node))
     wait_pod_phase("joulie-it", "perf-a", "Running")
@@ -775,7 +805,7 @@ def test_scheduling(ctx: Ctx) -> None:
     wait_pod_unschedulable_reason("joulie-it", "sch-eco-on-perf", "affinity")
     delete_pod("joulie-it", "sch-eco-on-perf")
 
-    # --- Eco + draining=false does not schedule on draining eco_node ---
+    # --- Eco + draining!=true does not schedule on draining eco_node ---
     set_static_hp_frac("0")
     wait_node_label(ctx.eco_node, "joulie.io/power-profile", "eco")
     kubectl(
@@ -789,7 +819,7 @@ def test_scheduling(ctx: Ctx) -> None:
     delete_pod("joulie-it", "sch-eco-on-draining")
     apply_yaml(mk_pod_yaml(
         "sch-eco-on-draining",
-        affinity=eco_affinity_with_draining_false(),
+        affinity=eco_affinity_not_draining_true(),
         node_selector={"kubernetes.io/hostname": ctx.eco_node},
     ))
     wait_pod_pending("joulie-it", "sch-eco-on-draining")
@@ -804,9 +834,8 @@ def test_classification_matrix(ctx: Ctx) -> None:
 
     Strategy with two nodes:
     - Start each case with eco_node in performance (frac=1 → both nodes performance).
-    - Force the test pod onto eco_node via nodeName (bypasses scheduler, kubelet
-      runs it regardless of affinity; this lets us observe classification on a
-      node that WILL transition to eco).
+    - Force the test pod onto eco_node via nodeName where needed so we can
+      observe classification on the node that will later transition to eco.
     - Then trigger frac=0: operator tries to move eco_node to eco.
       · If pod is perf-intent  → draining=true  (guarded transition)
       · If pod is NOT perf-intent → eco_node goes to eco directly
@@ -1198,10 +1227,9 @@ def test_classification_matrix(ctx: Ctx) -> None:
         wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
         wait_node_draining_false(ctx.eco_node)
 
-        # Force pod to eco_node via nodeName when requested.
-        # nodeName bypasses the scheduler so kubelet runs the pod regardless of
-        # affinity; this lets us observe the operator's classification response
-        # on the node that will be targeted for eco.
+        # Force pod to eco_node via nodeName when requested. This directly
+        # assigns the pod to the node we later target for eco, but it does not
+        # bypass kubelet-side validation of incompatible affinity rules.
         # For cases without force_node_name the pod floats freely (best-effort,
         # preferred-only, unrelated-required); classification is still checked
         # via eco_node's state after frac=0.
@@ -1232,17 +1260,16 @@ def test_fsm_idempotency(ctx: Ctx) -> None:
     wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
     wait_node_draining_false(ctx.eco_node)
     labels_before = get_node_labels(ctx.eco_node)
-    rv_before = get_node_resource_version(ctx.eco_node)
     # Reconcile interval is 5s in test install; wait >2 cycles.
+    # Do not assert on Node resourceVersion here: kubelet/status churn can
+    # legitimately update the Node object even when Joulie's visible labels are
+    # stable.
     time.sleep(12)
     labels_after = get_node_labels(ctx.eco_node)
-    rv_after = get_node_resource_version(ctx.eco_node)
     if labels_before.get("joulie.io/power-profile") != labels_after.get("joulie.io/power-profile"):
         raise AssertionError("power-profile label flapped across idle reconciles")
     if labels_after.get("joulie.io/draining", "false") != "false":
         raise AssertionError("draining label should remain false in steady performance mode")
-    if rv_before != rv_after:
-        raise AssertionError(f"node resourceVersion changed without requested state change: {rv_before} -> {rv_after}")
 
 
 def main() -> int:
