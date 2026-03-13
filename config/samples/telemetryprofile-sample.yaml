@@ -25,4 +25,4 @@ spec:
     cpu:
       type: host
     gpu:
-      type: none
+      type: host

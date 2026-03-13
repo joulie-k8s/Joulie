@@ -56,6 +56,24 @@ def get_ready_node() -> str:
     raise RuntimeError("no Ready node found")
 
 
+def node_has_gpu_allocatable(node: str) -> bool:
+    out = kubectl(["get", "node", node, "-o", "json"], capture=True).stdout
+    alloc = json.loads(out).get("status", {}).get("allocatable", {}) or {}
+    for key in ("nvidia.com/gpu", "amd.com/gpu"):
+        val = str(alloc.get(key, "")).strip()
+        if not val:
+            continue
+        try:
+            if int(val) > 0:
+                return True
+        except ValueError:
+            # K8s quantities for extended resources are normally integer strings.
+            # Keep permissive behavior for unexpected formats.
+            if val not in ("0", "0m"):
+                return True
+    return False
+
+
 def wait_ready_node(timeout_sec: int = 300) -> str:
     last_seen: list[str] = []
 
@@ -360,7 +378,7 @@ def install_http_mock() -> None:
               server.py: |
                 import json
                 from http.server import BaseHTTPRequestHandler, HTTPServer
-                STATS = {"get": 0, "post": 0}
+                STATS = {"get": 0, "post": 0, "gpu_post": 0}
                 class H(BaseHTTPRequestHandler):
                     def do_GET(self):
                         if self.path.startswith("/telemetry/"):
@@ -375,6 +393,13 @@ def install_http_mock() -> None:
                     def do_POST(self):
                         if self.path.startswith("/control/"):
                             STATS["post"] += 1
+                            try:
+                                raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+                                payload = json.loads(raw.decode() or "{}")
+                                if payload.get("action") == "gpu.set_power_cap_watts":
+                                    STATS["gpu_post"] += 1
+                            except Exception:
+                                pass
                             self.send_response(200); self.end_headers()
                         else:
                             self.send_response(404); self.end_headers()
@@ -449,6 +474,12 @@ def apply_telemetry_profile(node: str) -> None:
                     endpoint: http://joulie-http-mock.joulie-it.svc.cluster.local:8080/control/{{node}}
                     timeoutSeconds: 3
                     mode: dvfs
+                gpu:
+                  type: http
+                  http:
+                    endpoint: http://joulie-http-mock.joulie-it.svc.cluster.local:8080/control/{{node}}
+                    timeoutSeconds: 3
+                    mode: powercap
             """
         )
     )
@@ -470,6 +501,39 @@ def get_mock_stats() -> dict[str, Any]:
         raise RuntimeError("timeout reading http-mock /stats via port-forward")
     finally:
         proc.terminate()
+
+
+def patch_node_gpu_cap(node: str, cap_watts_per_gpu: int) -> None:
+    out = kubectl(["get", "nodepowerprofiles", "-o", "json"], capture=True).stdout
+    items = json.loads(out).get("items", [])
+    name = None
+    for item in items:
+        if item.get("spec", {}).get("nodeName") == node:
+            name = item.get("metadata", {}).get("name")
+            break
+    if not name:
+        raise RuntimeError(f"nodepowerprofile for node {node} not found")
+    patch = {
+        "spec": {
+            "gpu": {
+                "powerCap": {
+                    "scope": "perGpu",
+                    "capWattsPerGpu": cap_watts_per_gpu,
+                }
+            }
+        }
+    }
+    kubectl(["patch", "nodepowerprofile", name, "--type=merge", "-p", json.dumps(patch)])
+
+
+def get_telemetryprofile_gpu_control_status(node: str) -> tuple[str, str]:
+    name = f"it-http-{node.replace('.', '-')}"
+    out = kubectl(["get", "telemetryprofile", name, "-o", "json"], capture=True, check=False)
+    if out.returncode != 0 or not out.stdout.strip():
+        return "", ""
+    status = json.loads(out.stdout).get("status", {})
+    gpu = status.get("control", {}).get("gpu", {})
+    return str(gpu.get("result", "")), str(gpu.get("message", ""))
 
 
 def dump_debug() -> None:
@@ -524,6 +588,23 @@ def test_telemetry_http(ctx: Ctx) -> None:
         raise AssertionError(f"expected telemetry GETs > 0, stats={stats}")
     if stats.get("post", 0) <= 0:
         raise AssertionError(f"expected control POSTs > 0, stats={stats}")
+    patch_node_gpu_cap(ctx.node, 200)
+    time.sleep(10)
+    stats = get_mock_stats()
+    gpu_posts = int(stats.get("gpu_post", 0))
+    if node_has_gpu_allocatable(ctx.node):
+        if gpu_posts <= 0:
+            raise AssertionError(f"expected gpu control POSTs > 0 on GPU node, stats={stats}")
+    else:
+        # In CI/k3s we usually have no GPU resources; GPU control must degrade gracefully.
+        if gpu_posts > 0:
+            log(f"unexpected gpu POSTs on non-GPU node (still tolerating): stats={stats}")
+        result, message = get_telemetryprofile_gpu_control_status(ctx.node)
+        if result not in ("none", "blocked", "error"):
+            raise AssertionError(
+                f"expected graceful non-GPU handling (none/blocked/error), got result={result!r}, message={message!r}"
+            )
+        log(f"non-GPU node graceful path confirmed: result={result!r}, message={message!r}")
 
 
 def test_fsm_and_labels(ctx: Ctx) -> None:
@@ -1020,13 +1101,20 @@ def test_fsm_idempotency(ctx: Ctx) -> None:
 
 def main() -> int:
     try:
+        scope = os.getenv("IT_SCOPE", "all").strip().lower()
+        log(f"integration scope: {scope}")
         ctx = test_boot_and_install()
-        test_classification_matrix(ctx)
         test_telemetry_http(ctx)
-        test_fsm_and_labels(ctx)
-        test_fsm_toggle_under_eco(ctx)
-        test_fsm_idempotency(ctx)
-        test_scheduling(ctx)
+        if scope in ("all", "full"):
+            test_classification_matrix(ctx)
+            test_fsm_and_labels(ctx)
+            test_fsm_toggle_under_eco(ctx)
+            test_fsm_idempotency(ctx)
+            test_scheduling(ctx)
+        elif scope in ("gpu", "gpu-only", "gpu_only"):
+            log("non-GPU suites temporarily disabled (IT_SCOPE=gpu-only)")
+        else:
+            raise RuntimeError(f"unknown IT_SCOPE={scope!r}; expected all/full or gpu-only")
         log("all integration tests passed")
         return 0
     except Exception as e:

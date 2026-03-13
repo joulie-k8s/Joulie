@@ -15,6 +15,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -567,6 +568,54 @@ func TestApplyThrottlePctHostWrites(t *testing.T) {
 	}
 }
 
+func TestApplyCPUPercentIntentHTTP(t *testing.T) {
+	t.Parallel()
+	var seen map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	d := &DVFSController{
+		powerReader: powerReaderStub{power: 250, ok: true},
+	}
+	c := &HTTPControlClient{
+		endpoint: srv.URL + "/control/{node}",
+		nodeName: "node-a",
+		client:   srv.Client(),
+	}
+	backend, result, msg, err := applyCPUPercentIntent(100, c, d, nil)
+	if err != nil {
+		t.Fatalf("applyCPUPercentIntent err: %v", err)
+	}
+	if backend != "dvfs" || result != "applied" {
+		t.Fatalf("unexpected backend/result: %s/%s", backend, result)
+	}
+	if !strings.Contains(msg, "throttle=0%") {
+		t.Fatalf("unexpected msg: %q", msg)
+	}
+	if got, _ := seen["action"].(string); got != "dvfs.set_throttle_pct" {
+		t.Fatalf("unexpected action: %v", seen["action"])
+	}
+	if got, _ := seen["throttlePct"].(float64); got != 0 {
+		t.Fatalf("unexpected throttlePct: %v", seen["throttlePct"])
+	}
+}
+
+func TestApplyCPUPercentIntentBlockedWithoutBackends(t *testing.T) {
+	t.Parallel()
+	backend, result, _, err := applyCPUPercentIntent(60, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if backend != "none" || result != "blocked" {
+		t.Fatalf("unexpected backend/result: %s/%s", backend, result)
+	}
+}
+
 func TestResolveDesiredStateAndTelemetryConfig(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
@@ -795,4 +844,194 @@ func TestReconcileOnceSimulateOnlyWritesAppliedStatus(t *testing.T) {
 	if backend != "none" || result != "applied" || !strings.Contains(msg, "simulate-only") {
 		t.Fatalf("unexpected status backend=%q result=%q msg=%q", backend, result, msg)
 	}
+}
+
+func TestDetectGPUVendor(t *testing.T) {
+	old := commandRunner
+	defer func() { commandRunner = old }()
+
+	commandRunner = fakeCommandRunner{
+		responses: map[string]fakeCommandResult{
+			"nvidia-smi -L": {out: "GPU 0: L40S"},
+		},
+	}
+	if got := detectGPUVendor(context.Background(), map[string]string{
+		"feature.node.kubernetes.io/pci-10de.present": "true",
+	}); got != "nvidia" {
+		t.Fatalf("vendor=%q want=nvidia", got)
+	}
+
+	commandRunner = fakeCommandRunner{
+		responses: map[string]fakeCommandResult{
+			"nvidia-smi -L":              {err: errors.New("not found")},
+			"rocm-smi --showproductname": {out: "card0"},
+		},
+	}
+	if got := detectGPUVendor(context.Background(), map[string]string{
+		"feature.node.kubernetes.io/pci-1002.present": "true",
+	}); got != "amd" {
+		t.Fatalf("vendor=%q want=amd", got)
+	}
+}
+
+func TestResolveGPUCapPerDevice(t *testing.T) {
+	t.Parallel()
+	devs := []GPUDevice{
+		{Index: 0, MinCapWatts: 200, MaxCapWatts: 350},
+		{Index: 1, MinCapWatts: 200, MaxCapWatts: 350},
+	}
+	pct := 60.0
+	got, _, ok := resolveGPUCapPerDevice(&GPUPowerCap{CapPctOfMax: &pct}, devs)
+	if !ok || got != 210 {
+		t.Fatalf("resolved cap got=%v ok=%v want=210/true", got, ok)
+	}
+}
+
+func TestApplyGPUIntentHTTP(t *testing.T) {
+	old := commandRunner
+	defer func() { commandRunner = old }()
+	commandRunner = fakeCommandRunner{
+		responses: map[string]fakeCommandResult{
+			"nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits": {
+				out: "0, 200, 350, 300, 250, NVIDIA L40S\n",
+			},
+			"nvidia-smi -L": {out: "GPU 0: NVIDIA L40S"},
+		},
+	}
+
+	var seen map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	client := &HTTPControlClient{
+		endpoint: srv.URL + "/control/{node}",
+		nodeName: "node-a",
+		client:   srv.Client(),
+	}
+	w := 220.0
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+			},
+		},
+	}
+	backend, result, _, _, err := applyGPUIntent(context.Background(), node, &GPUPowerCap{CapWattsPerGPU: &w}, client)
+	if err != nil {
+		t.Fatalf("applyGPUIntent err: %v", err)
+	}
+	if backend != "http" || result != "applied" {
+		t.Fatalf("unexpected backend/result %s/%s", backend, result)
+	}
+	if seen["action"] != "gpu.set_power_cap_watts" {
+		t.Fatalf("unexpected action payload: %#v", seen)
+	}
+}
+
+func TestApplyGPUIntentBlockedOnNonGPUNode(t *testing.T) {
+	t.Parallel()
+	w := 220.0
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+	}
+	backend, result, msg, observed, err := applyGPUIntent(context.Background(), node, &GPUPowerCap{CapWattsPerGPU: &w}, nil)
+	if err != nil {
+		t.Fatalf("applyGPUIntent err: %v", err)
+	}
+	if backend != "none" || result != "blocked" {
+		t.Fatalf("unexpected backend/result %s/%s", backend, result)
+	}
+	if msg != "node has no allocatable GPU resources" {
+		t.Fatalf("unexpected msg: %q", msg)
+	}
+	if observed == nil || observed["allocatableGPUs"] != 0 {
+		t.Fatalf("unexpected observed payload: %#v", observed)
+	}
+}
+
+func TestApplyGPUIntentHTTPAbsoluteBypassesInventory(t *testing.T) {
+	old := commandRunner
+	defer func() { commandRunner = old }()
+	// No command responses configured: inventory would fail if invoked.
+	commandRunner = fakeCommandRunner{responses: map[string]fakeCommandResult{}}
+
+	var seen map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := &HTTPControlClient{
+		endpoint: srv.URL + "/control/{node}",
+		nodeName: "node-a",
+		client:   srv.Client(),
+	}
+	w := 250.0
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+			},
+		},
+	}
+
+	backend, result, msg, observed, err := applyGPUIntent(context.Background(), node, &GPUPowerCap{CapWattsPerGPU: &w}, client)
+	if err != nil {
+		t.Fatalf("applyGPUIntent err: %v", err)
+	}
+	if backend != "http" || result != "applied" {
+		t.Fatalf("unexpected backend/result %s/%s", backend, result)
+	}
+	if !strings.Contains(msg, "applied gpu cap") {
+		t.Fatalf("unexpected msg: %q", msg)
+	}
+	if observed == nil || observed["capWattsPerGpu"] != 250.0 {
+		t.Fatalf("unexpected observed payload: %#v", observed)
+	}
+	if seen["action"] != "gpu.set_power_cap_watts" {
+		t.Fatalf("unexpected action payload: %#v", seen)
+	}
+}
+
+func TestResolveGPUCapPerDeviceFailsWhenPctNeedsUnknownMax(t *testing.T) {
+	t.Parallel()
+	pct := 70.0
+	_, msg, ok := resolveGPUCapPerDevice(&GPUPowerCap{CapPctOfMax: &pct}, []GPUDevice{
+		{Index: 0, MinCapWatts: 150, MaxCapWatts: 0},
+	})
+	if ok {
+		t.Fatalf("expected failure when max cap is unavailable")
+	}
+	if !strings.Contains(msg, "cannot resolve capPctOfMax") {
+		t.Fatalf("unexpected msg: %q", msg)
+	}
+}
+
+type fakeCommandResult struct {
+	out string
+	err error
+}
+
+type fakeCommandRunner struct {
+	responses map[string]fakeCommandResult
+}
+
+func (f fakeCommandRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	key := name
+	if len(args) > 0 {
+		key += " " + strings.Join(args, " ")
+	}
+	if r, ok := f.responses[key]; ok {
+		return []byte(r.out), r.err
+	}
+	return nil, fmt.Errorf("unexpected command: %s", key)
 }

@@ -87,6 +87,7 @@ class JoulieCi:
         password: Annotated[dagger.Secret, Doc("Registry password/token secret used to authenticate image pushes.")],
         registry_repo: Annotated[str, Doc("Target OCI repository prefix (without component suffix).")] = "registry.cern.ch/mbunino/joulie",
         tag: Annotated[str, Doc("Image tag to publish and deploy. Must start with 'dev'. Auto-generated when empty.")] = "",
+        it_scope: Annotated[str, Doc("Integration scope passed to test runner (all/full or gpu-only).")] = "all",
     ) -> str:
         """
         Build/push local Joulie images and run the k3s integration suite.
@@ -102,6 +103,8 @@ class JoulieCi:
             tag = f"dev-{uuid.uuid4().hex[:12]}"
         if not tag.startswith("dev"):
             raise ValueError("integration image tag must start with 'dev'")
+        if not it_scope:
+            it_scope = "all"
 
         k3s_mod = dag.k3_s("joulie-ci")
         k3s = k3s_mod.server()
@@ -137,6 +140,7 @@ class JoulieCi:
             .with_env_variable("JOULIE_OPERATOR_IMAGE_TAG", tag)
             .with_env_variable("JOULIE_AGENT_IMAGE_REF", agent_ref)
             .with_env_variable("JOULIE_OPERATOR_IMAGE_REF", operator_ref)
+            .with_env_variable("IT_SCOPE", it_scope)
             .with_workdir("/src")
             .with_exec(["bash", "ci/scripts/run-integration.sh"])
         )

@@ -90,7 +90,7 @@ In most cases, users should either:
 
 If you choose eco-only, adding `joulie.io/draining=false` avoids nodes in transition from performance to eco, which are labelled with `joulie.io/power-profile=eco` but still have a performance power profile (`DrainingPerformance` state).
 
-{{< highlight yaml "linenos=table,hl_lines=15-22" >}}
+{{< highlight yaml "linenos=table,hl_lines=15-25" >}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -124,3 +124,11 @@ spec:
 Reference manifests:
 
 - [Example 03 workloads](https://github.com/joulie-k8s/Joulie/blob/main/examples/03-workload-intent-classes/deployments.yaml)
+
+## GPU resource requests
+
+GPU scheduling resources (`nvidia.com/gpu`, `amd.com/gpu`) are independent from Joulie power-profile labels.
+
+- request GPU resources as usual in pod/container resources,
+- keep Joulie intent guidance based on power-profile constraints (`NotIn ["eco"]` for performance-sensitive workloads),
+- remember Joulie GPU capping is node-level (not per-container GPU slicing).

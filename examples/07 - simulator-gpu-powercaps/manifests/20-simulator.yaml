@@ -4,63 +4,6 @@ metadata:
   name: joulie-sim-demo
 ---
 apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: joulie-simulator-node-classes
-  namespace: joulie-sim-demo
-data:
-  node-classes.yaml: |
-    classes:
-      - name: intel-kwok
-        matchLabels:
-          feature.node.kubernetes.io/cpu-model.vendor_id: Intel
-        model:
-          baseIdleW: 65
-          pMaxW: 420
-          alphaUtil: 1.1
-          betaFreq: 1.25
-          fMinMHz: 1200
-          fMaxMHz: 3200
-          raplCapMinW: 70
-          raplCapMaxW: 600
-          dvfsRampMs: 400
-          defaultCapW: 500
-          gpu:
-            vendor: nvidia
-            product: NVIDIA-L40S
-            count: 4
-            idleWattsPerGpu: 30
-            maxWattsPerGpu: 350
-            minCapWattsPerGpu: 200
-            powerModel:
-              alphaUtil: 1.0
-              betaCap: 1.0
-      - name: amd-kwok
-        matchLabels:
-          feature.node.kubernetes.io/cpu-model.vendor_id: AMD
-        model:
-          baseIdleW: 75
-          pMaxW: 460
-          alphaUtil: 1.2
-          betaFreq: 1.35
-          fMinMHz: 1200
-          fMaxMHz: 3400
-          raplCapMinW: 70
-          raplCapMaxW: 650
-          dvfsRampMs: 500
-          defaultCapW: 550
-          gpu:
-            vendor: amd
-            product: AMD-Radeon-PRO-W7900
-            count: 4
-            idleWattsPerGpu: 25
-            maxWattsPerGpu: 295
-            minCapWattsPerGpu: 200
-            powerModel:
-              alphaUtil: 1.0
-              betaCap: 1.0
----
-apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: joulie-simulator
@@ -114,9 +57,7 @@ spec:
             - name: SIM_K8S_POD_WATCH
               value: "true"
             - name: SIM_POLL_INTERVAL
-              value: "10s"
-            - name: SIM_EVENT_BUFFER
-              value: "1000"
+              value: "8s"
             - name: SIM_NODE_SELECTOR
               value: "joulie.io/managed=true"
             - name: SIM_NODE_CLASS_CONFIG
@@ -140,7 +81,6 @@ spec:
         - name: workload-trace
           configMap:
             name: joulie-simulator-workload-trace
-            optional: true
 ---
 apiVersion: v1
 kind: Service

@@ -64,8 +64,25 @@ Main fields:
 
 - `spec.nodeName` (required)
 - `spec.profile` (required, `performance|eco`)
-- `spec.cpu.packagePowerCapWatts` (optional)
+- `spec.cpu.packagePowerCapWatts` (optional, absolute package cap)
+- `spec.cpu.packagePowerCapPctOfMax` (optional, normalized policy intent)
+- `spec.gpu.powerCap` (optional):
+  - `scope` (`perGpu`)
+  - `capWattsPerGpu` (absolute per-GPU cap)
+  - `capPctOfMax` (percentage of node GPU max power)
 - `spec.policy.name` (optional, provenance/debug)
+
+Resolution/precedence in agent runtime:
+
+1. CPU: `packagePowerCapWatts` if present, otherwise `packagePowerCapPctOfMax`
+2. GPU: `capWattsPerGpu` if present, otherwise `capPctOfMax`
+
+What the operator typically writes today:
+
+- CPU intent is commonly emitted as `packagePowerCapPctOfMax`.
+- GPU intent may be emitted as:
+  - `capPctOfMax` only, when the agent is expected to resolve percentage to watts from device limits,
+  - `capWattsPerGpu` plus `capPctOfMax`, when the operator has deterministic model-based mapping available and wants the absolute target to be explicit.
 
 Example:
 
@@ -73,26 +90,76 @@ Example:
 apiVersion: joulie.io/v1alpha1
 kind: NodePowerProfile
 metadata:
-  name: node-worker-01
+  name: node-kwok-gpu-nvidia-0
 spec:
-  nodeName: worker-01
+  nodeName: kwok-gpu-nvidia-0
   profile: eco
   cpu:
-    packagePowerCapWatts: 180
+    packagePowerCapPctOfMax: 60
+  gpu:
+    powerCap:
+      scope: perGpu
+      capPctOfMax: 60
+      capWattsPerGpu: 210
   policy:
-    name: static_partition
+    name: static-partition-v1
 ```
+
+In this example:
+
+- CPU is expressed as a normalized percentage of max package power.
+- GPU is expressed as both percentage and resolved absolute watts per GPU.
+- The agent applies the absolute GPU cap when present and falls back to percentage only when absolute watts are not provided.
 
 ## Telemetry/control routing: `TelemetryProfile`
 
-`TelemetryProfile` defines how the agent reads telemetry and sends controls (`host`, `http`, ...).
+`TelemetryProfile` is the routing contract that tells the agent where telemetry comes from and where control intents should be sent.
 
-In short:
+At the policy-model level, the important distinction is:
 
-- `NodePowerProfile` = what target a node should have
-- `TelemetryProfile` = how telemetry/control IO is wired
+- `NodePowerProfile` says what state a node should reach
+- `TelemetryProfile` says how the agent should observe and actuate that node
 
-Details are in [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}}).
+High-level shape:
+
+- `spec.target`: which node or scope the profile applies to
+- `spec.sources`: telemetry backends (`cpu`, `gpu`, `thermal`, `context`)
+- `spec.controls`: control backends (`cpu`, `gpu`)
+- `status.control`: per-control outcome written back by the agent
+
+Example:
+
+```yaml
+apiVersion: joulie.io/v1alpha1
+kind: TelemetryProfile
+metadata:
+  name: sim-http-kwok-gpu-nvidia-0
+spec:
+  target:
+    scope: node
+    nodeName: kwok-gpu-nvidia-0
+  sources:
+    cpu:
+      type: http
+      http:
+        endpoint: http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node}
+        timeoutSeconds: 2
+  controls:
+    cpu:
+      type: http
+      http:
+        endpoint: http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}
+        timeoutSeconds: 2
+        mode: dvfs
+    gpu:
+      type: http
+      http:
+        endpoint: http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}
+        timeoutSeconds: 2
+        mode: powercap
+```
+
+The full runtime contract, backend types, HTTP payloads, and status semantics are documented in [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}}).
 
 ## End-to-end contract flow
 

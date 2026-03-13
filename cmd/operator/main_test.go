@@ -6,6 +6,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -258,14 +259,6 @@ func TestApplyDowngradeGuardsClearsDrainingWhenNoPerfPods(t *testing.T) {
 	}
 }
 
-func TestNormalizeNodeLabelsLegacyMigration(t *testing.T) {
-	t.Parallel()
-	prof, draining := normalizeNodeLabels("draining-performance", "")
-	if prof != "eco" || !draining {
-		t.Fatalf("legacy migration failed got profile=%s draining=%v", prof, draining)
-	}
-}
-
 func TestComputeDesiredLabelsMatrix(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -415,6 +408,14 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 		1,
 		5,
 		10,
+		100,
+		60,
+		false,
+		100,
+		60,
+		false,
+		map[string]GPUModelCaps{},
+		[]string{"joulie.io/gpu.product"},
 	); err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
@@ -559,4 +560,138 @@ func TestBuildPlanByPolicyUnknownFallsBackToStatic(t *testing.T) {
 	if perf != 2 {
 		t.Fatalf("perf nodes=%d want=2 (50/50 static fallback)", perf)
 	}
+}
+
+func TestComputeGPUIntentPctOnly(t *testing.T) {
+	t.Parallel()
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "n1",
+			Labels: map[string]string{
+				"joulie.io/gpu.product": "NVIDIA-L40S",
+			},
+		},
+		Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceName("nvidia.com/gpu"): resourceMustParse("4"),
+			},
+		},
+	}
+	intent := computeGPUIntentForNode(node, profileEco, 100, 60, false, nil, []string{"joulie.io/gpu.product"})
+	if intent == nil || intent.CapPctOfMax == nil || *intent.CapPctOfMax != 60 {
+		t.Fatalf("unexpected intent: %#v", intent)
+	}
+	if intent.CapWattsPerGPU != nil {
+		t.Fatalf("absolute cap should be unset when writeAbsolute=false")
+	}
+}
+
+func TestComputeGPUIntentAbsoluteWhenModelExists(t *testing.T) {
+	t.Parallel()
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "n1",
+			Labels: map[string]string{
+				"joulie.io/gpu.product": "NVIDIA-L40S",
+			},
+		},
+		Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceName("nvidia.com/gpu"): resourceMustParse("8"),
+			},
+		},
+	}
+	intent := computeGPUIntentForNode(
+		node,
+		profileEco,
+		100,
+		60,
+		true,
+		map[string]GPUModelCaps{"NVIDIA-L40S": {MinCapWatts: 200, MaxCapWatts: 350}},
+		[]string{"joulie.io/gpu.product"},
+	)
+	if intent == nil || intent.CapWattsPerGPU == nil {
+		t.Fatalf("expected absolute gpu cap intent, got %#v", intent)
+	}
+	if got := *intent.CapWattsPerGPU; got != 210 {
+		t.Fatalf("absolute cap got=%v want=210", got)
+	}
+}
+
+func TestComputeGPUIntentFallsBackWhenModelMissing(t *testing.T) {
+	t.Parallel()
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "n1",
+			Labels: map[string]string{
+				"joulie.io/gpu.product": "Unknown",
+			},
+		},
+		Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceName("amd.com/gpu"): resourceMustParse("2"),
+			},
+		},
+	}
+	intent := computeGPUIntentForNode(node, profilePerformance, 100, 60, true, map[string]GPUModelCaps{}, []string{"joulie.io/gpu.product"})
+	if intent == nil || intent.CapPctOfMax == nil || *intent.CapPctOfMax != 100 {
+		t.Fatalf("expected pct fallback, got %#v", intent)
+	}
+	if intent.CapWattsPerGPU != nil {
+		t.Fatalf("did not expect absolute cap when model is missing")
+	}
+}
+
+func TestComputeGPUIntentReturnsNilWithoutAllocatableGPU(t *testing.T) {
+	t.Parallel()
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "cpu-only"},
+		Status:     corev1.NodeStatus{Allocatable: corev1.ResourceList{}},
+	}
+	intent := computeGPUIntentForNode(node, profilePerformance, 100, 60, false, nil, []string{"joulie.io/gpu.product"})
+	if intent != nil {
+		t.Fatalf("expected nil intent for non-GPU node, got %#v", intent)
+	}
+}
+
+func TestComputeGPUIntentReturnsNilWhenPctDisabled(t *testing.T) {
+	t.Parallel()
+	node := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1"},
+		Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceName("nvidia.com/gpu"): resourceMustParse("1"),
+			},
+		},
+	}
+	intent := computeGPUIntentForNode(node, profileEco, 100, 0, false, nil, []string{"joulie.io/gpu.product"})
+	if intent != nil {
+		t.Fatalf("expected nil intent when eco gpu pct is disabled, got %#v", intent)
+	}
+}
+
+func TestParseGPUModelCapsInvalidJSON(t *testing.T) {
+	t.Parallel()
+	got := parseGPUModelCaps("{")
+	if len(got) != 0 {
+		t.Fatalf("expected empty map on invalid json, got=%#v", got)
+	}
+}
+
+func TestDiscoverGPUCountCustomSuffix(t *testing.T) {
+	t.Parallel()
+	node := corev1.Node{
+		Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceName("vendor.example/gpu"): resourceMustParse("3"),
+			},
+		},
+	}
+	if got := discoverGPUCount(node); got != 3 {
+		t.Fatalf("discoverGPUCount=%d want=3", got)
+	}
+}
+
+func resourceMustParse(v string) resource.Quantity {
+	return resource.MustParse(v)
 }

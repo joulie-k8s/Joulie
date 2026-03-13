@@ -8,6 +8,9 @@ This page describes runtime IO contracts:
 - how Joulie reads telemetry inputs,
 - how Joulie sends control intents.
 
+If you want the CRD-level summary first, read [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}}).
+This page is the detailed runtime reference for the `TelemetryProfile` contract.
+
 It is not the `/metrics` exposition contract.
 For exported metrics, see [Metrics Reference]({{< relref "/docs/architecture/metrics.md" >}}).
 
@@ -19,6 +22,15 @@ Joulie must run in two worlds with the same control logic:
 - simulator/KWOK clusters.
 
 So agent/operator logic depends on provider interfaces, not directly on sysfs or simulator HTTP shape.
+
+## `TelemetryProfile` in one sentence
+
+`TelemetryProfile` tells the agent which telemetry backend to read from and which control backend to write to for a given node or scope.
+
+Conceptually:
+
+- `NodePowerProfile` defines the target
+- `TelemetryProfile` defines the wiring
 
 ## Telemetry provider model
 
@@ -44,6 +56,7 @@ Result semantics:
 - `applied`
 - `blocked`
 - `error`
+- `none` (no intent selected for that control path)
 
 This allows desired vs applied behavior auditing.
 
@@ -56,6 +69,22 @@ Supported intent actions:
 
 DVFS intent is normalized as `throttlePct` (`0..100`) to stay portable across heterogeneous CPUs.
 Backend-specific frequency writes remain implementation details.
+
+## GPU control intent
+
+Supported GPU intent action:
+
+- `gpu.set_power_cap_watts`
+
+Payload:
+
+- `capWattsPerGpu`
+
+Semantics:
+
+- node-level intent is translated to per-device enforcement,
+- same cap is applied to all GPUs on the node,
+- result is reported as `applied|blocked|error` in `TelemetryProfile.status.control.gpu`.
 
 ## Current HTTP contracts
 
@@ -103,6 +132,13 @@ Agent host mode uses Linux interfaces:
 - RAPL energy/power cap files
 - cpufreq files for observed and enforced frequency bounds
 
+GPU host control backends:
+
+- NVIDIA path: NVIDIA tooling/NVML-compatible power-limit controls
+- AMD path: ROCm SMI power-limit controls where supported
+
+If a GPU backend is unavailable on a node, result is `blocked` (not silent success).
+
 Current deployment convention mounts host `/sys` into container `/host-sys`.
 
 ## CRD integration
@@ -113,6 +149,9 @@ Current runtime responsibilities:
 - agent reads `NodePowerProfile` for desired state,
 - agent reads node-scoped `TelemetryProfile` for source/control routing,
 - agent writes control status under `TelemetryProfile.status.control`.
+
+Today, the stable documented status contract is `TelemetryProfile.status.control`.
+If additional diagnostic snapshots are present in some environments, treat them as auxiliary rather than core API contract.
 
 ## Next step
 

@@ -30,8 +30,13 @@ This separation lets you validate control policies with realistic scheduler beha
 ## Goals
 
 - Keep Kubernetes scheduling real (real pod placement/lifecycle).
-- Simulate hardware telemetry and control interfaces (RAPL/DVFS now, GPU later).
+- Simulate hardware telemetry and control interfaces (CPU and GPU).
 - Provide reproducible, comparable experiments across Joulie and WAO.
+
+## Validation disclaimer
+
+GPU support has been validated in simulator mode only (no bare-metal GPU access yet).
+Host GPU code paths are designed for NVIDIA/AMD nodes and become fully testable once real GPU nodes are available.
 
 ## Design choice: hybrid simulation
 
@@ -103,13 +108,14 @@ In simulator mode:
 
 - `spec.sources.cpu.type=http` -> agent reads `/telemetry/{node}`.
 - `spec.controls.cpu.type=http` -> agent writes `/control/{node}`.
+- `spec.controls.gpu.type=http` -> agent writes GPU power-cap intents to `/control/{node}`.
 
 ## Simulator HTTP API
 
 - `GET /telemetry/{node}`
-  - returns simulated per-node telemetry (`cpu.packagePowerWatts`, throttle, cap, pod count).
+  - returns simulated per-node telemetry (`cpu.*`, `gpu.*`, pod counters).
 - `POST /control/{node}`
-  - accepts actions like `rapl.set_power_cap_watts`, `dvfs.set_throttle_pct`.
+  - accepts actions like `rapl.set_power_cap_watts`, `dvfs.set_throttle_pct`, `gpu.set_power_cap_watts`.
   - returns `result=applied|blocked|error`.
 - `GET /state/{node}`
   - returns current internal node state.
@@ -230,3 +236,8 @@ Algorithm details are split in:
 
 - [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
 - [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
+- [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})
+
+Related example:
+
+- `examples/07 - simulator-gpu-powercaps/`

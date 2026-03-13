@@ -41,6 +41,14 @@ operator:
     POWER_PROFILE_LABEL: "joulie.io/power-profile"
     PERFORMANCE_CAP_WATTS: "5000"
     ECO_CAP_WATTS: "120"
+    CPU_PERFORMANCE_CAP_PCT_OF_MAX: "100"
+    CPU_ECO_CAP_PCT_OF_MAX: "60"
+    CPU_WRITE_ABSOLUTE_CAPS: "false"
+    GPU_PERFORMANCE_CAP_PCT_OF_MAX: "100"
+    GPU_ECO_CAP_PCT_OF_MAX: "60"
+    GPU_WRITE_ABSOLUTE_CAPS: "false"
+    GPU_MODEL_CAPS_JSON: "{}"
+    GPU_PRODUCT_LABEL_KEYS: "joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product,amd.com/gpu.family"
   service:
     enabled: true
     port: 8081
