@@ -112,7 +112,7 @@ Joulie control is a desired-state loop:
 
 - agent discovers per-node hardware and publishes `NodeHardware`,
 - operator resolves hardware/inventory and decides per-node target state,
-- operator decides per-node target state and writes `NodePowerProfile`,
+- operator writes that desired state as `NodePowerProfile`,
 - node labels (`joulie.io/power-profile`) expose current supply to the scheduler,
 - agent enforces node-local controls from desired state and telemetry/control profile.
 
@@ -183,6 +183,7 @@ For fake-node workload + power simulation (real scheduler, fake [KWOK](https://k
 - [Simulator Overview]({{< relref "/docs/simulator/simulator.md" >}})
 - [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
 - [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
+- [Hardware Modeling and Physical Power Model]({{< relref "/docs/hardware/hardware-modeling.md" >}})
 - [KWOK Simulator Example](https://github.com/joulie-k8s/Joulie/tree/main/examples/06-simulator-kwok)
 
 ## Next step

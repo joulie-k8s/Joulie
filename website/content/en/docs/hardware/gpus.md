@@ -51,8 +51,21 @@ Simulator telemetry includes:
 - `gpu.vendor`
 - `gpu.count`
 - `gpu.powerWattsTotal`
+- `gpu.avgPowerWattsTotal`
 - `gpu.capWattsPerGpuApplied`
 - `gpu.utilization`
+
+Per-device entries also expose:
+
+- `temperatureC`
+- `thermalThrottle`
+- `avgPowerWatts`
+
+This makes it easier to compare:
+
+- internal power-cap dynamics,
+- exported averaged telemetry,
+- and sustained thermal behavior during long runs.
 
 ## Scheduling guidance
 

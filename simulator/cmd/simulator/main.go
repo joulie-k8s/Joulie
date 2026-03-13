@@ -35,6 +35,7 @@ var nodeListFunc = listNodeLabels
 
 type nodeState struct {
 	CapWatts                float64          `json:"capWatts"`
+	TargetCapWatts          float64          `json:"targetCapWatts"`
 	ThrottlePct             int              `json:"throttlePct"`
 	TargetThrottlePct       int              `json:"targetThrottlePct"`
 	FreqScale               float64          `json:"freqScale"`
@@ -52,6 +53,14 @@ type nodeState struct {
 	GPUWorkClass            string           `json:"gpuWorkClass"`
 	GPUPowerWatts           float64          `json:"gpuPowerWatts"`
 	GPUPerfMultiplier       float64          `json:"gpuPerfMultiplier"`
+	MemoryIntensity         float64          `json:"memoryIntensity"`
+	IOIntensity             float64          `json:"ioIntensity"`
+	CPUFeedIntensity        float64          `json:"cpuFeedIntensity"`
+	CPUInstantPowerWatts    float64          `json:"cpuInstantPowerWatts"`
+	CPUAvgPowerWatts        float64          `json:"cpuAvgPowerWatts"`
+	TotalAvgPowerWatts      float64          `json:"totalAvgPowerWatts"`
+	CPUTemperatureC         float64          `json:"cpuTemperatureC"`
+	CPUThermalThrottle      float64          `json:"cpuThermalThrottle"`
 	CPUSockets              []cpuSocketState `json:"cpuSockets,omitempty"`
 	GPUDevices              []gpuDeviceState `json:"gpuDevices,omitempty"`
 }
@@ -68,7 +77,10 @@ type gpuDeviceState struct {
 	CapWatts           float64 `json:"capWatts"`
 	TargetCapWatts     float64 `json:"targetCapWatts"`
 	PowerWatts         float64 `json:"powerWatts"`
+	AvgPowerWatts      float64 `json:"avgPowerWatts"`
 	PerfMultiplier     float64 `json:"perfMultiplier"`
+	TemperatureC       float64 `json:"temperatureC"`
+	ThermalThrottle    float64 `json:"thermalThrottle"`
 	SettledAtTimestamp string  `json:"settledAt,omitempty"`
 }
 
@@ -93,6 +105,10 @@ type runningPodInfo struct {
 
 type simJob struct {
 	JobID             string
+	WorkloadID        string
+	WorkloadType      string
+	PodRole           string
+	Gang              bool
 	Class             string
 	Namespace         string
 	SubmitOffsetSec   float64
@@ -126,6 +142,7 @@ type workloadEngine struct {
 	baseSpeedCore float64
 	jobs          []*simJob
 	jobByID       map[string]*simJob
+	jobsByWorkload map[string][]*simJob
 }
 
 type simulator struct {
@@ -344,6 +361,7 @@ func (s *simulator) getNode(node string) *nodeState {
 		}
 		st = &nodeState{
 			CapWatts:                model.DefaultCapW,
+			TargetCapWatts:          model.DefaultCapW,
 			ThrottlePct:             0,
 			TargetThrottlePct:       0,
 			FreqScale:               1.0,
@@ -357,6 +375,9 @@ func (s *simulator) getNode(node string) *nodeState {
 			GPUTargetCapWattsPerGpu: model.GPU.MaxWattsPerGPU,
 			GPUWorkClass:            "gpu.mixed",
 			GPUPerfMultiplier:       1.0,
+			CPUAvgPowerWatts:        model.BaseIdleW,
+			TotalAvgPowerWatts:      model.BaseIdleW,
+			CPUTemperatureC:         model.CPUAmbientTempC,
 		}
 		cpuSockets := model.CPUSockets
 		if cpuSockets <= 0 {
@@ -379,6 +400,8 @@ func (s *simulator) getNode(node string) *nodeState {
 					Index:          i,
 					CapWatts:       cap,
 					TargetCapWatts: cap,
+					AvgPowerWatts:  model.GPU.IdleWattsPerGPU,
+					TemperatureC:   model.GPU.AmbientTempC,
 				})
 			}
 		}
@@ -403,87 +426,14 @@ func (s *simulator) nodePower(node string, st *nodeState) float64 {
 
 func (s *simulator) nodePowerWithModel(st *nodeState, model simModel) float64 {
 	s.updateNodeDynamicsWithModel(st, model)
-	util := clamp01(st.CPUUtil)
-	freq := clamp01(st.FreqScale)
-	cpuClass := strings.TrimSpace(st.CPUWorkClass)
-	if cpuClass == "" {
-		cpuClass = "cpu.mixed"
+	cpuInstant := cpuPowerWithModel(st, model)
+	gpuInstant := gpuPowerWithModel(st, model)
+	st.CPUInstantPowerWatts = cpuInstant
+	st.GPUPowerWatts = gpuInstant
+	if st.TotalAvgPowerWatts > 0 {
+		return math.Round(st.TotalAvgPowerWatts*100) / 100
 	}
-	p := 0.0
-	if len(model.CPUPowerCurve) > 0 {
-		cpuModel := phys.MeasuredCurveCPUModel{
-			Points: model.CPUPowerCurve,
-			Knee:   cpuKneeFromModel(model),
-		}
-		p = cpuModel.Power(phys.DeviceState{
-			Utilization: util,
-			FreqScale:   freq,
-			CapWatts:    st.CapWatts,
-			Class:       cpuClass,
-		})
-	} else {
-		alpha := model.AlphaUtil
-		if alpha <= 0 {
-			alpha = 1
-		}
-		beta := model.BetaFreq
-		if beta <= 0 {
-			beta = 1
-		}
-		p = model.BaseIdleW + (model.PMaxW-model.BaseIdleW)*math.Pow(util, alpha)*math.Pow(freq, beta)
-	}
-	p = math.Max(20, p)
-
-	capW := st.CapWatts
-	if capW < model.RaplCapMinW {
-		capW = model.RaplCapMinW
-	}
-	if model.RaplCapMaxW > 0 && capW > model.RaplCapMaxW {
-		capW = model.RaplCapMaxW
-	}
-	minFreq := minFreqScale(model)
-	alpha := model.AlphaUtil
-	if alpha <= 0 {
-		alpha = 1
-	}
-	beta := model.BetaFreq
-	if beta <= 0 {
-		beta = 1
-	}
-	minPower := model.BaseIdleW + (model.PMaxW-model.BaseIdleW)*math.Pow(util, alpha)*math.Pow(minFreq, beta)
-	st.CapSaturated = false
-	if p > capW {
-		st.CapSaturated = minPower > capW
-		targetFreq := solveFreqScaleForCap(model, util, capW, cpuClass)
-		st.FreqScale = math.Max(minFreq, math.Min(st.FreqScale, targetFreq))
-		freq = clamp01(st.FreqScale)
-		if len(model.CPUPowerCurve) > 0 {
-			cpuModel := phys.MeasuredCurveCPUModel{
-				Points: model.CPUPowerCurve,
-				Knee:   cpuKneeFromModel(model),
-			}
-			p = cpuModel.Power(phys.DeviceState{
-				Utilization: util,
-				FreqScale:   freq,
-				CapWatts:    capW,
-				Class:       cpuClass,
-			})
-		} else {
-			alpha := model.AlphaUtil
-			if alpha <= 0 {
-				alpha = 1
-			}
-			beta := model.BetaFreq
-			if beta <= 0 {
-				beta = 1
-			}
-			p = model.BaseIdleW + (model.PMaxW-model.BaseIdleW)*math.Pow(util, alpha)*math.Pow(freq, beta)
-		}
-	}
-	p = math.Min(p, capW+model.RaplHeadW)
-	gpu := gpuPowerWithModel(st, model)
-	st.GPUPowerWatts = gpu
-	return math.Round((p+gpu)*100) / 100
+	return math.Round((cpuInstant+gpuInstant)*100) / 100
 }
 
 func gpuPowerWithModel(st *nodeState, model simModel) float64 {
@@ -514,20 +464,19 @@ func gpuPowerWithModel(st *nodeState, model simModel) float64 {
 	}
 	for i := range st.GPUDevices {
 		d := &st.GPUDevices[i]
-		p := gpuModel.Power(phys.DeviceState{
-			Utilization:    clamp01(st.GPUUtil),
-			CapWatts:       d.CapWatts,
-			MaxCapWatts:    model.GPU.MaxWattsPerGPU,
-			IdlePowerWatts: model.GPU.IdleWattsPerGPU,
-			Class:          class,
-		})
-		t := gpuModel.ThroughputMultiplier(phys.DeviceState{
-			Utilization:    clamp01(st.GPUUtil),
-			CapWatts:       d.CapWatts,
-			MaxCapWatts:    model.GPU.MaxWattsPerGPU,
-			IdlePowerWatts: model.GPU.IdleWattsPerGPU,
-			Class:          class,
-		}, class)
+		deviceState := phys.DeviceState{
+			Utilization:      clamp01(st.GPUUtil),
+			CapWatts:         d.CapWatts,
+			MaxCapWatts:      model.GPU.MaxWattsPerGPU,
+			IdlePowerWatts:   model.GPU.IdleWattsPerGPU,
+			MemoryIntensity:  st.MemoryIntensity,
+			CPUFeedIntensity: st.CPUFeedIntensity,
+			TemperatureC:     d.TemperatureC,
+			ThermalThrottle:  d.ThermalThrottle,
+			Class:            class,
+		}
+		p := gpuModel.Power(deviceState)
+		t := gpuModel.ThroughputMultiplier(deviceState, class)
 		d.PowerWatts = p
 		d.PerfMultiplier = t
 		total += p
@@ -539,6 +488,87 @@ func gpuPowerWithModel(st *nodeState, model simModel) float64 {
 		st.GPUPerfMultiplier = 1.0
 	}
 	return math.Round(total*100) / 100
+}
+
+func cpuPowerWithModel(st *nodeState, model simModel) float64 {
+	util := clamp01(st.CPUUtil)
+	freq := clamp01(st.FreqScale)
+	cpuClass := strings.TrimSpace(st.CPUWorkClass)
+	if cpuClass == "" {
+		cpuClass = "cpu.mixed"
+	}
+	capW := st.CapWatts
+	if capW < model.RaplCapMinW {
+		capW = model.RaplCapMinW
+	}
+	if model.RaplCapMaxW > 0 && capW > model.RaplCapMaxW {
+		capW = model.RaplCapMaxW
+	}
+	minFreq := minFreqScale(model)
+	cpuState := phys.DeviceState{
+		Utilization:     util,
+		FreqScale:       freq,
+		CapWatts:        capW,
+		MemoryIntensity: st.MemoryIntensity,
+		IOIntensity:     st.IOIntensity,
+		TemperatureC:    st.CPUTemperatureC,
+		ThermalThrottle: st.CPUThermalThrottle,
+		Class:           cpuClass,
+	}
+
+	p := 0.0
+	if len(model.CPUPowerCurve) > 0 {
+		cpuModel := phys.MeasuredCurveCPUModel{
+			Points: model.CPUPowerCurve,
+			Knee:   cpuKneeFromModel(model),
+		}
+		p = cpuModel.Power(cpuState)
+	} else {
+		alpha := model.AlphaUtil
+		if alpha <= 0 {
+			alpha = 1
+		}
+		beta := model.BetaFreq
+		if beta <= 0 {
+			beta = 1
+		}
+		activity := 1.0 - 0.30*clamp01(st.MemoryIntensity) - 0.45*clamp01(st.IOIntensity)
+		activity = math.Max(0.35, math.Min(1.0, activity))
+		p = model.BaseIdleW + (model.PMaxW-model.BaseIdleW)*math.Pow(clamp01(util*activity), alpha)*math.Pow(freq, beta)
+		p *= 1.0 - 0.35*clamp01(st.CPUThermalThrottle)
+	}
+	p = math.Max(20, p)
+
+	alpha := model.AlphaUtil
+	if alpha <= 0 {
+		alpha = 1
+	}
+	beta := model.BetaFreq
+	if beta <= 0 {
+		beta = 1
+	}
+	activity := 1.0 - 0.30*clamp01(st.MemoryIntensity) - 0.45*clamp01(st.IOIntensity)
+	activity = math.Max(0.35, math.Min(1.0, activity))
+	minPower := model.BaseIdleW + (model.PMaxW-model.BaseIdleW)*math.Pow(clamp01(util*activity), alpha)*math.Pow(minFreq, beta)
+	st.CapSaturated = false
+	if p > capW {
+		st.CapSaturated = minPower > capW
+		targetFreq := solveFreqScaleForCap(model, util, capW, cpuClass)
+		st.FreqScale = math.Max(minFreq, math.Min(st.FreqScale, targetFreq))
+		freq = clamp01(st.FreqScale)
+		cpuState.FreqScale = freq
+		if len(model.CPUPowerCurve) > 0 {
+			cpuModel := phys.MeasuredCurveCPUModel{
+				Points: model.CPUPowerCurve,
+				Knee:   cpuKneeFromModel(model),
+			}
+			p = cpuModel.Power(cpuState)
+		} else {
+			p = model.BaseIdleW + (model.PMaxW-model.BaseIdleW)*math.Pow(clamp01(util*activity), alpha)*math.Pow(freq, beta)
+			p *= 1.0 - 0.35*clamp01(st.CPUThermalThrottle)
+		}
+	}
+	return math.Min(p, capW+model.RaplHeadW)
 }
 
 func (s *simulator) updateNodeMetrics(node string, st *nodeState) {
@@ -577,34 +607,45 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	power := s.nodePower(node, st)
 	modelForTelemetry := s.modelForNode(node)
 	s.recordEvent("telemetry", node, map[string]any{
-		"packagePowerWatts": power,
-		"capWatts":          st.CapWatts,
-		"throttlePct":       st.ThrottlePct,
-		"freqScale":         st.FreqScale,
-		"cpuUtil":           st.CPUUtil,
-		"cpuWorkClass":      st.CPUWorkClass,
-		"capSaturated":      st.CapSaturated,
-		"podsRunning":       st.PodsRunning,
-		"gpuPowerWatts":     st.GPUPowerWatts,
-		"gpuCapWattsPerGpu": st.GPUCapWattsPerGpu,
-		"gpuUtil":           st.GPUUtil,
-		"gpuWorkClass":      st.GPUWorkClass,
-		"gpuPerfMultiplier": st.GPUPerfMultiplier,
+		"packagePowerWatts":        power,
+		"instantPackagePowerWatts": st.CPUInstantPowerWatts + st.GPUPowerWatts,
+		"capWatts":                 st.CapWatts,
+		"throttlePct":              st.ThrottlePct,
+		"freqScale":                st.FreqScale,
+		"cpuUtil":                  st.CPUUtil,
+		"cpuWorkClass":             st.CPUWorkClass,
+		"capSaturated":             st.CapSaturated,
+		"podsRunning":              st.PodsRunning,
+		"gpuPowerWatts":            st.GPUPowerWatts,
+		"gpuCapWattsPerGpu":        st.GPUCapWattsPerGpu,
+		"gpuUtil":                  st.GPUUtil,
+		"gpuWorkClass":             st.GPUWorkClass,
+		"gpuPerfMultiplier":        st.GPUPerfMultiplier,
+		"memoryIntensity":          st.MemoryIntensity,
+		"ioIntensity":              st.IOIntensity,
+		"cpuFeedIntensity":         st.CPUFeedIntensity,
 	})
 	log.Printf("telemetry node=%s powerW=%.2f capW=%.2f throttlePct=%d pods=%d", node, power, st.CapWatts, st.ThrottlePct, st.PodsRunning)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"node":              node,
-		"packagePowerWatts": power,
+		"node":                     node,
+		"packagePowerWatts":        power,
+		"instantPackagePowerWatts": math.Round((st.CPUInstantPowerWatts+st.GPUPowerWatts)*100) / 100,
 		"cpu": map[string]any{
-			"packagePowerWatts": power,
-			"utilization":       st.CPUUtil,
-			"workClass":         st.CPUWorkClass,
-			"freqScale":         st.FreqScale,
-			"throttlePct":       st.ThrottlePct,
-			"capWatts":          st.CapWatts,
-			"raplCapWatts":      st.CapWatts,
-			"capSaturated":      st.CapSaturated,
+			"packagePowerWatts":  st.CPUAvgPowerWatts,
+			"instantPowerWatts":  st.CPUInstantPowerWatts,
+			"utilization":        st.CPUUtil,
+			"memoryIntensity":    st.MemoryIntensity,
+			"ioIntensity":        st.IOIntensity,
+			"workClass":          st.CPUWorkClass,
+			"freqScale":          st.FreqScale,
+			"throttlePct":        st.ThrottlePct,
+			"thermalThrottlePct": st.CPUThermalThrottle * 100.0,
+			"temperatureC":       st.CPUTemperatureC,
+			"capWatts":           st.CapWatts,
+			"targetCapWatts":     st.TargetCapWatts,
+			"raplCapWatts":       st.CapWatts,
+			"capSaturated":       st.CapSaturated,
 		},
 		"gpu": map[string]any{
 			"present":               modelForTelemetry.GPU.Count > 0,
@@ -612,9 +653,12 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 			"product":               modelForTelemetry.GPU.Product,
 			"count":                 modelForTelemetry.GPU.Count,
 			"powerWattsTotal":       st.GPUPowerWatts,
+			"avgPowerWattsTotal":    gpuAvgPower(st),
 			"capWattsPerGpuApplied": st.GPUCapWattsPerGpu,
 			"capWattsPerGpuTarget":  st.GPUTargetCapWattsPerGpu,
 			"utilization":           st.GPUUtil,
+			"memoryIntensity":       st.MemoryIntensity,
+			"cpuFeedIntensity":      st.CPUFeedIntensity,
 			"workClass":             st.GPUWorkClass,
 			"perfMultiplier":        st.GPUPerfMultiplier,
 			"devices":               st.GPUDevices,
@@ -677,7 +721,10 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 			if model.RaplCapMaxW > 0 && capW > model.RaplCapMaxW {
 				capW = model.RaplCapMaxW
 			}
-			st.CapWatts = capW
+			st.TargetCapWatts = capW
+			if st.CapWatts <= 0 {
+				st.CapWatts = capW
+			}
 		}
 	case "dvfs.set_throttle_pct":
 		if payload.ThrottlePct < 0 {
@@ -734,6 +781,7 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 	s.recordEvent("control", node, map[string]any{
 		"action":            payload.Action,
 		"capWatts":          st.CapWatts,
+		"targetCapWatts":    st.TargetCapWatts,
 		"throttlePct":       st.ThrottlePct,
 		"powerWatts":        power,
 		"podsRunning":       st.PodsRunning,
@@ -1018,6 +1066,7 @@ func (s *simulator) refreshNodeStateFromKubeData(counts map[string]int, pods []r
 		if !ok {
 			st = &nodeState{
 				CapWatts:                model.DefaultCapW,
+				TargetCapWatts:          model.DefaultCapW,
 				FreqScale:               1,
 				CPUWorkClass:            "cpu.mixed",
 				LastAction:              "none",
@@ -1284,6 +1333,55 @@ func clamp01(v float64) float64 {
 	return v
 }
 
+func firstOrderToward(current, target, dt, tauSec float64) float64 {
+	if tauSec <= 0 {
+		return target
+	}
+	if dt <= 0 {
+		return current
+	}
+	step := dt / tauSec
+	if step > 1 {
+		step = 1
+	}
+	return current + (target-current)*step
+}
+
+func thermalTarget(ambientC, powerW, wattsPerDeltaC float64) float64 {
+	if wattsPerDeltaC <= 0 {
+		return ambientC
+	}
+	return ambientC + powerW/wattsPerDeltaC
+}
+
+func thermalThrottleFraction(tempC, startC, fullC float64) float64 {
+	if fullC <= 0 || fullC <= startC {
+		return 0
+	}
+	if tempC <= startC {
+		return 0
+	}
+	if tempC >= fullC {
+		return 1
+	}
+	return clamp01((tempC - startC) / (fullC - startC))
+}
+
+func gpuAvgPower(st *nodeState) float64 {
+	total := 0.0
+	for _, d := range st.GPUDevices {
+		total += d.AvgPowerWatts
+	}
+	return total
+}
+
+func firstDeviceThermalThrottle(st *nodeState) float64 {
+	if st == nil || len(st.GPUDevices) == 0 {
+		return 0
+	}
+	return st.GPUDevices[0].ThermalThrottle
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if strings.TrimSpace(v) != "" {
@@ -1300,14 +1398,17 @@ func cpuKneeFromModel(model simModel) float64 {
 	return 0.7
 }
 
-func cpuThroughputMultiplier(freqScale float64, workloadClass string, model simModel) float64 {
+func cpuThroughputMultiplier(freqScale float64, workloadClass string, model simModel, memoryIntensity, ioIntensity, thermalThrottle float64) float64 {
 	m := phys.MeasuredCurveCPUModel{
 		Points: model.CPUPowerCurve,
 		Knee:   cpuKneeFromModel(model),
 	}
 	return m.ThroughputMultiplier(phys.DeviceState{
-		FreqScale: freqScale,
-		Class:     workloadClass,
+		FreqScale:       freqScale,
+		MemoryIntensity: memoryIntensity,
+		IOIntensity:     ioIntensity,
+		ThermalThrottle: thermalThrottle,
+		Class:           workloadClass,
 	}, workloadClass)
 }
 
@@ -1394,6 +1495,23 @@ func (s *simulator) updateNodeDynamicsWithModel(st *nodeState, model simModel) {
 	st.FreqScale = math.Max(minFreqScale(model), clamp01(st.FreqScale))
 	st.ThrottlePct = int(math.Round((1.0 - st.FreqScale) * 100.0))
 
+	cpuCapTauMs := model.CPUCapApplyTauMS
+	if cpuCapTauMs <= 0 {
+		cpuCapTauMs = 250
+	}
+	if st.TargetCapWatts <= 0 {
+		st.TargetCapWatts = model.DefaultCapW
+	}
+	if st.CapWatts <= 0 {
+		st.CapWatts = st.TargetCapWatts
+	}
+	cpuCapTauSec := math.Max(0.01, float64(cpuCapTauMs)/1000.0)
+	cpuCapStep := dt / cpuCapTauSec
+	if cpuCapStep > 1 {
+		cpuCapStep = 1
+	}
+	st.CapWatts = st.CapWatts + (st.TargetCapWatts-st.CapWatts)*cpuCapStep
+
 	if len(st.CPUSockets) == 0 {
 		sockets := model.CPUSockets
 		if sockets <= 0 {
@@ -1411,8 +1529,14 @@ func (s *simulator) updateNodeDynamicsWithModel(st *nodeState, model simModel) {
 	}
 	for i := range st.CPUSockets {
 		st.CPUSockets[i].Utilization = clamp01(perSocketUtil)
-		st.CPUSockets[i].PerfMultiplier = cpuThroughputMultiplier(st.FreqScale, cpuClass, model)
-		if model.CPUSocketCapMaxW > 0 {
+		st.CPUSockets[i].PerfMultiplier = cpuThroughputMultiplier(st.FreqScale, cpuClass, model, st.MemoryIntensity, st.IOIntensity, st.CPUThermalThrottle)
+		if len(st.CPUSockets) > 0 {
+			st.CPUSockets[i].CapWatts = st.CapWatts / float64(len(st.CPUSockets))
+		}
+		if model.CPUSocketCapMinW > 0 && st.CPUSockets[i].CapWatts < model.CPUSocketCapMinW {
+			st.CPUSockets[i].CapWatts = model.CPUSocketCapMinW
+		}
+		if model.CPUSocketCapMaxW > 0 && st.CPUSockets[i].CapWatts > model.CPUSocketCapMaxW {
 			st.CPUSockets[i].CapWatts = model.CPUSocketCapMaxW
 		}
 	}
@@ -1459,6 +1583,49 @@ func (s *simulator) updateNodeDynamicsWithModel(st *nodeState, model simModel) {
 		st.GPUCapWattsPerGpu = d.CapWatts
 		d.SettledAtTimestamp = now.Format(time.RFC3339Nano)
 	}
+
+	cpuInstant := cpuPowerWithModel(st, model)
+	cpuTempTarget := thermalTarget(model.CPUAmbientTempC, cpuInstant, model.CPUWattsPerDeltaC)
+	st.CPUTemperatureC = firstOrderToward(st.CPUTemperatureC, cpuTempTarget, dt, float64(maxIntInt(1, model.CPUThermalTauMS))/1000.0)
+	st.CPUThermalThrottle = thermalThrottleFraction(st.CPUTemperatureC, model.CPUThermalThrottleStartC, model.CPUThermalThrottleFullC)
+	cpuInstant = cpuPowerWithModel(st, model)
+	st.CPUInstantPowerWatts = cpuInstant
+	st.CPUAvgPowerWatts = firstOrderToward(st.CPUAvgPowerWatts, cpuInstant, dt, float64(maxIntInt(1, model.CPUTelemetryWindowMS))/1000.0)
+
+	gpuInstantTotal := 0.0
+	for i := range st.GPUDevices {
+		d := &st.GPUDevices[i]
+		deviceState := phys.DeviceState{
+			Utilization:      clamp01(st.GPUUtil),
+			CapWatts:         d.CapWatts,
+			MaxCapWatts:      model.GPU.MaxWattsPerGPU,
+			IdlePowerWatts:   model.GPU.IdleWattsPerGPU,
+			MemoryIntensity:  st.MemoryIntensity,
+			CPUFeedIntensity: st.CPUFeedIntensity,
+			TemperatureC:     d.TemperatureC,
+			ThermalThrottle:  d.ThermalThrottle,
+			Class:            st.GPUWorkClass,
+		}
+		gpuModel := phys.CappedBoardGPUModel{
+			IdleW:         model.GPU.IdleWattsPerGPU,
+			MaxW:          model.GPU.MaxWattsPerGPU,
+			ComputeGamma:  model.GPU.ComputeGamma,
+			MemoryEpsilon: model.GPU.MemoryEpsilon,
+			MemoryGamma:   model.GPU.MemoryGamma,
+		}
+		instant := gpuModel.Power(deviceState)
+		targetTemp := thermalTarget(model.GPU.AmbientTempC, instant, model.GPU.WattsPerDeltaC)
+		d.TemperatureC = firstOrderToward(d.TemperatureC, targetTemp, dt, float64(maxIntInt(1, model.GPU.ThermalTauMS))/1000.0)
+		d.ThermalThrottle = thermalThrottleFraction(d.TemperatureC, model.GPU.ThermalThrottleStartC, model.GPU.ThermalThrottleFullC)
+		deviceState.TemperatureC = d.TemperatureC
+		deviceState.ThermalThrottle = d.ThermalThrottle
+		instant = gpuModel.Power(deviceState)
+		d.PowerWatts = instant
+		d.AvgPowerWatts = firstOrderToward(d.AvgPowerWatts, instant, dt, float64(maxIntInt(1, model.GPU.TelemetryWindowMS))/1000.0)
+		gpuInstantTotal += instant
+	}
+	st.GPUPowerWatts = gpuInstantTotal
+	st.TotalAvgPowerWatts = st.CPUAvgPowerWatts + gpuAvgPower(st)
 }
 
 func (s *simulator) initWorkloadEngineFromTrace(path string) error {
@@ -1472,6 +1639,7 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 		baseSpeedCore: floatEnv("SIM_BASE_SPEED_PER_CORE", 1.0),
 		jobs:          []*simJob{},
 		jobByID:       map[string]*simJob{},
+		jobsByWorkload: map[string][]*simJob{},
 	}
 	sc := bufio.NewScanner(f)
 	lineNum := 0
@@ -1493,6 +1661,10 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 		if jobID == "" {
 			continue
 		}
+		workloadID, _ := rec["workloadId"].(string)
+		workloadType, _ := rec["workloadType"].(string)
+		podRole, _ := rec["podRole"].(string)
+		gang, _ := rec["gang"].(bool)
 		class := "general"
 		if podTpl, ok := rec["podTemplate"].(map[string]any); ok {
 			if affinityRaw, ok := podTpl["affinity"].(map[string]any); ok {
@@ -1603,6 +1775,10 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 		}
 		job := &simJob{
 			JobID:             jobID,
+			WorkloadID:        workloadID,
+			WorkloadType:      workloadType,
+			PodRole:           podRole,
+			Gang:              gang,
 			Class:             class,
 			Namespace:         namespace,
 			SubmitOffsetSec:   submitOffset,
@@ -1626,6 +1802,9 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 		}
 		engine.jobs = append(engine.jobs, job)
 		engine.jobByID[jobID] = job
+		if workloadID != "" {
+			engine.jobsByWorkload[workloadID] = append(engine.jobsByWorkload[workloadID], job)
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return err
@@ -1686,7 +1865,10 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 					"app.kubernetes.io/part-of": "joulie-sim-workload",
 				},
 				Annotations: map[string]string{
-					"sim.joulie.io/jobId": j.JobID,
+					"sim.joulie.io/jobId":        j.JobID,
+					"sim.joulie.io/workloadId":   j.WorkloadID,
+					"sim.joulie.io/workloadType": j.WorkloadType,
+					"sim.joulie.io/podRole":      j.PodRole,
 				},
 			},
 			Spec: corev1.PodSpec{
@@ -1716,6 +1898,12 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 					"type": "kwok",
 				},
 			},
+		}
+		if j.WorkloadType != "" {
+			pod.ObjectMeta.Labels["sim.joulie.io/workload-type"] = sanitizeK8sName(j.WorkloadType)
+		}
+		if j.PodRole != "" {
+			pod.ObjectMeta.Labels["sim.joulie.io/pod-role"] = sanitizeK8sName(j.PodRole)
 		}
 		if j.RequestedGPUs > 0 {
 			gpuResourceName := j.GPUResourceName
@@ -1870,12 +2058,13 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 	if s.workload == nil {
 		return
 	}
-	pods, err := listRunningPodsDetailed(ctx, kube)
+	pods, err := podDetailFunc(ctx, kube)
 	if err != nil {
 		log.Printf("warning: workload progress list pods: %v", err)
 		return
 	}
 	byNode := map[string][]*simJob{}
+	runningByWorkload := map[string]int{}
 	for _, p := range pods {
 		if p.JobID == "" {
 			continue
@@ -1886,6 +2075,9 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 		}
 		j.NodeName = p.Node
 		byNode[p.Node] = append(byNode[p.Node], j)
+		if j.WorkloadID != "" {
+			runningByWorkload[j.WorkloadID]++
+		}
 	}
 	for node, jobs := range byNode {
 		s.mu.RLock()
@@ -1913,18 +2105,34 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 		totalGPUReq := 0.0
 		totalCPUUtilDemand := 0.0
 		totalGPUUtilDemand := 0.0
+		totalMemoryWeight := 0.0
+		totalIOWeight := 0.0
+		totalCPUFeedWeight := 0.0
+		memoryWeighted := 0.0
+		ioWeighted := 0.0
+		cpuFeedWeighted := 0.0
 		cpuClassWeights := map[string]float64{}
 		gpuClassWeights := map[string]float64{}
 		for _, j := range jobs {
 			if j.CPUUnitsRemaining > 0 {
-				cpuClassWeights[j.CPUWorkClass] += math.Max(0.1, j.RequestedCPUCores)
+				weight := math.Max(0.1, j.RequestedCPUCores)
+				cpuClassWeights[j.CPUWorkClass] += weight
 				totalCPUUtilDemand += j.RequestedCPUCores * clamp01(j.CPUUtilTarget)
+				memoryWeighted += weight * clamp01(j.MemoryIntensity)
+				ioWeighted += weight * clamp01(j.IOIntensity)
+				totalMemoryWeight += weight
+				totalIOWeight += weight
 			}
 			if j.GPUUnitsRemaining > 0 {
 				gpuJobs++
+				weight := math.Max(0.1, j.RequestedGPUs)
 				totalGPUReq += j.RequestedGPUs
 				totalGPUUtilDemand += j.RequestedGPUs * clamp01(j.GPUUtilTarget)
-				gpuClassWeights[j.GPUWorkClass] += math.Max(0.1, j.RequestedGPUs)
+				gpuClassWeights[j.GPUWorkClass] += weight
+				memoryWeighted += weight * clamp01(j.MemoryIntensity)
+				cpuFeedWeighted += weight * clamp01(j.CPUFeedIntensity)
+				totalMemoryWeight += weight
+				totalCPUFeedWeight += weight
 			}
 		}
 		if st != nil {
@@ -1941,10 +2149,35 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			}
 			st.CPUWorkClass = dominantWorkClass(cpuClassWeights, "cpu.mixed")
 			st.GPUWorkClass = dominantWorkClass(gpuClassWeights, "gpu.mixed")
+			if totalMemoryWeight > 0 {
+				st.MemoryIntensity = clamp01(memoryWeighted / totalMemoryWeight)
+			} else {
+				st.MemoryIntensity = 0
+			}
+			if totalIOWeight > 0 {
+				st.IOIntensity = clamp01(ioWeighted / totalIOWeight)
+			} else {
+				st.IOIntensity = 0
+			}
+			if totalCPUFeedWeight > 0 {
+				st.CPUFeedIntensity = clamp01(cpuFeedWeighted / totalCPUFeedWeight)
+			} else {
+				st.CPUFeedIntensity = 0
+			}
 			s.mu.Unlock()
 		}
 		for _, j := range jobs {
-			jobCPUMul := cpuThroughputMultiplier(freqScale, j.CPUWorkClass, model)
+			if j.Gang && j.WorkloadID != "" {
+				total := len(s.workload.jobsByWorkload[j.WorkloadID])
+				if total > 0 && runningByWorkload[j.WorkloadID] < total {
+					continue
+				}
+			}
+			jobThermalThrottle := 0.0
+			if st != nil {
+				jobThermalThrottle = st.CPUThermalThrottle
+			}
+			jobCPUMul := cpuThroughputMultiplier(freqScale, j.CPUWorkClass, model, j.MemoryIntensity, j.IOIntensity, jobThermalThrottle)
 			if j.CPUUnitsRemaining > 0 {
 				cpuThrottleFactor := cpuThrottleImpactFactor(jobCPUMul, j)
 				speed := j.RequestedCPUCores * s.workload.baseSpeedCore * cpuThrottleFactor
@@ -1964,10 +2197,13 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 					MemoryGamma:   model.GPU.MemoryGamma,
 				}
 				gpuMul := gpuModel.ThroughputMultiplier(phys.DeviceState{
-					Utilization: clamp01(j.GPUUtilTarget),
-					CapWatts:    st.GPUCapWattsPerGpu,
-					MaxCapWatts: model.GPU.MaxWattsPerGPU,
-					Class:       j.GPUWorkClass,
+					Utilization:      clamp01(j.GPUUtilTarget),
+					CapWatts:         st.GPUCapWattsPerGpu,
+					MaxCapWatts:      model.GPU.MaxWattsPerGPU,
+					MemoryIntensity:  j.MemoryIntensity,
+					CPUFeedIntensity: j.CPUFeedIntensity,
+					ThermalThrottle:  firstDeviceThermalThrottle(st),
+					Class:            j.GPUWorkClass,
 				}, j.GPUWorkClass)
 				cpuFeedFactor := cpuFeedThrottleFactor(jobCPUMul, j)
 				gpuCapImpact := 1.0 - (1.0-gpuCapFactor)*j.SensitivityGPU
@@ -2189,22 +2425,35 @@ func defaultBaseModelFromEnv() simModel {
 		RaplCapMinW:               floatEnv("SIM_RAPL_CAP_MIN_W", 80),
 		RaplCapMaxW:               floatEnv("SIM_RAPL_CAP_MAX_W", 5000),
 		DvfsRampMS:                int(floatEnv("SIM_DVFS_RAMP_MS", 500)),
+		CPUCapApplyTauMS:          int(floatEnv("SIM_CPU_CAP_APPLY_TAU_MS", 250)),
+		CPUTelemetryWindowMS:      int(floatEnv("SIM_CPU_TELEMETRY_WINDOW_MS", 250)),
+		CPUAmbientTempC:           floatEnv("SIM_CPU_AMBIENT_TEMP_C", 24),
+		CPUThermalTauMS:           int(floatEnv("SIM_CPU_THERMAL_TAU_MS", 4000)),
+		CPUWattsPerDeltaC:         floatEnv("SIM_CPU_WATTS_PER_DELTA_C", 8.0),
+		CPUThermalThrottleStartC:  floatEnv("SIM_CPU_THERMAL_THROTTLE_START_C", 85),
+		CPUThermalThrottleFullC:   floatEnv("SIM_CPU_THERMAL_THROTTLE_FULL_C", 97),
 		CPUDriverFamily:           strings.TrimSpace(envOrDefault("SIM_CPU_DRIVER_FAMILY", "amd-pstate")),
 		CPULowestNonlinearFreqMHz: floatEnv("SIM_CPU_LOWEST_NONLINEAR_FREQ_MHZ", 1800),
 		CPUSockets:                int(floatEnv("SIM_CPU_SOCKETS", 2)),
 		CPUSocketCapMinW:          floatEnv("SIM_CPU_SOCKET_CAP_MIN_W", 120),
 		CPUSocketCapMaxW:          floatEnv("SIM_CPU_SOCKET_CAP_MAX_W", 400),
 		GPU: hw.GPUProfile{
-			Vendor:            strings.TrimSpace(envOrDefault("SIM_GPU_VENDOR", "")),
-			Product:           strings.TrimSpace(envOrDefault("SIM_GPU_PRODUCT", "")),
-			Count:             int(floatEnv("SIM_GPU_COUNT", 0)),
-			IdleWattsPerGPU:   floatEnv("SIM_GPU_IDLE_WATTS_PER_GPU", 30),
-			MaxWattsPerGPU:    floatEnv("SIM_GPU_MAX_WATTS_PER_GPU", 300),
-			MinCapWattsPerGPU: floatEnv("SIM_GPU_MIN_CAP_WATTS_PER_GPU", 80),
-			CapApplyTauMS:     int(floatEnv("SIM_GPU_CAP_APPLY_TAU_MS", 150)),
-			ComputeGamma:      floatEnv("SIM_GPU_COMPUTE_GAMMA", 1.0),
-			MemoryEpsilon:     floatEnv("SIM_GPU_MEMORY_EPSILON", 0.2),
-			MemoryGamma:       floatEnv("SIM_GPU_MEMORY_GAMMA", 1.2),
+			Vendor:                strings.TrimSpace(envOrDefault("SIM_GPU_VENDOR", "")),
+			Product:               strings.TrimSpace(envOrDefault("SIM_GPU_PRODUCT", "")),
+			Count:                 int(floatEnv("SIM_GPU_COUNT", 0)),
+			IdleWattsPerGPU:       floatEnv("SIM_GPU_IDLE_WATTS_PER_GPU", 30),
+			MaxWattsPerGPU:        floatEnv("SIM_GPU_MAX_WATTS_PER_GPU", 300),
+			MinCapWattsPerGPU:     floatEnv("SIM_GPU_MIN_CAP_WATTS_PER_GPU", 80),
+			CapApplyTauMS:         int(floatEnv("SIM_GPU_CAP_APPLY_TAU_MS", 150)),
+			TelemetryWindowMS:     int(floatEnv("SIM_GPU_TELEMETRY_WINDOW_MS", 1000)),
+			AmbientTempC:          floatEnv("SIM_GPU_AMBIENT_TEMP_C", 24),
+			ThermalTauMS:          int(floatEnv("SIM_GPU_THERMAL_TAU_MS", 2500)),
+			WattsPerDeltaC:        floatEnv("SIM_GPU_WATTS_PER_DELTA_C", 12.0),
+			ThermalThrottleStartC: floatEnv("SIM_GPU_THERMAL_THROTTLE_START_C", 82),
+			ThermalThrottleFullC:  floatEnv("SIM_GPU_THERMAL_THROTTLE_FULL_C", 92),
+			ComputeGamma:          floatEnv("SIM_GPU_COMPUTE_GAMMA", 1.0),
+			MemoryEpsilon:         floatEnv("SIM_GPU_MEMORY_EPSILON", 0.2),
+			MemoryGamma:           floatEnv("SIM_GPU_MEMORY_GAMMA", 1.2),
 			PowerModel: hw.GPUPowerModel{
 				AlphaUtil: floatEnv("SIM_GPU_ALPHA_UTIL", 1.0),
 				BetaCap:   floatEnv("SIM_GPU_BETA_CAP", 1.0),

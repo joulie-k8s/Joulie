@@ -36,6 +36,7 @@ spec:
                       minimum: 1
                     packagePowerCapPctOfMax:
                       type: number
+                      minimum: 0
                       exclusiveMinimum: true
                       maximum: 100
                 gpu:
@@ -52,6 +53,7 @@ spec:
                           minimum: 1
                         capPctOfMax:
                           type: number
+                          minimum: 0
                           exclusiveMinimum: true
                           maximum: 100
                 policy:

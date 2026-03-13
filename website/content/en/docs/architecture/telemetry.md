@@ -113,6 +113,30 @@ or
 { "cpu": { "packagePowerWatts": 245.3 } }
 ```
 
+The simulator exports a richer payload than this minimal contract. Important optional fields currently include:
+
+- top level:
+  - `packagePowerWatts`
+  - `instantPackagePowerWatts`
+- `cpu.*`:
+  - `packagePowerWatts`
+  - `instantPowerWatts`
+  - `utilization`
+  - `memoryIntensity`
+  - `ioIntensity`
+  - `freqScale`
+  - `temperatureC`
+  - `thermalThrottlePct`
+- `gpu.*`:
+  - `powerWattsTotal`
+  - `avgPowerWattsTotal`
+  - `utilization`
+  - `memoryIntensity`
+  - `cpuFeedIntensity`
+  - `devices`
+
+Controllers should treat these richer fields as additive observability, not as a replacement for the minimal contract above.
+
 Control endpoint:
 
 - `POST /control/{node}`

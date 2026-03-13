@@ -23,7 +23,14 @@ type Profile struct {
 	RaplCapMinW               float64
 	RaplCapMaxW               float64
 	DvfsRampMS                int
+	CPUCapApplyTauMS          int
+	CPUTelemetryWindowMS      int
 	NoiseStddevW              float64
+	CPUAmbientTempC           float64
+	CPUThermalTauMS           int
+	CPUWattsPerDeltaC         float64
+	CPUThermalThrottleStartC  float64
+	CPUThermalThrottleFullC   float64
 	CPUModel                  string
 	CPUProvenance             string
 	CPUCurveSource            string
@@ -43,18 +50,24 @@ type PowerPoint struct {
 }
 
 type GPUProfile struct {
-	Vendor            string
-	Product           string
-	Count             int
-	IdleWattsPerGPU   float64
-	MaxWattsPerGPU    float64
-	MinCapWattsPerGPU float64
-	CapApplyTauMS     int
-	Provenance        string
-	ComputeGamma      float64
-	MemoryEpsilon     float64
-	MemoryGamma       float64
-	PowerModel        GPUPowerModel
+	Vendor                string
+	Product               string
+	Count                 int
+	IdleWattsPerGPU       float64
+	MaxWattsPerGPU        float64
+	MinCapWattsPerGPU     float64
+	CapApplyTauMS         int
+	TelemetryWindowMS     int
+	AmbientTempC          float64
+	ThermalTauMS          int
+	WattsPerDeltaC        float64
+	ThermalThrottleStartC float64
+	ThermalThrottleFullC  float64
+	Provenance            string
+	ComputeGamma          float64
+	MemoryEpsilon         float64
+	MemoryGamma           float64
+	PowerModel            GPUPowerModel
 }
 
 type GPUPowerModel struct {
@@ -86,7 +99,14 @@ type Overrides struct {
 	RaplCapMinW               *float64      `yaml:"raplCapMinW"`
 	RaplCapMaxW               *float64      `yaml:"raplCapMaxW"`
 	DvfsRampMS                *int          `yaml:"dvfsRampMs"`
+	CPUCapApplyTauMS          *int          `yaml:"cpuCapApplyTauMs"`
+	CPUTelemetryWindowMS      *int          `yaml:"cpuTelemetryWindowMs"`
 	NoiseStddevW              *float64      `yaml:"noiseStddevW"`
+	CPUAmbientTempC           *float64      `yaml:"cpuAmbientTempC"`
+	CPUThermalTauMS           *int          `yaml:"cpuThermalTauMs"`
+	CPUWattsPerDeltaC         *float64      `yaml:"cpuWattsPerDeltaC"`
+	CPUThermalThrottleStartC  *float64      `yaml:"cpuThermalThrottleStartC"`
+	CPUThermalThrottleFullC   *float64      `yaml:"cpuThermalThrottleFullC"`
 	CPUModel                  *string       `yaml:"cpuModel"`
 	CPUProvenance             *string       `yaml:"cpuProvenance"`
 	CPUCurveSource            *string       `yaml:"cpuCurveSource"`
@@ -101,18 +121,24 @@ type Overrides struct {
 }
 
 type GPUOverrides struct {
-	Vendor            *string            `yaml:"vendor"`
-	Product           *string            `yaml:"product"`
-	Count             *int               `yaml:"count"`
-	IdleWattsPerGPU   *float64           `yaml:"idleWattsPerGpu"`
-	MaxWattsPerGPU    *float64           `yaml:"maxWattsPerGpu"`
-	MinCapWattsPerGPU *float64           `yaml:"minCapWattsPerGpu"`
-	CapApplyTauMS     *int               `yaml:"capApplyTauMs"`
-	Provenance        *string            `yaml:"provenance"`
-	ComputeGamma      *float64           `yaml:"computeGamma"`
-	MemoryEpsilon     *float64           `yaml:"memoryEpsilon"`
-	MemoryGamma       *float64           `yaml:"memoryGamma"`
-	PowerModel        *GPUPowerOverrides `yaml:"powerModel"`
+	Vendor                *string            `yaml:"vendor"`
+	Product               *string            `yaml:"product"`
+	Count                 *int               `yaml:"count"`
+	IdleWattsPerGPU       *float64           `yaml:"idleWattsPerGpu"`
+	MaxWattsPerGPU        *float64           `yaml:"maxWattsPerGpu"`
+	MinCapWattsPerGPU     *float64           `yaml:"minCapWattsPerGpu"`
+	CapApplyTauMS         *int               `yaml:"capApplyTauMs"`
+	TelemetryWindowMS     *int               `yaml:"telemetryWindowMs"`
+	AmbientTempC          *float64           `yaml:"ambientTempC"`
+	ThermalTauMS          *int               `yaml:"thermalTauMs"`
+	WattsPerDeltaC        *float64           `yaml:"wattsPerDeltaC"`
+	ThermalThrottleStartC *float64           `yaml:"thermalThrottleStartC"`
+	ThermalThrottleFullC  *float64           `yaml:"thermalThrottleFullC"`
+	Provenance            *string            `yaml:"provenance"`
+	ComputeGamma          *float64           `yaml:"computeGamma"`
+	MemoryEpsilon         *float64           `yaml:"memoryEpsilon"`
+	MemoryGamma           *float64           `yaml:"memoryGamma"`
+	PowerModel            *GPUPowerOverrides `yaml:"powerModel"`
 }
 
 type GPUPowerOverrides struct {
@@ -161,8 +187,29 @@ func ApplyOverrides(base Profile, o Overrides) Profile {
 	if o.DvfsRampMS != nil {
 		out.DvfsRampMS = *o.DvfsRampMS
 	}
+	if o.CPUCapApplyTauMS != nil {
+		out.CPUCapApplyTauMS = *o.CPUCapApplyTauMS
+	}
+	if o.CPUTelemetryWindowMS != nil {
+		out.CPUTelemetryWindowMS = *o.CPUTelemetryWindowMS
+	}
 	if o.NoiseStddevW != nil {
 		out.NoiseStddevW = *o.NoiseStddevW
+	}
+	if o.CPUAmbientTempC != nil {
+		out.CPUAmbientTempC = *o.CPUAmbientTempC
+	}
+	if o.CPUThermalTauMS != nil {
+		out.CPUThermalTauMS = *o.CPUThermalTauMS
+	}
+	if o.CPUWattsPerDeltaC != nil {
+		out.CPUWattsPerDeltaC = *o.CPUWattsPerDeltaC
+	}
+	if o.CPUThermalThrottleStartC != nil {
+		out.CPUThermalThrottleStartC = *o.CPUThermalThrottleStartC
+	}
+	if o.CPUThermalThrottleFullC != nil {
+		out.CPUThermalThrottleFullC = *o.CPUThermalThrottleFullC
 	}
 	if o.CPUModel != nil {
 		out.CPUModel = strings.TrimSpace(*o.CPUModel)
@@ -215,6 +262,24 @@ func ApplyOverrides(base Profile, o Overrides) Profile {
 		}
 		if o.GPU.CapApplyTauMS != nil {
 			out.GPU.CapApplyTauMS = *o.GPU.CapApplyTauMS
+		}
+		if o.GPU.TelemetryWindowMS != nil {
+			out.GPU.TelemetryWindowMS = *o.GPU.TelemetryWindowMS
+		}
+		if o.GPU.AmbientTempC != nil {
+			out.GPU.AmbientTempC = *o.GPU.AmbientTempC
+		}
+		if o.GPU.ThermalTauMS != nil {
+			out.GPU.ThermalTauMS = *o.GPU.ThermalTauMS
+		}
+		if o.GPU.WattsPerDeltaC != nil {
+			out.GPU.WattsPerDeltaC = *o.GPU.WattsPerDeltaC
+		}
+		if o.GPU.ThermalThrottleStartC != nil {
+			out.GPU.ThermalThrottleStartC = *o.GPU.ThermalThrottleStartC
+		}
+		if o.GPU.ThermalThrottleFullC != nil {
+			out.GPU.ThermalThrottleFullC = *o.GPU.ThermalThrottleFullC
 		}
 		if o.GPU.Provenance != nil {
 			out.GPU.Provenance = strings.TrimSpace(*o.GPU.Provenance)
@@ -277,8 +342,29 @@ func ValidateProfile(p Profile) error {
 	if p.DvfsRampMS < 0 {
 		return fmt.Errorf("dvfsRampMs must be >= 0")
 	}
+	if p.CPUCapApplyTauMS < 0 {
+		return fmt.Errorf("cpuCapApplyTauMs must be >= 0")
+	}
+	if p.CPUTelemetryWindowMS < 0 {
+		return fmt.Errorf("cpuTelemetryWindowMs must be >= 0")
+	}
 	if p.NoiseStddevW < 0 {
 		return fmt.Errorf("noiseStddevW must be >= 0")
+	}
+	if p.CPUAmbientTempC < 0 {
+		return fmt.Errorf("cpuAmbientTempC must be >= 0")
+	}
+	if p.CPUThermalTauMS < 0 {
+		return fmt.Errorf("cpuThermalTauMs must be >= 0")
+	}
+	if p.CPUWattsPerDeltaC <= 0 {
+		return fmt.Errorf("cpuWattsPerDeltaC must be > 0")
+	}
+	if p.CPUThermalThrottleStartC < 0 || p.CPUThermalThrottleFullC < 0 {
+		return fmt.Errorf("cpu thermal throttle temperatures must be >= 0")
+	}
+	if p.CPUThermalThrottleFullC < p.CPUThermalThrottleStartC {
+		return fmt.Errorf("cpuThermalThrottleFullC must be >= cpuThermalThrottleStartC")
 	}
 	if p.CPUSockets < 0 {
 		return fmt.Errorf("cpuSockets must be >= 0")
@@ -340,6 +426,24 @@ func ValidateProfile(p Profile) error {
 		if p.GPU.CapApplyTauMS < 0 {
 			return fmt.Errorf("gpu.capApplyTauMs must be >= 0")
 		}
+		if p.GPU.TelemetryWindowMS < 0 {
+			return fmt.Errorf("gpu.telemetryWindowMs must be >= 0")
+		}
+		if p.GPU.AmbientTempC < 0 {
+			return fmt.Errorf("gpu.ambientTempC must be >= 0")
+		}
+		if p.GPU.ThermalTauMS < 0 {
+			return fmt.Errorf("gpu.thermalTauMs must be >= 0")
+		}
+		if p.GPU.WattsPerDeltaC <= 0 {
+			return fmt.Errorf("gpu.wattsPerDeltaC must be > 0")
+		}
+		if p.GPU.ThermalThrottleStartC < 0 || p.GPU.ThermalThrottleFullC < 0 {
+			return fmt.Errorf("gpu thermal throttle temperatures must be >= 0")
+		}
+		if p.GPU.ThermalThrottleFullC < p.GPU.ThermalThrottleStartC {
+			return fmt.Errorf("gpu.thermalThrottleFullC must be >= gpu.thermalThrottleStartC")
+		}
 		if p.GPU.ComputeGamma <= 0 {
 			return fmt.Errorf("gpu.computeGamma must be > 0")
 		}
@@ -375,8 +479,32 @@ func ValidateOverrides(o Overrides) error {
 	if o.DvfsRampMS != nil && *o.DvfsRampMS < 0 {
 		return fmt.Errorf("dvfsRampMs override must be >= 0")
 	}
+	if o.CPUCapApplyTauMS != nil && *o.CPUCapApplyTauMS < 0 {
+		return fmt.Errorf("cpuCapApplyTauMs override must be >= 0")
+	}
+	if o.CPUTelemetryWindowMS != nil && *o.CPUTelemetryWindowMS < 0 {
+		return fmt.Errorf("cpuTelemetryWindowMs override must be >= 0")
+	}
 	if o.NoiseStddevW != nil && *o.NoiseStddevW < 0 {
 		return fmt.Errorf("noiseStddevW override must be >= 0")
+	}
+	if o.CPUAmbientTempC != nil && *o.CPUAmbientTempC < 0 {
+		return fmt.Errorf("cpuAmbientTempC override must be >= 0")
+	}
+	if o.CPUThermalTauMS != nil && *o.CPUThermalTauMS < 0 {
+		return fmt.Errorf("cpuThermalTauMs override must be >= 0")
+	}
+	if o.CPUWattsPerDeltaC != nil && *o.CPUWattsPerDeltaC <= 0 {
+		return fmt.Errorf("cpuWattsPerDeltaC override must be > 0")
+	}
+	if o.CPUThermalThrottleStartC != nil && *o.CPUThermalThrottleStartC < 0 {
+		return fmt.Errorf("cpuThermalThrottleStartC override must be >= 0")
+	}
+	if o.CPUThermalThrottleFullC != nil && *o.CPUThermalThrottleFullC < 0 {
+		return fmt.Errorf("cpuThermalThrottleFullC override must be >= 0")
+	}
+	if o.CPUThermalThrottleStartC != nil && o.CPUThermalThrottleFullC != nil && *o.CPUThermalThrottleFullC < *o.CPUThermalThrottleStartC {
+		return fmt.Errorf("cpuThermalThrottleFullC override must be >= cpuThermalThrottleStartC override")
 	}
 	if o.CPULowestNonlinearFreqMHz != nil && *o.CPULowestNonlinearFreqMHz < 0 {
 		return fmt.Errorf("cpuLowestNonlinearFreqMHz override must be >= 0")
@@ -439,6 +567,27 @@ func ValidateOverrides(o Overrides) error {
 		}
 		if o.GPU.CapApplyTauMS != nil && *o.GPU.CapApplyTauMS < 0 {
 			return fmt.Errorf("gpu.capApplyTauMs override must be >= 0")
+		}
+		if o.GPU.TelemetryWindowMS != nil && *o.GPU.TelemetryWindowMS < 0 {
+			return fmt.Errorf("gpu.telemetryWindowMs override must be >= 0")
+		}
+		if o.GPU.AmbientTempC != nil && *o.GPU.AmbientTempC < 0 {
+			return fmt.Errorf("gpu.ambientTempC override must be >= 0")
+		}
+		if o.GPU.ThermalTauMS != nil && *o.GPU.ThermalTauMS < 0 {
+			return fmt.Errorf("gpu.thermalTauMs override must be >= 0")
+		}
+		if o.GPU.WattsPerDeltaC != nil && *o.GPU.WattsPerDeltaC <= 0 {
+			return fmt.Errorf("gpu.wattsPerDeltaC override must be > 0")
+		}
+		if o.GPU.ThermalThrottleStartC != nil && *o.GPU.ThermalThrottleStartC < 0 {
+			return fmt.Errorf("gpu.thermalThrottleStartC override must be >= 0")
+		}
+		if o.GPU.ThermalThrottleFullC != nil && *o.GPU.ThermalThrottleFullC < 0 {
+			return fmt.Errorf("gpu.thermalThrottleFullC override must be >= 0")
+		}
+		if o.GPU.ThermalThrottleStartC != nil && o.GPU.ThermalThrottleFullC != nil && *o.GPU.ThermalThrottleFullC < *o.GPU.ThermalThrottleStartC {
+			return fmt.Errorf("gpu.thermalThrottleFullC override must be >= gpu.thermalThrottleStartC override")
 		}
 		if o.GPU.ComputeGamma != nil && *o.GPU.ComputeGamma <= 0 {
 			return fmt.Errorf("gpu.computeGamma override must be > 0")

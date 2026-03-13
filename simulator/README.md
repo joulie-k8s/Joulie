@@ -104,7 +104,13 @@ The simulator can auto-scope and auto-map nodes:
 - `SIM_NODE_SELECTOR`:
   - limits simulated nodes (default in deploy manifest: `joulie.io/managed=true`)
 - `SIM_NODE_CLASS_CONFIG`:
-  - path to YAML with class rules (`matchLabels`) and model overrides.
+  - path to YAML with label-matched model overrides.
+
+The preferred bootstrap flow is now:
+
+1. node labels define CPU/GPU hardware identity,
+2. shared inventory resolves those labels into a hardware model,
+3. `SIM_NODE_CLASS_CONFIG` optionally overrides or refines profile parameters for a scenario.
 
 Class config example:
 
@@ -130,23 +136,38 @@ classes:
 
 ### Model parameters
 
-The simulator computes node power with:
+The simulator no longer uses the older "power = baseIdle + runningPods * podW - throttle * k" approximation as its main runtime model.
 
-`power = baseIdleW + (runningPods * podW) - (throttlePct * dvfsDropWPerPct)`
+Today the runtime model combines:
 
-then clamps to `[20W, capWatts + raplHeadW]`.
+- utilization-dependent CPU/GPU power,
+- workload-boundness signals (`memoryIntensity`, `ioIntensity`, `cpuFeedIntensityGpu`),
+- CPU and GPU cap-settling dynamics,
+- exported telemetry averaging windows,
+- thermal state and thermal-throttle penalties.
 
-- `baseIdleW`: baseline node power at zero load.
-- `podW`: added watts per running pod on that node.
-- `dvfsDropWPerPct`: watts removed per DVFS throttle percent point.
-- `raplHeadW`: allowed overshoot above cap (`capWatts`) before clamp.
-- `defaultCapW`: initial cap for nodes before any control action.
-- `pMaxW`: max package power at full load/frequency.
-- `alphaUtil`: utilization non-linearity exponent.
-- `betaFreq`: frequency non-linearity exponent.
-- `fMinMHz`,`fMaxMHz`: frequency bounds to derive minimum frequency scale.
-- `raplCapMinW`,`raplCapMaxW`: cap guardrails.
-- `dvfsRampMs`: throttle-to-frequency ramp time constant.
+Important hardware-profile parameters include:
+
+- `baseIdleW`, `pMaxW`
+- `alphaUtil`, `betaFreq`
+- `fMinMHz`, `fMaxMHz`
+- `raplCapMinW`, `raplCapMaxW`
+- `dvfsRampMs`
+- `cpuCapApplyTauMs`
+- `cpuTelemetryWindowMs`
+- `cpuAmbientTempC`, `cpuThermalTauMs`, `cpuWattsPerDeltaC`
+- `cpuThermalThrottleStartC`, `cpuThermalThrottleFullC`
+- `gpu.capApplyTauMs`
+- `gpu.telemetryWindowMs`
+- `gpu.ambientTempC`, `gpu.thermalTauMs`, `gpu.wattsPerDeltaC`
+- `gpu.thermalThrottleStartC`, `gpu.thermalThrottleFullC`
+
+Use the website docs as source of truth for the full model:
+
+- `/docs/hardware/hardware-modeling/`
+- `/docs/simulator/workload-generation/`
+- `/docs/simulator/workload-simulator/`
+- `/docs/simulator/power-simulator/`
 
 ## Trace-Driven Batch Workload
 
@@ -156,6 +177,10 @@ Set `SIM_WORKLOAD_TRACE_PATH` to a JSONL trace file. The simulator will:
 - create workload Pods over time,
 - advance per-job progress based on node effective speed,
 - delete Pods when work completes.
+
+The workload generator can also emit `type=workload` metadata records.
+The simulator currently ignores those metadata records and consumes the expanded `type=job`
+records directly.
 
 Minimal job record example:
 
@@ -171,7 +196,23 @@ Optional `workloadProfile` fields make the physical model more explicit:
 - `ioIntensity`: how IO-bound the job is
 - `cpuFeedIntensityGpu`: how strongly GPU throughput depends on CPU-side feeding
 
+These fields are consumed directly by the simulator runtime. They are not just annotations:
+
+- they influence power,
+- they influence slowdown under capping/throttling,
+- and they influence how node-level utilization and bottleneck mix are aggregated over time.
+
 Optional `workloadClass` fields control the coarse workload family used by the throttling model:
 
 - CPU: `cpu.compute_bound`, `cpu.memory_bound`, `cpu.io_bound`, `cpu.mixed`
 - GPU: `gpu.compute_bound`, `gpu.memory_bound`, `gpu.bandwidth_bound`, `gpu.mixed`
+
+The current generator is no longer just a flat single-job sampler.
+It can emit:
+
+- logical workload metadata (`type=workload`),
+- pod-expanded distributed-training/HPO structures,
+- gang metadata for multi-pod training workloads,
+- workload families seeded from public AI-cluster traces.
+
+See `/docs/simulator/workload-generation/` for the full generation model and references.

@@ -1,42 +1,71 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: joulie-simulator-node-classes
-  namespace: joulie-sim-demo
-data:
-  node-classes.yaml: |
-    classes:
-      - name: nvidia-l40s
-        matchLabels:
-          joulie.io/gpu.product: NVIDIA-L40S
-        model:
-          baseIdleW: 65
-          pMaxW: 420
-          defaultCapW: 500
-          gpu:
-            vendor: nvidia
-            product: NVIDIA-L40S
-            count: 4
-            idleWattsPerGpu: 30
-            maxWattsPerGpu: 350
-            minCapWattsPerGpu: 200
-            powerModel:
-              alphaUtil: 1.0
-              betaCap: 1.0
-      - name: amd-w7900
-        matchLabels:
-          joulie.io/gpu.product: AMD-Radeon-PRO-W7900
-        model:
-          baseIdleW: 70
-          pMaxW: 440
-          defaultCapW: 520
-          gpu:
-            vendor: amd
-            product: AMD-Radeon-PRO-W7900
-            count: 4
-            idleWattsPerGpu: 25
-            maxWattsPerGpu: 295
-            minCapWattsPerGpu: 200
-            powerModel:
-              alphaUtil: 1.0
-              betaCap: 1.0
+classes:
+  - name: gpu-class-1
+    matchLabels:
+      joulie.io/gpu.product: "NVIDIA H100 NVL"
+    model:
+      gpu:
+        vendor: nvidia
+        product: "NVIDIA H100 NVL"
+        count: 4
+        idleWattsPerGpu: 30
+        maxWattsPerGpu: 400
+        minCapWattsPerGpu: 200
+        powerModel:
+          alphaUtil: 1.0
+          betaCap: 1.0
+  - name: gpu-class-2
+    matchLabels:
+      joulie.io/gpu.product: "NVIDIA H100 80GB HBM3"
+    model:
+      gpu:
+        vendor: nvidia
+        product: "NVIDIA H100 80GB HBM3"
+        count: 4
+        idleWattsPerGpu: 30
+        maxWattsPerGpu: 700
+        minCapWattsPerGpu: 350
+        powerModel:
+          alphaUtil: 1.0
+          betaCap: 1.0
+  - name: gpu-class-3
+    matchLabels:
+      joulie.io/gpu.product: "NVIDIA L40S"
+    model:
+      gpu:
+        vendor: nvidia
+        product: "NVIDIA L40S"
+        count: 4
+        idleWattsPerGpu: 30
+        maxWattsPerGpu: 350
+        minCapWattsPerGpu: 200
+        powerModel:
+          alphaUtil: 1.0
+          betaCap: 1.0
+  - name: gpu-class-4
+    matchLabels:
+      joulie.io/gpu.product: "AMD Instinct MI300X"
+    model:
+      gpu:
+        vendor: amd
+        product: "AMD Instinct MI300X"
+        count: 4
+        idleWattsPerGpu: 30
+        maxWattsPerGpu: 750
+        minCapWattsPerGpu: 350
+        powerModel:
+          alphaUtil: 1.0
+          betaCap: 1.0
+  - name: gpu-class-5
+    matchLabels:
+      joulie.io/gpu.product: "AMD Radeon PRO W7900"
+    model:
+      gpu:
+        vendor: amd
+        product: "AMD Radeon PRO W7900"
+        count: 4
+        idleWattsPerGpu: 30
+        maxWattsPerGpu: 295
+        minCapWattsPerGpu: 200
+        powerModel:
+          alphaUtil: 1.0
+          betaCap: 1.0

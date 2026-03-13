@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 CFG="$ROOT/experiments/02-heterogeneous-benchmark/configs/cluster.yaml"
-INPUT=${1:-"$ROOT/tmp/Joulie heterogeneous cluster.xlsx"}
-SHEET=${SHEET:-Sheet1}
+INPUT=${1:-"$ROOT/experiments/02-heterogeneous-benchmark/configs/cluster-nodes.yaml"}
+SHEET=${SHEET:-}
 
 python3 "$ROOT/scripts/generate_heterogeneous_assets.py" \
   --input "$INPUT" \

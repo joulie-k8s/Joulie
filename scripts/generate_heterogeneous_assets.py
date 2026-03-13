@@ -30,11 +30,75 @@ from collections import OrderedDict
 from pathlib import Path
 
 
+def _strip_yaml_scalar(value: str) -> str:
+    value = value.strip()
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    return value
+
+
+def load_simple_yaml_rows(path: Path) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    in_nodes = False
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        stripped = line.strip()
+        if stripped == "nodes:":
+            in_nodes = True
+            continue
+        if not in_nodes:
+            continue
+        if stripped.startswith("- "):
+            if current:
+                rows.append(current)
+            current = {}
+            item = stripped[2:].strip()
+            if item and ":" in item:
+                key, value = item.split(":", 1)
+                current[key.strip()] = _strip_yaml_scalar(value)
+            continue
+        if current is None:
+            continue
+        if ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        current[key.strip()] = _strip_yaml_scalar(value)
+    if current:
+        rows.append(current)
+    return rows
+
+
 def load_rows(path: Path, sheet: str | None) -> list[dict[str, str]]:
     suffix = path.suffix.lower()
     if suffix in {".csv"}:
         with path.open(newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))
+    if suffix in {".yaml", ".yml"}:
+        try:
+            import yaml  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            rows = load_simple_yaml_rows(path)
+            if not rows:
+                raise RuntimeError("pyyaml is required for general .yaml input, or provide a simple nodes: list format") from exc
+            return rows
+        else:
+            with path.open(encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            if isinstance(data, dict) and isinstance(data.get("nodes"), list):
+                rows = data["nodes"]
+            elif isinstance(data, list):
+                rows = data
+            else:
+                raise RuntimeError("yaml input must be a list of node rows or a mapping with a 'nodes' list")
+            out: list[dict[str, str]] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                out.append({str(k): "" if v is None else str(v).strip() for k, v in row.items()})
+            return out
     if suffix in {".xlsx", ".xlsm"}:
         try:
             import openpyxl  # type: ignore

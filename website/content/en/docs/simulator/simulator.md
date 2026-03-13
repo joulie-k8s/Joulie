@@ -35,6 +35,11 @@ This separation lets you validate control policies with realistic scheduler beha
 - Simulate hardware telemetry and control interfaces (CPU and GPU).
 - Provide reproducible, comparable experiments across Joulie and WAO.
 
+The workload side of the simulator is now split into two docs:
+
+- [Workload Generation]({{< relref "/docs/simulator/workload-generation.md" >}}): how realistic AI traces are built
+- [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}}): how those traces are consumed and progressed at runtime
+
 ## Validation disclaimer
 
 GPU support has been validated in simulator mode only (no bare-metal GPU access yet).
@@ -149,7 +154,7 @@ The operator can also infer GPU presence from allocatable extended resources lik
 
 The simulator exposes Prometheus metrics and debug endpoints:
 
-- `GET /debug/nodes`: node selection/class/model + current node state.
+- `GET /debug/nodes`: node selection, matched override profile, resolved model hints, and current node state.
 - `GET /debug/events`: recent telemetry/control events (ring buffer).
 - `GET /debug/energy`: integrated simulated energy totals.
 
@@ -195,8 +200,14 @@ Current simulator supports:
   - only nodes matching this label selector are simulated.
   - default in deploy manifest: `joulie.io/managed=true`.
 - `SIM_NODE_CLASS_CONFIG`:
-  - YAML file with classes (`matchLabels`) and model overrides.
-  - used to map dynamic cluster node names to stable simulator behavior profiles.
+  - YAML file with label-matched model overrides.
+  - used as an optional override layer on top of inventory/label-based hardware identity.
+
+The preferred hardware bootstrap flow is now:
+
+1. put CPU/GPU identity on node labels,
+2. let the simulator/operator resolve that identity against the shared inventory,
+3. use `SIM_NODE_CLASS_CONFIG` only when you want scenario-specific overrides or calibration tweaks.
 
 ### Hardware profile parameters
 
@@ -207,6 +218,12 @@ Class model overrides now support:
 - `fMinMHz`, `fMaxMHz`
 - `raplCapMinW`, `raplCapMaxW`
 - `dvfsRampMs`
+- `cpuCapApplyTauMs`, `cpuTelemetryWindowMs`
+- `cpuAmbientTempC`, `cpuThermalTauMs`, `cpuWattsPerDeltaC`
+- `cpuThermalThrottleStartC`, `cpuThermalThrottleFullC`
+- `gpu.telemetryWindowMs`, `gpu.thermalTauMs`
+- `gpu.ambientTempC`, `gpu.wattsPerDeltaC`
+- `gpu.thermalThrottleStartC`, `gpu.thermalThrottleFullC`
 
 Hardware profile parsing and validation are implemented in:
 
@@ -216,17 +233,25 @@ Invalid class/base profiles fail fast at simulator startup.
 
 ### Power model
 
-The simulator computes:
+The runtime loop now combines:
 
-`P = P_idle + (P_max - P_idle) * util^alpha * freqScale^beta`
+- workload-derived utilization and bottleneck signals,
+- hardware inventory or override parameters,
+- control settling dynamics,
+- telemetry averaging windows,
+- thermal state.
 
-Then applies:
+The detailed formulas live in:
 
-- DVFS ramp dynamics (`dvfsRampMs`) from target throttle to effective `freqScale`.
-- RAPL cap clamp via cap-aware `freqScale` solve.
-- cap saturation flag when cap is below achievable minimum.
+- [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})
 
-Utilization comes from trace-driven workload engine.
+At runtime the important behaviors are:
+
+- DVFS ramp dynamics (`dvfsRampMs`) from target throttle to effective `freqScale`
+- CPU cap settling (`cpuCapApplyTauMs`)
+- GPU cap settling (`gpu.capApplyTauMs`)
+- averaged exported telemetry (`cpuTelemetryWindowMs`, `gpu.telemetryWindowMs`)
+- thermal-throttle behavior for sustained high-power operation
 
 ### Workload trace and execution
 
