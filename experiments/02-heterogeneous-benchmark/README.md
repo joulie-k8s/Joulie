@@ -140,6 +140,7 @@ The benchmark config lives in:
 - [benchmark.yaml](configs/benchmark.yaml)
 - [benchmark-debug.yaml](configs/benchmark-debug.yaml)
 - [benchmark-showcase.yaml](configs/benchmark-showcase.yaml)
+- [benchmark-overnight.yaml](configs/benchmark-overnight.yaml)
 
 It controls:
 
@@ -165,6 +166,41 @@ That profile is intentionally shaped to make Joulie's strengths easier to study:
 - very small performance-sensitive share,
 - no exclusive eco workload generation in the benchmark trace,
 - optional filtering of workload families that are currently too tail-heavy for a clean benchmark loop.
+
+There is also an overnight profile:
+
+- [benchmark-overnight.yaml](configs/benchmark-overnight.yaml)
+
+That profile is meant for longer unattended sweeps:
+
+- 300 logical workloads per seed,
+- 3 seeds across all three baselines,
+- the same Joulie-friendly workload shaping as the showcase profile,
+- a larger timeout / cleanup budget for longer tails.
+
+To run the full flow end to end with a single command:
+
+```bash
+experiments/02-heterogeneous-benchmark/scripts/30_run_overnight.sh
+```
+
+By default the wrapper:
+
+- regenerates heterogeneous assets,
+- reuses the existing `kind` cluster if present,
+- reapplies the heterogeneous KWOK node inventory,
+- runs the sweep/collect/plot pipeline,
+- copies the final `results/` tree under a timestamped directory in `tmp/`.
+
+Useful overrides:
+
+```bash
+REUSE_EXISTING_CLUSTER=true \
+CLEAN_RESULTS=true \
+ARTIFACT_DIR=tmp/heterogeneous-benchmark-overnight-manual \
+experiments/02-heterogeneous-benchmark/scripts/30_run_overnight.sh \
+  experiments/02-heterogeneous-benchmark/configs/benchmark-overnight.yaml
+```
 
 Artifacts are written under:
 
