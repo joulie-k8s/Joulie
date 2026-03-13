@@ -278,6 +278,155 @@ func TestWorkloadAggregationCarriesIntensityIntoNodeState(t *testing.T) {
 	}
 }
 
+func TestWorkloadProgressUsesNodeCapacityInsteadOfJobCount(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 40, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		10,
+		prometheus.NewRegistry(),
+	)
+	s.state["node-big"] = &nodeState{
+		FreqScale:        1,
+		CPUCapacityCores: 128,
+	}
+	s.workload = &workloadEngine{
+		startTime:     time.Now().UTC(),
+		baseSpeedCore: 1.0,
+		jobByID:       map[string]*simJob{},
+	}
+	j1 := &simJob{JobID: "j1", RequestedCPUCores: 2, CPUUnitsRemaining: 100, CPUWorkClass: "cpu.compute_bound", CPUUtilTarget: 0.9}
+	j2 := &simJob{JobID: "j2", RequestedCPUCores: 2, CPUUnitsRemaining: 100, CPUWorkClass: "cpu.compute_bound", CPUUtilTarget: 0.9}
+	s.workload.jobs = []*simJob{j1, j2}
+	s.workload.jobByID[j1.JobID] = j1
+	s.workload.jobByID[j2.JobID] = j2
+
+	podDetailFunc = func(_ context.Context, _ kubernetes.Interface) ([]runningPodInfo, error) {
+		return []runningPodInfo{
+			{Namespace: "default", Name: "p1", Node: "node-big", JobID: "j1"},
+			{Namespace: "default", Name: "p2", Node: "node-big", JobID: "j2"},
+		}, nil
+	}
+	defer func() { podDetailFunc = listRunningPodsDetailed }()
+
+	s.advanceJobProgress(context.Background(), k8sfake.NewSimpleClientset(), 1.0, time.Now().UTC())
+	if got := j1.CPUUnitsRemaining; got > 98.1 || got < 97.9 {
+		t.Fatalf("j1 CPUUnitsRemaining=%f want about 98", got)
+	}
+	if got := j2.CPUUnitsRemaining; got > 98.1 || got < 97.9 {
+		t.Fatalf("j2 CPUUnitsRemaining=%f want about 98", got)
+	}
+}
+
+func TestGangJobCanFinishAfterPeerCompletes(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 40, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		10,
+		prometheus.NewRegistry(),
+	)
+	s.state["node-gang"] = &nodeState{
+		FreqScale:        1,
+		CPUCapacityCores: 64,
+	}
+	s.workload = &workloadEngine{
+		startTime:      time.Now().UTC(),
+		baseSpeedCore:  1.0,
+		jobByID:        map[string]*simJob{},
+		jobsByWorkload: map[string][]*simJob{},
+	}
+	done := &simJob{
+		JobID:             "done",
+		WorkloadID:        "w1",
+		Gang:              true,
+		RequestedCPUCores: 1,
+		CPUUnitsRemaining: 0,
+		Completed:         true,
+		Submitted:         true,
+	}
+	active := &simJob{
+		JobID:             "active",
+		WorkloadID:        "w1",
+		Gang:              true,
+		RequestedCPUCores: 1,
+		CPUUnitsRemaining: 1,
+		CPUWorkClass:      "cpu.compute_bound",
+		CPUUtilTarget:     0.9,
+		Submitted:         true,
+		SubmittedAt:       time.Now().UTC().Add(-time.Second),
+	}
+	s.workload.jobs = []*simJob{done, active}
+	s.workload.jobByID[done.JobID] = done
+	s.workload.jobByID[active.JobID] = active
+	s.workload.jobsByWorkload["w1"] = []*simJob{done, active}
+
+	podDetailFunc = func(_ context.Context, _ kubernetes.Interface) ([]runningPodInfo, error) {
+		return []runningPodInfo{{Namespace: "default", Name: "p-active", Node: "node-gang", JobID: "active"}}, nil
+	}
+	defer func() { podDetailFunc = listRunningPodsDetailed }()
+
+	s.advanceJobProgress(context.Background(), k8sfake.NewSimpleClientset(), 2.0, time.Now().UTC())
+	if !active.Completed {
+		t.Fatalf("expected active gang member to complete once the other member is already completed")
+	}
+}
+
+func TestCompletedJobDeletionIsRetriedUntilPodDisappears(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 40, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		10,
+		prometheus.NewRegistry(),
+	)
+	s.workload = &workloadEngine{
+		startTime: time.Now().UTC(),
+		jobs:      []*simJob{},
+		jobByID:   map[string]*simJob{},
+	}
+	job := &simJob{
+		JobID:       "done",
+		Namespace:   "default",
+		PodName:     "sim-done",
+		Submitted:   true,
+		Completed:   true,
+		CompletedAt: time.Now().UTC().Add(-time.Second),
+	}
+	s.workload.jobs = []*simJob{job}
+	s.workload.jobByID[job.JobID] = job
+
+	kube := k8sfake.NewSimpleClientset(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "sim-done",
+			Namespace: "default",
+			Annotations: map[string]string{
+				"sim.joulie.io/jobId": "done",
+			},
+		},
+		Spec:   corev1.PodSpec{NodeName: "node-cleanup"},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	})
+
+	podDetailFunc = func(_ context.Context, _ kubernetes.Interface) ([]runningPodInfo, error) {
+		return []runningPodInfo{{
+			Namespace: "default",
+			Name:      "sim-done",
+			Node:      "node-cleanup",
+			JobID:     "done",
+		}}, nil
+	}
+	defer func() { podDetailFunc = listRunningPodsDetailed }()
+
+	s.advanceJobProgress(context.Background(), kube, 1.0, time.Now().UTC())
+	if job.DeleteRequestedAt.IsZero() {
+		t.Fatalf("expected deletion request to be recorded")
+	}
+	if _, err := kube.CoreV1().Pods("default").Get(context.Background(), "sim-done", metav1.GetOptions{}); err == nil {
+		t.Fatalf("expected completed workload pod to be deleted")
+	}
+}
+
 func TestHandleGPUControlAndTelemetry(t *testing.T) {
 	s := newSimulatorWithRegisterer(
 		simModel{

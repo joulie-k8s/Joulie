@@ -61,6 +61,8 @@ type nodeState struct {
 	TotalAvgPowerWatts      float64          `json:"totalAvgPowerWatts"`
 	CPUTemperatureC         float64          `json:"cpuTemperatureC"`
 	CPUThermalThrottle      float64          `json:"cpuThermalThrottle"`
+	CPUCapacityCores        float64          `json:"cpuCapacityCores"`
+	GPUCapacityDevices      float64          `json:"gpuCapacityDevices"`
 	CPUSockets              []cpuSocketState `json:"cpuSockets,omitempty"`
 	GPUDevices              []gpuDeviceState `json:"gpuDevices,omitempty"`
 }
@@ -133,15 +135,17 @@ type simJob struct {
 	SubmitAt          time.Time
 	SubmittedAt       time.Time
 	CompletedAt       time.Time
+	LastProgressAt    time.Time
+	DeleteRequestedAt time.Time
 	PodName           string
 	NodeName          string
 }
 
 type workloadEngine struct {
-	startTime     time.Time
-	baseSpeedCore float64
-	jobs          []*simJob
-	jobByID       map[string]*simJob
+	startTime      time.Time
+	baseSpeedCore  float64
+	jobs           []*simJob
+	jobByID        map[string]*simJob
 	jobsByWorkload map[string][]*simJob
 }
 
@@ -239,6 +243,7 @@ func main() {
 	mux.HandleFunc("/control/", s.handleControl)
 	mux.HandleFunc("/state/", s.handleState)
 	mux.HandleFunc("/debug/nodes", s.handleDebugNodes)
+	mux.HandleFunc("/debug/jobs", s.handleDebugJobs)
 	mux.HandleFunc("/debug/events", s.handleDebugEvents)
 	mux.HandleFunc("/debug/energy", s.handleDebugEnergy)
 
@@ -894,6 +899,62 @@ func (s *simulator) handleDebugNodes(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *simulator) handleDebugJobs(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	status := http.StatusOK
+	defer s.observeRequest("debug_jobs", r.Method, &status, start)
+	if r.Method != http.MethodGet {
+		status = http.StatusMethodNotAllowed
+		http.Error(w, "method not allowed", status)
+		return
+	}
+	if s.workload == nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"count": 0, "jobs": []any{}})
+		return
+	}
+	now := time.Now().UTC()
+	out := make([]map[string]any, 0, len(s.workload.jobs))
+	for _, j := range s.workload.jobs {
+		stalledForSec := 0.0
+		if !j.LastProgressAt.IsZero() && !j.Completed {
+			stalledForSec = now.Sub(j.LastProgressAt).Seconds()
+		}
+		out = append(out, map[string]any{
+			"jobId":             j.JobID,
+			"workloadId":        j.WorkloadID,
+			"workloadType":      j.WorkloadType,
+			"podRole":           j.PodRole,
+			"gang":              j.Gang,
+			"class":             j.Class,
+			"submitted":         j.Submitted,
+			"completed":         j.Completed,
+			"node":              j.NodeName,
+			"requestedCpuCores": j.RequestedCPUCores,
+			"requestedGpus":     j.RequestedGPUs,
+			"cpuUnitsTotal":     j.CPUUnitsTotal,
+			"cpuUnitsRemaining": j.CPUUnitsRemaining,
+			"gpuUnitsTotal":     j.GPUUnitsTotal,
+			"gpuUnitsRemaining": j.GPUUnitsRemaining,
+			"lastProgressAt":    j.LastProgressAt,
+			"deleteRequestedAt": j.DeleteRequestedAt,
+			"stalledForSec":     stalledForSec,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ic := out[i]["completed"].(bool)
+		jc := out[j]["completed"].(bool)
+		if ic != jc {
+			return !ic
+		}
+		return fmt.Sprint(out[i]["jobId"]) < fmt.Sprint(out[j]["jobId"])
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"count": len(out),
+		"jobs":  out,
+	})
+}
+
 func (s *simulator) handleDebugEvents(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	status := http.StatusOK
@@ -1055,6 +1116,14 @@ func (s *simulator) refreshNodeStateFromKubeData(counts map[string]int, pods []r
 		}
 		selected[node] = true
 		model, className := s.resolveModelForNode(labels)
+		cpuCapacity := parsePositiveFloatString(labels["joulie.io/hw.cpu-cores"])
+		if cpuCapacity <= 0 {
+			cpuCapacity = 16
+		}
+		gpuCapacity := parsePositiveFloatString(labels["joulie.io/hw.gpu-count"])
+		if gpuCapacity <= 0 {
+			gpuCapacity = float64(model.GPU.Count)
+		}
 		prevClass := s.nodeClass[node]
 		if prevClass != "" && prevClass != className {
 			s.nodeClassInfo.WithLabelValues(node, prevClass).Set(0)
@@ -1078,6 +1147,8 @@ func (s *simulator) refreshNodeStateFromKubeData(counts map[string]int, pods []r
 				GPUTargetCapWattsPerGpu: model.GPU.MaxWattsPerGPU,
 				GPUWorkClass:            "gpu.mixed",
 				GPUPerfMultiplier:       1.0,
+				CPUCapacityCores:        cpuCapacity,
+				GPUCapacityDevices:      gpuCapacity,
 			}
 			cpuSockets := model.CPUSockets
 			if cpuSockets <= 0 {
@@ -1099,6 +1170,8 @@ func (s *simulator) refreshNodeStateFromKubeData(counts map[string]int, pods []r
 			}
 			s.state[node] = st
 		}
+		st.CPUCapacityCores = cpuCapacity
+		st.GPUCapacityDevices = gpuCapacity
 	}
 
 	for node, st := range s.state {
@@ -1329,6 +1402,14 @@ func clamp01(v float64) float64 {
 	}
 	if v > 1 {
 		return 1
+	}
+	return v
+}
+
+func parsePositiveFloatString(raw string) float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || v <= 0 {
+		return 0
 	}
 	return v
 }
@@ -1635,10 +1716,10 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 	}
 	defer f.Close()
 	engine := &workloadEngine{
-		startTime:     time.Now().UTC(),
-		baseSpeedCore: floatEnv("SIM_BASE_SPEED_PER_CORE", 1.0),
-		jobs:          []*simJob{},
-		jobByID:       map[string]*simJob{},
+		startTime:      time.Now().UTC(),
+		baseSpeedCore:  floatEnv("SIM_BASE_SPEED_PER_CORE", 1.0),
+		jobs:           []*simJob{},
+		jobByID:        map[string]*simJob{},
 		jobsByWorkload: map[string][]*simJob{},
 	}
 	sc := bufio.NewScanner(f)
@@ -1970,8 +2051,8 @@ func affinityForIntentClass(intent string) *corev1.Affinity {
 								},
 								{
 									Key:      "joulie.io/draining",
-									Operator: corev1.NodeSelectorOpIn,
-									Values:   []string{"false"},
+									Operator: corev1.NodeSelectorOpNotIn,
+									Values:   []string{"true"},
 								},
 							},
 						},
@@ -2064,11 +2145,26 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 		return
 	}
 	byNode := map[string][]*simJob{}
+	podByJobID := map[string]runningPodInfo{}
 	runningByWorkload := map[string]int{}
+	completedByWorkload := map[string]int{}
+	submittedByWorkload := map[string]int{}
+	for _, j := range s.workload.jobs {
+		if j.WorkloadID == "" {
+			continue
+		}
+		if j.Submitted {
+			submittedByWorkload[j.WorkloadID]++
+		}
+		if j.Completed {
+			completedByWorkload[j.WorkloadID]++
+		}
+	}
 	for _, p := range pods {
 		if p.JobID == "" {
 			continue
 		}
+		podByJobID[p.JobID] = p
 		j := s.workload.jobByID[p.JobID]
 		if j == nil || j.Completed {
 			continue
@@ -2078,6 +2174,17 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 		if j.WorkloadID != "" {
 			runningByWorkload[j.WorkloadID]++
 		}
+	}
+	for _, j := range s.workload.jobs {
+		if !j.Completed {
+			continue
+		}
+		p, ok := podByJobID[j.JobID]
+		if !ok {
+			continue
+		}
+		j.NodeName = p.Node
+		s.ensureWorkloadPodDeleted(kube, j)
 	}
 	for node, jobs := range byNode {
 		s.mu.RLock()
@@ -2102,6 +2209,7 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			st = s.getNode(node)
 		}
 		gpuJobs := 0
+		totalCPUReq := 0.0
 		totalGPUReq := 0.0
 		totalCPUUtilDemand := 0.0
 		totalGPUUtilDemand := 0.0
@@ -2116,6 +2224,7 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 		for _, j := range jobs {
 			if j.CPUUnitsRemaining > 0 {
 				weight := math.Max(0.1, j.RequestedCPUCores)
+				totalCPUReq += math.Max(0.1, j.RequestedCPUCores)
 				cpuClassWeights[j.CPUWorkClass] += weight
 				totalCPUUtilDemand += j.RequestedCPUCores * clamp01(j.CPUUtilTarget)
 				memoryWeighted += weight * clamp01(j.MemoryIntensity)
@@ -2136,8 +2245,12 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			}
 		}
 		if st != nil {
+			cpuCapacity := st.CPUCapacityCores
+			if cpuCapacity <= 0 {
+				cpuCapacity = 16
+			}
 			s.mu.Lock()
-			st.CPUUtil = clamp01(totalCPUUtilDemand / 16.0)
+			st.CPUUtil = clamp01(totalCPUUtilDemand / cpuCapacity)
 			if gpuCount > 0 {
 				if totalGPUReq > 0 {
 					st.GPUUtil = clamp01(totalGPUUtilDemand / gpuCount)
@@ -2166,10 +2279,25 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			}
 			s.mu.Unlock()
 		}
+		cpuCapacity := 16.0
+		if st != nil && st.CPUCapacityCores > 0 {
+			cpuCapacity = st.CPUCapacityCores
+		}
+		cpuShareFactor := 1.0
+		if totalCPUReq > cpuCapacity && cpuCapacity > 0 {
+			cpuShareFactor = clamp01(cpuCapacity / totalCPUReq)
+		}
+		gpuShareFactor := 1.0
+		if gpuCount > 0 && totalGPUReq > gpuCount {
+			gpuShareFactor = clamp01(gpuCount / totalGPUReq)
+		}
 		for _, j := range jobs {
 			if j.Gang && j.WorkloadID != "" {
 				total := len(s.workload.jobsByWorkload[j.WorkloadID])
-				if total > 0 && runningByWorkload[j.WorkloadID] < total {
+				if total > 0 && submittedByWorkload[j.WorkloadID] < total {
+					continue
+				}
+				if total > 0 && runningByWorkload[j.WorkloadID]+completedByWorkload[j.WorkloadID] < total {
 					continue
 				}
 			}
@@ -2180,14 +2308,17 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			jobCPUMul := cpuThroughputMultiplier(freqScale, j.CPUWorkClass, model, j.MemoryIntensity, j.IOIntensity, jobThermalThrottle)
 			if j.CPUUnitsRemaining > 0 {
 				cpuThrottleFactor := cpuThrottleImpactFactor(jobCPUMul, j)
-				speed := j.RequestedCPUCores * s.workload.baseSpeedCore * cpuThrottleFactor
+				speed := j.RequestedCPUCores * s.workload.baseSpeedCore * cpuThrottleFactor * cpuShareFactor
 				if speed < 0 {
 					speed = 0
 				}
-				j.CPUUnitsRemaining -= speed * dt / float64(maxIntInt(1, len(jobs)))
+				prev := j.CPUUnitsRemaining
+				j.CPUUnitsRemaining -= speed * dt
+				if j.CPUUnitsRemaining < prev {
+					j.LastProgressAt = now
+				}
 			}
 			if j.GPUUnitsRemaining > 0 {
-				share := float64(maxIntInt(1, gpuJobs))
 				gpuBase := math.Max(0.1, j.RequestedGPUs) * s.workload.baseSpeedCore
 				gpuModel := phys.CappedBoardGPUModel{
 					IdleW:         model.GPU.IdleWattsPerGPU,
@@ -2207,18 +2338,22 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 				}, j.GPUWorkClass)
 				cpuFeedFactor := cpuFeedThrottleFactor(jobCPUMul, j)
 				gpuCapImpact := 1.0 - (1.0-gpuCapFactor)*j.SensitivityGPU
-				gpuSpeed := gpuBase * gpuMul * cpuFeedFactor * gpuCapImpact
+				gpuSpeed := gpuBase * gpuMul * cpuFeedFactor * gpuCapImpact * gpuShareFactor
 				if gpuSpeed < 0 {
 					gpuSpeed = 0
 				}
-				j.GPUUnitsRemaining -= gpuSpeed * dt / share
+				prev := j.GPUUnitsRemaining
+				j.GPUUnitsRemaining -= gpuSpeed * dt
+				if j.GPUUnitsRemaining < prev {
+					j.LastProgressAt = now
+				}
 			}
 			if j.CPUUnitsRemaining > 0 || j.GPUUnitsRemaining > 0 {
 				continue
 			}
 			j.Completed = true
 			j.CompletedAt = now
-			_ = kube.CoreV1().Pods(j.Namespace).Delete(ctx, j.PodName, metav1.DeleteOptions{})
+			s.ensureWorkloadPodDeleted(kube, j)
 			s.jobCompleted.WithLabelValues(j.Class, node).Inc()
 			if !j.SubmittedAt.IsZero() {
 				s.jobCompletion.Observe(j.CompletedAt.Sub(j.SubmittedAt).Seconds())
@@ -2226,6 +2361,33 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			log.Printf("job completed id=%s node=%s class=%s elapsed=%.1fs", j.JobID, node, j.Class, j.CompletedAt.Sub(j.SubmittedAt).Seconds())
 		}
 	}
+}
+
+func (s *simulator) ensureWorkloadPodDeleted(kube kubernetes.Interface, j *simJob) {
+	if j == nil || j.Namespace == "" || j.PodName == "" {
+		return
+	}
+	if !j.DeleteRequestedAt.IsZero() && time.Since(j.DeleteRequestedAt) < 2*time.Second {
+		return
+	}
+	grace := int64(0)
+	propagation := metav1.DeletePropagationBackground
+	deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := kube.CoreV1().Pods(j.Namespace).Delete(deleteCtx, j.PodName, metav1.DeleteOptions{
+		GracePeriodSeconds: &grace,
+		PropagationPolicy:  &propagation,
+	})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return
+		}
+		j.DeleteRequestedAt = time.Now().UTC()
+		log.Printf("warning: delete completed workload pod job=%s namespace=%s pod=%s: %v", j.JobID, j.Namespace, j.PodName, err)
+		return
+	}
+	j.DeleteRequestedAt = time.Now().UTC()
+	log.Printf("requested delete for completed workload pod job=%s namespace=%s pod=%s", j.JobID, j.Namespace, j.PodName)
 }
 
 func parseCPURequestOrDefault(v string, def float64) float64 {
@@ -2349,9 +2511,17 @@ func (w *workloadEngine) overrideNodeUtil(st *nodeState, node string) bool {
 	if active == 0 {
 		return false
 	}
-	st.CPUUtil = clamp01(totalCPUUtil / 16.0)
+	cpuCapacity := st.CPUCapacityCores
+	if cpuCapacity <= 0 {
+		cpuCapacity = 16
+	}
+	st.CPUUtil = clamp01(totalCPUUtil / cpuCapacity)
 	if gpuReq > 0 {
-		st.GPUUtil = clamp01(totalGPUUtil / gpuReq)
+		gpuCapacity := st.GPUCapacityDevices
+		if gpuCapacity <= 0 {
+			gpuCapacity = gpuReq
+		}
+		st.GPUUtil = clamp01(totalGPUUtil / gpuCapacity)
 	}
 	return true
 }

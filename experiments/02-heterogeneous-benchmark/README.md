@@ -129,7 +129,7 @@ experiments/02-heterogeneous-benchmark/scripts/10_run_smoke.sh
 experiments/02-heterogeneous-benchmark/scripts/10_setup_cluster.sh
 ```
 
-2. Run the heterogeneous benchmark sweep, aggregate results, and generate plots:
+1. Run the heterogeneous benchmark sweep, aggregate results, and generate plots:
 
 ```bash
 experiments/02-heterogeneous-benchmark/scripts/20_run_benchmark.sh
@@ -139,6 +139,7 @@ The benchmark config lives in:
 
 - [benchmark.yaml](configs/benchmark.yaml)
 - [benchmark-debug.yaml](configs/benchmark-debug.yaml)
+- [benchmark-showcase.yaml](configs/benchmark-showcase.yaml)
 
 It controls:
 
@@ -154,6 +155,17 @@ The repository also ships a lightweight debug profile:
 
 That profile is meant for fast iteration on the existing `kind` cluster and keeps each baseline close to about one minute on the current simulator settings.
 
+There is also a "showcase" profile:
+
+- [benchmark-showcase.yaml](configs/benchmark-showcase.yaml)
+
+That profile is intentionally shaped to make Joulie's strengths easier to study:
+
+- mostly memory-heavy CPU preprocessing and short/medium GPU jobs,
+- very small performance-sensitive share,
+- no exclusive eco workload generation in the benchmark trace,
+- optional filtering of workload families that are currently too tail-heavy for a clean benchmark loop.
+
 Artifacts are written under:
 
 - `experiments/02-heterogeneous-benchmark/results/`
@@ -164,7 +176,19 @@ including:
 - per-run reproducibility metadata (`metadata.json`, `benchmark_config.yaml`, `kubectl_version.json`, node snapshots),
 - aggregated `results/summary.csv`,
 - aggregated `results/baseline_summary.csv` with mean/std/95% CI-style summaries across repeated seeds,
+- aggregated `results/job_details.csv`,
+- aggregated `results/workload_type_relative_to_a.csv`,
+- aggregated `results/workload_type_tradeoff_vs_a.csv`,
+- aggregated `results/hardware_energy.csv`,
+- aggregated `results/hardware_family_relative_to_a.csv`,
 - plots under `results/plots/`.
+
+The new attribution outputs make it possible to answer questions such as:
+
+- which workload types slowed down the most under throttling,
+- which workload types were mostly unaffected while still running on energy-saving hardware,
+- which hardware families delivered the best energy-savings/slowdown tradeoff,
+- which hardware families paid slowdown without enough savings to justify it.
 
 If you want a clean debug run without stale aborted runs mixed into the summaries, use:
 
@@ -241,7 +265,27 @@ In other words:
 - the debug profile aims to cover all major hardware families,
 - but it does not guarantee that every individual fake node instance receives a job in the lightweight run.
 
+Between baselines, the sweep also resets control state to avoid contamination:
+
+- deletes `NodePowerProfile` and `TelemetryProfile` objects,
+- removes `joulie.io/power-profile` from managed nodes,
+- reinitializes `joulie.io/draining=false` on managed nodes as an explicit clean baseline-state marker,
+- baseline `A` runs without Joulie deployed at all.
+
+Eco-only workload affinity in the benchmark and docs now uses:
+
+- `joulie.io/power-profile In ["eco"]`
+- `joulie.io/draining NotIn ["true"]`
+
+instead of requiring `draining=false`, because `NotIn ["true"]` is safer when the label is temporarily absent.
+
 If you need one-pod-per-node-instance coverage, use a heavier benchmark config than the debug profile.
+
+The sweep can also optionally restrict the canonical trace to a subset of workload families via:
+
+- `workload.allowed_workload_types`
+
+This is useful for curated "showcase" studies where we want the benchmark to emphasize the parts of the workload space that best demonstrate the energy/throughput tradeoff, without being dominated by simulator-pathological long-tail gang workloads.
 
 ## Notes
 
@@ -250,6 +294,37 @@ If you need one-pod-per-node-instance coverage, use a heavier benchmark config t
 - `NodeHardware` is not hand-authored in this experiment; it is published by the agent.
 - This experiment is intended to be the benchmark-facing consumer of the shared hardware inventory and physical model.
 - The benchmark scripts can reuse an already existing `kind` cluster via the cluster-setup scripts; recreating the cluster is not required for the debug profile.
+
+## Plot guide
+
+The plot set now includes both aggregate and attribution views.
+
+Aggregate views:
+
+- `throughput_vs_energy.png`
+- `energy_vs_makespan.png`
+- `relative_tradeoff_vs_a.png`
+- `relative_tradeoff_bars_vs_a.png`
+
+Attribution views:
+
+- `workload_type_tradeoff_vs_a.png`
+  - slowdown vs energy-savings exposure by workload type
+- `workload_type_rankings_baseline_B.png`
+- `workload_type_rankings_baseline_C.png`
+  - which workload types were helped most and hurt most
+- `hardware_family_tradeoff_vs_a.png`
+  - energy savings vs slowdown by hardware family
+- `hardware_family_rankings_baseline_B.png`
+- `hardware_family_rankings_baseline_C.png`
+  - which hardware families delivered the best and worst throttling tradeoffs
+
+For workload types, "energy-savings exposure" is not a direct per-job energy meter. It is derived by combining:
+
+- the hardware-family energy savings measured from simulator node energy,
+- the hardware families actually used by each workload type.
+
+That keeps the analysis interpretable without pretending we have exact per-job energy accounting.
 
 ## Known caveats
 

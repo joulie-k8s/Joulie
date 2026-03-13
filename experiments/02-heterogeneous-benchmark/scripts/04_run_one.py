@@ -22,7 +22,7 @@ def log(msg: str):
 
 def run(cmd, check=True, capture=False, input_text=None):
     if capture:
-        return subprocess.run(cmd, check=check, text=True, capture_output=True)
+        return subprocess.run(cmd, check=check, text=True, capture_output=True, input=input_text)
     return subprocess.run(cmd, check=check, text=True, input=input_text)
 
 
@@ -118,20 +118,24 @@ def reset_workload_pods():
 
 def apply_trace_configmap(trace_path: pathlib.Path):
     log("applying simulator workload trace configmap")
-    content = trace_path.read_text()
-    manifest = """
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: joulie-simulator-workload-trace
-  namespace: joulie-sim-demo
-data:
-  trace.jsonl: |
-"""
-    for line in content.splitlines():
-        if line.strip():
-            manifest += f"    {line}\n"
-    run(["kubectl", "apply", "-f", "-"], input_text=manifest)
+    rendered = run(
+        [
+            "kubectl",
+            "-n",
+            "joulie-sim-demo",
+            "create",
+            "configmap",
+            "joulie-simulator-workload-trace",
+            f"--from-file=trace.jsonl={trace_path}",
+            "--dry-run=client",
+            "-o",
+            "yaml",
+        ],
+        capture=True,
+    ).stdout
+    replace = run(["kubectl", "replace", "-f", "-"], check=False, capture=True, input_text=rendered)
+    if replace.returncode != 0:
+        run(["kubectl", "create", "-f", "-"], input_text=rendered)
     log("restarting simulator deployment to pick up new trace")
     run(["kubectl", "-n", "joulie-sim-demo", "rollout", "restart", "deploy/joulie-telemetry-sim"])
     run(["kubectl", "-n", "joulie-sim-demo", "rollout", "status", "deploy/joulie-telemetry-sim"])
@@ -183,14 +187,16 @@ def collect_artifacts(
     time.sleep(1)
     try:
         nodes = urlopen("http://127.0.0.1:18080/debug/nodes", timeout=3).read().decode()
+        jobs = urlopen("http://127.0.0.1:18080/debug/jobs", timeout=3).read().decode()
         events = urlopen("http://127.0.0.1:18080/debug/events", timeout=3).read().decode()
         energy = urlopen("http://127.0.0.1:18080/debug/energy", timeout=3).read().decode()
     except Exception:
-        nodes, events, energy = "{}", "{}", "{}"
+        nodes, jobs, events, energy = "{}", "{}", "{}", "{}"
     finally:
         pf.terminate()
 
     (run_dir / "sim_debug_nodes.json").write_text(nodes)
+    (run_dir / "sim_debug_jobs.json").write_text(jobs)
     (run_dir / "sim_debug_events.json").write_text(events)
     (run_dir / "sim_debug_energy.json").write_text(energy)
 

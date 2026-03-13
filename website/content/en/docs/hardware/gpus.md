@@ -72,7 +72,7 @@ This makes it easier to compare:
 Keep workload intent guidance unchanged:
 
 - performance-sensitive pods: prefer `NotIn ["eco"]`
-- eco-only (advanced): `In ["eco"]` and optionally `draining=false`
+- eco-only (advanced): `In ["eco"]` and optionally `joulie.io/draining NotIn ["true"]`
 
 GPU resource requests (`nvidia.com/gpu`, `amd.com/gpu`) are orthogonal to Joulie power-profile labels.
 Joulie GPU capping is node-level and not a GPU slicing API.

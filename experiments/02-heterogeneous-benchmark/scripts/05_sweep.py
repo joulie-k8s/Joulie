@@ -78,6 +78,7 @@ def generate_canonical_seed_trace(
     burst_multiplier: float,
     emit_workload_records: bool,
     work_scale: float,
+    allowed_workload_types: list[str] | None,
 ) -> pathlib.Path:
     traces_dir = pathlib.Path("experiments/02-heterogeneous-benchmark/results/traces")
     traces_dir.mkdir(parents=True, exist_ok=True)
@@ -137,13 +138,16 @@ def generate_canonical_seed_trace(
         ]
     )
     run(cmd, check=True)
-    if work_scale != 1.0:
-        scaled_lines = []
+    if work_scale != 1.0 or allowed_workload_types:
+        allowed = set(allowed_workload_types or [])
+        filtered_scaled_lines = []
         for raw in trace_path.read_text().splitlines():
             raw = raw.strip()
             if not raw:
                 continue
             rec = json.loads(raw)
+            if allowed and rec.get("workloadType") not in allowed:
+                continue
             if rec.get("type", "job") == "job":
                 work = rec.get("work")
                 if isinstance(work, dict):
@@ -151,8 +155,8 @@ def generate_canonical_seed_trace(
                         work["cpuUnits"] = float(work["cpuUnits"]) * work_scale
                     if "gpuUnits" in work:
                         work["gpuUnits"] = float(work["gpuUnits"]) * work_scale
-            scaled_lines.append(json.dumps(rec, separators=(",", ":")))
-        trace_path.write_text("\n".join(scaled_lines) + ("\n" if scaled_lines else ""))
+            filtered_scaled_lines.append(json.dumps(rec, separators=(",", ":")))
+        trace_path.write_text("\n".join(filtered_scaled_lines) + ("\n" if filtered_scaled_lines else ""))
     count = sum(1 for l in trace_path.read_text().splitlines() if l.strip())
     log(f"canonical seed trace generated records={count} file={trace_path}")
     return trace_path
@@ -434,6 +438,18 @@ def reset_control_state():
         ],
         check=False,
     )
+    run(
+        [
+            "kubectl",
+            "label",
+            "nodes",
+            "-l",
+            "joulie.io/managed=true",
+            "joulie.io/draining=false",
+            "--overwrite",
+        ],
+        check=False,
+    )
 
 
 def wait_zero_active_workload_pods(timeout_sec: int):
@@ -457,6 +473,7 @@ def wait_zero_active_workload_pods(timeout_sec: int):
         active = sum(
             1
             for p in items
+            if not str(((p.get("metadata", {}) or {}).get("name", ""))).startswith("sim-bootstrap-")
             if p.get("status", {}).get("phase") in ("Pending", "Running")
         )
         if active == 0:
@@ -545,6 +562,9 @@ def main():
     emit_workload_records = str(emit_workload_records_raw).strip().lower() not in {"false", "0", "no"}
     work_scale = float(get_cfg(cfg, "workload", "work_scale", default=1.0))
     baseline_a_strip_affinity = bool(get_cfg(cfg, "workload", "baseline_a_strip_affinity", default=True))
+    allowed_workload_types = get_cfg(cfg, "workload", "allowed_workload_types", default=None)
+    if allowed_workload_types is not None and not isinstance(allowed_workload_types, list):
+        raise SystemExit("workload.allowed_workload_types must be a YAML list when set")
 
     baselines_raw = args.baselines if args.baselines.strip() else get_cfg(cfg, "run", "baselines", default=["A", "B", "C"])
     baselines = to_baselines(baselines_raw)
@@ -660,10 +680,11 @@ def main():
                 gpu_request_per_job=gpu_request_per_job,
                 burst_day_probability=burst_day_probability,
                 burst_mean_jobs=burst_mean_jobs,
-                burst_multiplier=burst_multiplier,
-                emit_workload_records=emit_workload_records,
-                work_scale=work_scale,
-            )
+            burst_multiplier=burst_multiplier,
+            emit_workload_records=emit_workload_records,
+            work_scale=work_scale,
+            allowed_workload_types=allowed_workload_types,
+        )
             canonical_trace = retarget_trace_for_cluster(canonical_trace)
             trace_file = derive_baseline_trace(
                 baseline=baseline,

@@ -275,6 +275,149 @@ def plot_relative_tradeoff_bars(df: pd.DataFrame):
     plt.close(fig)
 
 
+def plot_workload_type_tradeoff():
+    path = RESULTS / "workload_type_tradeoff_vs_a.csv"
+    if not path.exists():
+        return
+    df = pd.read_csv(path)
+    if df.empty:
+        return
+    fig, ax = plt.subplots(figsize=(10.5, 6))
+    for baseline in sorted(df["baseline"].unique(), key=lambda x: BASELINE_ORDER.index(x) if x in BASELINE_ORDER else 999):
+        grp = df[df["baseline"] == baseline]
+        ax.scatter(
+            grp["mean_slowdown_pct_vs_a"],
+            grp["mean_energy_savings_exposure_pct_vs_a"],
+            s=70,
+            alpha=0.85,
+            color=BASELINE_COLORS.get(baseline, None),
+            label=f"baseline {baseline}",
+        )
+        for _, row in grp.iterrows():
+            ax.annotate(
+                row["workload_type"],
+                (row["mean_slowdown_pct_vs_a"], row["mean_energy_savings_exposure_pct_vs_a"]),
+                textcoords="offset points",
+                xytext=(5, 4),
+                fontsize=8,
+            )
+    ax.axhline(0, color="#888888", linewidth=0.8)
+    ax.axvline(0, color="#888888", linewidth=0.8)
+    ax.set_xlabel("Mean slowdown vs baseline A (%)")
+    ax.set_ylabel("Mean energy-savings exposure vs baseline A (%)")
+    ax.set_title("Workload-Type Tradeoff: Slowdown vs Energy-Savings Exposure")
+    ax.grid(alpha=0.2)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(PLOTS / "workload_type_tradeoff_vs_a.png", dpi=170)
+    plt.close(fig)
+
+
+def plot_workload_type_rankings():
+    path = RESULTS / "workload_type_tradeoff_vs_a.csv"
+    if not path.exists():
+        return
+    df = pd.read_csv(path)
+    if df.empty:
+        return
+    for baseline in sorted(df["baseline"].unique(), key=lambda x: BASELINE_ORDER.index(x) if x in BASELINE_ORDER else 999):
+        grp = df[df["baseline"] == baseline].copy()
+        if grp.empty:
+            continue
+        grp.sort_values("tradeoff_score", ascending=False, inplace=True)
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+        y = range(len(grp))
+        color = BASELINE_COLORS.get(baseline, "#888888")
+        axes[0].barh(y, grp["mean_energy_savings_exposure_pct_vs_a"], color=color, alpha=0.82)
+        axes[0].set_yticks(list(y), grp["workload_type"])
+        axes[0].invert_yaxis()
+        axes[0].set_xlabel("Mean energy-savings exposure vs A (%)")
+        axes[0].set_title(f"Baseline {baseline}: Workload Types Helped Most")
+        axes[0].grid(axis="x", alpha=0.2)
+
+        worst = grp.sort_values("mean_slowdown_pct_vs_a", ascending=False)
+        y2 = range(len(worst))
+        axes[1].barh(y2, worst["mean_slowdown_pct_vs_a"], color=color, alpha=0.82)
+        axes[1].set_yticks(list(y2), worst["workload_type"])
+        axes[1].invert_yaxis()
+        axes[1].set_xlabel("Mean slowdown vs A (%)")
+        axes[1].set_title(f"Baseline {baseline}: Workload Types Hurt Most")
+        axes[1].grid(axis="x", alpha=0.2)
+
+        fig.tight_layout()
+        fig.savefig(PLOTS / f"workload_type_rankings_baseline_{baseline}.png", dpi=170)
+        plt.close(fig)
+
+
+def plot_hardware_family_tradeoff():
+    path = RESULTS / "hardware_family_relative_to_a.csv"
+    if not path.exists():
+        return
+    df = pd.read_csv(path)
+    if df.empty:
+        return
+    fig, ax = plt.subplots(figsize=(10.5, 6))
+    for baseline in sorted(df["baseline"].unique(), key=lambda x: BASELINE_ORDER.index(x) if x in BASELINE_ORDER else 999):
+        grp = df[df["baseline"] == baseline]
+        ax.scatter(
+            grp["mean_slowdown_pct_vs_a"],
+            grp["mean_energy_savings_pct_vs_a"],
+            s=78,
+            alpha=0.85,
+            color=BASELINE_COLORS.get(baseline, None),
+            label=f"baseline {baseline}",
+        )
+        for _, row in grp.iterrows():
+            ax.annotate(row["hardware_family"], (row["mean_slowdown_pct_vs_a"], row["mean_energy_savings_pct_vs_a"]), textcoords="offset points", xytext=(5, 4), fontsize=8)
+    ax.axhline(0, color="#888888", linewidth=0.8)
+    ax.axvline(0, color="#888888", linewidth=0.8)
+    ax.set_xlabel("Mean slowdown vs baseline A (%)")
+    ax.set_ylabel("Mean energy savings vs baseline A (%)")
+    ax.set_title("Hardware Families Best Fit for Throttling")
+    ax.grid(alpha=0.2)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(PLOTS / "hardware_family_tradeoff_vs_a.png", dpi=170)
+    plt.close(fig)
+
+
+def plot_hardware_family_rankings():
+    path = RESULTS / "hardware_family_relative_to_a.csv"
+    if not path.exists():
+        return
+    df = pd.read_csv(path)
+    if df.empty:
+        return
+    for baseline in sorted(df["baseline"].unique(), key=lambda x: BASELINE_ORDER.index(x) if x in BASELINE_ORDER else 999):
+        grp = df[df["baseline"] == baseline].copy()
+        if grp.empty:
+            continue
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+
+        helped = grp.sort_values("mean_energy_savings_pct_vs_a", ascending=False)
+        y = range(len(helped))
+        color = BASELINE_COLORS.get(baseline, "#888888")
+        axes[0].barh(y, helped["mean_energy_savings_pct_vs_a"], color=color, alpha=0.82)
+        axes[0].set_yticks(list(y), helped["hardware_family"])
+        axes[0].invert_yaxis()
+        axes[0].set_xlabel("Mean energy savings vs A (%)")
+        axes[0].set_title(f"Baseline {baseline}: Hardware Families Helped Most")
+        axes[0].grid(axis="x", alpha=0.2)
+
+        hurt = grp.sort_values("mean_slowdown_pct_vs_a", ascending=False)
+        y2 = range(len(hurt))
+        axes[1].barh(y2, hurt["mean_slowdown_pct_vs_a"], color=color, alpha=0.82)
+        axes[1].set_yticks(list(y2), hurt["hardware_family"])
+        axes[1].invert_yaxis()
+        axes[1].set_xlabel("Mean slowdown vs A (%)")
+        axes[1].set_title(f"Baseline {baseline}: Hardware Families Hurt Most")
+        axes[1].grid(axis="x", alpha=0.2)
+
+        fig.tight_layout()
+        fig.savefig(PLOTS / f"hardware_family_rankings_baseline_{baseline}.png", dpi=170)
+        plt.close(fig)
+
+
 def main():
     summary = RESULTS / "summary.csv"
     if not summary.exists():
@@ -303,6 +446,10 @@ def main():
     plot_baseline_summary_bars(df)
     plot_relative_tradeoff_scatter(df)
     plot_relative_tradeoff_bars(df)
+    plot_workload_type_tradeoff()
+    plot_workload_type_rankings()
+    plot_hardware_family_tradeoff()
+    plot_hardware_family_rankings()
 
     print(f"plots written to {PLOTS}")
 

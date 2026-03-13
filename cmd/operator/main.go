@@ -319,7 +319,7 @@ func reconcileWithCatalog(
 		operatorNodeDensity.WithLabelValues(nodeName, "gpu").Set(nh.GPUComputeDensity)
 	}
 
-	plan := buildPlanByPolicy(ctx, kube, policyType, eligible, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
+	plan := buildPlanByPolicy(ctx, kube, policyType, eligible, nodeHardwareByName, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
 	for i := range plan {
 		plan[i].SourceProfile = currentProfileOrDefault(nodesByName[plan[i].NodeName])
 		plan[i].SourceDrain = drainingByName[plan[i].NodeName]
@@ -517,25 +517,26 @@ func buildPlanByPolicy(
 	kube kubernetes.Interface,
 	policyType string,
 	nodes []string,
+	nodeHardwareByName map[string]NodeHardware,
 	interval time.Duration,
 	perfCap, ecoCap, staticHPFrac, queueHPBaseFrac float64,
 	queueHPMin, queueHPMax, queuePerfPerHPNode int,
 ) []NodeAssignment {
 	switch policyType {
 	case "static_partition", "":
-		return buildStaticPlan(nodes, perfCap, ecoCap, staticHPFrac)
+		return buildStaticPlan(nodes, nodeHardwareByName, perfCap, ecoCap, staticHPFrac)
 	case "queue_aware_v1":
 		perfIntentPods, err := runningPerformanceSensitivePodCountAllNodes(ctx, kube)
 		if err != nil {
 			log.Printf("warning: cannot classify running pods for queue_aware_v1: %v; falling back to static fraction", err)
-			return buildStaticPlan(nodes, perfCap, ecoCap, queueHPBaseFrac)
+			return buildStaticPlan(nodes, nodeHardwareByName, perfCap, ecoCap, queueHPBaseFrac)
 		}
-		return buildQueueAwarePlan(nodes, perfCap, ecoCap, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode, perfIntentPods)
+		return buildQueueAwarePlan(nodes, nodeHardwareByName, perfCap, ecoCap, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode, perfIntentPods)
 	case "rule_swap_v1":
 		return buildPlan(nodes, interval, perfCap, ecoCap)
 	default:
 		log.Printf("warning: unknown POLICY_TYPE=%q, falling back to static_partition", policyType)
-		return buildStaticPlan(nodes, perfCap, ecoCap, staticHPFrac)
+		return buildStaticPlan(nodes, nodeHardwareByName, perfCap, ecoCap, staticHPFrac)
 	}
 }
 
@@ -567,7 +568,7 @@ func buildPlanAt(nodes []string, interval time.Duration, perfCap, ecoCap float64
 	return plan
 }
 
-func buildStaticPlan(nodes []string, perfCap, ecoCap, hpFrac float64) []NodeAssignment {
+func buildStaticPlan(nodes []string, nodeHardwareByName map[string]NodeHardware, perfCap, ecoCap, hpFrac float64) []NodeAssignment {
 	n := len(nodes)
 	if n == 0 {
 		return nil
@@ -586,11 +587,14 @@ func buildStaticPlan(nodes []string, perfCap, ecoCap, hpFrac float64) []NodeAssi
 		hpCount = n
 	}
 
+	hpCount = enforceFamilyPerformanceFloor(nodes, nodeHardwareByName, hpCount)
+	perfNodes := selectPerformanceNodes(nodes, nodeHardwareByName, hpCount)
+
 	plan := make([]NodeAssignment, 0, n)
-	for i, node := range nodes {
+	for _, node := range nodes {
 		profile := "eco"
 		cap := ecoCap
-		if i < hpCount {
+		if perfNodes[node] {
 			profile = "performance"
 			cap = perfCap
 		}
@@ -604,7 +608,7 @@ func buildStaticPlan(nodes []string, perfCap, ecoCap, hpFrac float64) []NodeAssi
 	return plan
 }
 
-func buildQueueAwarePlan(nodes []string, perfCap, ecoCap, hpBaseFrac float64, hpMin, hpMax, perfPerHPNode, perfIntentPods int) []NodeAssignment {
+func buildQueueAwarePlan(nodes []string, nodeHardwareByName map[string]NodeHardware, perfCap, ecoCap, hpBaseFrac float64, hpMin, hpMax, perfPerHPNode, perfIntentPods int) []NodeAssignment {
 	n := len(nodes)
 	if n == 0 {
 		return nil
@@ -645,12 +649,14 @@ func buildQueueAwarePlan(nodes []string, perfCap, ecoCap, hpBaseFrac float64, hp
 	if hpCount < 0 {
 		hpCount = 0
 	}
+	hpCount = enforceFamilyPerformanceFloor(nodes, nodeHardwareByName, hpCount)
 
+	perfNodes := selectPerformanceNodes(nodes, nodeHardwareByName, hpCount)
 	plan := make([]NodeAssignment, 0, n)
-	for i, node := range nodes {
+	for _, node := range nodes {
 		profile := "eco"
 		cap := ecoCap
-		if i < hpCount {
+		if perfNodes[node] {
 			profile = "performance"
 			cap = perfCap
 		}
@@ -662,6 +668,71 @@ func buildQueueAwarePlan(nodes []string, perfCap, ecoCap, hpBaseFrac float64, hp
 		})
 	}
 	return plan
+}
+
+func enforceFamilyPerformanceFloor(nodes []string, nodeHardwareByName map[string]NodeHardware, hpCount int) int {
+	families := make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		families[nodePerformanceFamily(node, nodeHardwareByName)] = struct{}{}
+	}
+	if len(families) > hpCount {
+		hpCount = len(families)
+	}
+	if hpCount > len(nodes) {
+		hpCount = len(nodes)
+	}
+	return hpCount
+}
+
+func selectPerformanceNodes(nodes []string, nodeHardwareByName map[string]NodeHardware, hpCount int) map[string]bool {
+	perfNodes := make(map[string]bool, hpCount)
+	seenFamilies := make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		family := nodePerformanceFamily(node, nodeHardwareByName)
+		if _, ok := seenFamilies[family]; ok {
+			continue
+		}
+		perfNodes[node] = true
+		seenFamilies[family] = struct{}{}
+		if len(perfNodes) >= hpCount {
+			return perfNodes
+		}
+	}
+	for _, node := range nodes {
+		if perfNodes[node] {
+			continue
+		}
+		perfNodes[node] = true
+		if len(perfNodes) >= hpCount {
+			break
+		}
+	}
+	return perfNodes
+}
+
+func nodePerformanceFamily(node string, nodeHardwareByName map[string]NodeHardware) string {
+	nh, ok := nodeHardwareByName[node]
+	if !ok {
+		return "unknown:" + node
+	}
+	if nh.GPUCount > 0 {
+		model := strings.TrimSpace(nh.GPUModel)
+		if model == "" {
+			model = strings.TrimSpace(nh.GPURawModel)
+		}
+		if model == "" {
+			model = "unknown-gpu"
+		}
+		return "gpu:" + model
+	}
+	model := strings.TrimSpace(nh.CPUModel)
+	if model == "" {
+		model = strings.TrimSpace(nh.CPURawModel)
+	}
+	if model == "" {
+		model = "unknown-cpu"
+	}
+	return "cpu:" + model
 }
 
 func runningPerformanceSensitivePodCountAllNodes(

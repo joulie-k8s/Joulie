@@ -119,7 +119,7 @@ That state means:
 
 - the operator wants the node to end up in eco,
 - the transition is still guarded because performance-sensitive pods are present,
-- advanced eco-only placement can avoid the node until draining clears.
+- advanced eco-only placement can avoid the node until draining clears by excluding `joulie.io/draining=true`.
 
 ## Why this model
 

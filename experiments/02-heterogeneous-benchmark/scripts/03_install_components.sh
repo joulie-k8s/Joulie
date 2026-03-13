@@ -63,6 +63,9 @@ data:
 YAML
 
 kubectl apply -f "$SIMULATOR_MANIFEST"
+kubectl -n joulie-sim-demo patch deploy/joulie-telemetry-sim --type='json' -p='[
+  {"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}
+]'
 kubectl -n joulie-sim-demo set env deploy/joulie-telemetry-sim \
   SIM_NODE_CLASS_CONFIG=/etc/joulie-sim/node-classes.yaml \
   SIM_HARDWARE_CATALOG_PATH=/etc/joulie-sim-catalog/hardware.generated.yaml
@@ -98,8 +101,10 @@ helm upgrade --install joulie "$ROOT/charts/joulie" -n joulie-system --create-na
   -f "$EXAMPLE_DIR/manifests/30-joulie-values-pool.yaml" \
   --set "agent.image.repository=${JOULIE_REGISTRY}/joulie-agent" \
   --set "agent.image.tag=${JOULIE_TAG}" \
+  --set "agent.image.pullPolicy=IfNotPresent" \
   --set "operator.image.repository=${JOULIE_REGISTRY}/joulie-operator" \
   --set "operator.image.tag=${JOULIE_TAG}" \
+  --set "operator.image.pullPolicy=IfNotPresent" \
   --set "agent.env.RECONCILE_INTERVAL=${AGENT_RECONCILE_INTERVAL}" \
   --set "operator.env.RECONCILE_INTERVAL=${OPERATOR_RECONCILE_INTERVAL}" \
   --set "operator.env.POLICY_TYPE=${POLICY_TYPE}" \

@@ -949,8 +949,8 @@ func affinityForClass(class string) map[string]any {
 							"values":   []string{"eco"},
 						}, {
 							"key":      "joulie.io/draining",
-							"operator": "In",
-							"values":   []string{"false"},
+							"operator": "NotIn",
+							"values":   []string{"true"},
 						}},
 					}},
 				},
