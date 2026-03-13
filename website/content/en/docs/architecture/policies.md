@@ -16,7 +16,7 @@ Use this page after:
 Policy demand classification is derived from pod scheduling constraints on `joulie.io/power-profile`:
 
 - `performance-only`: pod excludes eco in required scheduling constraints.
-- `eco-only`: pod can run only on `eco`.
+- `eco-only`: pod can run only on `eco`; advanced eco-only placement should also exclude `joulie.io/draining=true`.
 - `general` (implicit unconstrained): no explicit power-profile constraint, or both profiles allowed.
 
 ## Shared Reconcile Flow
@@ -112,3 +112,8 @@ When planned profile is `eco` on a node currently `performance`:
 3. If count == 0:
    - keep desired profile `eco`,
    - set node label `joulie.io/draining=false`.
+
+For pod authors, the practical rule is:
+
+- if you need eco-only placement, exclude draining nodes with `joulie.io/draining NotIn ["true"]`
+- do not rely on `draining=false` as a required scheduling constraint

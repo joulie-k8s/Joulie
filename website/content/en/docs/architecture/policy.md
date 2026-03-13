@@ -41,6 +41,7 @@ Classification:
   - compatibility path: explicit `nodeSelector` `joulie.io/power-profile=performance`
 - `eco` demand:
   - pod requires `joulie.io/power-profile=eco`
+  - advanced pattern: also exclude `joulie.io/draining=true` with `NotIn ["true"]`
 - `general` demand:
   - no explicit power-profile requirement (unconstrained)
 
@@ -58,6 +59,9 @@ Semantics:
 - `performance`: full-performance supply
 - `eco`: low-power supply
 - `draining=true`: transition safeguard active while node is moving toward eco
+
+For eco-only placement, prefer excluding `joulie.io/draining=true` rather than requiring `draining=false`.
+That pattern is more robust because unlabeled nodes remain eligible while actively draining nodes are still excluded.
 
 ## Desired-state object: `NodePowerProfile`
 

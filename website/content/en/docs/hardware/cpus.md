@@ -57,7 +57,7 @@ See [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) fo
 Workload intent classification is based on node selector/affinity using `joulie.io/power-profile`:
 
 - performance-sensitive workloads: typically exclude `eco`
-- eco-only workloads: explicitly require `eco`
+- eco-only workloads: explicitly require `eco`, and if they must avoid transition-guarded nodes, exclude `joulie.io/draining=true` with `NotIn ["true"]`
 
 This classification drives operator profile assignment; CPU capping is then enforced through `NodePowerProfile`.
 
