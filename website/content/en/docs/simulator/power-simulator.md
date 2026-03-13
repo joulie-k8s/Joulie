@@ -27,15 +27,82 @@ The power simulator runtime is responsible for:
 
 Main node state includes:
 
-- CPU: cap, utilization, frequency scale, throttle target/current, saturation flag
-- GPU: per-device cap/target/power, aggregate utilization, effective performance multiplier
-- workload-class hints used by the model (`cpu.*`, `gpu.*`)
+- CPU:
+  - target/applied cap
+  - utilization
+  - effective frequency scale
+  - throttle target/current
+  - saturation flag
+  - instantaneous and averaged power
+  - temperature and thermal-throttle fraction
+- GPU:
+  - per-device cap/target
+  - per-device instantaneous and averaged power
+  - per-device temperature and thermal-throttle fraction
+  - aggregate utilization
+  - effective performance multiplier
+- workload-model inputs aggregated from running jobs:
+  - `memoryIntensity`
+  - `ioIntensity`
+  - `cpuFeedIntensity`
 
 Supported control actions:
 
 - `rapl.set_power_cap_watts`
 - `dvfs.set_throttle_pct`
 - `gpu.set_power_cap_watts`
+
+## Telemetry contract actually exposed by the simulator
+
+The simulator returns both a compact node-level view and richer subsystem views on:
+
+- `GET /telemetry/{node}`
+
+Important top-level fields:
+
+- `packagePowerWatts`
+  - exported averaged node power
+- `instantPackagePowerWatts`
+  - internal instantaneous node power used by the model
+
+Important CPU fields:
+
+- `cpu.packagePowerWatts`
+- `cpu.instantPowerWatts`
+- `cpu.utilization`
+- `cpu.memoryIntensity`
+- `cpu.ioIntensity`
+- `cpu.freqScale`
+- `cpu.temperatureC`
+- `cpu.thermalThrottlePct`
+
+Important GPU fields:
+
+- `gpu.powerWattsTotal`
+- `gpu.avgPowerWattsTotal`
+- `gpu.utilization`
+- `gpu.memoryIntensity`
+- `gpu.cpuFeedIntensity`
+- `gpu.capWattsPerGpuApplied`
+- `gpu.capWattsPerGpuTarget`
+- `gpu.devices[]`
+
+This distinction matters because the simulator is now intentionally modeling the difference between:
+
+- internal fast-changing device power
+- exported averaged telemetry seen by the controller
+
+## Hardware identity and overrides
+
+The simulator runtime no longer depends primarily on pre-enumerated node classes.
+
+Today the intended precedence is:
+
+1. node labels define simulated hardware identity
+2. shared inventory resolves that identity into a CPU/GPU model
+3. optional `SIM_NODE_CLASS_CONFIG` overrides refine or override profile parameters
+
+So `SIM_NODE_CLASS_CONFIG` is still useful, but it is now an override layer rather than the main source of hardware truth.
 
 ## Model source of truth
 

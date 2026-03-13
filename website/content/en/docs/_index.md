@@ -6,20 +6,22 @@ menu:
     weight: 10
 ---
 
-Joulie docs are organized for onboarding first, then depth:
+If you are completely new, the smoothest path is:
 
-1. learn the core concepts,
-2. run a first setup quickly,
-3. dive into architecture and policies,
-4. explore simulator and experiments.
+1. [Getting Started]({{< relref "/docs/getting-started/_index.md" >}})
+2. [Architecture]({{< relref "/docs/architecture/_index.md" >}})
+3. [Hardware]({{< relref "/docs/hardware/_index.md" >}})
+4. [Simulator]({{< relref "/docs/simulator/_index.md" >}})
+5. [Experiments]({{< relref "/docs/experiments/_index.md" >}})
 
 Core mental model used across all pages:
 
 - operator decides cluster-level node states,
+- agent discovers node hardware and capability,
 - agent enforces node-level controls,
 - scheduler consumes node supply labels + workload constraints.
 
-## Recommended reading path
+## Section guide
 
 - [Getting Started]({{< relref "/docs/getting-started/_index.md" >}})
   - concepts, install, runtime modes, workload compatibility
@@ -28,7 +30,7 @@ Core mental model used across all pages:
 - [Hardware]({{< relref "/docs/hardware/_index.md" >}})
   - CPU and GPU support model, heterogeneity strategy, runtime caveats
 - [Simulator]({{< relref "/docs/simulator/_index.md" >}})
-  - digital-twin behavior, algorithms, integration model
+  - digital-twin behavior, algorithms, runtime flow
 - [Experiments]({{< relref "/docs/experiments/_index.md" >}})
   - benchmark design and measured outcomes
 

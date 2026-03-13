@@ -1,0 +1,51 @@
+run:
+  baselines: [A, B, C]
+  seeds: 2
+  jobs: 120
+  mean_inter_arrival_sec: 0.20
+  time_scale: 60
+  timeout: 1200
+  settle_seconds: 8
+  cleanup_timeout: 180
+
+workload:
+  perf_ratio: 0.25
+  eco_ratio: 0.00
+  gpu_ratio: 0.35
+  gpu_request_per_job: 1
+  burst_day_probability: 0.25
+  burst_mean_jobs: 8.0
+  burst_multiplier: 2.0
+  emit_workload_records: true
+  baseline_a_strip_affinity: true
+
+simulator:
+  base_speed_per_core: 8.0
+  manifest: examples/07 - simulator-gpu-powercaps/manifests/20-simulator.yaml
+
+policy:
+  caps:
+    performance_watts: 500
+    eco_watts: 140
+    gpu_performance_pct_of_max: 100
+    gpu_eco_pct_of_max: 60
+  loop:
+    operator_reconcile_interval: "20s"
+    agent_reconcile_interval: "10s"
+  static:
+    hp_frac: 0.50
+  queue_aware:
+    hp_base_frac: 0.60
+    hp_min: 1
+    hp_max: 8
+    perf_per_hp_node: 10
+
+images:
+  joulie_registry: registry.cern.ch/mbunino/joulie
+  joulie_tag: dev0.0.13
+  sim_registry: registry.cern.ch/mbunino/joulie
+  sim_image: joulie-simulator
+  sim_tag: dev0.0.13
+
+install:
+  kind_cluster_config: experiments/02-heterogeneous-benchmark/configs/kind-cluster.yaml

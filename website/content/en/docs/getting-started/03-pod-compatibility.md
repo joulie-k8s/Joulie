@@ -88,7 +88,8 @@ In most cases, users should either:
 - use `NotIn ["eco"]` for performance-sensitive pods, or
 - keep pods unconstrained (best-effort) and let Joulie manage power behavior.
 
-If you choose eco-only, adding `joulie.io/draining=false` avoids nodes in transition from performance to eco, which are labelled with `joulie.io/power-profile=eco` but still have a performance power profile (`DrainingPerformance` state).
+If you choose eco-only, exclude actively draining nodes with `joulie.io/draining NotIn ["true"]`.
+That is more robust than requiring `draining=false`, because unlabeled nodes are still eligible while `draining=true` remains excluded.
 
 {{< highlight yaml "linenos=table,hl_lines=15-25" >}}
 apiVersion: apps/v1
@@ -114,8 +115,8 @@ spec:
                 operator: In
                 values: ["eco"]
               - key: joulie.io/draining
-                operator: In
-                values: ["false"]
+                operator: NotIn
+                values: ["true"]
       containers:
       - name: app
         image: ghcr.io/example/app:latest

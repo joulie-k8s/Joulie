@@ -21,10 +21,13 @@ Joulie is currently a PoC focused on Kubernetes-native control loops and simulat
 
 - **Operator** (`cmd/operator`): cluster-level policy brain
   - decides desired node power profile/cap assignments
+  - resolves discovered hardware against the inventory
   - writes desired state as `NodePowerProfile`
 - **Agent** (`cmd/agent`): node-level actuator
+  - discovers local CPU/GPU hardware and capability
   - reads desired state and telemetry configuration
   - enforces power controls (CPU + GPU)
+  - publishes discovered hardware as `NodeHardware`
   - exports metrics/status
 - **Simulator** (`simulator/`): digital-twin execution environment
   - keeps scheduling real, simulates telemetry/control behavior
@@ -32,6 +35,8 @@ Joulie is currently a PoC focused on Kubernetes-native control loops and simulat
 
 ## Key CRDs
 
+- `NodeHardware` (`joulie.io/v1alpha1`)
+  - discovered CPU/GPU identity, capability, and cap-range visibility for one node
 - `NodePowerProfile` (`joulie.io/v1alpha1`)
   - desired node policy state (`performance` / `eco`, optional power cap)
 - `TelemetryProfile` (`joulie.io/v1alpha1`)
@@ -63,10 +68,11 @@ Policy algorithms are detailed in [Policy Algorithms]({{< relref "/docs/architec
 ## Control loop in one minute
 
 1. Operator observes cluster context and picks desired node states.
-2. Operator writes/updates `NodePowerProfile`.
-3. Agent reads desired state + telemetry/control profile.
-4. Agent applies controls and reports status/metrics.
-5. Operator reconciles again.
+2. Agent discovers local hardware and publishes `NodeHardware`.
+3. Operator resolves hardware against the inventory and writes/updates `NodePowerProfile`.
+4. Agent reads desired state + telemetry/control profile.
+5. Agent applies controls and reports status/metrics.
+6. Operator reconciles again.
 
 ## Next step
 

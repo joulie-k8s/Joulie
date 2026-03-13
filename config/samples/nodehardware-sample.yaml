@@ -1,0 +1,6 @@
+apiVersion: joulie.io/v1alpha1
+kind: NodeHardware
+metadata:
+  name: sample-node
+spec:
+  nodeName: sample-node

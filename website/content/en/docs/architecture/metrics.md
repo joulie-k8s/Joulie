@@ -91,6 +91,13 @@ For telemetry/control input interfaces (host/http routing), see:
     - `applied`: transition committed
     - `deferred`: transition blocked/deferred by safeguards
 
+### Heterogeneous planning
+
+- `joulie_operator_node_compute_density{node,component}` (gauge)
+  - normalized per-node density signal used for heterogeneous planning
+  - `component`: `cpu|gpu`
+  - higher values mean the operator considers that node relatively denser for that subsystem
+
 ## Notes
 
 - Metrics are pull-based; values depend on scrape interval.

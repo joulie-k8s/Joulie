@@ -1,13 +1,22 @@
 apiVersion: v1
 kind: Node
 metadata:
-  name: kwok-gpu-nvidia-0
+  name: kwok-h100-nvl-0
   annotations:
     kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9654 96-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA H100 NVL"
   labels:
     type: kwok
     joulie.io/managed: "true"
-    joulie.io/gpu.product: NVIDIA-L40S
+    joulie.io/node-name: "kwok-h100-nvl-0"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9654-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-NVL"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-NVL"
     feature.node.kubernetes.io/pci-10de.present: "true"
 spec:
   taints:
@@ -16,26 +25,923 @@ spec:
       effect: NoSchedule
 status:
   allocatable:
-    cpu: "16"
-    nvidia.com/gpu: "4"
-    memory: "64Gi"
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
     pods: "110"
   capacity:
-    cpu: "16"
-    nvidia.com/gpu: "4"
-    memory: "64Gi"
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
     pods: "110"
 ---
 apiVersion: v1
 kind: Node
 metadata:
-  name: kwok-gpu-amd-0
+  name: kwok-h100-nvl-1
   annotations:
     kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9654 96-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA H100 NVL"
   labels:
     type: kwok
     joulie.io/managed: "true"
-    joulie.io/gpu.product: AMD-Radeon-PRO-W7900
+    joulie.io/node-name: "kwok-h100-nvl-1"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9654-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-NVL"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-NVL"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-nvl-2
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9654 96-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA H100 NVL"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-nvl-2"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9654-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-NVL"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-NVL"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-nvl-3
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9654 96-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA H100 NVL"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-nvl-3"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9654-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-NVL"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-NVL"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-nvl-4
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9654 96-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA H100 NVL"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-nvl-4"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9654-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-NVL"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-NVL"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-nvl-5
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9654 96-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA H100 NVL"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-nvl-5"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9654-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-NVL"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-NVL"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-nvl-6
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9654 96-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA H100 NVL"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-nvl-6"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9654-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-NVL"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-NVL"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-nvl-7
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9654 96-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA H100 NVL"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-nvl-7"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9654-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-NVL"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-NVL"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-nvl-8
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9654 96-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA H100 NVL"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-nvl-8"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9654-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-NVL"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-NVL"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-nvl-9
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9654 96-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA H100 NVL"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-nvl-9"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9654-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-NVL"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-NVL"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-nvl-10
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9654 96-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA H100 NVL"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-nvl-10"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9654-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-NVL"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-NVL"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-nvl-11
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9654 96-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA H100 NVL"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-nvl-11"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9654-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-NVL"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-NVL"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    nvidia.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-sxm-0
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "INTEL(R) XEON(R) GOLD 6530"
+    joulie.io/raw.gpu-product: "NVIDIA H100 80GB HBM3"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-sxm-0"
+    joulie.io/hw.cpu-model: "INTEL-R-XEON-R-GOLD-6530"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-80GB-HBM3"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-80GB-HBM3"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    nvidia.com/gpu: "4"
+    memory: "1024Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    nvidia.com/gpu: "4"
+    memory: "1024Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-sxm-1
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "INTEL(R) XEON(R) GOLD 6530"
+    joulie.io/raw.gpu-product: "NVIDIA H100 80GB HBM3"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-sxm-1"
+    joulie.io/hw.cpu-model: "INTEL-R-XEON-R-GOLD-6530"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-80GB-HBM3"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-80GB-HBM3"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    nvidia.com/gpu: "4"
+    memory: "1024Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    nvidia.com/gpu: "4"
+    memory: "1024Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-sxm-2
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "INTEL(R) XEON(R) GOLD 6530"
+    joulie.io/raw.gpu-product: "NVIDIA H100 80GB HBM3"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-sxm-2"
+    joulie.io/hw.cpu-model: "INTEL-R-XEON-R-GOLD-6530"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-80GB-HBM3"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-80GB-HBM3"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    nvidia.com/gpu: "4"
+    memory: "1024Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    nvidia.com/gpu: "4"
+    memory: "1024Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-sxm-3
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "INTEL(R) XEON(R) GOLD 6530"
+    joulie.io/raw.gpu-product: "NVIDIA H100 80GB HBM3"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-sxm-3"
+    joulie.io/hw.cpu-model: "INTEL-R-XEON-R-GOLD-6530"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-80GB-HBM3"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-80GB-HBM3"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    nvidia.com/gpu: "4"
+    memory: "1024Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    nvidia.com/gpu: "4"
+    memory: "1024Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-sxm-4
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "INTEL(R) XEON(R) GOLD 6530"
+    joulie.io/raw.gpu-product: "NVIDIA H100 80GB HBM3"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-sxm-4"
+    joulie.io/hw.cpu-model: "INTEL-R-XEON-R-GOLD-6530"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-80GB-HBM3"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-80GB-HBM3"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    nvidia.com/gpu: "4"
+    memory: "1024Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    nvidia.com/gpu: "4"
+    memory: "1024Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-h100-sxm-5
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "INTEL(R) XEON(R) GOLD 6530"
+    joulie.io/raw.gpu-product: "NVIDIA H100 80GB HBM3"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-h100-sxm-5"
+    joulie.io/hw.cpu-model: "INTEL-R-XEON-R-GOLD-6530"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-H100-80GB-HBM3"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-H100-80GB-HBM3"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    nvidia.com/gpu: "4"
+    memory: "1024Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    nvidia.com/gpu: "4"
+    memory: "1024Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-l40s-0
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA L40S"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-l40s-0"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-L40S"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-L40S"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-l40s-1
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA L40S"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-l40s-1"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-L40S"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-L40S"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-l40s-2
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA L40S"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-l40s-2"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-L40S"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-L40S"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-l40s-3
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA L40S"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-l40s-3"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-L40S"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-L40S"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-l40s-4
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA L40S"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-l40s-4"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-L40S"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-L40S"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-l40s-5
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA L40S"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-l40s-5"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-L40S"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-L40S"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-l40s-6
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "NVIDIA L40S"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-l40s-6"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "NVIDIA-L40S"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "NVIDIA-L40S"
+    feature.node.kubernetes.io/pci-10de.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "128"
+    nvidia.com/gpu: "4"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-mi300x-0
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "AMD Instinct MI300X"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-mi300x-0"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "AMD-Instinct-MI300X"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "AMD-Instinct-MI300X"
     feature.node.kubernetes.io/pci-1002.present: "true"
 spec:
   taints:
@@ -44,25 +950,36 @@ spec:
       effect: NoSchedule
 status:
   allocatable:
-    cpu: "16"
-    amd.com/gpu: "4"
-    memory: "64Gi"
+    cpu: "128"
+    amd.com/gpu: "8"
+    memory: "1536Gi"
     pods: "110"
   capacity:
-    cpu: "16"
-    amd.com/gpu: "4"
-    memory: "64Gi"
+    cpu: "128"
+    amd.com/gpu: "8"
+    memory: "1536Gi"
     pods: "110"
 ---
 apiVersion: v1
 kind: Node
 metadata:
-  name: kwok-cpu-only-0
+  name: kwok-mi300x-1
   annotations:
     kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "AMD Instinct MI300X"
   labels:
     type: kwok
     joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-mi300x-1"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "AMD-Instinct-MI300X"
+    joulie.io/hw.gpu-count: "8"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "AMD-Instinct-MI300X"
+    feature.node.kubernetes.io/pci-1002.present: "true"
 spec:
   taints:
     - key: kwok.x-k8s.io/node
@@ -70,10 +987,482 @@ spec:
       effect: NoSchedule
 status:
   allocatable:
-    cpu: "8"
-    memory: "32Gi"
+    cpu: "128"
+    amd.com/gpu: "8"
+    memory: "1536Gi"
     pods: "110"
   capacity:
-    cpu: "8"
-    memory: "32Gi"
+    cpu: "128"
+    amd.com/gpu: "8"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-w7900-0
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "AMD Radeon PRO W7900"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-w7900-0"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "AMD-Radeon-PRO-W7900"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "AMD-Radeon-PRO-W7900"
+    feature.node.kubernetes.io/pci-1002.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "128"
+    amd.com/gpu: "4"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "128"
+    amd.com/gpu: "4"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-w7900-1
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "AMD Radeon PRO W7900"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-w7900-1"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "AMD-Radeon-PRO-W7900"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "AMD-Radeon-PRO-W7900"
+    feature.node.kubernetes.io/pci-1002.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "128"
+    amd.com/gpu: "4"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "128"
+    amd.com/gpu: "4"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-w7900-2
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "AMD Radeon PRO W7900"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-w7900-2"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "AMD-Radeon-PRO-W7900"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "AMD-Radeon-PRO-W7900"
+    feature.node.kubernetes.io/pci-1002.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "128"
+    amd.com/gpu: "4"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "128"
+    amd.com/gpu: "4"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-w7900-3
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "AMD Radeon PRO W7900"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-w7900-3"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "AMD-Radeon-PRO-W7900"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "AMD-Radeon-PRO-W7900"
+    feature.node.kubernetes.io/pci-1002.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "128"
+    amd.com/gpu: "4"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "128"
+    amd.com/gpu: "4"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-w7900-4
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "AMD Radeon PRO W7900"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-w7900-4"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "AMD-Radeon-PRO-W7900"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "AMD-Radeon-PRO-W7900"
+    feature.node.kubernetes.io/pci-1002.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "128"
+    amd.com/gpu: "4"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "128"
+    amd.com/gpu: "4"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-w7900-5
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9534 64-Core Processor"
+    joulie.io/raw.gpu-product: "AMD Radeon PRO W7900"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-w7900-5"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9534-64-Core-Processor"
+    joulie.io/hw.cpu-cores: "128"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-model: "AMD-Radeon-PRO-W7900"
+    joulie.io/hw.gpu-count: "4"
+    joulie.io/hw.kind: "gpu"
+    joulie.io/gpu.product: "AMD-Radeon-PRO-W7900"
+    feature.node.kubernetes.io/pci-1002.present: "true"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "128"
+    amd.com/gpu: "4"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "128"
+    amd.com/gpu: "4"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highcore-0
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9965 192-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highcore-0"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9965-192-Core-Processor"
+    joulie.io/hw.cpu-cores: "384"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highcore-1
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9965 192-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highcore-1"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9965-192-Core-Processor"
+    joulie.io/hw.cpu-cores: "384"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highfreq-0
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9375F 32-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highfreq-0"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9375F-32-Core-Processor"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highfreq-1
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9375F 32-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highfreq-1"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9375F-32-Core-Processor"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-0
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-0"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-1
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-1"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-2
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-2"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-3
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-3"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
     pods: "110"

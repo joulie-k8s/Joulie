@@ -15,10 +15,12 @@ the agent is the component that turns that intent into concrete control actions.
 At each reconcile tick, the agent:
 
 1. identifies its node scope (single node in daemonset mode, sharded set in pool mode),
-2. reads desired target (`NodePowerProfile`) for each owned node,
-3. reads telemetry/control routing (`TelemetryProfile`),
-4. applies controls (host or HTTP),
-5. exports metrics and status.
+2. discovers local CPU/GPU hardware and runtime control capability,
+3. publishes `NodeHardware` for each owned node,
+4. reads desired target (`NodePowerProfile`) for each owned node,
+5. reads telemetry/control routing (`TelemetryProfile`),
+6. applies controls (host or HTTP),
+7. exports metrics and status.
 
 ## Inputs and outputs
 
@@ -30,11 +32,19 @@ Inputs:
 
 Outputs:
 
+- `NodeHardware` for discovered hardware/capability publication
 - control actions on host interfaces or simulator HTTP
 - status updates (`TelemetryProfile.status.control`)
 - Prometheus metrics (`/metrics`)
 
-This makes the agent the execution layer of the architecture: it does not plan policy, but it does make policy observable.
+This makes the agent the node-side discovery and execution layer of the architecture: it does not plan global policy, but it does publish the hardware facts the operator needs to plan against.
+
+`NodeHardware` is automatic output, not a user-authored input.
+Users normally configure:
+
+- hardware identity through node labels,
+- routing through `TelemetryProfile`,
+- desired targets through `NodePowerProfile`.
 
 ## Runtime modes
 
@@ -179,7 +189,7 @@ Prevent a node from dropping to eco while it still runs workloads that require p
    - enforces the desired eco/performance target through configured backend.
 5. On later reconcile ticks, operator re-checks safeguard.
 6. When no blocking performance-constrained pods remain:
-   - operator keeps profile `eco` and sets `joulie.io/draining=false`.
+   - operator keeps profile `eco` and clears the draining condition (`joulie.io/draining=false` in the current implementation).
    - agent continues enforcing desired target on next reconcile.
 
 ### Transition FSM (with conditions)
@@ -202,8 +212,8 @@ Interpretation:
 
 - `DrainingPerformance` is the operator transition state.
 - In `DrainingPerformance`, operator publishes eco as desired state and sets `joulie.io/draining=true`.
-- `joulie.io/draining=true` signals transition guard activity; advanced eco-only constraints can exclude draining nodes.
-- Transition to non-draining eco (`draining=false`) occurs when safeguard condition becomes true (`perf-constrained pods == 0`).
+- `joulie.io/draining=true` signals transition guard activity; advanced eco-only constraints should exclude draining nodes with `NotIn ["true"]`.
+- Transition to non-draining eco occurs when safeguard condition becomes true (`perf-constrained pods == 0`).
 
 Transition conditions:
 

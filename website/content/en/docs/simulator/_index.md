@@ -13,10 +13,13 @@ Use simulator docs after you are familiar with the core operator/agent control l
 ## Read in this order
 
 1. [Workload and Power Simulator]({{< relref "/docs/simulator/simulator.md" >}})
-2. [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
-3. [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
-4. [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})
-5. [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})
+2. [Workload Generation]({{< relref "/docs/simulator/workload-generation.md" >}})
+3. [Workload Distributions]({{< relref "/docs/simulator/workload-distributions.md" >}})
+4. [Kubernetes AI Workloads]({{< relref "/docs/simulator/kubernetes-ai-workloads.md" >}})
+5. [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
+6. [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
+7. [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})
+8. [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})
 
 ## Simulator architecture diagram
 

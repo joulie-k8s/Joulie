@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/kubernetes"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 )
 
@@ -49,7 +51,7 @@ func TestListRunningPodsByNode(t *testing.T) {
 
 func TestHandleControlAndTelemetry(t *testing.T) {
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 100, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 100, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000, RaplCapMinW: 80, RaplCapMaxW: 5000, CPUCapApplyTauMS: 2000},
 		nil,
 		nil,
 		200,
@@ -78,8 +80,350 @@ func TestHandleControlAndTelemetry(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing cpu payload")
 	}
-	if cpu["capWatts"].(float64) != 120 {
-		t.Fatalf("expected capWatts=120 got %v", cpu["capWatts"])
+	if cpu["capWatts"].(float64) <= 120 {
+		t.Fatalf("expected applied cap to be settling above target, got %v", cpu["capWatts"])
+	}
+	if cpu["targetCapWatts"].(float64) != 120 {
+		t.Fatalf("expected targetCapWatts=120 got %v", cpu["targetCapWatts"])
+	}
+}
+
+func TestCPUCapSettlingIsNotInstant(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{
+			BaseIdleW:        100,
+			PodW:             100,
+			DvfsDropW:        1,
+			RaplHeadW:        5,
+			DefaultCapW:      500,
+			RaplCapMinW:      100,
+			RaplCapMaxW:      500,
+			CPUCapApplyTauMS: 2000,
+			CPUSockets:       2,
+			CPUSocketCapMaxW: 250,
+		},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+
+	body := `{"action":"rapl.set_power_cap_watts","capWatts":200}`
+	req := httptest.NewRequest(http.MethodPost, "/control/node-a", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	s.handleControl(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("control status=%d", w.Code)
+	}
+	st := s.getNode("node-a")
+	if st.TargetCapWatts != 200 {
+		t.Fatalf("target cap=%v want=200", st.TargetCapWatts)
+	}
+	if st.CapWatts <= 200 || st.CapWatts >= 500 {
+		t.Fatalf("expected applied cap to settle gradually, got=%v", st.CapWatts)
+	}
+}
+
+func TestCPUCapSettlesTowardTargetOverTime(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{
+			BaseIdleW:        100,
+			PodW:             100,
+			DvfsDropW:        1,
+			RaplHeadW:        5,
+			DefaultCapW:      500,
+			RaplCapMinW:      100,
+			RaplCapMaxW:      500,
+			CPUCapApplyTauMS: 100,
+			CPUSockets:       2,
+			CPUSocketCapMaxW: 250,
+		},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+	st := s.getNode("node-a")
+	st.TargetCapWatts = 200
+	st.CapWatts = 500
+	st.LastUpdate = time.Now().Add(-time.Second)
+
+	s.updateNodeDynamicsWithModel(st, s.model)
+
+	if math.Abs(st.CapWatts-200) > 1 {
+		t.Fatalf("expected cap to converge near target, got=%v", st.CapWatts)
+	}
+	if len(st.CPUSockets) != 2 {
+		t.Fatalf("unexpected socket count=%d", len(st.CPUSockets))
+	}
+	if math.Abs(st.CPUSockets[0].CapWatts-100) > 1 || math.Abs(st.CPUSockets[1].CapWatts-100) > 1 {
+		t.Fatalf("unexpected per-socket cap distribution: %#v", st.CPUSockets)
+	}
+}
+
+func TestThermalTelemetryTracksHeatingAndAveraging(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{
+			BaseIdleW:                100,
+			PodW:                     100,
+			DvfsDropW:                1,
+			RaplHeadW:                5,
+			DefaultCapW:              500,
+			PMaxW:                    700,
+			RaplCapMinW:              100,
+			RaplCapMaxW:              700,
+			CPUCapApplyTauMS:         100,
+			CPUTelemetryWindowMS:     4000,
+			CPUAmbientTempC:          24,
+			CPUThermalTauMS:          500,
+			CPUWattsPerDeltaC:        4,
+			CPUThermalThrottleStartC: 60,
+			CPUThermalThrottleFullC:  90,
+			CPUSockets:               2,
+		},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+
+	st := s.getNode("node-hot")
+	st.CPUUtil = 1.0
+	st.MemoryIntensity = 0.05
+	st.IOIntensity = 0.02
+	st.LastUpdate = time.Now().Add(-2 * time.Second)
+
+	power := s.nodePower("node-hot", st)
+	if power <= 0 {
+		t.Fatalf("expected positive power")
+	}
+	if st.CPUTemperatureC <= 24 {
+		t.Fatalf("expected cpu temperature to rise, got=%f", st.CPUTemperatureC)
+	}
+	if st.CPUAvgPowerWatts <= 0 || st.CPUAvgPowerWatts >= st.CPUInstantPowerWatts {
+		t.Fatalf("expected averaged CPU power to lag instant power: avg=%f instant=%f", st.CPUAvgPowerWatts, st.CPUInstantPowerWatts)
+	}
+}
+
+func TestWorkloadAggregationCarriesIntensityIntoNodeState(t *testing.T) {
+	now := time.Now().UTC()
+	s := newSimulatorWithRegisterer(
+		simModel{
+			BaseIdleW:   80,
+			PodW:        100,
+			DvfsDropW:   1,
+			RaplHeadW:   5,
+			DefaultCapW: 5000,
+			GPU: hw.GPUProfile{
+				Vendor:                "nvidia",
+				Product:               "L40S",
+				Count:                 1,
+				IdleWattsPerGPU:       30,
+				MaxWattsPerGPU:        350,
+				MinCapWattsPerGPU:     200,
+				CapApplyTauMS:         150,
+				TelemetryWindowMS:     1000,
+				AmbientTempC:          24,
+				ThermalTauMS:          500,
+				WattsPerDeltaC:        8,
+				ThermalThrottleStartC: 80,
+				ThermalThrottleFullC:  90,
+				ComputeGamma:          1.0,
+				MemoryEpsilon:         0.2,
+				MemoryGamma:           1.2,
+				PowerModel:            hw.GPUPowerModel{AlphaUtil: 1.0, BetaCap: 1.0},
+			},
+		},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+	s.workload = &workloadEngine{
+		startTime:     now,
+		baseSpeedCore: 1.0,
+		jobByID:       map[string]*simJob{},
+	}
+	job := &simJob{
+		JobID:             "job-1",
+		NodeName:          "node-x",
+		RequestedCPUCores: 8,
+		CPUUnitsRemaining: 100,
+		CPUWorkClass:      "cpu.memory_bound",
+		CPUUtilTarget:     0.7,
+		RequestedGPUs:     1,
+		GPUUnitsRemaining: 100,
+		GPUWorkClass:      "gpu.memory_bound",
+		GPUUtilTarget:     0.8,
+		MemoryIntensity:   0.9,
+		IOIntensity:       0.1,
+		CPUFeedIntensity:  0.6,
+	}
+	s.workload.jobs = []*simJob{job}
+	s.workload.jobByID[job.JobID] = job
+
+	podDetailFunc = func(_ context.Context, _ kubernetes.Interface) ([]runningPodInfo, error) {
+		return []runningPodInfo{{Namespace: "default", Name: "p", Node: "node-x", JobID: "job-1"}}, nil
+	}
+	defer func() { podDetailFunc = listRunningPodsDetailed }()
+
+	s.advanceJobProgress(context.Background(), k8sfake.NewSimpleClientset(), 1.0, now.Add(time.Second))
+
+	st := s.getNode("node-x")
+	if st.MemoryIntensity < 0.85 {
+		t.Fatalf("expected memory intensity to be aggregated, got=%f", st.MemoryIntensity)
+	}
+	if st.CPUFeedIntensity < 0.55 {
+		t.Fatalf("expected cpu feed intensity to be aggregated, got=%f", st.CPUFeedIntensity)
+	}
+}
+
+func TestWorkloadProgressUsesNodeCapacityInsteadOfJobCount(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 40, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		10,
+		prometheus.NewRegistry(),
+	)
+	s.state["node-big"] = &nodeState{
+		FreqScale:        1,
+		CPUCapacityCores: 128,
+	}
+	s.workload = &workloadEngine{
+		startTime:     time.Now().UTC(),
+		baseSpeedCore: 1.0,
+		jobByID:       map[string]*simJob{},
+	}
+	j1 := &simJob{JobID: "j1", RequestedCPUCores: 2, CPUUnitsRemaining: 100, CPUWorkClass: "cpu.compute_bound", CPUUtilTarget: 0.9}
+	j2 := &simJob{JobID: "j2", RequestedCPUCores: 2, CPUUnitsRemaining: 100, CPUWorkClass: "cpu.compute_bound", CPUUtilTarget: 0.9}
+	s.workload.jobs = []*simJob{j1, j2}
+	s.workload.jobByID[j1.JobID] = j1
+	s.workload.jobByID[j2.JobID] = j2
+
+	podDetailFunc = func(_ context.Context, _ kubernetes.Interface) ([]runningPodInfo, error) {
+		return []runningPodInfo{
+			{Namespace: "default", Name: "p1", Node: "node-big", JobID: "j1"},
+			{Namespace: "default", Name: "p2", Node: "node-big", JobID: "j2"},
+		}, nil
+	}
+	defer func() { podDetailFunc = listRunningPodsDetailed }()
+
+	s.advanceJobProgress(context.Background(), k8sfake.NewSimpleClientset(), 1.0, time.Now().UTC())
+	if got := j1.CPUUnitsRemaining; got > 98.1 || got < 97.9 {
+		t.Fatalf("j1 CPUUnitsRemaining=%f want about 98", got)
+	}
+	if got := j2.CPUUnitsRemaining; got > 98.1 || got < 97.9 {
+		t.Fatalf("j2 CPUUnitsRemaining=%f want about 98", got)
+	}
+}
+
+func TestGangJobCanFinishAfterPeerCompletes(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 40, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		10,
+		prometheus.NewRegistry(),
+	)
+	s.state["node-gang"] = &nodeState{
+		FreqScale:        1,
+		CPUCapacityCores: 64,
+	}
+	s.workload = &workloadEngine{
+		startTime:      time.Now().UTC(),
+		baseSpeedCore:  1.0,
+		jobByID:        map[string]*simJob{},
+		jobsByWorkload: map[string][]*simJob{},
+	}
+	done := &simJob{
+		JobID:             "done",
+		WorkloadID:        "w1",
+		Gang:              true,
+		RequestedCPUCores: 1,
+		CPUUnitsRemaining: 0,
+		Completed:         true,
+		Submitted:         true,
+	}
+	active := &simJob{
+		JobID:             "active",
+		WorkloadID:        "w1",
+		Gang:              true,
+		RequestedCPUCores: 1,
+		CPUUnitsRemaining: 1,
+		CPUWorkClass:      "cpu.compute_bound",
+		CPUUtilTarget:     0.9,
+		Submitted:         true,
+		SubmittedAt:       time.Now().UTC().Add(-time.Second),
+	}
+	s.workload.jobs = []*simJob{done, active}
+	s.workload.jobByID[done.JobID] = done
+	s.workload.jobByID[active.JobID] = active
+	s.workload.jobsByWorkload["w1"] = []*simJob{done, active}
+
+	podDetailFunc = func(_ context.Context, _ kubernetes.Interface) ([]runningPodInfo, error) {
+		return []runningPodInfo{{Namespace: "default", Name: "p-active", Node: "node-gang", JobID: "active"}}, nil
+	}
+	defer func() { podDetailFunc = listRunningPodsDetailed }()
+
+	s.advanceJobProgress(context.Background(), k8sfake.NewSimpleClientset(), 2.0, time.Now().UTC())
+	if !active.Completed {
+		t.Fatalf("expected active gang member to complete once the other member is already completed")
+	}
+}
+
+func TestCompletedJobDeletionIsRetriedUntilPodDisappears(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 40, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		10,
+		prometheus.NewRegistry(),
+	)
+	s.workload = &workloadEngine{
+		startTime: time.Now().UTC(),
+		jobs:      []*simJob{},
+		jobByID:   map[string]*simJob{},
+	}
+	job := &simJob{
+		JobID:       "done",
+		Namespace:   "default",
+		PodName:     "sim-done",
+		Submitted:   true,
+		Completed:   true,
+		CompletedAt: time.Now().UTC().Add(-time.Second),
+	}
+	s.workload.jobs = []*simJob{job}
+	s.workload.jobByID[job.JobID] = job
+
+	kube := k8sfake.NewSimpleClientset(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "sim-done",
+			Namespace: "default",
+			Annotations: map[string]string{
+				"sim.joulie.io/jobId": "done",
+			},
+		},
+		Spec:   corev1.PodSpec{NodeName: "node-cleanup"},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	})
+
+	podDetailFunc = func(_ context.Context, _ kubernetes.Interface) ([]runningPodInfo, error) {
+		return []runningPodInfo{{
+			Namespace: "default",
+			Name:      "sim-done",
+			Node:      "node-cleanup",
+			JobID:     "done",
+		}}, nil
+	}
+	defer func() { podDetailFunc = listRunningPodsDetailed }()
+
+	s.advanceJobProgress(context.Background(), kube, 1.0, time.Now().UTC())
+	if job.DeleteRequestedAt.IsZero() {
+		t.Fatalf("expected deletion request to be recorded")
+	}
+	if _, err := kube.CoreV1().Pods("default").Get(context.Background(), "sim-done", metav1.GetOptions{}); err == nil {
+		t.Fatalf("expected completed workload pod to be deleted")
 	}
 }
 
@@ -387,6 +731,49 @@ func TestInitWorkloadEngineFromTraceRejectsNonIntegerGPURequest(t *testing.T) {
 	}
 	if job.GPUResourceName != "" {
 		t.Fatalf("GPUResourceName=%q want empty", job.GPUResourceName)
+	}
+}
+
+func TestInitWorkloadEngineFromTraceParsesWorkloadProfile(t *testing.T) {
+	trace := `{"type":"job","jobId":"profiled","submitTimeOffsetSec":0,"podTemplate":{"requests":{"cpu":"2","nvidia.com/gpu":"1"}},"workloadClass":{"cpu":"cpu.io_bound","gpu":"gpu.memory_bound"},"workloadProfile":{"cpuUtilization":0.25,"gpuUtilization":0.7,"memoryIntensity":0.8,"ioIntensity":0.9,"cpuFeedIntensityGpu":0.6}}`
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	if err := os.WriteFile(path, []byte(trace), 0o644); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+	if err := s.initWorkloadEngineFromTrace(path); err != nil {
+		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	}
+	job := s.workload.jobs[0]
+	if job.CPUUtilTarget != 0.25 || job.GPUUtilTarget != 0.7 || job.MemoryIntensity != 0.8 || job.IOIntensity != 0.9 || job.CPUFeedIntensity != 0.6 {
+		t.Fatalf("unexpected job profile: %+v", job)
+	}
+	if job.CPUWorkClass != "cpu.io_bound" || job.GPUWorkClass != "gpu.memory_bound" {
+		t.Fatalf("unexpected job classes: %+v", job)
+	}
+}
+
+func TestThrottleImpactHelpers(t *testing.T) {
+	compute := &simJob{CPUUtilTarget: 0.95, MemoryIntensity: 0.1, IOIntensity: 0.05, SensitivityCPU: 1.0}
+	ioBound := &simJob{CPUUtilTarget: 0.2, MemoryIntensity: 0.2, IOIntensity: 0.95, SensitivityCPU: 1.0}
+	computeFactor := cpuThrottleImpactFactor(0.5, compute)
+	ioFactor := cpuThrottleImpactFactor(0.5, ioBound)
+	if ioFactor <= computeFactor {
+		t.Fatalf("expected io-bound helper to degrade less: io=%f compute=%f", ioFactor, computeFactor)
+	}
+
+	gpuFed := &simJob{CPUFeedIntensity: 0.8, SensitivityCPU: 1.0}
+	gpuLoose := &simJob{CPUFeedIntensity: 0.2, SensitivityCPU: 1.0}
+	fedFactor := cpuFeedThrottleFactor(0.5, gpuFed)
+	looseFactor := cpuFeedThrottleFactor(0.5, gpuLoose)
+	if fedFactor >= looseFactor {
+		t.Fatalf("expected stronger cpu feed dependence to degrade more: fed=%f loose=%f", fedFactor, looseFactor)
 	}
 }
 

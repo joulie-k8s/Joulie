@@ -40,7 +40,7 @@ Related debug endpoints (non-Prometheus):
 - `joulie_sim_node_throttle_pct{node}` (gauge)
   - simulated DVFS throttle percent
 - `joulie_sim_node_power_watts{node}` (gauge)
-  - simulated node power
+  - simulated exported node power
 - `joulie_sim_node_cpu_util{node}` (gauge)
   - simulated CPU utilization
 - `joulie_sim_node_freq_scale{node}` (gauge)
@@ -63,3 +63,5 @@ Related debug endpoints (non-Prometheus):
 
 - Prometheus metrics capture online simulator state and request/control behavior.
 - Integrated node/cluster energy totals are exposed through `/debug/energy` (JSON), not as Prometheus time series in the current implementation.
+- Richer thermal and averaged-vs-instantaneous details are currently exposed through the HTTP telemetry/debug endpoints rather than as separate Prometheus gauges.
+- In particular, fields such as `instantPackagePowerWatts`, `cpu.temperatureC`, `cpu.thermalThrottlePct`, and per-device GPU averaged power live in `/telemetry/{node}` and `/debug/nodes`.

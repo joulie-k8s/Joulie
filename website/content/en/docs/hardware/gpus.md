@@ -51,15 +51,28 @@ Simulator telemetry includes:
 - `gpu.vendor`
 - `gpu.count`
 - `gpu.powerWattsTotal`
+- `gpu.avgPowerWattsTotal`
 - `gpu.capWattsPerGpuApplied`
 - `gpu.utilization`
+
+Per-device entries also expose:
+
+- `temperatureC`
+- `thermalThrottle`
+- `avgPowerWatts`
+
+This makes it easier to compare:
+
+- internal power-cap dynamics,
+- exported averaged telemetry,
+- and sustained thermal behavior during long runs.
 
 ## Scheduling guidance
 
 Keep workload intent guidance unchanged:
 
 - performance-sensitive pods: prefer `NotIn ["eco"]`
-- eco-only (advanced): `In ["eco"]` and optionally `draining=false`
+- eco-only (advanced): `In ["eco"]` and optionally `joulie.io/draining NotIn ["true"]`
 
 GPU resource requests (`nvidia.com/gpu`, `amd.com/gpu`) are orthogonal to Joulie power-profile labels.
 Joulie GPU capping is node-level and not a GPU slicing API.

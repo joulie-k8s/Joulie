@@ -7,12 +7,17 @@ import (
 )
 
 type DeviceState struct {
-	Utilization    float64
-	FreqScale      float64
-	CapWatts       float64
-	MaxCapWatts    float64
-	IdlePowerWatts float64
-	Class          string
+	Utilization      float64
+	FreqScale        float64
+	CapWatts         float64
+	MaxCapWatts      float64
+	IdlePowerWatts   float64
+	MemoryIntensity  float64
+	IOIntensity      float64
+	CPUFeedIntensity float64
+	TemperatureC     float64
+	ThermalThrottle  float64
+	Class            string
 }
 
 type PowerModel interface {
@@ -29,7 +34,9 @@ func (m MeasuredCurveCPUModel) Power(state DeviceState) float64 {
 	if len(m.Points) == 0 {
 		return 0
 	}
-	u := clamp01(state.Utilization) * 100.0
+	util := clamp01(state.Utilization)
+	activity := cpuActivityFactor(state)
+	u := clamp01(util*activity) * 100.0
 	base := interpolateCurve(m.Points, u)
 	if base <= 0 {
 		return 0
@@ -38,7 +45,7 @@ func (m MeasuredCurveCPUModel) Power(state DeviceState) float64 {
 	if scale <= 0 {
 		scale = 0.01
 	}
-	adjLoad := clamp01(clamp01(state.Utilization) * scale * 100.0)
+	adjLoad := clamp01(clamp01(state.Utilization)*scale) * 100.0
 	p := interpolateCurve(m.Points, adjLoad)
 	if state.CapWatts > 0 && p > state.CapWatts {
 		p = state.CapWatts
@@ -52,24 +59,17 @@ func (m MeasuredCurveCPUModel) ThroughputMultiplier(state DeviceState, workloadC
 	if knee <= 0 {
 		knee = 0.7
 	}
-	switch workloadClass {
-	case "cpu.compute_bound":
-		return f
-	case "cpu.memory_bound":
-		if f >= knee {
-			// Memory-bound workloads degrade slowly above the non-linear knee.
-			return 1.0 - 0.2*(1.0-f)
-		}
-		return 0.8 * (f / math.Max(0.1, knee))
-	default:
-		mem := 1.0
-		if f >= knee {
-			mem = 1.0 - 0.2*(1.0-f)
-		} else {
-			mem = 0.8 * (f / math.Max(0.1, knee))
-		}
-		return 0.5*f + 0.5*mem
+	computeScale := f
+	memoryScale := 1.0
+	if f >= knee {
+		memoryScale = 1.0 - 0.12*(1.0-f)
+	} else {
+		memoryScale = 1.0 - 0.12*(1.0-knee) - 0.45*((knee-f)/math.Max(0.1, knee))
 	}
+	ioScale := 1.0 - 0.05*(1.0-f)
+	wc, wm, wi := cpuBoundnessWeights(state, workloadClass)
+	out := wc*computeScale + wm*memoryScale + wi*ioScale
+	return applyThermalPenalty(clamp01(out), state)
 }
 
 type ProxyCurveCPUModel struct {
@@ -121,7 +121,7 @@ func (m CappedBoardGPUModel) Power(state DeviceState) float64 {
 	if capW <= 0 {
 		capW = 1
 	}
-	pNat := m.naturalPower(util, state.Class)
+	pNat := m.naturalPower(util, state)
 	if pNat > capW {
 		pNat = capW
 	}
@@ -133,7 +133,7 @@ func (m CappedBoardGPUModel) Power(state DeviceState) float64 {
 
 func (m CappedBoardGPUModel) ThroughputMultiplier(state DeviceState, workloadClass string) float64 {
 	util := clamp01(state.Utilization)
-	pNat := m.naturalPower(util, workloadClass)
+	pNat := m.naturalPower(util, state)
 	capW := state.CapWatts
 	if capW <= 0 {
 		capW = state.MaxCapWatts
@@ -160,31 +160,20 @@ func (m CappedBoardGPUModel) ThroughputMultiplier(state DeviceState, workloadCla
 	if memGamma <= 0 {
 		memGamma = 1.1
 	}
-	switch workloadClass {
-	case "gpu.compute_bound":
-		return math.Pow(ratio, computeGamma)
-	case "gpu.memory_bound":
-		return 1.0 - memEps*math.Pow(1.0-ratio, memGamma)
-	default:
-		c := math.Pow(ratio, computeGamma)
-		mm := 1.0 - memEps*math.Pow(1.0-ratio, memGamma)
-		return 0.5*c + 0.5*mm
-	}
+	computeScale := math.Pow(ratio, computeGamma)
+	memScale := 1.0 - memEps*math.Pow(1.0-ratio, memGamma)
+	wc, wm := gpuBoundnessWeights(state, workloadClass)
+	out := wc*computeScale + wm*memScale
+	return applyThermalPenalty(clamp01(out), state)
 }
 
-func (m CappedBoardGPUModel) naturalPower(util float64, class string) float64 {
+func (m CappedBoardGPUModel) naturalPower(util float64, state DeviceState) float64 {
 	util = clamp01(util)
 	dyn := math.Max(0, m.MaxW-m.IdleW)
-	switch class {
-	case "gpu.compute_bound":
-		return m.IdleW + dyn*util
-	case "gpu.memory_bound":
-		return m.IdleW + dyn*0.65*math.Sqrt(util)
-	default:
-		c := m.IdleW + dyn*util
-		mem := m.IdleW + dyn*0.65*math.Sqrt(util)
-		return 0.5*c + 0.5*mem
-	}
+	computeCurve := m.IdleW + dyn*math.Pow(util, 1.02)
+	memoryCurve := m.IdleW + dyn*(0.35*math.Sqrt(util)+0.30*util)
+	wc, wm := gpuBoundnessWeights(state, state.Class)
+	return wc*computeCurve + wm*memoryCurve
 }
 
 func interpolateCurve(points []hw.PowerPoint, load float64) float64 {
@@ -215,4 +204,93 @@ func clamp01(v float64) float64 {
 		return 1
 	}
 	return v
+}
+
+func cpuActivityFactor(state DeviceState) float64 {
+	mem := clamp01(state.MemoryIntensity)
+	io := clamp01(state.IOIntensity)
+	activity := 1.0 - 0.30*mem - 0.45*io
+	if stringsHasPrefixFast(state.Class, "cpu.compute_bound") {
+		activity += 0.08
+	}
+	if stringsHasPrefixFast(state.Class, "cpu.io_bound") {
+		activity -= 0.12
+	}
+	return clampRange(activity, 0.35, 1.0)
+}
+
+func cpuBoundnessWeights(state DeviceState, workloadClass string) (compute, memory, ioWeight float64) {
+	mem := clamp01(state.MemoryIntensity)
+	ioIntensity := clamp01(state.IOIntensity)
+	switch workloadClass {
+	case "cpu.compute_bound":
+		compute = 0.75
+		memory = 0.20
+		ioWeight = 0.05
+	case "cpu.memory_bound":
+		compute = 0.20
+		memory = 0.75
+		ioWeight = 0.05
+	case "cpu.io_bound":
+		compute = 0.10
+		memory = 0.10
+		ioWeight = 0.80
+	default:
+		compute = 0.45
+		memory = 0.35
+		ioWeight = 0.20
+	}
+	compute = clamp01(0.55*compute + 0.45*(1.0-math.Max(mem, ioIntensity)))
+	memory = clamp01(0.55*memory + 0.45*mem)
+	ioWeight = clamp01(0.55*ioWeight + 0.45*ioIntensity)
+	sum := compute + memory + ioWeight
+	if sum <= 0 {
+		return 0.45, 0.35, 0.20
+	}
+	return compute / sum, memory / sum, ioWeight / sum
+}
+
+func gpuBoundnessWeights(state DeviceState, workloadClass string) (compute, memory float64) {
+	mem := clamp01(state.MemoryIntensity)
+	feed := clamp01(state.CPUFeedIntensity)
+	switch workloadClass {
+	case "gpu.compute_bound":
+		compute = 0.80
+		memory = 0.20
+	case "gpu.memory_bound", "gpu.bandwidth_bound":
+		compute = 0.20
+		memory = 0.80
+	default:
+		compute = 0.50
+		memory = 0.50
+	}
+	compute = clamp01(compute + 0.10*feed)
+	compute = clamp01(0.60*compute + 0.40*(1.0-mem))
+	memory = clamp01(0.60*memory + 0.40*mem)
+	sum := compute + memory
+	if sum <= 0 {
+		return 0.5, 0.5
+	}
+	return compute / sum, memory / sum
+}
+
+func applyThermalPenalty(v float64, state DeviceState) float64 {
+	return clamp01(v * (1.0 - clamp01(state.ThermalThrottle)))
+}
+
+func clampRange(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func stringsHasPrefixFast(s, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	return s[:len(prefix)] == prefix
 }

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/matbun/joulie/pkg/hwinv"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +34,7 @@ import (
 var (
 	profileNodeGVR    = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodepowerprofiles"}
 	telemetryNodeGVR  = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "telemetryprofiles"}
+	nodeHardwareGVR   = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
 	defaultHTTPTimout = 2 * time.Second
 
 	registerMetricsOnce sync.Once
@@ -50,11 +52,36 @@ var (
 	dvfsMaxFreqMetric   *prometheus.GaugeVec
 	dvfsActionsMetric   *prometheus.CounterVec
 	reconcileErrMetric  *prometheus.CounterVec
+
+	hardwareCatalogOnce sync.Once
+	hardwareCatalog     *hwinv.Catalog
 )
 
 type HardwareInfo struct {
-	CPUVendor  string
-	GPUVendors []string
+	CPUVendor       string
+	CPURawModel     string
+	CPUModel        string
+	CPUSockets      int
+	CPUTotalCores   int
+	CPUCoresPerSock int
+	CPUDriverFamily string
+	CPUCapMinWatts  float64
+	CPUCapMaxWatts  float64
+	CPUCapKnown     bool
+	CPUControl      bool
+	CPUTelemetry    bool
+	GPUVendors      []string
+	GPUVendor       string
+	GPURawModel     string
+	GPUModel        string
+	GPUCount        int
+	GPUCapMinWatts  float64
+	GPUCapMaxWatts  float64
+	GPUCurrentCapW  float64
+	GPUCapKnown     bool
+	GPUControl      bool
+	GPUTelemetry    bool
+	Warnings        []string
 }
 
 type DesiredState struct {
@@ -504,7 +531,7 @@ func reconcileOnce(
 		return fmt.Errorf("get node: %w", err)
 	}
 
-	hw := discoverHardware(node.Labels)
+	hw := discoverHardware(ctx, node)
 
 	selected, source, err := resolveDesiredStateForNode(ctx, dyn, nodeName)
 	if err != nil {
@@ -517,7 +544,7 @@ func reconcileOnce(
 	}
 	controlClient := controlClientFromTelemetry(telemetry, nodeName)
 	gpuControlClient := gpuControlClientFromTelemetry(telemetry, nodeName)
-	_ = updateTelemetryHardwareStatus(ctx, dyn, telemetry, nodeName, node.Labels, hw)
+	_ = upsertNodeHardwareStatus(ctx, dyn, nodeName, hw)
 	if dvfs != nil {
 		dvfs.SetPowerReaderForTelemetry(telemetry, nodeName)
 	}
@@ -823,8 +850,8 @@ func applyGPUIntent(
 	}
 	if allocatableGPUCount(node) <= 0 {
 		return "none", "blocked", "node has no allocatable GPU resources", map[string]any{
-			"node":              nodeName,
-			"allocatableGPUs":   0,
+			"node":               nodeName,
+			"allocatableGPUs":    0,
 			"requestedGPUIntent": true,
 		}, nil
 	}
@@ -1547,8 +1574,34 @@ func (d *DVFSController) readPowerWatts() (float64, bool, error) {
 	return totalW, true, nil
 }
 
-func discoverHardware(nodeLabels map[string]string) HardwareInfo {
-	hw := HardwareInfo{CPUVendor: discoverCPUVendor(nodeLabels)}
+func discoverHardware(ctx context.Context, node *corev1.Node) HardwareInfo {
+	nodeLabels := node.Labels
+	hw := HardwareInfo{
+		CPUVendor: discoverCPUVendor(nodeLabels),
+		CPURawModel: firstNonEmpty(
+			nodeLabels["feature.node.kubernetes.io/cpu-model.name"],
+			nodeLabels["beta.kubernetes.io/instance-type"],
+		),
+		CPUSockets:      discoverCPUSockets(nodeLabels),
+		CPUTotalCores:   cpuCoresFromNode(node),
+		CPUDriverFamily: detectCPUDriverFamily(),
+		CPUTelemetry:    true,
+	}
+	if hw.CPUSockets > 0 && hw.CPUTotalCores > 0 {
+		hw.CPUCoresPerSock = hw.CPUTotalCores / hw.CPUSockets
+	}
+	if maxW, minW, ok := readRAPLPackageCapRangeWatts(); ok {
+		hw.CPUCapKnown = true
+		hw.CPUCapMinWatts = minW
+		hw.CPUCapMaxWatts = maxW
+		hw.CPUControl = true
+	} else {
+		hw.CPUControl = detectCPUDriverFamily() != ""
+	}
+
+	if key, _, ok := loadHardwareCatalog().MatchCPU(hw.CPURawModel); ok {
+		hw.CPUModel = key
+	}
 
 	if hasNFDGPUVendor(nodeLabels, "10de") {
 		hw.GPUVendors = append(hw.GPUVendors, "nvidia")
@@ -1560,15 +1613,84 @@ func discoverHardware(nodeLabels map[string]string) HardwareInfo {
 		hw.GPUVendors = append(hw.GPUVendors, "intel")
 	}
 	if len(hw.GPUVendors) == 0 {
-		switch detectGPUVendor(context.Background(), nodeLabels) {
+		switch detectGPUVendor(ctx, nodeLabels) {
 		case "nvidia":
 			hw.GPUVendors = append(hw.GPUVendors, "nvidia")
 		case "amd":
 			hw.GPUVendors = append(hw.GPUVendors, "amd")
 		}
 	}
-
+	hw.GPUVendor = detectGPUVendor(ctx, nodeLabels)
+	gpuDevices, _ := listGPUDevices(ctx, hw.GPUVendor)
+	hw.GPUCount = len(gpuDevices)
+	if hw.GPUCount == 0 {
+		hw.GPUCount = int(allocatableGPUCount(node))
+	}
+	if len(gpuDevices) > 0 {
+		hw.GPURawModel = gpuDevices[0].Product
+		hw.GPUCurrentCapW = gpuDevices[0].CurrentCapWatts
+		hw.GPUCapMinWatts = gpuDevices[0].MinCapWatts
+		hw.GPUCapMaxWatts = gpuDevices[0].MaxCapWatts
+		hw.GPUCapKnown = gpuDevices[0].MaxCapWatts > 0
+		hw.GPUControl = hw.GPUCapKnown
+		hw.GPUTelemetry = true
+	} else {
+		hw.GPURawModel = firstNonEmpty(
+			nodeLabels["joulie.io/gpu.product"],
+			nodeLabels["nvidia.com/gpu.product"],
+			nodeLabels["amd.com/gpu.product"],
+			nodeLabels["amd.com/gpu.family"],
+		)
+		hw.GPUControl = false
+		hw.GPUTelemetry = hw.GPUCount > 0
+	}
+	if key, _, ok := loadHardwareCatalog().MatchGPU(hw.GPURawModel); ok {
+		hw.GPUModel = key
+	}
+	if hw.CPUModel == "" && hw.CPURawModel != "" {
+		hw.Warnings = append(hw.Warnings, "cpu model not recognized")
+	}
+	if hw.GPUCount > 0 && hw.GPUModel == "" && hw.GPURawModel != "" {
+		hw.Warnings = append(hw.Warnings, "gpu model not recognized")
+	}
 	return hw
+}
+
+func discoverHardwareFromLabels(nodeLabels map[string]string) HardwareInfo {
+	node := &corev1.Node{}
+	node.Labels = nodeLabels
+	return discoverHardware(context.Background(), node)
+}
+
+func cpuCoresFromNode(node *corev1.Node) int {
+	if node == nil {
+		return 0
+	}
+	if qty, ok := node.Status.Capacity[corev1.ResourceCPU]; ok {
+		return int(qty.Value())
+	}
+	return 0
+}
+
+func discoverCPUSockets(nodeLabels map[string]string) int {
+	for _, key := range []string{
+		"feature.node.kubernetes.io/cpu-sockets",
+		"joulie.io/hw.cpu-sockets",
+	} {
+		if v := hwinv.ParseIntString(nodeLabels[key]); v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 func discoverCPUVendor(nodeLabels map[string]string) string {
@@ -1594,6 +1716,22 @@ func normalizeCPUVendor(raw string) string {
 	default:
 		return v
 	}
+}
+
+func loadHardwareCatalog() *hwinv.Catalog {
+	hardwareCatalogOnce.Do(func() {
+		path := strings.TrimSpace(os.Getenv("HARDWARE_CATALOG_PATH"))
+		if path == "" {
+			path = "simulator/catalog/hardware.yaml"
+		}
+		cat, err := hwinv.LoadCatalog(path)
+		if err != nil {
+			log.Printf("warning: failed to load hardware catalog path=%s err=%v", path, err)
+			return
+		}
+		hardwareCatalog = cat
+	})
+	return hardwareCatalog
 }
 
 func hasNFDGPUVendor(nodeLabels map[string]string, vendorHex string) bool {
@@ -1817,52 +1955,133 @@ func updateTelemetryGPUStatus(ctx context.Context, dyn dynamic.Interface, cfg *T
 	return err
 }
 
-func updateTelemetryHardwareStatus(ctx context.Context, dyn dynamic.Interface, cfg *TelemetryConfig, nodeName string, nodeLabels map[string]string, hw HardwareInfo) error {
-	if cfg == nil || cfg.Name == "" {
-		return nil
-	}
-	res := dyn.Resource(telemetryNodeGVR)
-	obj, err := res.Get(ctx, cfg.Name, metav1.GetOptions{})
+func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeName string, hw HardwareInfo) error {
+	name := sanitizeNodeObjectName(nodeName)
+	res := dyn.Resource(nodeHardwareGVR)
+	obj, err := res.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return err
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		obj = &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "joulie.io/v1alpha1",
+			"kind":       "NodeHardware",
+			"metadata": map[string]any{
+				"name": name,
+			},
+			"spec": map[string]any{
+				"nodeName": nodeName,
+			},
+		}}
+		created, cerr := res.Create(ctx, obj, metav1.CreateOptions{})
+		if cerr != nil && !apierrors.IsAlreadyExists(cerr) {
+			return cerr
+		}
+		if cerr == nil {
+			obj = created
+		} else {
+			obj, err = res.Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+		}
 	}
-	if sc, ok, _ := unstructured.NestedString(obj.Object, "spec", "target", "scope"); ok && sc != "node" {
-		return nil
+	status := map[string]any{
+		"cpu": map[string]any{
+			"rawModel":           hw.CPURawModel,
+			"model":              hw.CPUModel,
+			"vendor":             hw.CPUVendor,
+			"sockets":            int64(hw.CPUSockets),
+			"totalCores":         int64(hw.CPUTotalCores),
+			"coresPerSocket":     int64(hw.CPUCoresPerSock),
+			"driverFamily":       hw.CPUDriverFamily,
+			"controlAvailable":   hw.CPUControl,
+			"telemetryAvailable": hw.CPUTelemetry,
+			"quality":            qualityValue(hw.CPUModel != "", hw.CPURawModel != ""),
+			"warnings":           stringAnySlice(warningSlice(hw.CPUModel == "" && hw.CPURawModel != "", "cpu model not recognized")),
+		},
+		"gpu": map[string]any{
+			"rawModel":           hw.GPURawModel,
+			"model":              hw.GPUModel,
+			"vendor":             hw.GPUVendor,
+			"count":              int64(hw.GPUCount),
+			"currentCapWatts":    hw.GPUCurrentCapW,
+			"controlAvailable":   hw.GPUControl,
+			"telemetryAvailable": hw.GPUTelemetry,
+			"quality":            qualityValue(hw.GPUModel != "", hw.GPURawModel != ""),
+			"warnings":           stringAnySlice(warningSlice(hw.GPUCount > 0 && hw.GPUModel == "" && hw.GPURawModel != "", "gpu model not recognized")),
+		},
+		"capabilities": map[string]any{
+			"cpuControl":   hw.CPUControl,
+			"gpuControl":   hw.GPUControl,
+			"cpuTelemetry": hw.CPUTelemetry,
+			"gpuTelemetry": hw.GPUTelemetry,
+		},
+		"quality": map[string]any{
+			"overall":  overallQuality(hw),
+			"warnings": stringAnySlice(hw.Warnings),
+		},
+		"updatedAt": time.Now().UTC().Format(time.RFC3339),
 	}
-	if nn, ok, _ := unstructured.NestedString(obj.Object, "spec", "target", "nodeName"); ok && nn != nodeName {
-		return nil
+	if hw.CPUCapKnown {
+		status["cpu"].(map[string]any)["capMinWatts"] = hw.CPUCapMinWatts
+		status["cpu"].(map[string]any)["capMaxWatts"] = hw.CPUCapMaxWatts
 	}
-	driver := detectCPUDriverFamily()
-	gpuVendor := detectGPUVendor(ctx, nodeLabels)
-	gpuDevices, _ := listGPUDevices(ctx, gpuVendor)
-	gpuCaps := map[string]any{
-		"vendor":      gpuVendor,
-		"deviceCount": int64(len(gpuDevices)),
+	if hw.GPUCapKnown {
+		status["gpu"].(map[string]any)["capMinWatts"] = hw.GPUCapMinWatts
+		status["gpu"].(map[string]any)["capMaxWatts"] = hw.GPUCapMaxWatts
 	}
-	if len(gpuDevices) > 0 {
-		gpuCaps["product"] = gpuDevices[0].Product
-		gpuCaps["minCapWatts"] = gpuDevices[0].MinCapWatts
-		gpuCaps["maxCapWatts"] = gpuDevices[0].MaxCapWatts
-		gpuCaps["currentCapWatts"] = gpuDevices[0].CurrentCapWatts
-	}
-	cpuRangeMax, cpuRangeMin, haveRange := readRAPLPackageCapRangeWatts()
-	hwStatus := map[string]any{
-		"cpuVendor":       hw.CPUVendor,
-		"cpuDriverFamily": driver,
-		"gpu":             gpuCaps,
-	}
-	if haveRange {
-		hwStatus["cpuCapMinWatts"] = cpuRangeMin
-		hwStatus["cpuCapMaxWatts"] = cpuRangeMax
-	}
-	_ = unstructured.SetNestedField(obj.Object, hwStatus, "status", "hardware")
-	_ = unstructured.SetNestedField(obj.Object, time.Now().UTC().Format(time.RFC3339), "status", "hardware", "updatedAt")
+	_ = unstructured.SetNestedField(obj.Object, status, "status")
 	_, err = res.UpdateStatus(ctx, obj, metav1.UpdateOptions{})
 	if err == nil {
 		return nil
 	}
 	_, err = res.Update(ctx, obj, metav1.UpdateOptions{})
 	return err
+}
+
+func sanitizeNodeObjectName(nodeName string) string {
+	name := strings.ToLower(strings.TrimSpace(nodeName))
+	name = strings.NewReplacer(".", "-", "_", "-", "/", "-").Replace(name)
+	return strings.Trim(name, "-")
+}
+
+func qualityValue(recognized, haveRaw bool) string {
+	if recognized {
+		return "exact"
+	}
+	if haveRaw {
+		return "heuristic"
+	}
+	return "unavailable"
+}
+
+func overallQuality(hw HardwareInfo) string {
+	if hw.CPUModel != "" && (hw.GPUCount == 0 || hw.GPUModel != "") {
+		return "exact"
+	}
+	if hw.CPURawModel != "" || hw.GPURawModel != "" {
+		return "heuristic"
+	}
+	return "unavailable"
+}
+
+func warningSlice(cond bool, warning string) []string {
+	if !cond {
+		return nil
+	}
+	return []string{warning}
+}
+
+func stringAnySlice(in []string) []any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(in))
+	for _, v := range in {
+		out = append(out, v)
+	}
+	return out
 }
 
 func detectCPUDriverFamily() string {

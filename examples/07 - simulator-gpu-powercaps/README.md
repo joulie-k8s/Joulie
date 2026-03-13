@@ -8,6 +8,15 @@ This example validates GPU capping end-to-end in simulator mode on a small heter
 
 It demonstrates that tighter GPU caps reduce simulated GPU power and increase completion time for GPU jobs.
 
+The example uses the three contracts with separate roles:
+
+- node labels: simulated hardware identity bootstrap
+- `TelemetryProfile`: simulator HTTP routing
+- `NodePowerProfile`: desired caps/profile
+
+`NodeHardware` is published automatically by the agent for observability and operator planning.
+You do not need to create it by hand for this example.
+
 ## Important validation note
 
 GPU support has been validated in simulator mode only (no bare-metal GPU access yet).

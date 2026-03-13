@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matbun/joulie/pkg/hwinv"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -64,6 +65,89 @@ func TestProfileMapping(t *testing.T) {
 	}
 	if got := assignmentState("eco", true); got != "DrainingPerformance" {
 		t.Fatalf("assignmentState draining: got=%q", got)
+	}
+}
+
+func TestSortNodesByDensityPrefersGPUHeavyNodes(t *testing.T) {
+	t.Parallel()
+	nodes := []string{"cpu-node", "gpu-node", "mixed-node"}
+	hw := map[string]NodeHardware{
+		"cpu-node":   {CPUComputeDensity: 500, GPUComputeDensity: 0},
+		"gpu-node":   {CPUComputeDensity: 300, GPUComputeDensity: 2400},
+		"mixed-node": {CPUComputeDensity: 700, GPUComputeDensity: 700},
+	}
+	sortNodesByDensity(nodes, hw)
+	if nodes[0] != "gpu-node" {
+		t.Fatalf("unexpected order: %#v", nodes)
+	}
+}
+
+func TestBuildStaticPlanPreservesOnePerformanceNodePerHardwareFamily(t *testing.T) {
+	t.Parallel()
+	nodes := []string{"h100-a", "h100-b", "mi300x-a", "cpu-a"}
+	hw := map[string]NodeHardware{
+		"h100-a":   {GPUModel: "NVIDIA-H100", GPUCount: 8, GPUComputeDensity: 1000},
+		"h100-b":   {GPUModel: "NVIDIA-H100", GPUCount: 8, GPUComputeDensity: 900},
+		"mi300x-a": {GPUModel: "AMD-Instinct-MI300X", GPUCount: 8, GPUComputeDensity: 800},
+		"cpu-a":    {CPUModel: "AMD-EPYC-9654", CPUComputeDensity: 200},
+	}
+
+	plan := buildStaticPlan(nodes, hw, 5000, 120, 0.25)
+	perfByNode := map[string]bool{}
+	for _, a := range plan {
+		perfByNode[a.NodeName] = a.Profile == profilePerformance
+	}
+	if !perfByNode["h100-a"] {
+		t.Fatalf("expected one H100 node to remain performance")
+	}
+	if !perfByNode["mi300x-a"] {
+		t.Fatalf("expected one MI300X node to remain performance")
+	}
+	if !perfByNode["cpu-a"] {
+		t.Fatalf("expected one CPU-only family node to remain performance")
+	}
+}
+
+func TestBuildQueueAwarePlanPreservesOnePerformanceNodePerHardwareFamily(t *testing.T) {
+	t.Parallel()
+	nodes := []string{"w7900-a", "w7900-b", "l40s-a", "cpu-a"}
+	hw := map[string]NodeHardware{
+		"w7900-a": {GPUModel: "AMD-Radeon-PRO-W7900", GPUCount: 4, GPUComputeDensity: 700},
+		"w7900-b": {GPUModel: "AMD-Radeon-PRO-W7900", GPUCount: 4, GPUComputeDensity: 650},
+		"l40s-a":  {GPUModel: "NVIDIA-L40S", GPUCount: 8, GPUComputeDensity: 900},
+		"cpu-a":   {CPUModel: "Intel-Xeon-Gold-6530", CPUComputeDensity: 180},
+	}
+
+	plan := buildQueueAwarePlan(nodes, hw, 5000, 120, 0.10, 0, 2, 10, 0)
+	perfFamilies := map[string]bool{}
+	for _, a := range plan {
+		if a.Profile != profilePerformance {
+			continue
+		}
+		perfFamilies[nodePerformanceFamily(a.NodeName, hw)] = true
+	}
+	for _, family := range []string{"gpu:AMD-Radeon-PRO-W7900", "gpu:NVIDIA-L40S", "cpu:Intel-Xeon-Gold-6530"} {
+		if !perfFamilies[family] {
+			t.Fatalf("missing performance family %s in plan %#v", family, plan)
+		}
+	}
+}
+
+func TestComputeInventoryGPUCapUsesCatalogFallback(t *testing.T) {
+	t.Parallel()
+	cat, err := hwinv.LoadDefaultCatalog()
+	if err != nil {
+		t.Fatalf("LoadDefaultCatalog: %v", err)
+	}
+	abs, ok := computeInventoryGPUCap(profileEco, NodeHardware{
+		GPURawModel: "NVIDIA-L40S",
+		GPUCount:    4,
+	}, cat, 100, 60)
+	if !ok {
+		t.Fatalf("expected catalog-based cap resolution")
+	}
+	if abs < 200 || abs > 350 {
+		t.Fatalf("unexpected absolute cap: %v", abs)
 	}
 }
 
@@ -451,7 +535,14 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 func TestBuildStaticPlan(t *testing.T) {
 	t.Parallel()
 	nodes := []string{"node-a", "node-b", "node-c", "node-d", "node-e"}
-	plan := buildStaticPlan(nodes, 5000, 120, 0.6)
+	hw := map[string]NodeHardware{
+		"node-a": {CPUModel: "same-cpu"},
+		"node-b": {CPUModel: "same-cpu"},
+		"node-c": {CPUModel: "same-cpu"},
+		"node-d": {CPUModel: "same-cpu"},
+		"node-e": {CPUModel: "same-cpu"},
+	}
+	plan := buildStaticPlan(nodes, hw, 5000, 120, 0.6)
 	if len(plan) != len(nodes) {
 		t.Fatalf("len(plan)=%d", len(plan))
 	}
@@ -472,9 +563,16 @@ func TestBuildStaticPlan(t *testing.T) {
 func TestBuildQueueAwarePlan(t *testing.T) {
 	t.Parallel()
 	nodes := []string{"node-a", "node-b", "node-c", "node-d", "node-e"}
+	hw := map[string]NodeHardware{
+		"node-a": {CPUModel: "same-cpu"},
+		"node-b": {CPUModel: "same-cpu"},
+		"node-c": {CPUModel: "same-cpu"},
+		"node-d": {CPUModel: "same-cpu"},
+		"node-e": {CPUModel: "same-cpu"},
+	}
 
 	// Base 60% of 5 => 3 performance nodes at idle.
-	plan := buildQueueAwarePlan(nodes, 5000, 120, 0.6, 1, 5, 10, 0)
+	plan := buildQueueAwarePlan(nodes, hw, 5000, 120, 0.6, 1, 5, 10, 0)
 	perf := 0
 	for _, a := range plan {
 		if a.Profile == "performance" {
@@ -486,7 +584,7 @@ func TestBuildQueueAwarePlan(t *testing.T) {
 	}
 
 	// 40 performance-intent pods with perfPerHPNode=10 => 4 performance nodes.
-	plan = buildQueueAwarePlan(nodes, 5000, 120, 0.6, 1, 5, 10, 40)
+	plan = buildQueueAwarePlan(nodes, hw, 5000, 120, 0.6, 1, 5, 10, 40)
 	perf = 0
 	for _, a := range plan {
 		if a.Profile == "performance" {
@@ -505,11 +603,17 @@ func TestBuildPlanByPolicyQueueAware(t *testing.T) {
 		podWithRequiredPowerProfile("perf-2", "node-b", "performance"),
 	)
 	nodes := []string{"node-a", "node-b", "node-c"}
+	hw := map[string]NodeHardware{
+		"node-a": {CPUModel: "same-cpu"},
+		"node-b": {CPUModel: "same-cpu"},
+		"node-c": {CPUModel: "same-cpu"},
+	}
 	plan := buildPlanByPolicy(
 		context.Background(),
 		client,
 		"queue_aware_v1",
 		nodes,
+		hw,
 		time.Minute,
 		5000,
 		120,
@@ -536,11 +640,18 @@ func TestBuildPlanByPolicyUnknownFallsBackToStatic(t *testing.T) {
 	t.Parallel()
 	client := k8sfake.NewSimpleClientset()
 	nodes := []string{"node-a", "node-b", "node-c", "node-d"}
+	hw := map[string]NodeHardware{
+		"node-a": {CPUModel: "same-cpu"},
+		"node-b": {CPUModel: "same-cpu"},
+		"node-c": {CPUModel: "same-cpu"},
+		"node-d": {CPUModel: "same-cpu"},
+	}
 	plan := buildPlanByPolicy(
 		context.Background(),
 		client,
 		"unknown_policy",
 		nodes,
+		hw,
 		time.Minute,
 		5000,
 		120,

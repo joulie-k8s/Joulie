@@ -2,7 +2,7 @@
 
 This folder contains a Dagger-based integration test harness for Joulie.
 
-It starts a lightweight **k3s** cluster as a Dagger service using the Daggerverse k3s module (`github.com/marcosnils/daggerverse/k3s`), installs Joulie via Helm from the local repo, and runs integration tests focused on:
+It starts a lightweight custom **2-node k3s** cluster (server + worker) as Dagger services, installs Joulie via Helm from the local repo, and runs integration tests focused on:
 
 - FSM transitions and node labels (`joulie.io/power-profile`, `joulie.io/draining`)
 - scheduling behavior under affinity constraints
@@ -12,7 +12,7 @@ It starts a lightweight **k3s** cluster as a Dagger service using the Daggervers
 ## Layout
 
 - `dagger.json`: Dagger module definition (Python SDK)
-- `src/main/__init__.py`: Dagger pipeline entrypoint
+- `src/joulie_ci/__init__.py`: Dagger pipeline entrypoint
 - `scripts/run-integration.sh`: in-container bootstrap and test launcher
 - `tests/integration_runner.py`: integration runner (kubectl/helm driven)
 - `examples.sh`: local command examples

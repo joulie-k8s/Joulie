@@ -36,12 +36,18 @@ Joulie is designed around standard Linux CPU power/frequency controls:
 - Intel platforms: `intel_pstate` semantics
 
 In simulator mode, CPU dynamics include utilization-dependent power curves, cap effects, and DVFS settling behavior.
+They now also include:
+
+- CPU cap application settling (`cpuCapApplyTauMs`)
+- exported telemetry averaging (`cpuTelemetryWindowMs`)
+- first-order thermal behavior and thermal-throttle thresholds
+- workload-sensitive slowdown based on `memoryIntensity` and `ioIntensity`
 
 ## Measured vs proxy models
 
 Joulie distinguishes:
 
-- exact measured curves (for selected CPU node classes, e.g. SPECpower-backed)
+- exact measured curves (for selected inventory-backed CPU platforms, e.g. SPECpower-backed)
 - proxy/inferred curves where direct public measured curves are unavailable
 
 See [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) for full model provenance and references.
@@ -51,7 +57,7 @@ See [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) fo
 Workload intent classification is based on node selector/affinity using `joulie.io/power-profile`:
 
 - performance-sensitive workloads: typically exclude `eco`
-- eco-only workloads: explicitly require `eco`
+- eco-only workloads: explicitly require `eco`, and if they must avoid transition-guarded nodes, exclude `joulie.io/draining=true` with `NotIn ["true"]`
 
 This classification drives operator profile assignment; CPU capping is then enforced through `NodePowerProfile`.
 

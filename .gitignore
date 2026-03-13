@@ -14,11 +14,29 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
 .coverage
+.coverage.*
 htmlcov/
 dist/
 build/
 *.egg-info/
+.eggs/
+pip-wheel-metadata/
+*.egg
+
+# Python environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Python notebooks / tooling
+.ipynb_checkpoints/
 
 # Binaries for programs and plugins
 *.exe

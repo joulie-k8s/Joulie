@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+"""Integration test runner for a 2-node k3s cluster.
+
+Node layout (deterministic, set via --node-name in the Dagger CI module):
+  k3s-server   → always stays in performance (operator family-floor node)
+  k3s-worker-0 → transitions to eco when STATIC_HP_FRAC=0
+
+With STATIC_HP_FRAC=0 and two same-family nodes the operator keeps exactly one
+node in performance (the family floor) and puts the other in eco.  The operator
+sorts by compute density then lexicographically, so "k3s-server" < "k3s-worker-0"
+→ server is always the floor node.
+"""
 from __future__ import annotations
 
 import json
@@ -9,6 +20,10 @@ import textwrap
 import time
 from dataclasses import dataclass
 from typing import Any
+
+# Stable node names registered by the Dagger CI k3s setup.
+PERF_NODE = "k3s-server"
+ECO_NODE = "k3s-worker-0"
 
 
 def log(msg: str) -> None:
@@ -46,14 +61,30 @@ def wait_rollout(namespace: str, resource: str, timeout: str = "180s") -> None:
     kubectl(["-n", namespace, "rollout", "status", resource, f"--timeout={timeout}"])
 
 
-def get_ready_node() -> str:
-    out = kubectl(["get", "nodes", "-o", "json"], capture=True).stdout
-    items = json.loads(out).get("items", [])
-    for n in items:
-        for c in n.get("status", {}).get("conditions", []):
-            if c.get("type") == "Ready" and c.get("status") == "True":
-                return n["metadata"]["name"]
-    raise RuntimeError("no Ready node found")
+def wait_ready_nodes(count: int = 2, timeout_sec: int = 300) -> list[str]:
+    """Wait until at least `count` nodes report Ready=True, then return their names."""
+    def _enough_ready() -> bool:
+        out = kubectl(["get", "nodes", "-o", "json"], check=False, capture=True)
+        if out.returncode != 0 or not out.stdout.strip():
+            return False
+        items = json.loads(out.stdout).get("items", [])
+        ready = sum(
+            1 for n in items
+            for c in n.get("status", {}).get("conditions", [])
+            if c.get("type") == "Ready" and c.get("status") == "True"
+        )
+        return ready >= count
+
+    wait_until(_enough_ready, timeout_sec=timeout_sec, desc=f"{count} ready nodes in cluster")
+
+    out = kubectl(["get", "nodes", "-o", "json"], capture=True)
+    items = json.loads(out.stdout).get("items", [])
+    return [
+        n["metadata"]["name"]
+        for n in items
+        for c in n.get("status", {}).get("conditions", [])
+        if c.get("type") == "Ready" and c.get("status") == "True"
+    ]
 
 
 def node_has_gpu_allocatable(node: str) -> bool:
@@ -67,33 +98,9 @@ def node_has_gpu_allocatable(node: str) -> bool:
             if int(val) > 0:
                 return True
         except ValueError:
-            # K8s quantities for extended resources are normally integer strings.
-            # Keep permissive behavior for unexpected formats.
             if val not in ("0", "0m"):
                 return True
     return False
-
-
-def wait_ready_node(timeout_sec: int = 300) -> str:
-    last_seen: list[str] = []
-
-    def _has_ready() -> bool:
-        nonlocal last_seen
-        out = kubectl(["get", "nodes", "-o", "json"], check=False, capture=True)
-        if out.returncode != 0 or not out.stdout.strip():
-            return False
-        items = json.loads(out.stdout).get("items", [])
-        last_seen = [n.get("metadata", {}).get("name", "") for n in items]
-        for n in items:
-            for c in n.get("status", {}).get("conditions", []):
-                if c.get("type") == "Ready" and c.get("status") == "True":
-                    return True
-        return False
-
-    wait_until(_has_ready, timeout_sec=timeout_sec, interval_sec=2.0, desc="a Ready node in cluster")
-    node = get_ready_node()
-    log(f"ready node detected: {node}")
-    return node
 
 
 def get_node_labels(node: str) -> dict[str, str]:
@@ -562,44 +569,71 @@ def dump_debug() -> None:
 
 @dataclass
 class Ctx:
-    node: str
+    """Test context holding the two cluster node names.
 
+    perf_node  – always stays in performance (operator family floor).
+    eco_node   – transitions to eco when STATIC_HP_FRAC=0.
+    node       – alias for eco_node kept for clarity in test code.
+    """
+    perf_node: str
+    eco_node: str
+
+    @property
+    def node(self) -> str:
+        return self.eco_node
+
+
+# ---------------------------------------------------------------------------
+# Test functions
+# ---------------------------------------------------------------------------
 
 def test_boot_and_install() -> Ctx:
     log("IT-BOOT-01 / IT-HELM-01")
     kubectl(["version"], check=False)
-    node = wait_ready_node(timeout_sec=300)
-    kubectl(["label", "node", node, "joulie.io/managed=true", "--overwrite"])
+
+    nodes = wait_ready_nodes(count=2, timeout_sec=300)
+    log(f"ready nodes: {nodes}")
+
+    for expected in (PERF_NODE, ECO_NODE):
+        if expected not in nodes:
+            raise RuntimeError(
+                f"expected node {expected!r} not present; got {nodes}. "
+                "Check that --node-name flags in the Dagger k3s setup match PERF_NODE/ECO_NODE constants."
+            )
+
+    for node in (PERF_NODE, ECO_NODE):
+        kubectl(["label", "node", node, "joulie.io/managed=true", "--overwrite"])
+
     install_joulie()
-    # Explicit CRD checks from integration plan.
     kubectl(["get", "crd", "nodepowerprofiles.joulie.io"])
     kubectl(["get", "crd", "telemetryprofiles.joulie.io"])
     kubectl(["create", "ns", "joulie-it"], check=False)
-    return Ctx(node=node)
+    return Ctx(perf_node=PERF_NODE, eco_node=ECO_NODE)
 
 
 def test_telemetry_http(ctx: Ctx) -> None:
     log("IT-TP-01")
     install_http_mock()
-    apply_telemetry_profile(ctx.node)
+    # Apply telemetry profile to the eco node (it's in performance initially due
+    # to STATIC_HP_FRAC=1 at install time; that's fine – the agent reconciles it).
+    apply_telemetry_profile(ctx.eco_node)
     time.sleep(12)
     stats = get_mock_stats()
     if stats.get("get", 0) <= 0:
         raise AssertionError(f"expected telemetry GETs > 0, stats={stats}")
     if stats.get("post", 0) <= 0:
         raise AssertionError(f"expected control POSTs > 0, stats={stats}")
-    patch_node_gpu_cap(ctx.node, 200)
+    patch_node_gpu_cap(ctx.eco_node, 200)
     time.sleep(10)
     stats = get_mock_stats()
     gpu_posts = int(stats.get("gpu_post", 0))
-    if node_has_gpu_allocatable(ctx.node):
+    if node_has_gpu_allocatable(ctx.eco_node):
         if gpu_posts <= 0:
             raise AssertionError(f"expected gpu control POSTs > 0 on GPU node, stats={stats}")
     else:
-        # In CI/k3s we usually have no GPU resources; GPU control must degrade gracefully.
         if gpu_posts > 0:
             log(f"unexpected gpu POSTs on non-GPU node (still tolerating): stats={stats}")
-        result, message = get_telemetryprofile_gpu_control_status(ctx.node)
+        result, message = get_telemetryprofile_gpu_control_status(ctx.eco_node)
         if result not in ("none", "blocked", "error"):
             raise AssertionError(
                 f"expected graceful non-GPU handling (none/blocked/error), got result={result!r}, message={message!r}"
@@ -608,115 +642,179 @@ def test_telemetry_http(ctx: Ctx) -> None:
 
 
 def test_fsm_and_labels(ctx: Ctx) -> None:
+    """IT-FSM-*: verify guarded transition and draining lifecycle on eco_node.
+
+    With two nodes, the operator can actually move eco_node to eco (frac=0)
+    while keeping perf_node in performance (family floor).  We force the test
+    pod onto eco_node via nodeName so the guarded-transition signal is visible
+    there.
+    """
     log("IT-FSM-*")
     set_static_hp_frac("1")
-    wait_node_label(ctx.node, "joulie.io/power-profile", "performance")
-    wait_node_draining_false(ctx.node)
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
+    wait_node_draining_false(ctx.eco_node)
 
-    # perf pod present -> draining=true when moving to eco
+    # eco_node is in performance; place a perf-intent pod there.
+    # nodeName bypasses the scheduler (kubelet still runs the pod) so the pod
+    # lands on eco_node regardless of its affinity.
     delete_pod("joulie-it", "perf-a")
-    apply_yaml(mk_pod_yaml("perf-a", affinity=perf_affinity_notin_eco()))
+    apply_yaml(mk_pod_yaml("perf-a", affinity=perf_affinity_notin_eco(), node_name=ctx.eco_node))
     wait_pod_phase("joulie-it", "perf-a", "Running")
+
+    # Trigger eco transition: operator wants eco_node→eco but sees perf pod → draining=true.
     set_static_hp_frac("0")
-    wait_node_guarded_transition(ctx.node)
+    wait_node_guarded_transition(ctx.eco_node)
 
-    # draining clears after perf pod gone
+    # Once perf pod is gone, eco_node completes transition.
     delete_pod("joulie-it", "perf-a")
-    wait_node_eco_ready(ctx.node)
+    wait_node_eco_ready(ctx.eco_node)
 
-    # best-effort pod should not trigger draining
+    # Best-effort pod must not trigger draining.
     apply_yaml(mk_pod_yaml("besteffort-a"))
     wait_pod_phase("joulie-it", "besteffort-a", "Running")
-    wait_node_eco_ready(ctx.node)
+    wait_node_eco_ready(ctx.eco_node)
     delete_pod("joulie-it", "besteffort-a")
 
-    # eco -> performance clears draining immediately
+    # eco → performance clears draining immediately.
     set_static_hp_frac("1")
-    wait_node_label(ctx.node, "joulie.io/power-profile", "performance")
-    wait_node_draining_false(ctx.node)
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
+    wait_node_draining_false(ctx.eco_node)
 
 
 def test_fsm_toggle_under_eco(ctx: Ctx) -> None:
+    """IT-FSM-07: perf-intent pod restricted to eco_node stays pending while eco_node is eco.
+
+    With two nodes the scheduler would otherwise place the pod on perf_node.
+    We use nodeSelector to pin the pod to eco_node so the unschedulability is
+    observable, and confirm eco_node doesn't spuriously enter draining.
+    """
     log("IT-FSM-07")
     set_static_hp_frac("0")
-    wait_node_eco_ready(ctx.node)
+    wait_node_eco_ready(ctx.eco_node)
 
     delete_pod("joulie-it", "perf-toggle")
-    apply_yaml(mk_pod_yaml("perf-toggle", affinity=perf_affinity_notin_eco()))
+    # Pin to eco_node via nodeSelector (goes through scheduler → affinity enforced).
+    apply_yaml(mk_pod_yaml(
+        "perf-toggle",
+        affinity=perf_affinity_notin_eco(),
+        node_selector={"kubernetes.io/hostname": ctx.eco_node},
+    ))
     wait_pod_pending("joulie-it", "perf-toggle")
     wait_pod_unschedulable_reason("joulie-it", "perf-toggle", "affinity")
-    wait_node_eco_ready(ctx.node)
+    wait_node_eco_ready(ctx.eco_node)
 
     delete_pod("joulie-it", "perf-toggle")
 
 
 def test_scheduling(ctx: Ctx) -> None:
-    log("IT-SCH-*")
-    set_static_hp_frac("1")
-    wait_node_label(ctx.node, "joulie.io/power-profile", "performance")
+    """IT-SCH-*: verify scheduler respects operator-applied power-profile labels.
 
-    # perf NotIn eco schedules on unlabeled node too
+    With two nodes:
+    - frac=1 → both nodes in performance
+    - frac=0 → perf_node=performance (floor), eco_node=eco
+
+    We use nodeSelector (not nodeName) so the scheduler enforces affinity rules.
+    """
+    log("IT-SCH-*")
+
+    # --- Perf intent schedules on a node with no label ---
+    set_static_hp_frac("1")
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
     delete_pod("joulie-it", "sch-perf-on-unlabeled")
-    kubectl(["label", "node", ctx.node, "joulie.io/power-profile-"], check=False)
-    apply_yaml(mk_pod_yaml("sch-perf-on-unlabeled", affinity=perf_affinity_notin_eco()))
+    kubectl(["label", "node", ctx.eco_node, "joulie.io/power-profile-"], check=False)
+    apply_yaml(mk_pod_yaml(
+        "sch-perf-on-unlabeled",
+        affinity=perf_affinity_notin_eco(),
+        node_selector={"kubernetes.io/hostname": ctx.eco_node},
+    ))
     wait_pod_phase("joulie-it", "sch-perf-on-unlabeled", "Running")
     delete_pod("joulie-it", "sch-perf-on-unlabeled")
+    # Restore; operator will re-label within one reconcile interval but we need it now.
     set_static_hp_frac("1")
-    wait_node_label(ctx.node, "joulie.io/power-profile", "performance")
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
 
-    # perf NotIn eco schedules on perf
+    # --- Perf intent schedules on a performance node ---
     delete_pod("joulie-it", "sch-perf-on-perf")
-    apply_yaml(mk_pod_yaml("sch-perf-on-perf", affinity=perf_affinity_notin_eco()))
+    apply_yaml(mk_pod_yaml(
+        "sch-perf-on-perf",
+        affinity=perf_affinity_notin_eco(),
+        node_selector={"kubernetes.io/hostname": ctx.perf_node},
+    ))
     wait_pod_phase("joulie-it", "sch-perf-on-perf", "Running")
     delete_pod("joulie-it", "sch-perf-on-perf")
 
-    # perf NotIn eco does not schedule on eco
-    set_static_hp_frac("0")
-    wait_node_label(ctx.node, "joulie.io/power-profile", "eco")
-    delete_pod("joulie-it", "sch-perf-on-eco")
-    apply_yaml(mk_pod_yaml("sch-perf-on-eco", affinity=perf_affinity_notin_eco()))
-    wait_pod_pending("joulie-it", "sch-perf-on-eco")
-    wait_pod_unschedulable_reason("joulie-it", "sch-perf-on-eco", "affinity")
-    delete_pod("joulie-it", "sch-perf-on-eco")
+    # --- Eco-only intent cannot schedule when all nodes are in performance ---
+    # frac=1 → both nodes performance → In[eco] affinity cannot be satisfied.
+    delete_pod("joulie-it", "sch-eco-on-all-perf")
+    apply_yaml(mk_pod_yaml("sch-eco-on-all-perf", affinity=eco_affinity_in_eco()))
+    wait_pod_pending("joulie-it", "sch-eco-on-all-perf")
+    wait_pod_unschedulable_reason("joulie-it", "sch-eco-on-all-perf", "affinity")
+    delete_pod("joulie-it", "sch-eco-on-all-perf")
 
-    # eco-only In[eco] schedules on eco
+    # --- Eco-only intent schedules on eco_node ---
+    set_static_hp_frac("0")
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "eco")
     delete_pod("joulie-it", "sch-eco-on-eco")
-    apply_yaml(mk_pod_yaml("sch-eco-on-eco", affinity=eco_affinity_in_eco()))
+    apply_yaml(mk_pod_yaml(
+        "sch-eco-on-eco",
+        affinity=eco_affinity_in_eco(),
+        node_selector={"kubernetes.io/hostname": ctx.eco_node},
+    ))
     wait_pod_phase("joulie-it", "sch-eco-on-eco", "Running")
     delete_pod("joulie-it", "sch-eco-on-eco")
 
-    # eco-only In[eco] does not schedule on performance
-    set_static_hp_frac("1")
-    wait_node_label(ctx.node, "joulie.io/power-profile", "performance")
+    # --- Eco-only intent cannot schedule on performance node ---
+    # perf_node stays in performance (family floor) even with frac=0.
     delete_pod("joulie-it", "sch-eco-on-perf")
-    apply_yaml(mk_pod_yaml("sch-eco-on-perf", affinity=eco_affinity_in_eco()))
+    apply_yaml(mk_pod_yaml(
+        "sch-eco-on-perf",
+        affinity=eco_affinity_in_eco(),
+        node_selector={"kubernetes.io/hostname": ctx.perf_node},
+    ))
     wait_pod_pending("joulie-it", "sch-eco-on-perf")
     wait_pod_unschedulable_reason("joulie-it", "sch-eco-on-perf", "affinity")
     delete_pod("joulie-it", "sch-eco-on-perf")
 
-    # eco + draining=false excludes draining nodes
+    # --- Eco + draining=false does not schedule on draining eco_node ---
     set_static_hp_frac("0")
-    wait_node_label(ctx.node, "joulie.io/power-profile", "eco")
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "eco")
     kubectl(
         [
-            "label",
-            "node",
-            ctx.node,
+            "label", "node", ctx.eco_node,
             "joulie.io/power-profile=eco",
             "joulie.io/draining=true",
             "--overwrite",
         ]
     )
     delete_pod("joulie-it", "sch-eco-on-draining")
-    apply_yaml(mk_pod_yaml("sch-eco-on-draining", affinity=eco_affinity_with_draining_false()))
+    apply_yaml(mk_pod_yaml(
+        "sch-eco-on-draining",
+        affinity=eco_affinity_with_draining_false(),
+        node_selector={"kubernetes.io/hostname": ctx.eco_node},
+    ))
     wait_pod_pending("joulie-it", "sch-eco-on-draining")
     wait_pod_unschedulable_reason("joulie-it", "sch-eco-on-draining", "affinity")
-    kubectl(["label", "node", ctx.node, "joulie.io/draining=false", "--overwrite"])
+    kubectl(["label", "node", ctx.eco_node, "joulie.io/draining=false", "--overwrite"])
     wait_pod_phase("joulie-it", "sch-eco-on-draining", "Running")
     delete_pod("joulie-it", "sch-eco-on-draining")
 
 
 def test_classification_matrix(ctx: Ctx) -> None:
+    """IT-CLS-*: verify the operator correctly classifies pods as perf-intent or not.
+
+    Strategy with two nodes:
+    - Start each case with eco_node in performance (frac=1 → both nodes performance).
+    - Force the test pod onto eco_node via nodeName (bypasses scheduler, kubelet
+      runs it regardless of affinity; this lets us observe classification on a
+      node that WILL transition to eco).
+    - Then trigger frac=0: operator tries to move eco_node to eco.
+      · If pod is perf-intent  → draining=true  (guarded transition)
+      · If pod is NOT perf-intent → eco_node goes to eco directly
+    - Clean up and wait for eco_node to settle in eco before next case.
+
+    Skip cases (inherently unschedulable at the scheduler level) are run with
+    frac=0 to verify the scheduler rejects them; classification is moot.
+    """
     log("IT-CLS-*")
     # name, affinity, expect_perf, selector, force_node_name, expect_apply_ok
     cases: list[tuple[str, str, bool, dict[str, str] | None, bool, bool]] = [
@@ -1028,73 +1126,121 @@ def test_classification_matrix(ctx: Ctx) -> None:
         ("cls-24-node-name-no-constraints", "", False, None, True, True),
     ]
 
+    # Cases that are inherently unschedulable at the scheduler level.
+    # In the 2-node cluster these remain unschedulable for the same reasons:
+    #   cls-23: nodeSelector=performance conflicts with required affinity In[eco]
+    #   cls-14-doesnotexist: required DoesNotExist on power-profile while both
+    #                        nodes carry the label (operator assigns it).
+    skip_running_validation = {
+        "cls-23-selector-plus-eco-required",
+        "cls-14-doesnotexist-profile-key",
+    }
+
+    # Cases that require the eco_node to be in eco BEFORE the pod can schedule.
+    # These cannot use the nodeName bypass because k3s 1.34+ enforces nodeAffinity
+    # at the kubelet level even for nodeName pods.  Strategy: set frac=0 first,
+    # wait for eco_node to become eco, then apply and verify the pod runs and the
+    # node stays eco (confirming the pod is not classified as perf-intent).
+    eco_first_cases = {
+        "cls-12-in-eco-only",
+    }
+
     for name, affinity, expect_perf, selector, force_node_name, expect_apply_ok in cases:
         delete_pod("joulie-it", name)
-        set_static_hp_frac("0")
-        wait_node_eco_ready(ctx.node)
 
-        # These cases are logically unschedulable in this single-node setup under
-        # the matrix's default eco supply:
-        # - cls-23: nodeSelector=performance + required affinity In[eco]
-        # - cls-14-doesnotexist: required DoesNotExist on power-profile while node is labeled
-        # Keep them as scheduler/classification edge checks, but don't require Running.
-        skip_running_validation = name in {
-            "cls-23-selector-plus-eco-required",
-            "cls-14-doesnotexist-profile-key",
-        }
+        # ── Cases where Kubernetes may outright reject the manifest ──────────
+        if not expect_apply_ok:
+            set_static_hp_frac("0")
+            wait_node_eco_ready(ctx.eco_node)
+            manifest = mk_pod_yaml(name, affinity=affinity, node_selector=selector)
+            out = kubectl(["apply", "-f", "-"], stdin=manifest, check=False, capture=True)
+            if out.returncode != 0:
+                # k8s rejected it (expected); eco_node stays eco.
+                wait_node_eco_ready(ctx.eco_node)
+                continue
+            # k8s accepted despite empty values; treat as non-perf-intent.
+            wait_pod_phase("joulie-it", name, "Running")
+            wait_node_eco_ready(ctx.eco_node)
+            delete_pod("joulie-it", name)
+            wait_node_eco_ready(ctx.eco_node)
+            continue
 
-        # For perf-intent cases that should be runnable in this single-node matrix,
-        # temporarily expose performance supply so scheduler/kubelet can admit them.
-        if expect_perf and not skip_running_validation:
-            kubectl(["label", "node", ctx.node, "joulie.io/power-profile=performance", "--overwrite"])
-        else:
-            kubectl(["label", "node", ctx.node, "joulie.io/power-profile=eco", "--overwrite"])
+        # ── Cases that are inherently unschedulable ──────────────────────────
+        if name in skip_running_validation:
+            set_static_hp_frac("0")
+            wait_node_eco_ready(ctx.eco_node)
+            manifest = mk_pod_yaml(name, affinity=affinity, node_selector=selector)
+            kubectl(["apply", "-f", "-"], stdin=manifest)
+            wait_pod_pending("joulie-it", name)
+            wait_pod_unschedulable_reason("joulie-it", name, "affinity")
+            delete_pod("joulie-it", name)
+            wait_node_eco_ready(ctx.eco_node)
+            continue
 
-        node_name = ctx.node if (force_node_name and not skip_running_validation) else ""
+        # ── Cases requiring eco_node to be eco before the pod can schedule ──
+        # k3s 1.34+ enforces nodeAffinity at the kubelet level even for nodeName
+        # pods, so we cannot force an In[eco] pod onto a performance node.
+        # Set frac=0 first, wait for eco transition, then apply normally.
+        if name in eco_first_cases:
+            set_static_hp_frac("0")
+            wait_node_eco_ready(ctx.eco_node)
+            manifest = mk_pod_yaml(name, affinity=affinity, node_selector=selector)
+            kubectl(["apply", "-f", "-"], stdin=manifest)
+            wait_pod_phase("joulie-it", name, "Running")
+            wait_node_eco_ready(ctx.eco_node)
+            delete_pod("joulie-it", name)
+            wait_node_eco_ready(ctx.eco_node)
+            continue
+
+        # ── Normal classification cases ──────────────────────────────────────
+        # Start with eco_node in performance (frac=1 → both nodes performance).
+        set_static_hp_frac("1")
+        wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
+        wait_node_draining_false(ctx.eco_node)
+
+        # Force pod to eco_node via nodeName when requested.
+        # nodeName bypasses the scheduler so kubelet runs the pod regardless of
+        # affinity; this lets us observe the operator's classification response
+        # on the node that will be targeted for eco.
+        # For cases without force_node_name the pod floats freely (best-effort,
+        # preferred-only, unrelated-required); classification is still checked
+        # via eco_node's state after frac=0.
+        node_name = ctx.eco_node if force_node_name else ""
         manifest = mk_pod_yaml(name, affinity=affinity, node_name=node_name, node_selector=selector)
         out = kubectl(["apply", "-f", "-"], stdin=manifest, check=False, capture=True)
-        if not expect_apply_ok:
-            # Kubernetes should reject empty values for In/NotIn, but behavior can vary.
-            # If rejected, classification cannot apply and draining must stay false.
-            if out.returncode != 0:
-                wait_node_eco_ready(ctx.node)
-                continue
         if out.returncode != 0:
             err = (out.stderr or out.stdout or "").strip()
             raise AssertionError(f"{name}: apply failed unexpectedly: {err}")
 
-        if skip_running_validation:
-            wait_pod_pending("joulie-it", name)
-            wait_pod_unschedulable_reason("joulie-it", name, "affinity")
-            delete_pod("joulie-it", name)
-            wait_node_eco_ready(ctx.node)
-            continue
-
         wait_pod_phase("joulie-it", name, "Running")
+
+        # Trigger eco transition on eco_node.
+        set_static_hp_frac("0")
+
         if expect_perf:
-            wait_node_guarded_transition(ctx.node)
+            wait_node_guarded_transition(ctx.eco_node)
         else:
-            wait_node_eco_ready(ctx.node)
+            wait_node_eco_ready(ctx.eco_node)
+
         delete_pod("joulie-it", name)
-        wait_node_eco_ready(ctx.node)
+        wait_node_eco_ready(ctx.eco_node)
 
 
 def test_fsm_idempotency(ctx: Ctx) -> None:
     log("IT-FSM-05")
     set_static_hp_frac("1")
-    wait_node_label(ctx.node, "joulie.io/power-profile", "performance")
-    wait_node_draining_false(ctx.node)
-    labels_before = get_node_labels(ctx.node)
-    rv_before = get_node_resource_version(ctx.node)
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
+    wait_node_draining_false(ctx.eco_node)
+    labels_before = get_node_labels(ctx.eco_node)
+    rv_before = get_node_resource_version(ctx.eco_node)
     # Reconcile interval is 5s in test install; wait >2 cycles.
     time.sleep(12)
-    labels_after = get_node_labels(ctx.node)
-    rv_after = get_node_resource_version(ctx.node)
+    labels_after = get_node_labels(ctx.eco_node)
+    rv_after = get_node_resource_version(ctx.eco_node)
     if labels_before.get("joulie.io/power-profile") != labels_after.get("joulie.io/power-profile"):
         raise AssertionError("power-profile label flapped across idle reconciles")
     if labels_after.get("joulie.io/draining", "false") != "false":
         raise AssertionError("draining label should remain false in steady performance mode")
-    # Best effort idempotency check: node object should not churn without changes.
     if rv_before != rv_after:
         raise AssertionError(f"node resourceVersion changed without requested state change: {rv_before} -> {rv_after}")
 
