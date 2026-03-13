@@ -179,6 +179,7 @@ If percentage intent cannot be converted to watts (for example missing RAPL rang
 &lt;li&gt;&lt;code&gt;eco&lt;/code&gt; demand:
 &lt;ul&gt;
 &lt;li&gt;pod requires &lt;code&gt;joulie.io/power-profile=eco&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;advanced pattern: also exclude &lt;code&gt;joulie.io/draining=true&lt;/code&gt; with &lt;code&gt;NotIn [&amp;quot;true&amp;quot;]&lt;/code&gt;&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;li&gt;&lt;code&gt;general&lt;/code&gt; demand:
@@ -376,21 +377,11 @@ the agent is the component that turns that intent into concrete control actions.
 &lt;p&gt;Policy demand classification is derived from pod scheduling constraints on &lt;code&gt;joulie.io/power-profile&lt;/code&gt;:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;&lt;code&gt;performance-only&lt;/code&gt;: pod excludes eco in required scheduling constraints.&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;eco-only&lt;/code&gt;: pod can run only on &lt;code&gt;eco&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;eco-only&lt;/code&gt;: pod can run only on &lt;code&gt;eco&lt;/code&gt;; advanced eco-only placement should also exclude &lt;code&gt;joulie.io/draining=true&lt;/code&gt;.&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;general&lt;/code&gt; (implicit unconstrained): no explicit power-profile constraint, or both profiles allowed.&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id="shared-reconcile-flow"&gt;Shared Reconcile Flow&lt;/h2&gt;
-&lt;p&gt;Each reconcile tick:&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;Select eligible nodes from &lt;code&gt;NODE_SELECTOR&lt;/code&gt;, excluding reserved and unschedulable nodes.&lt;/li&gt;
-&lt;li&gt;Build a hardware view from &lt;code&gt;NodeHardware&lt;/code&gt; when available, otherwise from node labels/inventory fallback.&lt;/li&gt;
-&lt;li&gt;Sort eligible nodes by normalized compute density (highest first).&lt;/li&gt;
-&lt;li&gt;Preserve at least one performance-capable node per discovered hardware family whenever the requested HP count allows it.&lt;/li&gt;
-&lt;li&gt;Build a desired plan with the selected policy.&lt;/li&gt;
-&lt;li&gt;Apply downgrade guard (sets &lt;code&gt;draining=true&lt;/code&gt; while blocking pods still run).&lt;/li&gt;
-&lt;li&gt;Write &lt;code&gt;NodePowerProfile&lt;/code&gt; and update node labels (&lt;code&gt;joulie.io/power-profile&lt;/code&gt;, &lt;code&gt;joulie.io/draining&lt;/code&gt;).&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;In other words, policies still decide &lt;em&gt;how many&lt;/em&gt; high-performance nodes are needed, but the density-aware ordering influences &lt;em&gt;which&lt;/em&gt; nodes get those assignments.&lt;/p&gt;</description></item><item><title>Simulator Metrics</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-31/docs/simulator/metrics/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-31/docs/simulator/metrics/</guid><description>&lt;p&gt;This page documents Prometheus metrics exposed by the simulator (&lt;code&gt;simulator/cmd/simulator/main.go&lt;/code&gt;).&lt;/p&gt;
+&lt;p&gt;Each reconcile tick:&lt;/p&gt;</description></item><item><title>Simulator Metrics</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-31/docs/simulator/metrics/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-31/docs/simulator/metrics/</guid><description>&lt;p&gt;This page documents Prometheus metrics exposed by the simulator (&lt;code&gt;simulator/cmd/simulator/main.go&lt;/code&gt;).&lt;/p&gt;
 &lt;p&gt;Endpoint:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;path: &lt;code&gt;/metrics&lt;/code&gt;&lt;/li&gt;
