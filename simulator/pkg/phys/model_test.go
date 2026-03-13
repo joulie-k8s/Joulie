@@ -59,3 +59,19 @@ func TestGPUThroughputClassSensitivity(t *testing.T) {
 		t.Fatalf("expected memory-bound throughput to degrade less: memory=%f compute=%f", memory, compute)
 	}
 }
+
+func TestCPUThroughputIOBoundDegradesLessThanCompute(t *testing.T) {
+	m := MeasuredCurveCPUModel{
+		Points: []hw.PowerPoint{
+			{LoadPct: 0, PowerW: 100},
+			{LoadPct: 50, PowerW: 300},
+			{LoadPct: 100, PowerW: 700},
+		},
+		Knee: 0.7,
+	}
+	compute := m.ThroughputMultiplier(DeviceState{FreqScale: 0.5, Class: "cpu.compute_bound"}, "cpu.compute_bound")
+	ioBound := m.ThroughputMultiplier(DeviceState{FreqScale: 0.5, Class: "cpu.io_bound"}, "cpu.io_bound")
+	if ioBound <= compute {
+		t.Fatalf("expected io-bound throughput to degrade less: io=%f compute=%f", ioBound, compute)
+	}
+}

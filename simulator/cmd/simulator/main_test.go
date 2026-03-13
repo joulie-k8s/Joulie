@@ -390,6 +390,49 @@ func TestInitWorkloadEngineFromTraceRejectsNonIntegerGPURequest(t *testing.T) {
 	}
 }
 
+func TestInitWorkloadEngineFromTraceParsesWorkloadProfile(t *testing.T) {
+	trace := `{"type":"job","jobId":"profiled","submitTimeOffsetSec":0,"podTemplate":{"requests":{"cpu":"2","nvidia.com/gpu":"1"}},"workloadClass":{"cpu":"cpu.io_bound","gpu":"gpu.memory_bound"},"workloadProfile":{"cpuUtilization":0.25,"gpuUtilization":0.7,"memoryIntensity":0.8,"ioIntensity":0.9,"cpuFeedIntensityGpu":0.6}}`
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	if err := os.WriteFile(path, []byte(trace), 0o644); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+	if err := s.initWorkloadEngineFromTrace(path); err != nil {
+		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	}
+	job := s.workload.jobs[0]
+	if job.CPUUtilTarget != 0.25 || job.GPUUtilTarget != 0.7 || job.MemoryIntensity != 0.8 || job.IOIntensity != 0.9 || job.CPUFeedIntensity != 0.6 {
+		t.Fatalf("unexpected job profile: %+v", job)
+	}
+	if job.CPUWorkClass != "cpu.io_bound" || job.GPUWorkClass != "gpu.memory_bound" {
+		t.Fatalf("unexpected job classes: %+v", job)
+	}
+}
+
+func TestThrottleImpactHelpers(t *testing.T) {
+	compute := &simJob{CPUUtilTarget: 0.95, MemoryIntensity: 0.1, IOIntensity: 0.05, SensitivityCPU: 1.0}
+	ioBound := &simJob{CPUUtilTarget: 0.2, MemoryIntensity: 0.2, IOIntensity: 0.95, SensitivityCPU: 1.0}
+	computeFactor := cpuThrottleImpactFactor(0.5, compute)
+	ioFactor := cpuThrottleImpactFactor(0.5, ioBound)
+	if ioFactor <= computeFactor {
+		t.Fatalf("expected io-bound helper to degrade less: io=%f compute=%f", ioFactor, computeFactor)
+	}
+
+	gpuFed := &simJob{CPUFeedIntensity: 0.8, SensitivityCPU: 1.0}
+	gpuLoose := &simJob{CPUFeedIntensity: 0.2, SensitivityCPU: 1.0}
+	fedFactor := cpuFeedThrottleFactor(0.5, gpuFed)
+	looseFactor := cpuFeedThrottleFactor(0.5, gpuLoose)
+	if fedFactor >= looseFactor {
+		t.Fatalf("expected stronger cpu feed dependence to degrade more: fed=%f loose=%f", fedFactor, looseFactor)
+	}
+}
+
 func TestEnvHelpers(t *testing.T) {
 	t.Setenv("SIM_BOOL", "true")
 	t.Setenv("SIM_FLOAT", "12.5")

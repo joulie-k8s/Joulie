@@ -29,8 +29,17 @@ So agent/operator logic depends on provider interfaces, not directly on sysfs or
 
 Conceptually:
 
+- `NodeHardware` defines discovered node capability
 - `NodePowerProfile` defines the target
 - `TelemetryProfile` defines the wiring
+
+`TelemetryProfile` should not carry hardware identity.
+Its job is only backend routing.
+In particular:
+
+- do not use `TelemetryProfile` to describe CPU/GPU model or inventory identity,
+- do not hand-author it as a substitute for `NodeHardware`,
+- do use it to route simulator HTTP or host backends.
 
 ## Telemetry provider model
 
@@ -145,6 +154,7 @@ Current deployment convention mounts host `/sys` into container `/host-sys`.
 
 Current runtime responsibilities:
 
+- agent publishes `NodeHardware` for discovered hardware/capability state,
 - operator writes `NodePowerProfile` targets,
 - agent reads `NodePowerProfile` for desired state,
 - agent reads node-scoped `TelemetryProfile` for source/control routing,

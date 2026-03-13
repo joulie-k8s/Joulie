@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Generate KWOK node manifests and simulator node classes from a spreadsheet/CSV inventory.
+"""Generate KWOK node manifests, optional simulator overrides, and a compositional hardware catalog.
 
 Input columns expected (case-insensitive):
 - node_name
 - vendor (nvidia|amd|none)
 - product
 - cpu
+- cpu_sockets
 - memory_gib
 - gpu_count
 - gpu_min_cap_watts
@@ -69,6 +70,10 @@ def make_kwok_node(row: dict[str, str]) -> str:
     labels = [
         '    type: kwok',
         '    joulie.io/managed: "true"',
+        f'    joulie.io/hw.cpu-model: "{norm(row, "cpu")}"' if norm(row, "cpu") else None,
+        f'    joulie.io/hw.cpu-sockets: "{norm(row, "cpu_sockets", "2")}"',
+        f'    joulie.io/hw.gpu-model: "{product}"' if product else None,
+        f'    joulie.io/hw.gpu-count: "{gpu_count}"',
         f'    joulie.io/gpu.product: "{product}"' if product else None,
     ]
     alloc_gpu_lines: list[str] = []
@@ -150,8 +155,34 @@ def make_class_rows(rows: list[dict[str, str]]) -> str:
 
 
 def make_catalog_rows(rows: list[dict[str, str]]) -> str:
+    cpu_models: OrderedDict[str, dict[str, str]] = OrderedDict()
     gpu_models: OrderedDict[str, dict[str, str]] = OrderedDict()
-    out = ["catalogVersion: v1", "gpuModels:"]
+    out = ["catalogVersion: v1", "cpuModels:"]
+    for row in rows:
+        cpu = norm(row, "cpu")
+        if not cpu or cpu in cpu_models:
+            continue
+        vendor = "amd" if "amd" in cpu.lower() else "intel" if "intel" in cpu.lower() or "xeon" in cpu.lower() else ""
+        cpu_models[cpu] = {
+            "vendor": vendor,
+            "cores": norm(row, "cpu", "").split(" ")[-2] if "Core" in cpu else "",
+        }
+    for cpu, item in cpu_models.items():
+        key = cpu.replace("-", "_").replace(" ", "_").replace("(R)", "").replace("__", "_")
+        out.extend(
+            [
+                f"  {key}:",
+                f'    aliases: ["{cpu}"]',
+                "    provenance: generated-from-inventory",
+                "    official:",
+                f'      vendor: {item["vendor"] or "unknown"}',
+                "      baseGHz: 2.0",
+                "      boostGHz: 3.0",
+                "      tdpW: 300",
+            ]
+        )
+    out.append("")
+    out.append("gpuModels:")
     for row in rows:
         vendor = norm(row, "vendor", "none").lower()
         product = norm(row, "product")
@@ -167,6 +198,7 @@ def make_catalog_rows(rows: list[dict[str, str]]) -> str:
         out.extend(
             [
                 f"  {product.replace('-', '_').replace(' ', '_')}:",
+                f'    aliases: ["{product}"]',
                 "    provenance: generated-from-inventory",
                 "    official:",
                 f'      vendor: {item["vendor"]}',

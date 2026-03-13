@@ -10,10 +10,12 @@ This document defines the Joulie simulator design and how it integrates with Jou
 
 The simulator extends the same control path used on real nodes:
 
-1. Operator writes desired node profile (`NodePowerProfile`).
-2. Agent reads desired state and sends control intents.
-3. Simulator emulates telemetry/control behavior per node and exposes HTTP endpoints.
-4. Next reconcile loop reacts to updated simulated state.
+1. Node labels define simulated hardware identity.
+2. Operator resolves hardware from `NodeHardware` when available, otherwise from labels/inventory fallback.
+3. Operator writes desired node profile (`NodePowerProfile`).
+4. Agent reads desired state and sends control intents.
+5. Simulator emulates telemetry/control behavior per node and exposes HTTP endpoints.
+6. Next reconcile loop reacts to updated simulated state.
 
 <img src='{{< relURL "images/joulie-arch-simulator.png" >}}' alt="Joulie simulator architecture overview">
 
@@ -109,6 +111,25 @@ In simulator mode:
 - `spec.sources.cpu.type=http` -> agent reads `/telemetry/{node}`.
 - `spec.controls.cpu.type=http` -> agent writes `/control/{node}`.
 - `spec.controls.gpu.type=http` -> agent writes GPU power-cap intents to `/control/{node}`.
+
+### `NodeHardware` (what the node is)
+
+- Published automatically by the agent when available.
+- Describes discovered CPU/GPU identity and control capability.
+- Not normally authored by hand in simulator examples.
+
+For simulator bootstrap, node labels remain the lightweight source of hardware identity.
+`NodeHardware` is the normalized, observable view of that identity once the agent is running.
+
+The most useful bootstrap labels are:
+
+- `joulie.io/hw.cpu-model`
+- `joulie.io/hw.cpu-sockets`
+- `joulie.io/hw.gpu-model`
+- `joulie.io/hw.gpu-count`
+- vendor presence labels such as `feature.node.kubernetes.io/pci-10de.present=true` or `feature.node.kubernetes.io/pci-1002.present=true`
+
+The operator can also infer GPU presence from allocatable extended resources like `nvidia.com/gpu` or `amd.com/gpu`.
 
 ## Simulator HTTP API
 

@@ -12,14 +12,16 @@ import (
 )
 
 type jobRecord struct {
-	Type                string         `json:"type"`
-	SchemaVersion       string         `json:"schemaVersion"`
-	JobID               string         `json:"jobId"`
-	SubmitTimeOffsetSec float64        `json:"submitTimeOffsetSec"`
-	Namespace           string         `json:"namespace"`
-	PodTemplate         podTemplateRec `json:"podTemplate"`
-	Work                workRec        `json:"work"`
-	Sensitivity         sensitivityRec `json:"sensitivity"`
+	Type                string             `json:"type"`
+	SchemaVersion       string             `json:"schemaVersion"`
+	JobID               string             `json:"jobId"`
+	SubmitTimeOffsetSec float64            `json:"submitTimeOffsetSec"`
+	Namespace           string             `json:"namespace"`
+	PodTemplate         podTemplateRec     `json:"podTemplate"`
+	Work                workRec            `json:"work"`
+	Sensitivity         sensitivityRec     `json:"sensitivity"`
+	WorkloadClass       workloadClass      `json:"workloadClass"`
+	WorkloadProfile     workloadProfileRec `json:"workloadProfile"`
 }
 
 type podTemplateRec struct {
@@ -35,6 +37,19 @@ type workRec struct {
 type sensitivityRec struct {
 	CPU float64 `json:"cpu"`
 	GPU float64 `json:"gpu"`
+}
+
+type workloadClass struct {
+	CPU string `json:"cpu,omitempty"`
+	GPU string `json:"gpu,omitempty"`
+}
+
+type workloadProfileRec struct {
+	CPUUtilization      float64 `json:"cpuUtilization,omitempty"`
+	GPUUtilization      float64 `json:"gpuUtilization,omitempty"`
+	MemoryIntensity     float64 `json:"memoryIntensity,omitempty"`
+	IOIntensity         float64 `json:"ioIntensity,omitempty"`
+	CPUFeedIntensityGPU float64 `json:"cpuFeedIntensityGpu,omitempty"`
 }
 
 func main() {
@@ -99,9 +114,12 @@ func main() {
 		units := cpuUnitsMin + rng.Float64()*(cpuUnitsMax-cpuUnitsMin)
 		gpuUnits := 0.0
 		requests := map[string]string{"cpu": fmt.Sprintf("%d", cpu), "memory": "1Gi"}
+		cpuWorkClass := randomCPUWorkClass(rng)
+		gpuWorkClass := "gpu.mixed"
 		if rng.Float64() < gpuRatio {
 			gpuUnits = gpuUnitsMin + rng.Float64()*(gpuUnitsMax-gpuUnitsMin)
 			requests["nvidia.com/gpu"] = strconv.FormatFloat(gpuRequestPerJob, 'f', -1, 64)
+			gpuWorkClass = randomGPUWorkClass(rng)
 		}
 		class := "general"
 		if !noAffinityOnly {
@@ -127,10 +145,97 @@ func main() {
 				CPU: 0.8 + rng.Float64()*0.2,
 				GPU: 1,
 			},
+			WorkloadClass: workloadClass{
+				CPU: cpuWorkClass,
+				GPU: gpuWorkClass,
+			},
+			WorkloadProfile: workloadProfileRec{
+				CPUUtilization:      defaultCPUUtilization(cpuWorkClass, rng),
+				GPUUtilization:      defaultGPUUtilization(gpuWorkClass, gpuUnits > 0, rng),
+				MemoryIntensity:     defaultMemoryIntensity(cpuWorkClass, gpuWorkClass, rng),
+				IOIntensity:         defaultIOIntensity(cpuWorkClass, rng),
+				CPUFeedIntensityGPU: defaultCPUFeedIntensity(gpuUnits > 0, rng),
+			},
 		}
 		b, _ := json.Marshal(rec)
 		_, _ = w.Write(append(b, '\n'))
 	}
+}
+
+func randomCPUWorkClass(rng *rand.Rand) string {
+	p := rng.Float64()
+	switch {
+	case p < 0.45:
+		return "cpu.compute_bound"
+	case p < 0.75:
+		return "cpu.memory_bound"
+	case p < 0.90:
+		return "cpu.io_bound"
+	default:
+		return "cpu.mixed"
+	}
+}
+
+func randomGPUWorkClass(rng *rand.Rand) string {
+	if rng.Float64() < 0.7 {
+		return "gpu.compute_bound"
+	}
+	if rng.Float64() < 0.85 {
+		return "gpu.memory_bound"
+	}
+	return "gpu.mixed"
+}
+
+func defaultCPUUtilization(class string, rng *rand.Rand) float64 {
+	switch class {
+	case "cpu.compute_bound":
+		return 0.85 + rng.Float64()*0.12
+	case "cpu.memory_bound":
+		return 0.45 + rng.Float64()*0.25
+	case "cpu.io_bound":
+		return 0.10 + rng.Float64()*0.20
+	default:
+		return 0.45 + rng.Float64()*0.35
+	}
+}
+
+func defaultGPUUtilization(class string, hasGPU bool, rng *rand.Rand) float64 {
+	if !hasGPU {
+		return 0
+	}
+	switch class {
+	case "gpu.compute_bound":
+		return 0.85 + rng.Float64()*0.12
+	case "gpu.memory_bound":
+		return 0.55 + rng.Float64()*0.20
+	default:
+		return 0.60 + rng.Float64()*0.25
+	}
+}
+
+func defaultMemoryIntensity(cpuClass, gpuClass string, rng *rand.Rand) float64 {
+	switch {
+	case cpuClass == "cpu.memory_bound" || gpuClass == "gpu.memory_bound":
+		return 0.75 + rng.Float64()*0.20
+	case cpuClass == "cpu.io_bound":
+		return 0.20 + rng.Float64()*0.20
+	default:
+		return 0.35 + rng.Float64()*0.35
+	}
+}
+
+func defaultIOIntensity(cpuClass string, rng *rand.Rand) float64 {
+	if cpuClass == "cpu.io_bound" {
+		return 0.75 + rng.Float64()*0.20
+	}
+	return 0.05 + rng.Float64()*0.20
+}
+
+func defaultCPUFeedIntensity(hasGPU bool, rng *rand.Rand) float64 {
+	if !hasGPU {
+		return 0
+	}
+	return 0.20 + rng.Float64()*0.50
 }
 
 func affinityForClass(class string) map[string]any {

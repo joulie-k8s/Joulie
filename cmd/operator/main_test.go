@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matbun/joulie/pkg/hwinv"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -64,6 +65,38 @@ func TestProfileMapping(t *testing.T) {
 	}
 	if got := assignmentState("eco", true); got != "DrainingPerformance" {
 		t.Fatalf("assignmentState draining: got=%q", got)
+	}
+}
+
+func TestSortNodesByDensityPrefersGPUHeavyNodes(t *testing.T) {
+	t.Parallel()
+	nodes := []string{"cpu-node", "gpu-node", "mixed-node"}
+	hw := map[string]NodeHardware{
+		"cpu-node":   {CPUComputeDensity: 500, GPUComputeDensity: 0},
+		"gpu-node":   {CPUComputeDensity: 300, GPUComputeDensity: 2400},
+		"mixed-node": {CPUComputeDensity: 700, GPUComputeDensity: 700},
+	}
+	sortNodesByDensity(nodes, hw)
+	if nodes[0] != "gpu-node" {
+		t.Fatalf("unexpected order: %#v", nodes)
+	}
+}
+
+func TestComputeInventoryGPUCapUsesCatalogFallback(t *testing.T) {
+	t.Parallel()
+	cat, err := hwinv.LoadDefaultCatalog()
+	if err != nil {
+		t.Fatalf("LoadDefaultCatalog: %v", err)
+	}
+	abs, ok := computeInventoryGPUCap(profileEco, NodeHardware{
+		GPURawModel: "NVIDIA-L40S",
+		GPUCount:    4,
+	}, cat, 100, 60)
+	if !ok {
+		t.Fatalf("expected catalog-based cap resolution")
+	}
+	if abs < 200 || abs > 350 {
+		t.Fatalf("unexpected absolute cap: %v", abs)
 	}
 }
 

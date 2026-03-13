@@ -24,9 +24,13 @@ Policy demand classification is derived from pod scheduling constraints on `joul
 Each reconcile tick:
 
 1. Select eligible nodes from `NODE_SELECTOR`, excluding reserved and unschedulable nodes.
-2. Build a desired plan with the selected policy.
-3. Apply downgrade guard (sets `draining=true` while blocking pods still run).
-4. Write `NodePowerProfile` and update node labels (`joulie.io/power-profile`, `joulie.io/draining`).
+2. Build a hardware view from `NodeHardware` when available, otherwise from node labels/inventory fallback.
+3. Sort eligible nodes by normalized compute density (highest first).
+4. Build a desired plan with the selected policy.
+5. Apply downgrade guard (sets `draining=true` while blocking pods still run).
+6. Write `NodePowerProfile` and update node labels (`joulie.io/power-profile`, `joulie.io/draining`).
+
+In other words, policies still decide *how many* high-performance nodes are needed, but the density-aware ordering influences *which* nodes get those assignments.
 
 ## `static_partition`
 
@@ -41,8 +45,9 @@ Algorithm:
 
 1. `hp_count = round(N * STATIC_HP_FRAC)`.
 2. Clamp `hp_count` to `[0, N]`.
-3. Sort eligible nodes lexicographically.
-4. First `hp_count` nodes -> `performance`; remaining -> `eco`.
+3. Sort eligible nodes by compute density descending.
+4. Break ties lexicographically.
+5. First `hp_count` nodes -> `performance`; remaining -> `eco`.
 
 Properties:
 
@@ -69,14 +74,16 @@ Algorithm:
 3. `hp_count = max(base, need)`.
 4. Clamp `hp_count` to `[QUEUE_HP_MIN, QUEUE_HP_MAX]`.
 5. Clamp again to `[0, N]`.
-6. Sort nodes lexicographically.
-7. First `hp_count` nodes -> `performance`; remaining -> `eco`.
+6. Sort nodes by compute density descending.
+7. Break ties lexicographically.
+8. First `hp_count` nodes -> `performance`; remaining -> `eco`.
 
 Properties:
 
 - deterministic for a fixed `(N, P)`,
 - monotonic in pressure `P`,
-- bounded by min/max limits.
+- bounded by min/max limits,
+- heterogeneous-aware because denser nodes are preferred first.
 
 ## `rule_swap_v1` (debug policy)
 

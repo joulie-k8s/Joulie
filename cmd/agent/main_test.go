@@ -62,7 +62,7 @@ func TestDiscoverHardwareGPUVendors(t *testing.T) {
 		"feature.node.kubernetes.io/pci-0300_10de.present": "true",
 		"feature.node.kubernetes.io/pci-0302_1002.present": "true",
 	}
-	hw := discoverHardware(labels)
+	hw := discoverHardwareFromLabels(labels)
 	if hw.CPUVendor != "GenuineIntel" {
 		t.Fatalf("cpu vendor got=%q", hw.CPUVendor)
 	}
@@ -764,6 +764,7 @@ func TestReconcileOnceNoProfileWritesNoneStatus(t *testing.T) {
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		profileNodeGVR:   "NodePowerProfileList",
 		telemetryNodeGVR: "TelemetryProfileList",
+		nodeHardwareGVR:  "NodeHardwareList",
 	},
 		&unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "joulie.io/v1alpha1",
@@ -791,6 +792,13 @@ func TestReconcileOnceNoProfileWritesNoneStatus(t *testing.T) {
 	if backend != "none" || result != "none" {
 		t.Fatalf("unexpected status backend=%q result=%q", backend, result)
 	}
+	hwObj, err := dyn.Resource(nodeHardwareGVR).Get(context.Background(), "node-a", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get nodehardware: %v", err)
+	}
+	if got, _, _ := unstructured.NestedString(hwObj.Object, "spec", "nodeName"); got != nodeName {
+		t.Fatalf("unexpected nodehardware nodeName=%q", got)
+	}
 }
 
 func TestReconcileOnceSimulateOnlyWritesAppliedStatus(t *testing.T) {
@@ -807,6 +815,7 @@ func TestReconcileOnceSimulateOnlyWritesAppliedStatus(t *testing.T) {
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		profileNodeGVR:   "NodePowerProfileList",
 		telemetryNodeGVR: "TelemetryProfileList",
+		nodeHardwareGVR:  "NodeHardwareList",
 	},
 		&unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "joulie.io/v1alpha1",

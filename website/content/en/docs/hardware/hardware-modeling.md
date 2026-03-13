@@ -63,6 +63,39 @@ Proxy entries are explicitly marked as such in the hardware catalog.
 
 ## 3. Hardware inventory currently modeled
 
+The inventory is now **compositional** rather than node-class-only.
+
+It is organized around reusable:
+
+- CPU model entries
+- GPU model entries
+
+Nodes are then understood as:
+
+- discovered CPU model + count
+- discovered GPU model + count
+
+This is used consistently by:
+
+- the agent, which discovers raw hardware facts,
+- the operator, which resolves those facts against the inventory,
+- the simulator, which composes node models from the same CPU/GPU entries.
+
+In the codebase, the shared inventory shape lives in:
+
+- `pkg/hwinv/catalog.go`
+- embedded catalog data under `pkg/hwinv/assets/hardware.yaml`
+
+The simulator also keeps its source catalog in:
+
+- `simulator/catalog/hardware.yaml`
+
+Matching is alias-based and normalization-based:
+
+- raw model names discovered by the agent or provided by simulator labels are normalized,
+- then matched against canonical CPU/GPU inventory keys and aliases,
+- and unresolved subsystems fall back independently to generic modeling or no-throttle behavior, depending on what capability exists.
+
 The heterogeneous cluster inventory currently targeted includes:
 
 ### GPU-equipped nodes
@@ -81,11 +114,13 @@ The heterogeneous cluster inventory currently targeted includes:
 
 Joulie does **not** require every simulated platform to be present in the catalog.
 
-Today, the simulator resolves hardware in this order:
+Today, hardware is resolved in this order:
 
-1. start from a generic base model loaded from simulator env vars,
-2. apply any matching node-class overrides from `SIM_NODE_CLASS_CONFIG`,
-3. enrich the resulting model from the hardware catalog when the node class exists in `SIM_HARDWARE_CATALOG_PATH`.
+1. discover or provide raw CPU/GPU hardware facts,
+2. match those facts against the inventory when possible,
+3. start from a generic base model when exact inventory coverage is missing,
+4. apply any explicit simulator overrides from `SIM_NODE_CLASS_CONFIG`,
+5. enrich with measured or proxy catalog data where available.
 
 If the platform is not in the inventory described on this page, the system still works.
 What changes is the level of realism and how much hardware-specific information is available:

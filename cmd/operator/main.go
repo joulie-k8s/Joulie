@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/matbun/joulie/pkg/hwinv"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	corev1 "k8s.io/api/core/v1"
@@ -29,6 +30,7 @@ import (
 )
 
 var profileGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodepowerprofiles"}
+var nodeHardwareGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
 
 const (
 	powerProfileLabelKey  = "joulie.io/power-profile"
@@ -65,6 +67,29 @@ type GPUModelCaps struct {
 	MaxCapWatts float64 `json:"maxCapWatts"`
 }
 
+type NodeHardware struct {
+	Name                string
+	NodeName            string
+	CPUModel            string
+	CPURawModel         string
+	CPUSockets          int
+	CPUTotalCores       int
+	GPUModel            string
+	GPURawModel         string
+	GPUCount            int
+	CPUCapMinWatts      float64
+	CPUCapMaxWatts      float64
+	CPUCapKnown         bool
+	GPUCapMinWatts      float64
+	GPUCapMaxWatts      float64
+	GPUCapKnown         bool
+	CPUControlAvailable bool
+	GPUControlAvailable bool
+	CPUComputeDensity   float64
+	GPUComputeDensity   float64
+	Warnings            []string
+}
+
 var (
 	gpuIntentWarningMu   sync.Mutex
 	gpuIntentWarningSeen = map[string]struct{}{}
@@ -89,6 +114,14 @@ var (
 			Help: "Total number of state-transition events handled by operator.",
 		},
 		[]string{"node", "from_state", "to_state", "result"},
+	)
+
+	operatorNodeDensity = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "joulie_operator_node_compute_density",
+			Help: "Normalized compute density score used by the operator for heterogeneous planning.",
+		},
+		[]string{"node", "component"},
 	)
 )
 
@@ -121,6 +154,7 @@ func main() {
 		"GPU_PRODUCT_LABEL_KEYS",
 		"joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product,amd.com/gpu.family",
 	))
+	hardwareCatalog := loadHardwareCatalog()
 
 	parsedSelector, err := labels.Parse(selector)
 	if err != nil {
@@ -143,11 +177,11 @@ func main() {
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		if err := reconcile(
+		if err := reconcileWithCatalog(
 			ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, drainingLabel, reconcileEvery,
 			perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
 			cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
-			gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys,
+			gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, hardwareCatalog,
 		); err != nil {
 			log.Printf("reconcile failed: %v", err)
 		}
@@ -157,7 +191,7 @@ func main() {
 }
 
 func startMetricsServer(addr string) {
-	prometheus.MustRegister(operatorNodeState, operatorNodeProfileLabel, operatorStateTransitions)
+	prometheus.MustRegister(operatorNodeState, operatorNodeProfileLabel, operatorStateTransitions, operatorNodeDensity)
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	go func() {
@@ -194,6 +228,41 @@ func reconcile(
 	gpuModelCaps map[string]GPUModelCaps,
 	gpuProductLabelKeys []string,
 ) error {
+	return reconcileWithCatalog(
+		ctx, kube, dyn, selector, reservedLabel, profileLabel, drainingLabel, interval,
+		perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
+		cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
+		gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, loadHardwareCatalog(),
+	)
+}
+
+func reconcileWithCatalog(
+	ctx context.Context,
+	kube kubernetes.Interface,
+	dyn dynamic.Interface,
+	selector labels.Selector,
+	reservedLabel string,
+	profileLabel string,
+	drainingLabel string,
+	interval time.Duration,
+	perfCap float64,
+	ecoCap float64,
+	policyType string,
+	staticHPFrac float64,
+	queueHPBaseFrac float64,
+	queueHPMin int,
+	queueHPMax int,
+	queuePerfPerHPNode int,
+	cpuPerfCapPct float64,
+	cpuEcoCapPct float64,
+	cpuWriteAbsolute bool,
+	gpuPerfCapPct float64,
+	gpuEcoCapPct float64,
+	gpuWriteAbsolute bool,
+	gpuModelCaps map[string]GPUModelCaps,
+	gpuProductLabelKeys []string,
+	hardwareCatalog *hwinv.Catalog,
+) error {
 	nodes, err := kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("list nodes: %w", err)
@@ -226,6 +295,30 @@ func reconcile(
 		return nil
 	}
 
+	nodeHardwareByName, err := listNodeHardware(ctx, dyn, hardwareCatalog)
+	if err != nil {
+		return fmt.Errorf("list node hardware: %w", err)
+	}
+	for _, nodeName := range eligible {
+		if _, ok := nodeHardwareByName[nodeName]; ok {
+			continue
+		}
+		if n := nodeObjs[nodeName]; n != nil {
+			nodeHardwareByName[nodeName] = nodeHardwareFromLabels(*n, hardwareCatalog, gpuProductLabelKeys)
+		}
+	}
+	sortNodesByDensity(eligible, nodeHardwareByName)
+	for _, nodeName := range eligible {
+		nh, ok := nodeHardwareByName[nodeName]
+		if !ok {
+			operatorNodeDensity.WithLabelValues(nodeName, "cpu").Set(0)
+			operatorNodeDensity.WithLabelValues(nodeName, "gpu").Set(0)
+			continue
+		}
+		operatorNodeDensity.WithLabelValues(nodeName, "cpu").Set(nh.CPUComputeDensity)
+		operatorNodeDensity.WithLabelValues(nodeName, "gpu").Set(nh.GPUComputeDensity)
+	}
+
 	plan := buildPlanByPolicy(ctx, kube, policyType, eligible, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
 	for i := range plan {
 		plan[i].SourceProfile = currentProfileOrDefault(nodesByName[plan[i].NodeName])
@@ -234,6 +327,11 @@ func reconcile(
 		plan[i].State = assignmentState(plan[i].Profile, plan[i].Draining)
 		if cpuWriteAbsolute {
 			plan[i].CPUCapPctOfMax = nil
+			if nh, ok := nodeHardwareByName[plan[i].NodeName]; ok {
+				if abs, ok := computeAbsoluteCPUCap(plan[i].Profile, nh, hardwareCatalog, perfCap, ecoCap); ok {
+					plan[i].CapWatts = abs
+				}
+			}
 		} else {
 			pct := cpuEcoCapPct
 			if plan[i].Profile == profilePerformance {
@@ -242,7 +340,7 @@ func reconcile(
 			plan[i].CPUCapPctOfMax = floatPtr(pct)
 		}
 		if n := nodeObjs[plan[i].NodeName]; n != nil {
-			plan[i].GPU = computeGPUIntentForNode(*n, plan[i].Profile, gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys)
+			plan[i].GPU = computeGPUIntentForNodeWithHardware(*n, plan[i].Profile, gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, nodeHardwareByName[plan[i].NodeName], hardwareCatalog)
 			if discoverGPUCount(*n) > 0 && plan[i].GPU == nil {
 				reason := "no GPU cap configured"
 				if plan[i].Profile == profilePerformance && gpuPerfCapPct <= 0 {
@@ -692,6 +790,63 @@ func summarizePlan(plan []NodeAssignment) string {
 	return strings.Join(parts, ",")
 }
 
+func sortNodesByDensity(nodes []string, hardwareByName map[string]NodeHardware) {
+	sort.SliceStable(nodes, func(i, j int) bool {
+		di := nodeDensityScore(hardwareByName[nodes[i]])
+		dj := nodeDensityScore(hardwareByName[nodes[j]])
+		if di == dj {
+			return nodes[i] < nodes[j]
+		}
+		return di > dj
+	})
+}
+
+func computeAbsoluteCPUCap(profile string, nh NodeHardware, catalog *hwinv.Catalog, perfCap, ecoCap float64) (float64, bool) {
+	if nh.CPUCapKnown && nh.CPUCapMaxWatts > 0 {
+		target := ecoCap
+		if profile == profilePerformance {
+			target = perfCap
+		}
+		if target < nh.CPUCapMinWatts {
+			target = nh.CPUCapMinWatts
+		}
+		if target > nh.CPUCapMaxWatts {
+			target = nh.CPUCapMaxWatts
+		}
+		return target, true
+	}
+	if catalog == nil {
+		return 0, false
+	}
+	match := catalog.MatchNode(hwinv.NodeDescriptor{
+		CPUModelRaw: nh.CPURawModel,
+		CPUSockets:  nh.CPUSockets,
+		CPUCores:    nh.CPUTotalCores,
+	})
+	if match.CPUSpec == nil {
+		return 0, false
+	}
+	maxW := match.CPUSpec.Official.TDPW
+	if nh.CPUSockets > 0 {
+		maxW *= float64(nh.CPUSockets)
+	}
+	if maxW <= 0 {
+		return 0, false
+	}
+	target := ecoCap
+	if profile == profilePerformance {
+		target = perfCap
+	}
+	if target > maxW {
+		target = maxW
+	}
+	minW := maxW * 0.55
+	if target < minW {
+		target = minW
+	}
+	return target, true
+}
+
 func computeGPUIntentForNode(
 	node corev1.Node,
 	profile string,
@@ -700,6 +855,20 @@ func computeGPUIntentForNode(
 	gpuWriteAbsolute bool,
 	gpuModelCaps map[string]GPUModelCaps,
 	gpuProductLabelKeys []string,
+) *GPUCapIntent {
+	return computeGPUIntentForNodeWithHardware(node, profile, gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, NodeHardware{}, loadHardwareCatalog())
+}
+
+func computeGPUIntentForNodeWithHardware(
+	node corev1.Node,
+	profile string,
+	gpuPerfCapPct float64,
+	gpuEcoCapPct float64,
+	gpuWriteAbsolute bool,
+	gpuModelCaps map[string]GPUModelCaps,
+	gpuProductLabelKeys []string,
+	nh NodeHardware,
+	catalog *hwinv.Catalog,
 ) *GPUCapIntent {
 	if discoverGPUCount(node) <= 0 {
 		return nil
@@ -718,27 +887,69 @@ func computeGPUIntentForNode(
 	if !gpuWriteAbsolute {
 		return intent
 	}
+	if abs, ok := computeInventoryGPUCap(profile, nh, catalog, gpuPerfCapPct, gpuEcoCapPct); ok {
+		intent.CapWattsPerGPU = floatPtr(abs)
+		return intent
+	}
 	product := resolveGPUProduct(node.Labels, gpuProductLabelKeys)
 	if product == "" {
 		return intent
 	}
-	caps, ok := gpuModelCaps[product]
-	if !ok || caps.MaxCapWatts <= 0 {
-		return intent
+	if caps, ok := gpuModelCaps[product]; ok && caps.MaxCapWatts > 0 {
+		minW := caps.MinCapWatts
+		if minW <= 0 {
+			minW = 1
+		}
+		abs := (capPct / 100.0) * caps.MaxCapWatts
+		if abs < minW {
+			abs = minW
+		}
+		if abs > caps.MaxCapWatts {
+			abs = caps.MaxCapWatts
+		}
+		intent.CapWattsPerGPU = floatPtr(abs)
 	}
-	minW := caps.MinCapWatts
+	return intent
+}
+
+func computeInventoryGPUCap(profile string, nh NodeHardware, catalog *hwinv.Catalog, gpuPerfCapPct, gpuEcoCapPct float64) (float64, bool) {
+	capPct := gpuEcoCapPct
+	if profile == profilePerformance {
+		capPct = gpuPerfCapPct
+	}
+	if capPct <= 0 {
+		return 0, false
+	}
+	if nh.GPUCapKnown && nh.GPUCapMaxWatts > 0 {
+		abs := (capPct / 100.0) * nh.GPUCapMaxWatts
+		if abs < nh.GPUCapMinWatts && nh.GPUCapMinWatts > 0 {
+			abs = nh.GPUCapMinWatts
+		}
+		if abs > nh.GPUCapMaxWatts {
+			abs = nh.GPUCapMaxWatts
+		}
+		return abs, true
+	}
+	if catalog == nil {
+		return 0, false
+	}
+	match := catalog.MatchNode(hwinv.NodeDescriptor{GPUModelRaw: nh.GPURawModel, GPUCount: nh.GPUCount})
+	if match.GPUSpec == nil || match.GPUSpec.Official.MaxBoardPowerW <= 0 {
+		return 0, false
+	}
+	maxW := match.GPUSpec.Official.MaxBoardPowerW
+	minW := match.GPUSpec.Official.MinBoardPowerW
 	if minW <= 0 {
-		minW = 1
+		minW = maxW * 0.5
 	}
-	abs := (capPct / 100.0) * caps.MaxCapWatts
+	abs := (capPct / 100.0) * maxW
 	if abs < minW {
 		abs = minW
 	}
-	if abs > caps.MaxCapWatts {
-		abs = caps.MaxCapWatts
+	if abs > maxW {
+		abs = maxW
 	}
-	intent.CapWattsPerGPU = floatPtr(abs)
-	return intent
+	return abs, true
 }
 
 func discoverGPUCount(node corev1.Node) int64 {
@@ -788,6 +999,186 @@ func parseCSVList(in string) []string {
 		}
 	}
 	return out
+}
+
+func loadHardwareCatalog() *hwinv.Catalog {
+	path := strings.TrimSpace(os.Getenv("HARDWARE_CATALOG_PATH"))
+	if path == "" {
+		path = "simulator/catalog/hardware.yaml"
+	}
+	cat, err := hwinv.LoadCatalog(path)
+	if err != nil {
+		log.Printf("warning: failed to load hardware catalog path=%s err=%v", path, err)
+		return nil
+	}
+	return cat
+}
+
+func listNodeHardware(ctx context.Context, dyn dynamic.Interface, catalog *hwinv.Catalog) (out map[string]NodeHardware, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("warning: nodehardware resource unavailable in dynamic client: %v", r)
+			out = map[string]NodeHardware{}
+			err = nil
+		}
+	}()
+	ul, err := dyn.Resource(nodeHardwareGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return map[string]NodeHardware{}, nil
+		}
+		return nil, err
+	}
+	out = make(map[string]NodeHardware, len(ul.Items))
+	for _, item := range ul.Items {
+		nh := parseNodeHardware(item)
+		if catalog != nil {
+			match := catalog.MatchNode(hwinv.NodeDescriptor{
+				CPUModelRaw: nh.CPURawModel,
+				CPUSockets:  nh.CPUSockets,
+				CPUCores:    nh.CPUTotalCores,
+				GPUModelRaw: nh.GPURawModel,
+				GPUCount:    nh.GPUCount,
+			})
+			if match.CPUSpec != nil {
+				nh.CPUModel = match.CPUKey
+				nh.CPUComputeDensity = computeCPUNodeDensity(*match.CPUSpec, nh.CPUSockets, nh.CPUTotalCores)
+			}
+			if match.GPUSpec != nil {
+				nh.GPUModel = match.GPUKey
+				nh.GPUComputeDensity = computeGPUNodeDensity(*match.GPUSpec, nh.GPUCount)
+			}
+			nh.Warnings = append(nh.Warnings, match.Warnings...)
+		}
+		out[nh.NodeName] = nh
+	}
+	return out, nil
+}
+
+func parseNodeHardware(u unstructured.Unstructured) NodeHardware {
+	nh := NodeHardware{Name: u.GetName()}
+	nh.NodeName, _, _ = unstructured.NestedString(u.Object, "spec", "nodeName")
+	nh.CPUModel, _, _ = unstructured.NestedString(u.Object, "status", "cpu", "model")
+	nh.CPURawModel, _, _ = unstructured.NestedString(u.Object, "status", "cpu", "rawModel")
+	if v, ok, _ := unstructured.NestedInt64(u.Object, "status", "cpu", "sockets"); ok {
+		nh.CPUSockets = int(v)
+	}
+	if v, ok, _ := unstructured.NestedInt64(u.Object, "status", "cpu", "totalCores"); ok {
+		nh.CPUTotalCores = int(v)
+	}
+	if v, ok, _ := unstructured.NestedFloat64(u.Object, "status", "cpu", "capMinWatts"); ok {
+		nh.CPUCapMinWatts = v
+		nh.CPUCapKnown = true
+	}
+	if v, ok, _ := unstructured.NestedFloat64(u.Object, "status", "cpu", "capMaxWatts"); ok {
+		nh.CPUCapMaxWatts = v
+		nh.CPUCapKnown = true
+	}
+	if v, ok, _ := unstructured.NestedBool(u.Object, "status", "cpu", "controlAvailable"); ok {
+		nh.CPUControlAvailable = v
+	}
+	nh.GPUModel, _, _ = unstructured.NestedString(u.Object, "status", "gpu", "model")
+	nh.GPURawModel, _, _ = unstructured.NestedString(u.Object, "status", "gpu", "rawModel")
+	if v, ok, _ := unstructured.NestedInt64(u.Object, "status", "gpu", "count"); ok {
+		nh.GPUCount = int(v)
+	}
+	if v, ok, _ := unstructured.NestedFloat64(u.Object, "status", "gpu", "capMinWatts"); ok {
+		nh.GPUCapMinWatts = v
+		nh.GPUCapKnown = true
+	}
+	if v, ok, _ := unstructured.NestedFloat64(u.Object, "status", "gpu", "capMaxWatts"); ok {
+		nh.GPUCapMaxWatts = v
+		nh.GPUCapKnown = true
+	}
+	if v, ok, _ := unstructured.NestedBool(u.Object, "status", "gpu", "controlAvailable"); ok {
+		nh.GPUControlAvailable = v
+	}
+	if warnings, ok, _ := unstructured.NestedStringSlice(u.Object, "status", "quality", "warnings"); ok {
+		nh.Warnings = append(nh.Warnings, warnings...)
+	}
+	return nh
+}
+
+func nodeHardwareFromLabels(node corev1.Node, catalog *hwinv.Catalog, gpuProductLabelKeys []string) NodeHardware {
+	nh := NodeHardware{
+		Name:        sanitizeName(node.Name),
+		NodeName:    node.Name,
+		CPURawModel: firstNonEmpty(node.Labels["joulie.io/hw.cpu-model"], node.Labels["feature.node.kubernetes.io/cpu-model.name"]),
+		CPUSockets:  hwinv.ParseIntString(firstNonEmpty(node.Labels["joulie.io/hw.cpu-sockets"], node.Labels["feature.node.kubernetes.io/cpu-sockets"])),
+		CPUTotalCores: func() int {
+			if qty, ok := node.Status.Capacity[corev1.ResourceCPU]; ok {
+				return int(qty.Value())
+			}
+			return 0
+		}(),
+		GPURawModel: resolveGPUProduct(node.Labels, append([]string{"joulie.io/hw.gpu-model"}, gpuProductLabelKeys...)),
+		GPUCount: func() int {
+			if v := hwinv.ParseIntString(node.Labels["joulie.io/hw.gpu-count"]); v > 0 {
+				return v
+			}
+			return int(discoverGPUCount(node))
+		}(),
+		CPUControlAvailable: false,
+		GPUControlAvailable: false,
+	}
+	if catalog != nil {
+		match := catalog.MatchNode(hwinv.NodeDescriptor{
+			CPUModelRaw: nh.CPURawModel,
+			CPUSockets:  nh.CPUSockets,
+			CPUCores:    nh.CPUTotalCores,
+			GPUModelRaw: nh.GPURawModel,
+			GPUCount:    nh.GPUCount,
+		})
+		if match.CPUSpec != nil {
+			nh.CPUModel = match.CPUKey
+			nh.CPUComputeDensity = computeCPUNodeDensity(*match.CPUSpec, nh.CPUSockets, nh.CPUTotalCores)
+		}
+		if match.GPUSpec != nil {
+			nh.GPUModel = match.GPUKey
+			nh.GPUComputeDensity = computeGPUNodeDensity(*match.GPUSpec, nh.GPUCount)
+		}
+		nh.Warnings = append(nh.Warnings, match.Warnings...)
+	}
+	return nh
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func computeCPUNodeDensity(spec hwinv.CPUModelSpec, sockets, totalCores int) float64 {
+	base := spec.ComputeDensity
+	if base <= 0 {
+		base = spec.Official.BoostGHz * spec.Official.TDPW
+	}
+	multiplier := float64(totalCores)
+	if multiplier <= 0 && sockets > 0 {
+		multiplier = float64(sockets)
+	}
+	if multiplier <= 0 {
+		multiplier = 1
+	}
+	return base * multiplier
+}
+
+func computeGPUNodeDensity(spec hwinv.GPUModelSpec, count int) float64 {
+	base := spec.ComputeDensity
+	if base <= 0 {
+		base = spec.Official.MaxBoardPowerW
+	}
+	if count <= 0 {
+		count = 1
+	}
+	return base * float64(count)
+}
+
+func nodeDensityScore(nh NodeHardware) float64 {
+	return nh.CPUComputeDensity + nh.GPUComputeDensity
 }
 
 func floatPtr(v float64) *float64 {

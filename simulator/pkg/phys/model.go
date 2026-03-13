@@ -61,6 +61,8 @@ func (m MeasuredCurveCPUModel) ThroughputMultiplier(state DeviceState, workloadC
 			return 1.0 - 0.2*(1.0-f)
 		}
 		return 0.8 * (f / math.Max(0.1, knee))
+	case "cpu.io_bound":
+		return 1.0 - 0.1*(1.0-f)
 	default:
 		mem := 1.0
 		if f >= knee {
@@ -68,7 +70,8 @@ func (m MeasuredCurveCPUModel) ThroughputMultiplier(state DeviceState, workloadC
 		} else {
 			mem = 0.8 * (f / math.Max(0.1, knee))
 		}
-		return 0.5*f + 0.5*mem
+		io := 1.0 - 0.1*(1.0-f)
+		return (f + mem + io) / 3.0
 	}
 }
 
@@ -163,7 +166,7 @@ func (m CappedBoardGPUModel) ThroughputMultiplier(state DeviceState, workloadCla
 	switch workloadClass {
 	case "gpu.compute_bound":
 		return math.Pow(ratio, computeGamma)
-	case "gpu.memory_bound":
+	case "gpu.memory_bound", "gpu.bandwidth_bound":
 		return 1.0 - memEps*math.Pow(1.0-ratio, memGamma)
 	default:
 		c := math.Pow(ratio, computeGamma)
@@ -178,7 +181,7 @@ func (m CappedBoardGPUModel) naturalPower(util float64, class string) float64 {
 	switch class {
 	case "gpu.compute_bound":
 		return m.IdleW + dyn*util
-	case "gpu.memory_bound":
+	case "gpu.memory_bound", "gpu.bandwidth_bound":
 		return m.IdleW + dyn*0.65*math.Sqrt(util)
 	default:
 		c := m.IdleW + dyn*util

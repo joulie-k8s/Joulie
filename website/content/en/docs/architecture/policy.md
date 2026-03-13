@@ -7,6 +7,7 @@ This page defines Joulie's core contract:
 
 - **demand** comes from pod scheduling constraints,
 - **supply** is exposed by node power-profile labels,
+- **discovered hardware** is published through `NodeHardware`,
 - **desired state** is published through `NodePowerProfile`.
 
 ## APIs
@@ -17,11 +18,13 @@ Group/version:
 
 CRDs:
 
+- `NodeHardware` (`nodehardwares`, cluster-scoped)
 - `NodePowerProfile` (`nodepowerprofiles`, cluster-scoped)
 - `TelemetryProfile` (`telemetryprofiles`, cluster-scoped)
 
 CRD definitions live in:
 
+- `config/crd/bases/joulie.io_nodehardwares.yaml`
 - `config/crd/bases/joulie.io_nodepowerprofiles.yaml`
 - `config/crd/bases/joulie.io_telemetryprofiles.yaml`
 
@@ -111,6 +114,88 @@ In this example:
 - GPU is expressed as both percentage and resolved absolute watts per GPU.
 - The agent applies the absolute GPU cap when present and falls back to percentage only when absolute watts are not provided.
 
+## Hardware-discovery object: `NodeHardware`
+
+`NodeHardware` is the agent-to-operator contract for discovered node capabilities.
+
+It is status-oriented and agent-owned.
+Users should not normally create it by hand.
+
+Main fields:
+
+- `spec.nodeName`
+- `status.cpu`:
+  - raw model string
+  - normalized inventory model when recognized
+  - sockets / total cores / cores per socket
+  - runtime CPU cap range when available
+  - control and telemetry availability
+- `status.gpu`:
+  - raw model string
+  - normalized inventory model when recognized
+  - GPU count
+  - runtime GPU cap range when available
+  - control and telemetry availability
+- `status.quality`:
+  - overall discovery quality
+  - warnings
+
+Discovery quality values are:
+
+- `exact`: recognized against the inventory
+- `heuristic`: some raw hardware signal is present, but normalization is incomplete
+- `unavailable`: no useful signal was found for that subsystem
+
+Example:
+
+```yaml
+apiVersion: joulie.io/v1alpha1
+kind: NodeHardware
+metadata:
+  name: node-kwok-gpu-nvidia-0
+spec:
+  nodeName: kwok-gpu-nvidia-0
+status:
+  cpu:
+    rawModel: AMD EPYC 9654 96-Core Processor
+    model: AMD_EPYC_9654
+    vendor: amd
+    sockets: 2
+    totalCores: 192
+    coresPerSocket: 96
+    driverFamily: amd-pstate
+    controlAvailable: true
+    telemetryAvailable: true
+    quality: exact
+  gpu:
+    rawModel: NVIDIA H100 NVL
+    model: NVIDIA_H100_NVL
+    vendor: nvidia
+    count: 4
+    capMinWatts: 200
+    capMaxWatts: 400
+    controlAvailable: true
+    telemetryAvailable: true
+    quality: exact
+  capabilities:
+    cpuControl: true
+    gpuControl: true
+    cpuTelemetry: true
+    gpuTelemetry: true
+  quality:
+    overall: exact
+    warnings: []
+```
+
+The operator uses `NodeHardware` as the source of truth for:
+
+- hardware recognition against the inventory,
+- compute-density-aware planning,
+- per-device fallback when only part of the node is recognized.
+
+In simulator-first setups, the operator can fall back to node hardware labels when `NodeHardware` has not been published yet.
+This keeps simulator examples lightweight while preserving the same architecture once the agent starts publishing discovered hardware.
+
 ## Telemetry/control routing: `TelemetryProfile`
 
 `TelemetryProfile` is the routing contract that tells the agent where telemetry comes from and where control intents should be sent.
@@ -118,6 +203,7 @@ In this example:
 At the policy-model level, the important distinction is:
 
 - `NodePowerProfile` says what state a node should reach
+- `NodeHardware` says what the node is and what it can do
 - `TelemetryProfile` says how the agent should observe and actuate that node
 
 High-level shape:
@@ -166,8 +252,10 @@ The full runtime contract, backend types, HTTP payloads, and status semantics ar
 1. User submits workload with Kubernetes scheduling constraints.
 2. Scheduler places pods according to available node labels.
 3. Operator observes demand/supply and computes new node targets.
-4. Operator writes `NodePowerProfile` and updates node supply labels.
-5. Agent enforces controls and reports status/metrics.
+4. Agent publishes `NodeHardware`.
+5. Operator resolves discovered hardware against the inventory.
+6. Operator writes `NodePowerProfile` and updates node supply labels.
+7. Agent enforces controls and reports status/metrics.
 
 ## Next step
 

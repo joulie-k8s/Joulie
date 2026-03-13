@@ -40,26 +40,54 @@ Each job tracks:
 - total work `CPUUnitsTotal`,
 - remaining work `CPUUnitsRemaining`,
 - CPU sensitivity `S_cpu` in `[0,1]`,
+- CPU target utilization `U_cpu` in `[0,1]`,
+- CPU workload class (`cpu.compute_bound`, `cpu.memory_bound`, `cpu.io_bound`, `cpu.mixed`),
 - requested GPUs `G_req` (optional),
 - total/remaining GPU work (`GPUUnitsTotal`, `GPUUnitsRemaining`),
-- GPU sensitivity `S_gpu` in `[0,1]`.
+- GPU sensitivity `S_gpu` in `[0,1]`,
+- GPU target utilization `U_gpu` in `[0,1]`,
+- GPU workload class (`gpu.compute_bound`, `gpu.memory_bound`, `gpu.bandwidth_bound`, `gpu.mixed`),
+- memory intensity `M` in `[0,1]`,
+- IO intensity `I` in `[0,1]`,
+- CPU feed intensity for GPU work `F_feed` in `[0,1]`.
 
-Node effective speed factor comes from power simulator output (`FreqScale`).
+Node effective CPU speed factor comes from power simulator output (`FreqScale`).
 GPU jobs also use a GPU speed factor derived from per-GPU cap ratio.
 
-Per-job speed on node:
+CPU work progression combines:
 
-`speed = C_req * BaseSpeedPerCore * (1 - (1 - FreqScale) * S_cpu)`
+- base CPU throughput per core,
+- current node frequency scale,
+- CPU workload class,
+- explicit job utilization/intensity profile.
+
+At a high level:
+
+`cpuSpeed ~= C_req * BaseSpeedPerCore * throttleImpact(FreqScale, workloadClass, U_cpu, M, I)`
 
 If `k` jobs run on same node, progress is approximated by fair share:
 
-`progress = speed * dt / max(1, k)`
+`cpuProgress = cpuSpeed * dt / max(1, k)`
 
 State update:
 
-`CPUUnitsRemaining -= progress`
+`CPUUnitsRemaining -= cpuProgress`
 
-For GPU work:
+GPU work progression combines:
+
+- requested GPUs,
+- current per-GPU cap ratio,
+- GPU workload class,
+- target GPU utilization,
+- CPU feed pressure from the job.
+
+At a high level:
+
+`gpuSpeed ~= G_req * BaseSpeedPerGPU * gpuCapImpact * gpuClassImpact * cpuFeedImpact`
+
+where CPU throttling can also slow GPU jobs when CPU-side feeding is part of the bottleneck.
+
+State update:
 
 `GPUUnitsRemaining -= gpuProgress`
 
@@ -72,9 +100,19 @@ Completion condition:
 
 Approximate remaining runtime at a given instant:
 
-`T_remaining ~= CPUUnitsRemaining / (speed / max(1, k))`
+`T_remaining ~= CPUUnitsRemaining / (cpuSpeed / max(1, k))`
 
 As `FreqScale` decreases (due to cap/throttle), speed drops and completion time rises.
+
+The impact is intentionally workload-aware:
+
+- CPU compute-bound jobs slow down strongly under CPU throttling.
+- CPU memory-bound and IO-bound jobs slow down more gently.
+- GPU compute-bound jobs slow down strongly under GPU caps.
+- GPU memory/bandwidth-bound jobs slow down less for the same cap.
+- CPU throttling can still hurt GPU jobs when `cpuFeedIntensityGpu` is high.
+
+The simulator also aggregates explicit per-job `cpuUtilization` and `gpuUtilization` into node-level utilization, so higher-utilization jobs contribute more strongly to modeled node power.
 
 ## Scheduling class inference
 

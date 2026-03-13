@@ -160,5 +160,18 @@ Set `SIM_WORKLOAD_TRACE_PATH` to a JSONL trace file. The simulator will:
 Minimal job record example:
 
 ```json
-{"type":"job","schemaVersion":"v1","jobId":"job-1","submitTimeOffsetSec":2,"namespace":"default","podTemplate":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"joulie.io/power-profile","operator":"NotIn","values":["eco"]}]}]}}},"requests":{"cpu":"4","memory":"1Gi"}},"work":{"cpuUnits":1200},"sensitivity":{"cpu":1.0}}
+{"type":"job","schemaVersion":"v1","jobId":"job-1","submitTimeOffsetSec":2,"namespace":"default","podTemplate":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"joulie.io/power-profile","operator":"NotIn","values":["eco"]}]}]}}},"requests":{"cpu":"4","memory":"1Gi"}},"work":{"cpuUnits":1200},"sensitivity":{"cpu":1.0},"workloadClass":{"cpu":"cpu.compute_bound"},"workloadProfile":{"cpuUtilization":0.95,"memoryIntensity":0.15,"ioIntensity":0.05}}
 ```
+
+Optional `workloadProfile` fields make the physical model more explicit:
+
+- `cpuUtilization`: average CPU utilization target for the job
+- `gpuUtilization`: average GPU utilization target for GPU jobs
+- `memoryIntensity`: how strongly memory effects dominate slowdown behavior
+- `ioIntensity`: how IO-bound the job is
+- `cpuFeedIntensityGpu`: how strongly GPU throughput depends on CPU-side feeding
+
+Optional `workloadClass` fields control the coarse workload family used by the throttling model:
+
+- CPU: `cpu.compute_bound`, `cpu.memory_bound`, `cpu.io_bound`, `cpu.mixed`
+- GPU: `gpu.compute_bound`, `gpu.memory_bound`, `gpu.bandwidth_bound`, `gpu.mixed`

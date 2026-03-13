@@ -16,10 +16,12 @@ which nodes should currently supply `performance` capacity, and which can safely
 At each reconcile tick, the operator:
 
 1. selects eligible managed nodes,
-2. classifies workload demand from pod scheduling constraints,
-3. runs a policy algorithm to compute a plan,
-4. applies transition guards for safe downgrades,
-5. writes desired node targets (`NodePowerProfile`) and node supply labels.
+2. reads `NodeHardware` when available and falls back to node labels when it is not,
+3. resolves hardware identity against the shared inventory,
+4. classifies workload demand from pod scheduling constraints,
+5. runs a policy algorithm to compute a plan,
+6. applies transition guards for safe downgrades,
+7. writes desired node targets (`NodePowerProfile`) and node supply labels.
 
 The agent then enforces those targets node-by-node.
 
@@ -34,15 +36,21 @@ This separation keeps policy logic portable while actuator details stay node-loc
 
 1. Read nodes matching `NODE_SELECTOR` (chart default: `joulie.io/managed=true`).
 2. Ignore reserved/unschedulable nodes.
-3. Build demand view from active pods:
+3. Build a normalized hardware view:
+   - prefer `NodeHardware`
+   - otherwise derive hardware identity from node labels / allocatable resources
+   - resolve CPU/GPU models against the inventory
+   - compute per-node CPU/GPU density signals
+4. Build demand view from active pods:
    - performance-constrained
    - eco-constrained
    - unconstrained
-4. Run policy (`static_partition`, `queue_aware_v1`, or debug `rule_swap_v1`).
-5. For planned `performance -> eco` transitions, run downgrade guard:
+5. Sort eligible nodes by normalized compute density (CPU + GPU), highest first.
+6. Run policy (`static_partition`, `queue_aware_v1`, or debug `rule_swap_v1`).
+7. For planned `performance -> eco` transitions, run downgrade guard:
    - publish `profile=eco` as desired state
    - keep `joulie.io/draining=true` while performance-sensitive pods are still present
-6. Persist desired state through `NodePowerProfile` and update node labels:
+8. Persist desired state through `NodePowerProfile` and update node labels:
    - `joulie.io/power-profile`
    - `joulie.io/draining`
 
@@ -78,6 +86,25 @@ High-level behavior:
   - when `GPU_WRITE_ABSOLUTE_CAPS=true`, operator may write resolved `capWattsPerGpu` in addition to `capPctOfMax`, when model-based mapping is available.
 
 This is why GPU `NodePowerProfile` objects may contain both normalized intent and resolved absolute caps at the same time.
+
+## Heterogeneous planning
+
+The operator is now inventory-aware.
+
+Its first heterogeneous-planning input is a normalized compute-density score built from:
+
+- recognized CPU model + socket/core shape
+- recognized GPU model + GPU count
+
+This score is used to order eligible nodes before policy assignment.
+So, for the same policy parameters, denser nodes are preferred first for `performance` supply.
+
+If `NodeHardware` is not available yet:
+
+- the operator derives a best-effort hardware view from labels such as `joulie.io/hw.cpu-model`, `joulie.io/hw.gpu-model`, `joulie.io/hw.gpu-count`,
+- and from allocatable extended resources (`nvidia.com/gpu`, `amd.com/gpu`).
+
+That keeps simulator-first and bootstrap scenarios working without making `NodeHardware` a hand-authored prerequisite.
 
 ## Node state model
 

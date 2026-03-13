@@ -16,6 +16,7 @@ Joulie docs are organized for onboarding first, then depth:
 Core mental model used across all pages:
 
 - operator decides cluster-level node states,
+- agent discovers node hardware and capability,
 - agent enforces node-level controls,
 - scheduler consumes node supply labels + workload constraints.
 

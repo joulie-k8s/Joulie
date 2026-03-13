@@ -14,9 +14,10 @@ If you are new, first read:
 ## Core story
 
 1. **Operator** computes desired node power state.
-2. Desired state is published in `NodePowerProfile`.
-3. **Agent** reads desired state and applies controls through configured backends.
-4. Telemetry and status feed the next reconcile step.
+2. **Agent** discovers node hardware and publishes `NodeHardware`.
+3. **Operator** resolves discovered hardware against the inventory and publishes desired state in `NodePowerProfile`.
+4. **Agent** reads desired state and applies controls through configured backends.
+5. Telemetry and status feed the next reconcile step.
 
 <img src='{{< relURL "images/joulie-arch.png" >}}' alt="Joulie architecture overview">
 

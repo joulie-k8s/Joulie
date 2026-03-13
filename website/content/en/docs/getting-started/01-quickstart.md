@@ -110,6 +110,8 @@ make rollout TAG=<new-tag>
 
 Joulie control is a desired-state loop:
 
+- agent discovers per-node hardware and publishes `NodeHardware`,
+- operator resolves hardware/inventory and decides per-node target state,
 - operator decides per-node target state and writes `NodePowerProfile`,
 - node labels (`joulie.io/power-profile`) expose current supply to the scheduler,
 - agent enforces node-local controls from desired state and telemetry/control profile.
@@ -149,12 +151,17 @@ Configuration details:
 Verify:
 
 ```bash
+kubectl get nodehardwares
 kubectl get nodepowerprofiles
 kubectl -n joulie-system logs deploy/joulie-operator --tail=100
 kubectl -n joulie-system logs -l app.kubernetes.io/name=joulie-agent --tail=100
 ```
 
-Look for log lines containing desired-state source and enforcement/fallback actions.
+Look for:
+
+- `NodeHardware` objects appearing for managed nodes,
+- operator logs mentioning inventory-aware planning or desired-state assignment,
+- agent logs containing desired-state source and enforcement/fallback actions.
 
 Also verify installed images:
 
