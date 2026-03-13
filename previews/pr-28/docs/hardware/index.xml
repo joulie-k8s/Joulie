@@ -34,4 +34,16 @@ The host code paths are designed to work on bare metal (NVIDIA + AMD) when GPU n
 &lt;li&gt;&lt;code&gt;capWattsPerGpu&lt;/code&gt; if present&lt;/li&gt;
 &lt;li&gt;otherwise &lt;code&gt;capPctOfMax&lt;/code&gt;&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;The same cap is applied uniformly to all GPUs on the node.&lt;/p&gt;</description></item></channel></rss>
+&lt;p&gt;The same cap is applied uniformly to all GPUs on the node.&lt;/p&gt;</description></item><item><title>Hardware Modeling and Physical Power Model</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-28/docs/hardware/hardware-modeling/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-28/docs/hardware/hardware-modeling/</guid><description>&lt;p&gt;This page documents how Joulie models CPUs and GPUs across the project using a mix of:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;official vendor specifications and management APIs&lt;/strong&gt;,&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;public measured power curves&lt;/strong&gt;, and&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;explicit proxy models&lt;/strong&gt; where public exact curves are not yet available.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;It serves two closely related purposes:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;for the &lt;strong&gt;agent&lt;/strong&gt;, it describes the hardware assumptions used to resolve caps, interpret device limits, and reason about how throttling affects attainable performance&lt;/li&gt;
+&lt;li&gt;for the &lt;strong&gt;simulator&lt;/strong&gt;, it describes the physical model used to turn utilization and control actions into simulated power and slowdown&lt;/li&gt;
+&lt;/ul&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;Validation status&lt;/strong&gt;&lt;/p&gt;</description></item></channel></rss>
