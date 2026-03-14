@@ -33,83 +33,94 @@ spec:
                 cpu:
                   type: object
                   properties:
-                    rawModel:
-                      type: string
-                    model:
-                      type: string
-                    vendor:
-                      type: string
-                    sockets:
-                      type: integer
-                    totalCores:
-                      type: integer
-                    coresPerSocket:
-                      type: integer
-                    driverFamily:
-                      type: string
-                    capMinWatts:
-                      type: number
-                    capMaxWatts:
-                      type: number
-                    controlAvailable:
-                      type: boolean
-                    telemetryAvailable:
-                      type: boolean
-                    quality:
-                      type: string
+                    rawModel: { type: string }
+                    model: { type: string }
+                    vendor: { type: string }
+                    sockets: { type: integer }
+                    totalCores: { type: integer }
+                    coresPerSocket: { type: integer }
+                    driverFamily: { type: string }
+                    capRange:
+                      type: object
+                      properties:
+                        type: { type: string }
+                        minWattsPerSocket: { type: number }
+                        maxWattsPerSocket: { type: number }
+                    landmarks:
+                      type: object
+                      properties:
+                        minFreqMHz: { type: number }
+                        nominalFreqMHz: { type: number }
+                        maxBoostMHz: { type: number }
+                        lowestNonlinearFreqMHz: { type: number }
+                    controlAvailable: { type: boolean }
+                    telemetryAvailable: { type: boolean }
                     warnings:
                       type: array
-                      items:
-                        type: string
+                      items: { type: string }
                 gpu:
                   type: object
                   properties:
-                    rawModel:
-                      type: string
-                    model:
-                      type: string
-                    vendor:
-                      type: string
-                    count:
-                      type: integer
-                    capMinWatts:
-                      type: number
-                    capMaxWatts:
-                      type: number
-                    currentCapWatts:
-                      type: number
-                    controlAvailable:
-                      type: boolean
-                    telemetryAvailable:
-                      type: boolean
-                    quality:
-                      type: string
+                    present: { type: boolean }
+                    rawModel: { type: string }
+                    model: { type: string }
+                    vendor: { type: string }
+                    count: { type: integer }
+                    capRangePerGpu:
+                      type: object
+                      properties:
+                        minWatts: { type: number }
+                        maxWatts: { type: number }
+                        defaultWatts: { type: number }
+                    currentCapWatts: { type: number }
+                    slicing:
+                      type: object
+                      properties:
+                        supported: { type: boolean }
+                        modes:
+                          type: array
+                          items: { type: string }
+                    controlAvailable: { type: boolean }
+                    telemetryAvailable: { type: boolean }
                     warnings:
                       type: array
-                      items:
-                        type: string
+                      items: { type: string }
+                memory:
+                  type: object
+                  properties:
+                    totalBytes: { type: integer, format: int64 }
+                network:
+                  type: object
+                  properties:
+                    linkClass: { type: string }
+                inventoryResolution:
+                  type: object
+                  properties:
+                    hardwareCatalogKey:
+                      type: object
+                      properties:
+                        cpu: { type: string }
+                        gpu: { type: string }
+                    exactness:
+                      type: object
+                      properties:
+                        cpu: { type: string }
+                        gpu: { type: string }
                 capabilities:
                   type: object
                   properties:
-                    cpuControl:
-                      type: boolean
-                    gpuControl:
-                      type: boolean
-                    cpuTelemetry:
-                      type: boolean
-                    gpuTelemetry:
-                      type: boolean
+                    cpuControl: { type: boolean }
+                    gpuControl: { type: boolean }
+                    cpuTelemetry: { type: boolean }
+                    gpuTelemetry: { type: boolean }
                 quality:
                   type: object
                   properties:
-                    overall:
-                      type: string
+                    overall: { type: string }
                     warnings:
                       type: array
-                      items:
-                        type: string
-                updatedAt:
-                  type: string
+                      items: { type: string }
+                updatedAt: { type: string }
           required:
             - spec
             - metadata

@@ -34,8 +34,8 @@ import (
 var (
 	profileNodeGVR    = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodepowerprofiles"}
 	telemetryNodeGVR  = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "telemetryprofiles"}
-	nodeHardwareGVR   = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
-	defaultHTTPTimout = 2 * time.Second
+	nodeHardwareGVR     = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
+	defaultHTTPTimout   = 2 * time.Second
 
 	registerMetricsOnce sync.Once
 	backendModeMetric   *prometheus.GaugeVec
@@ -2024,13 +2024,45 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 		"updatedAt": time.Now().UTC().Format(time.RFC3339),
 	}
 	if hw.CPUCapKnown {
-		status["cpu"].(map[string]any)["capMinWatts"] = hw.CPUCapMinWatts
-		status["cpu"].(map[string]any)["capMaxWatts"] = hw.CPUCapMaxWatts
+		status["cpu"].(map[string]any)["capRange"] = map[string]any{
+			"type":              "package",
+			"minWattsPerSocket": hw.CPUCapMinWatts,
+			"maxWattsPerSocket": hw.CPUCapMaxWatts,
+		}
 	}
 	if hw.GPUCapKnown {
-		status["gpu"].(map[string]any)["capMinWatts"] = hw.GPUCapMinWatts
-		status["gpu"].(map[string]any)["capMaxWatts"] = hw.GPUCapMaxWatts
+		status["gpu"].(map[string]any)["present"] = hw.GPUCount > 0
+		status["gpu"].(map[string]any)["capRangePerGpu"] = map[string]any{
+			"minWatts":     hw.GPUCapMinWatts,
+			"maxWatts":     hw.GPUCapMaxWatts,
+			"defaultWatts": hw.GPUCapMaxWatts,
+		}
 	}
+
+	// Inventory resolution (model catalog match quality)
+	exactnessCPU := "generic"
+	if hw.CPUModel != "" {
+		exactnessCPU = "exact"
+	} else if hw.CPURawModel != "" {
+		exactnessCPU = "proxy"
+	}
+	exactnessGPU := "generic"
+	if hw.GPUModel != "" {
+		exactnessGPU = "exact"
+	} else if hw.GPURawModel != "" {
+		exactnessGPU = "proxy"
+	}
+	status["inventoryResolution"] = map[string]any{
+		"hardwareCatalogKey": map[string]any{
+			"cpu": hw.CPUModel,
+			"gpu": hw.GPUModel,
+		},
+		"exactness": map[string]any{
+			"cpu": exactnessCPU,
+			"gpu": exactnessGPU,
+		},
+	}
+
 	_ = unstructured.SetNestedField(obj.Object, status, "status")
 	_, err = res.UpdateStatus(ctx, obj, metav1.UpdateOptions{})
 	if err == nil {

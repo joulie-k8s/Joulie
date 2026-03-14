@@ -262,7 +262,7 @@ def strip_power_profile_affinity(affinity: dict | None) -> dict | None:
         kept_exprs = [
             e
             for e in exprs
-            if isinstance(e, dict) and e.get("key") not in {"joulie.io/power-profile", "joulie.io/draining"}
+            if isinstance(e, dict) and e.get("key") not in {"joulie.io/power-profile"}
         ]
         if kept_exprs:
             keep_terms.append({"matchExpressions": kept_exprs})
@@ -444,8 +444,7 @@ def reset_control_state():
             "nodes",
             "-l",
             "joulie.io/managed=true",
-            "joulie.io/draining=false",
-            "--overwrite",
+            "joulie.io/draining-",
         ],
         check=False,
     )

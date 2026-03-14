@@ -179,17 +179,17 @@ Prevent a node from dropping to eco while it still runs workloads that require p
 
 1. Policy plans `performance -> eco` for node `N`.
 2. Operator evaluates safeguard on `N`:
-   - classify active pods from scheduling constraints (`joulie.io/power-profile` affinity/selector),
-   - detect whether performance-constrained pods are still running on `N`.
-3. If performance-constrained pods are present:
+   - classify active pods from workload-class annotations and `WorkloadProfile` matching,
+   - detect whether performance pods are still running on `N`.
+3. If performance pods are present:
    - operator keeps desired profile as `eco`,
-   - operator marks node `joulie.io/draining=true`.
+   - operator sets `NodeTwinState.schedulableClass` to `draining`.
 4. Agent reconciles:
    - sees desired profile from `NodePowerProfile`,
    - enforces the desired eco/performance target through configured backend.
 5. On later reconcile ticks, operator re-checks safeguard.
-6. When no blocking performance-constrained pods remain:
-   - operator keeps profile `eco` and clears the draining condition (`joulie.io/draining=false` in the current implementation).
+6. When no blocking performance pods remain:
+   - operator keeps profile `eco` and sets `NodeTwinState.schedulableClass` to `eco`.
    - agent continues enforcing desired target on next reconcile.
 
 ### Transition FSM (with conditions)
@@ -211,14 +211,14 @@ stateDiagram-v2
 Interpretation:
 
 - `DrainingPerformance` is the operator transition state.
-- In `DrainingPerformance`, operator publishes eco as desired state and sets `joulie.io/draining=true`.
-- `joulie.io/draining=true` signals transition guard activity; advanced eco-only constraints should exclude draining nodes with `NotIn ["true"]`.
-- Transition to non-draining eco occurs when safeguard condition becomes true (`perf-constrained pods == 0`).
+- In `DrainingPerformance`, operator publishes eco as desired state and sets `NodeTwinState.schedulableClass` to `draining`.
+- The scheduler extender reads the `draining` schedulable class and applies a score penalty to avoid placing new workloads on the node.
+- Transition to eco occurs when safeguard condition becomes true (`performance pods == 0`).
 
 Transition conditions:
 
-- `defer`: policy plans eco and node still has performance-constrained pods (`count > 0`).
-- `allow`: policy plans eco and node has no performance-constrained pods (`count == 0`).
+- `defer`: policy plans eco and node still has performance pods (`count > 0`).
+- `allow`: policy plans eco and node has no performance pods (`count == 0`).
 - `still blocked`: periodic re-check still finds blocking pods (`count > 0`).
 - `unblocked`: periodic re-check finds none (`count == 0`), so eco can be committed.
 - `re-plan perf` / `plan perf`: policy decision requires performance supply.

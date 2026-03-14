@@ -34,7 +34,7 @@ var nodeHardwareGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "
 
 const (
 	powerProfileLabelKey  = "joulie.io/power-profile"
-	drainingLabelKey      = "joulie.io/draining"
+
 	profilePerformance    = "performance"
 	profileEco            = "eco"
 	workloadClassUnknown  = "unknown"
@@ -134,7 +134,7 @@ func main() {
 	selector := envOrDefault("NODE_SELECTOR", "node-role.kubernetes.io/worker")
 	reservedLabel := envOrDefault("RESERVED_LABEL_KEY", "joulie.io/reserved")
 	profileLabel := envOrDefault("POWER_PROFILE_LABEL", "joulie.io/power-profile")
-	drainingLabel := envOrDefault("DRAINING_LABEL", drainingLabelKey)
+
 	perfCap := floatEnv("PERFORMANCE_CAP_WATTS", 5000)
 	ecoCap := floatEnv("ECO_CAP_WATTS", 120)
 	cpuPerfCapPct := floatEnv("CPU_PERFORMANCE_CAP_PCT_OF_MAX", 100)
@@ -178,7 +178,7 @@ func main() {
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		if err := reconcileWithCatalog(
-			ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, drainingLabel, reconcileEvery,
+			ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, reconcileEvery,
 			perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
 			cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
 			gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, hardwareCatalog,
@@ -209,7 +209,6 @@ func reconcile(
 	selector labels.Selector,
 	reservedLabel string,
 	profileLabel string,
-	drainingLabel string,
 	interval time.Duration,
 	perfCap float64,
 	ecoCap float64,
@@ -229,7 +228,7 @@ func reconcile(
 	gpuProductLabelKeys []string,
 ) error {
 	return reconcileWithCatalog(
-		ctx, kube, dyn, selector, reservedLabel, profileLabel, drainingLabel, interval,
+		ctx, kube, dyn, selector, reservedLabel, profileLabel, interval,
 		perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
 		cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
 		gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, loadHardwareCatalog(),
@@ -243,7 +242,6 @@ func reconcileWithCatalog(
 	selector labels.Selector,
 	reservedLabel string,
 	profileLabel string,
-	drainingLabel string,
 	interval time.Duration,
 	perfCap float64,
 	ecoCap float64,
@@ -271,13 +269,10 @@ func reconcileWithCatalog(
 	eligible := make([]string, 0)
 	nodesByName := make(map[string]string, len(nodes.Items))
 	nodeObjs := make(map[string]*corev1.Node, len(nodes.Items))
-	drainingByName := make(map[string]bool, len(nodes.Items))
 	for _, n := range nodes.Items {
 		node := n
 		nodeObjs[n.Name] = &node
-		prof, draining := normalizeNodeLabels(n.Labels[profileLabel], n.Labels[drainingLabel])
-		nodesByName[n.Name] = prof
-		drainingByName[n.Name] = draining
+		nodesByName[n.Name] = currentProfileOrDefault(n.Labels[profileLabel])
 		if n.Spec.Unschedulable {
 			continue
 		}
@@ -322,7 +317,6 @@ func reconcileWithCatalog(
 	plan := buildPlanByPolicy(ctx, kube, policyType, eligible, nodeHardwareByName, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
 	for i := range plan {
 		plan[i].SourceProfile = currentProfileOrDefault(nodesByName[plan[i].NodeName])
-		plan[i].SourceDrain = drainingByName[plan[i].NodeName]
 		plan[i].Draining = false
 		plan[i].State = assignmentState(plan[i].Profile, plan[i].Draining)
 		if cpuWriteAbsolute {
@@ -357,7 +351,7 @@ func reconcileWithCatalog(
 		if err := upsertNodeProfile(ctx, dyn, a); err != nil {
 			return err
 		}
-		if err := upsertNodeLabels(ctx, kube, profileLabel, drainingLabel, a); err != nil {
+		if err := upsertNodeLabels(ctx, kube, profileLabel, a); err != nil {
 			return err
 		}
 		recordNodeStateMetrics(a.NodeName, a.State)
@@ -465,7 +459,7 @@ func applyDowngradeGuards(
 }
 
 // computeDesiredLabels maps desired profile + running performance-sensitive pods
-// to node labels.
+// to the effective profile and internal draining state (tracked in NodeTwinState.schedulableClass).
 // Rules:
 // - desired performance => (performance, draining=false)
 // - desired eco + perfPods>0 => (eco, draining=true)
@@ -830,15 +824,6 @@ func containsString(in []string, v string) bool {
 		}
 	}
 	return false
-}
-
-func normalizeNodeLabels(profileVal, drainingVal string) (string, bool) {
-	prof := currentProfileOrDefault(profileVal)
-	draining := strings.EqualFold(strings.TrimSpace(drainingVal), "true")
-	if prof == "unknown" {
-		return prof, false
-	}
-	return prof, draining
 }
 
 func summarizePlan(plan []NodeAssignment) string {
@@ -1304,9 +1289,6 @@ func upsertNodeProfile(ctx context.Context, dyn dynamic.Interface, a NodeAssignm
 		"kind":       "NodePowerProfile",
 		"metadata": map[string]any{
 			"name": name,
-			"labels": map[string]any{
-				"joulie.io/managed-by": "operator",
-			},
 		},
 		"spec": spec,
 	}}
@@ -1331,26 +1313,20 @@ func upsertNodeProfile(ctx context.Context, dyn dynamic.Interface, a NodeAssignm
 	return nil
 }
 
-func upsertNodeLabels(ctx context.Context, kube kubernetes.Interface, profileLabel, drainingLabel string, a NodeAssignment) error {
+func upsertNodeLabels(ctx context.Context, kube kubernetes.Interface, profileLabel string, a NodeAssignment) error {
 	labelValue := a.Profile
-	drainingValue := "false"
-	if a.Draining {
-		drainingValue = "true"
-	}
 	node, err := kube.CoreV1().Nodes().Get(ctx, a.NodeName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("get node %s before patch: %w", a.NodeName, err)
 	}
 	currentProfile := strings.TrimSpace(node.Labels[profileLabel])
-	currentDraining := strings.TrimSpace(node.Labels[drainingLabel])
-	if currentProfile == labelValue && currentDraining == drainingValue {
+	if currentProfile == labelValue {
 		return nil
 	}
 	patch := map[string]any{
 		"metadata": map[string]any{
 			"labels": map[string]string{
-				profileLabel:  labelValue,
-				drainingLabel: drainingValue,
+				profileLabel: labelValue,
 			},
 		},
 	}
@@ -1359,7 +1335,7 @@ func upsertNodeLabels(ctx context.Context, kube kubernetes.Interface, profileLab
 		return fmt.Errorf("marshal node label patch for %s: %w", a.NodeName, err)
 	}
 	if _, err := kube.CoreV1().Nodes().Patch(ctx, a.NodeName, types.MergePatchType, rawPatch, metav1.PatchOptions{}); err != nil {
-		return fmt.Errorf("patch node %s labels %s=%s %s=%s: %w", a.NodeName, profileLabel, labelValue, drainingLabel, drainingValue, err)
+		return fmt.Errorf("patch node %s label %s=%s: %w", a.NodeName, profileLabel, labelValue, err)
 	}
 	return nil
 }

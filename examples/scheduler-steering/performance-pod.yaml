@@ -1,0 +1,24 @@
+# Performance workload: must not land on eco nodes.
+# The scheduler extender will filter out any node with schedulableClass=eco.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: performance-app
+  labels:
+    app: performance-app
+  annotations:
+    joulie.io/workload-class: "performance"
+    joulie.io/gpu-sensitivity: "high"
+spec:
+  containers:
+    - name: app
+      image: busybox:latest
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: "4"
+          memory: "8Gi"
+        limits:
+          cpu: "8"
+          memory: "16Gi"
+  restartPolicy: Never

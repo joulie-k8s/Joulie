@@ -21,7 +21,7 @@ At each reconcile tick, the operator:
 4. classifies workload demand from pod scheduling constraints,
 5. runs a policy algorithm to compute a plan,
 6. applies transition guards for safe downgrades,
-7. writes desired node targets (`NodePowerProfile`) and node supply labels.
+7. writes desired node targets (`NodePowerProfile`) and the `joulie.io/power-profile` node label.
 
 The agent then enforces those targets node-by-node.
 
@@ -49,15 +49,14 @@ This separation keeps policy logic portable while actuator details stay node-loc
 6. Run policy (`static_partition`, `queue_aware_v1`, or debug `rule_swap_v1`).
 7. For planned `performance -> eco` transitions, run downgrade guard:
    - publish `profile=eco` as desired state
-   - keep `joulie.io/draining=true` while performance-sensitive pods are still present
-8. Persist desired state through `NodePowerProfile` and update node labels:
-   - `joulie.io/power-profile`
-   - `joulie.io/draining`
+   - set `NodeTwinState.schedulableClass` to `draining` while performance pods are still present
+8. Persist desired state through `NodePowerProfile` and update the `joulie.io/power-profile` node label.
 
 The important distinction is:
 
 - `NodePowerProfile` expresses desired target state for enforcement,
-- node labels express scheduler-facing supply state during transitions.
+- `joulie.io/power-profile` node label expresses the current power profile,
+- `NodeTwinState.schedulableClass` expresses transition state (including `draining`) for the scheduler extender.
 
 ## Power intent configuration knobs
 
@@ -113,13 +112,13 @@ Joulie models two scheduler-facing supply states:
 - `performance`
 - `eco`
 
-`DrainingPerformance` is an internal operator FSM state tracked while `profile=eco` and `joulie.io/draining=true`.
+`DrainingPerformance` is an internal operator FSM state tracked via `NodeTwinState.schedulableClass = "draining"`.
 
 That state means:
 
 - the operator wants the node to end up in eco,
-- the transition is still guarded because performance-sensitive pods are present,
-- advanced eco-only placement can avoid the node until draining clears by excluding `joulie.io/draining=true`.
+- the transition is still guarded because performance pods are still present,
+- the scheduler extender sees `schedulableClass: draining` and applies a score penalty to avoid placing new workloads on the node.
 
 ## Why this model
 

@@ -424,7 +424,7 @@ func TestUpsertNodeLabels(t *testing.T) {
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a", Labels: map[string]string{}}},
 	)
 	a := NodeAssignment{NodeName: "node-a", Profile: "eco", Draining: true}
-	if err := upsertNodeLabels(context.Background(), client, "joulie.io/power-profile", "joulie.io/draining", a); err != nil {
+	if err := upsertNodeLabels(context.Background(), client, "joulie.io/power-profile", a); err != nil {
 		t.Fatalf("upsertNodeLabels failed: %v", err)
 	}
 	n, err := client.CoreV1().Nodes().Get(context.Background(), "node-a", metav1.GetOptions{})
@@ -434,8 +434,9 @@ func TestUpsertNodeLabels(t *testing.T) {
 	if got := n.Labels["joulie.io/power-profile"]; got != "eco" {
 		t.Fatalf("label=%s want=eco", got)
 	}
-	if got := n.Labels["joulie.io/draining"]; got != "true" {
-		t.Fatalf("draining=%s want=true", got)
+	// Draining is NOT set as a node label; it is tracked in NodeTwinState.schedulableClass only.
+	if _, hasDraining := n.Labels["joulie.io/draining"]; hasDraining {
+		t.Fatalf("joulie.io/draining label should not be set on node")
 	}
 }
 
@@ -446,13 +447,12 @@ func TestUpsertNodeLabelsIsIdempotent(t *testing.T) {
 			Name: "node-a",
 			Labels: map[string]string{
 				"joulie.io/power-profile": "eco",
-				"joulie.io/draining":      "false",
 			},
 		}},
 	)
 	a := NodeAssignment{NodeName: "node-a", Profile: "eco", Draining: false}
 	before := len(client.Actions())
-	if err := upsertNodeLabels(context.Background(), client, "joulie.io/power-profile", "joulie.io/draining", a); err != nil {
+	if err := upsertNodeLabels(context.Background(), client, "joulie.io/power-profile", a); err != nil {
 		t.Fatalf("upsertNodeLabels failed: %v", err)
 	}
 	after := len(client.Actions())
@@ -482,7 +482,6 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 		selector,
 		"joulie.io/reserved",
 		"joulie.io/power-profile",
-		"joulie.io/draining",
 		time.Minute,
 		5000,
 		120,
@@ -523,8 +522,9 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 		case "eco":
 			eco++
 		}
-		if _, ok := n.Labels["joulie.io/draining"]; !ok {
-			t.Fatalf("missing draining label on node %s", n.Name)
+		// Draining is NOT a node label; it is tracked in NodeTwinState.schedulableClass only.
+		if _, hasDraining := n.Labels["joulie.io/draining"]; hasDraining {
+			t.Fatalf("unexpected joulie.io/draining label on node %s", n.Name)
 		}
 	}
 	if perf != 1 || eco != 1 {

@@ -58,3 +58,11 @@ operator:
       prometheus.io/scrape: "true"
       prometheus.io/port: "8081"
       prometheus.io/path: /metrics
+
+schedulerExtender:
+  enabled: false  # disabled by default; enable when using custom kube-scheduler config
+  image:
+    repository: registry.cern.ch/mbunino/joulie/joulie-scheduler
+    tag: latest
+  port: 9876
+  replicas: 1

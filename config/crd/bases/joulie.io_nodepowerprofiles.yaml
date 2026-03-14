@@ -61,6 +61,13 @@ spec:
                   properties:
                     name:
                       type: string
+                scheduling:
+                  type: object
+                  properties:
+                    draining: { type: boolean }
+                    reschedulablePressure:
+                      type: string
+                      enum: ["low", "medium", "high"]
               required:
                 - nodeName
                 - profile
@@ -80,3 +87,6 @@ spec:
         - name: GPU-Pct
           type: number
           jsonPath: .spec.gpu.powerCap.capPctOfMax
+        - name: Draining
+          type: boolean
+          jsonPath: .spec.scheduling.draining

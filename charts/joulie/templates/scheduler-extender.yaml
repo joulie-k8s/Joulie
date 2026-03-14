@@ -1,0 +1,66 @@
+{{- if .Values.schedulerExtender.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "joulie.fullname" . }}-scheduler-extender
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "joulie.labels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "joulie.fullname" . }}-scheduler-extender
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "joulie.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler-extender
+spec:
+  replicas: {{ .Values.schedulerExtender.replicas }}
+  selector:
+    matchLabels:
+      {{- include "joulie.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: scheduler-extender
+  template:
+    metadata:
+      labels:
+        {{- include "joulie.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: scheduler-extender
+    spec:
+      serviceAccountName: {{ include "joulie.fullname" . }}-scheduler-extender
+      containers:
+        - name: extender
+          image: "{{ .Values.schedulerExtender.image.repository }}:{{ .Values.schedulerExtender.image.tag }}"
+          ports:
+            - name: http
+              containerPort: {{ .Values.schedulerExtender.port }}
+              protocol: TCP
+          env:
+            - name: EXTENDER_ADDR
+              value: ":{{ .Values.schedulerExtender.port }}"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "joulie.fullname" . }}-scheduler-extender
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "joulie.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler-extender
+spec:
+  selector:
+    {{- include "joulie.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler-extender
+  ports:
+    - name: http
+      port: {{ .Values.schedulerExtender.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}
