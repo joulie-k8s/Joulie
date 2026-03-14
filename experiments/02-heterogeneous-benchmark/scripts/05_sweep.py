@@ -11,11 +11,14 @@ from collections import deque
 import yaml
 
 DEFAULT_CONFIG = pathlib.Path("experiments/02-heterogeneous-benchmark/configs/benchmark.yaml")
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", "experiments/02-heterogeneous-benchmark/results"))
+START_TS = time.time()
 
 
 def log(msg: str):
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    print(f"[sweep {now}] {msg}", flush=True)
+    elapsed = time.time() - START_TS
+    print(f"[sweep {now} +{elapsed:8.1f}s] {msg}", flush=True)
 
 
 def run(cmd, check=True, capture=False):
@@ -80,7 +83,7 @@ def generate_canonical_seed_trace(
     work_scale: float,
     allowed_workload_types: list[str] | None,
 ) -> pathlib.Path:
-    traces_dir = pathlib.Path("experiments/02-heterogeneous-benchmark/results/traces")
+    traces_dir = RESULTS / "traces"
     traces_dir.mkdir(parents=True, exist_ok=True)
     ratio_id = f"perf_{str(perf_ratio).replace('.', '_')}_eco_{str(eco_ratio).replace('.', '_')}"
     workload_id = (

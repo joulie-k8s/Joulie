@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
+import os
 import pathlib
 
 import matplotlib.pyplot as plt
 import pandas as pd
 
 ROOT = pathlib.Path("experiments/02-heterogeneous-benchmark")
-RESULTS = ROOT / "results"
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "results")))
 PLOTS = RESULTS / "plots"
 BASELINE_ORDER = ["A", "B", "C"]
 BASELINE_COLORS = {"A": "#4c78a8", "B": "#f58518", "C": "#54a24b"}

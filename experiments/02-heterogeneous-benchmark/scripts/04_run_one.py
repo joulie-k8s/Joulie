@@ -9,15 +9,19 @@ import platform
 import subprocess
 import sys
 import time
+import uuid
 from urllib.request import urlopen
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-RESULTS = ROOT / "results"
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "results"))).resolve()
+SIM_DEBUG_PERSIST_DIR = os.environ.get("SIM_DEBUG_PERSIST_DIR", "/tmp/joulie-simulator-debug").strip() or "/tmp/joulie-simulator-debug"
+START_TS = time.time()
 
 
 def log(msg: str):
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    print(f"[run_one {now}] {msg}", flush=True)
+    elapsed = time.time() - START_TS
+    print(f"[run_one {now} +{elapsed:8.1f}s] {msg}", flush=True)
 
 
 def run(cmd, check=True, capture=False, input_text=None):
@@ -116,8 +120,8 @@ def reset_workload_pods():
     )
 
 
-def apply_trace_configmap(trace_path: pathlib.Path):
-    log("applying simulator workload trace configmap")
+def apply_trace_configmap(trace_path: pathlib.Path, persist_dir: str):
+    log(f"applying simulator workload trace configmap persist_dir={persist_dir}")
     rendered = run(
         [
             "kubectl",
@@ -136,6 +140,17 @@ def apply_trace_configmap(trace_path: pathlib.Path):
     replace = run(["kubectl", "replace", "-f", "-"], check=False, capture=True, input_text=rendered)
     if replace.returncode != 0:
         run(["kubectl", "create", "-f", "-"], input_text=rendered)
+    run(
+        [
+            "kubectl",
+            "-n",
+            "joulie-sim-demo",
+            "set",
+            "env",
+            "deploy/joulie-telemetry-sim",
+            f"SIM_DEBUG_PERSIST_DIR={persist_dir}",
+        ]
+    )
     log("restarting simulator deployment to pick up new trace")
     run(["kubectl", "-n", "joulie-sim-demo", "rollout", "restart", "deploy/joulie-telemetry-sim"])
     run(["kubectl", "-n", "joulie-sim-demo", "rollout", "status", "deploy/joulie-telemetry-sim"])
@@ -179,26 +194,90 @@ def collect_artifacts(
     trace_path: pathlib.Path,
     time_scale: float,
     benchmark_config_path: pathlib.Path | None,
+    pod_persist_dir: str,
+    host_persist_dir: pathlib.Path,
 ):
     log("collecting artifacts")
     (run_dir / "trace.jsonl").write_text(trace_path.read_text())
+    host_persist_dir.mkdir(parents=True, exist_ok=True)
 
-    pf = subprocess.Popen(["kubectl", "-n", "joulie-sim-demo", "port-forward", "deploy/joulie-telemetry-sim", "18080:18080"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(1)
-    try:
-        nodes = urlopen("http://127.0.0.1:18080/debug/nodes", timeout=3).read().decode()
-        jobs = urlopen("http://127.0.0.1:18080/debug/jobs", timeout=3).read().decode()
-        events = urlopen("http://127.0.0.1:18080/debug/events", timeout=3).read().decode()
-        energy = urlopen("http://127.0.0.1:18080/debug/energy", timeout=3).read().decode()
-    except Exception:
-        nodes, jobs, events, energy = "{}", "{}", "{}", "{}"
-    finally:
-        pf.terminate()
+    def valid_debug_payload(text: str) -> bool:
+        text = (text or "").strip()
+        if not text or text == "{}":
+            return False
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            return False
+        return isinstance(obj, dict) and bool(obj)
+
+    def fetch_via_port_forward(endpoint: str, timeout_sec: int) -> str:
+        pf = subprocess.Popen(
+            ["kubectl", "-n", "joulie-sim-demo", "port-forward", "deploy/joulie-telemetry-sim", "18080:18080"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            time.sleep(1.5)
+            return urlopen(f"http://127.0.0.1:18080{endpoint}", timeout=timeout_sec).read().decode()
+        finally:
+            pf.terminate()
+            try:
+                pf.wait(timeout=5)
+            except Exception:
+                pf.kill()
+
+    def fetch_via_exec(filename: str) -> str:
+        out = run(
+            [
+                "kubectl",
+                "-n",
+                "joulie-sim-demo",
+                "exec",
+                "deploy/joulie-telemetry-sim",
+                "--",
+                "cat",
+                f"{pod_persist_dir}/{filename}",
+            ],
+            capture=True,
+            check=False,
+        )
+        return out.stdout.strip()
+
+    def fetch_debug_artifact(endpoint: str, filename: str) -> str:
+        for timeout_sec in (3, 8, 20):
+            try:
+                payload = fetch_via_port_forward(endpoint, timeout_sec)
+                if valid_debug_payload(payload):
+                    return payload
+            except Exception:
+                pass
+            time.sleep(1)
+        payload = fetch_via_exec(filename)
+        if valid_debug_payload(payload):
+            return payload
+        return "{}"
+
+    def mirror_persisted_file(filename: str):
+        payload = fetch_via_exec(filename)
+        if payload:
+            (host_persist_dir / filename).write_text(payload)
+
+    nodes = fetch_debug_artifact("/debug/nodes", "nodes.json")
+    jobs = fetch_debug_artifact("/debug/jobs", "jobs.json")
+    events = fetch_debug_artifact("/debug/events", "events.json")
+    energy = fetch_debug_artifact("/debug/energy", "energy.json")
 
     (run_dir / "sim_debug_nodes.json").write_text(nodes)
     (run_dir / "sim_debug_jobs.json").write_text(jobs)
     (run_dir / "sim_debug_events.json").write_text(events)
     (run_dir / "sim_debug_energy.json").write_text(energy)
+
+    (host_persist_dir / "nodes.json").write_text(nodes)
+    (host_persist_dir / "jobs.json").write_text(jobs)
+    (host_persist_dir / "events.json").write_text(events)
+    (host_persist_dir / "energy.json").write_text(energy)
+    mirror_persisted_file("events.ndjson")
 
     (run_dir / "pods.json").write_text(run(["kubectl", "get", "pods", "-A", "-o", "json"], capture=True).stdout)
     (run_dir / "nodepowerprofiles.yaml").write_text(run(["kubectl", "get", "nodepowerprofiles", "-o", "yaml"], capture=True, check=False).stdout)
@@ -266,10 +345,12 @@ def main():
     ap.add_argument("--benchmark-config", default="", type=str)
     args = ap.parse_args()
 
-    run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"_b{args.baseline}_s{args.seed}"
+    run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"_u{uuid.uuid4().hex}_b{args.baseline}_s{args.seed}"
     run_dir = RESULTS / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     log(f"starting run_id={run_id} baseline={args.baseline} seed={args.seed} jobs={args.jobs}")
+    pod_persist_dir = f"/tmp/joulie-simulator-debug/{run_id}"
+    host_persist_dir = pathlib.Path(SIM_DEBUG_PERSIST_DIR).resolve() / run_id
 
     trace_path = run_dir / "trace.jsonl"
     reset_workload_pods()
@@ -282,7 +363,7 @@ def main():
         log(f"reusing pre-generated trace file={src} records={copied}")
     else:
         generate_trace(trace_path, args.seed, args.jobs, args.mean_inter_arrival_sec)
-    apply_trace_configmap(trace_path)
+    apply_trace_configmap(trace_path, pod_persist_dir)
 
     start_ts = time.time()
     done = wait_completion(args.timeout, args.poll_log_sec)
@@ -290,7 +371,17 @@ def main():
         print("timeout waiting for completion", file=sys.stderr)
 
     benchmark_config_path = pathlib.Path(args.benchmark_config).resolve() if args.benchmark_config.strip() else None
-    collect_artifacts(run_dir, args.baseline, args.seed, start_ts, trace_path, args.time_scale, benchmark_config_path)
+    collect_artifacts(
+        run_dir,
+        args.baseline,
+        args.seed,
+        start_ts,
+        trace_path,
+        args.time_scale,
+        benchmark_config_path,
+        pod_persist_dir,
+        host_persist_dir,
+    )
     log(f"run completed run_id={run_id}")
 
 

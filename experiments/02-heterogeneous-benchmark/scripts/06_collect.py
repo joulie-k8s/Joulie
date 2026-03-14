@@ -2,13 +2,14 @@
 import datetime as dt
 import json
 import math
+import os
 import pathlib
 import re
 
 import pandas as pd
 
 ROOT = pathlib.Path("experiments/02-heterogeneous-benchmark")
-RESULTS = ROOT / "results"
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "results")))
 RUN_ID_RE = re.compile(r"_b([ABC])_s(\d+)$")
 JOB_COMPLETED_RE = re.compile(r"job completed id=(?P<job>\S+) node=(?P<node>\S+) class=(?P<class>\S+) elapsed=(?P<elapsed>[0-9.]+)s")
 

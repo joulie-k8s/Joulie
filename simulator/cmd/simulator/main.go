@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -164,6 +165,8 @@ type simulator struct {
 	energyJByNode map[string]float64
 	energyTotalJ  float64
 	energyLastTs  time.Time
+	persistDir    string
+	persistMu     sync.Mutex
 
 	requestsTotal   *prometheus.CounterVec
 	requestDuration *prometheus.HistogramVec
@@ -220,6 +223,7 @@ func main() {
 
 	s := newSimulator(baseModel, selector, classes, int(floatEnv("SIM_EVENT_BUFFER", 300)))
 	s.catalog = catalog
+	s.configurePersistence(strings.TrimSpace(envOrDefault("SIM_DEBUG_PERSIST_DIR", "/tmp/joulie-simulator-debug")))
 
 	tracePath := strings.TrimSpace(os.Getenv("SIM_WORKLOAD_TRACE_PATH"))
 	if tracePath != "" {
@@ -234,6 +238,7 @@ func main() {
 	if s.workload != nil {
 		go s.startWorkloadLoop(durationEnv("SIM_WORKLOAD_TICK", time.Second))
 	}
+	go s.startDebugSnapshotLoop(durationEnv("SIM_DEBUG_SNAPSHOT_INTERVAL", 5*time.Second))
 
 	addr := envOrDefault("SIM_ADDR", ":18080")
 	mux := http.NewServeMux()
@@ -353,6 +358,19 @@ func newSimulatorWithRegisterer(model simModel, selector labels.Selector, classe
 		s.controlResult,
 	)
 	return s
+}
+
+func (s *simulator) configurePersistence(dir string) {
+	if strings.TrimSpace(dir) == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("warning: debug persistence disabled mkdir path=%s err=%v", dir, err)
+		return
+	}
+	s.persistDir = dir
+	s.snapshotDebugState()
+	log.Printf("debug persistence enabled dir=%s", dir)
 }
 
 func (s *simulator) getNode(node string) *nodeState {
@@ -847,17 +865,96 @@ func (s *simulator) handleDebugNodes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", status)
 		return
 	}
-	type debugNode struct {
-		Node      string     `json:"node"`
-		Selected  bool       `json:"selected"`
-		Class     string     `json:"class"`
-		Model     simModel   `json:"model"`
-		State     *nodeState `json:"state,omitempty"`
-		Known     bool       `json:"known"`
-		SeenByAPI bool       `json:"seenByApi"`
-	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.debugNodesPayload())
+}
 
+func (s *simulator) handleDebugJobs(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	status := http.StatusOK
+	defer s.observeRequest("debug_jobs", r.Method, &status, start)
+	if r.Method != http.MethodGet {
+		status = http.StatusMethodNotAllowed
+		http.Error(w, "method not allowed", status)
+		return
+	}
+	if s.workload == nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"count": 0, "jobs": []any{}})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.debugJobsPayload())
+}
+
+func (s *simulator) handleDebugEvents(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	status := http.StatusOK
+	defer s.observeRequest("debug_events", r.Method, &status, start)
+	if r.Method != http.MethodGet {
+		status = http.StatusMethodNotAllowed
+		http.Error(w, "method not allowed", status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.debugEventsPayload(int(floatEnv("SIM_DEBUG_EVENT_LIMIT", 200))))
+}
+
+func (s *simulator) handleDebugEnergy(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	status := http.StatusOK
+	defer s.observeRequest("debug_energy", r.Method, &status, start)
+	if r.Method != http.MethodGet {
+		status = http.StatusMethodNotAllowed
+		http.Error(w, "method not allowed", status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.debugEnergyPayload())
+}
+
+func (s *simulator) observeRequest(route, method string, status *int, start time.Time) {
+	s.requestsTotal.WithLabelValues(route, method, strconv.Itoa(*status)).Inc()
+	s.requestDuration.WithLabelValues(route, method).Observe(time.Since(start).Seconds())
+}
+
+func (s *simulator) accumulateEnergy(dt float64) {
+	if dt <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for node, st := range s.state {
+		if st == nil {
+			continue
+		}
+		model := s.model
+		if m, ok := s.nodeModels[node]; ok {
+			model = m
+		}
+		p := s.nodePowerWithModel(st, model)
+		e := p * dt
+		if e <= 0 {
+			continue
+		}
+		s.energyJByNode[node] += e
+		s.energyTotalJ += e
+	}
+	s.energyLastTs = time.Now().UTC()
+}
+
+type debugNode struct {
+	Node      string     `json:"node"`
+	Selected  bool       `json:"selected"`
+	Class     string     `json:"class"`
+	Model     simModel   `json:"model"`
+	State     *nodeState `json:"state,omitempty"`
+	Known     bool       `json:"known"`
+	SeenByAPI bool       `json:"seenByApi"`
+}
+
+func (s *simulator) debugNodesPayload() map[string]any {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	nodes := make([]string, 0, len(s.nodeSeen))
 	for n := range s.nodeSeen {
 		nodes = append(nodes, n)
@@ -890,27 +987,15 @@ func (s *simulator) handleDebugNodes(w http.ResponseWriter, r *http.Request) {
 			SeenByAPI: s.nodeSeen[n],
 		})
 	}
-	s.mu.RUnlock()
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	return map[string]any{
 		"count": len(out),
 		"nodes": out,
-	})
+	}
 }
 
-func (s *simulator) handleDebugJobs(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	status := http.StatusOK
-	defer s.observeRequest("debug_jobs", r.Method, &status, start)
-	if r.Method != http.MethodGet {
-		status = http.StatusMethodNotAllowed
-		http.Error(w, "method not allowed", status)
-		return
-	}
+func (s *simulator) debugJobsPayload() map[string]any {
 	if s.workload == nil {
-		_ = json.NewEncoder(w).Encode(map[string]any{"count": 0, "jobs": []any{}})
-		return
+		return map[string]any{"count": 0, "jobs": []any{}}
 	}
 	now := time.Now().UTC()
 	out := make([]map[string]any, 0, len(s.workload.jobs))
@@ -948,89 +1033,107 @@ func (s *simulator) handleDebugJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		return fmt.Sprint(out[i]["jobId"]) < fmt.Sprint(out[j]["jobId"])
 	})
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	return map[string]any{
 		"count": len(out),
 		"jobs":  out,
-	})
+	}
 }
 
-func (s *simulator) handleDebugEvents(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	status := http.StatusOK
-	defer s.observeRequest("debug_events", r.Method, &status, start)
-	if r.Method != http.MethodGet {
-		status = http.StatusMethodNotAllowed
-		http.Error(w, "method not allowed", status)
-		return
-	}
+func (s *simulator) debugEventsPayload(limit int) map[string]any {
 	s.mu.RLock()
 	events := append([]simEvent(nil), s.events...)
 	s.mu.RUnlock()
-	limit := int(floatEnv("SIM_DEBUG_EVENT_LIMIT", 200))
 	if limit > 0 && len(events) > limit {
 		events = events[len(events)-limit:]
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	return map[string]any{
 		"count":  len(events),
 		"events": events,
-	})
+	}
 }
 
-func (s *simulator) handleDebugEnergy(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	status := http.StatusOK
-	defer s.observeRequest("debug_energy", r.Method, &status, start)
-	if r.Method != http.MethodGet {
-		status = http.StatusMethodNotAllowed
-		http.Error(w, "method not allowed", status)
-		return
-	}
+func (s *simulator) debugEnergyPayload() map[string]any {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	perNode := map[string]float64{}
 	for node, v := range s.energyJByNode {
 		perNode[node] = v
 	}
-	total := s.energyTotalJ
-	last := s.energyLastTs
-	s.mu.RUnlock()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"totalJoules":  total,
+	return map[string]any{
+		"totalJoules":  s.energyTotalJ,
 		"byNodeJoules": perNode,
-		"lastUpdated":  last.Format(time.RFC3339Nano),
-	})
+		"lastUpdated":  s.energyLastTs.Format(time.RFC3339Nano),
+	}
 }
 
-func (s *simulator) observeRequest(route, method string, status *int, start time.Time) {
-	s.requestsTotal.WithLabelValues(route, method, strconv.Itoa(*status)).Inc()
-	s.requestDuration.WithLabelValues(route, method).Observe(time.Since(start).Seconds())
-}
-
-func (s *simulator) accumulateEnergy(dt float64) {
-	if dt <= 0 {
+func (s *simulator) startDebugSnapshotLoop(interval time.Duration) {
+	if strings.TrimSpace(s.persistDir) == "" {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for node, st := range s.state {
-		if st == nil {
-			continue
-		}
-		model := s.model
-		if m, ok := s.nodeModels[node]; ok {
-			model = m
-		}
-		p := s.nodePowerWithModel(st, model)
-		e := p * dt
-		if e <= 0 {
-			continue
-		}
-		s.energyJByNode[node] += e
-		s.energyTotalJ += e
+	if interval <= 0 {
+		interval = 5 * time.Second
 	}
-	s.energyLastTs = time.Now().UTC()
+	s.snapshotDebugState()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.snapshotDebugState()
+	}
+}
+
+func (s *simulator) snapshotDebugState() {
+	if strings.TrimSpace(s.persistDir) == "" {
+		return
+	}
+	s.persistJSONAtomic("nodes.json", s.debugNodesPayload())
+	s.persistJSONAtomic("jobs.json", s.debugJobsPayload())
+	s.persistJSONAtomic("events.json", s.debugEventsPayload(0))
+	s.persistJSONAtomic("energy.json", s.debugEnergyPayload())
+}
+
+func (s *simulator) persistJSONAtomic(name string, payload any) {
+	if strings.TrimSpace(s.persistDir) == "" {
+		return
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		log.Printf("warning: persist %s marshal failed: %v", name, err)
+		return
+	}
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+	target := filepath.Join(s.persistDir, name)
+	tmp := target + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+		log.Printf("warning: persist %s write failed: %v", name, err)
+		return
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		log.Printf("warning: persist %s rename failed: %v", name, err)
+	}
+}
+
+func (s *simulator) persistEventJournal(e simEvent) {
+	if strings.TrimSpace(s.persistDir) == "" {
+		return
+	}
+	line, err := json.Marshal(e)
+	if err != nil {
+		log.Printf("warning: persist events journal marshal failed: %v", err)
+		return
+	}
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+	path := filepath.Join(s.persistDir, "events.ndjson")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("warning: persist events journal open failed: %v", err)
+		return
+	}
+	defer f.Close()
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		log.Printf("warning: persist events journal write failed: %v", err)
+	}
 }
 
 func (s *simulator) startPodPolling(interval time.Duration) {
@@ -1380,17 +1483,19 @@ func applyModelOverrides(base simModel, o simModelOverrides) simModel {
 }
 
 func (s *simulator) recordEvent(kind, node string, payload map[string]any) {
+	ev := simEvent{
+		Timestamp: time.Now().UTC(),
+		Kind:      kind,
+		Node:      node,
+		Payload:   payload,
+	}
+	s.persistEventJournal(ev)
 	if s.eventMax <= 0 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.events = append(s.events, simEvent{
-		Timestamp: time.Now().UTC(),
-		Kind:      kind,
-		Node:      node,
-		Payload:   payload,
-	})
+	s.events = append(s.events, ev)
 	if len(s.events) > s.eventMax {
 		s.events = s.events[len(s.events)-s.eventMax:]
 	}

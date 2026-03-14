@@ -190,25 +190,38 @@ By default the wrapper:
 - reuses the existing `kind` cluster if present,
 - reapplies the heterogeneous KWOK node inventory,
 - runs the sweep/collect/plot pipeline,
-- copies the final `results/` tree under a timestamped directory in `tmp/`.
+- creates a single numbered benchmark run root under `experiments/02-heterogeneous-benchmark/runs/`,
+- stores `results/`, simulator debug persistence, copied config files, and `run.log` under that same root,
+- logs UTC timestamps plus elapsed seconds for each major stage into `run.log`.
+
+The default run root format is:
+
+- `experiments/02-heterogeneous-benchmark/runs/0007_20260314T221530Z_u<uuid>/`
+
+The leading number makes runs easy to sort chronologically, and the UUID guarantees uniqueness. The newest run is also exposed through:
+
+- `experiments/02-heterogeneous-benchmark/runs/latest`
 
 Useful overrides:
 
 ```bash
 REUSE_EXISTING_CLUSTER=true \
 CLEAN_RESULTS=true \
-ARTIFACT_DIR=tmp/heterogeneous-benchmark-overnight-manual \
+ARTIFACT_DIR=experiments/02-heterogeneous-benchmark/runs/manual-overnight \
 experiments/02-heterogeneous-benchmark/scripts/30_run_overnight.sh \
   experiments/02-heterogeneous-benchmark/configs/benchmark-overnight.yaml
 ```
 
-Artifacts are written under:
+Artifacts for one benchmark execution are written under its benchmark run root, for example:
 
-- `experiments/02-heterogeneous-benchmark/results/`
+- `experiments/02-heterogeneous-benchmark/runs/0007_20260314T221530Z_u<uuid>/`
 
 including:
 
-- per-run directories with traces, logs, `nodepowerprofiles.yaml`, `nodehardwares.yaml`, and simulator debug snapshots,
+- per-run directories named with timestamp + UUID + baseline/seed, with traces, logs, `nodepowerprofiles.yaml`, `nodehardwares.yaml`, and simulator debug snapshots,
+- a shared `results/` subtree containing per-baseline/per-seed outputs plus aggregated CSVs and plots,
+- a shared `simulator-debug/` subtree used as the persistence root for simulator snapshots during that benchmark execution,
+- `run.log`, `benchmark-config.yaml`, and `cluster-nodes.yaml` at the benchmark run root,
 - per-run reproducibility metadata (`metadata.json`, `benchmark_config.yaml`, `kubectl_version.json`, node snapshots),
 - aggregated `results/summary.csv`,
 - aggregated `results/baseline_summary.csv` with mean/std/95% CI-style summaries across repeated seeds,
@@ -218,6 +231,8 @@ including:
 - aggregated `results/hardware_energy.csv`,
 - aggregated `results/hardware_family_relative_to_a.csv`,
 - plots under `results/plots/`.
+
+Each run also gets its own simulator debug persistence directory, so repeated simulator restarts do not overwrite the previous run's persisted debug state.
 
 The new attribution outputs make it possible to answer questions such as:
 

@@ -9,15 +9,23 @@ run:
   cleanup_timeout: 300
 
 workload:
-  perf_ratio: 0.08
+  # Research-cluster / HEP-style overnight mix:
+  # - most jobs are flexible exploratory runs, preprocessing, or analytics
+  # - a meaningful minority remains performance-sensitive
+  # - explicit eco-only jobs stay disabled because they are uncommon in practice
+  #   and make the benchmark more about benchmark-side placement than policy value
+  perf_ratio: 0.15
   eco_ratio: 0.00
-  gpu_ratio: 0.35
+  # Many jobs are GPU-backed, but CPU-side preprocessing/analytics is still common.
+  gpu_ratio: 0.45
   gpu_request_per_job: 1
-  burst_day_probability: 0.30
-  burst_mean_jobs: 10.0
-  burst_multiplier: 2.2
+  burst_day_probability: 0.25
+  burst_mean_jobs: 8.0
+  burst_multiplier: 2.0
   emit_workload_records: true
-  work_scale: 0.08
+  # Long enough to make throttling/capping matter, but still dominated by the
+  # single-GPU and CPU-side exploratory workload mix described in the workload report.
+  work_scale: 0.10
   baseline_a_strip_affinity: true
   allowed_workload_types:
     - debug_eval
@@ -48,10 +56,10 @@ policy:
 
 images:
   joulie_registry: registry.cern.ch/mbunino/joulie
-  joulie_tag: dev0.0.13
+  joulie_tag: dev0.0.14
   sim_registry: registry.cern.ch/mbunino/joulie
   sim_image: joulie-simulator
-  sim_tag: dev0.0.13
+  sim_tag: dev0.0.14
 
 install:
   kind_cluster_config: experiments/02-heterogeneous-benchmark/configs/kind-cluster.yaml
