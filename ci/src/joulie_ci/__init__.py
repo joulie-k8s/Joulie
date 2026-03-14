@@ -325,3 +325,101 @@ class JoulieCi:
         )
 
         return await client.stdout()
+
+    @function
+    async def integration_new_components(
+        self,
+        source: Annotated[dagger.Directory, Doc("Repository source directory.")],
+        username: Annotated[dagger.Secret, Doc("Registry username.")],
+        password: Annotated[dagger.Secret, Doc("Registry password/token.")],
+        registry_repo: Annotated[str, Doc("OCI repository prefix.")] = "registry.cern.ch/mbunino/joulie",
+        tag: Annotated[str, Doc("Image tag (must start with 'dev'). Auto-generated when empty.")] = "",
+    ) -> str:
+        """
+        Build/push Joulie images, start a single-node k3s cluster, install the Helm
+        chart with new CRDs, and run the Go integration tests in tests/integration/.
+
+        Workflow:
+        1. Build `agent` and `operator` images from current repo source.
+        2. Publish images to `registry_repo` using a `dev*` tag.
+        3. Start a single-node k3s cluster (server only, no worker).
+        4. Install Joulie Helm chart so CRDs are registered.
+        5. Run `go test -tags=integration ./tests/integration/...` and return stdout.
+
+        Single-node design rationale:
+          The new integration tests (IT-ARCH-01, IT-TWIN-01, IT-PROF-01, IT-SCHED-01/02,
+          IT-FSM-01) do not require the 2-node performance-floor logic.  A single k3s
+          server is faster to start and sufficient for CRD lifecycle, object write, and
+          scheduler-logic assertions.
+        """
+        import asyncio
+
+        if not tag:
+            tag = f"dev-{uuid.uuid4().hex[:12]}"
+        if not tag.startswith("dev"):
+            raise ValueError("integration_new_components image tag must start with 'dev'")
+
+        run_id = tag
+        cluster_token = f"joulie-ci-new-{run_id}"
+        config_cache = dag.cache_volume(f"k3s-config-new-{run_id}")
+
+        # --- Start single-node k3s server ---
+        server_svc = self._k3s_server_service(config_cache, run_id, cluster_token)
+        started_server = await server_svc.start()
+
+        # --- Build and publish images concurrently ---
+        agent_ref, operator_ref = await asyncio.gather(
+            self._publish_component_image(source, "agent", registry_repo, tag, username, password),
+            self._publish_component_image(source, "operator", registry_repo, tag, username, password),
+        )
+
+        # --- Kubeconfig ---
+        kubeconfig = self._kubeconfig_file(config_cache, run_id, started_server)
+
+        go_mod_cache = dag.cache_volume("joulie-go-mod-cache")
+        go_build_cache = dag.cache_volume("joulie-go-build-cache")
+
+        # --- Install CRDs via Helm then run Go integration tests ---
+        helm_cli = dag.helm().with_kubeconfig_file(kubeconfig)
+        client = (
+            helm_cli.container()
+            .with_exec([
+                "apk", "add", "--no-cache",
+                "bash", "go", "git", "ca-certificates", "sed", "kubectl",
+            ])
+            .with_mounted_directory("/src", source)
+            .with_file("/tmp/kubeconfig.yaml", kubeconfig)
+            .with_env_variable("KUBECONFIG", "/tmp/kubeconfig.yaml")
+            .with_service_binding("k3s", started_server)
+            .with_exec(["sed", "-i",
+                r"s|server: https://[^:]*:6443|server: https://k3s:6443|",
+                "/tmp/kubeconfig.yaml"])
+            # Wait for API server to be ready before installing chart.
+            .with_exec(["sh", "-c",
+                "for i in $(seq 1 120); do kubectl get nodes >/dev/null 2>&1 && break; sleep 1; done"])
+            # Install Helm chart so Joulie CRDs are registered.
+            .with_env_variable("JOULIE_AGENT_IMAGE_REPOSITORY", f"{registry_repo}/joulie-agent")
+            .with_env_variable("JOULIE_AGENT_IMAGE_TAG", tag)
+            .with_env_variable("JOULIE_OPERATOR_IMAGE_REPOSITORY", f"{registry_repo}/joulie-operator")
+            .with_env_variable("JOULIE_OPERATOR_IMAGE_TAG", tag)
+            .with_env_variable("JOULIE_AGENT_IMAGE_REF", agent_ref)
+            .with_env_variable("JOULIE_OPERATOR_IMAGE_REF", operator_ref)
+            .with_exec(["sh", "-c",
+                "helm upgrade --install joulie /src/charts/joulie "
+                "--set agent.image.repository=${JOULIE_AGENT_IMAGE_REPOSITORY} "
+                "--set agent.image.tag=${JOULIE_AGENT_IMAGE_TAG} "
+                "--set operator.image.repository=${JOULIE_OPERATOR_IMAGE_REPOSITORY} "
+                "--set operator.image.tag=${JOULIE_OPERATOR_IMAGE_TAG} "
+                "--wait --timeout=5m"])
+            # Go cache volumes for faster repeated runs.
+            .with_mounted_cache("/go/pkg/mod", go_mod_cache)
+            .with_mounted_cache("/root/.cache/go-build", go_build_cache)
+            .with_env_variable("GOMODCACHE", "/go/pkg/mod")
+            .with_env_variable("GOCACHE", "/root/.cache/go-build")
+            .with_workdir("/src")
+            # Run the new Go integration tests with the integration build tag.
+            .with_exec(["go", "test", "-v", "-tags=integration",
+                "-timeout=10m", "./tests/integration/..."])
+        )
+
+        return await client.stdout()

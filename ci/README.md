@@ -4,9 +4,9 @@ This folder contains a Dagger-based integration test harness for Joulie.
 
 It starts a lightweight custom **2-node k3s** cluster (server + worker) as Dagger services, installs Joulie via Helm from the local repo, and runs integration tests focused on:
 
-- FSM transitions and node labels (`joulie.io/power-profile`, `joulie.io/draining`)
-- scheduling behavior under affinity constraints
-- classification-driven draining behavior
+- FSM transitions and node labels (`joulie.io/power-profile`) with draining state tracked in `NodeTwinState.schedulableClass`
+- scheduler extender behavior driven by `joulie.io/workload-class` pod annotations
+- workload-class classification and draining behavior (via NodeTwinState)
 - TelemetryProfile HTTP routing smoke test (CPU + GPU control paths)
 
 ## Layout
@@ -84,11 +84,11 @@ Always executed:
 
 Executed in full scope (`IT_SCOPE=all` or `full`):
 
-- `IT-CLS-*` (`test_classification_matrix`): runs the classification matrix across affinity/nodeSelector patterns and validates expected draining/eco behavior, including unschedulable edge cases.
-- `IT-FSM-*` (`test_fsm_and_labels`): verifies main FSM transitions (`performance` <-> `eco`) and `draining` behavior with perf and best-effort workloads.
-- `IT-FSM-07` (`test_fsm_toggle_under_eco`): keeps node in eco, creates a perf-constrained pod, and verifies it stays unschedulable while node remains eco/non-draining.
+- `IT-CLS-*` (`test_classification_matrix`): validates workload-class annotation-based classification (`performance`, `standard`, `best-effort`, unset) and expected draining/eco behavior.
+- `IT-FSM-*` (`test_fsm_and_labels`): verifies main FSM transitions (`performance` <-> `eco`) and `draining` behavior with performance and best-effort workloads.
+- `IT-FSM-07` (`test_fsm_toggle_under_eco`): keeps node in eco, creates a performance-class pod, and verifies the scheduler extender rejects it while node remains eco/non-draining.
 - `IT-FSM-05` (`test_fsm_idempotency`): checks steady-state idempotency (no label flapping and no unexpected node resourceVersion churn).
-- `IT-SCH-*` (`test_scheduling`): validates scheduler outcomes for perf and eco affinities on unlabeled/performance/eco/draining node states.
+- `IT-SCH-*` (`test_scheduling`): validates scheduler extender outcomes for `performance`, `standard`, and `best-effort` workload classes on performance/eco nodes.
 
 Current execution order in `integration_runner.py` is:
 

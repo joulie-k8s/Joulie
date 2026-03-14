@@ -30,38 +30,26 @@ CRD definitions live in:
 
 ## Demand model (workloads)
 
-Workload class is inferred from Kubernetes scheduling constraints on key:
+Workload class is determined from the `joulie.io/workload-class` pod annotation or from a matching `WorkloadProfile`:
 
-- `joulie.io/power-profile`
-
-Classification:
-
-- `performance` demand:
-  - pod excludes eco in required scheduling constraints (recommended pattern: `NotIn ["eco"]`)
-  - compatibility path: explicit `nodeSelector` `joulie.io/power-profile=performance`
-- `eco` demand:
-  - pod requires `joulie.io/power-profile=eco`
-  - advanced pattern: also exclude `joulie.io/draining=true` with `NotIn ["true"]`
-- `general` demand:
-  - no explicit power-profile requirement (unconstrained)
-
-Classification source is affinity/selector, not a custom intent label.
+- `performance` demand: pod carries `joulie.io/workload-class: performance` or a matching profile with `criticality: performance`.
+- `best-effort` demand: pod carries `joulie.io/workload-class: best-effort` or a matching profile with `criticality: best-effort`.
+- `standard` demand (default): no annotation, or `joulie.io/workload-class: standard`. No class-specific adjustments.
 
 ## Supply model (nodes)
 
-Node supply is represented by label:
+Node supply is represented by:
 
-- `joulie.io/power-profile=performance|eco`
-- `joulie.io/draining=true|false`
+- `joulie.io/power-profile=performance|eco` (node label, set by operator)
+- `NodeTwinState.schedulableClass` (internal, set by operator twin controller)
 
 Semantics:
 
 - `performance`: full-performance supply
 - `eco`: low-power supply
-- `draining=true`: transition safeguard active while node is moving toward eco
+- `draining` (schedulableClass only): transition safeguard active while node is moving toward eco; the scheduler extender applies a score penalty
 
-For eco-only placement, prefer excluding `joulie.io/draining=true` rather than requiring `draining=false`.
-That pattern is more robust because unlabeled nodes remain eligible while actively draining nodes are still excluded.
+The `schedulableClass` field is internal to the operator and scheduler extender. Users interact only with the `joulie.io/workload-class` pod annotation for placement intent.
 
 ## Desired-state object: `NodePowerProfile`
 

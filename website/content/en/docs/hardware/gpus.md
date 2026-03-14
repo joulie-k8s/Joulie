@@ -69,12 +69,13 @@ This makes it easier to compare:
 
 ## Scheduling guidance
 
-Keep workload intent guidance unchanged:
+Workload placement intent is expressed via the `joulie.io/workload-class` pod annotation:
 
-- performance-sensitive pods: prefer `NotIn ["eco"]`
-- eco-only (advanced): `In ["eco"]` and optionally `joulie.io/draining NotIn ["true"]`
+- `performance`: must run on full-power nodes (extender hard-rejects eco nodes)
+- `standard`: default, prefers performance nodes, tolerates eco
+- `best-effort`: prefers eco nodes, leaves performance capacity free
 
-GPU resource requests (`nvidia.com/gpu`, `amd.com/gpu`) are orthogonal to Joulie power-profile labels.
+GPU resource requests (`nvidia.com/gpu`, `amd.com/gpu`) are independent from Joulie workload classes.
 Joulie GPU capping is node-level and not a GPU slicing API.
 
 ## Example

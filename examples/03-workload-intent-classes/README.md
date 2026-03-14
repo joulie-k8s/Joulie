@@ -5,7 +5,7 @@ This example demonstrates scheduler adaptation to Joulie profile flips even when
 You will run:
 
 - operator policy loop that flips node profiles every `N` minutes,
-- two Deployments with scheduling classes (`performance`, `eco`) expressed via node affinity,
+- two Deployments with scheduling classes (`performance`, `best-effort`) expressed via the `joulie.io/workload-class` pod annotation,
 - a recycler CronJob that periodically deletes pods so new pods are rescheduled against the latest node profile.
 
 ## 1) Preconditions
@@ -73,11 +73,11 @@ watch -n 5 'kubectl -n joulie-intent-demo get pods -o wide; echo; kubectl get no
 
 Note: `servicemonitor-operator.yaml` assumes Prometheus Operator release label `release: telemetry` in namespace `default`.
 
-What each workload expresses (single source of truth is affinity):
+What each workload expresses (single source of truth is the `joulie.io/workload-class` annotation):
 
-- `performance`: recommended pattern is `joulie.io/power-profile NotIn ["eco"]`
-- `eco`: hard requires `joulie.io/power-profile=eco`
-- no power-profile affinity: implicit unconstrained/general scheduling class
+- `performance`: the scheduler extender hard-rejects eco nodes for this pod
+- `best-effort`: the extender prefers eco nodes for this pod
+- no annotation: implicit `standard` class, prefers performance nodes but tolerates eco
 
 ## 3) Observe pod movement across nodes
 
@@ -86,8 +86,7 @@ watch -n 5 'kubectl -n joulie-intent-demo get pods -o wide; echo; kubectl get no
 ```
 
 You should see pods recreated roughly every minute by the recycler, then placed according to the profile labels currently set by the operator.
-If a node is transitioning `ActivePerformance -> ActiveEco` and still has running `performance`-class workloads (classified from pod scheduling constraints), the operator marks the node as draining with `joulie.io/draining=true`.
-Advanced eco-only constraints can use `joulie.io/draining=false` to avoid mid-transition nodes.
+If a node is transitioning `ActivePerformance -> ActiveEco` and still has running performance workloads, the operator sets `NodeTwinState.schedulableClass` to `draining` and the extender applies a score penalty to avoid placing new workloads there.
 
 ## 4) Grafana dashboard for this demo
 
@@ -110,8 +109,6 @@ Dashboard highlights:
   - `applied` transitions and `deferred` transitions from operator guard logic
 - `Kubernetes Node Label Profile (kube_node_labels)`:
   - actual `joulie.io/power-profile` label value from Kubernetes
-- `Kubernetes Draining Flag (kube_node_labels)`:
-  - actual `joulie.io/draining` transition flag from Kubernetes
 - `Pods by Node`:
   - shows how workload pods land on nodes as profiles flip
 - `Pod Re-creations (5m)`:

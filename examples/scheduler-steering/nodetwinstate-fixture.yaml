@@ -1,0 +1,37 @@
+# Fixture NodeTwinState for testing the scheduler extender without a running operator.
+# In production, the operator automatically maintains these objects.
+apiVersion: joulie.io/v1alpha1
+kind: NodeTwinState
+metadata:
+  name: worker-node-1
+spec:
+  nodeName: worker-node-1
+status:
+  nodeName: worker-node-1
+  schedulableClass: eco
+  predictedPowerHeadroomScore: 30
+  predictedCoolingStressScore: 65
+  predictedPsuStressScore: 55
+  effectiveCapState:
+    cpuPct: 60
+    gpuPct: 60
+  hardwareDensityScore: 90
+  lastUpdated: "2026-03-13T12:00:00Z"
+---
+apiVersion: joulie.io/v1alpha1
+kind: NodeTwinState
+metadata:
+  name: worker-node-2
+spec:
+  nodeName: worker-node-2
+status:
+  nodeName: worker-node-2
+  schedulableClass: performance
+  predictedPowerHeadroomScore: 80
+  predictedCoolingStressScore: 20
+  predictedPsuStressScore: 25
+  effectiveCapState:
+    cpuPct: 100
+    gpuPct: 100
+  hardwareDensityScore: 75
+  lastUpdated: "2026-03-13T12:00:00Z"

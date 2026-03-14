@@ -72,3 +72,9 @@ go.work.sum
 website/public/
 website/resources/
 website/.hugo_build.lock
+
+# Compiled Go binaries (root-level)
+/agent
+/scheduler
+/operator
+/simulator

@@ -54,12 +54,13 @@ See [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) fo
 
 ## Scheduling guidance
 
-Workload intent classification is based on node selector/affinity using `joulie.io/power-profile`:
+Workload placement intent is expressed via the `joulie.io/workload-class` pod annotation:
 
-- performance-sensitive workloads: typically exclude `eco`
-- eco-only workloads: explicitly require `eco`, and if they must avoid transition-guarded nodes, exclude `joulie.io/draining=true` with `NotIn ["true"]`
+- `performance`: must run on full-power nodes (extender hard-rejects eco nodes)
+- `standard`: default, prefers performance nodes, tolerates eco
+- `best-effort`: prefers eco nodes, leaves performance capacity free
 
-This classification drives operator profile assignment; CPU capping is then enforced through `NodePowerProfile`.
+The scheduler extender enforces these classes; CPU capping is then enforced through `NodePowerProfile`.
 
 ## Related docs
 

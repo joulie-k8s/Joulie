@@ -1,0 +1,37 @@
+# Joulie control loop scenarios
+# Each scenario enables a different combination of Joulie features.
+
+scenarios:
+  - name: A
+    label: "Baseline (no Joulie)"
+    capsEnabled: false
+    schedulerEnabled: false
+    cpuCapPct: 100
+    gpuCapPct: 100
+    description: >
+      No Joulie components active. Baseline energy and performance numbers.
+      Pods are placed by default kube-scheduler.
+
+  - name: B
+    label: "Caps only"
+    capsEnabled: true
+    schedulerEnabled: false
+    cpuCapPct: 65
+    gpuCapPct: 65
+    description: >
+      Operator applies 65% CPU and GPU power caps via NodePowerProfile CRs.
+      Agent enforces via RAPL (CPU) and NVML (GPU).
+      No scheduler steering: pods still placed by default scheduler.
+      Performance jobs may land on capped nodes.
+
+  - name: C
+    label: "Caps + Scheduler"
+    capsEnabled: true
+    schedulerEnabled: true
+    cpuCapPct: 65
+    gpuCapPct: 65
+    description: >
+      Caps + scheduler extender.
+      Extender rejects eco nodes for performance pods.
+      Scores nodes by power headroom, cooling stress, PSU stress.
+      Draining nodes receive a score penalty.

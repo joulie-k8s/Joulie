@@ -5,131 +5,129 @@ slug = "workload-compatibility"
 weight = 3
 +++
 
-Joulie uses Kubernetes scheduling constraints as the single source of truth for workload placement intent.
+Joulie uses a single pod annotation to express workload placement intent:
 
-Power profile supply is exposed on node label:
+```
+joulie.io/workload-class: performance | standard | best-effort
+```
 
-- `joulie.io/power-profile=performance`
-- `joulie.io/power-profile=eco`
-- `joulie.io/draining=true|false` (independent transition flag)
+The scheduler extender reads this annotation and steers pods accordingly. No node affinity rules are needed.
 
-Workload behavior:
+## Workload classes
 
-- `performance` workload (recommended): require `joulie.io/power-profile NotIn ["eco"]`
-- `eco` workload: require `joulie.io/power-profile=eco`
-- unconstrained workload: no power-profile affinity, can run on either profile
+| Class | Behavior |
+|-------|----------|
+| `performance` | Must run on full-power nodes. The extender hard-rejects eco nodes. |
+| `standard` | Default. Prefers performance nodes, tolerates eco. |
+| `best-effort` | Prefers eco nodes, leaves performance capacity free for critical workloads. |
 
-## Best-effort Pod (unconstrained, starting point)
+If no annotation is present and no `WorkloadProfile` matches the pod, the extender treats it as `standard`.
 
-This is the default and recommended starting spec.
-Do not set power-profile affinity: Kubernetes can schedule the pod on either eco or performance nodes.
+## Performance pod
+
+Add the `joulie.io/workload-class: performance` annotation. The scheduler extender will reject eco nodes for this pod.
+
+{{< highlight yaml "linenos=table,hl_lines=6-7" >}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-critical-service
+  annotations:
+    joulie.io/workload-class: performance
+spec:
+  containers:
+  - name: app
+    image: ghcr.io/example/app:latest
+{{< /highlight >}}
+
+## Standard pod (default)
+
+No annotation is required. The extender scores performance nodes higher but does not reject eco nodes.
 
 {{< highlight yaml "linenos=table" >}}
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: Pod
 metadata:
   name: my-workload
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: my-workload
-  template:
-    metadata:
-      labels:
-        app: my-workload
-    spec:
-      containers:
-      - name: app
-        image: ghcr.io/example/app:latest
+  containers:
+  - name: app
+    image: ghcr.io/example/app:latest
 {{< /highlight >}}
 
-## Performance Pod (recommended, lines to add)
+You can also be explicit:
 
-{{< highlight yaml "linenos=table,hl_lines=15-22" >}}
-apiVersion: apps/v1
-kind: Deployment
+{{< highlight yaml "linenos=table,hl_lines=6-7" >}}
+apiVersion: v1
+kind: Pod
 metadata:
   name: my-workload
+  annotations:
+    joulie.io/workload-class: standard
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: my-workload
-  template:
-    metadata:
-      labels:
-        app: my-workload
-    spec:
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: joulie.io/power-profile
-                operator: NotIn
-                values: ["eco"]
-      containers:
-      - name: app
-        image: ghcr.io/example/app:latest
+  containers:
+  - name: app
+    image: ghcr.io/example/app:latest
 {{< /highlight >}}
 
-Why this is recommended:
+## Best-effort pod
 
-- it avoids eco nodes while still allowing high-performance nodes which are not managed by Joulie;
-- explicitly requiring `performance` can exclude unlabeled nodes that are still valid for performance workloads and are managed by Joulie.
+Best-effort pods are steered toward eco nodes, freeing performance capacity for critical workloads.
 
-## Eco-only Pod (advanced, lines to add)
-
-This is an advanced/rare pattern.
-Use it only when you explicitly need jobs to run on eco supply.
-In most cases, users should either:
-
-- use `NotIn ["eco"]` for performance-sensitive pods, or
-- keep pods unconstrained (best-effort) and let Joulie manage power behavior.
-
-If you choose eco-only, exclude actively draining nodes with `joulie.io/draining NotIn ["true"]`.
-That is more robust than requiring `draining=false`, because unlabeled nodes are still eligible while `draining=true` remains excluded.
-
-{{< highlight yaml "linenos=table,hl_lines=15-25" >}}
-apiVersion: apps/v1
-kind: Deployment
+{{< highlight yaml "linenos=table,hl_lines=6-7" >}}
+apiVersion: v1
+kind: Pod
 metadata:
-  name: my-workload
+  name: my-batch-job
+  annotations:
+    joulie.io/workload-class: best-effort
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: my-workload
-  template:
-    metadata:
-      labels:
-        app: my-workload
-    spec:
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: joulie.io/power-profile
-                operator: In
-                values: ["eco"]
-              - key: joulie.io/draining
-                operator: NotIn
-                values: ["true"]
-      containers:
-      - name: app
-        image: ghcr.io/example/app:latest
+  containers:
+  - name: app
+    image: ghcr.io/example/batch:latest
 {{< /highlight >}}
-
-Reference manifests:
-
-- [Example 03 workloads](https://github.com/joulie-k8s/Joulie/blob/main/examples/03-workload-intent-classes/deployments.yaml)
 
 ## GPU resource requests
 
-GPU scheduling resources (`nvidia.com/gpu`, `amd.com/gpu`) are independent from Joulie power-profile labels.
+GPU scheduling resources (`nvidia.com/gpu`, `amd.com/gpu`) are independent from Joulie workload classes.
 
-- request GPU resources as usual in pod/container resources,
-- keep Joulie intent guidance based on power-profile constraints (`NotIn ["eco"]` for performance-sensitive workloads),
-- remember Joulie GPU capping is node-level (not per-container GPU slicing).
+- Request GPU resources as usual in pod/container resources.
+- Set `joulie.io/workload-class` to express your placement intent.
+- Joulie GPU capping is node-level (not per-container GPU slicing).
+
+Example: a performance GPU inference pod:
+
+{{< highlight yaml "linenos=table,hl_lines=6-8" >}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-inference
+  annotations:
+    joulie.io/workload-class: performance
+    joulie.io/gpu-sensitivity: high
+spec:
+  containers:
+  - name: inference
+    image: ghcr.io/example/inference:latest
+    resources:
+      limits:
+        nvidia.com/gpu: "1"
+{{< /highlight >}}
+
+## Sensitivity annotations
+
+For finer control, add sensitivity annotations so the extender can prefer nodes with more headroom:
+
+| Annotation | Values | Effect |
+|---|---|---|
+| `joulie.io/workload-class` | `performance`, `standard`, `best-effort` | Controls eco/performance placement |
+| `joulie.io/cpu-sensitivity` | `high`, `medium`, `low` | Scales penalty on capped CPU nodes |
+| `joulie.io/gpu-sensitivity` | `high`, `medium`, `low` | Scales penalty on capped GPU nodes |
+
+All annotations are optional. If omitted and no `WorkloadProfile` matches the pod, the extender scores neutrally.
+
+## WorkloadProfile-based scheduling
+
+For teams that prefer not to annotate individual pods, create a `WorkloadProfile` with a `podSelector` matching your workload's labels. The extender will use the profile's fields to drive filter and score logic automatically.
+
+See [WorkloadProfile Guide]({{< relref "/docs/getting-started/04-workload-profiles.md" >}}) for details.

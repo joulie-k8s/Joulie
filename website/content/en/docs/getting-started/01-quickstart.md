@@ -124,8 +124,6 @@ Meaning of the key node labels:
   - node currently offers high-performance supply
 - `joulie.io/power-profile=eco`
   - node currently offers low-power supply (resources are throttled according to the selected policy)
-- `joulie.io/draining=true|false`
-  - transition flag used while moving toward eco under safeguards
 
 Read the architecture path after this quickstart:
 

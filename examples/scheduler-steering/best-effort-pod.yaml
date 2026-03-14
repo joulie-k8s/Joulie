@@ -1,0 +1,27 @@
+# Best-effort workload: can run on eco nodes.
+# The scheduler extender will prefer eco nodes with available headroom.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: best-effort-job
+  labels:
+    app: best-effort-job
+  annotations:
+    # Hints for the Joulie scheduler extender
+    joulie.io/workload-class: "best-effort"
+    joulie.io/cpu-sensitivity: "low"
+spec:
+  nodeSelector:
+    joulie.io/managed: "true"
+  containers:
+    - name: worker
+      image: busybox:latest
+      command: ["sleep", "1800"]
+      resources:
+        requests:
+          cpu: "1"
+          memory: "2Gi"
+        limits:
+          cpu: "2"
+          memory: "4Gi"
+  restartPolicy: Never

@@ -258,6 +258,30 @@ Thermal state is also modeled with first-order settling:
 
 So short spikes, long steady-state runs, and sustained capped operation do not all look the same in telemetry anymore.
 
+## WorkloadProfile fields in simulation
+
+The simulator generates `WorkloadProfile`-compatible fields for each job. These fields mirror the `joulie.io/v1alpha1` `WorkloadProfile` CRD and are consumed by the simulated operator/twin and scheduler extender.
+
+Generated fields:
+
+| Field | Values | Effect |
+|-------|--------|--------|
+| `criticality.class` | `performance`, `standard`, `best-effort` | Scheduler hard-rejects eco placement for performance workloads |
+| `migratability.reschedulable` | `true` / `false` | Operator considers workload for rescheduling under pressure |
+| `cpu.capSensitivity` | `high`, `medium`, `low` | Scheduler prefers uncapped nodes for high-sensitivity workloads |
+| `gpu.capSensitivity` | `high`, `medium`, `low` | As above, for GPU headroom |
+| `cpu.bound` | `compute`, `memory`, `io`, `mixed` | Affects slowdown model under CPU throttling |
+| `gpu.bound` | `compute`, `memory`, `mixed`, `none` | Affects slowdown model under GPU cap |
+
+Best-effort jobs are marked reschedulable by default. Performance jobs are not reschedulable. Standard jobs may be reschedulable.
+
+These fields are used by:
+- the simulated operator twin (`pkg/operator/twin`) to compute headroom and stress scores,
+- the scheduler extender (`cmd/scheduler`) to apply workload-class-aware scoring,
+- the migration controller (`pkg/operator/migration`) to generate reschedule recommendations.
+
+The heterogeneous cluster control loop benchmark (`experiments/03-heterogeneous_cluster_control_loop/`) exercises all three scenarios (baseline, caps-only, caps+scheduler) using a mixed batch with all the above profile variants.
+
 ## Scheduling class inference
 
 Workload class is inferred from pod scheduling constraints:
