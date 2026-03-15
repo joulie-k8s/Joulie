@@ -66,6 +66,11 @@ data:
 YAML
 
 kubectl apply -f "$SIMULATOR_MANIFEST"
+# Pin the simulator to the real infra worker so it never lands on a KWOK fake node.
+# If a KWOK node receives the simulator pod, the kwok pod-complete stage immediately
+# marks it as Succeeded, which makes the Deployment rollout never converge.
+kubectl -n joulie-sim-demo patch deploy/joulie-telemetry-sim --type='merge' \
+  -p='{"spec":{"template":{"spec":{"nodeSelector":{"joulie.io/infra":"true"}}}}}'
 kubectl -n joulie-sim-demo patch deploy/joulie-telemetry-sim --type='json' -p='[
   {"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}
 ]'
@@ -85,7 +90,7 @@ if [[ "$HAS_HW_CATALOG" == "0" ]]; then
     {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"hardware-catalog","configMap":{"name":"joulie-simulator-hardware-catalog"}}}
   ]'
 fi
-kubectl -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim
+kubectl -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim --timeout=600s
 SIM_ACTUAL_IMAGE=$(actual_image_from_workload "joulie-sim-demo" "deploy/joulie-telemetry-sim")
 
 echo "simulator deployment image in use: ${SIM_ACTUAL_IMAGE}"

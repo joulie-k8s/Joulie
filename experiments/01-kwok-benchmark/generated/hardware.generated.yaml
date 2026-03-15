@@ -1,13 +1,5 @@
 catalogVersion: v1
 cpuModels:
-  AMD_EPYC_9654_96_Core_Processor:
-    aliases: ["AMD EPYC 9654 96-Core Processor", "AMD-EPYC-9654-96-Core-Processor"]
-    provenance: generated-from-inventory
-    official:
-      vendor: amd
-      baseGHz: 2.0
-      boostGHz: 3.0
-      tdpW: 300
   AMD_EPYC_9965_192_Core_Processor:
     aliases: ["AMD EPYC 9965 192-Core Processor", "AMD-EPYC-9965-192-Core-Processor"]
     provenance: generated-from-inventory
@@ -34,9 +26,3 @@ cpuModels:
       tdpW: 300
 
 gpuModels:
-  NVIDIA_H100_NVL:
-    aliases: ["NVIDIA H100 NVL", "NVIDIA-H100-NVL"]
-    provenance: generated-from-inventory
-    official:
-      vendor: nvidia
-      maxBoardPowerW: 400

@@ -310,13 +310,13 @@ Experiment 02 therefore adds a second step during the sweep:
 2. retarget `type=job` records onto the currently available KWOK nodes,
 3. derive baseline-specific traces from that retargeted canonical trace.
 
-The current retargeting logic is intentionally **family-first**:
+The current retargeting logic is intentionally **scheduler-driven**:
 
-- CPU-only jobs are first spread across CPU families,
-- GPU jobs are first spread across GPU product families,
-- only then are additional jobs reused across more node instances in those families.
+- CPU-only jobs are constrained only to the CPU-only pool (`joulie.io/hw.kind=cpu-only`),
+- GPU jobs are mapped to the appropriate vendor extended resource (`nvidia.com/gpu` or `amd.com/gpu`) using the actual cluster composition,
+- Kubernetes then performs the real node-level placement on the compatible pool.
 
-This keeps the debug benchmark lightweight while still making sure the heterogeneous hardware families are actually exercised.
+This keeps the heterogeneous family mix realistic without pre-assigning workloads to exact nodes in the harness.
 
 In other words:
 
@@ -404,8 +404,39 @@ That keeps the analysis interpretable without pretending we have exact per-job e
 
 Workload-type tradeoff views also tag low-sample groups in the CSVs. Plot generation filters out unstable low-count workload categories by default so a handful of jobs does not dominate the visual story.
 
+## Hardware physics model
+
+The simulator uses the `CappedBoardGPUModel` with per-GPU-family physics parameters calibrated from vendor specifications and published power/performance data:
+
+| GPU family | idleWattsPerGpu | computeGamma | memoryEpsilon | memoryGamma | Notes |
+|---|---|---|---|---|---|
+| NVIDIA H100 NVL | 60 W | 1.50 | 0.15 | 0.90 | NVLink fabric idle overhead ~20-30 W; steep compute regression under capping (MLPerf Power v3.1/v4.0) |
+| NVIDIA H100 80GB HBM3 | 100 W | 1.40 | 0.15 | 0.90 | SXM5 socket + NVLink bridge; ~800 W board idle / 8 GPUs |
+| NVIDIA L40S | 35 W | 1.20 | 0.25 | 1.10 | GDDR6; inference-focused; moderate compute regression |
+| AMD Instinct MI300X | 120 W | 0.85 | 0.10 | 0.85 | HBM3 unified memory; compute holds up well under throttling; high idle from coherency circuits |
+| AMD Radeon PRO W7900 | 25 W | 1.10 | 0.30 | 1.20 | GDDR6; workstation GPU; memory bandwidth more sensitive to power capping |
+
+**computeGamma** controls how steeply compute throughput falls when the GPU is power-capped: `computeScale = (capW / natW)^computeGamma`. H100 NVL (γ=1.5) degrades steeply because it is FLOPS-density optimized and its performance is tightly coupled to its power budget. MI300X (γ=0.85) degrades gently because its unified memory APU-like design allows the processor to sustain throughput even at lower clocks.
+
+**memoryEpsilon / memoryGamma** control HBM3 vs GDDR6 bandwidth sensitivity: `memScale = 1 - ε*(1-ratio)^γ`. HBM3 (ε=0.10-0.15) is robust because it is independently clocked and self-refreshes efficiently. GDDR6 (ε=0.25-0.30) is more sensitive because its bandwidth is directly tied to memory clock frequency.
+
+Sources: NVIDIA H100 NVL spec; AMD MI300X architecture whitepaper; MLCommons MLPerf Training v4.1 power submissions; "Characterizing Power Management Opportunities on DGX H100" (NeurIPS'23 Systems Workshop); AMD ROCm documentation.
+
+## GPU job placement in the benchmark
+
+The retargeting step (`05_sweep.py`) now maps GPU jobs to the correct vendor extended resource (`nvidia.com/gpu` or `amd.com/gpu`) using a unified family-first pool that reflects the actual cluster composition. After that rewrite, Kubernetes performs the real node-level placement. This replaces earlier harness behavior that pinned jobs to exact nodes and distorted queueing.
+
+## Benchmark trace job classification
+
+`trace_stats()` classifies performance/eco/general jobs by parsing the actual affinity structure rather than string-matching the serialized JSON. The naive string approach produced false positives for performance jobs (which have `joulie.io/power-profile NotIn [eco]`) because unrelated affinity expressions can also contain `"In"` operators.
+
+## Related experiment
+
+- [03 - Homogeneous H100 Benchmark](../03-homogeneous-h100-benchmark/README.md) — identical workload and policy parameters on a homogeneous H100 NVL cluster, to test the hypothesis that heterogeneity limits Joulie's scheduling efficiency.
+
 ## Known caveats
 
 - Simulator power telemetry intentionally distinguishes averaged vs instantaneous power. When comparing results to real GPU runs, remember that NVML power telemetry on many modern NVIDIA GPUs is itself averaged over a 1-second window.
 - Real CPU package power is often reconstructed from energy-counter deltas, so sampling cadence and averaging windows matter there as well.
 - This harness is a reproducible simulation/benchmark path, not yet an external-meter calibration harness. External-meter validation remains the next step for bare-metal model calibration.
+- In the heterogeneous cluster, Joulie applies a uniform power-cap percentage across GPU families with very different throttling characteristics. A per-family `hp_min` policy extension would let the operator reserve more performance nodes for MI300X workloads (which tolerate throttling well) while keeping H100 NVL nodes uncapped for compute-bound jobs.

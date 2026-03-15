@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-EXP_ROOT="$ROOT/experiments/01-kwok-benchmark"
+EXP_ROOT="$ROOT/experiments/03-homogeneous-h100-benchmark"
 EXAMPLE_DIR="$ROOT/examples/07 - simulator-gpu-powercaps"
 BASELINE=${1:-B}
 JOULIE_REGISTRY=${JOULIE_REGISTRY:-registry.cern.ch/mbunino/joulie}
@@ -18,13 +18,18 @@ QUEUE_HP_MAX=${QUEUE_HP_MAX:-8}
 QUEUE_PERF_PER_HP_NODE=${QUEUE_PERF_PER_HP_NODE:-10}
 SIMULATOR_MANIFEST=${SIMULATOR_MANIFEST:-$EXAMPLE_DIR/manifests/20-simulator.yaml}
 SIM_BASE_SPEED_PER_CORE=${SIM_BASE_SPEED_PER_CORE:-}
+PERFORMANCE_CAP_WATTS=${PERFORMANCE_CAP_WATTS:-500}
+ECO_CAP_WATTS=${ECO_CAP_WATTS:-140}
 CPU_PERFORMANCE_CAP_PCT_OF_MAX=${CPU_PERFORMANCE_CAP_PCT_OF_MAX:-100}
-CPU_ECO_CAP_PCT_OF_MAX=${CPU_ECO_CAP_PCT_OF_MAX:-80}
+CPU_ECO_CAP_PCT_OF_MAX=${CPU_ECO_CAP_PCT_OF_MAX:-60}
+GPU_PERFORMANCE_CAP_PCT_OF_MAX=${GPU_PERFORMANCE_CAP_PCT_OF_MAX:-100}
+GPU_ECO_CAP_PCT_OF_MAX=${GPU_ECO_CAP_PCT_OF_MAX:-60}
 CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS:-false}
+GPU_WRITE_ABSOLUTE_CAPS=${GPU_WRITE_ABSOLUTE_CAPS:-true}
 OPERATOR_RECONCILE_INTERVAL=${OPERATOR_RECONCILE_INTERVAL:-20s}
 AGENT_RECONCILE_INTERVAL=${AGENT_RECONCILE_INTERVAL:-10s}
-GENERATED_CLASSES=${GENERATED_CLASSES:-$EXP_ROOT/generated/10-node-classes.yaml}
-GENERATED_CATALOG=${GENERATED_CATALOG:-$EXP_ROOT/generated/hardware.generated.yaml}
+GENERATED_CLASSES=${GENERATED_CLASSES:-$EXAMPLE_DIR/manifests/10-node-classes.yaml}
+GENERATED_CATALOG=${GENERATED_CATALOG:-$ROOT/simulator/catalog/hardware.generated.yaml}
 
 actual_image_from_workload() {
   local ns=$1
@@ -116,9 +121,14 @@ helm upgrade --install joulie "$ROOT/charts/joulie" -n joulie-system --create-na
   --set "operator.env.QUEUE_HP_MIN=${QUEUE_HP_MIN}" \
   --set "operator.env.QUEUE_HP_MAX=${QUEUE_HP_MAX}" \
   --set "operator.env.QUEUE_PERF_PER_HP_NODE=${QUEUE_PERF_PER_HP_NODE}" \
+  --set "operator.env.PERFORMANCE_CAP_WATTS=${PERFORMANCE_CAP_WATTS}" \
+  --set "operator.env.ECO_CAP_WATTS=${ECO_CAP_WATTS}" \
   --set "operator.env.CPU_PERFORMANCE_CAP_PCT_OF_MAX=${CPU_PERFORMANCE_CAP_PCT_OF_MAX}" \
   --set "operator.env.CPU_ECO_CAP_PCT_OF_MAX=${CPU_ECO_CAP_PCT_OF_MAX}" \
-  --set "operator.env.CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS}"
+  --set "operator.env.CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS}" \
+  --set "operator.env.GPU_PERFORMANCE_CAP_PCT_OF_MAX=${GPU_PERFORMANCE_CAP_PCT_OF_MAX}" \
+  --set "operator.env.GPU_ECO_CAP_PCT_OF_MAX=${GPU_ECO_CAP_PCT_OF_MAX}" \
+  --set "operator.env.GPU_WRITE_ABSOLUTE_CAPS=${GPU_WRITE_ABSOLUTE_CAPS}"
 
 kubectl -n joulie-system rollout status deploy/joulie-operator
 kubectl -n joulie-system rollout status statefulset/joulie-agent-pool

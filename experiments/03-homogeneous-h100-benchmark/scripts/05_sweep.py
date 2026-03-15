@@ -10,8 +10,8 @@ from collections import deque
 
 import yaml
 
-DEFAULT_CONFIG = pathlib.Path("experiments/02-heterogeneous-benchmark/configs/benchmark.yaml")
-RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", "experiments/02-heterogeneous-benchmark/results"))
+DEFAULT_CONFIG = pathlib.Path("experiments/03-homogeneous-h100-benchmark/configs/benchmark.yaml")
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", "experiments/03-homogeneous-h100-benchmark/results"))
 START_TS = time.time()
 
 
@@ -289,9 +289,8 @@ def retarget_trace_for_cluster(trace_path: pathlib.Path) -> pathlib.Path:
     # Build GPU pools used only to choose a vendor/resource class proportionally to the actual
     # fleet composition. Kubernetes still does the real node-level placement.
     #
-    # We intentionally do not add node-name affinity here. The benchmark should exercise the
-    # scheduler against the allocatable extended GPU resources already advertised by the KWOK
-    # nodes, not a pre-computed node assignment from the harness.
+    # We intentionally do not add node-name affinity here. On a homogeneous H100 cluster the
+    # whole point is to let the scheduler place any GPU job on any compatible H100 node.
     all_gpu_pool = build_family_first_pool(gpu_nodes, "gpu_product")
 
     total_job_count = 0
@@ -593,8 +592,8 @@ def main():
     )
 
     install_env_base = os.environ.copy()
-    inventory_source = str(get_cfg(cfg, "inventory", "source", default="experiments/02-heterogeneous-benchmark/configs/cluster-nodes.yaml"))
-    run(["bash", "experiments/02-heterogeneous-benchmark/scripts/00_generate_assets.sh", inventory_source], check=True)
+    inventory_source = str(get_cfg(cfg, "inventory", "source", default="experiments/03-homogeneous-h100-benchmark/configs/cluster-nodes.yaml"))
+    run(["bash", "experiments/03-homogeneous-h100-benchmark/scripts/00_generate_assets.sh", inventory_source], check=True)
 
     # Image and manifest config
     install_env_base["JOULIE_REGISTRY"] = str(get_cfg(cfg, "images", "joulie_registry", default="registry.cern.ch/mbunino/joulie"))
@@ -667,7 +666,7 @@ def main():
         run_with_env(
             [
                 "bash",
-                "experiments/02-heterogeneous-benchmark/scripts/03_install_components.sh",
+                "experiments/03-homogeneous-h100-benchmark/scripts/03_install_components.sh",
                 baseline,
             ],
             env=install_env,
@@ -710,7 +709,7 @@ def main():
             run(
                 [
                     "python3",
-                    "experiments/02-heterogeneous-benchmark/scripts/04_run_one.py",
+                    "experiments/03-homogeneous-h100-benchmark/scripts/04_run_one.py",
                     "--baseline",
                     baseline,
                     "--seed",

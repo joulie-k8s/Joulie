@@ -3,11 +3,11 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "$ROOT"
-KUBECONFIG="$ROOT/experiments/02-heterogeneous-benchmark/kubeconfig.yaml"
+KUBECONFIG="$ROOT/experiments/03-homogeneous-h100-benchmark/kubeconfig.yaml"
 export KUBECONFIG
-CFG=${1:-experiments/02-heterogeneous-benchmark/configs/benchmark.yaml}
+CFG=${1:-experiments/03-homogeneous-h100-benchmark/configs/benchmark.yaml}
 START_EPOCH=$(date +%s)
-RUNS_ROOT=${RUNS_ROOT:-experiments/02-heterogeneous-benchmark/runs}
+RUNS_ROOT=${RUNS_ROOT:-experiments/03-homogeneous-h100-benchmark/runs}
 
 log() {
   local now elapsed
@@ -85,8 +85,8 @@ if [[ "${CLEAN_RESULTS:-false}" == "true" ]]; then
   rm -f "$RESULTS_DIR"/summary.csv
   rm -f "$RESULTS_DIR"/baseline_summary.csv
 fi
-run_step "prerequisites check" bash experiments/02-heterogeneous-benchmark/scripts/00_prereqs_check.sh
-run_step "benchmark sweep" python3 experiments/02-heterogeneous-benchmark/scripts/05_sweep.py --config "$CFG"
-run_step "result collection" python3 experiments/02-heterogeneous-benchmark/scripts/06_collect.py
-run_step "plot generation" python3 experiments/02-heterogeneous-benchmark/scripts/07_plot.py
+run_step "prerequisites check" bash experiments/03-homogeneous-h100-benchmark/scripts/00_prereqs_check.sh
+run_step "benchmark sweep" python3 experiments/03-homogeneous-h100-benchmark/scripts/05_sweep.py --config "$CFG"
+run_step "result collection" python3 experiments/03-homogeneous-h100-benchmark/scripts/06_collect.py
+run_step "plot generation" python3 experiments/03-homogeneous-h100-benchmark/scripts/07_plot.py
 log "heterogeneous benchmark run+collect+plot completed (config=$CFG total_elapsed=$(( $(date +%s) - START_EPOCH ))s)"

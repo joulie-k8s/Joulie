@@ -1,34 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
-TPL="$ROOT/manifests/kwok_nodes.yaml.tpl"
-OUT=$(mktemp)
+ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
+INPUT_CFG=${1:-$ROOT/experiments/01-kwok-benchmark/configs/cluster-nodes.yaml}
+NODES_MANIFEST="$ROOT/experiments/01-kwok-benchmark/generated/00-kwok-nodes.yaml"
 
-COUNT=${FAKE_NODE_COUNT:-5}
-CPU=${FAKE_NODE_CPU:-32}
-MEMORY=${FAKE_NODE_MEMORY:-128Gi}
-PODS=${FAKE_NODE_PODS:-110}
-
-for i in $(seq 0 $((COUNT-1))); do
-  if (( i % 2 == 0 )); then
-    VID=Intel
-    VENDOR=GenuineIntel
-  else
-    VID=AMD
-    VENDOR=AuthenticAMD
-  fi
-  sed -e "s/{{INDEX}}/${i}/g" \
-      -e "s/{{CPU_VENDOR_ID}}/${VID}/g" \
-      -e "s/{{CPU_VENDOR}}/${VENDOR}/g" \
-      -e "s/{{CPU}}/${CPU}/g" \
-      -e "s/{{MEMORY}}/${MEMORY}/g" \
-      -e "s/{{PODS}}/${PODS}/g" "$TPL" >> "$OUT"
-  echo "---" >> "$OUT"
-done
-
-kubectl apply -f "$OUT"
-rm -f "$OUT"
-
-kubectl wait --for=condition=Ready node -l type=kwok --timeout=120s || true
+"$ROOT/experiments/01-kwok-benchmark/scripts/00_generate_assets.sh" "$INPUT_CFG"
+kubectl apply -f "$NODES_MANIFEST"
 kubectl get nodes -l type=kwok -o wide

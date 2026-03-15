@@ -9,23 +9,19 @@ run:
   cleanup_timeout: 600
 
 workload:
-  # Research-cluster / HEP-style overnight mix:
+  # Research-cluster / HEP-style overnight mix — identical to experiment 02 for a fair
+  # homogeneous vs heterogeneous comparison:
   # - most jobs are flexible exploratory runs, preprocessing, or analytics
   # - a meaningful minority remains performance-sensitive
-  # - explicit eco-only jobs stay disabled because they are uncommon in practice
-  #   and make the benchmark more about benchmark-side placement than policy value
+  # - explicit eco-only jobs stay disabled (uncommon in practice)
   perf_ratio: 0.15
   eco_ratio: 0.00
-  # Many jobs are GPU-backed, but CPU-side preprocessing/analytics is still common.
   gpu_ratio: 0.45
   gpu_request_per_job: 1
   burst_day_probability: 0.25
   burst_mean_jobs: 8.0
   burst_multiplier: 2.0
   emit_workload_records: true
-  # Slightly heavier than the showcase/default overnight profile so the much larger
-  # 41-node heterogeneous cluster stays occupied for long enough to expose
-  # scheduling/capping tradeoffs without relying on artificially bursty arrivals.
   work_scale: 0.12
   baseline_a_strip_affinity: true
   allowed_workload_types:
@@ -65,6 +61,9 @@ images:
   sim_registry: registry.cern.ch/mbunino/joulie
   sim_image: joulie-simulator
   sim_tag: dev0.0.15
+
+inventory:
+  source: experiments/03-homogeneous-h100-benchmark/configs/cluster-nodes.yaml
 
 install:
   kind_cluster_config: experiments/02-heterogeneous-benchmark/configs/kind-cluster.yaml
