@@ -23,8 +23,9 @@ import (
 )
 
 var (
-	nodeTwinStateGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwinstates"}
-	nodeHardwareGVR  = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
+	nodeTwinStateGVR   = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwinstates"}
+	nodeHardwareGVR    = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
+	workloadProfileGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "workloadprofiles"}
 )
 
 func main() {
@@ -35,7 +36,11 @@ func main() {
 
 	switch os.Args[1] {
 	case "status":
+		explain := hasFlag(os.Args[2:], "--explain")
 		runStatus()
+		if explain {
+			runExplain()
+		}
 	case "recommend":
 		runRecommend()
 	case "help", "--help", "-h":
@@ -47,13 +52,23 @@ func main() {
 	}
 }
 
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
 func printUsage() {
-	fmt.Println(`Usage: kubectl joulie <command>
+	fmt.Println(`Usage: kubectl joulie <command> [flags]
 
 Commands:
-  status      Show cluster energy state overview
-  recommend   Show GPU slicing and rescheduling recommendations
-  help        Show this help`)
+  status              Show cluster energy state overview
+  status --explain    Show cluster state + workload classification reasons
+  recommend           Show GPU slicing and rescheduling recommendations
+  help                Show this help`)
 }
 
 func newClient() dynamic.Interface {
@@ -332,6 +347,86 @@ func runRecommend() {
 		fmt.Println("RESCHEDULE RECOMMENDATIONS")
 		fmt.Println("  No workloads recommended for rescheduling")
 	}
+}
+
+func runExplain() {
+	client := newClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	list, err := client.Resource(workloadProfileGVR).Namespace("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot list WorkloadProfiles: %v\n", err)
+		return
+	}
+
+	if len(list.Items) == 0 {
+		fmt.Println("\nWORKLOAD CLASSIFICATION")
+		fmt.Println("  No WorkloadProfile resources found. Is the classifier running?")
+		return
+	}
+
+	type wpRow struct {
+		namespace string
+		name      string
+		class     string
+		reason    string
+		confPct   string
+		cpuBound  string
+		gpuBound  string
+	}
+
+	var rows []wpRow
+	for _, item := range list.Items {
+		ns := item.GetNamespace()
+		name := item.GetName()
+
+		class, _, _ := unstructured.NestedString(item.Object, "status", "criticality", "class")
+		reason, _, _ := unstructured.NestedString(item.Object, "status", "classificationReason")
+		confidence, _, _ := unstructured.NestedFloat64(item.Object, "status", "confidence")
+		cpuBound, _, _ := unstructured.NestedString(item.Object, "status", "cpu", "bound")
+		gpuBound, _, _ := unstructured.NestedString(item.Object, "status", "gpu", "bound")
+
+		if class == "" {
+			class = "-"
+		}
+		if reason == "" {
+			reason = "-"
+		}
+		if cpuBound == "" {
+			cpuBound = "-"
+		}
+		if gpuBound == "" {
+			gpuBound = "-"
+		}
+
+		rows = append(rows, wpRow{
+			namespace: ns,
+			name:      name,
+			class:     class,
+			reason:    reason,
+			confPct:   fmt.Sprintf("%.0f%%", confidence*100),
+			cpuBound:  cpuBound,
+			gpuBound:  gpuBound,
+		})
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].namespace != rows[j].namespace {
+			return rows[i].namespace < rows[j].namespace
+		}
+		return rows[i].name < rows[j].name
+	})
+
+	fmt.Println()
+	fmt.Println("WORKLOAD CLASSIFICATION")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NAMESPACE\tNAME\tCLASS\tCONFIDENCE\tCPU BOUND\tGPU BOUND\tREASON")
+	for _, r := range rows {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			r.namespace, r.name, r.class, r.confPct, r.cpuBound, r.gpuBound, r.reason)
+	}
+	w.Flush()
 }
 
 // jsonPrint is a debug helper (unused in normal operation, kept for development).
