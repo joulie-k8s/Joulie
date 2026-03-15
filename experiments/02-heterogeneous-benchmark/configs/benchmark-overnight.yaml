@@ -1,12 +1,12 @@
 run:
   baselines: [A, B, C]
   seeds: 3
-  jobs: 300
+  jobs: 2500
   mean_inter_arrival_sec: 0.12
   time_scale: 60
-  timeout: 5400
+  timeout: 14400
   settle_seconds: 10
-  cleanup_timeout: 300
+  cleanup_timeout: 600
 
 workload:
   # Research-cluster / HEP-style overnight mix:
@@ -23,9 +23,10 @@ workload:
   burst_mean_jobs: 8.0
   burst_multiplier: 2.0
   emit_workload_records: true
-  # Long enough to make throttling/capping matter, but still dominated by the
-  # single-GPU and CPU-side exploratory workload mix described in the workload report.
-  work_scale: 0.10
+  # Slightly heavier than the showcase/default overnight profile so the much larger
+  # 41-node heterogeneous cluster stays occupied for long enough to expose
+  # scheduling/capping tradeoffs without relying on artificially bursty arrivals.
+  work_scale: 0.12
   baseline_a_strip_affinity: true
   allowed_workload_types:
     - debug_eval
@@ -38,11 +39,13 @@ simulator:
   manifest: examples/07 - simulator-gpu-powercaps/manifests/20-simulator.yaml
 
 policy:
+  cpu_write_absolute_caps: false
+  gpu_write_absolute_caps: false
   caps:
-    performance_watts: 500
-    eco_watts: 140
+    cpu_performance_pct_of_max: 100
+    cpu_eco_pct_of_max: 80
     gpu_performance_pct_of_max: 100
-    gpu_eco_pct_of_max: 60
+    gpu_eco_pct_of_max: 80
   loop:
     operator_reconcile_interval: "20s"
     agent_reconcile_interval: "10s"
@@ -56,10 +59,10 @@ policy:
 
 images:
   joulie_registry: registry.cern.ch/mbunino/joulie
-  joulie_tag: dev0.0.14
+  joulie_tag: dev0.0.15
   sim_registry: registry.cern.ch/mbunino/joulie
   sim_image: joulie-simulator
-  sim_tag: dev0.0.14
+  sim_tag: dev0.0.15
 
 install:
   kind_cluster_config: experiments/02-heterogeneous-benchmark/configs/kind-cluster.yaml

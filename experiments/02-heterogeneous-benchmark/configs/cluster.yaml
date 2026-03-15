@@ -7,7 +7,7 @@ policy:
   density_inputs: [cpu, gpu]
   unknown_hardware: per-device-fallback
   cpu_write_absolute_caps: false
-  gpu_write_absolute_caps: true
+  gpu_write_absolute_caps: false
 smoke:
   cluster_name: joulie-heterogeneous-smoke
   runner: examples/07 - simulator-gpu-powercaps/run-e2e.sh

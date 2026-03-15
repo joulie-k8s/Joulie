@@ -1815,11 +1815,6 @@ func (s *simulator) updateNodeDynamicsWithModel(st *nodeState, model simModel) {
 }
 
 func (s *simulator) initWorkloadEngineFromTrace(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
 	engine := &workloadEngine{
 		startTime:      time.Now().UTC(),
 		baseSpeedCore:  floatEnv("SIM_BASE_SPEED_PER_CORE", 1.0),
@@ -1827,17 +1822,67 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 		jobByID:        map[string]*simJob{},
 		jobsByWorkload: map[string][]*simJob{},
 	}
-	sc := bufio.NewScanner(f)
+	tracePaths, err := resolveTracePaths(path)
+	if err != nil {
+		return err
+	}
 	lineNum := 0
+	for _, tracePath := range tracePaths {
+		if err := loadTraceFileIntoEngine(tracePath, engine, &lineNum); err != nil {
+			return err
+		}
+	}
+	sort.Slice(engine.jobs, func(i, j int) bool { return engine.jobs[i].SubmitOffsetSec < engine.jobs[j].SubmitOffsetSec })
+	s.workload = engine
+	log.Printf("workload trace loaded jobs=%d parts=%d path=%s", len(engine.jobs), len(tracePaths), path)
+	return nil
+}
+
+func resolveTracePaths(path string) ([]string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return []string{path}, nil
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		paths = append(paths, filepath.Join(path, entry.Name()))
+	}
+	sort.Strings(paths)
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no .jsonl trace parts found in %s", path)
+	}
+	return paths, nil
+}
+
+func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		lineNum++
+		*lineNum++
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
 			continue
 		}
 		var rec map[string]any
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			return fmt.Errorf("trace parse line %d: %w", lineNum, err)
+			return fmt.Errorf("trace parse line %d file=%s: %w", *lineNum, path, err)
 		}
 		tp, _ := rec["type"].(string)
 		if tp != "job" {
@@ -1880,12 +1925,12 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 					}
 					rawStr, ok := raw.(string)
 					if !ok {
-						log.Printf("warning: trace line %d job=%s has non-string %s request; skipping GPU request", lineNum, jobID, gpuReq.key)
+						log.Printf("warning: trace line %d file=%s job=%s has non-string %s request; skipping GPU request", *lineNum, path, jobID, gpuReq.key)
 						break
 					}
 					gpuQty, ok := parseIntegerResourceRequest(rawStr)
 					if !ok {
-						log.Printf("warning: trace line %d job=%s has non-integer %s request=%q; skipping GPU request", lineNum, jobID, gpuReq.key, rawStr)
+						log.Printf("warning: trace line %d file=%s job=%s has non-integer %s request=%q; skipping GPU request", *lineNum, path, jobID, gpuReq.key, rawStr)
 						break
 					}
 					requestedGPUs = gpuQty
@@ -1995,9 +2040,6 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 	if err := sc.Err(); err != nil {
 		return err
 	}
-	sort.Slice(engine.jobs, func(i, j int) bool { return engine.jobs[i].SubmitOffsetSec < engine.jobs[j].SubmitOffsetSec })
-	s.workload = engine
-	log.Printf("workload trace loaded jobs=%d path=%s", len(engine.jobs), path)
 	return nil
 }
 

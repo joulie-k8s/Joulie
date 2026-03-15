@@ -23,6 +23,15 @@ def ensure_numeric(df: pd.DataFrame, cols):
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
 
+def filter_stable_tradeoff_rows(df: pd.DataFrame, x_col: str, y_col: str):
+    d = df.copy()
+    ensure_numeric(d, [x_col, y_col])
+    d = d.dropna(subset=[x_col, y_col, "baseline"]).copy()
+    if "sample_quality" in d.columns:
+        d = d[d["sample_quality"] == "stable"].copy()
+    return d
+
+
 def pareto_frontier(df: pd.DataFrame, x_col: str, y_col: str):
     # Minimize x (energy), maximize y (throughput).
     pts = df.dropna(subset=[x_col, y_col]).sort_values([x_col, y_col], ascending=[True, False])
@@ -281,6 +290,7 @@ def plot_workload_type_tradeoff():
     if not path.exists():
         return
     df = pd.read_csv(path)
+    df = filter_stable_tradeoff_rows(df, "mean_slowdown_pct_vs_a", "mean_energy_savings_exposure_pct_vs_a")
     if df.empty:
         return
     fig, ax = plt.subplots(figsize=(10.5, 6))
@@ -319,6 +329,7 @@ def plot_workload_type_rankings():
     if not path.exists():
         return
     df = pd.read_csv(path)
+    df = filter_stable_tradeoff_rows(df, "mean_slowdown_pct_vs_a", "mean_energy_savings_exposure_pct_vs_a")
     if df.empty:
         return
     for baseline in sorted(df["baseline"].unique(), key=lambda x: BASELINE_ORDER.index(x) if x in BASELINE_ORDER else 999):
@@ -355,6 +366,7 @@ def plot_hardware_family_tradeoff():
     if not path.exists():
         return
     df = pd.read_csv(path)
+    df = filter_stable_tradeoff_rows(df, "mean_slowdown_pct_vs_a", "mean_energy_savings_pct_vs_a")
     if df.empty:
         return
     fig, ax = plt.subplots(figsize=(10.5, 6))
@@ -387,6 +399,7 @@ def plot_hardware_family_rankings():
     if not path.exists():
         return
     df = pd.read_csv(path)
+    df = filter_stable_tradeoff_rows(df, "mean_slowdown_pct_vs_a", "mean_energy_savings_pct_vs_a")
     if df.empty:
         return
     for baseline in sorted(df["baseline"].unique(), key=lambda x: BASELINE_ORDER.index(x) if x in BASELINE_ORDER else 999):

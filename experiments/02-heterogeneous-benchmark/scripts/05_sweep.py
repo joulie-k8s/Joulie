@@ -619,6 +619,13 @@ def main():
     install_env_base["QUEUE_PERF_PER_HP_NODE"] = str(get_cfg(cfg, "policy", "queue_aware", "perf_per_hp_node", default=10))
     install_env_base["PERFORMANCE_CAP_WATTS"] = str(get_cfg(cfg, "policy", "caps", "performance_watts", default=500))
     install_env_base["ECO_CAP_WATTS"] = str(get_cfg(cfg, "policy", "caps", "eco_watts", default=140))
+    install_env_base["CPU_PERFORMANCE_CAP_PCT_OF_MAX"] = str(
+        get_cfg(cfg, "policy", "caps", "cpu_performance_pct_of_max", default=100)
+    )
+    install_env_base["CPU_ECO_CAP_PCT_OF_MAX"] = str(
+        get_cfg(cfg, "policy", "caps", "cpu_eco_pct_of_max", default=60)
+    )
+    install_env_base["CPU_WRITE_ABSOLUTE_CAPS"] = str(get_cfg(cfg, "policy", "cpu_write_absolute_caps", default=True)).lower()
     install_env_base["GPU_PERFORMANCE_CAP_PCT_OF_MAX"] = str(get_cfg(cfg, "policy", "caps", "gpu_performance_pct_of_max", default=100))
     install_env_base["GPU_ECO_CAP_PCT_OF_MAX"] = str(get_cfg(cfg, "policy", "caps", "gpu_eco_pct_of_max", default=60))
     install_env_base["GPU_WRITE_ABSOLUTE_CAPS"] = str(get_cfg(cfg, "policy", "gpu_write_absolute_caps", default=True)).lower()
@@ -634,7 +641,12 @@ def main():
     )
     log(
         "configured policy "
-        f"caps(perf={install_env_base['PERFORMANCE_CAP_WATTS']}W eco={install_env_base['ECO_CAP_WATTS']}W) "
+        f"caps(cpu_perf={install_env_base['CPU_PERFORMANCE_CAP_PCT_OF_MAX']}% "
+        f"cpu_eco={install_env_base['CPU_ECO_CAP_PCT_OF_MAX']}% "
+        f"gpu_perf={install_env_base['GPU_PERFORMANCE_CAP_PCT_OF_MAX']}% "
+        f"gpu_eco={install_env_base['GPU_ECO_CAP_PCT_OF_MAX']}% "
+        f"cpu_abs={install_env_base['CPU_WRITE_ABSOLUTE_CAPS']} "
+        f"gpu_abs={install_env_base['GPU_WRITE_ABSOLUTE_CAPS']}) "
         f"static.hp_frac={install_env_base['STATIC_HP_FRAC']} "
         f"queue(base={install_env_base['QUEUE_HP_BASE_FRAC']} min={install_env_base['QUEUE_HP_MIN']} "
         f"max={install_env_base['QUEUE_HP_MAX']} perf_per_hp={install_env_base['QUEUE_PERF_PER_HP_NODE']}) "

@@ -173,9 +173,9 @@ There is also an overnight profile:
 
 That profile is meant for longer unattended sweeps:
 
-- 300 logical workloads per seed,
+- 2500 logical workloads per seed,
 - 3 seeds across all three baselines,
-- the same Joulie-friendly workload shaping as the showcase profile,
+- a research-cluster / HEP-style workload mix with a moderate performance-sensitive share,
 - a larger timeout / cleanup budget for longer tails.
 
 To run the full flow end to end with a single command:
@@ -240,6 +240,14 @@ The new attribution outputs make it possible to answer questions such as:
 - which workload types were mostly unaffected while still running on energy-saving hardware,
 - which hardware families delivered the best energy-savings/slowdown tradeoff,
 - which hardware families paid slowdown without enough savings to justify it.
+
+The aggregated summaries now also carry:
+
+- `sim_event_count`
+- `telemetry_event_count`
+
+so you can verify that simulator/event telemetry was actually collected for each run instead of silently falling back to empty debug artifacts.
+For baseline `A`, these counts can legitimately stay zero because no Joulie control actions are applied.
 
 If you want a clean debug run without stale aborted runs mixed into the summaries, use:
 
@@ -330,6 +338,23 @@ Eco-only workload affinity in the benchmark and docs now uses:
 
 instead of requiring `draining=false`, because `NotIn ["true"]` is safer when the label is temporarily absent.
 
+The benchmark policy path now uses percentage-based CPU and GPU intents:
+
+- `cpu.packagePowerCapPctOfMax`
+- `gpu.powerCap.capPctOfMax`
+
+The operator writes those percentages into `NodePowerProfile`, and the agent resolves them on each node against discovered or inventory-derived hardware limits. That keeps the control contract consistent across CPU and GPU:
+
+- policy expresses relative intent,
+- agent resolves node-local enforcement from those percentages,
+- discovery and inventory still provide the hardware-aware bounds and fallback hints.
+
+In other words:
+
+- the benchmark no longer relies on a global fixed eco watt cap being copied into every heterogeneous node profile,
+- CPU and GPU intents are both expressed as `% of max`,
+- node-local hardware facts decide what that percentage means on a given node.
+
 If you need one-pod-per-node-instance coverage, use a heavier benchmark config than the debug profile.
 
 The sweep can also optionally restrict the canonical trace to a subset of workload families via:
@@ -376,6 +401,8 @@ For workload types, "energy-savings exposure" is not a direct per-job energy met
 - the hardware families actually used by each workload type.
 
 That keeps the analysis interpretable without pretending we have exact per-job energy accounting.
+
+Workload-type tradeoff views also tag low-sample groups in the CSVs. Plot generation filters out unstable low-count workload categories by default so a handful of jobs does not dominate the visual story.
 
 ## Known caveats
 
