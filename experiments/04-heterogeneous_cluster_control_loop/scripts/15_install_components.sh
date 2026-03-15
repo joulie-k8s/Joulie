@@ -5,15 +5,15 @@
 #   ./15_install_components.sh <scenario>
 #
 # Scenarios:
-#   A — No Joulie components (uninstall if present)
-#   B — Operator + Agent only (caps, no scheduler)
-#   C — Operator + Agent + Scheduler extender
+#   A - No Joulie components (uninstall if present)
+#   B - Operator + Agent only (caps, no scheduler)
+#   C - Operator + Agent + Scheduler extender
 set -euo pipefail
 
 SCENARIO="${1:?Usage: $0 <A|B|C>}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-CLUSTER_NAME="${CLUSTER_NAME:-joulie-control-loop-exp03}"
+CLUSTER_NAME="${CLUSTER_NAME:-joulie-control-loop-exp04}"
 
 export KUBECONFIG="${KUBECONFIG:-$(kwokctl get kubeconfig-path --name "$CLUSTER_NAME")}"
 

@@ -532,9 +532,9 @@ def dump_debug() -> None:
 class Ctx:
     """Test context holding the two cluster node names.
 
-    perf_node  – always stays in performance (operator family floor).
-    eco_node   – transitions to eco when STATIC_HP_FRAC=0.
-    node       – alias for eco_node kept for clarity in test code.
+    perf_node  - always stays in performance (operator family floor).
+    eco_node   - transitions to eco when STATIC_HP_FRAC=0.
+    node       - alias for eco_node kept for clarity in test code.
     """
     perf_node: str
     eco_node: str
@@ -576,7 +576,7 @@ def test_telemetry_http(ctx: Ctx) -> None:
     log("IT-TP-01")
     install_http_mock()
     # Apply telemetry profile to the eco node (it's in performance initially due
-    # to STATIC_HP_FRAC=1 at install time; that's fine – the agent reconciles it).
+    # to STATIC_HP_FRAC=1 at install time; that's fine - the agent reconciles it).
     apply_telemetry_profile(ctx.eco_node)
     time.sleep(12)
     stats = get_mock_stats()

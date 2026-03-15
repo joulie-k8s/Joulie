@@ -78,3 +78,4 @@ website/.hugo_build.lock
 /scheduler
 /operator
 /simulator
+/kubectl-joulie

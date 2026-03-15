@@ -49,7 +49,7 @@ func TestIT_SCHED_01_FilterEcoDraining(t *testing.T) {
 	})
 }
 
-// IT-SCHED-02: Scheduler scoring uses NodeTwinState values.
+// IT-SCHED-02: Scheduler scoring uses NodeTwin values.
 func TestIT_SCHED_02_ScoringDeterminism(t *testing.T) {
 	states := map[string]*twinStateIT{
 		"high-headroom": {
@@ -72,7 +72,7 @@ func TestIT_SCHED_02_ScoringDeterminism(t *testing.T) {
 		t.Errorf("high-headroom node should score higher than stressed node: %d vs %d", s1, s2)
 	}
 
-	// Changing NodeTwinState values should change the score deterministically
+	// Changing NodeTwin values should change the score deterministically
 	states["high-headroom"].PredictedCoolingStressScore = 90
 	s1b := scoreNode_IT("high-headroom", states, "standard", "", "")
 	if s1b >= s1 {
@@ -81,7 +81,7 @@ func TestIT_SCHED_02_ScoringDeterminism(t *testing.T) {
 }
 
 // IT-FSM-01: Existing FSM transitions still work with new architecture.
-func TestIT_FSM_01_ExistingFSMWithNodeTwinState(t *testing.T) {
+func TestIT_FSM_01_ExistingFSMWithNodeTwin(t *testing.T) {
 	kubeconfig := os.Getenv("KUBECONFIG")
 	clients, err := helpers.NewClients(kubeconfig)
 	if err != nil {
@@ -100,10 +100,10 @@ func TestIT_FSM_01_ExistingFSMWithNodeTwinState(t *testing.T) {
 	}
 	nodeName := nodes.Items[0].Name
 
-	// Create a NodePowerProfile with eco profile
-	npp := map[string]interface{}{
+	// Create a NodeTwin with eco profile
+	nt := map[string]interface{}{
 		"apiVersion": "joulie.io/v1alpha1",
-		"kind":       "NodePowerProfile",
+		"kind":       "NodeTwin",
 		"metadata":   map[string]interface{}{"name": nodeName},
 		"spec": map[string]interface{}{
 			"nodeName": nodeName,
@@ -111,10 +111,10 @@ func TestIT_FSM_01_ExistingFSMWithNodeTwinState(t *testing.T) {
 			"cpu":      map[string]interface{}{"packagePowerCapPctOfMax": float64(60)},
 		},
 	}
-	nppBytes, _ := json.Marshal(npp)
-	nppObj := helpers.MustParseCR(t, string(nppBytes))
-	if err := helpers.ApplyUnstructured(ctx, clients.Dynamic, helpers.JoulieGVRs["nodepowerprofiles"], "", nppObj); err != nil {
-		t.Logf("apply NodePowerProfile: %v", err)
+	ntBytes, _ := json.Marshal(nt)
+	ntObj := helpers.MustParseCR(t, string(ntBytes))
+	if err := helpers.ApplyUnstructured(ctx, clients.Dynamic, helpers.JoulieGVRs["nodetwins"], "", ntObj); err != nil {
+		t.Logf("apply NodeTwin: %v", err)
 	}
 
 	// Wait for node label to be set to eco

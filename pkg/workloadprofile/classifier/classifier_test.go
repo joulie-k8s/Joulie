@@ -1,6 +1,7 @@
 package classifier
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -136,6 +137,9 @@ func TestFromHintsOnly(t *testing.T) {
 	if wp.LastUpdated.IsZero() {
 		t.Error("expected LastUpdated to be set")
 	}
+	if wp.ClassificationReason == "" {
+		t.Error("expected classificationReason to be set for hints-only")
+	}
 	_ = time.Now() // just ensure time package is used
 }
 
@@ -149,6 +153,40 @@ func TestComputeConfidenceKepler(t *testing.T) {
 	conf := computeConfidence(hints, m)
 	if conf < 0.7 {
 		t.Errorf("expected high confidence with Kepler + explicit class, got %f", conf)
+	}
+}
+
+func TestClassificationReasonPopulated(t *testing.T) {
+	c := NewClassifier(DefaultClassifierConfig())
+	hints := PodHints{WorkloadClass: "standard"}
+	m := PodMetrics{
+		CPUUtilPct:        90,
+		CPUBoundRatio:     0.80,
+		MemoryBoundRatio:  0.10,
+		KeplerUsed:        true,
+		TotalEnergyJoules: 100,
+		CPUEnergyJoules:   80,
+		DRAMEnergyJoules:  10,
+	}
+	wp := c.classify(hints, m)
+	if wp.ClassificationReason == "" {
+		t.Error("expected classificationReason to be populated")
+	}
+	if !strings.Contains(wp.ClassificationReason, "cpu-intensity=high") {
+		t.Errorf("expected reason to mention cpu-intensity=high, got %q", wp.ClassificationReason)
+	}
+	if !strings.Contains(wp.ClassificationReason, "cpu-bound=compute") {
+		t.Errorf("expected reason to mention compute-bound, got %q", wp.ClassificationReason)
+	}
+}
+
+func TestClassificationReasonAnnotationOverride(t *testing.T) {
+	c := NewClassifier(DefaultClassifierConfig())
+	hints := PodHints{WorkloadClass: "standard", CPUSensitivity: "low"}
+	m := PodMetrics{CPUUtilPct: 90}
+	wp := c.classify(hints, m)
+	if !strings.Contains(wp.ClassificationReason, "annotation override") {
+		t.Errorf("expected reason to mention annotation override, got %q", wp.ClassificationReason)
 	}
 }
 

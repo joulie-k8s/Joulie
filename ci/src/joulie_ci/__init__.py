@@ -203,7 +203,7 @@ class JoulieCi:
     ) -> dagger.File:
         """Wait for k3s to write its kubeconfig and return it as a Dagger File.
 
-        This is lazily evaluated — actual execution happens when the file is used
+        This is lazily evaluated. Actual execution happens when the file is used
         by the client container, by which point the server has been running long
         enough to have written k3s.yaml.
         """

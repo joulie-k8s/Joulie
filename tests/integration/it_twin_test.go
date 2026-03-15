@@ -14,12 +14,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-var nodeTwinStateGVR = helpers.JoulieGVRs["nodetwinstates"]
+var nodeTwinGVR = helpers.JoulieGVRs["nodetwins"]
 var nodeHardwareGVR = helpers.JoulieGVRs["nodehardwares"]
 var workloadProfileGVR = helpers.JoulieGVRs["workloadprofiles"]
 
-// IT-TWIN-01: Operator writes NodeTwinState when NodeHardware and profile are present.
-func TestIT_TWIN_01_OperatorWritesNodeTwinState(t *testing.T) {
+// IT-TWIN-01: Operator writes NodeTwin when NodeHardware and profile are present.
+func TestIT_TWIN_01_OperatorWritesNodeTwin(t *testing.T) {
 	kubeconfig := os.Getenv("KUBECONFIG")
 	clients, err := helpers.NewClients(kubeconfig)
 	if err != nil {
@@ -70,21 +70,21 @@ func TestIT_TWIN_01_OperatorWritesNodeTwinState(t *testing.T) {
 		t.Logf("seed NodeHardware: %v (may already exist)", err)
 	}
 
-	// Wait for operator to write NodeTwinState
-	twinObj, err := helpers.WaitForObject(ctx, clients.Dynamic, nodeTwinStateGVR, "", nodeName, 90*time.Second)
+	// Wait for operator to write NodeTwin
+	twinObj, err := helpers.WaitForObject(ctx, clients.Dynamic, nodeTwinGVR, "", nodeName, 90*time.Second)
 	if err != nil {
-		t.Fatalf("NodeTwinState not found for node %s within 90s: %v", nodeName, err)
+		t.Fatalf("NodeTwin not found for node %s within 90s: %v", nodeName, err)
 	}
 
 	// Assert schedulableClass is set
 	class, found, _ := unstructured.NestedString(twinObj.Object, "status", "schedulableClass")
 	if !found || class == "" {
-		t.Errorf("NodeTwinState missing status.schedulableClass")
+		t.Errorf("NodeTwin missing status.schedulableClass")
 	}
 	if class != "eco" && class != "performance" && class != "draining" && class != "unknown" {
 		t.Errorf("unexpected schedulableClass: %s", class)
 	}
-	t.Logf("NodeTwinState for %s: schedulableClass=%s", nodeName, class)
+	t.Logf("NodeTwin for %s: schedulableClass=%s", nodeName, class)
 }
 
 // IT-PROF-01: WorkloadProfile consumption by operator/scheduler.

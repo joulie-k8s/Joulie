@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Check prerequisites for experiment 03.
+# Check prerequisites for experiment 04.
 set -euo pipefail
 
 ERRORS=0
@@ -9,12 +9,12 @@ check() {
   if "$@" &>/dev/null; then
     echo "  [OK]  $name"
   else
-    echo "  [ERR] $name — not found or failed"
+    echo "  [ERR] $name - not found or failed"
     ERRORS=$((ERRORS+1))
   fi
 }
 
-echo "=== Experiment 03 Prerequisites ==="
+echo "=== Experiment 04 Prerequisites ==="
 echo ""
 echo "Required:"
 check "kubectl"       kubectl version --client

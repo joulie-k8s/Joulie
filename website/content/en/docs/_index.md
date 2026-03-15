@@ -7,7 +7,7 @@ menu:
 ---
 
 Joulie is a Kubernetes-native digital twin for energy-efficient data centers.
-It ingests real-time telemetry from every node — CPU/GPU power draw, thermal state, per-pod utilization — to maintain a continuously updated model of the cluster's energy state.
+It ingests real-time telemetry from every node (CPU/GPU power draw, thermal state, per-pod utilization) to maintain a continuously updated model of the cluster's energy state.
 That model drives two things: power cap enforcement (via RAPL and NVML) and scheduling decisions that steer workloads toward the most energy-efficient nodes.
 
 If you are completely new, the smoothest path is:
@@ -28,18 +28,20 @@ Core mental model:
 ## Section guide
 
 - [Getting Started]({{< relref "/docs/getting-started/_index.md" >}})
-  - concepts, install, runtime modes, workload compatibility
+  - concepts, install, workload compatibility, WorkloadProfile classification, configuration reference
 - [Architecture]({{< relref "/docs/architecture/_index.md" >}})
-  - operator/agent/twin roles, CRDs, policy model, telemetry/control interfaces
+  - operator/agent/twin/scheduler roles, CRDs, policy algorithms, telemetry/control interfaces, kubectl plugin
 - [Hardware]({{< relref "/docs/hardware/_index.md" >}})
   - CPU and GPU support model, heterogeneity strategy, runtime caveats
 - [Simulator]({{< relref "/docs/simulator/_index.md" >}})
-  - digital-twin behavior, algorithms, runtime flow
+  - trace-driven workload simulation, power modeling, facility stress
 - [Experiments]({{< relref "/docs/experiments/_index.md" >}})
   - benchmark design and measured outcomes
 
 ## What to expect
 
 - **Digital twin model**: telemetry → twin state → cap decisions and scheduling.
-- **Kubernetes-native contracts**: CRDs + scheduling constraints as intent/supply language.
+- **Kubernetes-native contracts**: 2 user-facing CRDs (`NodeHardware`, `NodeTwin`) + scheduling constraints as intent/supply language.
+- **Workload classification**: automatic profiling via Kepler/cAdvisor metrics with transparent classification reasons.
+- **Observability tooling**: `kubectl joulie` plugin, Grafana dashboard, Prometheus metrics.
 - **Practical path to adoption**: quickstart first, then progressive deep dives.

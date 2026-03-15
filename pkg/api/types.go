@@ -108,6 +108,7 @@ type WorkloadProfileStatus struct {
 	GPU                   WorkloadGPUProfile    `json:"gpu,omitempty"`
 	RescheduleRecommended bool                  `json:"rescheduleRecommended,omitempty"`
 	RescheduleReason      string                `json:"rescheduleReason,omitempty"`
+	ClassificationReason  string                `json:"classificationReason,omitempty"`
 	Confidence            float64               `json:"confidence,omitempty"`
 	LastUpdated           time.Time             `json:"lastUpdated,omitempty"`
 }
@@ -144,31 +145,94 @@ type WorkloadGPUProfile struct {
 	CapSensitivity    string  `json:"capSensitivity,omitempty"`
 }
 
-// NodeTwinState is the digital-twin output for one node.
-// Computed every ~1 min by the operator from NodeHardware + NodePowerProfile + WorkloadProfiles.
+// NodeTwinSpec is the desired power state for a node, written by the operator.
+// This is the spec portion of the NodeTwin CRD.
+type NodeTwinSpec struct {
+	NodeName    string       `json:"nodeName"`
+	Profile     string       `json:"profile"`               // "performance" or "eco"
+	CPU         *NodeTwinCPU `json:"cpu,omitempty"`
+	GPU         *NodeTwinGPU `json:"gpu,omitempty"`
+	PolicyName  string       `json:"policyName,omitempty"`
+	Draining    bool         `json:"draining,omitempty"`
+}
+
+type NodeTwinCPU struct {
+	PackagePowerCapWatts    *float64 `json:"packagePowerCapWatts,omitempty"`
+	PackagePowerCapPctOfMax *float64 `json:"packagePowerCapPctOfMax,omitempty"`
+}
+
+type NodeTwinGPU struct {
+	Scope          string   `json:"scope,omitempty"` // "perGpu"
+	CapWattsPerGPU *float64 `json:"capWattsPerGpu,omitempty"`
+	CapPctOfMax    *float64 `json:"capPctOfMax,omitempty"`
+}
+
+// NodeTwinStatus is the digital-twin output for one node.
+// Computed by the operator from NodeHardware + NodeTwinSpec + WorkloadProfiles.
 // Read by the scheduler extender to make placement decisions.
-type NodeTwinState struct {
-	NodeName string `json:"nodeName,omitempty"`
+type NodeTwinStatus struct {
 	// SchedulableClass: "eco", "performance", "draining", "unknown".
-	//
-	// draining = node is transitioning from performance to eco:
-	//   it has been set to eco profile but still has performance pods.
-	//   The operator tries to reschedule those pods to performance nodes.
-	//   New pods should avoid draining nodes (scored down, not hard-filtered).
 	SchedulableClass string `json:"schedulableClass,omitempty"`
 	// PredictedPowerHeadroomScore: 0-100. Available power budget on this node.
-	// Higher = more room to place new workloads without stressing cooling/PSU.
 	PredictedPowerHeadroomScore float64 `json:"predictedPowerHeadroomScore,omitempty"`
 	// PredictedCoolingStressScore: 0-100. Fraction of cooling capacity predicted to be used.
-	// High = risk of thermal throttling; operator triggers migration of reschedulable pods.
 	PredictedCoolingStressScore float64 `json:"predictedCoolingStressScore,omitempty"`
 	// PredictedPsuStressScore: 0-100. Fraction of PDU/PSU capacity predicted to be used.
-	// High = risk of power brownout; operator reduces caps or triggers migration.
 	PredictedPsuStressScore     float64                    `json:"predictedPsuStressScore,omitempty"`
 	EffectiveCapState           CapState                   `json:"effectiveCapState,omitempty"`
 	HardwareDensityScore        float64                    `json:"hardwareDensityScore,omitempty"`
 	RescheduleRecommendations   []RescheduleRecommendation `json:"rescheduleRecommendations,omitempty"`
+	GPUSlicingRecommendation    *GPUSlicingRecommendation  `json:"gpuSlicingRecommendation,omitempty"`
+	ControlStatus               *ControlStatus             `json:"controlStatus,omitempty"`
 	LastUpdated                 time.Time                  `json:"lastUpdated,omitempty"`
+}
+
+// ControlStatus holds agent feedback on applied controls.
+type ControlStatus struct {
+	CPU *ControlResult `json:"cpu,omitempty"`
+	GPU *ControlResult `json:"gpu,omitempty"`
+}
+
+type ControlResult struct {
+	Backend   string `json:"backend,omitempty"`
+	Result    string `json:"result,omitempty"`
+	Message   string `json:"message,omitempty"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
+}
+
+// NodeTwin is the combined CRD for a node's desired power state and computed twin output.
+// spec = desired state (operator writes), status = twin output + control feedback.
+type NodeTwin struct {
+	Spec   NodeTwinSpec   `json:"spec"`
+	Status NodeTwinStatus `json:"status,omitempty"`
+}
+
+// GPUSlicingRecommendation is a suggestion from the digital twin to the
+// cluster admin about how to configure GPU slicing (MIG or time-slicing)
+// on a node for optimal power efficiency and resource utilization.
+//
+// The twin analyzes historical WorkloadProfile data to determine the
+// dominant GPU usage pattern and recommends a slicing configuration that
+// best matches that pattern. The admin reviews the recommendation and
+// applies it manually (MIG reconfiguration requires GPU reset / pod eviction).
+//
+// This is advisory only. The operator never changes GPU slicing at runtime.
+type GPUSlicingRecommendation struct {
+	// Mode: "mig", "time-slicing", or "none" (whole GPU).
+	Mode string `json:"mode,omitempty"`
+	// SliceType: for MIG, the recommended profile (e.g. "3g.40gb", "1g.10gb").
+	// For time-slicing, empty (k8s handles partitioning).
+	SliceType string `json:"sliceType,omitempty"`
+	// SlicesPerGPU: how many slices per physical GPU.
+	SlicesPerGPU int `json:"slicesPerGPU,omitempty"`
+	// TotalSlices: slicesPerGPU * GPU count on this node.
+	TotalSlices int `json:"totalSlices,omitempty"`
+	// Reason: human-readable explanation of why this config was chosen.
+	Reason string `json:"reason,omitempty"`
+	// EstimatedUtilizationGain: predicted improvement in GPU utilization (0-100 pct points).
+	EstimatedUtilizationGain float64 `json:"estimatedUtilizationGain,omitempty"`
+	// Confidence: 0-1 confidence in the recommendation based on data quality.
+	Confidence float64 `json:"confidence,omitempty"`
 }
 
 type CapState struct {

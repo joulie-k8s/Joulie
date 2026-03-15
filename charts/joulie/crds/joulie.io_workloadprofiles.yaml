@@ -73,6 +73,7 @@ spec:
                       enum: ["high", "medium", "low", "none"]
                 rescheduleRecommended: { type: boolean }
                 rescheduleReason: { type: string }
+                classificationReason: { type: string }
                 confidence: { type: number }
                 lastUpdated: { type: string }
       additionalPrinterColumns:

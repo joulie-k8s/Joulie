@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Collect and aggregate results from experiment 03 scenario runs.
+Collect and aggregate results from experiment 04 scenario runs.
 
 Reads per-scenario JSON files from results/ (produced by the Go simulation
 or the cluster-based benchmark) and produces summary.csv.
@@ -92,9 +92,9 @@ def main():
 
     if not rows:
         print("No results found. Run the simulation or cluster benchmark first:")
-        print("  go run ./experiments/03-heterogeneous_cluster_control_loop/")
+        print("  go run ./experiments/04-heterogeneous_cluster_control_loop/")
         print("  # or")
-        print("  bash experiments/03-heterogeneous_cluster_control_loop/scripts/20_run_scenarios.sh")
+        print("  bash experiments/04-heterogeneous_cluster_control_loop/scripts/20_run_scenarios.sh")
         sys.exit(1)
 
     out_path = RESULTS_DIR / "summary.csv"

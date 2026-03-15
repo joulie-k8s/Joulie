@@ -19,20 +19,16 @@ import (
 )
 
 var (
-	nodeTwinStateGVR   = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwinstates"}
+	nodeTwinGVR         = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
 	twinNodeHardwareGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
-	workloadProfileGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "workloadprofiles"}
+	workloadProfileGVR  = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "workloadprofiles"}
 )
 
-// reconcileNodeTwinState computes and publishes NodeTwinState for one node.
-func reconcileNodeTwinState(ctx context.Context, dynClient dynamic.Interface, nodeName, profile string, cpuCapPct, gpuCapPct float64, draining bool) error {
-	// Fetch NodeHardware
+// reconcileNodeTwin computes and publishes NodeTwin status for one node.
+func reconcileNodeTwin(ctx context.Context, dynClient dynamic.Interface, nodeName, profile string, cpuCapPct, gpuCapPct float64, draining bool) error {
 	hw := fetchNodeHardware(ctx, dynClient, nodeName)
-
-	// Fetch WorkloadProfiles for pods on this node
 	workloads := fetchWorkloadProfilesForNode(ctx, dynClient, nodeName)
 
-	// Compute twin state
 	in := twin.Input{
 		NodeName:  nodeName,
 		Hardware:  hw,
@@ -44,33 +40,29 @@ func reconcileNodeTwinState(ctx context.Context, dynClient dynamic.Interface, no
 	}
 	out := twin.Compute(in)
 
-	// Compute migration recommendations
-	twinState := joulie.NodeTwinState{
-		NodeName:                    nodeName,
+	twinStatus := joulie.NodeTwinStatus{
 		SchedulableClass:            out.SchedulableClass,
 		PredictedPowerHeadroomScore: out.PredictedPowerHeadroomScore,
 		PredictedCoolingStressScore: out.PredictedCoolingStressScore,
 		PredictedPsuStressScore:     out.PredictedPsuStressScore,
 		EffectiveCapState:           out.EffectiveCapState,
 		HardwareDensityScore:        out.HardwareDensityScore,
+		GPUSlicingRecommendation:    out.GPUSlicingRecommendation,
 		LastUpdated:                 out.LastUpdated,
 	}
 
 	// Build migration recommendations
 	var workloadsOnNode []migration.WorkloadOnNode
-	// WorkloadProfiles are already fetched; build WorkloadOnNode list
-	// (ref is approximated since we don't have full pod names here)
 	for _, w := range workloads {
 		workloadsOnNode = append(workloadsOnNode, migration.WorkloadOnNode{
 			Ref:     joulie.WorkloadRef{Kind: "Pod", Namespace: "default", Name: "unknown"},
 			Profile: w,
 		})
 	}
-	recs := migration.EvaluateNode(twinState, workloadsOnNode, migration.DefaultPolicy())
-	twinState.RescheduleRecommendations = append(out.RescheduleRecommendations, recs...)
+	recs := migration.EvaluateNode(twinStatus, workloadsOnNode, migration.DefaultPolicy())
+	twinStatus.RescheduleRecommendations = append(out.RescheduleRecommendations, recs...)
 
-	// Write NodeTwinState CR
-	return upsertNodeTwinState(ctx, dynClient, nodeName, twinState)
+	return upsertNodeTwinStatus(ctx, dynClient, nodeName, twinStatus)
 }
 
 // fetchNodeHardware reads NodeHardware for the node from the API.
@@ -145,8 +137,6 @@ func fetchNodeHardware(ctx context.Context, dynClient dynamic.Interface, nodeNam
 }
 
 // fetchWorkloadProfilesForNode returns WorkloadProfile statuses for pods on this node.
-// Currently fetches all WorkloadProfiles in all namespaces and returns them.
-// A production implementation would filter by node affinity / pod scheduling.
 func fetchWorkloadProfilesForNode(ctx context.Context, dynClient dynamic.Interface, nodeName string) []joulie.WorkloadProfileStatus {
 	var profiles []joulie.WorkloadProfileStatus
 
@@ -204,79 +194,144 @@ func parseWorkloadProfileStatus(status map[string]interface{}) joulie.WorkloadPr
 	return wp
 }
 
-// upsertNodeTwinState creates or updates a NodeTwinState CR.
-func upsertNodeTwinState(ctx context.Context, dynClient dynamic.Interface, nodeName string, state joulie.NodeTwinState) error {
-	statusMap := nodeTwinStateToMap(state)
+// upsertNodeTwinStatus patches the status subresource of a NodeTwin CR.
+func upsertNodeTwinStatus(ctx context.Context, dynClient dynamic.Interface, nodeName string, status joulie.NodeTwinStatus) error {
+	statusMap := nodeTwinStatusToMap(status)
 
 	patch := map[string]interface{}{
 		"status": statusMap,
 	}
 	patchBytes, err := json.Marshal(patch)
 	if err != nil {
-		return fmt.Errorf("marshal NodeTwinState patch: %w", err)
+		return fmt.Errorf("marshal NodeTwin status patch: %w", err)
 	}
 
-	// Ensure the object exists first
-	_, err = dynClient.Resource(nodeTwinStateGVR).Get(ctx, nodeName, metav1.GetOptions{})
+	// Ensure the object exists first (it may have been created by upsertNodeTwinSpec)
+	_, err = dynClient.Resource(nodeTwinGVR).Get(ctx, nodeName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
+		// Create a minimal object; spec will be filled by upsertNodeTwinSpec
 		obj := &unstructured.Unstructured{
 			Object: map[string]interface{}{
 				"apiVersion": "joulie.io/v1alpha1",
-				"kind":       "NodeTwinState",
+				"kind":       "NodeTwin",
 				"metadata": map[string]interface{}{
 					"name": nodeName,
 				},
 				"spec": map[string]interface{}{
 					"nodeName": nodeName,
+					"profile":  "unknown",
 				},
 			},
 		}
-		if _, err := dynClient.Resource(nodeTwinStateGVR).Create(ctx, obj, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("create NodeTwinState %s: %w", nodeName, err)
+		if _, err := dynClient.Resource(nodeTwinGVR).Create(ctx, obj, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("create NodeTwin %s: %w", nodeName, err)
 		}
 	}
 
-	// Patch status
-	_, err = dynClient.Resource(nodeTwinStateGVR).Patch(
+	// Patch status subresource
+	_, err = dynClient.Resource(nodeTwinGVR).Patch(
 		ctx, nodeName, types.MergePatchType, patchBytes, metav1.PatchOptions{}, "status",
 	)
 	if err != nil {
-		// If status subresource not available, try full patch
+		// Fallback: full patch if status subresource not available
 		fullPatch := map[string]interface{}{
 			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "NodeTwinState",
+			"kind":       "NodeTwin",
 			"metadata":   map[string]interface{}{"name": nodeName},
-			"spec":       map[string]interface{}{"nodeName": nodeName},
 			"status":     statusMap,
 		}
 		fp, _ := json.Marshal(fullPatch)
-		_, err = dynClient.Resource(nodeTwinStateGVR).Patch(ctx, nodeName, types.MergePatchType, fp, metav1.PatchOptions{})
+		_, err = dynClient.Resource(nodeTwinGVR).Patch(ctx, nodeName, types.MergePatchType, fp, metav1.PatchOptions{})
 		if err != nil {
-			return fmt.Errorf("patch NodeTwinState %s: %w", nodeName, err)
+			return fmt.Errorf("patch NodeTwin %s status: %w", nodeName, err)
 		}
 	}
 
 	return nil
 }
 
-func nodeTwinStateToMap(state joulie.NodeTwinState) map[string]interface{} {
+// upsertNodeTwinSpec creates or updates the spec portion of a NodeTwin CR.
+// This replaces the old upsertNodeProfile which wrote to a separate NodePowerProfile CRD.
+func upsertNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, a NodeAssignment) error {
+	name := sanitizeName(a.NodeName)
+	spec := map[string]any{
+		"nodeName": a.NodeName,
+		"profile":  a.Profile,
+		"policy": map[string]any{
+			"name": a.ManagedBy,
+		},
+		"scheduling": map[string]any{
+			"draining": a.Draining,
+		},
+	}
+	cpu := map[string]any{}
+	if a.CPUCapPctOfMax != nil {
+		cpu["packagePowerCapPctOfMax"] = *a.CPUCapPctOfMax
+	} else {
+		cpu["packagePowerCapWatts"] = a.CapWatts
+	}
+	spec["cpu"] = cpu
+	if a.GPU != nil {
+		powerCap := map[string]any{
+			"scope": "perGpu",
+		}
+		if a.GPU.CapWattsPerGPU != nil {
+			powerCap["capWattsPerGpu"] = *a.GPU.CapWattsPerGPU
+		}
+		if a.GPU.CapPctOfMax != nil {
+			powerCap["capPctOfMax"] = *a.GPU.CapPctOfMax
+		}
+		spec["gpu"] = map[string]any{
+			"powerCap": powerCap,
+		}
+	}
+
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "joulie.io/v1alpha1",
+		"kind":       "NodeTwin",
+		"metadata": map[string]any{
+			"name": name,
+		},
+		"spec": spec,
+	}}
+
+	res := dyn.Resource(nodeTwinGVR)
+	existing, err := res.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("get NodeTwin %s: %w", name, err)
+		}
+		_, err := res.Create(ctx, obj, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create NodeTwin %s: %w", name, err)
+		}
+		return nil
+	}
+
+	existing.Object["spec"] = obj.Object["spec"]
+	if _, err := res.Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("update NodeTwin %s: %w", name, err)
+	}
+	return nil
+}
+
+func nodeTwinStatusToMap(status joulie.NodeTwinStatus) map[string]interface{} {
 	m := map[string]interface{}{
-		"nodeName":                    state.NodeName,
-		"schedulableClass":            state.SchedulableClass,
-		"predictedPowerHeadroomScore": state.PredictedPowerHeadroomScore,
-		"predictedCoolingStressScore": state.PredictedCoolingStressScore,
-		"predictedPsuStressScore":     state.PredictedPsuStressScore,
-		"hardwareDensityScore":        state.HardwareDensityScore,
-		"lastUpdated":                 state.LastUpdated.Format(time.RFC3339),
+		"schedulableClass":            status.SchedulableClass,
+		"predictedPowerHeadroomScore": status.PredictedPowerHeadroomScore,
+		"predictedCoolingStressScore": status.PredictedCoolingStressScore,
+		"predictedPsuStressScore":     status.PredictedPsuStressScore,
+		"hardwareDensityScore":        status.HardwareDensityScore,
+		"lastUpdated":                 status.LastUpdated.Format(time.RFC3339),
 		"effectiveCapState": map[string]interface{}{
-			"cpuPct": state.EffectiveCapState.CPUPct,
-			"gpuPct": state.EffectiveCapState.GPUPct,
+			"cpuPct": status.EffectiveCapState.CPUPct,
+			"gpuPct": status.EffectiveCapState.GPUPct,
 		},
 	}
 
-	if len(state.RescheduleRecommendations) > 0 {
-		recs := make([]interface{}, len(state.RescheduleRecommendations))
-		for i, r := range state.RescheduleRecommendations {
+	if len(status.RescheduleRecommendations) > 0 {
+		recs := make([]interface{}, len(status.RescheduleRecommendations))
+		for i, r := range status.RescheduleRecommendations {
 			recs[i] = map[string]interface{}{
 				"workloadRef": map[string]interface{}{
 					"kind":      r.WorkloadRef.Kind,
@@ -288,5 +343,19 @@ func nodeTwinStateToMap(state joulie.NodeTwinState) map[string]interface{} {
 		}
 		m["rescheduleRecommendations"] = recs
 	}
+
+	if status.GPUSlicingRecommendation != nil {
+		r := status.GPUSlicingRecommendation
+		m["gpuSlicingRecommendation"] = map[string]interface{}{
+			"mode":                     r.Mode,
+			"sliceType":                r.SliceType,
+			"slicesPerGPU":             r.SlicesPerGPU,
+			"totalSlices":              r.TotalSlices,
+			"reason":                   r.Reason,
+			"estimatedUtilizationGain": r.EstimatedUtilizationGain,
+			"confidence":               r.Confidence,
+		}
+	}
+
 	return m
 }

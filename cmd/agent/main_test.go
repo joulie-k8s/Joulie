@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matbun/joulie/pkg/agent/dvfs"
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -73,23 +74,23 @@ func TestDiscoverHardwareGPUVendors(t *testing.T) {
 
 func TestCPUIndexFromPath(t *testing.T) {
 	t.Parallel()
-	if got, ok := cpuIndexFromPath("/host-sys/devices/system/cpu/cpufreq/policy11"); !ok || got != 11 {
+	if got, ok := dvfs.CPUIndexFromPath("/host-sys/devices/system/cpu/cpufreq/policy11"); !ok || got != 11 {
 		t.Fatalf("policy path parse failed: got=%d ok=%v", got, ok)
 	}
-	if got, ok := cpuIndexFromPath("/host-sys/devices/system/cpu/cpu7/cpufreq"); !ok || got != 7 {
+	if got, ok := dvfs.CPUIndexFromPath("/host-sys/devices/system/cpu/cpu7/cpufreq"); !ok || got != 7 {
 		t.Fatalf("cpu path parse failed: got=%d ok=%v", got, ok)
 	}
-	if _, ok := cpuIndexFromPath("/not/a/cpu/path"); ok {
+	if _, ok := dvfs.CPUIndexFromPath("/not/a/cpu/path"); ok {
 		t.Fatalf("invalid path should not parse")
 	}
 }
 
-func TestParseNodePowerProfileWithIntAndFloatCaps(t *testing.T) {
+func TestParseNodeTwinAsProfileWithIntAndFloatCaps(t *testing.T) {
 	t.Parallel()
 	intObj := unstructured.Unstructured{
 		Object: map[string]any{
 			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "NodePowerProfile",
+			"kind":       "NodeTwin",
 			"metadata": map[string]any{
 				"name": "node-a",
 			},
@@ -102,8 +103,7 @@ func TestParseNodePowerProfileWithIntAndFloatCaps(t *testing.T) {
 			},
 		},
 	}
-	intObj.SetGroupVersionKind(metav1.SchemeGroupVersion.WithKind("NodePowerProfile"))
-	npInt := parseNodePowerProfile(intObj)
+	npInt := parseNodeTwinAsProfile(intObj)
 	if npInt.PowerWatts == nil || *npInt.PowerWatts != 120 {
 		t.Fatalf("int cap parse failed: %#v", npInt.PowerWatts)
 	}
@@ -111,7 +111,7 @@ func TestParseNodePowerProfileWithIntAndFloatCaps(t *testing.T) {
 	floatObj := unstructured.Unstructured{
 		Object: map[string]any{
 			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "NodePowerProfile",
+			"kind":       "NodeTwin",
 			"metadata": map[string]any{
 				"name": "node-b",
 			},
@@ -124,51 +124,39 @@ func TestParseNodePowerProfileWithIntAndFloatCaps(t *testing.T) {
 			},
 		},
 	}
-	npFloat := parseNodePowerProfile(floatObj)
+	npFloat := parseNodeTwinAsProfile(floatObj)
 	if npFloat.PowerWatts == nil || *npFloat.PowerWatts != 5000 {
 		t.Fatalf("float cap parse failed: %#v", npFloat.PowerWatts)
 	}
 }
 
-func TestParseTelemetryProfile(t *testing.T) {
-	t.Parallel()
-	obj := unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "TelemetryProfile",
-			"spec": map[string]any{
-				"target": map[string]any{
-					"scope":    "node",
-					"nodeName": "node-a",
-				},
-				"sources": map[string]any{
-					"cpu": map[string]any{
-						"type": "http",
-						"http": map[string]any{
-							"endpoint":       "http://sim.local/nodes/{node}",
-							"timeoutSeconds": int64(5),
-						},
-					},
-				},
-				"controls": map[string]any{
-					"cpu": map[string]any{
-						"type": "http",
-						"http": map[string]any{
-							"endpoint":       "http://sim.local/control/{node}",
-							"timeoutSeconds": int64(4),
-							"mode":           "dvfs",
-						},
-					},
-				},
-			},
-		},
+func TestResolveTelemetryConfigFromEnv(t *testing.T) {
+	t.Setenv("TELEMETRY_CPU_SOURCE", "http")
+	t.Setenv("TELEMETRY_CPU_CONTROL", "http")
+	t.Setenv("TELEMETRY_CPU_HTTP_ENDPOINT", "http://sim.local/nodes/{node}")
+	t.Setenv("TELEMETRY_CPU_CONTROL_HTTP_ENDPOINT", "http://sim.local/control/{node}")
+	t.Setenv("TELEMETRY_CPU_CONTROL_MODE", "dvfs")
+	t.Setenv("TELEMETRY_HTTP_TIMEOUT_SECONDS", "5")
+
+	cfg := resolveTelemetryConfigFromEnv()
+	if cfg == nil {
+		t.Fatalf("expected non-nil config")
 	}
-	cfg := parseTelemetryProfile(obj)
-	if cfg.TargetScope != "node" || cfg.NodeName != "node-a" || cfg.CPUSourceType != "http" || cfg.HTTPEndpoint == "" || cfg.TimeoutSeconds != 5 {
+	if cfg.CPUSourceType != "http" || cfg.HTTPEndpoint != "http://sim.local/nodes/{node}" || cfg.TimeoutSeconds != 5 {
 		t.Fatalf("unexpected telemetry config: %#v", cfg)
 	}
-	if cfg.CPUControlType != "http" || cfg.ControlHTTPEndpoint == "" || cfg.ControlTimeoutSeconds != 4 || cfg.ControlMode != "dvfs" {
+	if cfg.CPUControlType != "http" || cfg.ControlHTTPEndpoint != "http://sim.local/control/{node}" || cfg.ControlMode != "dvfs" {
 		t.Fatalf("unexpected telemetry config: %#v", cfg)
+	}
+}
+
+func TestResolveTelemetryConfigFromEnvReturnsNilWhenEmpty(t *testing.T) {
+	t.Setenv("TELEMETRY_CPU_SOURCE", "")
+	t.Setenv("TELEMETRY_CPU_CONTROL", "")
+	t.Setenv("TELEMETRY_GPU_CONTROL", "")
+	cfg := resolveTelemetryConfigFromEnv()
+	if cfg != nil {
+		t.Fatalf("expected nil config when no env vars set, got %#v", cfg)
 	}
 }
 
@@ -194,7 +182,7 @@ func TestHTTPPowerReader(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"packagePowerWatts": 222.5})
 		}))
 		defer srv.Close()
-		r := &HTTPPowerReader{endpoint: srv.URL, nodeName: "node-a", client: srv.Client()}
+		r := &HTTPPowerReader{Endpoint: srv.URL, NodeName: "node-a", Client: srv.Client()}
 		p, ok, err := r.ReadPowerWatts()
 		if err != nil || !ok || p != 222.5 {
 			t.Fatalf("unexpected result p=%v ok=%v err=%v", p, ok, err)
@@ -207,7 +195,7 @@ func TestHTTPPowerReader(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"cpu": map[string]any{"packagePowerWatts": 111.0}})
 		}))
 		defer srv.Close()
-		r := &HTTPPowerReader{endpoint: srv.URL, nodeName: "node-a", client: srv.Client()}
+		r := &HTTPPowerReader{Endpoint: srv.URL, NodeName: "node-a", Client: srv.Client()}
 		p, ok, err := r.ReadPowerWatts()
 		if err != nil || !ok || p != 111.0 {
 			t.Fatalf("unexpected result p=%v ok=%v err=%v", p, ok, err)
@@ -220,7 +208,7 @@ func TestHTTPPowerReader(t *testing.T) {
 			w.WriteHeader(http.StatusBadGateway)
 		}))
 		defer srv.Close()
-		r := &HTTPPowerReader{endpoint: srv.URL, nodeName: "node-a", client: srv.Client()}
+		r := &HTTPPowerReader{Endpoint: srv.URL, NodeName: "node-a", Client: srv.Client()}
 		_, _, err := r.ReadPowerWatts()
 		if err == nil {
 			t.Fatalf("expected error for non-2xx status")
@@ -238,7 +226,7 @@ func TestControlClientFromTelemetry(t *testing.T) {
 	if client == nil {
 		t.Fatalf("expected http control client")
 	}
-	if got := client.endpoint; got != "http://sim/control/{node}" {
+	if got := client.Endpoint; got != "http://sim/control/{node}" {
 		t.Fatalf("unexpected endpoint %q", got)
 	}
 
@@ -289,18 +277,18 @@ func TestResolvePoolShardIDFromPodName(t *testing.T) {
 func TestDVFSSetPowerReaderForTelemetry(t *testing.T) {
 	t.Parallel()
 	d := &DVFSController{}
-	d.SetPowerReaderForTelemetry(nil, "node-a")
-	if d.powerReader != nil {
+	setDVFSPowerReaderForTelemetry(d, nil, "node-a")
+	if d.PowerReader != nil {
 		t.Fatalf("expected nil powerReader")
 	}
 	cfg := &TelemetryConfig{CPUSourceType: "http", HTTPEndpoint: "http://sim/telemetry/{node}"}
-	d.SetPowerReaderForTelemetry(cfg, "node-a")
-	if d.powerReader == nil {
+	setDVFSPowerReaderForTelemetry(d, cfg, "node-a")
+	if d.PowerReader == nil {
 		t.Fatalf("expected powerReader")
 	}
 	cfg.CPUSourceType = "host"
-	d.SetPowerReaderForTelemetry(cfg, "node-a")
-	if d.powerReader != nil {
+	setDVFSPowerReaderForTelemetry(d, cfg, "node-a")
+	if d.PowerReader != nil {
 		t.Fatalf("expected nil powerReader for host type")
 	}
 }
@@ -323,9 +311,9 @@ func TestHTTPControlClientApplyCPUControl(t *testing.T) {
 	defer srv.Close()
 
 	c := &HTTPControlClient{
-		endpoint: srv.URL + "/control/{node}",
-		nodeName: "node-a",
-		client:   srv.Client(),
+		Endpoint: srv.URL + "/control/{node}",
+		NodeName: "node-a",
+		Client:   srv.Client(),
 	}
 	if err := c.ApplyCPUControl("dvfs.set_throttle_pct", 120, 30); err != nil {
 		t.Fatalf("ApplyCPUControl error: %v", err)
@@ -354,11 +342,11 @@ func TestApplyThrottlePctHTTPControlNoCPUs(t *testing.T) {
 
 	d := &DVFSController{}
 	c := &HTTPControlClient{
-		endpoint: srv.URL + "/control/{node}",
-		nodeName: "node-a",
-		client:   srv.Client(),
+		Endpoint: srv.URL + "/control/{node}",
+		NodeName: "node-a",
+		Client:   srv.Client(),
 	}
-	written, err := d.applyThrottlePct(40, c, 120)
+	written, err := d.ApplyThrottlePct(40, c, 120)
 	if err != nil {
 		t.Fatalf("applyThrottlePct returned error: %v", err)
 	}
@@ -373,7 +361,7 @@ func TestApplyThrottlePctHTTPControlNoCPUs(t *testing.T) {
 func TestApplyThrottlePctFailsWithoutBackends(t *testing.T) {
 	t.Parallel()
 	d := &DVFSController{}
-	_, err := d.applyThrottlePct(10, nil, 120)
+	_, err := d.ApplyThrottlePct(10, nil, 120)
 	if err == nil {
 		t.Fatalf("expected error when no cpufreq and no http control")
 	}
@@ -390,47 +378,21 @@ func TestDVFSReconcileUsesHTTPControl(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m := &AgentMetrics{
-		node: "node-a",
-		dvfsObservedPowerW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "test_dvfs_observed_power_watts", Help: "test",
-		}, []string{"node"}),
-		dvfsEMAPowerW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "test_dvfs_ema_power_watts", Help: "test",
-		}, []string{"node"}),
-		dvfsThrottlePct: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "test_dvfs_throttle_pct", Help: "test",
-		}, []string{"node"}),
-		dvfsTripAbove: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "test_dvfs_above_trip_count", Help: "test",
-		}, []string{"node"}),
-		dvfsTripBelow: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "test_dvfs_below_trip_count", Help: "test",
-		}, []string{"node"}),
-		dvfsCPUCurFreqKHz: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "test_dvfs_cpu_cur_freq_khz", Help: "test",
-		}, []string{"node", "cpu"}),
-		dvfsCPUMaxFreqKHz: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "test_dvfs_cpu_max_freq_khz", Help: "test",
-		}, []string{"node", "cpu"}),
-		dvfsActionsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "test_dvfs_actions_total", Help: "test",
-		}, []string{"node", "action"}),
-	}
+	m := newTestDVFSMetrics("node-a", "reconcile_http")
 
 	d := &DVFSController{
-		metrics:     m,
-		emaAlpha:    1.0,
-		highMarginW: 0,
-		lowMarginW:  0,
-		stepPct:     10,
-		tripCount:   1,
+		Metrics:     m,
+		EmaAlpha:    1.0,
+		HighMarginW: 0,
+		LowMarginW:  0,
+		StepPct:     10,
+		TripCount:   1,
 	}
-	d.powerReader = powerReaderStub{power: 200, ok: true}
+	d.PowerReader = powerReaderStub{power: 200, ok: true}
 	c := &HTTPControlClient{
-		endpoint: srv.URL + "/control/{node}",
-		nodeName: "node-a",
-		client:   srv.Client(),
+		Endpoint: srv.URL + "/control/{node}",
+		NodeName: "node-a",
+		Client:   srv.Client(),
 	}
 	action, err := d.Reconcile(120, c)
 	if err != nil {
@@ -455,25 +417,25 @@ func TestDVFSReconcileThrottleDown(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m := newTestMetricsForDVFS("down")
+	m := newTestDVFSMetrics("node-down", "down")
 	d := &DVFSController{
-		metrics:     m,
-		emaAlpha:    1.0,
-		highMarginW: 0,
-		lowMarginW:  0,
-		stepPct:     10,
-		tripCount:   1,
-		throttlePct: 20,
-		powerReader: powerReaderStub{power: 80, ok: true},
-		cooldown:    0,
-		lastAction:  time.Time{},
-		aboveCount:  0,
-		belowCount:  0,
+		Metrics:     m,
+		EmaAlpha:    1.0,
+		HighMarginW: 0,
+		LowMarginW:  0,
+		StepPct:     10,
+		TripCount:   1,
+		ThrottlePct: 20,
+		PowerReader: powerReaderStub{power: 80, ok: true},
+		Cooldown:    0,
+		LastAction:  time.Time{},
+		AboveCount:  0,
+		BelowCount:  0,
 	}
 	c := &HTTPControlClient{
-		endpoint: srv.URL + "/control/{node}",
-		nodeName: "node-down",
-		client:   srv.Client(),
+		Endpoint: srv.URL + "/control/{node}",
+		NodeName: "node-down",
+		Client:   srv.Client(),
 	}
 	action, err := d.Reconcile(120, c)
 	if err != nil {
@@ -492,18 +454,18 @@ func TestDVFSReconcileThrottleDown(t *testing.T) {
 
 func TestDVFSReconcileCooldownHold(t *testing.T) {
 	t.Parallel()
-	m := newTestMetricsForDVFS("cooldown")
+	m := newTestDVFSMetrics("node-cooldown", "cooldown")
 	d := &DVFSController{
-		metrics:     m,
-		emaAlpha:    1.0,
-		highMarginW: 0,
-		lowMarginW:  0,
-		stepPct:     10,
-		tripCount:   1,
-		throttlePct: 10,
-		powerReader: powerReaderStub{power: 300, ok: true},
-		cooldown:    10 * time.Minute,
-		lastAction:  time.Now(),
+		Metrics:     m,
+		EmaAlpha:    1.0,
+		HighMarginW: 0,
+		LowMarginW:  0,
+		StepPct:     10,
+		TripCount:   1,
+		ThrottlePct: 10,
+		PowerReader: powerReaderStub{power: 300, ok: true},
+		Cooldown:    10 * time.Minute,
+		LastAction:  time.Now(),
 	}
 	action, err := d.Reconcile(120, nil)
 	if err != nil {
@@ -516,8 +478,8 @@ func TestDVFSReconcileCooldownHold(t *testing.T) {
 
 func TestDVFSReadPowerWattsUsesReader(t *testing.T) {
 	t.Parallel()
-	d := &DVFSController{powerReader: powerReaderStub{power: 42, ok: true}}
-	p, ok, err := d.readPowerWatts()
+	d := &DVFSController{PowerReader: powerReaderStub{power: 42, ok: true}}
+	p, ok, err := d.ReadPowerWatts()
 	if err != nil || !ok || p != 42 {
 		t.Fatalf("unexpected p=%v ok=%v err=%v", p, ok, err)
 	}
@@ -525,8 +487,8 @@ func TestDVFSReadPowerWattsUsesReader(t *testing.T) {
 
 func TestDVFSReadPowerWattsReaderError(t *testing.T) {
 	t.Parallel()
-	d := &DVFSController{powerReader: powerReaderStub{err: errors.New("boom")}}
-	_, _, err := d.readPowerWatts()
+	d := &DVFSController{PowerReader: powerReaderStub{err: errors.New("boom")}}
+	_, _, err := d.ReadPowerWatts()
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -545,13 +507,13 @@ func TestApplyThrottlePctHostWrites(t *testing.T) {
 	}
 
 	d := &DVFSController{
-		cpus: []DVFSCpu{
+		Cpus: []DVFSCpu{
 			{Index: 0, MaxFile: f1, MinKHz: 1000000, MaxKHz: 3000000},
 			{Index: 1, MaxFile: f2, MinKHz: 1000000, MaxKHz: 3000000},
 		},
-		minFreqKHz: 1500000,
+		MinFreqKHz: 1500000,
 	}
-	written, err := d.applyThrottlePct(50, nil, 120)
+	written, err := d.ApplyThrottlePct(50, nil, 120)
 	if err != nil {
 		t.Fatalf("applyThrottlePct error: %v", err)
 	}
@@ -580,12 +542,12 @@ func TestApplyCPUPercentIntentHTTP(t *testing.T) {
 	defer srv.Close()
 
 	d := &DVFSController{
-		powerReader: powerReaderStub{power: 250, ok: true},
+		PowerReader: powerReaderStub{power: 250, ok: true},
 	}
 	c := &HTTPControlClient{
-		endpoint: srv.URL + "/control/{node}",
-		nodeName: "node-a",
-		client:   srv.Client(),
+		Endpoint: srv.URL + "/control/{node}",
+		NodeName: "node-a",
+		Client:   srv.Client(),
 	}
 	backend, result, msg, err := applyCPUPercentIntent(100, c, d, nil)
 	if err != nil {
@@ -616,15 +578,15 @@ func TestApplyCPUPercentIntentBlockedWithoutBackends(t *testing.T) {
 	}
 }
 
-func TestResolveDesiredStateAndTelemetryConfig(t *testing.T) {
+func TestResolveDesiredStateFromNodeTwin(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
 	dyn := dynamicfake.NewSimpleDynamicClient(scheme,
 		&unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "NodePowerProfile",
+			"kind":       "NodeTwin",
 			"metadata": map[string]any{
-				"name": "node-a-profile",
+				"name": "node-a",
 			},
 			"spec": map[string]any{
 				"nodeName": "node-a",
@@ -634,65 +596,42 @@ func TestResolveDesiredStateAndTelemetryConfig(t *testing.T) {
 				},
 			},
 		}},
-		&unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "TelemetryProfile",
-			"metadata": map[string]any{
-				"name": "node-a-telemetry",
-			},
-			"spec": map[string]any{
-				"target": map[string]any{"scope": "node", "nodeName": "node-a"},
-				"sources": map[string]any{
-					"cpu": map[string]any{"type": "http", "http": map[string]any{"endpoint": "http://sim/telemetry/{node}"}},
-				},
-				"controls": map[string]any{
-					"cpu": map[string]any{"type": "http", "http": map[string]any{"endpoint": "http://sim/control/{node}", "mode": "dvfs"}},
-				},
-			},
-		}},
 	)
 
 	state, src, err := resolveDesiredStateForNode(context.Background(), dyn, "node-a")
 	if err != nil {
 		t.Fatalf("resolveDesiredStateForNode error: %v", err)
 	}
-	if state == nil || src != "nodepowerprofile" || state.PowerWatts == nil || *state.PowerWatts != 120.0 {
+	if state == nil || src != "nodetwin" || state.PowerWatts == nil || *state.PowerWatts != 120.0 {
 		t.Fatalf("unexpected desired state: %#v src=%s", state, src)
-	}
-	cfg, err := resolveTelemetryConfigForNode(context.Background(), dyn, "node-a")
-	if err != nil {
-		t.Fatalf("resolveTelemetryConfigForNode error: %v", err)
-	}
-	if cfg == nil || cfg.CPUSourceType != "http" || cfg.CPUControlType != "http" || cfg.ControlMode != "dvfs" {
-		t.Fatalf("unexpected telemetry config: %#v", cfg)
 	}
 }
 
-func TestUpdateTelemetryControlStatus(t *testing.T) {
+func TestUpdateNodeTwinControlStatus(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
 	dyn := dynamicfake.NewSimpleDynamicClient(scheme,
 		&unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "TelemetryProfile",
+			"kind":       "NodeTwin",
 			"metadata": map[string]any{
-				"name": "node-a-telemetry",
+				"name": "node-a",
 			},
 			"spec": map[string]any{
-				"target": map[string]any{"scope": "node", "nodeName": "node-a"},
+				"nodeName": "node-a",
+				"profile":  "eco",
 			},
 		}},
 	)
-	cfg := &TelemetryConfig{Name: "node-a-telemetry", TargetScope: "node", NodeName: "node-a"}
-	if err := updateTelemetryControlStatus(context.Background(), dyn, cfg, "node-a", "dvfs", "applied", "ok"); err != nil {
-		t.Fatalf("updateTelemetryControlStatus error: %v", err)
+	if err := updateNodeTwinControlStatus(context.Background(), dyn, "node-a", "cpu", "dvfs", "applied", "ok"); err != nil {
+		t.Fatalf("updateNodeTwinControlStatus error: %v", err)
 	}
-	obj, err := dyn.Resource(telemetryNodeGVR).Get(context.Background(), "node-a-telemetry", metav1.GetOptions{})
+	obj, err := dyn.Resource(nodeTwinGVR).Get(context.Background(), "node-a", metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("get telemetryprofile: %v", err)
+		t.Fatalf("get NodeTwin: %v", err)
 	}
-	backend, _, _ := unstructured.NestedString(obj.Object, "status", "control", "cpu", "backend")
-	result, _, _ := unstructured.NestedString(obj.Object, "status", "control", "cpu", "result")
+	backend, _, _ := unstructured.NestedString(obj.Object, "status", "controlStatus", "cpu", "backend")
+	result, _, _ := unstructured.NestedString(obj.Object, "status", "controlStatus", "cpu", "result")
 	if backend != "dvfs" || result != "applied" {
 		t.Fatalf("unexpected status backend=%s result=%s", backend, result)
 	}
@@ -708,31 +647,31 @@ func (p powerReaderStub) ReadPowerWatts() (float64, bool, error) {
 	return p.power, p.ok, p.err
 }
 
-func newTestMetricsForDVFS(prefix string) *AgentMetrics {
-	return &AgentMetrics{
-		node: "node-" + prefix,
-		dvfsObservedPowerW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+func newTestDVFSMetrics(node, prefix string) *dvfs.Metrics {
+	return &dvfs.Metrics{
+		Node: node,
+		ObservedPowerW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "test_" + prefix + "_dvfs_observed_power_watts", Help: "test",
 		}, []string{"node"}),
-		dvfsEMAPowerW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		EMAPowerW: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "test_" + prefix + "_dvfs_ema_power_watts", Help: "test",
 		}, []string{"node"}),
-		dvfsThrottlePct: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		ThrottlePct: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "test_" + prefix + "_dvfs_throttle_pct", Help: "test",
 		}, []string{"node"}),
-		dvfsTripAbove: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		TripAbove: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "test_" + prefix + "_dvfs_above_trip_count", Help: "test",
 		}, []string{"node"}),
-		dvfsTripBelow: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		TripBelow: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "test_" + prefix + "_dvfs_below_trip_count", Help: "test",
 		}, []string{"node"}),
-		dvfsCPUCurFreqKHz: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		CPUCurFreqKHz: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "test_" + prefix + "_dvfs_cpu_cur_freq_khz", Help: "test",
 		}, []string{"node", "cpu"}),
-		dvfsCPUMaxFreqKHz: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		CPUMaxFreqKHz: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "test_" + prefix + "_dvfs_cpu_max_freq_khz", Help: "test",
 		}, []string{"node", "cpu"}),
-		dvfsActionsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+		ActionsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "test_" + prefix + "_dvfs_actions_total", Help: "test",
 		}, []string{"node", "action"}),
 	}
@@ -762,35 +701,23 @@ func TestReconcileOnceNoProfileWritesNoneStatus(t *testing.T) {
 		},
 	)
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
-		profileNodeGVR:   "NodePowerProfileList",
-		telemetryNodeGVR: "TelemetryProfileList",
-		nodeHardwareGVR:  "NodeHardwareList",
-	},
-		&unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "TelemetryProfile",
-			"metadata":   map[string]any{"name": "tp-node-a"},
-			"spec": map[string]any{
-				"target": map[string]any{"scope": "node", "nodeName": nodeName},
-			},
-		}},
-	)
+		nodeTwinGVR:     "NodeTwinList",
+		nodeHardwareGVR: "NodeHardwareList",
+	})
 	metrics := newTestAgentMetrics("reconcile-no-profile")
-	last := "prev"
-	if err := reconcileOnce(context.Background(), kube, dyn, nodeName, nil, metrics, false, &last); err != nil {
+	nc := &NodeController{
+		nodeName:               nodeName,
+		metrics:                metrics,
+		simulateOnly:           false,
+		lastRaplKey:            "prev",
+		lastSuccessfulSpecRead: time.Now(),
+		specReadTimeout:        5 * time.Minute,
+	}
+	if err := reconcileOnce(context.Background(), kube, dyn, nc); err != nil {
 		t.Fatalf("reconcileOnce error: %v", err)
 	}
-	if last != "" {
-		t.Fatalf("expected lastRaplKey reset, got %q", last)
-	}
-	obj, err := dyn.Resource(telemetryNodeGVR).Get(context.Background(), "tp-node-a", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get telemetry profile: %v", err)
-	}
-	backend, _, _ := unstructured.NestedString(obj.Object, "status", "control", "cpu", "backend")
-	result, _, _ := unstructured.NestedString(obj.Object, "status", "control", "cpu", "result")
-	if backend != "none" || result != "none" {
-		t.Fatalf("unexpected status backend=%q result=%q", backend, result)
+	if nc.lastRaplKey != "" {
+		t.Fatalf("expected lastRaplKey reset, got %q", nc.lastRaplKey)
 	}
 	hwObj, err := dyn.Resource(nodeHardwareGVR).Get(context.Background(), "node-a", metav1.GetOptions{})
 	if err != nil {
@@ -813,14 +740,13 @@ func TestReconcileOnceSimulateOnlyWritesAppliedStatus(t *testing.T) {
 		},
 	)
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
-		profileNodeGVR:   "NodePowerProfileList",
-		telemetryNodeGVR: "TelemetryProfileList",
-		nodeHardwareGVR:  "NodeHardwareList",
+		nodeTwinGVR:     "NodeTwinList",
+		nodeHardwareGVR: "NodeHardwareList",
 	},
 		&unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "NodePowerProfile",
-			"metadata":   map[string]any{"name": "np-node-a"},
+			"kind":       "NodeTwin",
+			"metadata":   map[string]any{"name": "node-a"},
 			"spec": map[string]any{
 				"nodeName": nodeName,
 				"profile":  "eco",
@@ -829,29 +755,76 @@ func TestReconcileOnceSimulateOnlyWritesAppliedStatus(t *testing.T) {
 				},
 			},
 		}},
-		&unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "TelemetryProfile",
-			"metadata":   map[string]any{"name": "tp-node-a"},
-			"spec": map[string]any{
-				"target": map[string]any{"scope": "node", "nodeName": nodeName},
-			},
-		}},
 	)
 	metrics := newTestAgentMetrics("reconcile-sim-only")
-	last := ""
-	if err := reconcileOnce(context.Background(), kube, dyn, nodeName, nil, metrics, true, &last); err != nil {
+	nc := &NodeController{
+		nodeName:               nodeName,
+		metrics:                metrics,
+		simulateOnly:           true,
+		lastSuccessfulSpecRead: time.Now(),
+		specReadTimeout:        5 * time.Minute,
+	}
+	if err := reconcileOnce(context.Background(), kube, dyn, nc); err != nil {
 		t.Fatalf("reconcileOnce error: %v", err)
 	}
-	obj, err := dyn.Resource(telemetryNodeGVR).Get(context.Background(), "tp-node-a", metav1.GetOptions{})
+	obj, err := dyn.Resource(nodeTwinGVR).Get(context.Background(), "node-a", metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("get telemetry profile: %v", err)
+		t.Fatalf("get NodeTwin: %v", err)
 	}
-	backend, _, _ := unstructured.NestedString(obj.Object, "status", "control", "cpu", "backend")
-	result, _, _ := unstructured.NestedString(obj.Object, "status", "control", "cpu", "result")
-	msg, _, _ := unstructured.NestedString(obj.Object, "status", "control", "cpu", "message")
+	backend, _, _ := unstructured.NestedString(obj.Object, "status", "controlStatus", "cpu", "backend")
+	result, _, _ := unstructured.NestedString(obj.Object, "status", "controlStatus", "cpu", "result")
+	msg, _, _ := unstructured.NestedString(obj.Object, "status", "controlStatus", "cpu", "message")
 	if backend != "none" || result != "applied" || !strings.Contains(msg, "simulate-only") {
 		t.Fatalf("unexpected status backend=%q result=%q msg=%q", backend, result, msg)
+	}
+}
+
+func TestReconcileOnceRelaxesCapsWhenSpecReadTimesOut(t *testing.T) {
+	t.Parallel()
+	nodeName := "node-a"
+	kube := k8sfake.NewSimpleClientset(
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   nodeName,
+				Labels: map[string]string{"feature.node.kubernetes.io/cpu-model.vendor_id": "GenuineIntel"},
+			},
+		},
+	)
+	// No NodeTwin objects - simulates operator being gone.
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		nodeTwinGVR:     "NodeTwinList",
+		nodeHardwareGVR: "NodeHardwareList",
+	})
+	metrics := newTestAgentMetrics("reconcile-timeout")
+	nc := &NodeController{
+		nodeName:               nodeName,
+		metrics:                metrics,
+		simulateOnly:           false,
+		lastSuccessfulSpecRead: time.Now().Add(-10 * time.Minute), // 10 min ago
+		specReadTimeout:        5 * time.Minute,
+	}
+
+	// With no NodeTwin objects, resolveDesiredStateForNode returns nil/nil (no error, no profile).
+	// This counts as a successful API read (API was reachable, just no profile).
+	err := reconcileOnce(context.Background(), kube, dyn, nc)
+	if err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	// lastSuccessfulSpecRead should be updated since API call succeeded
+	if time.Since(nc.lastSuccessfulSpecRead) > 2*time.Second {
+		t.Fatalf("lastSuccessfulSpecRead should have been refreshed")
+	}
+}
+
+func TestNodeControllerCapsRelaxedFlag(t *testing.T) {
+	t.Parallel()
+	nc := &NodeController{
+		nodeName:               "test-node",
+		specReadTimeout:        5 * time.Minute,
+		lastSuccessfulSpecRead: time.Now(),
+	}
+	if nc.capsRelaxed {
+		t.Fatal("capsRelaxed should be false initially")
 	}
 }
 
@@ -917,9 +890,9 @@ func TestApplyGPUIntentHTTP(t *testing.T) {
 	}))
 	defer srv.Close()
 	client := &HTTPControlClient{
-		endpoint: srv.URL + "/control/{node}",
-		nodeName: "node-a",
-		client:   srv.Client(),
+		Endpoint: srv.URL + "/control/{node}",
+		NodeName: "node-a",
+		Client:   srv.Client(),
 	}
 	w := 220.0
 	node := &corev1.Node{
@@ -979,9 +952,9 @@ func TestApplyGPUIntentHTTPAbsoluteBypassesInventory(t *testing.T) {
 	defer srv.Close()
 
 	client := &HTTPControlClient{
-		endpoint: srv.URL + "/control/{node}",
-		nodeName: "node-a",
-		client:   srv.Client(),
+		Endpoint: srv.URL + "/control/{node}",
+		NodeName: "node-a",
+		Client:   srv.Client(),
 	}
 	w := 250.0
 	node := &corev1.Node{

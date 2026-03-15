@@ -54,7 +54,7 @@ def generate_pods(jobs, perf_ratio, standard_ratio, best_effort_ratio, gpu_ratio
                 "name": name,
                 "namespace": "default",
                 "labels": {
-                    "app.kubernetes.io/part-of": "joulie-exp03-benchmark",
+                    "app.kubernetes.io/part-of": "joulie-exp04-benchmark",
                     "joulie.io/workload-class": wclass,
                 },
                 "annotations": {

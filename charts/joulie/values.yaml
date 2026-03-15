@@ -66,3 +66,8 @@ schedulerExtender:
     tag: latest
   port: 9876
   replicas: 1
+
+grafanaDashboard:
+  enabled: false  # enable if Grafana sidecar is configured to auto-provision dashboards
+  labels:
+    grafana_dashboard: "1"

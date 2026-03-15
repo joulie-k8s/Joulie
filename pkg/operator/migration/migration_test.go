@@ -7,8 +7,7 @@ import (
 )
 
 func TestEvaluateNodeNoStress(t *testing.T) {
-	ts := joulie.NodeTwinState{
-		NodeName:                    "node1",
+	ts := joulie.NodeTwinStatus{
 		SchedulableClass:            "performance",
 		PredictedCoolingStressScore: 30,
 		PredictedPsuStressScore:     20,
@@ -29,8 +28,7 @@ func TestEvaluateNodeNoStress(t *testing.T) {
 }
 
 func TestEvaluateNodeHighStress(t *testing.T) {
-	ts := joulie.NodeTwinState{
-		NodeName:                    "node1",
+	ts := joulie.NodeTwinStatus{
 		SchedulableClass:            "eco",
 		PredictedCoolingStressScore: 80,
 		PredictedPsuStressScore:     75,
@@ -61,8 +59,7 @@ func TestEvaluateNodeHighStress(t *testing.T) {
 }
 
 func TestEvaluateNodeDraining(t *testing.T) {
-	ts := joulie.NodeTwinState{
-		NodeName:                    "node1",
+	ts := joulie.NodeTwinStatus{
 		SchedulableClass:            "draining",
 		PredictedCoolingStressScore: 10,
 		PredictedPsuStressScore:     10,

@@ -1,0 +1,175 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nodetwins.joulie.io
+spec:
+  group: joulie.io
+  names:
+    kind: NodeTwin
+    listKind: NodeTwinList
+    plural: nodetwins
+    singular: nodetwin
+    shortNames:
+      - nt
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              description: "Desired power state for this node, written by the operator."
+              properties:
+                nodeName:
+                  type: string
+                profile:
+                  type: string
+                  enum: ["performance", "eco"]
+                cpu:
+                  type: object
+                  properties:
+                    packagePowerCapWatts:
+                      type: number
+                      minimum: 1
+                    packagePowerCapPctOfMax:
+                      type: number
+                      minimum: 0
+                      exclusiveMinimum: true
+                      maximum: 100
+                gpu:
+                  type: object
+                  properties:
+                    powerCap:
+                      type: object
+                      properties:
+                        scope:
+                          type: string
+                          enum: ["perGpu"]
+                        capWattsPerGpu:
+                          type: number
+                          minimum: 1
+                        capPctOfMax:
+                          type: number
+                          minimum: 0
+                          exclusiveMinimum: true
+                          maximum: 100
+                policy:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                scheduling:
+                  type: object
+                  properties:
+                    draining: { type: boolean }
+                    reschedulablePressure:
+                      type: string
+                      enum: ["low", "medium", "high"]
+              required:
+                - nodeName
+                - profile
+            status:
+              type: object
+              description: "Computed twin state, written by the operator's digital twin model."
+              properties:
+                schedulableClass:
+                  type: string
+                  enum: ["eco", "performance", "draining", "unknown"]
+                predictedPowerHeadroomScore:
+                  type: number
+                  description: "0=no headroom, 100=full headroom"
+                predictedCoolingStressScore:
+                  type: number
+                  description: "0=no stress, 100=max stress"
+                predictedPsuStressScore:
+                  type: number
+                  description: "0=no stress, 100=max stress"
+                effectiveCapState:
+                  type: object
+                  properties:
+                    cpuPct: { type: number }
+                    gpuPct: { type: number }
+                hardwareDensityScore:
+                  type: number
+                  description: "Relative compute density score"
+                rescheduleRecommendations:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      workloadRef:
+                        type: object
+                        properties:
+                          kind: { type: string }
+                          namespace: { type: string }
+                          name: { type: string }
+                      reason: { type: string }
+                gpuSlicingRecommendation:
+                  type: object
+                  description: "Advisory GPU slicing suggestion based on historical workload patterns"
+                  properties:
+                    mode:
+                      type: string
+                      enum: ["mig", "time-slicing", "none"]
+                    sliceType:
+                      type: string
+                    slicesPerGPU:
+                      type: integer
+                    totalSlices:
+                      type: integer
+                    reason:
+                      type: string
+                    estimatedUtilizationGain:
+                      type: number
+                    confidence:
+                      type: number
+                controlStatus:
+                  type: object
+                  description: "Control feedback from the agent"
+                  properties:
+                    cpu:
+                      type: object
+                      properties:
+                        backend: { type: string }
+                        result: { type: string }
+                        message: { type: string }
+                        updatedAt: { type: string }
+                    gpu:
+                      type: object
+                      properties:
+                        backend: { type: string }
+                        result: { type: string }
+                        message: { type: string }
+                        updatedAt: { type: string }
+                lastUpdated: { type: string }
+      additionalPrinterColumns:
+        - name: Node
+          type: string
+          jsonPath: .spec.nodeName
+        - name: Profile
+          type: string
+          jsonPath: .spec.profile
+        - name: Class
+          type: string
+          jsonPath: .status.schedulableClass
+        - name: PowerHeadroom
+          type: number
+          jsonPath: .status.predictedPowerHeadroomScore
+        - name: CoolingStress
+          type: number
+          jsonPath: .status.predictedCoolingStressScore
+        - name: PSUStress
+          type: number
+          jsonPath: .status.predictedPsuStressScore
+        - name: CPU-Cap
+          type: string
+          jsonPath: .spec.cpu.packagePowerCapPctOfMax
+        - name: Draining
+          type: boolean
+          jsonPath: .spec.scheduling.draining
+      subresources:
+        status: {}

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Set up a KWOK cluster for experiment 03.
+# Set up a KWOK cluster for experiment 04.
 # Creates fake nodes matching cluster-nodes.yaml and installs Joulie CRDs.
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-joulie-control-loop-exp03}"
+CLUSTER_NAME="${CLUSTER_NAME:-joulie-control-loop-exp04}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CONFIGS_DIR="$SCRIPT_DIR/../configs"
 
-echo "=== Experiment 03: Setting up KWOK cluster ==="
+echo "=== Experiment 04: Setting up KWOK cluster ==="
 echo "Cluster: $CLUSTER_NAME"
 
 # Create cluster

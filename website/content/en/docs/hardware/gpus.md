@@ -12,7 +12,7 @@ The host code paths are designed to work on bare metal (NVIDIA + AMD) when GPU n
 
 ## Contract model
 
-`NodePowerProfile.spec.gpu.powerCap` defines a per-GPU cap intent:
+`NodeTwin.spec.gpu.powerCap` defines a per-GPU cap intent:
 
 - `scope: perGpu`
 - `capWattsPerGpu` (absolute, optional)

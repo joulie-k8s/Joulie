@@ -11,10 +11,10 @@
 #   7. Write per-scenario metrics JSON to results/
 #
 # Fast simulation alternative (no cluster needed):
-#   go run ./experiments/03-heterogeneous_cluster_control_loop/
+#   go run ./experiments/04-heterogeneous_cluster_control_loop/
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-joulie-control-loop-exp03}"
+CLUSTER_NAME="${CLUSTER_NAME:-joulie-control-loop-exp04}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CONFIGS_DIR="$SCRIPT_DIR/../configs"
@@ -54,7 +54,7 @@ else
   ECO_NODE_FRACTION=0.50
 fi
 
-echo "=== Experiment 03: Running scenarios ==="
+echo "=== Experiment 04: Running scenarios ==="
 echo "  Benchmark config: $BENCHMARK_CFG"
 echo "  Results dir: $RESULTS_DIR"
 echo "  Settle seconds: $SETTLE_SECONDS"
@@ -78,7 +78,7 @@ reset_state() {
     kubectl label node "$NODE" joulie.io/power-profile=performance --overwrite 2>/dev/null || true
   done
   # Delete previous workload pods
-  kubectl delete pods -l app.kubernetes.io/part-of=joulie-exp03-benchmark \
+  kubectl delete pods -l app.kubernetes.io/part-of=joulie-exp04-benchmark \
     --ignore-not-found --wait=false 2>/dev/null || true
 }
 
@@ -153,7 +153,7 @@ def kubectl_json(args):
         return {}
 
 nodes = kubectl_json(['get', 'nodes', '-o', 'json'])
-pods = kubectl_json(['get', 'pods', '-A', '-l', 'app.kubernetes.io/part-of=joulie-exp03-benchmark', '-o', 'json'])
+pods = kubectl_json(['get', 'pods', '-A', '-l', 'app.kubernetes.io/part-of=joulie-exp04-benchmark', '-o', 'json'])
 
 node_items = nodes.get('items', [])
 pod_items = pods.get('items', [])
@@ -196,14 +196,14 @@ for SCENARIO in A B C; do
   # 3. Apply scenario-specific configuration
   case "$SCENARIO" in
     A)
-      echo "  Scenario A: No Joulie — baseline (no NodePowerProfiles, no scheduler extender)"
+      echo "  Scenario A: No Joulie - baseline (no NodePowerProfiles, no scheduler extender)"
       ;;
     B)
-      echo "  Scenario B: Caps only — eco profiles on ${ECO_COUNT} nodes, no scheduler"
+      echo "  Scenario B: Caps only - eco profiles on ${ECO_COUNT} nodes, no scheduler"
       apply_eco_profiles "$ECO_CAP_CPU_PCT" "$ECO_CAP_GPU_PCT" "$ECO_COUNT"
       ;;
     C)
-      echo "  Scenario C: Caps + Scheduler — eco profiles + scheduler extender"
+      echo "  Scenario C: Caps + Scheduler - eco profiles + scheduler extender"
       apply_eco_profiles "$ECO_CAP_CPU_PCT" "$ECO_CAP_GPU_PCT" "$ECO_COUNT"
       ;;
   esac
@@ -240,4 +240,4 @@ echo "  Summary: $RESULTS_DIR/summary.csv"
 echo "  Plots:   $RESULTS_DIR/plots/"
 echo ""
 echo "Fast simulation alternative (no cluster):"
-echo "  cd $REPO_ROOT && go run ./experiments/03-heterogeneous_cluster_control_loop/"
+echo "  cd $REPO_ROOT && go run ./experiments/04-heterogeneous_cluster_control_loop/"

@@ -4,7 +4,7 @@ weight: 40
 ---
 
 
-This page documents the controller policy algorithms implemented in `cmd/operator/main.go`.
+This page documents the controller policy algorithms implemented in `pkg/operator/policy/`.
 
 Use this page after:
 
@@ -28,8 +28,8 @@ Each reconcile tick:
 3. Sort eligible nodes by normalized compute density (highest first).
 4. Preserve at least one performance-capable node per discovered hardware family whenever the requested HP count allows it.
 5. Build a desired plan with the selected policy.
-6. Apply downgrade guard (sets `NodeTwinState.schedulableClass` to `draining` while blocking pods still run).
-7. Write `NodePowerProfile` and update the `joulie.io/power-profile` node label.
+6. Apply downgrade guard (sets `NodeTwin.status.schedulableClass` to `draining` while blocking pods still run).
+7. Write `NodeTwin.spec` and update the `joulie.io/power-profile` node label.
 
 In other words, policies still decide *how many* high-performance nodes are needed, but the density-aware ordering influences *which* nodes get those assignments.
 
@@ -107,10 +107,10 @@ When planned profile is `eco` on a node currently `performance`:
 1. Count active performance pods on that node.
 2. If count > 0:
    - keep desired profile as `eco`,
-   - set `NodeTwinState.schedulableClass` to `draining`,
+   - set `NodeTwin.status.schedulableClass` to `draining`,
    - record transition as deferred in operator FSM/metrics.
 3. If count == 0:
    - keep desired profile `eco`,
-   - set `NodeTwinState.schedulableClass` to `eco`.
+   - set `NodeTwin.status.schedulableClass` to `eco`.
 
 The scheduler extender reads `schedulableClass` and applies a -20 score penalty for draining nodes, discouraging new workload placement during transitions.
