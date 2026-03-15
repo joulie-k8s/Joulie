@@ -38,7 +38,7 @@ The operator also manages `WorkloadProfile` CRs internally (per-pod workload cla
 The operator contains three controllers that share the same reconcile entry point:
 
 - **Twin controller**: ingests per-node telemetry into `NodeTwin.status`. Runs the `CoolingModel` and PSU stress computations. Makes facility stress signals available to the scheduler extender.
-- **Policy controller**: reads `NodeTwin.status` + pod demand signals, runs the policy algorithm (`pkg/operator/policy/`), writes `NodeTwin.spec` and the `joulie.io/power-profile` node label. Transition state is tracked internally via `NodeTwin.status.schedulableClass`.
+- **Policy controller**: reads `NodeTwin.status` + pod demand signals, runs the policy algorithm (`pkg/operator/policy/`), writes `NodeTwin.spec` and the `joulie.io/power-profile` node label. The state machine (`pkg/operator/fsm/`) enforces downgrade guards: nodes cannot transition from performance to eco while performance-sensitive pods are still running. Transition state is tracked via `NodeTwin.status.schedulableClass`.
 - **Migration controller**: evaluates node stress levels and workload migratability (`pkg/operator/migration/`). When CoolingStress or PSUStress exceeds thresholds, generates reschedule recommendations for reschedulable best-effort workloads.
 
 ### Agent
@@ -57,7 +57,8 @@ The scheduler extender is a read-only HTTP service that participates in the Kube
 
 The `kubectl joulie` plugin (`cmd/kubectl-joulie`) provides immediate visibility into the cluster's energy state:
 
-- `kubectl joulie status`: per-node overview of power profiles, cap settings, twin stress scores, and workload classification.
+- `kubectl joulie status`: per-node overview of power profiles, cap settings, twin stress scores.
+- `kubectl joulie status --explain`: adds a workload classification table showing each WorkloadProfile's class, confidence, CPU/GPU boundness, and classification reason.
 - `kubectl joulie recommend`: GPU slicing and reschedule recommendations from `NodeTwin.status`.
 
 No configuration is needed. The plugin reads your current kubeconfig context.

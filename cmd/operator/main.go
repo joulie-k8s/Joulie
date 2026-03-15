@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/matbun/joulie/pkg/hwinv"
+	"github.com/matbun/joulie/pkg/operator/fsm"
 	"github.com/matbun/joulie/pkg/operator/policy"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -45,6 +46,21 @@ const (
 // NodeAssignment and GPUCapIntent are defined in pkg/operator/policy.
 type NodeAssignment = policy.NodeAssignment
 type GPUCapIntent = policy.GPUCapIntent
+
+// kubeNodeOps adapts kubernetes.Interface to the fsm.NodeOps interface.
+type kubeNodeOps struct {
+	kube kubernetes.Interface
+}
+
+func (k *kubeNodeOps) RunningPerformanceSensitivePodCount(ctx context.Context, nodeName string) (int, error) {
+	pods, err := k.kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: "spec.nodeName=" + nodeName,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return fsm.CountPerformanceSensitivePods(pods.Items), nil
+}
 
 type GPUModelCaps struct {
 	MinCapWatts float64 `json:"minCapWatts"`
@@ -347,26 +363,11 @@ func reconcileWithCatalog(
 	return nil
 }
 
-func currentProfileOrDefault(in string) string {
-	if in == profilePerformance || in == profileEco {
-		return in
-	}
-	return "unknown"
-}
-
-func assignmentState(profile string, draining bool) string {
-	if draining {
-		return "DrainingPerformance"
-	}
-	switch profile {
-	case profilePerformance:
-		return "ActivePerformance"
-	case profileEco:
-		return "ActiveEco"
-	default:
-		return "Unknown"
-	}
-}
+// Delegate to fsm package.
+var (
+	currentProfileOrDefault = fsm.CurrentProfileOrDefault
+	assignmentState         = fsm.AssignmentState
+)
 
 func recordNodeStateMetrics(nodeName, state string) {
 	activePerf := 0.0
@@ -417,74 +418,18 @@ func applyDowngradeGuards(
 	plan []NodeAssignment,
 	currentProfiles map[string]string,
 ) {
-	for i := range plan {
-		a := &plan[i]
-		if a.Profile != profileEco {
-			a.Profile, a.Draining = computeDesiredLabels(a.Profile, 0)
-			a.State = assignmentState(a.Profile, a.Draining)
-			continue
-		}
-		current := currentProfiles[a.NodeName]
-		if current != profilePerformance && current != profileEco {
-			// New/unknown node state; mark draining based on current pod mix.
-		}
-		count, err := runningPerformanceSensitivePodCountOnNode(ctx, kube, a.NodeName)
-		if err != nil {
-			log.Printf("warning: cannot classify running pods on node=%s: %v", a.NodeName, err)
-			continue
-		}
-		a.Profile, a.Draining = computeDesiredLabels(a.Profile, count)
-		a.State = assignmentState(a.Profile, a.Draining)
+	ops := &kubeNodeOps{kube: kube}
+	fsm.ApplyDowngradeGuards(ctx, ops, plan, currentProfiles)
+	// Record metrics for guarded transitions.
+	for _, a := range plan {
 		if a.Draining {
 			operatorStateTransitions.WithLabelValues(a.NodeName, "ActivePerformance", "ActiveEco", "deferred").Inc()
-			log.Printf("transition guarded node=%s desired=eco draining=true reason=running-performance-sensitive-pods count=%d", a.NodeName, count)
 		}
 	}
 }
 
-// computeDesiredLabels maps desired profile + running performance-sensitive pods
-// to the effective profile and internal draining state (tracked in NodeTwinState.schedulableClass).
-// Rules:
-// - desired performance => (performance, draining=false)
-// - desired eco + perfPods>0 => (eco, draining=true)
-// - desired eco + perfPods=0 => (eco, draining=false)
-func computeDesiredLabels(desiredProfile string, perfPods int) (string, bool) {
-	switch currentProfileOrDefault(desiredProfile) {
-	case profilePerformance:
-		return profilePerformance, false
-	case profileEco:
-		return profileEco, perfPods > 0
-	default:
-		return "unknown", false
-	}
-}
-
-func runningPerformanceSensitivePodCountOnNode(
-	ctx context.Context,
-	kube kubernetes.Interface,
-	nodeName string,
-) (int, error) {
-	pods, err := kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{
-		FieldSelector: "spec.nodeName=" + nodeName,
-	})
-	if err != nil {
-		return 0, err
-	}
-	count := 0
-	for _, p := range pods.Items {
-		if p.DeletionTimestamp != nil {
-			continue
-		}
-		if p.Status.Phase == "Succeeded" || p.Status.Phase == "Failed" {
-			continue
-		}
-		if !isPerformanceSensitivePod(&p) {
-			continue
-		}
-		count++
-	}
-	return count, nil
-}
+// computeDesiredLabels delegates to fsm.ComputeDesiredLabels.
+var computeDesiredLabels = fsm.ComputeDesiredLabels
 
 // toHardwareInfoMap converts the operator's NodeHardware map to the minimal
 // policy.NodeHardwareInfo map needed by the policy algorithms.
@@ -539,93 +484,24 @@ func runningPerformanceSensitivePodCountAllNodes(
 	if err != nil {
 		return 0, err
 	}
-	count := 0
-	for _, p := range pods.Items {
-		if p.DeletionTimestamp != nil {
-			continue
-		}
-		if p.Status.Phase == "Succeeded" || p.Status.Phase == "Failed" {
-			continue
-		}
-		if !isPerformanceSensitivePod(&p) {
-			continue
-		}
-		count++
-	}
-	return count, nil
+	return fsm.CountPerformanceSensitivePods(pods.Items), nil
 }
 
-func isPerformanceSensitivePod(p *corev1.Pod) bool {
-	return podExcludesEco(p)
-}
+// Delegate pod classification to fsm package.
+var (
+	isPerformanceSensitivePod = fsm.IsPerformanceSensitivePod
+	classifyPodByScheduling   = fsm.ClassifyPodByScheduling
+	podExcludesEco            = fsm.PodExcludesEco
+	podIsEcoOnly              = fsm.PodIsEcoOnly
+)
 
-func classifyPodByScheduling(p *corev1.Pod) string {
-	if podExcludesEco(p) {
-		return workloadClassPerfOnly
-	}
-	if podIsEcoOnly(p) {
-		return workloadClassEcoOnly
-	}
-	return workloadClassGeneral
-}
-
-func podExcludesEco(p *corev1.Pod) bool {
-	// Compatibility path: explicit selector on profile=performance.
-	if strings.TrimSpace(p.Spec.NodeSelector[powerProfileLabelKey]) == profilePerformance {
-		return true
-	}
-	required := p.Spec.Affinity
-	if required == nil || required.NodeAffinity == nil || required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-		return false
-	}
-	for _, term := range required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
-		for _, expr := range term.MatchExpressions {
-			if expr.Key != powerProfileLabelKey {
-				continue
-			}
-			switch expr.Operator {
-			case corev1.NodeSelectorOpNotIn:
-				if containsString(expr.Values, profileEco) {
-					return true
-				}
-			case corev1.NodeSelectorOpIn:
-				if len(expr.Values) > 0 && !containsString(expr.Values, profileEco) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func podIsEcoOnly(p *corev1.Pod) bool {
-	if strings.TrimSpace(p.Spec.NodeSelector[powerProfileLabelKey]) == profileEco {
-		return true
-	}
-	required := p.Spec.Affinity
-	if required == nil || required.NodeAffinity == nil || required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-		return false
-	}
-	for _, term := range required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
-		for _, expr := range term.MatchExpressions {
-			if expr.Key != powerProfileLabelKey {
-				continue
-			}
-			if expr.Operator == corev1.NodeSelectorOpIn && len(expr.Values) > 0 && !containsString(expr.Values, profilePerformance) && containsString(expr.Values, profileEco) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func containsString(in []string, v string) bool {
-	for _, x := range in {
-		if strings.TrimSpace(x) == v {
-			return true
-		}
-	}
-	return false
+func runningPerformanceSensitivePodCountOnNode(
+	ctx context.Context,
+	kube kubernetes.Interface,
+	nodeName string,
+) (int, error) {
+	ops := &kubeNodeOps{kube: kube}
+	return ops.RunningPerformanceSensitivePodCount(ctx, nodeName)
 }
 
 func summarizePlan(plan []NodeAssignment) string {

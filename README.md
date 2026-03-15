@@ -96,12 +96,13 @@ Without it, pods run anywhere and get standard Kubernetes scheduling.
 cmd/agent/          Node agent: orchestration, reconcile loop
 cmd/operator/       Cluster operator: twin computation, NodeTwin, migration
 cmd/scheduler/      HTTP scheduler extender: filter + score via NodeTwin.status
-cmd/kubectl-joulie/ kubectl plugin: `kubectl joulie status`, `kubectl joulie recommend`
+cmd/kubectl-joulie/ kubectl plugin: `kubectl joulie status [--explain]`, `kubectl joulie recommend`
 pkg/agent/dvfs/     DVFS controller (EMA smoothing, hysteresis, frequency capping)
 pkg/agent/control/  HTTP control and telemetry clients
 pkg/agent/hardware/ Hardware discovery (CPU/GPU caps, freq landmarks, slicing)
 pkg/api/            Shared Go types (NodeHardware, NodeTwin, WorkloadProfile)
 pkg/operator/policy/  Policy algorithms (static_partition, queue_aware_v1, rule_swap_v1)
+pkg/operator/fsm/   Node state machine (downgrade guards, pod classification, NodeOps interface)
 pkg/operator/twin/  Digital twin model (CoolingModel interface)
 pkg/operator/migration/  Migration recommendation engine
 pkg/workloadprofile/classifier/  Workload classifier (util % primary, Kepler optional)
