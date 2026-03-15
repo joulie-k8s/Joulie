@@ -434,6 +434,7 @@ The retargeting step (`05_sweep.py`) now maps GPU jobs to the correct vendor ext
 
 - [03 - Homogeneous H100 Benchmark](../03-homogeneous-h100-benchmark/README.md) — identical workload and policy parameters on a homogeneous H100 NVL cluster, to test the hypothesis that heterogeneity limits Joulie's scheduling efficiency.
 
+
 ## Known caveats
 
 - Simulator power telemetry intentionally distinguishes averaged vs instantaneous power. When comparing results to real GPU runs, remember that NVML power telemetry on many modern NVIDIA GPUs is itself averaged over a 1-second window.
