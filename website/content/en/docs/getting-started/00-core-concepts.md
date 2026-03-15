@@ -11,12 +11,12 @@ Before installing Joulie, understand the control model.
 
 Joulie is a Kubernetes-native **digital twin** for energy-efficient data centers.
 
-It continuously ingests telemetry from every node — CPU/GPU power draw via RAPL and NVML/DCGM, per-pod resource utilization via cAdvisor, and optional energy counters from [Kepler](https://github.com/sustainable-computing-io/kepler) — to maintain an up-to-date model of each node's thermal and power state.
+It continuously ingests telemetry from every node (CPU/GPU power draw via RAPL and NVML/DCGM, per-pod resource utilization via cAdvisor, and optional energy counters from [Kepler](https://github.com/sustainable-computing-io/kepler)) to maintain an up-to-date model of each node's thermal and power state.
 
 That digital twin model drives two outcomes:
 
-1. **Energy control**: the operator applies CPU and GPU power caps and publishes them as `NodePowerProfile` CRs. The node agent enforces them.
-2. **Scheduling decisions**: the scheduler extender reads computed `NodeTwinState` — power headroom, predicted cooling stress, PSU load — to steer new pods toward nodes with the best energy-efficiency / performance trade-off.
+1. **Energy control**: the operator writes desired power state into `NodeTwin` CRs (CPU and GPU power caps). The node agent reads `NodeTwin.spec` and enforces them.
+2. **Scheduling decisions**: the scheduler extender reads computed `NodeTwin.status` (power headroom, predicted cooling stress, PSU load) to steer new pods toward nodes with the best energy-efficiency / performance trade-off.
 
 The feedback loop: telemetry → twin update → cap decisions → new pod placement → updated telemetry. This keeps the cluster's power envelope stable and prevents cooling or PSU spikes without sacrificing critical workload performance.
 
@@ -32,18 +32,22 @@ Joulie addresses these by making the scheduler and operator aware of the physica
 ## Main components
 
 - **Operator** (`cmd/operator`): cluster-level decision engine and twin controller
-  - runs the digital twin model, computes `NodeTwinState`
+  - runs the digital twin model, computes `NodeTwin.status`
   - decides desired node power profile/cap assignments
-  - writes desired state as `NodePowerProfile`
+  - writes desired state into `NodeTwin.spec`
   - triggers pod migration under thermal/PSU pressure
 - **Agent** (`cmd/agent`): node-level actuator
   - discovers local CPU/GPU hardware and capability
   - publishes discovered hardware as `NodeHardware`
-  - reads desired state and enforces power controls (RAPL/NVML)
+  - reads `NodeTwin.spec` for desired state and enforces power controls (RAPL/NVML)
+  - writes control feedback to `NodeTwin.status.controlStatus`
 - **Scheduler extender** (`cmd/scheduler`): placement steering
-  - reads `NodeTwinState` (30s TTL cache)
+  - reads `NodeTwin.status` (30s TTL cache)
   - rejects eco nodes for performance pods
   - scores nodes by power headroom and facility stress
+- **kubectl plugin** (`cmd/kubectl-joulie`): cluster observability
+  - `kubectl joulie status` shows per-node energy state, power profiles, and cap settings
+  - `kubectl joulie recommend` surfaces GPU slicing and reschedule recommendations
 - **Simulator** (`simulator/`): digital-twin execution environment
   - enables repeatable experiments without requiring real hardware
 
@@ -52,9 +56,9 @@ Joulie addresses these by making the scheduler and operator aware of the physica
 | CRD | Owner | Purpose |
 |-----|-------|---------|
 | `NodeHardware` | Agent | Hardware facts: CPU/GPU model, cap ranges, frequency landmarks, GPU slicing modes |
-| `NodePowerProfile` | Operator/user | Desired state: power cap % |
-| `NodeTwinState` | Operator | Twin output: headroom score, cooling stress, PSU stress, schedulable class, migration recommendations |
-| `WorkloadProfile` | Operator (classifier) | Per-pod: workload class, CPU/GPU intensity, cap sensitivity |
+| `NodeTwin` | Operator | Desired state (spec: power cap %) + twin output (status: headroom, cooling stress, PSU stress, schedulable class, migration recommendations, GPU slicing recommendations, control feedback) |
+
+The operator also creates `WorkloadProfile` CRs internally to classify workloads. These are managed automatically. You only interact with them indirectly via the `joulie.io/workload-class` pod annotation.
 
 ## Node supply labels
 
@@ -62,7 +66,7 @@ The operator sets one label on each managed node:
 
 - `joulie.io/power-profile`: `performance` or `eco`
 
-This label reflects the current power state of the node. Users do not need to interact with it directly for placement — the `joulie.io/workload-class` annotation on pods is the single source of truth for placement intent.
+This label reflects the current power state of the node. Users do not need to interact with it directly for placement. The `joulie.io/workload-class` annotation on pods is the single source of truth for placement intent.
 
 ## Workload classes
 
@@ -82,9 +86,9 @@ The digital twin is the core predictive engine of Joulie. It is an O(1) parametr
 
 For each managed node, the twin produces three scores:
 
-- **Power headroom** (0--100): how much power budget remains before hitting thermal or PSU limits. Higher is better for new workload placement.
-- **CoolingStress** (0--100): predicted percentage of cooling capacity in use. High values mean the node is near its thermal limit and risks throttling.
-- **PSUStress** (0--100): predicted percentage of PDU/rack power capacity in use. High values mean the rack is near its power supply limit.
+- **Power headroom** (0-100): how much power budget remains before hitting thermal or PSU limits. Higher is better for new workload placement.
+- **CoolingStress** (0-100): predicted percentage of cooling capacity in use. High values mean the node is near its thermal limit and risks throttling.
+- **PSUStress** (0-100): predicted percentage of PDU/rack power capacity in use. High values mean the rack is near its power supply limit.
 
 ### CoolingStress formula
 
@@ -110,11 +114,13 @@ The `CoolingModel` interface is pluggable. The default implementation is `Linear
 
 ### How it feeds the scheduler
 
-The twin outputs are written to `NodeTwinState` CRs (one per managed node). The scheduler extender caches these with a 30-second TTL and uses them in its filter and score logic to steer pods toward nodes with the best energy/performance trade-off.
+The twin outputs are written to `NodeTwin.status` (one per managed node). The scheduler extender caches these with a 30-second TTL and uses them in its filter and score logic to steer pods toward nodes with the best energy/performance trade-off.
 
 ### How it feeds the operator
 
 When CoolingStress or PSUStress exceeds 70 on a node, the twin generates reschedule recommendations for reschedulable best-effort workloads, enabling the operator to trigger migration away from stressed nodes.
+
+For GPU nodes with slicing support, the twin also produces GPU slicing recommendations (MIG or time-slicing) based on observed workload intensity patterns. These are advisory: cluster admins review and apply them during maintenance windows.
 
 ### Implementation
 
@@ -124,8 +130,8 @@ The twin is implemented in `pkg/operator/twin/twin.go`.
 
 ```
 telemetry (RAPL/NVML/cAdvisor/Kepler)
-  → twin update (NodeTwinState: headroom, coolingStress, psuStress)
-    → cap decisions (NodePowerProfile)
+  → twin update (NodeTwin.status: headroom, coolingStress, psuStress)
+    → cap decisions (NodeTwin.spec)
     → pod placement steering (scheduler extender)
       → updated telemetry
 ```

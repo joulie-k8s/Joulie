@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Plot experiment 03 results from summary.csv.
+Plot experiment 04 results from summary.csv.
 
 Usage:
   python3 scripts/40_plot.py [results_dir]
@@ -52,7 +52,7 @@ bar_colors = [colors.get(s, "#999") for s in scenarios]
 
 # --- Plot 1: Energy vs Makespan bar chart ---
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-fig.suptitle("Experiment 03: Joulie Control Loop -- Energy & Makespan", fontsize=13)
+fig.suptitle("Experiment 04: Joulie Control Loop -- Energy & Makespan", fontsize=13)
 
 bars1 = ax1.bar(scenarios, energy, color=bar_colors)
 ax1.set_ylabel("Total Energy (kWh)")

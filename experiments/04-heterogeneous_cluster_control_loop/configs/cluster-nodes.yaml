@@ -1,4 +1,4 @@
-# Heterogeneous cluster for experiment 03 — control loop benchmark
+# Heterogeneous cluster for experiment 04 - control loop benchmark
 # 8 nodes: 4 GPU (H100-class) + 4 CPU-only
 # Matches the simulation in run.go and experiments/02-heterogeneous-benchmark
 

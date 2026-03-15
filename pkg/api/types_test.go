@@ -34,24 +34,33 @@ func TestNodeHardwareMarshal(t *testing.T) {
 	}
 }
 
-func TestNodeTwinStateMarshal(t *testing.T) {
-	ts := NodeTwinState{
-		NodeName:                    "node1",
-		SchedulableClass:            "eco",
-		PredictedPowerHeadroomScore: 50,
-		PredictedCoolingStressScore: 30,
-		EffectiveCapState:           CapState{CPUPct: 60, GPUPct: 60},
+func TestNodeTwinMarshal(t *testing.T) {
+	nt := NodeTwin{
+		Spec: NodeTwinSpec{
+			NodeName: "node1",
+			Profile:  "eco",
+			CPU:      &NodeTwinCPU{PackagePowerCapPctOfMax: func() *float64 { v := 60.0; return &v }()},
+		},
+		Status: NodeTwinStatus{
+			SchedulableClass:            "eco",
+			PredictedPowerHeadroomScore: 50,
+			PredictedCoolingStressScore: 30,
+			EffectiveCapState:           CapState{CPUPct: 60, GPUPct: 60},
+		},
 	}
-	data, err := json.Marshal(ts)
+	data, err := json.Marshal(nt)
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)
 	}
-	var out NodeTwinState
+	var out NodeTwin
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
-	if out.SchedulableClass != ts.SchedulableClass {
-		t.Errorf("schedulableClass mismatch: got %q want %q", out.SchedulableClass, ts.SchedulableClass)
+	if out.Status.SchedulableClass != nt.Status.SchedulableClass {
+		t.Errorf("schedulableClass mismatch: got %q want %q", out.Status.SchedulableClass, nt.Status.SchedulableClass)
+	}
+	if out.Spec.Profile != "eco" {
+		t.Errorf("profile mismatch: got %q want %q", out.Spec.Profile, "eco")
 	}
 }
 

@@ -58,7 +58,7 @@ type SimNode struct {
 	HasGPU        bool
 	MaxCPUPowerW  float64
 	MaxGPUPowerW  float64 // total for all GPUs
-	TwinState     joulie.NodeTwinState
+	TwinState     joulie.NodeTwinStatus
 	CurrentPowerW float64
 	AssignedJobs  []Job
 }
@@ -344,7 +344,7 @@ func runScenario(sc ScenarioConfig, jobs []Job, clusterTemplate []SimNode, fm *f
 	}
 }
 
-func buildNodeTwinState(n SimNode, sc ScenarioConfig) joulie.NodeTwinState {
+func buildNodeTwinState(n SimNode, sc ScenarioConfig) joulie.NodeTwinStatus {
 	profile := "performance"
 	if sc.CapsEnabled {
 		// Eco profile for GPU nodes under caps
@@ -368,8 +368,7 @@ func buildNodeTwinState(n SimNode, sc ScenarioConfig) joulie.NodeTwinState {
 	}
 	out := twin.Compute(in)
 
-	return joulie.NodeTwinState{
-		NodeName:                    n.Name,
+	return joulie.NodeTwinStatus{
 		SchedulableClass:            out.SchedulableClass,
 		PredictedPowerHeadroomScore: out.PredictedPowerHeadroomScore,
 		PredictedCoolingStressScore: out.PredictedCoolingStressScore,

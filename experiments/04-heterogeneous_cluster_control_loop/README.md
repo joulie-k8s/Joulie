@@ -1,4 +1,4 @@
-# Experiment 03: Heterogeneous Cluster Control Loop
+# Experiment 04: Heterogeneous Cluster Control Loop
 
 This experiment benchmarks the full Joulie architecture on a heterogeneous
 cluster, comparing three scenarios with increasing levels of power management.
@@ -27,33 +27,33 @@ Standalone Go simulation that does not require a cluster. Useful for quick
 iteration on scoring logic and scenario parameters.
 
 ```bash
-go run ./experiments/03-heterogeneous_cluster_control_loop/
+go run ./experiments/04-heterogeneous_cluster_control_loop/
 ```
 
 Or run the unit tests:
 
 ```bash
-go test ./experiments/03-heterogeneous_cluster_control_loop/
+go test ./experiments/04-heterogeneous_cluster_control_loop/
 ```
 
 ## Prerequisites
 
-- **kwokctl** -- KWOK cluster management
-- **kubectl** -- Kubernetes CLI
-- **Go >= 1.22** -- for fast simulation mode
-- **Python 3** with PyYAML, matplotlib, pandas -- for workload generation and plotting
+- **kwokctl**: KWOK cluster management
+- **kubectl**: Kubernetes CLI
+- **Go >= 1.22**: for fast simulation mode
+- **Python 3** with PyYAML, matplotlib, pandas: for workload generation and plotting
 
 Install Python dependencies:
 
 ```bash
-pip install -r experiments/03-heterogeneous_cluster_control_loop/requirements.txt
+pip install -r experiments/04-heterogeneous_cluster_control_loop/requirements.txt
 ```
 
 ## Scenarios
 
 | Scenario | Caps (65%) | Scheduler Steering | Description |
 |----------|------------|--------------------|-------------|
-| A | No | No | Baseline -- no Joulie components |
+| A | No | No | Baseline: no Joulie components |
 | B | Yes | No | Operator applies CPU/GPU caps; no scheduling awareness |
 | C | Yes | Yes | Caps + scheduler extender for workload-class-aware placement |
 
@@ -89,15 +89,15 @@ See `configs/benchmark.yaml` for tunable parameters:
 
 Results are written to `results/` with:
 
-- `scenario_<X>/` -- per-scenario cluster snapshots (nodes, pods, CRs)
-- `scenario_<X>_metrics.json` -- aggregate metrics per scenario (simulation mode)
-- `summary.csv` -- cross-scenario comparison table
-- `comparison.json` -- detailed comparison (simulation mode)
-- `plots/` -- generated charts:
-  - `energy_vs_makespan.png` -- energy and makespan bar chart
-  - `cooling_stress.png` -- peak/avg cooling and PSU stress
-  - `edp_comparison.png` -- Energy-Delay Product comparison
-  - `relative_improvement.png` -- relative improvement vs baseline A
+- `scenario_<X>/`: per-scenario cluster snapshots (nodes, pods, CRs)
+- `scenario_<X>_metrics.json`: aggregate metrics per scenario (simulation mode)
+- `summary.csv`: cross-scenario comparison table
+- `comparison.json`: detailed comparison (simulation mode)
+- `plots/`: generated charts:
+  - `energy_vs_makespan.png`: energy and makespan bar chart
+  - `cooling_stress.png`: peak/avg cooling and PSU stress
+  - `edp_comparison.png`: Energy-Delay Product comparison
+  - `relative_improvement.png`: relative improvement vs baseline A
 
 ## Workload mix (simulation mode)
 

@@ -280,7 +280,7 @@ These fields are used by:
 - the scheduler extender (`cmd/scheduler`) to apply workload-class-aware scoring,
 - the migration controller (`pkg/operator/migration`) to generate reschedule recommendations.
 
-The heterogeneous cluster control loop benchmark (`experiments/03-heterogeneous_cluster_control_loop/`) exercises all three scenarios (baseline, caps-only, caps+scheduler) using a mixed batch with all the above profile variants.
+The heterogeneous cluster control loop benchmark (`experiments/04-heterogeneous_cluster_control_loop/`) exercises all three scenarios (baseline, caps-only, caps+scheduler) using a mixed batch with all the above profile variants.
 
 ## Scheduling class inference
 

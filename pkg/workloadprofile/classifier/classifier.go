@@ -84,9 +84,9 @@ type PodHints struct {
 	// Reschedulable: pod can be safely restarted/rescheduled.
 	// Set via joulie.io/reschedulable=true annotation.
 	Reschedulable bool
-	// CPUSensitivity: "high" | "medium" | "low" — overrides dynamic classification.
+	// CPUSensitivity: "high" | "medium" | "low" - overrides dynamic classification.
 	CPUSensitivity string
-	// GPUSensitivity: "high" | "medium" | "low" — overrides dynamic classification.
+	// GPUSensitivity: "high" | "medium" | "low" - overrides dynamic classification.
 	GPUSensitivity string
 }
 
@@ -193,6 +193,8 @@ func (c *Classifier) classify(hints PodHints, m PodMetrics) joulie.WorkloadProfi
 		LastUpdated: time.Now().UTC(),
 	}
 
+	var reasons []string
+
 	// --- CPU profile (primary: utilization %) ---
 	cpuIntensity := "low"
 	cpuBound := "mixed"
@@ -201,8 +203,12 @@ func (c *Classifier) classify(hints PodHints, m PodMetrics) joulie.WorkloadProfi
 	switch {
 	case m.CPUUtilPct >= 75:
 		cpuIntensity = "high"
+		reasons = append(reasons, fmt.Sprintf("cpu-intensity=high (util %.0f%%≥75%%)", m.CPUUtilPct))
 	case m.CPUUtilPct >= 30:
 		cpuIntensity = "medium"
+		reasons = append(reasons, fmt.Sprintf("cpu-intensity=medium (util %.0f%%)", m.CPUUtilPct))
+	default:
+		reasons = append(reasons, fmt.Sprintf("cpu-intensity=low (util %.0f%%<30%%)", m.CPUUtilPct))
 	}
 
 	// Boundness: util % as primary signal, Kepler ratios as enrichment
@@ -210,17 +216,23 @@ func (c *Classifier) classify(hints PodHints, m PodMetrics) joulie.WorkloadProfi
 	case m.GPUDominant:
 		cpuBound = "mixed" // GPU is the primary resource; CPU is secondary
 		cpuCapSensitivity = "low"
+		reasons = append(reasons, "cpu-bound=mixed (GPU dominant)")
 	case m.CPUUtilPct > 65 && m.MemoryPressurePct < 50:
 		cpuBound = "compute"
 		if m.CPUUtilPct > 70 {
 			cpuCapSensitivity = "high" // CPU compute at high util = sensitive to RAPL cap
+			reasons = append(reasons, fmt.Sprintf("cpu-bound=compute, cap-sensitivity=high (util %.0f%%>70%%)", m.CPUUtilPct))
+		} else {
+			reasons = append(reasons, "cpu-bound=compute (high CPU, low mem pressure)")
 		}
 	case m.MemoryPressurePct > 50 && m.CPUUtilPct < 60:
 		cpuBound = "memory"
 		cpuCapSensitivity = "low" // memory-bound: RAPL cap has less impact
+		reasons = append(reasons, fmt.Sprintf("cpu-bound=memory (mem-pressure %.0f%%>50%%)", m.MemoryPressurePct))
 	case m.CPUUtilPct < 20:
 		cpuBound = "io"
 		cpuCapSensitivity = "low"
+		reasons = append(reasons, "cpu-bound=io (util <20%)")
 	}
 
 	// Kepler enrichment: override if Kepler gives a clearer signal
@@ -228,15 +240,18 @@ func (c *Classifier) classify(hints PodHints, m PodMetrics) joulie.WorkloadProfi
 		if m.CPUBoundRatio > 0.70 && cpuBound != "compute" {
 			cpuBound = "compute"
 			cpuCapSensitivity = "high"
+			reasons = append(reasons, fmt.Sprintf("kepler override: cpu-bound=compute (energy ratio %.2f>0.70)", m.CPUBoundRatio))
 		} else if m.MemoryBoundRatio > 0.40 && cpuBound != "memory" {
 			cpuBound = "memory"
 			cpuCapSensitivity = "low"
+			reasons = append(reasons, fmt.Sprintf("kepler override: cpu-bound=memory (mem-energy ratio %.2f>0.40)", m.MemoryBoundRatio))
 		}
 	}
 
 	// Override from hints
 	if hints.CPUSensitivity != "" {
 		cpuCapSensitivity = hints.CPUSensitivity
+		reasons = append(reasons, fmt.Sprintf("cpu-cap-sensitivity=%s (annotation override)", hints.CPUSensitivity))
 	}
 
 	wp.CPU = joulie.WorkloadCPUProfile{
@@ -255,10 +270,13 @@ func (c *Classifier) classify(hints PodHints, m PodMetrics) joulie.WorkloadProfi
 		switch {
 		case m.GPUUtilPct >= 70:
 			gpuIntensity = "high"
+			reasons = append(reasons, fmt.Sprintf("gpu-intensity=high (util %.0f%%≥70%%)", m.GPUUtilPct))
 		case m.GPUUtilPct >= 25:
 			gpuIntensity = "medium"
+			reasons = append(reasons, fmt.Sprintf("gpu-intensity=medium (util %.0f%%)", m.GPUUtilPct))
 		default:
 			gpuIntensity = "low"
+			reasons = append(reasons, fmt.Sprintf("gpu-intensity=low (util %.0f%%<25%%)", m.GPUUtilPct))
 		}
 
 		// GPU boundness: memory-bound if high memory pressure, else compute
@@ -287,6 +305,7 @@ func (c *Classifier) classify(hints PodHints, m PodMetrics) joulie.WorkloadProfi
 		if gpuCapSensitivity != "none" && gpuIntensity == "none" {
 			gpuIntensity = "medium" // user says sensitive, assume medium presence
 		}
+		reasons = append(reasons, fmt.Sprintf("gpu-cap-sensitivity=%s (annotation override)", hints.GPUSensitivity))
 	}
 
 	wp.GPU = joulie.WorkloadGPUProfile{
@@ -298,6 +317,9 @@ func (c *Classifier) classify(hints PodHints, m PodMetrics) joulie.WorkloadProfi
 
 	// --- Confidence ---
 	wp.Confidence = computeConfidence(hints, m)
+
+	// --- Classification reason ---
+	wp.ClassificationReason = strings.Join(reasons, "; ")
 
 	return wp
 }
@@ -329,8 +351,9 @@ func fromHintsOnly(hints PodHints) joulie.WorkloadProfileStatus {
 			Bound:          "none",
 			CapSensitivity: gpuSens,
 		},
-		Confidence:  0.3, // low confidence without metrics
-		LastUpdated: time.Now().UTC(),
+		ClassificationReason: "hints only (no metrics available)",
+		Confidence:           0.3, // low confidence without metrics
+		LastUpdated:          time.Now().UTC(),
 	}
 }
 

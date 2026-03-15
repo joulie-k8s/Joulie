@@ -40,9 +40,9 @@ A pod is treated as performance if:
 - it carries `joulie.io/workload-class: performance`, or
 - a matching `WorkloadProfile` has `criticality: performance`.
 
-For such pods, the extender rejects any node whose `NodeTwinState` has `schedulableClass: eco`.
+For such pods, the extender rejects any node whose `NodeTwin.status` has `schedulableClass: eco`.
 
-All other pods — `standard`, `best-effort`, and unannotated pods — pass the filter unconditionally.
+All other pods (`standard`, `best-effort`, and unannotated pods) pass the filter unconditionally.
 
 ## Score logic
 
@@ -56,13 +56,13 @@ score = headroom * 0.4 + (100 - coolingStress) * 0.3 + (100 - psuStress) * 0.3
 
 Where:
 
-- `headroom`: available CPU/GPU compute headroom on the node (0--100), from `NodeTwinState.PredictedPowerHeadroomScore`.
-- `coolingStress`: predicted % of cooling capacity in use (0--100), from `NodeTwinState.PredictedCoolingStressScore`.
-- `psuStress`: predicted % of PDU/rack PSU capacity in use (0--100), from `NodeTwinState.PredictedPsuStressScore`.
+- `headroom`: available CPU/GPU compute headroom on the node (0-100), from `NodeTwin.status.PredictedPowerHeadroomScore`.
+- `coolingStress`: predicted % of cooling capacity in use (0-100), from `NodeTwin.status.PredictedCoolingStressScore`.
+- `psuStress`: predicted % of PDU/rack PSU capacity in use (0-100), from `NodeTwin.status.PredictedPsuStressScore`.
 
 Higher scores are better.
 A node with high headroom and low facility stress receives the highest score.
-If a node has no `NodeTwinState`, a neutral score of 50 is returned.
+If a node has no `NodeTwin.status`, a neutral score of 50 is returned.
 
 ### Workload class adjustments
 
@@ -84,12 +84,12 @@ This blends the base score with remaining cap headroom for sensitive workloads, 
 
 All scores are clamped to `[0, 100]`.
 
-## Data sources: NodeTwinState CR
+## Data sources: NodeTwin CR
 
-The extender reads `NodeTwinState` CRs (one per managed node).
+The extender reads `NodeTwin` CRs (one per managed node).
 Values are cached with a 30-second TTL to avoid hitting the API server on every scheduling decision.
 
-`NodeTwinState` is populated by the operator's twin controller, which runs the digital twin model using telemetry from Prometheus and `NodeHardware`.
+`NodeTwin.status` is populated by the operator's twin controller, which runs the digital twin model using telemetry from Prometheus and `NodeHardware`.
 
 ## What the extender does not do
 

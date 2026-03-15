@@ -5,79 +5,109 @@ slug = "workload-profiles"
 weight = 4
 +++
 
-A `WorkloadProfile` describes the power and performance characteristics of a workload class.
-It is a CRD that both the operator and the scheduler extender consume to make placement and policy decisions without requiring every pod to carry a full set of annotations.
+A `WorkloadProfile` describes the power and performance characteristics of a workload.
+It is a namespaced CRD (`joulie.io/v1alpha1`) that the operator's classifier populates automatically and that both the operator and the scheduler extender consume for placement and policy decisions.
 
 ## What WorkloadProfile is
 
-`WorkloadProfile` is a cluster-scoped CRD (`joulie.io/v1alpha1`) that captures:
+`WorkloadProfile` captures:
 
-- how critical a workload class is (determines scheduler preference),
-- whether workloads in this class can be migrated (determines transition guard behavior),
+- how critical a workload is (determines scheduler preference),
+- whether the workload can be migrated (determines transition guard behavior),
 - how intensively the workload uses CPU and GPU resources (determines power draw classification),
-- how sensitive the workload is to CPU and GPU frequency reduction (determines slowdown risk under caps).
+- how sensitive the workload is to CPU and GPU frequency reduction (determines slowdown risk under caps),
+- why the classifier reached its conclusion (`classificationReason`).
 
-Profiles are referenced by name or matched by label selector to pods.
-They are advisory, not enforced: a pod without a matching profile still runs, it just gets less-specific treatment from the extender and operator.
+Profiles are created automatically by the classifier for each observed workload. Users interact with them indirectly via pod annotations (`joulie.io/workload-class`, sensitivity annotations) or by inspecting the profile status.
 
-## Fields
+## CRD structure
+
+The `spec` identifies the workload. The `status` holds classification output:
 
 ```yaml
 apiVersion: joulie.io/v1alpha1
 kind: WorkloadProfile
 metadata:
-  name: gpu-compute-bound
+  name: llm-training-job
+  namespace: default
 spec:
-  # criticality: performance | standard | best-effort
-  # Controls scheduler extender preference and operator demand weighting.
-  criticality: performance
-
-  # reschedulable: true if this workload class can be safely restarted on another node.
-  reschedulable: false
-
-  # cpuIntensity: high | medium | low
-  # How much CPU compute this workload class consumes relative to node capacity.
-  cpuIntensity: medium
-
-  # gpuIntensity: high | medium | low
-  # How much GPU compute this workload class consumes relative to node GPU capacity.
-  gpuIntensity: high
-
-  # cpuSensitivity: high | medium | low
-  # How strongly completion time degrades when CPU frequency is reduced.
-  cpuSensitivity: low
-
-  # gpuSensitivity: high | medium | low
-  # How strongly throughput degrades when GPU power cap is reduced.
-  gpuSensitivity: high
-
-  # podSelector: optional label selector to match pods automatically.
-  podSelector:
-    matchLabels:
-      workload-type: gpu-compute
+  workloadRef:
+    kind: Job
+    namespace: default
+    name: llm-training-v2
+status:
+  criticality:
+    class: standard            # performance | standard | best-effort
+  migratability:
+    reschedulable: true
+  cpu:
+    intensity: medium          # high | medium | low
+    bound: memory              # compute | memory | io | mixed
+    avgUtilizationPct: 45
+    capSensitivity: low        # high | medium | low
+  gpu:
+    intensity: high            # high | medium | low | none
+    bound: compute             # compute | memory | mixed | none
+    avgUtilizationPct: 92
+    capSensitivity: high       # high | medium | low | none
+  classificationReason: "cpu-intensity=medium (util 45%); cpu-bound=memory (mem-pressure 68%>50%); gpu-intensity=high (util 92%≥70%)"
+  confidence: 0.85
+  lastUpdated: "2026-03-13T12:00:00Z"
 ```
 
-### Field semantics
+## Status field semantics
 
-**criticality**
+**criticality.class**
 
-- `performance`: the scheduler extender hard-rejects eco nodes for this workload class and prefers high-headroom performance nodes.
+- `performance`: the scheduler extender hard-rejects eco nodes for this workload and prefers high-headroom performance nodes.
 - `standard`: neutral treatment; the extender scores normally without class-specific adjustments. Prefers performance nodes, tolerates eco.
-- `best-effort`: the extender prefers eco nodes for this class, concentrating it away from performance nodes.
+- `best-effort`: the extender prefers eco nodes for this workload, concentrating it away from performance nodes.
 
-**reschedulable**
+**migratability.reschedulable**
 
-When `reschedulable: true`, the operator treats running pods of this class as safe to restart on another node, shortening the transition window. When false, the node waits for these pods to finish before completing the eco transition.
+When `true`, the operator treats running pods as safe to restart on another node, shortening the transition window. When `false`, the node waits for these pods to finish before completing the eco transition.
 
-**cpuIntensity / gpuIntensity**
+**cpu / gpu intensity**
 
 Used by the operator for demand weighting.
 A node with many `high` CPU-intensity pods counts more strongly toward performance demand.
 
-**cpuSensitivity / gpuSensitivity**
+**cpu / gpu capSensitivity**
 
 Used by the scheduler extender to scale the score penalty on capped nodes.
-A workload with `gpuSensitivity: high` receives a larger penalty on nodes where the GPU is currently under a power cap.
+A workload with `gpu.capSensitivity: high` receives a larger penalty on nodes where the GPU is currently under a power cap.
+
+**cpu.bound**
+
+Indicates the dominant resource constraint for the workload's CPU usage:
+
+| Value | Meaning |
+|-------|---------|
+| `compute` | CPU-bound: high CPU utilization, sensitive to frequency/power cap |
+| `memory` | Memory-bound: high DRAM pressure, less sensitive to CPU cap |
+| `io` | IO-bound: low CPU utilization, cap has minimal impact |
+| `mixed` | No single resource dominates |
+
+**classificationReason**
+
+A human-readable audit trail explaining each classification decision. The reason tracks:
+
+- which intensity thresholds were triggered (e.g., `cpu-intensity=high (util 90%≥75%)`),
+- which boundness heuristic matched (e.g., `cpu-bound=compute, cap-sensitivity=high (util 90%>70%)`),
+- whether Kepler energy ratios overrode the utilization-based classification (e.g., `kepler override: cpu-bound=memory (mem-energy ratio 0.45>0.40)`),
+- whether user annotations overrode the dynamic classification (e.g., `cpu-cap-sensitivity=low (annotation override)`).
+
+When no metrics are available, the reason reads `hints only (no metrics available)`.
+
+**confidence**
+
+A score from 0 to 1 indicating how much data the classifier had:
+
+- `0.3`: hints only (no metrics)
+- `0.5`: utilization data available
+- `0.7+`: Kepler energy data + explicit annotations
+
+A confidence below `0.5` (configurable via `MinConfidence`) means the classifier is working from static hints only and the profile should be treated as a best-effort estimate.
 
 ## How the operator consumes WorkloadProfile
 
@@ -94,14 +124,14 @@ If no `WorkloadProfile` matches a pod, the operator falls back to the scheduling
 At scheduling time, the extender:
 
 1. looks for pod annotations (`joulie.io/workload-class`, `joulie.io/cpu-sensitivity`, `joulie.io/gpu-sensitivity`),
-2. if annotations are absent, checks whether the pod matches any `WorkloadProfile` `podSelector`,
-3. uses the matched profile's fields to drive filter and score logic.
+2. if annotations are absent, checks for a matching `WorkloadProfile`,
+3. uses the profile's status fields to drive filter and score logic.
 
 Explicit pod annotations always win over profile-derived values.
 
 ## Example: annotating a pod for scheduler steering
 
-You can bypass profile matching and drive extender behavior directly with annotations:
+You can drive extender behavior directly with annotations, without waiting for the classifier:
 
 ```yaml
 apiVersion: v1
@@ -127,54 +157,65 @@ With `workload-class: performance` and `gpu-sensitivity: high`, the extender wil
 - apply a larger score penalty on nodes where the GPU is currently capped,
 - prefer nodes with high power headroom and low facility stress.
 
-## Automatic vs manual profiles
+## Automatic vs manual classification
 
-**Automatic** (recommended for production):
+**Automatic** (default):
 
-- Create a `WorkloadProfile` with a `podSelector` that matches your workload's labels.
-- All pods matching that selector automatically get profile-based treatment without per-pod annotations.
+- The classifier watches running pods, fetches Prometheus/Kepler metrics, and creates or updates `WorkloadProfile` CRs automatically.
+- Pod annotations (`joulie.io/workload-class`, sensitivity annotations) seed the classifier with high-confidence hints.
+- No manual `WorkloadProfile` creation is needed.
 
-**Manual** (useful for testing or one-off jobs):
+**Manual** (useful for testing or overriding):
 
-- Add the `joulie.io/workload-class`, `joulie.io/cpu-sensitivity`, and `joulie.io/gpu-sensitivity` annotations directly to the pod or pod template.
-- No `WorkloadProfile` object is needed.
-
-## Creating a WorkloadProfile for testing
-
-Apply the following to test extender behavior with a specific profile:
-
-```yaml
-apiVersion: joulie.io/v1alpha1
-kind: WorkloadProfile
-metadata:
-  name: test-performance
-spec:
-  criticality: performance
-  reschedulable: false
-  cpuIntensity: high
-  gpuIntensity: high
-  cpuSensitivity: high
-  gpuSensitivity: high
-  podSelector:
-    matchLabels:
-      test-profile: performance
-```
-
-Label your test pod with `test-profile: performance`.
-The extender will then apply `performance` scoring and the operator will block eco transitions while the pod is running on its node.
+- Add `joulie.io/workload-class`, `joulie.io/cpu-sensitivity`, and `joulie.io/gpu-sensitivity` annotations directly to the pod or pod template.
+- The classifier will incorporate these as high-confidence hints that override metric-derived values.
 
 ## Automated classification with Kepler
 
-Joulie includes a workload profile classifier in `pkg/workloadprofile/classifier` that can automatically derive `WorkloadProfile` fields from live metrics rather than relying entirely on manual annotation.
+Joulie includes a workload profile classifier in `pkg/workloadprofile/classifier/` that automatically derives `WorkloadProfile` status fields from live metrics.
 
 ### How it works
 
 Classification uses a two-phase approach:
 
-1. **Static hints** — pod labels and annotations are parsed first. These are fast and zero-overhead but require the user or deployment tooling to supply them.
-2. **Dynamic metrics** — Prometheus/Kepler metrics measured while the workload runs are used to infer CPU/GPU intensity and boundness automatically.
+1. **Static hints**: pod labels and annotations are parsed first. These are fast and zero-overhead but require the user or deployment tooling to supply them.
+2. **Dynamic metrics**: Prometheus/Kepler metrics measured while the workload runs are used to infer CPU/GPU intensity and boundness automatically.
 
-### Primary signals: utilization %
+### Classification rules
+
+The classifier uses utilization percentage as the primary signal, with Kepler energy ratios as enrichment:
+
+**CPU intensity** (from `CPUUtilPct`):
+
+| Utilization | Intensity |
+|-------------|-----------|
+| ≥ 75% | `high` |
+| ≥ 30% | `medium` |
+| < 30% | `low` |
+
+**CPU boundness** (primary: utilization + memory pressure; enrichment: Kepler energy ratios):
+
+| Condition | Bound | Cap sensitivity |
+|-----------|-------|----------------|
+| GPU dominant (GPUUtilPct > 40 and > CPUUtilPct) | `mixed` | `low` |
+| CPUUtilPct > 65 and MemoryPressurePct < 50 | `compute` | `high` (if util > 70%) |
+| MemoryPressurePct > 50 and CPUUtilPct < 60 | `memory` | `low` |
+| CPUUtilPct < 20 | `io` | `low` |
+
+When Kepler is available, energy ratios can override the utilization-based classification:
+
+- `CPUBoundRatio > 0.70` → override to `compute`
+- `MemoryBoundRatio > 0.40` → override to `memory`
+
+**GPU intensity** (from `GPUUtilPct` or Kepler GPU energy):
+
+| Utilization | Intensity |
+|-------------|-----------|
+| ≥ 70% | `high` |
+| ≥ 25% | `medium` |
+| < 25% | `low` |
+
+### Kepler metrics used
 
 [Kepler](https://github.com/sustainable-computing-io/kepler) (Kubernetes-based Efficient Power Level Exporter) instruments the kernel via eBPF to produce per-container energy counters, scraped by Prometheus. The classifier reads three Kepler metrics over a configurable window (default 10 minutes):
 
@@ -183,13 +224,6 @@ Classification uses a two-phase approach:
 | `kepler_container_package_joules_total` | CPU package energy → CPU-bound ratio |
 | `kepler_container_dram_joules_total` | DRAM energy → memory-bound ratio |
 | `kepler_container_gpu_joules_total` | GPU energy → GPU intensity and GPU-bound ratio |
-
-**CPU-bound vs memory-bound detection** is based on the ratio of CPU package energy to DRAM energy:
-
-- `CPUBoundRatio = CPUEnergyJoules / TotalEnergyJoules` — high (> 0.65) → `bound: compute`, `capSensitivity: high`
-- `MemoryBoundRatio = DRAMEnergyJoules / TotalEnergyJoules` — high (> 0.35) → `bound: memory`, `capSensitivity: low`
-
-**GPU energy fraction** (`GPUEnergyJoules / TotalEnergyJoules`) sets `gpuIntensity` and `gpuBound` automatically. A fraction above 0.7 maps to `intensity: high`.
 
 ### Confidence without Kepler
 
@@ -223,21 +257,11 @@ The classifier reads the following annotations as high-confidence hints that ove
 | `joulie.io/cpu-sensitivity` | `high`, `medium`, `low` |
 | `joulie.io/gpu-sensitivity` | `high`, `medium`, `low` |
 
-### Confidence score
-
-Each classification result carries a `confidence` field (0–1). The score is built up from:
-
-- Base: `0.3`
-- Explicit workload-class annotation: `+0.2`
-- Sensitivity annotations present: `+0.1`
-- CPU utilization data available: `+0.2`
-- Kepler energy data available: `+0.2`
-
-A confidence below `0.5` (configurable via `MinConfidence`) means the classifier is working from static hints only and the profile should be treated as a best-effort estimate.
-
 ### Current status and future work
 
-The current implementation uses **threshold-based heuristic rules** — effectively a hand-coded decision tree over the energy ratios described above. This is intentional: the rules are simple to audit and replace.
+The current implementation uses **threshold-based heuristic rules**, effectively a hand-coded decision tree over utilization percentages and energy ratios. This is intentional: the rules are simple to audit and replace.
+
+The `classificationReason` field provides a built-in audit trail, making it possible to verify and debug classification decisions without reading source code.
 
 A future ML model would:
 
@@ -245,7 +269,24 @@ A future ML model would:
 - Train a lightweight multi-class classifier (Random Forest or XGBoost) on features: `CPUBoundRatio`, `MemoryBoundRatio`, `GPUEnergyFraction`, `CPUUtilPct`, job duration.
 - Export as ONNX and embed in the binary, or serve via a sidecar inference service.
 
-The classifier's `classify(hints, metrics)` function is the only code that would need to change; the rest of the pipeline (metrics reading, hint parsing, confidence computation) stays the same.
+The classifier's `classify(hints, metrics)` function is the only code that would need to change; the rest of the pipeline (metrics reading, hint parsing, confidence computation, reason tracking) stays the same.
+
+## Inspecting WorkloadProfiles
+
+Use `kubectl` to view classification results:
+
+```bash
+# List all profiles with key columns
+kubectl get workloadprofiles
+
+# View full status including classification reason
+kubectl get wp llm-training-job -o yaml
+
+# View just the classification reason
+kubectl get wp llm-training-job -o jsonpath='{.status.classificationReason}'
+```
+
+The `wp` short name is registered for convenience.
 
 ## What to read next
 

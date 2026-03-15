@@ -1,9 +1,9 @@
 apiVersion: joulie.io/v1alpha1
-kind: NodePowerProfile
+kind: NodeTwin
 metadata:
-  name: node-sample
+  name: worker-1
 spec:
-  nodeName: worker-0
+  nodeName: worker-1
   profile: eco
   cpu:
     packagePowerCapPctOfMax: 60
@@ -12,4 +12,6 @@ spec:
       scope: perGpu
       capPctOfMax: 60
   policy:
-    name: manual-sample
+    name: queue_aware_v1
+  scheduling:
+    draining: false

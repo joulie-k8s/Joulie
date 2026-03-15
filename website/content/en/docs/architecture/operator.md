@@ -18,12 +18,17 @@ At each reconcile tick, the operator:
 1. selects eligible managed nodes,
 2. reads `NodeHardware` when available and falls back to node labels when it is not,
 3. resolves hardware identity against the shared inventory,
-4. classifies workload demand from pod scheduling constraints,
-5. runs a policy algorithm to compute a plan,
+4. classifies workload demand from pod scheduling constraints and `WorkloadProfile` data,
+5. runs a policy algorithm (`pkg/operator/policy/`) to compute a plan,
 6. applies transition guards for safe downgrades,
-7. writes desired node targets (`NodePowerProfile`) and the `joulie.io/power-profile` node label.
+7. evaluates node stress for migration recommendations (`pkg/operator/migration/`),
+8. writes desired node targets (`NodeTwin.spec`) and the `joulie.io/power-profile` node label.
 
 The agent then enforces those targets node-by-node.
+
+## Migration recommendations
+
+When node stress (CoolingStress or PSUStress) exceeds configured thresholds, the migration controller (`pkg/operator/migration/`) evaluates which workloads can be safely rescheduled. It generates reschedule recommendations written to `NodeTwin.status.rescheduleRecommendations` for reschedulable best-effort workloads. These recommendations are surfaced via `kubectl joulie recommend`.
 
 ## Control boundary with the agent
 
@@ -49,14 +54,14 @@ This separation keeps policy logic portable while actuator details stay node-loc
 6. Run policy (`static_partition`, `queue_aware_v1`, or debug `rule_swap_v1`).
 7. For planned `performance -> eco` transitions, run downgrade guard:
    - publish `profile=eco` as desired state
-   - set `NodeTwinState.schedulableClass` to `draining` while performance pods are still present
-8. Persist desired state through `NodePowerProfile` and update the `joulie.io/power-profile` node label.
+   - set `NodeTwin.status.schedulableClass` to `draining` while performance pods are still present
+8. Persist desired state through `NodeTwin.spec` and update the `joulie.io/power-profile` node label.
 
 The important distinction is:
 
-- `NodePowerProfile` expresses desired target state for enforcement,
+- `NodeTwin.spec` expresses desired target state for enforcement,
 - `joulie.io/power-profile` node label expresses the current power profile,
-- `NodeTwinState.schedulableClass` expresses transition state (including `draining`) for the scheduler extender.
+- `NodeTwin.status` holds twin output including `schedulableClass`, which expresses transition state (including `draining`) for the scheduler extender.
 
 ## Power intent configuration knobs
 
@@ -84,7 +89,7 @@ High-level behavior:
   - when `GPU_WRITE_ABSOLUTE_CAPS=false`, operator writes percentage intent,
   - when `GPU_WRITE_ABSOLUTE_CAPS=true`, operator may write resolved `capWattsPerGpu` in addition to `capPctOfMax`, when model-based mapping is available.
 
-This is why GPU `NodePowerProfile` objects may contain both normalized intent and resolved absolute caps at the same time.
+This is why GPU `NodeTwin.spec` objects may contain both normalized intent and resolved absolute caps at the same time.
 
 ## Heterogeneous planning
 
@@ -112,7 +117,7 @@ Joulie models two scheduler-facing supply states:
 - `performance`
 - `eco`
 
-`DrainingPerformance` is an internal operator FSM state tracked via `NodeTwinState.schedulableClass = "draining"`.
+`DrainingPerformance` is an internal operator FSM state tracked via `NodeTwin.status.schedulableClass = "draining"`.
 
 That state means:
 

@@ -6,7 +6,7 @@
 //   - Cooling stress (fraction of cooling capacity in use)
 //   - PSU stress (fraction of rack PDU capacity in use)
 //
-// Runs every ~1 minute in the operator → writes NodeTwinState CRs →
+// Runs every ~1 minute in the operator, writes NodeTwin CRs,
 // read by the scheduler extender for placement decisions.
 //
 // CoolingModel is pluggable. Default: LinearCoolingModel (algebraic proxy).
@@ -23,7 +23,7 @@ import (
 // CoolingModel predicts cooling stress given node power and ambient temperature.
 // Implement this interface to swap in a higher-fidelity thermal model.
 type CoolingModel interface {
-	// CoolingStress returns 0–100. 100 = cooling at capacity.
+	// CoolingStress returns 0-100. 100 = cooling at capacity.
 	// nodePowerW = total draw of this node; ambientTempC = outside air temperature.
 	CoolingStress(nodePowerW, ambientTempC float64) float64
 }
@@ -76,6 +76,7 @@ type Output struct {
 	EffectiveCapState           joulie.CapState
 	HardwareDensityScore        float64
 	RescheduleRecommendations   []joulie.RescheduleRecommendation
+	GPUSlicingRecommendation    *joulie.GPUSlicingRecommendation
 	LastUpdated                 time.Time
 }
 
@@ -130,6 +131,9 @@ func Compute(in Input) Output {
 
 	// Reschedule recommendations
 	out.RescheduleRecommendations = computeRescheduleRecommendations(in)
+
+	// GPU slicing recommendation
+	out.GPUSlicingRecommendation = computeGPUSlicingRecommendation(in)
 
 	return out
 }
@@ -198,6 +202,96 @@ func computeRescheduleRecommendations(in Input) []joulie.RescheduleRecommendatio
 		}
 	}
 	return recs
+}
+
+// computeGPUSlicingRecommendation analyzes workload profiles running on a node
+// and recommends the optimal GPU slicing configuration (MIG or time-slicing).
+//
+// The recommendation is advisory: cluster admins review and apply it manually,
+// since MIG reconfiguration requires GPU reset and pod eviction.
+//
+// Decision logic:
+//  1. No GPU or slicing not supported → nil (no recommendation)
+//  2. Analyze workload GPU intensity distribution:
+//     - If most workloads use <30% GPU → recommend MIG small slices (1g.10gb)
+//     - If most workloads use 30-70% GPU → recommend MIG medium slices (3g.40gb)
+//     - If most workloads use >70% GPU → recommend whole GPU (no slicing)
+//  3. If no workloads have GPU usage data → recommend time-slicing as a safe default
+func computeGPUSlicingRecommendation(in Input) *joulie.GPUSlicingRecommendation {
+	if !in.Hardware.GPU.Present || in.Hardware.GPU.Count == 0 {
+		return nil
+	}
+	if !in.Hardware.GPU.Slicing.Supported {
+		return nil
+	}
+
+	// Count workloads by GPU intensity bucket
+	var lowGPU, medGPU, highGPU, noGPU int
+	for _, w := range in.Workloads {
+		switch {
+		case w.GPU.Intensity == "" || w.GPU.Intensity == "none":
+			noGPU++
+		case w.GPU.Intensity == "low":
+			lowGPU++
+		case w.GPU.Intensity == "medium":
+			medGPU++
+		case w.GPU.Intensity == "high":
+			highGPU++
+		}
+	}
+
+	gpuWorkloads := lowGPU + medGPU + highGPU
+	gpuCount := in.Hardware.GPU.Count
+
+	// No GPU workloads observed → time-slicing as safe default
+	if gpuWorkloads == 0 {
+		return &joulie.GPUSlicingRecommendation{
+			Mode:                     "time-slicing",
+			SlicesPerGPU:             4,
+			TotalSlices:              4 * gpuCount,
+			Reason:                   "no GPU workloads observed; time-slicing is a safe default that requires no GPU reset",
+			EstimatedUtilizationGain: 10,
+			Confidence:               0.3,
+		}
+	}
+
+	confidence := math.Min(1.0, float64(gpuWorkloads)/10.0) // more data → higher confidence
+
+	// Dominant pattern: most workloads are low-intensity → small MIG slices
+	if lowGPU > medGPU && lowGPU > highGPU {
+		return &joulie.GPUSlicingRecommendation{
+			Mode:                     "mig",
+			SliceType:                "1g.10gb",
+			SlicesPerGPU:             7,
+			TotalSlices:              7 * gpuCount,
+			Reason:                   "majority of GPU workloads are low-intensity; small MIG slices maximize GPU sharing and power efficiency",
+			EstimatedUtilizationGain: 40,
+			Confidence:               confidence,
+		}
+	}
+
+	// Dominant pattern: most workloads are medium-intensity → medium MIG slices
+	if medGPU >= highGPU {
+		return &joulie.GPUSlicingRecommendation{
+			Mode:                     "mig",
+			SliceType:                "3g.40gb",
+			SlicesPerGPU:             2,
+			TotalSlices:              2 * gpuCount,
+			Reason:                   "majority of GPU workloads are medium-intensity; medium MIG slices balance throughput and sharing",
+			EstimatedUtilizationGain: 25,
+			Confidence:               confidence,
+		}
+	}
+
+	// Dominant pattern: most workloads are high-intensity → whole GPU
+	return &joulie.GPUSlicingRecommendation{
+		Mode:                     "none",
+		SlicesPerGPU:             1,
+		TotalSlices:              gpuCount,
+		Reason:                   "majority of GPU workloads are high-intensity; whole-GPU allocation avoids MIG overhead",
+		EstimatedUtilizationGain: 0,
+		Confidence:               confidence,
+	}
 }
 
 // ComputeHardwareDensityScore is exported for use in tests and operator.

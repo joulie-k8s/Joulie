@@ -51,8 +51,9 @@ install:
 
 uninstall:
 	helm uninstall "$(HELM_RELEASE)" -n "$(NAMESPACE)" || true
-	kubectl delete crd nodepowerprofiles.joulie.io --ignore-not-found=true
-	kubectl delete crd telemetryprofiles.joulie.io --ignore-not-found=true
+	kubectl delete crd nodetwins.joulie.io --ignore-not-found=true
+	kubectl delete crd nodehardwares.joulie.io --ignore-not-found=true
+	kubectl delete crd workloadprofiles.joulie.io --ignore-not-found=true
 
 build:
 	@for img in $(if $(IMAGE),$(IMAGE),$(IMAGES)); do \

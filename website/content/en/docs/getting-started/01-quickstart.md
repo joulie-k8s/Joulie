@@ -112,7 +112,7 @@ Joulie control is a desired-state loop:
 
 - agent discovers per-node hardware and publishes `NodeHardware`,
 - operator resolves hardware/inventory and decides per-node target state,
-- operator writes that desired state as `NodePowerProfile`,
+- operator writes that desired state into `NodeTwin.spec`,
 - node labels (`joulie.io/power-profile`) expose current supply to the scheduler,
 - agent enforces node-local controls from desired state and telemetry/control profile.
 
@@ -137,7 +137,7 @@ Architecture overview:
 
 ### Central operator mode
 
-The operator continuously writes `NodePowerProfile` assignments from the active policy (for example static partition or queue-aware), mapping desired states to node profiles (`performance`/`eco`).
+The operator continuously writes `NodeTwin.spec` assignments from the active policy (for example static partition or queue-aware), mapping desired states to node profiles (`performance`/`eco`).
 
 Configuration details:
 
@@ -150,7 +150,7 @@ Verify:
 
 ```bash
 kubectl get nodehardwares
-kubectl get nodepowerprofiles
+kubectl get nodetwins
 kubectl -n joulie-system logs deploy/joulie-operator --tail=100
 kubectl -n joulie-system logs -l app.kubernetes.io/name=joulie-agent --tail=100
 ```

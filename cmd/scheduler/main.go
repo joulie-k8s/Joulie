@@ -5,8 +5,12 @@
 // implements the Filter and Prioritize endpoints of the scheduler extender
 // protocol.
 //
-// The extender reads NodeTwinState and WorkloadProfile CRs to make
+// The extender reads NodeTwin and WorkloadProfile CRs to make
 // placement decisions. It does NOT run heavy simulation inline.
+//
+// Resilience: twin data older than TWIN_STALENESS_THRESHOLD (default 5m) is
+// treated as stale and the node receives a neutral score instead of potentially
+// misleading values from an operator that may have crashed.
 //
 // Scheduler extender protocol reference:
 //
@@ -34,13 +38,18 @@ import (
 )
 
 var (
-	nodeTwinStateGVR   = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwinstates"}
+	nodeTwinGVR        = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
 	workloadProfileGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "workloadprofiles"}
 
-	twinStateCache    map[string]*joulie.NodeTwinState
+	twinStateCache    map[string]*joulie.NodeTwinStatus
 	twinStateMu       sync.RWMutex
 	twinStateCacheTTL = 30 * time.Second
 	lastCacheRefresh  time.Time
+
+	// twinStalenessThreshold: if a NodeTwin.status.lastUpdated is older than
+	// this, the scheduler treats it as stale and falls back to a neutral score.
+	// Default 5 minutes. Override via TWIN_STALENESS_THRESHOLD env var.
+	twinStalenessThreshold = durationEnvOrDefault("TWIN_STALENESS_THRESHOLD", 5*time.Minute)
 )
 
 // ExtenderArgs is the request body for filter/prioritize calls.
@@ -195,7 +204,7 @@ func handlePrioritize(w http.ResponseWriter, r *http.Request) {
 // Filter rules:
 //  1. Reject eco nodes for performance pods.
 //     performance pods must run on uncapped (performance) nodes.
-//  2. All other pods pass all nodes — eco pods can run on performance nodes.
+//  2. All other pods pass all nodes. Eco pods can run on performance nodes.
 //
 // Draining nodes are NOT filtered out; they receive a score penalty in prioritizeNodes.
 // Draining = node is transitioning from performance to eco (still has performance pods).
@@ -242,7 +251,7 @@ func filterNodes(ctx context.Context, args ExtenderArgs) ExtenderFilterResult {
 
 // shouldFilterNode returns a non-empty rejection reason if this node should be
 // excluded for this pod. Only performance-class pods are strictly filtered from eco nodes.
-func shouldFilterNode(nodeName string, states map[string]*joulie.NodeTwinState, labels map[string]string, isPerformance bool) string {
+func shouldFilterNode(nodeName string, states map[string]*joulie.NodeTwinStatus, labels map[string]string, isPerformance bool) string {
 	if !isPerformance {
 		return "" // standard/best-effort pods can go anywhere
 	}
@@ -306,10 +315,14 @@ func prioritizeNodes(ctx context.Context, args ExtenderArgs) ExtenderPriorityLis
 	return result
 }
 
-func scoreNode(nodeName string, states map[string]*joulie.NodeTwinState, wpClass, cpuSensitivity, gpuSensitivity string) int64 {
+func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, wpClass, cpuSensitivity, gpuSensitivity string) int64 {
 	state, ok := states[nodeName]
 	if !ok {
 		return 50 // neutral score if no twin state
+	}
+	if isTwinStale(state) {
+		log.Printf("warning: stale twin data for node %s (lastUpdated=%s); using neutral score", nodeName, state.LastUpdated.Format(time.RFC3339))
+		return 50
 	}
 
 	headroom := state.PredictedPowerHeadroomScore
@@ -348,7 +361,7 @@ func scoreNode(nodeName string, states map[string]*joulie.NodeTwinState, wpClass
 }
 
 // getNodeTwinStates retrieves NodeTwinState objects, using a short-lived cache.
-func getNodeTwinStates(ctx context.Context) map[string]*joulie.NodeTwinState {
+func getNodeTwinStates(ctx context.Context) map[string]*joulie.NodeTwinStatus {
 	twinStateMu.RLock()
 	if time.Since(lastCacheRefresh) < twinStateCacheTTL && twinStateCache != nil {
 		defer twinStateMu.RUnlock()
@@ -360,22 +373,22 @@ func getNodeTwinStates(ctx context.Context) map[string]*joulie.NodeTwinState {
 	defer twinStateMu.Unlock()
 
 	if dynClient == nil {
-		return make(map[string]*joulie.NodeTwinState)
+		return make(map[string]*joulie.NodeTwinStatus)
 	}
 
-	list, err := dynClient.Resource(nodeTwinStateGVR).List(ctx, metav1.ListOptions{})
+	list, err := dynClient.Resource(nodeTwinGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			log.Printf("failed to list NodeTwinState: %v", err)
 		}
-		return make(map[string]*joulie.NodeTwinState)
+		return make(map[string]*joulie.NodeTwinStatus)
 	}
 
-	states := make(map[string]*joulie.NodeTwinState, len(list.Items))
+	states := make(map[string]*joulie.NodeTwinStatus, len(list.Items))
 	for _, item := range list.Items {
-		ts := parseTwinState(item)
-		if ts.NodeName != "" {
-			states[ts.NodeName] = ts
+		nodeName, ts := parseTwinState(item)
+		if nodeName != "" {
+			states[nodeName] = ts
 		}
 	}
 	twinStateCache = states
@@ -383,20 +396,19 @@ func getNodeTwinStates(ctx context.Context) map[string]*joulie.NodeTwinState {
 	return states
 }
 
-func parseTwinState(u unstructured.Unstructured) *joulie.NodeTwinState {
+// parseTwinState returns (nodeName, status) from a NodeTwin unstructured object.
+func parseTwinState(u unstructured.Unstructured) (string, *joulie.NodeTwinStatus) {
 	spec, _, _ := unstructured.NestedMap(u.Object, "spec")
 	status, _, _ := unstructured.NestedMap(u.Object, "status")
 
-	ts := &joulie.NodeTwinState{}
+	var nodeName string
 	if spec != nil {
 		if v, ok := spec["nodeName"].(string); ok {
-			ts.NodeName = v
+			nodeName = v
 		}
 	}
+	ts := &joulie.NodeTwinStatus{}
 	if status != nil {
-		if v, ok := status["nodeName"].(string); ok {
-			ts.NodeName = v
-		}
 		if v, ok := status["schedulableClass"].(string); ok {
 			ts.SchedulableClass = v
 		}
@@ -420,8 +432,34 @@ func parseTwinState(u unstructured.Unstructured) *joulie.NodeTwinState {
 		if v, ok := status["hardwareDensityScore"].(float64); ok {
 			ts.HardwareDensityScore = v
 		}
+		if v, ok := status["lastUpdated"].(string); ok {
+			if t, err := time.Parse(time.RFC3339, v); err == nil {
+				ts.LastUpdated = t
+			}
+		}
 	}
-	return ts
+	return nodeName, ts
+}
+
+// isTwinStale returns true if the twin data is too old to trust for scheduling.
+func isTwinStale(ts *joulie.NodeTwinStatus) bool {
+	if ts.LastUpdated.IsZero() {
+		return false // no timestamp = operator hasn't set it yet; don't penalize
+	}
+	return time.Since(ts.LastUpdated) > twinStalenessThreshold
+}
+
+func durationEnvOrDefault(key string, fallback time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Printf("warning: invalid %s=%q, using default %s", key, v, fallback)
+		return fallback
+	}
+	return d
 }
 
 

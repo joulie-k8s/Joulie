@@ -35,9 +35,9 @@ func DefaultPrometheusConfig() PrometheusConfig {
 // PodMetrics holds the metrics collected for a single pod over a measurement window.
 //
 // Primary classification signals (always fetched when Prometheus is available):
-//   - CPUUtilPct: fraction of CPU request used (cAdvisor) — identifies compute-bound
-//   - GPUUtilPct: GPU utilization % (DCGM or Kepler) — identifies GPU-bound
-//   - MemoryPressurePct: memory working set / limit — identifies memory-bound
+//   - CPUUtilPct: fraction of CPU request used (cAdvisor) - identifies compute-bound
+//   - GPUUtilPct: GPU utilization % (DCGM or Kepler) - identifies GPU-bound
+//   - MemoryPressurePct: memory working set / limit - identifies memory-bound
 //
 // These utilization % signals directly indicate which resource is the bottleneck.
 //

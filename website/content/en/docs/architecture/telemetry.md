@@ -9,7 +9,7 @@ This page describes runtime IO contracts:
 - how Joulie sends control intents.
 
 If you want the CRD-level summary first, read [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}}).
-This page is the detailed runtime reference for the `TelemetryProfile` contract.
+This page is the detailed runtime reference for the telemetry and control contract.
 
 It is not the `/metrics` exposition contract.
 For exported metrics, see [Metrics Reference]({{< relref "/docs/architecture/metrics.md" >}}).
@@ -23,22 +23,22 @@ Joulie must run in two worlds with the same control logic:
 
 So agent/operator logic depends on provider interfaces, not directly on sysfs or simulator HTTP shape.
 
-## `TelemetryProfile` in one sentence
+## Backend selection in one sentence
 
-`TelemetryProfile` tells the agent which telemetry backend to read from and which control backend to write to for a given node or scope.
+Environment variables tell the agent which telemetry backend to read from and which control backend to write to.
 
 Conceptually:
 
 - `NodeHardware` defines discovered node capability
-- `NodePowerProfile` defines the target
-- `TelemetryProfile` defines the wiring
+- `NodeTwin.spec` defines the target
+- Agent environment variables define the wiring
 
-`TelemetryProfile` should not carry hardware identity.
+Backend configuration should not carry hardware identity.
 Its job is only backend routing.
 In particular:
 
-- do not use `TelemetryProfile` to describe CPU/GPU model or inventory identity,
-- do not hand-author it as a substitute for `NodeHardware`,
+- do not conflate backend selection with CPU/GPU model or inventory identity,
+- do not use it as a substitute for `NodeHardware`,
 - do use it to route simulator HTTP or host backends.
 
 ## Telemetry provider model
@@ -93,7 +93,7 @@ Semantics:
 
 - node-level intent is translated to per-device enforcement,
 - same cap is applied to all GPUs on the node,
-- result is reported as `applied|blocked|error` in `TelemetryProfile.status.control.gpu`.
+- result is reported as `applied|blocked|error` in `NodeTwin.status.controlStatus.gpu`.
 
 ## Current HTTP contracts
 
@@ -179,12 +179,12 @@ Current deployment convention mounts host `/sys` into container `/host-sys`.
 Current runtime responsibilities:
 
 - agent publishes `NodeHardware` for discovered hardware/capability state,
-- operator writes `NodePowerProfile` targets,
-- agent reads `NodePowerProfile` for desired state,
-- agent reads node-scoped `TelemetryProfile` for source/control routing,
-- agent writes control status under `TelemetryProfile.status.control`.
+- operator writes `NodeTwin.spec` targets,
+- agent reads `NodeTwin.spec` for desired state,
+- agent selects telemetry/control backends via environment variables,
+- agent writes control status under `NodeTwin.status.controlStatus`.
 
-Today, the stable documented status contract is `TelemetryProfile.status.control`.
+Today, the stable documented status contract is `NodeTwin.status.controlStatus`.
 If additional diagnostic snapshots are present in some environments, treat them as auxiliary rather than core API contract.
 
 ## Next step

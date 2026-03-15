@@ -2,12 +2,13 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	joulie "github.com/matbun/joulie/pkg/api"
 )
 
 func TestScoreNodeNoState(t *testing.T) {
-	states := map[string]*joulie.NodeTwinState{}
+	states := map[string]*joulie.NodeTwinStatus{}
 	score := scoreNode("node1", states, "", "", "")
 	if score != 50 {
 		t.Errorf("expected neutral score 50 when no state, got %d", score)
@@ -15,9 +16,8 @@ func TestScoreNodeNoState(t *testing.T) {
 }
 
 func TestScoreNodeEcoHighHeadroom(t *testing.T) {
-	states := map[string]*joulie.NodeTwinState{
+	states := map[string]*joulie.NodeTwinStatus{
 		"node1": {
-			NodeName:                    "node1",
 			SchedulableClass:            "eco",
 			PredictedPowerHeadroomScore: 80,
 			PredictedCoolingStressScore: 10,
@@ -25,7 +25,6 @@ func TestScoreNodeEcoHighHeadroom(t *testing.T) {
 			EffectiveCapState:           joulie.CapState{CPUPct: 60, GPUPct: 60},
 		},
 		"node2": {
-			NodeName:                    "node2",
 			SchedulableClass:            "performance",
 			PredictedPowerHeadroomScore: 30,
 			PredictedCoolingStressScore: 70,
@@ -42,16 +41,14 @@ func TestScoreNodeEcoHighHeadroom(t *testing.T) {
 }
 
 func TestScoreNodeDrainingPenalty(t *testing.T) {
-	states := map[string]*joulie.NodeTwinState{
+	states := map[string]*joulie.NodeTwinStatus{
 		"draining-node": {
-			NodeName:                    "draining-node",
 			SchedulableClass:            "draining",
 			PredictedPowerHeadroomScore: 80,
 			PredictedCoolingStressScore: 10,
 			PredictedPsuStressScore:     10,
 		},
 		"normal-node": {
-			NodeName:                    "normal-node",
 			SchedulableClass:            "performance",
 			PredictedPowerHeadroomScore: 80,
 			PredictedCoolingStressScore: 10,
@@ -67,8 +64,8 @@ func TestScoreNodeDrainingPenalty(t *testing.T) {
 }
 
 func TestFilterNodesEcoRejected(t *testing.T) {
-	states := map[string]*joulie.NodeTwinState{
-		"eco-node": {NodeName: "eco-node", SchedulableClass: "eco"},
+	states := map[string]*joulie.NodeTwinStatus{
+		"eco-node": {SchedulableClass: "eco"},
 	}
 	// Performance pod requires non-eco
 	reason := shouldFilterNode("eco-node", states, nil, true)
@@ -78,12 +75,84 @@ func TestFilterNodesEcoRejected(t *testing.T) {
 }
 
 func TestFilterNodesStandardAccepted(t *testing.T) {
-	states := map[string]*joulie.NodeTwinState{
-		"eco-node": {NodeName: "eco-node", SchedulableClass: "eco"},
+	states := map[string]*joulie.NodeTwinStatus{
+		"eco-node": {SchedulableClass: "eco"},
 	}
 	// Standard pod can go anywhere
 	reason := shouldFilterNode("eco-node", states, nil, false)
 	if reason != "" {
 		t.Errorf("expected eco node to be accepted for standard pod, got: %s", reason)
+	}
+}
+
+func TestScoreNodeStaleTwinFallsBackToNeutral(t *testing.T) {
+	states := map[string]*joulie.NodeTwinStatus{
+		"stale-node": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 90,
+			PredictedCoolingStressScore: 5,
+			PredictedPsuStressScore:     5,
+			LastUpdated:                 time.Now().Add(-10 * time.Minute), // 10 min ago = stale
+		},
+		"fresh-node": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 90,
+			PredictedCoolingStressScore: 5,
+			PredictedPsuStressScore:     5,
+			LastUpdated:                 time.Now(), // just updated
+		},
+	}
+	sStale := scoreNode("stale-node", states, "standard", "", "")
+	sFresh := scoreNode("fresh-node", states, "standard", "", "")
+	if sStale != 50 {
+		t.Errorf("stale node should get neutral score 50, got %d", sStale)
+	}
+	if sFresh == 50 {
+		t.Errorf("fresh node should get a non-neutral score, got %d", sFresh)
+	}
+	if sStale >= sFresh {
+		t.Errorf("fresh node should outscore stale node: fresh=%d stale=%d", sFresh, sStale)
+	}
+}
+
+func TestIsTwinStaleWithZeroTimestamp(t *testing.T) {
+	// Zero timestamp = operator hasn't set it yet; should not be treated as stale
+	ts := &joulie.NodeTwinStatus{}
+	if isTwinStale(ts) {
+		t.Error("zero LastUpdated should not be treated as stale")
+	}
+}
+
+func TestIsTwinStaleWithRecentTimestamp(t *testing.T) {
+	ts := &joulie.NodeTwinStatus{LastUpdated: time.Now().Add(-1 * time.Minute)}
+	if isTwinStale(ts) {
+		t.Error("1-minute-old data should not be stale with 5min threshold")
+	}
+}
+
+func TestIsTwinStaleWithOldTimestamp(t *testing.T) {
+	ts := &joulie.NodeTwinStatus{LastUpdated: time.Now().Add(-10 * time.Minute)}
+	if !isTwinStale(ts) {
+		t.Error("10-minute-old data should be stale with 5min threshold")
+	}
+}
+
+func TestScoreNodeCapSensitivityWithFreshData(t *testing.T) {
+	states := map[string]*joulie.NodeTwinStatus{
+		"node1": {
+			SchedulableClass:            "eco",
+			PredictedPowerHeadroomScore: 60,
+			PredictedCoolingStressScore: 20,
+			PredictedPsuStressScore:     20,
+			EffectiveCapState:           joulie.CapState{CPUPct: 100, GPUPct: 100},
+			LastUpdated:                 time.Now(),
+		},
+	}
+	// High CPU sensitivity should blend cap headroom into score
+	sNormal := scoreNode("node1", states, "standard", "", "")
+	sCPUSensitive := scoreNode("node1", states, "standard", "high", "")
+	// With CPUPct=100, blending should increase score
+	if sCPUSensitive < sNormal {
+		t.Errorf("high cpu sensitivity with 100%% cap should increase score: normal=%d sensitive=%d", sNormal, sCPUSensitive)
 	}
 }

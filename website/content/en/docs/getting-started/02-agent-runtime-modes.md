@@ -88,8 +88,7 @@ agent:
 Agent needs:
 
 - `nodes`
-- `nodepowerprofiles.joulie.io`
-- `telemetryprofiles.joulie.io` (read + status update in current implementation)
+- `nodetwins.joulie.io`
 
 Pool mode uses the same API permissions.
 
@@ -113,4 +112,4 @@ GPU labels are used for capability detection, and GPU cap intents are enforced w
 
 On each node, agent resolves desired state only from:
 
-1. `NodePowerProfile` matching `spec.nodeName=<this-node>`.
+1. `NodeTwin.spec` matching `spec.nodeName=<this-node>`.

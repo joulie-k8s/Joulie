@@ -38,7 +38,7 @@ type WorkloadOnNode struct {
 }
 
 // EvaluateNode returns reschedule recommendations for workloads on the given node.
-func EvaluateNode(twinState joulie.NodeTwinState, workloads []WorkloadOnNode, cfg PolicyConfig) []joulie.RescheduleRecommendation {
+func EvaluateNode(twinState joulie.NodeTwinStatus, workloads []WorkloadOnNode, cfg PolicyConfig) []joulie.RescheduleRecommendation {
 	var recs []joulie.RescheduleRecommendation
 
 	highStress := twinState.PredictedCoolingStressScore > cfg.CoolingStressThreshold ||
@@ -63,7 +63,7 @@ func EvaluateNode(twinState joulie.NodeTwinState, workloads []WorkloadOnNode, cf
 	return recs
 }
 
-func buildReason(twinState joulie.NodeTwinState, w WorkloadOnNode) string {
+func buildReason(twinState joulie.NodeTwinStatus, w WorkloadOnNode) string {
 	if twinState.SchedulableClass == "draining" {
 		return "node is draining; workload eligible for rescheduling"
 	}

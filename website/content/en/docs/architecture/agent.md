@@ -17,8 +17,8 @@ At each reconcile tick, the agent:
 1. identifies its node scope (single node in daemonset mode, sharded set in pool mode),
 2. discovers local CPU/GPU hardware and runtime control capability,
 3. publishes `NodeHardware` for each owned node,
-4. reads desired target (`NodePowerProfile`) for each owned node,
-5. reads telemetry/control routing (`TelemetryProfile`),
+4. reads desired target (`NodeTwin.spec`) for each owned node,
+5. resolves telemetry/control backend from environment variables (default: host),
 6. applies controls (host or HTTP),
 7. exports metrics and status.
 
@@ -26,15 +26,15 @@ At each reconcile tick, the agent:
 
 Inputs:
 
-- `NodePowerProfile` for desired profile/cap
-- `TelemetryProfile` for source/control backend selection
+- `NodeTwin.spec` for desired profile/cap
+- environment variables for backend selection (`TELEMETRY_CPU_SOURCE`, `TELEMETRY_CPU_CONTROL`, etc.; default: host)
 - node capability hints (for example NFD labels)
 
 Outputs:
 
 - `NodeHardware` for discovered hardware/capability publication
 - control actions on host interfaces or simulator HTTP
-- status updates (`TelemetryProfile.status.control`)
+- status updates (`NodeTwin.status.controlStatus`)
 - Prometheus metrics (`/metrics`)
 
 This makes the agent the node-side discovery and execution layer of the architecture: it does not plan global policy, but it does publish the hardware facts the operator needs to plan against.
@@ -43,8 +43,8 @@ This makes the agent the node-side discovery and execution layer of the architec
 Users normally configure:
 
 - hardware identity through node labels,
-- routing through `TelemetryProfile`,
-- desired targets through `NodePowerProfile`.
+- telemetry/control backends through environment variables,
+- desired targets through `NodeTwin.spec`.
 
 ## Runtime modes
 
@@ -139,10 +139,10 @@ Throttle state and actions are exported in:
 
 The agent also supports node-level GPU cap intents:
 
-- resolves `NodePowerProfile.spec.gpu.powerCap`,
+- resolves `NodeTwin.spec.gpu.powerCap`,
 - computes `capWattsPerGpu` from `capPctOfMax` when needed,
 - applies `gpu.set_power_cap_watts` via HTTP control backend or host backend,
-- writes status in `TelemetryProfile.status.control.gpu` with `applied|blocked|error|none`.
+- writes status in `NodeTwin.status.controlStatus.gpu` with `applied|blocked|error|none`.
 
 Host backends are vendor-aware:
 
@@ -183,13 +183,13 @@ Prevent a node from dropping to eco while it still runs workloads that require p
    - detect whether performance pods are still running on `N`.
 3. If performance pods are present:
    - operator keeps desired profile as `eco`,
-   - operator sets `NodeTwinState.schedulableClass` to `draining`.
+   - operator sets `NodeTwin.status.schedulableClass` to `draining`.
 4. Agent reconciles:
-   - sees desired profile from `NodePowerProfile`,
+   - sees desired profile from `NodeTwin.spec`,
    - enforces the desired eco/performance target through configured backend.
 5. On later reconcile ticks, operator re-checks safeguard.
 6. When no blocking performance pods remain:
-   - operator keeps profile `eco` and sets `NodeTwinState.schedulableClass` to `eco`.
+   - operator keeps profile `eco` and sets `NodeTwin.status.schedulableClass` to `eco`.
    - agent continues enforcing desired target on next reconcile.
 
 ### Transition FSM (with conditions)
@@ -211,7 +211,7 @@ stateDiagram-v2
 Interpretation:
 
 - `DrainingPerformance` is the operator transition state.
-- In `DrainingPerformance`, operator publishes eco as desired state and sets `NodeTwinState.schedulableClass` to `draining`.
+- In `DrainingPerformance`, operator publishes eco as desired state and sets `NodeTwin.status.schedulableClass` to `draining`.
 - The scheduler extender reads the `draining` schedulable class and applies a score penalty to avoid placing new workloads on the node.
 - Transition to eco occurs when safeguard condition becomes true (`performance pods == 0`).
 
