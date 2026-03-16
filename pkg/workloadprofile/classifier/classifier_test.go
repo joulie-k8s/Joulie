@@ -198,3 +198,219 @@ func TestClassificationSummary(t *testing.T) {
 		t.Error("expected non-empty summary")
 	}
 }
+
+func TestClassifyGPUUtilizationUsesGPUMetric(t *testing.T) {
+	// Regression test for bug: GPU profile was using CPUUtilPct instead of GPUUtilPct
+	c := NewClassifier(DefaultClassifierConfig())
+	hints := PodHints{WorkloadClass: "standard"}
+	m := PodMetrics{
+		CPUUtilPct: 20,
+		GPUUtilPct: 85,
+	}
+	wp := c.classify(hints, m)
+	if wp.GPU.AvgUtilizationPct != 85 {
+		t.Errorf("GPU AvgUtilizationPct should use GPUUtilPct (85), got %f", wp.GPU.AvgUtilizationPct)
+	}
+	if wp.CPU.AvgUtilizationPct != 20 {
+		t.Errorf("CPU AvgUtilizationPct should use CPUUtilPct (20), got %f", wp.CPU.AvgUtilizationPct)
+	}
+}
+
+func TestClassifyZeroMetrics(t *testing.T) {
+	// All-zero metrics: should not panic, should produce reasonable defaults
+	c := NewClassifier(DefaultClassifierConfig())
+	wp := c.classify(PodHints{}, PodMetrics{})
+	if wp.CPU.Intensity != "low" {
+		t.Errorf("expected low cpu intensity for zero metrics, got %s", wp.CPU.Intensity)
+	}
+	if wp.GPU.Intensity != "none" {
+		t.Errorf("expected none gpu intensity for zero metrics, got %s", wp.GPU.Intensity)
+	}
+	// Empty hints.WorkloadClass passes through as-is (classify doesn't default it)
+	// ParsePodHints defaults to "standard" but classify just uses what it gets
+	if wp.Criticality.Class != "" {
+		t.Errorf("expected empty class for empty hints, got %s", wp.Criticality.Class)
+	}
+}
+
+func TestClassifyIOBound(t *testing.T) {
+	c := NewClassifier(DefaultClassifierConfig())
+	m := PodMetrics{CPUUtilPct: 10, MemoryPressurePct: 20}
+	wp := c.classify(PodHints{WorkloadClass: "standard"}, m)
+	if wp.CPU.Bound != "io" {
+		t.Errorf("expected io-bound for very low CPU util, got %s", wp.CPU.Bound)
+	}
+	if wp.CPU.CapSensitivity != "low" {
+		t.Errorf("expected low cap sensitivity for io-bound, got %s", wp.CPU.CapSensitivity)
+	}
+}
+
+func TestClassifyGPUDominant(t *testing.T) {
+	c := NewClassifier(DefaultClassifierConfig())
+	m := PodMetrics{
+		CPUUtilPct:  50,
+		GPUUtilPct:  90,
+		GPUDominant: true,
+	}
+	wp := c.classify(PodHints{WorkloadClass: "standard"}, m)
+	// When GPU dominant, CPU should be marked as mixed with low sensitivity
+	if wp.CPU.Bound != "mixed" {
+		t.Errorf("expected cpu-bound=mixed when GPU dominant, got %s", wp.CPU.Bound)
+	}
+	if wp.CPU.CapSensitivity != "low" {
+		t.Errorf("expected low CPU cap sensitivity when GPU dominant, got %s", wp.CPU.CapSensitivity)
+	}
+	if wp.GPU.Intensity != "high" {
+		t.Errorf("expected high GPU intensity at 90%% util, got %s", wp.GPU.Intensity)
+	}
+}
+
+func TestClassifyGPUHighIntensityComputeBound(t *testing.T) {
+	c := NewClassifier(DefaultClassifierConfig())
+	m := PodMetrics{GPUUtilPct: 80, MemoryPressurePct: 10}
+	wp := c.classify(PodHints{}, m)
+	if wp.GPU.Bound != "compute" {
+		t.Errorf("expected gpu-bound=compute for high GPU util low mem, got %s", wp.GPU.Bound)
+	}
+	if wp.GPU.CapSensitivity != "high" {
+		t.Errorf("expected high GPU cap sensitivity for compute+high intensity, got %s", wp.GPU.CapSensitivity)
+	}
+}
+
+func TestClassifyGPUMemoryBound(t *testing.T) {
+	c := NewClassifier(DefaultClassifierConfig())
+	m := PodMetrics{GPUUtilPct: 50, MemoryPressurePct: 70}
+	wp := c.classify(PodHints{}, m)
+	if wp.GPU.Bound != "memory" {
+		t.Errorf("expected gpu-bound=memory when mem pressure > 60, got %s", wp.GPU.Bound)
+	}
+}
+
+func TestClassifyGPULowIntensity(t *testing.T) {
+	c := NewClassifier(DefaultClassifierConfig())
+	m := PodMetrics{GPUUtilPct: 15}
+	wp := c.classify(PodHints{}, m)
+	if wp.GPU.Intensity != "low" {
+		t.Errorf("expected low GPU intensity at 15%%, got %s", wp.GPU.Intensity)
+	}
+	if wp.GPU.CapSensitivity != "low" {
+		t.Errorf("expected low GPU cap sensitivity for low intensity, got %s", wp.GPU.CapSensitivity)
+	}
+}
+
+func TestClassifyKeplerOverrideToCompute(t *testing.T) {
+	c := NewClassifier(DefaultClassifierConfig())
+	// Moderate CPU util (not compute-bound by util alone) but Kepler says 80% CPU energy
+	m := PodMetrics{
+		CPUUtilPct:        50,
+		MemoryPressurePct: 60, // would be memory-bound by pressure
+		CPUBoundRatio:     0.80,
+		KeplerUsed:        true,
+		TotalEnergyJoules: 100,
+	}
+	wp := c.classify(PodHints{}, m)
+	if wp.CPU.Bound != "compute" {
+		t.Errorf("expected kepler override to compute-bound, got %s", wp.CPU.Bound)
+	}
+	if !strings.Contains(wp.ClassificationReason, "kepler override") {
+		t.Errorf("expected reason to mention kepler override, got %q", wp.ClassificationReason)
+	}
+}
+
+func TestClassifyKeplerOverrideToMemory(t *testing.T) {
+	c := NewClassifier(DefaultClassifierConfig())
+	// High CPU util but Kepler shows high memory energy
+	m := PodMetrics{
+		CPUUtilPct:        80,
+		MemoryBoundRatio:  0.50,
+		CPUBoundRatio:     0.20,
+		KeplerUsed:        true,
+		TotalEnergyJoules: 100,
+	}
+	wp := c.classify(PodHints{}, m)
+	if wp.CPU.Bound != "memory" {
+		t.Errorf("expected kepler override to memory-bound, got %s", wp.CPU.Bound)
+	}
+}
+
+func TestConfidenceClampedToOne(t *testing.T) {
+	// All signals present: should not exceed 1.0
+	hints := PodHints{WorkloadClass: "performance", CPUSensitivity: "high", GPUSensitivity: "high"}
+	m := PodMetrics{CPUUtilPct: 90, KeplerUsed: true, TotalEnergyJoules: 100}
+	conf := computeConfidence(hints, m)
+	if conf > 1.0 {
+		t.Errorf("confidence should be clamped to 1.0, got %f", conf)
+	}
+}
+
+func TestConfidenceBaseMinimum(t *testing.T) {
+	conf := computeConfidence(PodHints{}, PodMetrics{})
+	if conf < 0.3 {
+		t.Errorf("base confidence should be at least 0.3, got %f", conf)
+	}
+}
+
+func TestFromHintsOnlyDefaults(t *testing.T) {
+	// No sensitivity hints: should use defaults
+	wp := fromHintsOnly(PodHints{WorkloadClass: "standard"})
+	if wp.CPU.CapSensitivity != "medium" {
+		t.Errorf("expected default cpu sensitivity=medium, got %s", wp.CPU.CapSensitivity)
+	}
+	if wp.GPU.CapSensitivity != "none" {
+		t.Errorf("expected default gpu sensitivity=none, got %s", wp.GPU.CapSensitivity)
+	}
+}
+
+func TestParsePodHintsNilInputs(t *testing.T) {
+	hints := ParsePodHints(nil, nil)
+	if hints.WorkloadClass != "standard" {
+		t.Errorf("expected standard default class, got %s", hints.WorkloadClass)
+	}
+	if hints.Reschedulable {
+		t.Error("expected reschedulable=false by default")
+	}
+}
+
+func TestClassifyGPUMediumIntensity(t *testing.T) {
+	c := NewClassifier(DefaultClassifierConfig())
+	m := PodMetrics{GPUUtilPct: 40}
+	wp := c.classify(PodHints{}, m)
+	if wp.GPU.Intensity != "medium" {
+		t.Errorf("expected medium GPU intensity at 40%%, got %s", wp.GPU.Intensity)
+	}
+}
+
+func TestClassifyCPUMediumIntensity(t *testing.T) {
+	c := NewClassifier(DefaultClassifierConfig())
+	m := PodMetrics{CPUUtilPct: 50}
+	wp := c.classify(PodHints{}, m)
+	if wp.CPU.Intensity != "medium" {
+		t.Errorf("expected medium CPU intensity at 50%%, got %s", wp.CPU.Intensity)
+	}
+}
+
+func TestClassifyGPUHintOverrideSetsIntensity(t *testing.T) {
+	// GPU sensitivity hint with no GPU metrics should set intensity to medium
+	c := NewClassifier(DefaultClassifierConfig())
+	m := PodMetrics{CPUUtilPct: 50}
+	wp := c.classify(PodHints{GPUSensitivity: "high"}, m)
+	if wp.GPU.Intensity != "medium" {
+		t.Errorf("expected GPU intensity=medium from hint override, got %s", wp.GPU.Intensity)
+	}
+	if wp.GPU.CapSensitivity != "high" {
+		t.Errorf("expected GPU cap sensitivity=high from hint, got %s", wp.GPU.CapSensitivity)
+	}
+}
+
+func TestClassificationSummaryHighConfidence(t *testing.T) {
+	c := NewClassifier(DefaultClassifierConfig())
+	m := PodMetrics{CPUUtilPct: 90, GPUUtilPct: 80, KeplerUsed: true, TotalEnergyJoules: 100}
+	wp := c.classify(PodHints{WorkloadClass: "performance"}, m)
+	s := ClassificationSummary(wp)
+	if !strings.Contains(s, "high-confidence") {
+		t.Errorf("expected high-confidence in summary, got %q", s)
+	}
+	if !strings.Contains(s, "gpu=") {
+		t.Errorf("expected GPU info in summary when GPU active, got %q", s)
+	}
+}

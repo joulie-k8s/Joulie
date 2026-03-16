@@ -137,6 +137,85 @@ func TestIsTwinStaleWithOldTimestamp(t *testing.T) {
 	}
 }
 
+func TestFilterNodesDrainingNotFiltered(t *testing.T) {
+	states := map[string]*joulie.NodeTwinStatus{
+		"draining-node": {SchedulableClass: "draining"},
+	}
+	// Draining nodes are NOT filtered (they're penalized in scoring instead).
+	// The node is transitioning to eco but hasn't completed - existing perf pods
+	// need to finish, and filtering would prevent that.
+	reason := shouldFilterNode("draining-node", states, nil, true)
+	if reason != "" {
+		t.Errorf("draining node should not be filtered (only penalized in scoring), got: %s", reason)
+	}
+}
+
+func TestFilterNodesNoStateAccepted(t *testing.T) {
+	states := map[string]*joulie.NodeTwinStatus{}
+	// No twin state = allow scheduling (don't block if operator hasn't run yet)
+	reason := shouldFilterNode("new-node", states, nil, true)
+	if reason != "" {
+		t.Errorf("expected no filter for unknown node, got: %s", reason)
+	}
+}
+
+func TestScoreNodeAllZeroStress(t *testing.T) {
+	states := map[string]*joulie.NodeTwinStatus{
+		"ideal": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 100,
+			PredictedCoolingStressScore: 0,
+			PredictedPsuStressScore:     0,
+			LastUpdated:                 time.Now(),
+		},
+	}
+	score := scoreNode("ideal", states, "standard", "", "")
+	// headroom*0.4 + (100-0)*0.3 + (100-0)*0.3 = 40+30+30 = 100
+	if score != 100 {
+		t.Errorf("expected perfect score 100 for zero stress, got %d", score)
+	}
+}
+
+func TestScoreNodeAllMaxStress(t *testing.T) {
+	states := map[string]*joulie.NodeTwinStatus{
+		"stressed": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 0,
+			PredictedCoolingStressScore: 100,
+			PredictedPsuStressScore:     100,
+			LastUpdated:                 time.Now(),
+		},
+	}
+	score := scoreNode("stressed", states, "standard", "", "")
+	if score != 0 {
+		t.Errorf("expected minimum score 0 for max stress, got %d", score)
+	}
+}
+
+func TestScoreNodeBestEffortEcoBonus(t *testing.T) {
+	states := map[string]*joulie.NodeTwinStatus{
+		"eco": {
+			SchedulableClass:            "eco",
+			PredictedPowerHeadroomScore: 50,
+			PredictedCoolingStressScore: 30,
+			PredictedPsuStressScore:     30,
+			LastUpdated:                 time.Now(),
+		},
+		"perf": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 50,
+			PredictedCoolingStressScore: 30,
+			PredictedPsuStressScore:     30,
+			LastUpdated:                 time.Now(),
+		},
+	}
+	sEco := scoreNode("eco", states, "best-effort", "", "")
+	sPerf := scoreNode("perf", states, "best-effort", "", "")
+	if sEco <= sPerf {
+		t.Errorf("eco node should get bonus for best-effort: eco=%d perf=%d", sEco, sPerf)
+	}
+}
+
 func TestScoreNodeCapSensitivityWithFreshData(t *testing.T) {
 	states := map[string]*joulie.NodeTwinStatus{
 		"node1": {

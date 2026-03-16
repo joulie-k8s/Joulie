@@ -126,3 +126,123 @@ func TestNodeFamily(t *testing.T) {
 		t.Errorf("expected unknown:missing, got %s", f)
 	}
 }
+
+// Edge case tests
+
+func TestBuildStaticPlanSingleNode(t *testing.T) {
+	nodes := []string{"only"}
+	hw := map[string]NodeHardwareInfo{"only": {CPUModel: "x"}}
+	plan := BuildStaticPlan(nodes, hw, 5000, 120, 0.0)
+	// With hpFrac=0, family floor forces 1 performance node
+	if len(plan) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(plan))
+	}
+	if plan[0].Profile != "performance" {
+		t.Errorf("expected performance (family floor), got %s", plan[0].Profile)
+	}
+}
+
+func TestBuildStaticPlanAllPerformance(t *testing.T) {
+	nodes := []string{"a", "b"}
+	hw := map[string]NodeHardwareInfo{"a": {CPUModel: "x"}, "b": {CPUModel: "x"}}
+	plan := BuildStaticPlan(nodes, hw, 5000, 120, 1.0)
+	for _, a := range plan {
+		if a.Profile != "performance" {
+			t.Errorf("expected all performance at hpFrac=1.0, got %s for %s", a.Profile, a.NodeName)
+		}
+	}
+}
+
+func TestBuildStaticPlanFractionClamped(t *testing.T) {
+	nodes := []string{"a", "b"}
+	hw := map[string]NodeHardwareInfo{"a": {CPUModel: "x"}, "b": {CPUModel: "x"}}
+	// Negative fraction should be clamped to 0
+	plan := BuildStaticPlan(nodes, hw, 5000, 120, -0.5)
+	perf := 0
+	for _, a := range plan {
+		if a.Profile == "performance" {
+			perf++
+		}
+	}
+	// Family floor forces at least 1 perf node per family
+	if perf < 1 {
+		t.Errorf("expected at least 1 performance node (family floor), got %d", perf)
+	}
+}
+
+func TestBuildStaticPlanFractionAboveOne(t *testing.T) {
+	nodes := []string{"a", "b"}
+	hw := map[string]NodeHardwareInfo{"a": {CPUModel: "x"}, "b": {CPUModel: "x"}}
+	plan := BuildStaticPlan(nodes, hw, 5000, 120, 1.5)
+	for _, a := range plan {
+		if a.Profile != "performance" {
+			t.Errorf("expected all performance at hpFrac>1.0, got %s for %s", a.Profile, a.NodeName)
+		}
+	}
+}
+
+func TestBuildQueueAwarePlanEmptyNodes(t *testing.T) {
+	plan := BuildQueueAwarePlan(nil, nil, 5000, 120, 0.5, 0, 10, 10, 0)
+	if len(plan) != 0 {
+		t.Errorf("expected empty plan for nil nodes, got %d", len(plan))
+	}
+}
+
+func TestBuildQueueAwarePlanNegativeParams(t *testing.T) {
+	nodes := []string{"a", "b"}
+	hw := map[string]NodeHardwareInfo{"a": {CPUModel: "x"}, "b": {CPUModel: "x"}}
+	// Negative hpMin, perfPerHPNode=0 should be corrected
+	plan := BuildQueueAwarePlan(nodes, hw, 5000, 120, 0.5, -1, -1, 0, 0)
+	if len(plan) != 2 {
+		t.Fatalf("expected 2 assignments, got %d", len(plan))
+	}
+}
+
+func TestBuildRuleSwapPlanSingleNode(t *testing.T) {
+	nodes := []string{"solo"}
+	plan := BuildRuleSwapPlanAt(nodes, time.Minute, 5000, 120, time.Unix(0, 0))
+	if len(plan) != 1 {
+		t.Fatalf("expected 1 assignment")
+	}
+	// At t=0, phase=0, single node should be eco
+	if plan[0].Profile != "eco" {
+		t.Errorf("expected eco at phase 0, got %s", plan[0].Profile)
+	}
+}
+
+func TestBuildRuleSwapPlanZeroInterval(t *testing.T) {
+	nodes := []string{"a", "b"}
+	// Zero interval should not panic (division by zero guard)
+	plan := BuildRuleSwapPlanAt(nodes, 0, 5000, 120, time.Now())
+	if len(plan) != 2 {
+		t.Fatalf("expected 2 assignments with zero interval, got %d", len(plan))
+	}
+}
+
+func TestNodeFamilyFallbackToRawModel(t *testing.T) {
+	hw := map[string]NodeHardwareInfo{
+		"n": {GPURawModel: "NVIDIA-L40S", GPUCount: 4},
+	}
+	f := NodeFamily("n", hw)
+	if f != "gpu:NVIDIA-L40S" {
+		t.Errorf("expected gpu:NVIDIA-L40S from raw model fallback, got %s", f)
+	}
+}
+
+func TestNodeFamilyCPUFallbackToRawModel(t *testing.T) {
+	hw := map[string]NodeHardwareInfo{
+		"n": {CPURawModel: "AMD-EPYC-9654"},
+	}
+	f := NodeFamily("n", hw)
+	if f != "cpu:AMD-EPYC-9654" {
+		t.Errorf("expected cpu:AMD-EPYC-9654 from raw model fallback, got %s", f)
+	}
+}
+
+func TestNodeFamilyEmptyHardware(t *testing.T) {
+	hw := map[string]NodeHardwareInfo{"n": {}}
+	f := NodeFamily("n", hw)
+	if f != "cpu:unknown-cpu" {
+		t.Errorf("expected cpu:unknown-cpu for empty hw, got %s", f)
+	}
+}

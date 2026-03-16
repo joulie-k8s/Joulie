@@ -1,7 +1,7 @@
 # Fixture NodeTwinState for testing the scheduler extender without a running operator.
 # In production, the operator automatically maintains these objects.
 apiVersion: joulie.io/v1alpha1
-kind: NodeTwinState
+kind: NodeTwin
 metadata:
   name: worker-node-1
 spec:
@@ -19,7 +19,7 @@ status:
   lastUpdated: "2026-03-13T12:00:00Z"
 ---
 apiVersion: joulie.io/v1alpha1
-kind: NodeTwinState
+kind: NodeTwin
 metadata:
   name: worker-node-2
 spec:

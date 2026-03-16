@@ -240,7 +240,10 @@ func upsertNodeTwinStatus(ctx context.Context, dynClient dynamic.Interface, node
 			"metadata":   map[string]interface{}{"name": nodeName},
 			"status":     statusMap,
 		}
-		fp, _ := json.Marshal(fullPatch)
+		fp, err := json.Marshal(fullPatch)
+		if err != nil {
+			return fmt.Errorf("marshal NodeTwin %s status patch: %w", nodeName, err)
+		}
 		_, err = dynClient.Resource(nodeTwinGVR).Patch(ctx, nodeName, types.MergePatchType, fp, metav1.PatchOptions{})
 		if err != nil {
 			return fmt.Errorf("patch NodeTwin %s status: %w", nodeName, err)
@@ -267,9 +270,11 @@ func upsertNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, a NodeAssign
 	cpu := map[string]any{}
 	if a.CPUCapPctOfMax != nil {
 		cpu["packagePowerCapPctOfMax"] = *a.CPUCapPctOfMax
-	} else {
+	} else if a.CapWatts > 0 {
 		cpu["packagePowerCapWatts"] = a.CapWatts
 	}
+	// If both CPUCapPctOfMax is nil and CapWatts is 0, no CPU cap is written.
+	// The agent will leave the current cap unchanged.
 	spec["cpu"] = cpu
 	if a.GPU != nil {
 		powerCap := map[string]any{

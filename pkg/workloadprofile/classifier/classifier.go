@@ -311,7 +311,7 @@ func (c *Classifier) classify(hints PodHints, m PodMetrics) joulie.WorkloadProfi
 	wp.GPU = joulie.WorkloadGPUProfile{
 		Intensity:         gpuIntensity,
 		Bound:             gpuBound,
-		AvgUtilizationPct: m.CPUUtilPct, // GPU util would come from nvidia-dcgm or Kepler GPU metrics
+		AvgUtilizationPct: m.GPUUtilPct, // GPU util from nvidia-dcgm or Kepler GPU metrics
 		CapSensitivity:    gpuCapSensitivity,
 	}
 

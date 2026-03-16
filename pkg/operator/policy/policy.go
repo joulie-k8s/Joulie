@@ -133,7 +133,11 @@ func BuildRuleSwapPlan(nodes []string, interval time.Duration, perfCap, ecoCap f
 
 // BuildRuleSwapPlanAt is the time-parameterized version of BuildRuleSwapPlan.
 func BuildRuleSwapPlanAt(nodes []string, interval time.Duration, perfCap, ecoCap float64, now time.Time) []NodeAssignment {
-	phase := int((now.Unix() / int64(interval.Seconds())) % 2)
+	intervalSec := int64(interval.Seconds())
+	if intervalSec <= 0 {
+		intervalSec = 60 // default to 1 minute if invalid
+	}
+	phase := int((now.Unix() / intervalSec) % 2)
 	plan := make([]NodeAssignment, 0, len(nodes))
 	for i, n := range nodes {
 		profile := "performance"

@@ -210,8 +210,8 @@ func detectRAPLCapRange(sockets int) joulie.CPUCapRange {
 		raplPath := fmt.Sprintf("/sys/class/powercap/intel-rapl/intel-rapl:%d/constraint_0_max_power_uw", s)
 		data, err := os.ReadFile(raplPath)
 		if err != nil {
-			// Try AMD RAPL path
-			raplPath = fmt.Sprintf("/sys/class/powercap/intel-rapl/intel-rapl:%d/constraint_0_max_power_uw", s)
+			// Try AMD RAPL path (amd_rapl uses the same sysfs layout)
+			raplPath = fmt.Sprintf("/sys/class/powercap/amd-rapl/amd-rapl:%d/constraint_0_max_power_uw", s)
 			data, err = os.ReadFile(raplPath)
 		}
 		if err == nil {

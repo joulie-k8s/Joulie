@@ -527,7 +527,9 @@ func reconcileOnce(
 	}
 	controlClient := controlClientFromTelemetry(telemetry, nodeName)
 	gpuControlClient := gpuControlClientFromTelemetry(telemetry, nodeName)
-	_ = upsertNodeHardwareStatus(ctx, dyn, nodeName, hw)
+	if err := upsertNodeHardwareStatus(ctx, dyn, nodeName, hw); err != nil {
+		log.Printf("warning: failed to upsert NodeHardware status for node=%s: %v", nodeName, err)
+	}
 	if dvfsCtl != nil {
 		setDVFSPowerReaderForTelemetry(dvfsCtl, telemetry, nodeName)
 	}
@@ -544,6 +546,10 @@ func reconcileOnce(
 	}
 
 	cpuCapWatts := selected.PowerWatts
+	if cpuCapWatts != nil && *cpuCapWatts <= 0 {
+		log.Printf("warning: ignoring invalid cpu cap watts=%.2f for node=%s", *cpuCapWatts, nodeName)
+		cpuCapWatts = nil
+	}
 	if cpuCapWatts == nil && selected.PowerPctOfMax != nil {
 		if resolved, msg, ok := resolveCPUCapFromPct(ctx, *selected.PowerPctOfMax); ok {
 			cpuCapWatts = &resolved
@@ -1481,10 +1487,19 @@ func updateNodeTwinControlStatus(ctx context.Context, dyn dynamic.Interface, nod
 		}
 		return err
 	}
-	_ = unstructured.SetNestedField(obj.Object, backend, "status", "controlStatus", component, "backend")
-	_ = unstructured.SetNestedField(obj.Object, result, "status", "controlStatus", component, "result")
-	_ = unstructured.SetNestedField(obj.Object, message, "status", "controlStatus", component, "message")
-	_ = unstructured.SetNestedField(obj.Object, time.Now().UTC().Format(time.RFC3339), "status", "controlStatus", component, "updatedAt")
+	for _, kv := range []struct {
+		val  interface{}
+		path []string
+	}{
+		{backend, []string{"status", "controlStatus", component, "backend"}},
+		{result, []string{"status", "controlStatus", component, "result"}},
+		{message, []string{"status", "controlStatus", component, "message"}},
+		{time.Now().UTC().Format(time.RFC3339), []string{"status", "controlStatus", component, "updatedAt"}},
+	} {
+		if err := unstructured.SetNestedField(obj.Object, kv.val, kv.path...); err != nil {
+			return fmt.Errorf("set %s: %w", kv.path[len(kv.path)-1], err)
+		}
+	}
 	_, err = res.UpdateStatus(ctx, obj, metav1.UpdateOptions{})
 	if err == nil {
 		return nil
@@ -1562,18 +1577,22 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 		"updatedAt": time.Now().UTC().Format(time.RFC3339),
 	}
 	if hw.CPUCapKnown {
-		status["cpu"].(map[string]any)["capRange"] = map[string]any{
-			"type":              "package",
-			"minWattsPerSocket": hw.CPUCapMinWatts,
-			"maxWattsPerSocket": hw.CPUCapMaxWatts,
+		if cpuMap, ok := status["cpu"].(map[string]any); ok {
+			cpuMap["capRange"] = map[string]any{
+				"type":              "package",
+				"minWattsPerSocket": hw.CPUCapMinWatts,
+				"maxWattsPerSocket": hw.CPUCapMaxWatts,
+			}
 		}
 	}
 	if hw.GPUCapKnown {
-		status["gpu"].(map[string]any)["present"] = hw.GPUCount > 0
-		status["gpu"].(map[string]any)["capRangePerGpu"] = map[string]any{
-			"minWatts":     hw.GPUCapMinWatts,
-			"maxWatts":     hw.GPUCapMaxWatts,
-			"defaultWatts": hw.GPUCapMaxWatts,
+		if gpuMap, ok := status["gpu"].(map[string]any); ok {
+			gpuMap["present"] = hw.GPUCount > 0
+			gpuMap["capRangePerGpu"] = map[string]any{
+				"minWatts":     hw.GPUCapMinWatts,
+				"maxWatts":     hw.GPUCapMaxWatts,
+				"defaultWatts": hw.GPUCapMaxWatts,
+			}
 		}
 	}
 
@@ -1601,7 +1620,9 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 		},
 	}
 
-	_ = unstructured.SetNestedField(obj.Object, status, "status")
+	if err := unstructured.SetNestedField(obj.Object, status, "status"); err != nil {
+		return fmt.Errorf("set NodeHardware status: %w", err)
+	}
 	_, err = res.UpdateStatus(ctx, obj, metav1.UpdateOptions{})
 	if err == nil {
 		return nil

@@ -184,7 +184,9 @@ func handleFilter(w http.ResponseWriter, r *http.Request) {
 
 	result := filterNodes(r.Context(), args)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		log.Printf("warning: failed to encode filter response: %v", err)
+	}
 }
 
 func handlePrioritize(w http.ResponseWriter, r *http.Request) {
@@ -196,7 +198,9 @@ func handlePrioritize(w http.ResponseWriter, r *http.Request) {
 
 	result := prioritizeNodes(r.Context(), args)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		log.Printf("warning: failed to encode prioritize response: %v", err)
+	}
 }
 
 // filterNodes applies Joulie filter logic to candidate nodes.
@@ -214,9 +218,14 @@ func filterNodes(ctx context.Context, args ExtenderArgs) ExtenderFilterResult {
 	}
 
 	// Parse pod
-	podBytes, _ := json.Marshal(args.Pod)
+	podBytes, err := json.Marshal(args.Pod)
+	if err != nil {
+		log.Printf("warning: cannot marshal pod for classification: %v", err)
+	}
 	var pod PodSpec
-	json.Unmarshal(podBytes, &pod)
+	if err := json.Unmarshal(podBytes, &pod); err != nil {
+		log.Printf("warning: cannot unmarshal pod for classification: %v", err)
+	}
 
 	isPerformance := podWorkloadClass(pod) == "performance"
 	states := getNodeTwinStates(ctx)
@@ -293,9 +302,14 @@ func prioritizeNodes(ctx context.Context, args ExtenderArgs) ExtenderPriorityLis
 	states := getNodeTwinStates(ctx)
 
 	// Parse pod for workload profile hints
-	podBytes, _ := json.Marshal(args.Pod)
+	podBytes, err := json.Marshal(args.Pod)
+	if err != nil {
+		log.Printf("warning: cannot marshal pod for scoring: %v", err)
+	}
 	var pod PodSpec
-	json.Unmarshal(podBytes, &pod)
+	if err := json.Unmarshal(podBytes, &pod); err != nil {
+		log.Printf("warning: cannot unmarshal pod for scoring: %v", err)
+	}
 	wpClass := podWorkloadClass(pod)
 	cpuSensitivity := pod.Metadata.Annotations["joulie.io/cpu-sensitivity"]
 	gpuSensitivity := pod.Metadata.Annotations["joulie.io/gpu-sensitivity"]
@@ -371,6 +385,11 @@ func getNodeTwinStates(ctx context.Context) map[string]*joulie.NodeTwinStatus {
 
 	twinStateMu.Lock()
 	defer twinStateMu.Unlock()
+
+	// Double-check after acquiring write lock: another goroutine may have refreshed.
+	if time.Since(lastCacheRefresh) < twinStateCacheTTL && twinStateCache != nil {
+		return twinStateCache
+	}
 
 	if dynClient == nil {
 		return make(map[string]*joulie.NodeTwinStatus)
