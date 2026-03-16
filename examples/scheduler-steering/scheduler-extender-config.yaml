@@ -11,7 +11,7 @@ data:
     apiVersion: kubescheduler.config.k8s.io/v1
     kind: KubeSchedulerConfiguration
     extenders:
-      - urlPrefix: "http://joulie-scheduler-extender.kube-system.svc.cluster.local:9876"
+      - urlPrefix: "http://joulie-scheduler-extender.joulie-system.svc.cluster.local:9876"
         filterVerb: "filter"
         prioritizeVerb: "prioritize"
         weight: 5

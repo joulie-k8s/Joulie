@@ -1929,7 +1929,9 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 		podRole, _ := rec["podRole"].(string)
 		gang, _ := rec["gang"].(bool)
 		class := "standard"
-		if podTpl, ok := rec["podTemplate"].(map[string]any); ok {
+		if ic, ok := rec["intentClass"].(string); ok && ic != "" {
+			class = ic
+		} else if podTpl, ok := rec["podTemplate"].(map[string]any); ok {
 			if affinityRaw, ok := podTpl["affinity"].(map[string]any); ok {
 				class = classifyClassFromAffinityMap(affinityRaw)
 			}

@@ -290,6 +290,8 @@ def install_joulie() -> None:
     agent_tag = os.getenv("JOULIE_AGENT_IMAGE_TAG", "").strip()
     operator_repo = os.getenv("JOULIE_OPERATOR_IMAGE_REPOSITORY", "").strip()
     operator_tag = os.getenv("JOULIE_OPERATOR_IMAGE_TAG", "").strip()
+    scheduler_repo = os.getenv("JOULIE_SCHEDULER_IMAGE_REPOSITORY", "").strip()
+    scheduler_tag = os.getenv("JOULIE_SCHEDULER_IMAGE_TAG", "").strip()
     if not (agent_repo and agent_tag and operator_repo and operator_tag):
         raise RuntimeError(
             "missing required image overrides: JOULIE_AGENT_IMAGE_REPOSITORY/JOULIE_AGENT_IMAGE_TAG/"
@@ -331,9 +333,21 @@ def install_joulie() -> None:
             "--set",
             "operator.image.pullPolicy=Always",
         ]
+        + (
+            [
+                "--set", "schedulerExtender.enabled=true",
+                "--set", f"schedulerExtender.image.repository={scheduler_repo}",
+                "--set", f"schedulerExtender.image.tag={scheduler_tag}",
+                "--set", "schedulerExtender.image.pullPolicy=Always",
+            ]
+            if scheduler_repo and scheduler_tag
+            else []
+        )
     )
     wait_rollout("joulie-system", "deploy/joulie-operator")
     wait_rollout("joulie-system", "statefulset/joulie-agent-pool")
+    if scheduler_repo and scheduler_tag:
+        wait_rollout("joulie-system", "deploy/joulie-scheduler-extender")
 
 
 def set_static_hp_frac(frac: str) -> None:
@@ -585,6 +599,70 @@ def test_boot_and_install() -> Ctx:
     return Ctx(perf_node=perf_node, eco_node=eco_node)
 
 
+def test_scheduler_extender_deployed(ctx: Ctx) -> None:
+    """IT-SCHED-EXT-01: verify the scheduler extender is deployed, has a running pod, and its service exists."""
+    log("IT-SCHED-EXT-01")
+    scheduler_repo = os.getenv("JOULIE_SCHEDULER_IMAGE_REPOSITORY", "").strip()
+    scheduler_tag = os.getenv("JOULIE_SCHEDULER_IMAGE_TAG", "").strip()
+    if not (scheduler_repo and scheduler_tag):
+        log("SKIP: scheduler extender image not provided")
+        return
+
+    # Verify the deployment exists and is available
+    out = kubectl(
+        ["-n", "joulie-system", "get", "deploy/joulie-scheduler-extender",
+         "-o", "jsonpath={.status.availableReplicas}"],
+        capture=True,
+    )
+    available = out.stdout.strip()
+    if not available or int(available) < 1:
+        raise RuntimeError(
+            f"scheduler extender deployment has {available!r} available replicas, expected >= 1"
+        )
+    log(f"scheduler extender available replicas: {available}")
+
+    # Verify the service exists and has the expected port
+    out = kubectl(
+        ["-n", "joulie-system", "get", "svc/joulie-scheduler-extender",
+         "-o", "jsonpath={.spec.ports[0].port}"],
+        capture=True,
+    )
+    port = out.stdout.strip()
+    if port != "9876":
+        raise RuntimeError(f"scheduler extender service port={port!r}, expected 9876")
+    log(f"scheduler extender service port: {port}")
+
+    # Verify the extender pod is running with the correct image
+    out = kubectl(
+        ["-n", "joulie-system", "get", "pods",
+         "-l", "app.kubernetes.io/component=scheduler-extender",
+         "-o", "jsonpath={.items[0].spec.containers[0].image}"],
+        capture=True,
+    )
+    image = out.stdout.strip()
+    expected_image = f"{scheduler_repo}:{scheduler_tag}"
+    if image != expected_image:
+        raise RuntimeError(
+            f"scheduler extender pod image={image!r}, expected {expected_image!r}"
+        )
+    log(f"scheduler extender image: {image}")
+
+    # Verify the extender responds to health checks via port-forward
+    # (We can't easily curl from inside the test container, but the rollout
+    # already proved the pod passes readiness. Just verify the annotation
+    # contract is correct by checking the deployed pod's env.)
+    out = kubectl(
+        ["-n", "joulie-system", "get", "pods",
+         "-l", "app.kubernetes.io/component=scheduler-extender",
+         "-o", "jsonpath={.items[0].spec.containers[0].env[?(@.name=='EXTENDER_ADDR')].value}"],
+        capture=True,
+    )
+    addr = out.stdout.strip()
+    if ":9876" not in addr:
+        raise RuntimeError(f"scheduler extender EXTENDER_ADDR={addr!r}, expected to contain :9876")
+    log("scheduler extender deployment verified")
+
+
 def test_telemetry_http(ctx: Ctx) -> None:
     log("IT-TP-01")
     install_http_mock()
@@ -828,6 +906,7 @@ def main() -> int:
         scope = os.getenv("IT_SCOPE", "all").strip().lower()
         log(f"integration scope: {scope}")
         ctx = test_boot_and_install()
+        test_scheduler_extender_deployed(ctx)
         test_telemetry_http(ctx)
         if scope in ("all", "full"):
             test_classification_matrix(ctx)

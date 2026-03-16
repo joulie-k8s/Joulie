@@ -23,6 +23,7 @@ type jobRecord struct {
 	Gang                bool               `json:"gang,omitempty"`
 	SubmitTimeOffsetSec float64            `json:"submitTimeOffsetSec"`
 	Namespace           string             `json:"namespace"`
+	IntentClass         string             `json:"intentClass"`
 	PodTemplate         podTemplateRec     `json:"podTemplate"`
 	Work                workRec            `json:"work"`
 	Sensitivity         sensitivityRec     `json:"sensitivity"`
@@ -40,6 +41,7 @@ type workloadRecord struct {
 	WorkloadType        string             `json:"workloadType"`
 	Gang                bool               `json:"gang,omitempty"`
 	DurationSec         float64            `json:"durationSec"`
+	IntentClass         string             `json:"intentClass"`
 	WorkloadClass       workloadClass      `json:"workloadClass"`
 	SharedIntensity     workloadProfileRec `json:"sharedIntensityProfile"`
 	Pods                []workloadPodRec   `json:"pods"`
@@ -258,6 +260,7 @@ func workloadToRecord(wl logicalWorkload) workloadRecord {
 		WorkloadType:        wl.Type,
 		Gang:                wl.Gang,
 		DurationSec:         wl.DurationSec,
+		IntentClass:         wl.Class,
 		WorkloadClass:       workloadClass{CPU: wl.CPUClass, GPU: wl.GPUClass},
 		SharedIntensity:     wl.Profile,
 		Pods:                pods,
@@ -298,6 +301,7 @@ func expandLogicalWorkload(wl logicalWorkload, cfg generatorConfig, ordinal *int
 				Gang:                wl.Gang,
 				SubmitTimeOffsetSec: wl.SubmitSec,
 				Namespace:           wl.Namespace,
+				IntentClass:         intent,
 				PodTemplate: podTemplateRec{
 					Affinity: affinityForClass(intent),
 					Requests: requests,
@@ -327,6 +331,7 @@ func sampleLogicalWorkload(rng *rand.Rand, idx int, submitSec float64, cfg gener
 	wl := logicalWorkload{
 		ID:          fmt.Sprintf("workload-%06d", idx),
 		Type:        wlType,
+		Class:       intent,
 		SubmitSec:   submitSec,
 		Namespace:   cfg.Namespace,
 		Gang:        wlType == "distributed_training" || wlType == "parameter_server_training",

@@ -59,6 +59,7 @@ This pushes:
 
 - `registry.cern.ch/mbunino/joulie/joulie-agent:<tag>`
 - `registry.cern.ch/mbunino/joulie/joulie-operator:<tag>`
+- `registry.cern.ch/mbunino/joulie/joulie-scheduler:<tag>`
 
 You can also do build+push+install in one command:
 
@@ -183,6 +184,48 @@ For fake-node workload + power simulation (real scheduler, fake [KWOK](https://k
 - [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
 - [Hardware Modeling and Physical Power Model]({{< relref "/docs/hardware/hardware-modeling.md" >}})
 - [KWOK Simulator Example](https://github.com/joulie-k8s/Joulie/tree/main/examples/06-simulator-kwok)
+
+## kubectl plugin
+
+The `kubectl-joulie` plugin adds `kubectl joulie status` and `kubectl joulie recommend` commands for inspecting Joulie cluster energy state.
+
+### Install from release (Harbor/OCI)
+
+Download the pre-built binary for your platform from the CERN OCI registry using [ORAS](https://oras.land/):
+
+```bash
+# Pick your platform: linux-amd64, linux-arm64, darwin-amd64, darwin-arm64
+PLATFORM="linux-amd64"
+VERSION="<version>"
+
+oras pull "registry.cern.ch/mbunino/joulie/kubectl-joulie:${VERSION}-${PLATFORM}"
+chmod +x "kubectl-joulie-${PLATFORM}"
+sudo install "kubectl-joulie-${PLATFORM}" /usr/local/bin/kubectl-joulie
+```
+
+Alternatively, download from the [GitHub release assets](https://github.com/joulie-k8s/Joulie/releases):
+
+```bash
+PLATFORM="linux-amd64"
+VERSION="<version>"
+
+curl -sLO "https://github.com/joulie-k8s/Joulie/releases/download/v${VERSION}/kubectl-joulie-${PLATFORM}"
+chmod +x "kubectl-joulie-${PLATFORM}"
+sudo install "kubectl-joulie-${PLATFORM}" /usr/local/bin/kubectl-joulie
+```
+
+### Install from source
+
+```bash
+make kubectl-plugin-install
+```
+
+### Usage
+
+```bash
+kubectl joulie status      # Show energy state of all Joulie-managed nodes
+kubectl joulie recommend   # Show power optimization recommendations
+```
 
 ## Next step
 

@@ -242,7 +242,7 @@ class JoulieCi:
         Build/push local Joulie images and run the 2-node k3s integration suite.
 
         Workflow:
-        1. Build `agent` and `operator` images from current repo source.
+        1. Build `agent`, `operator`, and `scheduler` images from current repo source.
         2. Publish images to `registry_repo` using a `dev*` tag.
         3. Start a 2-node k3s cluster (server + agent) with a static join token.
         4. Install Joulie Helm chart with the freshly published images.
@@ -283,9 +283,10 @@ class JoulieCi:
         )
 
         # --- Build and publish images (runs while cluster warms up) ---
-        agent_ref, operator_ref = await asyncio.gather(
+        agent_ref, operator_ref, scheduler_ref = await asyncio.gather(
             self._publish_component_image(source, "agent", registry_repo, tag, username, password),
             self._publish_component_image(source, "operator", registry_repo, tag, username, password),
+            self._publish_component_image(source, "scheduler", registry_repo, tag, username, password),
         )
 
         # --- Kubeconfig (lazily evaluated when the client container runs) ---
@@ -317,8 +318,11 @@ class JoulieCi:
             .with_env_variable("JOULIE_AGENT_IMAGE_TAG", tag)
             .with_env_variable("JOULIE_OPERATOR_IMAGE_REPOSITORY", f"{registry_repo}/joulie-operator")
             .with_env_variable("JOULIE_OPERATOR_IMAGE_TAG", tag)
+            .with_env_variable("JOULIE_SCHEDULER_IMAGE_REPOSITORY", f"{registry_repo}/joulie-scheduler")
+            .with_env_variable("JOULIE_SCHEDULER_IMAGE_TAG", tag)
             .with_env_variable("JOULIE_AGENT_IMAGE_REF", agent_ref)
             .with_env_variable("JOULIE_OPERATOR_IMAGE_REF", operator_ref)
+            .with_env_variable("JOULIE_SCHEDULER_IMAGE_REF", scheduler_ref)
             .with_env_variable("IT_SCOPE", it_scope)
             .with_workdir("/src")
             .with_exec(["bash", "ci/scripts/run-integration.sh"])
@@ -340,7 +344,7 @@ class JoulieCi:
         chart with new CRDs, and run the Go integration tests in tests/integration/.
 
         Workflow:
-        1. Build `agent` and `operator` images from current repo source.
+        1. Build `agent`, `operator`, and `scheduler` images from current repo source.
         2. Publish images to `registry_repo` using a `dev*` tag.
         3. Start a single-node k3s cluster (server only, no worker).
         4. Install Joulie Helm chart so CRDs are registered.
@@ -368,9 +372,10 @@ class JoulieCi:
         started_server = await server_svc.start()
 
         # --- Build and publish images concurrently ---
-        agent_ref, operator_ref = await asyncio.gather(
+        agent_ref, operator_ref, scheduler_ref = await asyncio.gather(
             self._publish_component_image(source, "agent", registry_repo, tag, username, password),
             self._publish_component_image(source, "operator", registry_repo, tag, username, password),
+            self._publish_component_image(source, "scheduler", registry_repo, tag, username, password),
         )
 
         # --- Kubeconfig ---
@@ -402,14 +407,19 @@ class JoulieCi:
             .with_env_variable("JOULIE_AGENT_IMAGE_TAG", tag)
             .with_env_variable("JOULIE_OPERATOR_IMAGE_REPOSITORY", f"{registry_repo}/joulie-operator")
             .with_env_variable("JOULIE_OPERATOR_IMAGE_TAG", tag)
+            .with_env_variable("JOULIE_SCHEDULER_IMAGE_REPOSITORY", f"{registry_repo}/joulie-scheduler")
+            .with_env_variable("JOULIE_SCHEDULER_IMAGE_TAG", tag)
             .with_env_variable("JOULIE_AGENT_IMAGE_REF", agent_ref)
             .with_env_variable("JOULIE_OPERATOR_IMAGE_REF", operator_ref)
+            .with_env_variable("JOULIE_SCHEDULER_IMAGE_REF", scheduler_ref)
             .with_exec(["sh", "-c",
                 "helm upgrade --install joulie /src/charts/joulie "
                 "--set agent.image.repository=${JOULIE_AGENT_IMAGE_REPOSITORY} "
                 "--set agent.image.tag=${JOULIE_AGENT_IMAGE_TAG} "
                 "--set operator.image.repository=${JOULIE_OPERATOR_IMAGE_REPOSITORY} "
                 "--set operator.image.tag=${JOULIE_OPERATOR_IMAGE_TAG} "
+                "--set schedulerExtender.image.repository=${JOULIE_SCHEDULER_IMAGE_REPOSITORY} "
+                "--set schedulerExtender.image.tag=${JOULIE_SCHEDULER_IMAGE_TAG} "
                 "--wait --timeout=5m"])
             # Go cache volumes for faster repeated runs.
             .with_mounted_cache("/go/pkg/mod", go_mod_cache)
