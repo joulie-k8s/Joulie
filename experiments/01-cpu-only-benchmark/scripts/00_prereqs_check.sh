@@ -15,7 +15,7 @@ if missing:
     raise SystemExit(
         "missing python modules: "
         + ", ".join(missing)
-        + " (install with: python -m pip install -r experiments/01-kwok-benchmark/requirements.txt)"
+        + " (install with: python -m pip install -r experiments/01-cpu-only-benchmark/requirements.txt)"
     )
 print("python modules: ok (yaml, pandas, matplotlib)")
 PY

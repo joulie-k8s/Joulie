@@ -3,12 +3,12 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "$ROOT"
-KUBECONFIG="$ROOT/experiments/01-kwok-benchmark/kubeconfig.yaml"
+KUBECONFIG="$ROOT/experiments/01-cpu-only-benchmark/kubeconfig.yaml"
 export KUBECONFIG
 
-CFG=${1:-experiments/01-kwok-benchmark/configs/benchmark-overnight.yaml}
-INVENTORY=${2:-experiments/01-kwok-benchmark/configs/cluster-nodes.yaml}
-RUNS_ROOT=${RUNS_ROOT:-experiments/01-kwok-benchmark/runs}
+CFG=${1:-experiments/01-cpu-only-benchmark/configs/benchmark-overnight.yaml}
+INVENTORY=${2:-experiments/01-cpu-only-benchmark/configs/cluster-nodes.yaml}
+RUNS_ROOT=${RUNS_ROOT:-experiments/01-cpu-only-benchmark/runs}
 next_run_index() {
   python3 - "$RUNS_ROOT" <<'PY'
 import pathlib
@@ -64,9 +64,9 @@ run_step() {
 
 mkdir -p "$ARTIFACT_DIR"
 
-if [[ -f experiments/01-kwok-benchmark/.venv/bin/activate ]]; then
+if [[ -f experiments/01-cpu-only-benchmark/.venv/bin/activate ]]; then
   # shellcheck disable=SC1091
-  source experiments/01-kwok-benchmark/.venv/bin/activate
+  source experiments/01-cpu-only-benchmark/.venv/bin/activate
 elif [[ -f experiments/02-heterogeneous-benchmark/.venv/bin/activate ]]; then
   # shellcheck disable=SC1091
   source experiments/02-heterogeneous-benchmark/.venv/bin/activate
@@ -78,8 +78,8 @@ export CLEAN_RESULTS=${CLEAN_RESULTS:-true}
 export BENCHMARK_RUN_ROOT=${BENCHMARK_RUN_ROOT:-$ARTIFACT_DIR}
 export RESULTS_DIR=${RESULTS_DIR:-$BENCHMARK_RUN_ROOT/results}
 export SIM_DEBUG_PERSIST_DIR=${SIM_DEBUG_PERSIST_DIR:-$BENCHMARK_RUN_ROOT/simulator-debug}
-export GENERATED_CLASSES=${GENERATED_CLASSES:-"$ROOT/experiments/01-kwok-benchmark/generated/10-node-classes.yaml"}
-export GENERATED_CATALOG=${GENERATED_CATALOG:-"$ROOT/experiments/01-kwok-benchmark/generated/hardware.generated.yaml"}
+export GENERATED_CLASSES=${GENERATED_CLASSES:-"$ROOT/experiments/01-cpu-only-benchmark/generated/10-node-classes.yaml"}
+export GENERATED_CATALOG=${GENERATED_CATALOG:-"$ROOT/experiments/01-cpu-only-benchmark/generated/hardware.generated.yaml"}
 
 mkdir -p "$BENCHMARK_RUN_ROOT" "$RESULTS_DIR" "$SIM_DEBUG_PERSIST_DIR" "$BENCHMARK_RUN_ROOT/logs"
 case "$BENCHMARK_RUN_ROOT" in
@@ -98,9 +98,9 @@ esac
   log "reuse_existing_cluster: $REUSE_EXISTING_CLUSTER"
   log "clean_results: $CLEAN_RESULTS"
 
-  run_step "generate cpu-only assets" bash experiments/01-kwok-benchmark/scripts/00_generate_assets.sh "$INVENTORY"
-  run_step "setup cluster" bash experiments/01-kwok-benchmark/scripts/10_setup_cluster.sh "$CFG" "$INVENTORY"
-  run_step "run benchmark pipeline" bash experiments/01-kwok-benchmark/scripts/20_run_benchmark.sh "$CFG"
+  run_step "generate cpu-only assets" bash experiments/01-cpu-only-benchmark/scripts/00_generate_assets.sh "$INVENTORY"
+  run_step "setup cluster" bash experiments/01-cpu-only-benchmark/scripts/10_setup_cluster.sh "$CFG" "$INVENTORY"
+  run_step "run benchmark pipeline" bash experiments/01-cpu-only-benchmark/scripts/20_run_benchmark.sh "$CFG"
 
   cp "$CFG" "$ARTIFACT_DIR/benchmark-config.yaml"
   cp "$INVENTORY" "$ARTIFACT_DIR/cluster-nodes.yaml"

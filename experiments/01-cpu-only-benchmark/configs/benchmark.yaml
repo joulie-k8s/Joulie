@@ -54,7 +54,7 @@ images:
   sim_tag: dev0.0.15
 
 inventory:
-  source: experiments/01-kwok-benchmark/configs/cluster-nodes.yaml
+  source: experiments/01-cpu-only-benchmark/configs/cluster-nodes.yaml
 
 install:
-  kind_cluster_config: experiments/01-kwok-benchmark/configs/kind-cluster.yaml
+  kind_cluster_config: experiments/01-cpu-only-benchmark/configs/kind-cluster.yaml

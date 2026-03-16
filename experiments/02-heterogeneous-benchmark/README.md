@@ -7,7 +7,7 @@ It is centered on four things:
 - a checked-in heterogeneous cluster description in YAML,
 - generation of KWOK nodes and simulator catalog assets from that description,
 - a quick end-to-end smoke validation path that exercises the heterogeneous GPU example on the generated assets.
-- a full sweep/collect/plot benchmark harness comparable to `experiments/01-kwok-benchmark`, but targeting the heterogeneous inventory.
+- a full sweep/collect/plot benchmark harness comparable to `experiments/01-cpu-only-benchmark`, but targeting the heterogeneous inventory.
 
 The workflow:
 
@@ -279,7 +279,7 @@ It also records a basic reproducibility bundle for each run:
 
 What it still does not provide yet is a polished report layer equivalent to:
 
-- `experiments/01-kwok-benchmark/REPORT.md`
+- `experiments/01-cpu-only-benchmark/REPORT.md`
 
 The core benchmark machinery now exists; the next refinement is a more curated experiment report and interpretation layer for the heterogeneous results.
 

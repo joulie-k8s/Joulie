@@ -5,7 +5,7 @@ import pathlib
 import matplotlib.pyplot as plt
 import pandas as pd
 
-ROOT = pathlib.Path("experiments/01-kwok-benchmark")
+ROOT = pathlib.Path("experiments/01-cpu-only-benchmark")
 RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "results"))).resolve()
 PLOTS = RESULTS / "plots"
 BASELINE_ORDER = ["A", "B", "C"]

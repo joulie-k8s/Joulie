@@ -2,14 +2,14 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-EXP_ROOT="$ROOT/experiments/01-kwok-benchmark"
+EXP_ROOT="$ROOT/experiments/01-cpu-only-benchmark"
 CFG=${1:-$EXP_ROOT/configs/benchmark.yaml}
 CLUSTER_NAME=${CLUSTER_NAME:-joulie-cpu-benchmark}
 REUSE_EXISTING_CLUSTER=${REUSE_EXISTING_CLUSTER:-false}
 KIND_CLUSTER_CONFIG=${KIND_CLUSTER_CONFIG:-$(python3 - <<'PY' "$CFG"
 import pathlib, sys, yaml
 cfg = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()) or {}
-print(cfg.get("install", {}).get("kind_cluster_config", "experiments/01-kwok-benchmark/configs/kind-cluster.yaml"))
+print(cfg.get("install", {}).get("kind_cluster_config", "experiments/01-cpu-only-benchmark/configs/kind-cluster.yaml"))
 PY
 )}
 KIND_CLUSTER_CONFIG="$ROOT/${KIND_CLUSTER_CONFIG}"

@@ -107,15 +107,15 @@ Equivalent expanded commands run by `10_setup_cluster.sh`:
 From the repo root:
 
 ```bash
-source experiments/01-kwok-benchmark/.venv/bin/activate
-experiments/01-kwok-benchmark/scripts/20_run_benchmark.sh
+source experiments/01-cpu-only-benchmark/.venv/bin/activate
+experiments/01-cpu-only-benchmark/scripts/20_run_benchmark.sh
 ```
 
 Optionally pass a custom config file path:
 
 ```bash
-experiments/01-kwok-benchmark/scripts/20_run_benchmark.sh \
-  experiments/01-kwok-benchmark/configs/benchmark.yaml
+experiments/01-cpu-only-benchmark/scripts/20_run_benchmark.sh \
+  experiments/01-cpu-only-benchmark/configs/benchmark.yaml
 ```
 
 `05_sweep.py` still accepts CLI overrides, but the default workflow is to edit `configs/benchmark.yaml` only.

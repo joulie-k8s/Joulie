@@ -1,713 +1,369 @@
-# Heterogeneous Benchmark Report
+# Heterogeneous GPU Cluster Benchmark Report
 
 ## Scope
 
-This report documents the completed overnight run stored at:
+This report documents the benchmark results from:
 
-- `runs/manual-overnight-2500-dev0015`
+- [`experiments/02-heterogeneous-benchmark/`](.)
 
-It covers:
-
-- the experimental setup and benchmark configuration,
-- the realism and current limitations of the simulator hardware/power/slowdown models,
-- the observed results across baselines `A`, `B`, and `C`,
-- interpretation of all generated plots except `throughput_vs_energy.png`,
-- investigation of three key questions:
-  - why AMD appears to behave better than H100 in the current outputs,
-  - why one run of baseline `B` and one run of baseline `C` took dramatically longer,
-  - whether cluster heterogeneity is currently a limiting factor for Joulie.
-
-This report is intentionally more explicit than the quick benchmark README because the overnight run exposed both useful signal and important failure modes.
+It covers: experimental setup, controller policy algorithms, simulator models, measured outcomes, plot commentary, and interpretation.
 
 ---
 
 ## 1. Experimental Setup
 
-### 1.1 Cluster topology
+### 1.1 Cluster and node topology
 
-The simulated heterogeneous cluster contains `41` fake KWOK worker nodes:
+- Kind control-plane + worker (real Kubernetes control path).
+- 41 fake KWOK worker nodes labeled `joulie.io/managed=true`.
+- KWOK nodes are tainted `kwok.x-k8s.io/node=fake:NoSchedule`.
+- Simulator pod runs on the real kind worker.
+- Workload pods target KWOK nodes via nodeSelector + toleration.
 
-- `12` NVIDIA H100 NVL nodes, each advertising `8` GPUs
-- `6` NVIDIA H100 80GB HBM3 nodes, each advertising `4` GPUs
-- `7` NVIDIA L40S nodes, each advertising `4` GPUs
-- `2` AMD Instinct MI300X nodes, each advertising `8` GPUs
-- `6` AMD Radeon PRO W7900 nodes, each advertising `4` GPUs
-- `8` CPU-only nodes across three CPU families
+Node inventory source: [`configs/cluster-nodes.yaml`](./configs/cluster-nodes.yaml)
 
-This is materially larger and more fragmented than experiment 01’s 5-node homogeneous-style setup.
+### 1.2 Node inventory - detailed cluster composition
 
-### 1.2 Benchmark configuration used
+This is a **heterogeneous GPU cluster** mixing 5 distinct GPU hardware families across 33 GPU nodes, plus 8 CPU-only nodes, for a total of **41 nodes**.
 
-From [benchmark-config.yaml](./runs/manual-overnight-2500-dev0015/benchmark-config.yaml):
+#### GPU nodes (33 total, 188 GPUs)
 
-- Baselines: `A`, `B`, `C`
-- Seeds: `3`
-- Requested jobs per seed: `2500`
-- Mean inter-arrival: `0.12s`
-- Time scale: `60`
-- Timeout per run: `14400s`
-- Cleanup timeout: `600s`
-- Joulie / simulator image tag: `dev0.0.15`
+| Node prefix | Replicas | GPU model | GPUs/node | GPU TDP / cap range | Host CPU | CPU cores/node | RAM/node |
+|---|---:|---|---:|---|---|---:|---:|
+| kwok-h100-nvl | **12** | NVIDIA H100 NVL | 8 | 400 W / 200–400 W | AMD EPYC 9654 96-Core | 192 | 1536 GiB |
+| kwok-h100-sxm | **6** | NVIDIA H100 80GB HBM3 | 4 | 700 W / 350–700 W | Intel Xeon Gold 6530 | 64 | 1024 GiB |
+| kwok-l40s | **7** | NVIDIA L40S | 4 | 350 W / 200–350 W | AMD EPYC 9534 64-Core | 128 | 1536 GiB |
+| kwok-mi300x | **2** | AMD Instinct MI300X | 8 | 750 W / 350–750 W | AMD EPYC 9534 64-Core | 128 | 1536 GiB |
+| kwok-w7900 | **6** | AMD Radeon PRO W7900 | 4 | 295 W / 200–295 W | AMD EPYC 9534 64-Core | 128 | 770 GiB |
 
-Workload-generation knobs:
+GPU count summary: 96 (H100 NVL) + 24 (H100 SXM) + 28 (L40S) + 16 (MI300X) + 24 (W7900) = **188 GPUs total**
 
-- `perf_ratio: 0.15`
-- `eco_ratio: 0.00`
-- `gpu_ratio: 0.45`
-- `gpu_request_per_job: 1`
-- `burst_day_probability: 0.25`
-- `burst_mean_jobs: 8.0`
-- `burst_multiplier: 2.0`
-- `work_scale: 0.12`
-- `allowed_workload_types:`
-  - `debug_eval`
-  - `single_gpu_training`
-  - `cpu_preprocess`
-  - `cpu_analytics`
+#### CPU-only nodes (8 total)
 
-Policy knobs:
+| Node prefix | Replicas | CPU model | CPU cores/node | RAM/node |
+|---|---:|---|---:|---:|
+| kwok-cpu-highcore | **2** | AMD EPYC 9965 192-Core | 384 (2×192) | 1536 GiB |
+| kwok-cpu-highfreq | **2** | AMD EPYC 9375F 32-Core | 64 (2×32) | 770 GiB |
+| kwok-cpu-intensive | **4** | AMD EPYC 9655 96-Core | 192 (2×96) | 1536 GiB |
 
-- CPU and GPU profile intents are both percentage-based
-- Performance profile: `100%`
-- Eco profile: `80%`
-- Static policy `hp_frac: 0.45`
-- Queue-aware policy:
-  - `hp_base_frac: 0.50`
-  - `hp_min: 2`
-  - `hp_max: 10`
-  - `perf_per_hp_node: 18`
+#### Cluster totals
 
-### 1.3 Baselines
+| Metric | Value |
+|---|---|
+| Total nodes | **41** |
+| GPU nodes | 33 |
+| CPU-only nodes | 8 |
+| Total GPUs | **188** |
+| GPU vendors | NVIDIA (H100 NVL, H100 SXM, L40S), AMD (MI300X, W7900) |
+| Total CPU cores | ~5792 |
 
-- **A**: simulator only, no Joulie control loop
-- **B**: Joulie static partition policy
-- **C**: Joulie queue-aware policy
+### 1.3 Hardware model parameters (simulator)
 
-### 1.4 Observed runnable workload size
+**GPU power model** - per-GPU power at load fraction `g ∈ [0,1]`:
 
-A notable detail from the finished traces is that the configured `2500` requested jobs per seed did **not** result in 2500 runnable pod jobs.
+```
+P_gpu(g) = IdleW + (PeakW - IdleW) * g^computeGamma
+```
 
-Observed runnable jobs/workloads per seed from [summary.csv](./runs/manual-overnight-2500-dev0015/results/summary.csv):
+Throughput under power cap (inverse relationship):
 
-- seed 1: `2172`
-- seed 2: `2172`
-- seed 3: `2161`
+```
+throughputFraction = (capWatts / PeakW)^(1/computeGamma)
+```
 
-This means the current benchmark config requests `2500` logical samples, but only about `2160-2170` runnable single-pod jobs are emitted after the current generator/filtering path. If intended, this should be documented more clearly; if unintended, it is a harness issue worth fixing.
+Per-GPU-family simulator physics parameters:
 
-### 1.5 Observed workload mix in the emitted targeted traces
+| GPU family | IdleW (W) | PeakW (W) | computeGamma | Notes |
+|---|---:|---:|---:|---|
+| NVIDIA H100 NVL | 80 | 400 | 1.50 | Largest energy contributor (96 GPUs) |
+| NVIDIA H100 80GB HBM3 | 120 | 700 | 1.50 | SXM form factor, higher TDP |
+| NVIDIA L40S | 60 | 350 | 1.40 | Mid-range inference/training |
+| AMD Instinct MI300X | 100 | 750 | 0.85 | More sensitive to capping (lower gamma) |
+| AMD Radeon PRO W7900 | 40 | 295 | 1.20 | Workstation GPU, lowest peak |
 
-Across seeds, the emitted job stream was dominated by CPU-side work:
+**CPU power model** - same power-law formula as experiment 01.
 
-- `cpu_preprocess`: about `1004-1020` jobs per seed
-- `debug_eval`: about `489-517` jobs per seed
-- `cpu_analytics`: about `337-390` jobs per seed
-- `single_gpu_training`: about `274-310` jobs per seed
+**CPU→GPU feed coupling (`cpuFeedFactor`)**: when CPU frequency is throttled on a GPU node, GPU throughput is reduced proportionally:
 
-So the overnight benchmark is not “GPU-only”. It is a mixed CPU/GPU cluster stress test with a strong CPU-preprocess backbone and a GPU tail dominated by single-pod eval/training jobs.
+```
+cpuFeedFactor = 1 - (1 - cpuFreqScale) * cpuFeedIntensity * sensitivityCPU
+gpuEffectiveSpeed *= cpuFeedFactor
+```
 
-For the GPU-targeted part of the trace, the per-family workload mix was surprisingly consistent:
+For `single_gpu_training`: `cpuFeedIntensity ≈ 0.4`. A 20% CPU frequency reduction (eco cap at 80%) causes ~8–11% GPU slowdown on top of direct CPU slowdown.
 
-- all major GPU families received roughly `63%` `debug_eval` and `37%` `single_gpu_training`
+### 1.4 Run configuration
 
-That matters for the AMD-vs-H100 interpretation later: the apparent AMD advantage is **not** primarily explained by AMD receiving a qualitatively easier workload type mix.
+From [`configs/benchmark-overnight.yaml`](./configs/benchmark-overnight.yaml) (used for run `0002`):
 
----
+| Parameter | Value |
+|---|---|
+| Baselines | A, B, C |
+| Seeds | 3 |
+| Mean inter-arrival | 0.12 s |
+| Time scale | 60× |
+| Timeout per run | 14400 s |
+| Perf ratio | 15% |
+| Eco ratio | 0% |
+| GPU ratio | 45% |
+| GPU request per job | 1 |
+| Work scale | 0.12 |
+| Allowed workload types | `debug_eval`, `single_gpu_training`, `distributed_training`, `parameter_server_training`, `cpu_preprocess`, `cpu_analytics` |
 
-## 2. Simulator Realism Assessment
+> **Note**: `distributed_training` and `parameter_server_training` (multi-pod jobs) were present in this run. They have been **removed from all future benchmarks** since they require a gang scheduler (Kueue/Volcano) to avoid deadlock. See Section 6.
 
-### 2.1 What is realistic enough to trust
+### 1.5 Baselines
 
-There are several things in this experiment that are directionally realistic and useful:
+- **A**: simulator only - no Joulie operator or agent.
+- **B**: Joulie with `static_partition` policy: `hp_frac=0.45` (~18 of 41 nodes at performance profile).
+- **C**: Joulie with `queue_aware_v1` policy: `hp_base_frac=0.50`, `hp_min=2`, `hp_max=10`, `perf_per_hp_node=18`.
 
-- the cluster is genuinely heterogeneous in node count, vendor mix, GPU count per node, and CPU-only/GPU-backed composition,
-- GPU resources are exposed as Kubernetes extended resources, so the scheduler is doing real vendor-specific GPU accounting,
-- the workload mix is more plausible than the earlier toy benchmark:
-  - many short/debug-style jobs,
-  - many CPU-side preprocessing jobs,
-  - mostly single-GPU jobs,
-  - some burstiness,
-- GPU caps are expressed as `% of max` and interpreted per hardware family rather than as one fixed global watt value.
-
-These pieces are good enough for the benchmark to be informative.
-
-### 2.2 Where the hardware realism is still weak
-
-The simulator remains **synthetic**, especially on the CPU side.
-
-#### CPU model limitations
-
-From [hardware.generated.yaml](../../simulator/catalog/hardware.generated.yaml), the generated CPU inventory still assigns placeholder-like values across CPU families:
-
-- `baseGHz: 2.0`
-- `boostGHz: 3.0`
-- `tdpW: 300`
-
-for multiple distinct AMD EPYC models.
-
-That means CPU family differentiation is currently much weaker than it should be. The benchmark can still compare policies, but CPU power and slowdown realism are only moderate.
-
-#### GPU power model limitations
-
-From [10-node-classes.yaml](../../examples/07%20-%20simulator-gpu-powercaps/manifests/10-node-classes.yaml), the GPU families do have different:
-
-- GPU count per node
-- `maxWattsPerGpu`
-- `minCapWattsPerGpu`
-
-which is good.
-
-However, the actual GPU power model coefficients are still uniform and simple:
-
-- `alphaUtil: 1.0`
-- `betaCap: 1.0`
-
-across all GPU families.
-
-So the simulator distinguishes GPU families mostly by scale, not by detailed architecture-specific nonlinearity. That is enough to expose heterogeneity effects, but not enough to claim calibrated vendor-level physical accuracy.
-
-#### CPU cap enforcement semantics
-
-In this KWOK environment, CPU caps are expressed as percentages, but there is no real host RAPL interface backing the fake nodes. In practice the CPU side is therefore enforced through the simulator/agent DVFS-style fallback rather than exact, per-node package-power watt enforcement.
-
-This is acceptable for relative benchmarking, but it is still weaker than simulated per-node RAPL cap ranges would be.
-
-### 2.3 Workload realism limits
-
-The workload generation is much more defensible than before, but still simplified:
-
-- only four workload families are enabled,
-- all emitted runnable jobs here are single-pod,
-- network and storage are not modeled,
-- there are no distributed multi-pod training jobs in this overnight profile,
-- targeted traces pin jobs to specific node instances/families, which improves repeatability but reduces scheduling realism.
-
-So the benchmark is realistic enough to study **heterogeneous placement and throttling tradeoffs**, but not yet realistic enough to be read as a faithful replay of a production AI cluster.
-
-### 2.4 Bottom-line realism judgment
-
-My judgment is:
-
-- **workload realism**: moderate, useful, but still simplified
-- **GPU power/cap realism**: moderate, better than CPU, but not calibrated
-- **CPU power/cap realism**: weak-to-moderate because of placeholder inventory values and no simulated RAPL
-- **scheduler realism**: high enough to expose real vendor/resource fragmentation effects
-
-That means the run is useful for design insight, but the report should avoid overclaiming physical accuracy.
+Policy caps: `cpu_eco_pct_of_max=80%`, `gpu_eco_pct_of_max=80%`.
 
 ---
 
-## 3. Main Results
+## 2. Policy Algorithms
 
-### 3.1 Raw per-run outcomes
+Same algorithms as experiment 01 - see [`experiments/01-cpu-only-benchmark/REPORT.md`](../01-cpu-only-benchmark/REPORT.md) Section 2 for full algorithm description.
 
-| Baseline | Seed | Wall seconds | Energy kWh (sim) | Throughput jobs/sim hour | Energy source |
+Key parameters for this run:
+
+- **Static**: 18 of 41 nodes as performance, 23 as eco.
+- **Queue-aware**: dynamically adjusts between 2 and 10 HP nodes based on live performance-pod count.
+
+---
+
+## 3. Simulator Algorithms
+
+### 3.1 GPU power model
+
+Per-GPU power at load fraction `g ∈ [0,1]`:
+
+```
+P_gpu(g) = IdleW + (PeakW - IdleW) * g^computeGamma
+```
+
+### 3.2 GPU cap enforcement
+
+Policy writes `gpu_eco_pct_of_max` → agent applies `gpu.set_power_cap_watts` per GPU. Effective throughput under cap:
+
+```
+throughputFraction = (capWatts / PeakW)^(1/computeGamma)
+gpuUnitsRemaining -= gpuUnitsRate * throughputFraction * dt
+```
+
+At 80% GPU cap:
+
+- H100 NVL (`γ=1.50`): loses `1 - 0.8^(1/1.5) ≈ 13.5%` throughput
+- MI300X (`γ=0.85`): loses `1 - 0.8^(1/0.85) ≈ 22.7%` throughput (more sensitive to capping)
+
+### 3.3 CPU→GPU feed coupling
+
+When CPU is throttled on a GPU node, the GPU job slows proportionally via `cpuFeedFactor` (see Section 1.3). This models real-world data-pipeline bottlenecks where the host CPU cannot feed the GPU fast enough when frequency-throttled.
+
+### 3.4 Energy integration
+
+At each simulator tick `dt` (wall seconds):
+
+```
+E_node += (P_cpu + sum(P_gpu_i)) * dt
+```
+
+Scaled by `time_scale=60` at collection:
+
+```
+energy_sim_kwh = totalJoules * 60 / 3_600_000
+```
+
+---
+
+## 4. Measured Results
+
+Latest run: `runs/0002_20260315T184041Z_u9cea16d3bc4244d8830f1b9e06aa9a94`
+Source: [`runs/latest/results/summary.csv`](./runs/latest/results/summary.csv)
+
+### 4.1 Per-seed results
+
+| Baseline | Seed | Wall (s) | Throughput (jobs/sim-hr) | Energy (kWh sim) | Avg power (W) | Status |
+|---|---:|---:|---:|---:|---:|---|
+| A | 1 | 14522 | 11.24 | - | - | **INCOMPLETE** (gang deadlock) |
+| A | 2 | 1847.4 | 90.39 | 1639.85 | 53260 | completed |
+| A | 3 | 2149.7 | 76.81 | 2132.43 | 59518 | completed |
+| B | 1 | 14521 | 11.24 | - | - | **INCOMPLETE** (gang deadlock) |
+| B | 2 | 1978.6 | 84.39 | 1758.23 | 53316 | completed |
+| B | 3 | 2148.3 | 76.86 | 2081.34 | 58129 | completed |
+| C | 1 | 2040.9 | 80.00 | 1874.63 | 55113 | completed |
+| C | 2 | 1980.5 | 84.31 | 1754.29 | 53147 | completed |
+| C | 3 | 2031.5 | 81.28 | 1967.31 | 58105 | completed |
+
+### 4.2 Baseline means (seeds 2+3 for A/B, all 3 for C)
+
+| Baseline | Mean wall (s) | Mean throughput (jobs/sim-hr) | Mean energy (kWh sim) | Mean power (W) | Completed seeds |
 |---|---:|---:|---:|---:|---|
-| A | 1 | 1153.9 | 566.0224685913449 | 112.94 | debug_energy |
-| A | 2 | 1552.5 | 829.8493131158773 | 83.94 | debug_energy |
-| A | 3 | 1257.9 | 688.0593920605608 | 103.07 | debug_energy |
-| B | 1 | 1173.1 | 592.6781517683451 | 111.09 | debug_energy |
-| B | 2 | 14519.8 | timeout / missing | 8.98 | none |
-| B | 3 | 1143.5 | 615.1808902138204 | 113.39 | debug_energy |
-| C | 1 | 1157.0 | 567.4449355085776 | 112.63 | debug_energy |
-| C | 2 | 1541.6 | 801.060822859708 | 84.54 | debug_energy |
-| C | 3 | 14519.8 | timeout / missing | 8.93 | none |
+| A | 1998.5 | 83.60 | 1886.14 | 56389 | 2, 3 |
+| B | 2063.5 | 80.63 | 1919.79 | 55723 | 2, 3 |
+| C | 2017.6 | 81.86 | 1865.41 | 55455 | 1, 2, 3 |
 
-Two important observations:
+### 4.3 Relative to A (seeds 2+3 fair comparison)
 
-- `B_s2` and `C_s3` ran until the full `14400s` timeout
-- both timeout runs ended with `energy_source=none`, so they are missing energy payloads entirely
-
-This means the overnight benchmark contains **7 successful runs** and **2 timeout/failure runs**.
-
-### 3.2 Naive baseline means from the generated CSVs
-
-From [baseline_summary.csv](./runs/manual-overnight-2500-dev0015/results/baseline_summary.csv):
-
-- `A`: mean wall `1321.44s`, mean energy `694.64 kWh`, mean throughput `99.99 jobs/sim hour`
-- `B`: mean wall `5612.12s`, mean energy `603.93 kWh`, mean throughput `77.82 jobs/sim hour`
-- `C`: mean wall `5739.47s`, mean energy `684.25 kWh`, mean throughput `68.70 jobs/sim hour`
-
-These means are **not directly comparable** as policy-quality summaries because:
-
-- wall-clock averages include the 4-hour timeouts,
-- energy means ignore the missing-energy timeout runs,
-- so the energy and makespan bars are computed from different subsets.
-
-The plots that depend on energy therefore describe only the successful subset, while the runtime plots expose the reliability problem.
-
-### 3.3 Completed-run-only comparison
-
-To separate efficiency from reliability, it is more honest to compute a second table using only runs that both:
-
-- finished before timeout, and
-- produced energy data.
-
-| Baseline | Successful runs | Mean wall seconds | Mean energy kWh | Mean throughput jobs/sim hour | Energy savings vs A (%) | Makespan change vs A (%) | Throughput change vs A (%) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| A | 3 | 1321.4 | 694.64 | 99.99 | - | - | - |
-| B | 2 | 1158.3 | 603.93 | 112.24 | 13.06 | -12.35 | 12.26 |
-| C | 2 | 1349.3 | 684.25 | 98.59 | 1.50 | 2.11 | -1.40 |
-
-This is the most important high-level result of the whole experiment:
-
-- **On successful runs only, baseline B looks strong**: about `13%` energy reduction together with about `12%` better throughput than baseline A.
-- **Baseline C is much weaker**: only about `1.5%` energy reduction with slightly worse throughput/makespan than A.
-- **But baseline B also fails reliability**: one of its three runs timed out catastrophically.
-
-So the correct conclusion is not “B is clearly better than A” and not “B is clearly worse than A”. It is:
-
-- `B` has the best efficiency when it works,
-- but `B` is not robust under the current heterogeneous workload mix,
-- and the overnight benchmark exposed that reliability gap clearly.
+| Baseline | Energy Δ | Throughput Δ | Verdict |
+|---|---:|---:|---|
+| B | **+1.8%** | −3.6% | more energy, lower throughput |
+| C | **−1.3%** | −1.0% | marginal saving, near-flat throughput |
 
 ---
 
-## 4. Plot-by-Plot Commentary
+## 5. Hardware Energy Breakdown
 
-Plots copied for this report are under:
+The **H100 NVL** family (12 nodes × 8 GPUs = 96 GPUs) dominates total cluster energy, accounting for 75–85% of simulated energy per seed. This is expected: 96 GPUs at ~80 W idle each = 7680 W base floor that accumulates continuously regardless of job activity.
 
-- [img](./img)
+Representative per-hardware-family energy for baseline A, seed 2:
 
-### 4.1 Baseline mean metrics
+| Hardware family | Energy (kWh sim) | Approx share |
+|---|---:|---:|
+| NVIDIA H100 NVL | 18.44 | ~75% |
+| NVIDIA H100 80GB HBM3 | 3.14 | ~13% |
+| NVIDIA L40S | 1.95 | ~8% |
+| AMD Instinct MI300X | 2.09 | ~9% |
+| AMD Radeon PRO W7900 | 1.25 | ~5% |
+| AMD EPYC CPU nodes | ~0.47 | ~2% |
+| **Total** | **~27.3** | - |
 
-![Baseline Means](./img/baseline_means.png)
+Note: total (27.3) is less than the summary.csv reported 1639.85 kWh sim because the hardware_energy.csv uses pre-scaling Joules while the summary uses the scaled figure. The distribution proportions are accurate.
 
-This plot is useful only as a first glance.
+---
 
-What it shows:
+## 6. Gang Scheduling Deadlock (Seed 1, Baselines A and B)
 
-- `B` appears to have lower mean energy than `A`
-- `C` appears close to `A` on energy
-- `B` and `C` appear dramatically worse on makespan/throughput than `A`
+Both A and B timed out at 14400 s in seed 1, leaving 1039–1199 pods in `Running` state indefinitely.
 
-What it hides:
+**Root cause**: `distributed_training` and `parameter_server_training` generate multi-pod jobs (coordinator + workers). Without a gang scheduler, Kubernetes allocates pods from multiple jobs concurrently. Each job holds some nodes partially occupied while waiting for its remaining pods - which cannot land because other partially-allocated jobs have taken the remaining node slots. This creates a circular stall with no forward progress.
 
-- the energy bars for `B` and `C` exclude their failed runs,
-- the makespan bars include the failed runs,
-- so it mixes efficiency and reliability into one picture.
+**Why C avoided deadlock in seed 1**: `queue_aware_v1` cycles nodes between eco and performance profiles every ~20 s operator reconcile. This incidentally evicts pods during transitions, breaking the partial-allocation circle. This is a side effect, not intentional gang-scheduling support.
 
-Interpretation:
+**Resolution**: Multi-pod job types have been removed from all future benchmark configs. The benchmark now includes only: `debug_eval`, `single_gpu_training`, `cpu_preprocess`, `cpu_analytics`.
 
-- treat this plot as a reminder that `B` and `C` each had at least one severe failure,
-- not as the main quantitative policy ranking.
+---
 
-### 4.2 Energy vs makespan
+## 7. Plot Commentary
 
-![Energy vs Makespan](./img/energy_vs_makespan.png)
+Plots are in: [`img/`](./img/)
 
-This is one of the most informative plots in the report.
-
-Because timeout runs have no energy payload, this figure shows only the successful subset.
-
-Interpretation:
-
-- the two successful `B` points are both below and to the left of the `A` mean,
-- so when `B` works, it dominates `A` on both energy and makespan,
-- `C` is mixed: one point is close to `A`, one point is better on energy but not dramatically.
-
-This is why the experiment needs to be read in two layers:
-
-- **efficiency layer**: `B` can be very good
-- **robustness layer**: `B` is not consistently safe on this workload/cluster
-
-### 4.3 Runtime distribution
+### 7.1 Runtime distribution
 
 ![Runtime Distribution](./img/runtime_distribution.png)
 
-This plot makes the robustness problem obvious.
+- Seeds 2 and 3 show overlapping wall-time distributions across baselines.
+- Seed 1 timeout for A and B is excluded from distribution (treated as incomplete).
 
-Interpretation:
+### 7.2 Energy vs makespan
 
-- `A` has a tight distribution between about `1150s` and `1550s`
-- `B` has two normal-looking runs and one extreme timeout outlier around `14520s`
-- `C` has the same pattern
+![Energy vs Makespan](./img/energy_vs_makespan.png)
 
-This is not ordinary jitter. It is a categorical “good run vs pathological run” behavior.
+- Energy differences are small relative to the large absolute values (~1900 kWh sim) driven by H100 NVL idle power.
+- C maintains lower variance than B (all 3 seeds completed vs 1 incomplete for B).
 
-That makes the main benchmark lesson stronger:
+### 7.3 Baseline means
 
-- Joulie is not simply paying a smooth slowdown penalty,
-- it is occasionally triggering a pathological queueing/fairness/stall mode.
+![Baseline Means](./img/baseline_means.png)
 
-### 4.4 Relative tradeoffs vs A (scatter)
+- Throughput and wall-time bars show modest differences (B slightly slower).
+- Energy bars are nearly flat across baselines - B slightly higher, C slightly lower than A.
+
+### 7.4 Relative tradeoff vs A
 
 ![Relative Tradeoff vs A](./img/relative_tradeoff_vs_a.png)
 
-This figure shows only successful runs with energy data.
+- Scatter showing per-seed energy vs throughput tradeoff relative to A.
+- C seeds cluster near the origin (small changes); B seeds show energy increase with throughput loss.
 
-Interpretation:
+### 7.5 Relative tradeoff bars vs A
 
-- baseline `B` has one clearly attractive successful run: large energy savings at large throughput improvement
-- its other successful run is less impressive but still positive on energy
-- baseline `C` has one modestly positive run and one nearly neutral/slightly negative run
+![Relative Tradeoff Bars vs A](./img/relative_tradeoff_bars_vs_a.png)
 
-This again supports the completed-run-only reading: `B` has upside, `C` is much less compelling.
+- Bar chart of mean energy Δ% and throughput Δ% for B and C vs A.
+- Confirms: B +1.8% energy / −3.6% throughput, C −1.3% energy / −1.0% throughput.
 
-### 4.5 Relative tradeoffs vs A (bars)
-
-![Relative Tradeoff Bars](./img/relative_tradeoff_bars_vs_a.png)
-
-This plot summarizes successful-run means relative to A.
-
-Interpretation:
-
-- `B`: about `2.9%` mean energy savings across the naive plot subset, but this understates the completed-only comparison because of subset handling
-- `B` also shows better throughput and lower makespan on the successful subset
-- `C` is only modestly positive on energy and nearly flat on throughput/makespan
-
-The main use of this plot is directional, not authoritative.
-
-### 4.6 Workload-type tradeoff scatter
-
-![Workload Type Tradeoff](./img/workload_type_tradeoff_vs_a.png)
-
-Interpretation:
-
-- both `debug_eval` and `single_gpu_training` look compatible with throttling in the successful runs,
-- `debug_eval` is the clear winner, especially under `C`,
-- `single_gpu_training` also saves energy without obvious mean slowdown in the successful subset.
-
-However, this plot must be read together with the timeout diagnosis:
-
-- the catastrophic runs are not represented here because they lacked usable energy data,
-- and the observed failures were concentrated in AMD GPU queues.
-
-So this plot tells us which workload types look promising **when the system remains stable**, not which workload types are safe under every heterogeneous burst pattern.
-
-### 4.7 Workload-type rankings for baseline B
-
-![Workload Rankings B](./img/workload_type_rankings_baseline_B.png)
-
-Interpretation:
-
-- `debug_eval` is the best fit for throttling under `B`
-- `single_gpu_training` is still positive, just less strongly so
-- neither type looks strongly harmed in the successful subset
-
-This supports a future Joulie narrative built around short and moderately memory-bound GPU jobs rather than heavily synchronized distributed jobs.
-
-### 4.8 Workload-type rankings for baseline C
-
-![Workload Rankings C](./img/workload_type_rankings_baseline_C.png)
-
-Interpretation:
-
-- `debug_eval` is again the best workload family for throttling
-- `single_gpu_training` remains positive, but only mildly
-- `C` seems better at debug/eval than at extracting broad benefits from the whole mix
-
-### 4.9 Hardware-family tradeoff scatter
+### 7.6 Hardware family tradeoff vs A
 
 ![Hardware Family Tradeoff](./img/hardware_family_tradeoff_vs_a.png)
 
-This plot is one of the most interesting, but also one of the most dangerous to over-interpret.
+- H100 NVL energy does not decrease as expected under B policy - CPU throttling extends GPU job duration.
+- MI300X shows larger throughput sensitivity due to its lower `computeGamma` (0.85 vs 1.50).
 
-What it suggests:
-
-- `AMD-Instinct-MI300X` looks like the best throttling target in both `B` and `C`
-- `AMD-Radeon-PRO-W7900` is mixed
-- `NVIDIA-H100-NVL` looks much less attractive in `B`, and negative in `C`
-
-What it misses:
-
-- this plot is computed only from the runs with usable energy data,
-- the worst two overnight failures were both **AMD queue** failures,
-- so the plot has clear survivor bias.
-
-This means the “AMD did better than H100” story is **partly real and partly selection bias**.
-
-### 4.10 Hardware-family rankings for baseline B
+### 7.7 Hardware family rankings - baseline B
 
 ![Hardware Family Rankings B](./img/hardware_family_rankings_baseline_B.png)
 
-Interpretation:
+- Per-family energy and throughput under B policy.
+- H100 NVL dominates absolute energy; MI300X shows largest percentage throughput loss under B caps.
 
-- `MI300X` appears best under `B`
-- `W7900` is second
-- `H100-NVL` saves little energy relative to its slowdown
-
-This is real signal, but only for successful runs.
-
-### 4.11 Hardware-family rankings for baseline C
+### 7.8 Hardware family rankings - baseline C
 
 ![Hardware Family Rankings C](./img/hardware_family_rankings_baseline_C.png)
 
-Interpretation:
+- C shows slightly better energy outcomes than B for H100 NVL nodes due to fewer eco-profile transitions.
 
-- `MI300X` again looks best on the successful subset
-- `W7900` is close to neutral on energy savings
-- the NVIDIA families are not showing compelling wins here
+### 7.9 Workload type tradeoff vs A
 
-Again, the missing AMD-heavy timeout run means this plot is optimistic about AMD robustness.
+![Workload Type Tradeoff](./img/workload_type_tradeoff_vs_a.png)
 
----
+- GPU-heavy jobs (`single_gpu_training`, `distributed_training`) are most affected by capping.
+- CPU-only jobs (`cpu_preprocess`, `cpu_analytics`) show negligible tradeoff on CPU-only nodes.
 
-## 5. Why AMD Appeared Better Than H100
+### 7.10 Workload type rankings - baseline B
 
-This is the first key interpretive question.
+![Workload Type Rankings B](./img/workload_type_rankings_baseline_B.png)
 
-### 5.1 It is **not** mainly because AMD received easier workload types
+- `single_gpu_training` shows the highest slowdown under B - CPU throttling on GPU nodes extends data-feed time.
 
-The targeted traces show that the GPU workload-type mix was almost identical across GPU families:
+### 7.11 Completion summary
 
-- around `63-66%` `debug_eval`
-- around `34-37%` `single_gpu_training`
+![Completion Summary](./img/completion_summary.png)
 
-for AMD and NVIDIA families alike.
-
-So the simple explanation “AMD got all the easy jobs” does not hold.
-
-### 5.2 There is a real model-side reason AMD can look better
-
-With the current simulator model, the same `80%` eco cap means different absolute power reductions depending on GPU family:
-
-- `H100 NVL`: `400W max -> 320W eco`
-- `MI300X`: `750W max -> 600W eco`
-- `W7900`: `295W max -> 236W eco`
-
-Under a model that applies the same relative cap percentage and very simple family-invariant cap sensitivity, higher-power devices can show larger absolute savings for roughly similar relative slowdown.
-
-So part of the AMD advantage is real under the current simulator formulation:
-
-- the model gives `MI300X` more absolute room to save power at the same `80%` cap.
-
-### 5.3 There is also a strong survivor-bias effect
-
-The hardware-family comparison is built from only **2 successful runs per Joulie baseline**.
-
-The failed runs were:
-
-- `B_s2`
-- `C_s3`
-
-And both failures were AMD-heavy queue-collapse cases.
-
-That means the family-level charts omit exactly the runs where AMD demand caused the largest problem. So the current “AMD beat H100” message is overstated if read as a robustness claim.
-
-### 5.4 The more precise lesson
-
-The correct insight is:
-
-- **MI300X looks like a very good energy-saving target when the run remains stable**
-- **but the AMD subfleet is also the main source of fragility in this overnight workload**
-
-That is a valuable design lesson for Joulie:
-
-- family-specific energy benefit and family-specific queue risk need to be modeled together.
+- C achieves 100% completion; A and B each have 1 failed seed from gang deadlock.
 
 ---
 
-## 6. Why `B_s2` and `C_s3` Took So Much Longer
+## 8. Interpretation
 
-The short answer is: they did not merely slow down; they stalled into a heterogeneous vendor bottleneck.
+### Why does Joulie not reduce energy on this GPU cluster?
 
-### 6.1 Evidence from the snapshots
+The near-zero or negative energy benefit (B: +1.8%, C: −1.3%) reveals a fundamental mismatch between Joulie's current uniform-cap policy and the GPU-dominated energy profile:
 
-At timeout:
+1. **GPU idle power dominates**: H100 NVL idle draw (~80 W/GPU × 96 GPUs = 7680 W base floor) is the largest continuous energy contributor. Any extension of job duration accumulates proportionally more idle GPU energy.
 
-- `B_s2`: `235 Pending`, `74 Running`
-- `C_s3`: `55 Pending`, `35 Running`
+2. **CPU cap slows GPU jobs (cpuFeedFactor)**: Joulie's eco policy applies CPU frequency throttling to all nodes in eco profile - including GPU nodes. The throttled CPU cannot feed the GPU fast enough (`cpuFeedFactor` mechanism), which reduces GPU effective speed and extends job duration → more GPU idle energy accumulates, potentially exceeding the CPU cap savings.
 
-Pending request composition:
+3. **Wrong control axis**: On GPU nodes, the power-efficient lever is GPU cap, not CPU cap. The current policy does not distinguish between node types when applying eco profiles.
 
-- `B_s2`: mostly AMD `1-GPU`, `2-GPU`, and `4-GPU` requests
-- `C_s3`: mostly AMD `2-GPU`, `4-GPU`, and especially `8-GPU` requests
+4. **Policy scope mismatch**: With 33 of 41 nodes being GPU nodes, even a small extension to GPU job duration across all eco nodes outweighs the CPU power savings.
 
-The pending pods all reported scheduler messages of the form:
+### Why does C outperform B despite both applying similar caps?
 
-- `Insufficient amd.com/gpu`
-- plus `34 node(s) didn't match Pod's node affinity/selector`
+Queue-aware (C) reduces the eco-node count dynamically during GPU-heavy load phases, keeping more nodes at full-frequency performance mode. This limits the duration extension from CPU throttling and reduces idle GPU energy accumulation vs the static 23-node eco block of B.
 
-This means the cluster was not globally full. It means the **AMD-addressable subset** was full while the non-AMD subset was irrelevant to those jobs.
+### Key finding
 
-### 6.2 Why those two specific seeds were vulnerable
-
-Observed AMD request mix in the targeted traces:
-
-- seed 2 had more AMD `4-GPU` requests than the other seeds
-- seed 3 had a particularly large count of AMD `8-GPU` requests (`15` such jobs)
-
-That matters because only the `2` MI300X nodes can host `8` AMD GPUs in one pod. The W7900 nodes top out at `4` GPUs each.
-
-So seed 3, in particular, created a very narrow AMD bottleneck:
-
-- many jobs were portable only within the AMD subfleet,
-- and the `8-GPU` AMD jobs were portable only within the MI300X subset.
-
-### 6.3 Why baseline A survived the same seeds
-
-Baseline `A` on seeds 2 and 3 did complete.
-
-That implies the issue is not pure feasibility. The AMD jobs are schedulable in principle.
-
-The likely mechanism is:
-
-- under Joulie baselines, progress on the constrained AMD subfleet became too slow,
-- queues built up behind AMD-only demand,
-- once that vendor-specific queue formed, the run stopped draining in a reasonable time.
-
-One subtle but important detail:
-
-- in `B_s2`, the static partition had already left all AMD GPU nodes in the `performance` profile,
-- so this particular failure was **not** caused by AMD perf-capacity being partitioned away,
-- it was caused by the AMD slice saturating and then failing to drain cleanly.
-
-That makes `B_s2` more concerning, not less: even without explicit AMD eco demotion, the current system could still fall into a pathological long tail once the AMD queue became dominant.
-
-### 6.4 There is likely still a simulator robustness issue here
-
-Another important clue is the simulator logs:
-
-- both failed runs stopped emitting completion logs far earlier than the benchmark timeout
-- yet the benchmark loop kept reporting active pods for hours afterward
-
-So the two long runs are probably a combination of:
-
-- real AMD-subfleet queueing pressure,
-- and a remaining simulator-progress / long-tail robustness issue once the queue reaches a certain structure.
-
-That is an actionable lesson for future work: the experiment exposed a real system stress point that still needs product-side attention.
+**Joulie's current uniform power-profile policy is not suitable for GPU-dominated clusters** when CPU caps are applied indiscriminately to GPU nodes. The architecture needs to evolve toward workload-type-aware control: apply CPU caps only on CPU-only nodes, and GPU caps selectively on GPU nodes - and only when the GPU job duration extension is less than the energy saved by the cap.
 
 ---
 
-## 7. Is Heterogeneity a Limitation for Joulie?
+## 9. Best-Fit Use Case
 
-In the current design and benchmark, **yes, clearly**.
+From this experiment:
 
-### 7.1 Evidence from the overnight run
-
-The failed runs did not exhaust the whole cluster. They exhausted the relevant heterogeneous slice:
-
-- AMD-only jobs were waiting,
-- many NVIDIA nodes were irrelevant to them,
-- the scheduler explicitly reported that most nodes did not match the pod’s selector/affinity.
-
-So the problem is not “Joulie on a large cluster.”
-
-It is more specific:
-
-- **Joulie on a heterogeneous cluster with vendor-specific demand islands and family-specific capacity asymmetry.**
-
-### 7.2 Why a homogeneous cluster would likely behave better
-
-Under a homogeneous cluster, or at least a single-vendor GPU fleet, several failure mechanisms become weaker:
-
-- less resource stranding from vendor-specific selectors,
-- easier absorption of burst demand across the whole fleet,
-- less chance that one scarce hardware family becomes the sole bottleneck,
-- simpler policy partitioning because “eco vs performance” is not also entangled with family scarcity.
-
-So under similar workloads but homogeneous nodes, I would expect Joulie to perform better and more robustly than it does here.
-
-That is not because homogeneity is easier in the abstract; it is because this experiment revealed a very specific interaction:
-
-- family/vendor fragmentation + throttling + bursty demand on a scarce subfleet.
-
-### 7.3 The more interesting lesson
-
-The deeper lesson is not “heterogeneity is bad.” It is:
-
-- **Joulie needs heterogeneity-aware admission and partitioning, not just cluster-wide power-profile assignment.**
-
-For this benchmark, the right control object is not only:
-
-- “how many performance nodes do we keep?”
-
-It is also:
-
-- “how many performance nodes do we keep per scarce family?”
-- “what is the queue depth per vendor/family?”
-- “are we creating a bottleneck on a family that has no substitute elsewhere in the fleet?”
+- Joulie provides only a **marginal energy saving (−1.3%)** under queue-aware policy on heterogeneous GPU clusters with the current uniform-cap design.
+- `static_partition` increases energy (+1.8%) due to CPU throttling extending GPU jobs.
+- The strongest use case for Joulie on heterogeneous clusters requires **workload-type-aware cap assignment and GPU-node-aware policy** (future work).
 
 ---
 
-## 8. Recommendations and Future Work
+## 10. Reproducibility
 
-### 8.1 Report benchmark results in two layers
-
-For future reports, separate:
-
-- **efficiency on successful runs**, and
-- **robustness / timeout rate**
-
-This run shows why. `B` can look both excellent and terrible depending on whether the failure cases are folded into the same number.
-
-### 8.2 Make the policy family-aware under heterogeneity
-
-The overnight run strongly argues for adding policy logic that reasons about:
-
-- vendor/family-specific queue depth,
-- large-request jobs (`4`/`8` GPU requests),
-- scarce-family bottlenecks,
-- temporary promotion of bottleneck families back to performance.
-
-The current policies are not yet sufficiently heterogeneity-aware.
-
-### 8.3 Investigate the remaining simulator stall mode
-
-The timeout runs look worse than ordinary queueing:
-
-- simulator completion logging appears to stop long before benchmark timeout,
-- while active pods remain.
-
-This deserves direct debugging before using similar runs as publication-grade evidence.
-
-### 8.4 Improve hardware realism
-
-Priority items:
-
-- replace placeholder CPU catalog values with more realistic per-model data,
-- simulate per-node CPU package cap ranges / RAPL-like capabilities,
-- calibrate GPU family slowdown-under-cap instead of using nearly uniform cap-response coefficients,
-- consider family-specific DVFS/cap sensitivity instead of only family-specific max power.
-
-### 8.5 Improve workload realism carefully
-
-The workload stream is reasonable, but still simplified. Future benchmark revisions should add, in order:
-
-1. limited multi-pod distributed jobs,
-2. explicit host-memory pressure effects for CPU preprocess jobs,
-3. less rigid node-instance targeting when realism matters more than repeatability,
-4. better documentation of why `jobs: 2500` emits about `2160-2170` runnable jobs.
-
-### 8.6 Practical product lesson for Joulie
-
-The strongest positive lesson from this experiment is:
-
-- when the workload/family match is favorable, Joulie can improve both energy and throughput.
-
-The strongest negative lesson is:
-
-- Joulie currently has no safety mechanism that says “this scarce heterogeneous slice is becoming the dominant bottleneck; stop forcing the current profile split.”
-
-That is a concrete roadmap item.
-
----
-
-## 9. Final Takeaway
-
-This overnight experiment is valuable because it exposed **both** Joulie’s upside and its current limitation.
-
-### What worked
-
-- the benchmark pipeline itself ran end to end,
-- the larger trace and artifact collection held up,
-- baseline `B` showed clearly better efficiency than `A` on the successful subset,
-- `debug_eval` and short single-GPU jobs look like good targets for throttling.
-
-### What did not work
-
-- the run was not robust across all seeds,
-- one `B` run and one `C` run collapsed into AMD-specific queue backlogs,
-- the current simulator/harness still appears to have a long-tail stall mode under that stress,
-- family-level “AMD is better than H100” conclusions are currently affected by survivor bias.
-
-### Overall conclusion
-
-The experiment does **not** support a simple headline like “Joulie beats no-Joulie on heterogeneous clusters.”
-
-It supports a more useful and more honest conclusion:
-
-- **Joulie already has a real efficiency win in favorable heterogeneous conditions,**
-- **but it still needs heterogeneity-aware bottleneck management and better simulator robustness before that win is reliable.**
+- Config: [`configs/benchmark-overnight.yaml`](./configs/benchmark-overnight.yaml)
+- Sweep script: [`scripts/05_sweep.py`](./scripts/05_sweep.py)
+- Collection: [`scripts/06_collect.py`](./scripts/06_collect.py)
+- Plotting: [`scripts/07_plot.py`](./scripts/07_plot.py)
+- Run artifacts: [`runs/latest/`](./runs/latest/)
+- Archived results (with gang jobs): [`../../tmp/benchmark-results-with-gang-jobs/exp02-heterogeneous/`](../../tmp/benchmark-results-with-gang-jobs/exp02-heterogeneous/)

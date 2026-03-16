@@ -10,8 +10,8 @@ from collections import deque
 
 import yaml
 
-DEFAULT_CONFIG = pathlib.Path("experiments/01-kwok-benchmark/configs/benchmark.yaml")
-RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", "experiments/01-kwok-benchmark/results"))
+DEFAULT_CONFIG = pathlib.Path("experiments/01-cpu-only-benchmark/configs/benchmark.yaml")
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", "experiments/01-cpu-only-benchmark/results"))
 START_TS = time.time()
 
 
@@ -536,8 +536,8 @@ def main():
     )
 
     install_env_base = os.environ.copy()
-    inventory_source = str(get_cfg(cfg, "inventory", "source", default="experiments/01-kwok-benchmark/configs/cluster-nodes.yaml"))
-    run(["bash", "experiments/01-kwok-benchmark/scripts/00_generate_assets.sh", inventory_source], check=True)
+    inventory_source = str(get_cfg(cfg, "inventory", "source", default="experiments/01-cpu-only-benchmark/configs/cluster-nodes.yaml"))
+    run(["bash", "experiments/01-cpu-only-benchmark/scripts/00_generate_assets.sh", inventory_source], check=True)
 
     # Image and manifest config
     install_env_base["JOULIE_REGISTRY"] = str(get_cfg(cfg, "images", "joulie_registry", default="registry.cern.ch/mbunino/joulie"))
@@ -568,10 +568,10 @@ def main():
     install_env_base["SIM_BASE_SPEED_PER_CORE"] = str(get_cfg(cfg, "simulator", "base_speed_per_core", default=1.0))
     # GENERATED_CLASSES/CATALOG: prefer env vars already set by 30_run_overnight.sh, fall back to generated/ dir
     install_env_base["GENERATED_CLASSES"] = os.environ.get(
-        "GENERATED_CLASSES", "experiments/01-kwok-benchmark/generated/10-node-classes.yaml"
+        "GENERATED_CLASSES", "experiments/01-cpu-only-benchmark/generated/10-node-classes.yaml"
     )
     install_env_base["GENERATED_CATALOG"] = os.environ.get(
-        "GENERATED_CATALOG", "experiments/01-kwok-benchmark/generated/hardware.generated.yaml"
+        "GENERATED_CATALOG", "experiments/01-cpu-only-benchmark/generated/hardware.generated.yaml"
     )
 
     log(
@@ -610,7 +610,7 @@ def main():
         run_with_env(
             [
                 "bash",
-                "experiments/01-kwok-benchmark/scripts/03_install_components.sh",
+                "experiments/01-cpu-only-benchmark/scripts/03_install_components.sh",
                 baseline,
             ],
             env=install_env,
@@ -652,7 +652,7 @@ def main():
             run(
                 [
                     "python3",
-                    "experiments/01-kwok-benchmark/scripts/04_run_one.py",
+                    "experiments/01-cpu-only-benchmark/scripts/04_run_one.py",
                     "--baseline",
                     baseline,
                     "--seed",

@@ -75,7 +75,7 @@ With [kind](https://kind.sigs.k8s.io/) + [KWOK](https://kwok.sigs.k8s.io/) you c
 
 This is the model used in the benchmark experiment:
 
-- [KWOK Benchmark Experiment]({{< relref "/docs/experiments/kwok-benchmark.md" >}})
+- [CPU-Only Benchmark]({{< relref "/docs/experiments/cpu-only-benchmark.md" >}})
 
 Typical flow:
 
@@ -86,15 +86,15 @@ Typical flow:
 
 Practical scripts are in:
 
-- `experiments/01-kwok-benchmark/scripts/10_setup_cluster.sh`
-- `experiments/01-kwok-benchmark/scripts/20_run_benchmark.sh`
+- `experiments/01-cpu-only-benchmark/scripts/10_setup_cluster.sh`
+- `experiments/01-cpu-only-benchmark/scripts/20_run_benchmark.sh`
 
 Example run:
 
 ```bash
-source experiments/01-kwok-benchmark/.venv/bin/activate
-experiments/01-kwok-benchmark/scripts/10_setup_cluster.sh
-experiments/01-kwok-benchmark/scripts/20_run_benchmark.sh
+source experiments/01-cpu-only-benchmark/.venv/bin/activate
+experiments/01-cpu-only-benchmark/scripts/10_setup_cluster.sh
+experiments/01-cpu-only-benchmark/scripts/20_run_benchmark.sh
 ```
 
 ## Integration with Joulie

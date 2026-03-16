@@ -8,7 +8,7 @@ import re
 
 import pandas as pd
 
-ROOT = pathlib.Path("experiments/01-kwok-benchmark")
+ROOT = pathlib.Path("experiments/01-cpu-only-benchmark")
 RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "results"))).resolve()
 RUN_ID_RE = re.compile(r"_b([ABC])_s(\d+)$")
 

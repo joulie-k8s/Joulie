@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-EXP_ROOT="$ROOT/experiments/01-kwok-benchmark"
+EXP_ROOT="$ROOT/experiments/01-cpu-only-benchmark"
 EXAMPLE_DIR="$ROOT/examples/07 - simulator-gpu-powercaps"
 BASELINE=${1:-B}
 JOULIE_REGISTRY=${JOULIE_REGISTRY:-registry.cern.ch/mbunino/joulie}

@@ -3,11 +3,11 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "$ROOT"
-KUBECONFIG="$ROOT/experiments/01-kwok-benchmark/kubeconfig.yaml"
+KUBECONFIG="$ROOT/experiments/01-cpu-only-benchmark/kubeconfig.yaml"
 export KUBECONFIG
-CFG=${1:-experiments/01-kwok-benchmark/configs/benchmark.yaml}
+CFG=${1:-experiments/01-cpu-only-benchmark/configs/benchmark.yaml}
 START_EPOCH=$(date +%s)
-RUNS_ROOT=${RUNS_ROOT:-experiments/01-kwok-benchmark/runs}
+RUNS_ROOT=${RUNS_ROOT:-experiments/01-cpu-only-benchmark/runs}
 
 log() {
   local now elapsed
@@ -85,8 +85,8 @@ if [[ "${CLEAN_RESULTS:-false}" == "true" ]]; then
   rm -f "$RESULTS_DIR"/summary.csv
   rm -f "$RESULTS_DIR"/baseline_summary.csv
 fi
-run_step "prerequisites check" bash experiments/01-kwok-benchmark/scripts/00_prereqs_check.sh
-run_step "benchmark sweep" python3 experiments/01-kwok-benchmark/scripts/05_sweep.py --config "$CFG"
-run_step "result collection" python3 experiments/01-kwok-benchmark/scripts/06_collect.py
-run_step "plot generation" python3 experiments/01-kwok-benchmark/scripts/07_plot.py
+run_step "prerequisites check" bash experiments/01-cpu-only-benchmark/scripts/00_prereqs_check.sh
+run_step "benchmark sweep" python3 experiments/01-cpu-only-benchmark/scripts/05_sweep.py --config "$CFG"
+run_step "result collection" python3 experiments/01-cpu-only-benchmark/scripts/06_collect.py
+run_step "plot generation" python3 experiments/01-cpu-only-benchmark/scripts/07_plot.py
 log "cpu-only benchmark run+collect+plot completed (config=$CFG total_elapsed=$(( $(date +%s) - START_EPOCH ))s)"

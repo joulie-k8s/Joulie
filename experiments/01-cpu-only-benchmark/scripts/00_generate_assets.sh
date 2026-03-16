@@ -2,10 +2,10 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-INPUT=${1:-"$ROOT/experiments/01-kwok-benchmark/configs/cluster-nodes.yaml"}
+INPUT=${1:-"$ROOT/experiments/01-cpu-only-benchmark/configs/cluster-nodes.yaml"}
 SHEET=${SHEET:-}
 
-GENERATED_DIR="$ROOT/experiments/01-kwok-benchmark/generated"
+GENERATED_DIR="$ROOT/experiments/01-cpu-only-benchmark/generated"
 mkdir -p "$GENERATED_DIR"
 
 python3 "$ROOT/scripts/generate_heterogeneous_assets.py" \
