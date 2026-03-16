@@ -19,6 +19,11 @@ workload:
   emit_workload_records: true
   work_scale: 1.0
   baseline_a_strip_affinity: true
+  allowed_workload_types:
+    - debug_eval
+    - single_gpu_training
+    - cpu_preprocess
+    - cpu_analytics
 
 simulator:
   base_speed_per_core: 100.0

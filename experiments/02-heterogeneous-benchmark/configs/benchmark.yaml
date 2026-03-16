@@ -18,6 +18,11 @@ workload:
   burst_multiplier: 2.0
   emit_workload_records: true
   baseline_a_strip_affinity: true
+  allowed_workload_types:
+    - debug_eval
+    - single_gpu_training
+    - cpu_preprocess
+    - cpu_analytics
 
 simulator:
   base_speed_per_core: 8.0
