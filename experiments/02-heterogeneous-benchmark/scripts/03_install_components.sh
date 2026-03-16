@@ -20,8 +20,11 @@ SIMULATOR_MANIFEST=${SIMULATOR_MANIFEST:-$EXAMPLE_DIR/manifests/20-simulator.yam
 SIM_BASE_SPEED_PER_CORE=${SIM_BASE_SPEED_PER_CORE:-}
 PERFORMANCE_CAP_WATTS=${PERFORMANCE_CAP_WATTS:-500}
 ECO_CAP_WATTS=${ECO_CAP_WATTS:-140}
+CPU_PERFORMANCE_CAP_PCT_OF_MAX=${CPU_PERFORMANCE_CAP_PCT_OF_MAX:-100}
+CPU_ECO_CAP_PCT_OF_MAX=${CPU_ECO_CAP_PCT_OF_MAX:-60}
 GPU_PERFORMANCE_CAP_PCT_OF_MAX=${GPU_PERFORMANCE_CAP_PCT_OF_MAX:-100}
 GPU_ECO_CAP_PCT_OF_MAX=${GPU_ECO_CAP_PCT_OF_MAX:-60}
+CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS:-false}
 GPU_WRITE_ABSOLUTE_CAPS=${GPU_WRITE_ABSOLUTE_CAPS:-true}
 OPERATOR_RECONCILE_INTERVAL=${OPERATOR_RECONCILE_INTERVAL:-20s}
 AGENT_RECONCILE_INTERVAL=${AGENT_RECONCILE_INTERVAL:-10s}
@@ -63,6 +66,11 @@ data:
 YAML
 
 kubectl apply -f "$SIMULATOR_MANIFEST"
+# Pin the simulator to the real infra worker so it never lands on a KWOK fake node.
+# If a KWOK node receives the simulator pod, the kwok pod-complete stage immediately
+# marks it as Succeeded, which makes the Deployment rollout never converge.
+kubectl -n joulie-sim-demo patch deploy/joulie-telemetry-sim --type='merge' \
+  -p='{"spec":{"template":{"spec":{"nodeSelector":{"joulie.io/infra":"true"}}}}}'
 kubectl -n joulie-sim-demo patch deploy/joulie-telemetry-sim --type='json' -p='[
   {"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}
 ]'
@@ -82,7 +90,7 @@ if [[ "$HAS_HW_CATALOG" == "0" ]]; then
     {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"hardware-catalog","configMap":{"name":"joulie-simulator-hardware-catalog"}}}
   ]'
 fi
-kubectl -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim
+kubectl -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim --timeout=600s
 SIM_ACTUAL_IMAGE=$(actual_image_from_workload "joulie-sim-demo" "deploy/joulie-telemetry-sim")
 
 echo "simulator deployment image in use: ${SIM_ACTUAL_IMAGE}"
@@ -115,6 +123,9 @@ helm upgrade --install joulie "$ROOT/charts/joulie" -n joulie-system --create-na
   --set "operator.env.QUEUE_PERF_PER_HP_NODE=${QUEUE_PERF_PER_HP_NODE}" \
   --set "operator.env.PERFORMANCE_CAP_WATTS=${PERFORMANCE_CAP_WATTS}" \
   --set "operator.env.ECO_CAP_WATTS=${ECO_CAP_WATTS}" \
+  --set "operator.env.CPU_PERFORMANCE_CAP_PCT_OF_MAX=${CPU_PERFORMANCE_CAP_PCT_OF_MAX}" \
+  --set "operator.env.CPU_ECO_CAP_PCT_OF_MAX=${CPU_ECO_CAP_PCT_OF_MAX}" \
+  --set "operator.env.CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS}" \
   --set "operator.env.GPU_PERFORMANCE_CAP_PCT_OF_MAX=${GPU_PERFORMANCE_CAP_PCT_OF_MAX}" \
   --set "operator.env.GPU_ECO_CAP_PCT_OF_MAX=${GPU_ECO_CAP_PCT_OF_MAX}" \
   --set "operator.env.GPU_WRITE_ABSOLUTE_CAPS=${GPU_WRITE_ABSOLUTE_CAPS}"

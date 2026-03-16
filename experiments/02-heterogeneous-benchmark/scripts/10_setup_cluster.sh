@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "$ROOT"
+KUBECONFIG="$ROOT/experiments/02-heterogeneous-benchmark/kubeconfig.yaml"
+export KUBECONFIG
 CFG=${1:-experiments/02-heterogeneous-benchmark/configs/benchmark.yaml}
 INVENTORY=${2:-experiments/02-heterogeneous-benchmark/configs/cluster-nodes.yaml}
 

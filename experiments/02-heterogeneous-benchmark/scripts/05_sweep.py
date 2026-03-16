@@ -11,11 +11,14 @@ from collections import deque
 import yaml
 
 DEFAULT_CONFIG = pathlib.Path("experiments/02-heterogeneous-benchmark/configs/benchmark.yaml")
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", "experiments/02-heterogeneous-benchmark/results"))
+START_TS = time.time()
 
 
 def log(msg: str):
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    print(f"[sweep {now}] {msg}", flush=True)
+    elapsed = time.time() - START_TS
+    print(f"[sweep {now} +{elapsed:8.1f}s] {msg}", flush=True)
 
 
 def run(cmd, check=True, capture=False):
@@ -80,7 +83,7 @@ def generate_canonical_seed_trace(
     work_scale: float,
     allowed_workload_types: list[str] | None,
 ) -> pathlib.Path:
-    traces_dir = pathlib.Path("experiments/02-heterogeneous-benchmark/results/traces")
+    traces_dir = RESULTS / "traces"
     traces_dir.mkdir(parents=True, exist_ok=True)
     ratio_id = f"perf_{str(perf_ratio).replace('.', '_')}_eco_{str(eco_ratio).replace('.', '_')}"
     workload_id = (
@@ -275,8 +278,6 @@ def strip_power_profile_affinity(affinity: dict | None) -> dict | None:
 def retarget_trace_for_cluster(trace_path: pathlib.Path) -> pathlib.Path:
     nodes = load_kwok_nodes()
     gpu_nodes = [n for n in nodes if not n["cpu_only"]]
-    nvidia_nodes = build_family_first_pool([n for n in gpu_nodes if n["vendor"] == "nvidia"], "gpu_product")
-    amd_nodes = build_family_first_pool([n for n in gpu_nodes if n["vendor"] == "amd"], "gpu_product")
     cpu_nodes = build_family_first_pool([n for n in nodes if n["cpu_only"]], "cpu_model")
     if not gpu_nodes or not cpu_nodes:
         raise SystemExit("expected both GPU and CPU-only KWOK nodes to exist before generating the benchmark trace")
@@ -285,10 +286,17 @@ def retarget_trace_for_cluster(trace_path: pathlib.Path) -> pathlib.Path:
     if out_path.exists():
         return out_path
 
+    # Build GPU pools used only to choose a vendor/resource class proportionally to the actual
+    # fleet composition. Kubernetes still does the real node-level placement.
+    #
+    # We intentionally do not add node-name affinity here. The benchmark should exercise the
+    # scheduler against the allocatable extended GPU resources already advertised by the KWOK
+    # nodes, not a pre-computed node assignment from the harness.
+    all_gpu_pool = build_family_first_pool(gpu_nodes, "gpu_product")
+
     total_job_count = 0
     gpu_job_count = 0
     cpu_job_count = 0
-    gpu_vendor_toggle = deque(["nvidia", "amd"]) if amd_nodes else deque(["nvidia"])
     lines = []
     for raw in trace_path.read_text().splitlines():
         raw = raw.strip()
@@ -318,33 +326,24 @@ def retarget_trace_for_cluster(trace_path: pathlib.Path) -> pathlib.Path:
                 break
 
         affinity = pod_tpl.get("affinity")
+        # Keep only broad pool compatibility constraints so Kubernetes does the actual placement.
+        # The generated trace already carries perf/eco intent via power-profile affinity; we add
+        # only the minimum pool compatibility needed for realistic scheduling on this synthetic
+        # fleet (CPU-only jobs on CPU-only nodes; GPU jobs on a chosen GPU vendor resource).
         if gpu_key is None:
             cpu_job_count += 1
-            target = rotate_pick(cpu_nodes)
             pod_tpl["affinity"] = add_required_expr(
                 affinity,
-                {"key": "joulie.io/node-name", "operator": "In", "values": [target["name"]]},
+                {"key": "joulie.io/hw.kind", "operator": "In", "values": ["cpu-only"]},
             )
         else:
             gpu_job_count += 1
-            vendor = gpu_vendor_toggle[0]
-            gpu_vendor_toggle.rotate(-1)
-            if vendor == "amd" and amd_nodes:
-                target = rotate_pick(amd_nodes)
-                req.pop(gpu_key, None)
+            target = rotate_pick(all_gpu_pool)
+            req.pop(gpu_key, None)
+            if target["vendor"] == "amd":
                 req["amd.com/gpu"] = gpu_qty
             else:
-                target = rotate_pick(nvidia_nodes)
-                req.pop(gpu_key, None)
                 req["nvidia.com/gpu"] = gpu_qty
-            affinity = add_required_expr(
-                affinity,
-                {"key": "joulie.io/node-name", "operator": "In", "values": [target["name"]]},
-            )
-            affinity = add_required_expr(
-                affinity,
-                {"key": "joulie.io/gpu.product", "operator": "In", "values": [target["gpu_product"]]},
-            )
             pod_tpl["affinity"] = affinity
 
         lines.append(json.dumps(rec, separators=(",", ":")))
@@ -616,6 +615,13 @@ def main():
     install_env_base["QUEUE_PERF_PER_HP_NODE"] = str(get_cfg(cfg, "policy", "queue_aware", "perf_per_hp_node", default=10))
     install_env_base["PERFORMANCE_CAP_WATTS"] = str(get_cfg(cfg, "policy", "caps", "performance_watts", default=500))
     install_env_base["ECO_CAP_WATTS"] = str(get_cfg(cfg, "policy", "caps", "eco_watts", default=140))
+    install_env_base["CPU_PERFORMANCE_CAP_PCT_OF_MAX"] = str(
+        get_cfg(cfg, "policy", "caps", "cpu_performance_pct_of_max", default=100)
+    )
+    install_env_base["CPU_ECO_CAP_PCT_OF_MAX"] = str(
+        get_cfg(cfg, "policy", "caps", "cpu_eco_pct_of_max", default=60)
+    )
+    install_env_base["CPU_WRITE_ABSOLUTE_CAPS"] = str(get_cfg(cfg, "policy", "cpu_write_absolute_caps", default=True)).lower()
     install_env_base["GPU_PERFORMANCE_CAP_PCT_OF_MAX"] = str(get_cfg(cfg, "policy", "caps", "gpu_performance_pct_of_max", default=100))
     install_env_base["GPU_ECO_CAP_PCT_OF_MAX"] = str(get_cfg(cfg, "policy", "caps", "gpu_eco_pct_of_max", default=60))
     install_env_base["GPU_WRITE_ABSOLUTE_CAPS"] = str(get_cfg(cfg, "policy", "gpu_write_absolute_caps", default=True)).lower()
@@ -631,7 +637,12 @@ def main():
     )
     log(
         "configured policy "
-        f"caps(perf={install_env_base['PERFORMANCE_CAP_WATTS']}W eco={install_env_base['ECO_CAP_WATTS']}W) "
+        f"caps(cpu_perf={install_env_base['CPU_PERFORMANCE_CAP_PCT_OF_MAX']}% "
+        f"cpu_eco={install_env_base['CPU_ECO_CAP_PCT_OF_MAX']}% "
+        f"gpu_perf={install_env_base['GPU_PERFORMANCE_CAP_PCT_OF_MAX']}% "
+        f"gpu_eco={install_env_base['GPU_ECO_CAP_PCT_OF_MAX']}% "
+        f"cpu_abs={install_env_base['CPU_WRITE_ABSOLUTE_CAPS']} "
+        f"gpu_abs={install_env_base['GPU_WRITE_ABSOLUTE_CAPS']}) "
         f"static.hp_frac={install_env_base['STATIC_HP_FRAC']} "
         f"queue(base={install_env_base['QUEUE_HP_BASE_FRAC']} min={install_env_base['QUEUE_HP_MIN']} "
         f"max={install_env_base['QUEUE_HP_MAX']} perf_per_hp={install_env_base['QUEUE_PERF_PER_HP_NODE']}) "

@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 import pathlib
+import tempfile
 import subprocess
 import sys
 import time
@@ -11,6 +12,8 @@ from urllib.request import urlopen
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RESULTS = ROOT / "results"
+TRACE_CONFIGMAP_PREFIX = "joulie-simulator-workload-trace"
+TRACE_PART_SIZE_BYTES = 900_000
 
 
 def log(msg: str):
@@ -20,7 +23,7 @@ def log(msg: str):
 
 def run(cmd, check=True, capture=False, input_text=None):
     if capture:
-        return subprocess.run(cmd, check=check, text=True, capture_output=True)
+        return subprocess.run(cmd, check=check, text=True, capture_output=True, input=input_text)
     return subprocess.run(cmd, check=check, text=True, input=input_text)
 
 
@@ -66,22 +69,157 @@ def reset_workload_pods():
     )
 
 
+def split_trace_parts(trace_path: pathlib.Path) -> list[bytes]:
+    parts: list[bytes] = []
+    current = bytearray()
+    with trace_path.open("rb") as f:
+        for raw_line in f:
+            if not raw_line:
+                continue
+            if len(raw_line) > TRACE_PART_SIZE_BYTES:
+                raise RuntimeError(f"trace line too large for chunking: {len(raw_line)} bytes")
+            if current and len(current) + len(raw_line) > TRACE_PART_SIZE_BYTES:
+                parts.append(bytes(current))
+                current = bytearray()
+            current.extend(raw_line)
+    if current:
+        parts.append(bytes(current))
+    if not parts:
+        parts.append(b"")
+    return parts
+
+
+def delete_old_trace_configmaps():
+    out = run(
+        ["kubectl", "-n", "joulie-sim-demo", "get", "configmap", "-o", "name"],
+        capture=True,
+        check=False,
+    )
+    names = []
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("configmap/"):
+            continue
+        name = line.split("/", 1)[1]
+        if name == TRACE_CONFIGMAP_PREFIX or name.startswith(f"{TRACE_CONFIGMAP_PREFIX}-"):
+            names.append(name)
+    if names:
+        run(
+            ["kubectl", "-n", "joulie-sim-demo", "delete", "configmap", *names, "--ignore-not-found=true"],
+            check=False,
+        )
+
+
+def apply_trace_chunks(trace_path: pathlib.Path) -> list[str]:
+    parts = split_trace_parts(trace_path)
+    delete_old_trace_configmaps()
+    chunk_names: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="joulie-trace-parts-") as tmpdir:
+        tmpdir_path = pathlib.Path(tmpdir)
+        for idx, payload in enumerate(parts):
+            key = f"part-{idx:03d}.jsonl"
+            name = f"{TRACE_CONFIGMAP_PREFIX}-{idx:03d}"
+            part_path = tmpdir_path / key
+            part_path.write_bytes(payload)
+            rendered = run(
+                [
+                    "kubectl",
+                    "-n",
+                    "joulie-sim-demo",
+                    "create",
+                    "configmap",
+                    name,
+                    f"--from-file={key}={part_path}",
+                    "--dry-run=client",
+                    "-o",
+                    "yaml",
+                ],
+                capture=True,
+            ).stdout
+            replace = run(["kubectl", "replace", "-f", "-"], check=False, capture=True, input_text=rendered)
+            if replace.returncode != 0:
+                run(["kubectl", "create", "-f", "-"], input_text=rendered)
+            chunk_names.append(name)
+    log(f"trace split into configmap parts count={len(chunk_names)}")
+    return chunk_names
+
+
+def patch_simulator_trace_projected_volume(chunk_names: list[str]):
+    sources = []
+    for idx, name in enumerate(chunk_names):
+        key = f"part-{idx:03d}.jsonl"
+        sources.append(
+            {
+                "configMap": {
+                    "name": name,
+                    "items": [{"key": key, "path": key}],
+                }
+            }
+        )
+    deploy = json.loads(
+        run(
+            [
+                "kubectl",
+                "-n",
+                "joulie-sim-demo",
+                "get",
+                "deployment",
+                "joulie-telemetry-sim",
+                "-o",
+                "json",
+            ],
+            capture=True,
+        ).stdout
+    )
+    deploy.pop("status", None)
+    metadata = deploy.get("metadata", {})
+    for key in (
+        "annotations",
+        "creationTimestamp",
+        "generation",
+        "managedFields",
+        "resourceVersion",
+        "uid",
+    ):
+        metadata.pop(key, None)
+    spec = deploy.setdefault("spec", {}).setdefault("template", {}).setdefault("spec", {})
+    volumes = spec.setdefault("volumes", [])
+    replaced = False
+    for volume in volumes:
+        if volume.get("name") == "workload-trace":
+            volume.clear()
+            volume.update({"name": "workload-trace", "projected": {"sources": sources}})
+            replaced = True
+            break
+    if not replaced:
+        volumes.append({"name": "workload-trace", "projected": {"sources": sources}})
+
+    containers = spec.get("containers", [])
+    simulator = next((c for c in containers if c.get("name") == "simulator"), None)
+    if simulator is None:
+        raise RuntimeError("simulator container not found in deployment")
+    env = simulator.setdefault("env", [])
+    env_entry = next((e for e in env if e.get("name") == "SIM_WORKLOAD_TRACE_PATH"), None)
+    if env_entry is None:
+        env.append({"name": "SIM_WORKLOAD_TRACE_PATH", "value": "/etc/joulie-sim-trace"})
+    else:
+        env_entry["value"] = "/etc/joulie-sim-trace"
+    mounts = simulator.setdefault("volumeMounts", [])
+    mount_entry = next((m for m in mounts if m.get("name") == "workload-trace" or m.get("mountPath") == "/etc/joulie-sim-trace"), None)
+    if mount_entry is None:
+        mounts.append({"name": "workload-trace", "mountPath": "/etc/joulie-sim-trace", "readOnly": True})
+    else:
+        mount_entry["name"] = "workload-trace"
+        mount_entry["mountPath"] = "/etc/joulie-sim-trace"
+        mount_entry["readOnly"] = True
+
+    run(["kubectl", "apply", "-f", "-"], input_text=json.dumps(deploy))
+
+
 def apply_trace_configmap(trace_path: pathlib.Path):
-    log("applying simulator workload trace configmap")
-    content = trace_path.read_text()
-    manifest = """
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: joulie-simulator-workload-trace
-  namespace: joulie-sim-demo
-data:
-  trace.jsonl: |
-"""
-    for line in content.splitlines():
-        if line.strip():
-            manifest += f"    {line}\n"
-    run(["kubectl", "apply", "-f", "-"], input_text=manifest)
+    log("applying simulator workload trace parts")
+    chunk_names = apply_trace_chunks(trace_path)
+    patch_simulator_trace_projected_volume(chunk_names)
     log("restarting simulator deployment to pick up new trace")
     run(["kubectl", "-n", "joulie-sim-demo", "rollout", "restart", "deploy/joulie-telemetry-sim"])
     run(["kubectl", "-n", "joulie-sim-demo", "rollout", "status", "deploy/joulie-telemetry-sim"])
@@ -180,6 +318,10 @@ def main():
     ap.add_argument("--poll-log-sec", default=3, type=int)
     ap.add_argument("--trace-file", default="", type=str)
     ap.add_argument("--time-scale", default=60.0, type=float)
+    # Accepted for parity with newer sweep scripts; the runner does not need to
+    # read the benchmark config directly once the trace file and runtime knobs
+    # have already been materialized by the sweep.
+    ap.add_argument("--benchmark-config", default="", type=str)
     args = ap.parse_args()
 
     run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"_b{args.baseline}_s{args.seed}"

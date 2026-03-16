@@ -1,0 +1,63 @@
+run:
+  baselines: [A, B, C]
+  seeds: 3
+  jobs: 2500
+  mean_inter_arrival_sec: 0.12
+  time_scale: 60
+  timeout: 14400
+  settle_seconds: 10
+  cleanup_timeout: 600
+
+workload:
+  # Research-cluster / HEP-style overnight CPU-only mix:
+  # - most jobs are flexible preprocessing or analytics runs
+  # - a meaningful minority remains performance-sensitive
+  # - eco-only jobs are disabled (uncommon in practice)
+  # Workload parameters are intentionally matched to experiments 02 and 03
+  # (same perf_ratio, burst shape, work_scale) so results are comparable
+  # on a pure CPU cluster vs a heterogeneous or homogeneous GPU cluster.
+  perf_ratio: 0.15
+  eco_ratio: 0.00
+  gpu_ratio: 0.00
+  burst_day_probability: 0.20
+  burst_mean_jobs: 8.0
+  burst_multiplier: 2.0
+  emit_workload_records: true
+  work_scale: 0.15
+  baseline_a_strip_affinity: true
+  allowed_workload_types:
+    - cpu_preprocess
+    - cpu_analytics
+
+simulator:
+  base_speed_per_core: 18.0
+  manifest: examples/07 - simulator-gpu-powercaps/manifests/20-simulator.yaml
+
+policy:
+  cpu_write_absolute_caps: false
+  caps:
+    cpu_performance_pct_of_max: 100
+    cpu_eco_pct_of_max: 80
+  loop:
+    operator_reconcile_interval: "20s"
+    agent_reconcile_interval: "10s"
+  static:
+    hp_frac: 0.45
+  queue_aware:
+    hp_base_frac: 0.50
+    hp_min: 2
+    hp_max: 8
+    perf_per_hp_node: 18
+
+images:
+  joulie_registry: registry.cern.ch/mbunino/joulie
+  joulie_tag: dev0.0.15
+  sim_registry: registry.cern.ch/mbunino/joulie
+  sim_image: joulie-simulator
+  sim_tag: dev0.0.15
+
+inventory:
+  source: experiments/01-kwok-benchmark/configs/cluster-nodes.yaml
+
+install:
+  kind_cluster_config: experiments/01-kwok-benchmark/configs/kind-cluster.yaml

@@ -1,11 +1,13 @@
 # If you prefer the allow list template instead of the deny list, see community template:
 # https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
 #
-
+runs/
+results/
 tmp/
 tmp.*
 *.tgz
 *.tar.gz
+kubeconfig.yaml
 
 # Python bytecode
 __pycache__/

@@ -2,15 +2,17 @@
 import datetime as dt
 import json
 import math
+import os
 import pathlib
 import re
 
 import pandas as pd
 
 ROOT = pathlib.Path("experiments/02-heterogeneous-benchmark")
-RESULTS = ROOT / "results"
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "results")))
 RUN_ID_RE = re.compile(r"_b([ABC])_s(\d+)$")
 JOB_COMPLETED_RE = re.compile(r"job completed id=(?P<job>\S+) node=(?P<node>\S+) class=(?P<class>\S+) elapsed=(?P<elapsed>[0-9.]+)s")
+MIN_WORKLOAD_TYPE_JOBS = 10
 
 
 def parse_iso_utc(ts: str):
@@ -275,6 +277,21 @@ def integrate_energy_joules_from_events(events_doc: dict, time_scale: float):
     return energy_sim_j, len(events), telemetry_count
 
 
+def extract_event_counts(events_doc: dict):
+    if not isinstance(events_doc, dict):
+        return 0, 0
+    events = events_doc.get("events")
+    if not isinstance(events, list):
+        return 0, 0
+    telemetry_count = 0
+    for e in events:
+        if not isinstance(e, dict):
+            continue
+        if e.get("kind") == "telemetry":
+            telemetry_count += 1
+    return len(events), telemetry_count
+
+
 def energy_from_debug_energy(debug_energy_doc: dict, time_scale: float):
     if not isinstance(debug_energy_doc, dict):
         return None
@@ -309,13 +326,13 @@ def collect_one_run(run_dir: pathlib.Path):
         throughput_sim = jobs_total / sim_seconds if sim_seconds > 0 else None
         throughput_sim_hour = throughput_sim * 3600 if throughput_sim is not None else None
 
-    sim_event_count = 0
-    telemetry_event_count = 0
+    events_doc = load_json_file(run_dir / "sim_debug_events.json")
+    sim_event_count, telemetry_event_count = extract_event_counts(events_doc)
     energy_sim_j = energy_from_debug_energy(load_json_file(run_dir / "sim_debug_energy.json"), time_scale)
     energy_source = "debug_energy"
     if energy_sim_j is None:
         energy_sim_j, sim_event_count, telemetry_event_count = integrate_energy_joules_from_events(
-            load_json_file(run_dir / "sim_debug_events.json"), time_scale
+            events_doc, time_scale
         )
         energy_source = "debug_events" if energy_sim_j is not None else "none"
 
@@ -388,6 +405,8 @@ def main():
             merged_jobs["slowdown_pct_vs_a"] = 100.0 * (
                 merged_jobs["elapsed_seconds"] / merged_jobs["elapsed_seconds_a"] - 1.0
             )
+            merged_jobs["slowdown_pct_vs_a"] = pd.to_numeric(merged_jobs["slowdown_pct_vs_a"], errors="coerce")
+            merged_jobs.loc[~merged_jobs["slowdown_pct_vs_a"].map(math.isfinite), "slowdown_pct_vs_a"] = pd.NA
 
             wt_out = RESULTS / "workload_type_relative_to_a.csv"
             wt_df = (
@@ -421,6 +440,8 @@ def main():
                 merged_jobs["slowdown_pct_vs_a"] = 100.0 * (
                     merged_jobs["elapsed_seconds"] / merged_jobs["elapsed_seconds_a"] - 1.0
                 )
+                merged_jobs["slowdown_pct_vs_a"] = pd.to_numeric(merged_jobs["slowdown_pct_vs_a"], errors="coerce")
+                merged_jobs.loc[~merged_jobs["slowdown_pct_vs_a"].map(math.isfinite), "slowdown_pct_vs_a"] = pd.NA
                 hw_slowdown = (
                     merged_jobs.groupby(["baseline", "seed", "hardware_family"], as_index=False)
                     .agg(
@@ -464,6 +485,8 @@ def main():
                             merged_jobs["slowdown_pct_vs_a"] = 100.0 * (
                                 merged_jobs["elapsed_seconds"] / merged_jobs["elapsed_seconds_a"] - 1.0
                             )
+                            merged_jobs["slowdown_pct_vs_a"] = pd.to_numeric(merged_jobs["slowdown_pct_vs_a"], errors="coerce")
+                            merged_jobs.loc[~merged_jobs["slowdown_pct_vs_a"].map(math.isfinite), "slowdown_pct_vs_a"] = pd.NA
                             merged_jobs = merged_jobs.merge(
                                 merged_hw[
                                     [
@@ -485,6 +508,9 @@ def main():
                                     p95_slowdown_pct_vs_a=("slowdown_pct_vs_a", lambda s: float(s.quantile(0.95))),
                                     mean_energy_savings_exposure_pct_vs_a=("energy_savings_pct_vs_a", "mean"),
                                 )
+                            )
+                            workload_tradeoff_df["sample_quality"] = workload_tradeoff_df["jobs"].apply(
+                                lambda n: "stable" if n >= MIN_WORKLOAD_TYPE_JOBS else "low"
                             )
                             workload_tradeoff_df["tradeoff_score"] = (
                                 workload_tradeoff_df["mean_energy_savings_exposure_pct_vs_a"]

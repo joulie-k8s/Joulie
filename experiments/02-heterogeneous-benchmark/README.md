@@ -173,9 +173,9 @@ There is also an overnight profile:
 
 That profile is meant for longer unattended sweeps:
 
-- 300 logical workloads per seed,
+- 2500 logical workloads per seed,
 - 3 seeds across all three baselines,
-- the same Joulie-friendly workload shaping as the showcase profile,
+- a research-cluster / HEP-style workload mix with a moderate performance-sensitive share,
 - a larger timeout / cleanup budget for longer tails.
 
 To run the full flow end to end with a single command:
@@ -190,25 +190,38 @@ By default the wrapper:
 - reuses the existing `kind` cluster if present,
 - reapplies the heterogeneous KWOK node inventory,
 - runs the sweep/collect/plot pipeline,
-- copies the final `results/` tree under a timestamped directory in `tmp/`.
+- creates a single numbered benchmark run root under `experiments/02-heterogeneous-benchmark/runs/`,
+- stores `results/`, simulator debug persistence, copied config files, and `run.log` under that same root,
+- logs UTC timestamps plus elapsed seconds for each major stage into `run.log`.
+
+The default run root format is:
+
+- `experiments/02-heterogeneous-benchmark/runs/0007_20260314T221530Z_u<uuid>/`
+
+The leading number makes runs easy to sort chronologically, and the UUID guarantees uniqueness. The newest run is also exposed through:
+
+- `experiments/02-heterogeneous-benchmark/runs/latest`
 
 Useful overrides:
 
 ```bash
 REUSE_EXISTING_CLUSTER=true \
 CLEAN_RESULTS=true \
-ARTIFACT_DIR=tmp/heterogeneous-benchmark-overnight-manual \
+ARTIFACT_DIR=experiments/02-heterogeneous-benchmark/runs/manual-overnight \
 experiments/02-heterogeneous-benchmark/scripts/30_run_overnight.sh \
   experiments/02-heterogeneous-benchmark/configs/benchmark-overnight.yaml
 ```
 
-Artifacts are written under:
+Artifacts for one benchmark execution are written under its benchmark run root, for example:
 
-- `experiments/02-heterogeneous-benchmark/results/`
+- `experiments/02-heterogeneous-benchmark/runs/0007_20260314T221530Z_u<uuid>/`
 
 including:
 
-- per-run directories with traces, logs, `nodepowerprofiles.yaml`, `nodehardwares.yaml`, and simulator debug snapshots,
+- per-run directories named with timestamp + UUID + baseline/seed, with traces, logs, `nodepowerprofiles.yaml`, `nodehardwares.yaml`, and simulator debug snapshots,
+- a shared `results/` subtree containing per-baseline/per-seed outputs plus aggregated CSVs and plots,
+- a shared `simulator-debug/` subtree used as the persistence root for simulator snapshots during that benchmark execution,
+- `run.log`, `benchmark-config.yaml`, and `cluster-nodes.yaml` at the benchmark run root,
 - per-run reproducibility metadata (`metadata.json`, `benchmark_config.yaml`, `kubectl_version.json`, node snapshots),
 - aggregated `results/summary.csv`,
 - aggregated `results/baseline_summary.csv` with mean/std/95% CI-style summaries across repeated seeds,
@@ -219,12 +232,22 @@ including:
 - aggregated `results/hardware_family_relative_to_a.csv`,
 - plots under `results/plots/`.
 
+Each run also gets its own simulator debug persistence directory, so repeated simulator restarts do not overwrite the previous run's persisted debug state.
+
 The new attribution outputs make it possible to answer questions such as:
 
 - which workload types slowed down the most under throttling,
 - which workload types were mostly unaffected while still running on energy-saving hardware,
 - which hardware families delivered the best energy-savings/slowdown tradeoff,
 - which hardware families paid slowdown without enough savings to justify it.
+
+The aggregated summaries now also carry:
+
+- `sim_event_count`
+- `telemetry_event_count`
+
+so you can verify that simulator/event telemetry was actually collected for each run instead of silently falling back to empty debug artifacts.
+For baseline `A`, these counts can legitimately stay zero because no Joulie control actions are applied.
 
 If you want a clean debug run without stale aborted runs mixed into the summaries, use:
 
@@ -287,13 +310,13 @@ Experiment 02 therefore adds a second step during the sweep:
 2. retarget `type=job` records onto the currently available KWOK nodes,
 3. derive baseline-specific traces from that retargeted canonical trace.
 
-The current retargeting logic is intentionally **family-first**:
+The current retargeting logic is intentionally **scheduler-driven**:
 
-- CPU-only jobs are first spread across CPU families,
-- GPU jobs are first spread across GPU product families,
-- only then are additional jobs reused across more node instances in those families.
+- CPU-only jobs are constrained only to the CPU-only pool (`joulie.io/hw.kind=cpu-only`),
+- GPU jobs are mapped to the appropriate vendor extended resource (`nvidia.com/gpu` or `amd.com/gpu`) using the actual cluster composition,
+- Kubernetes then performs the real node-level placement on the compatible pool.
 
-This keeps the debug benchmark lightweight while still making sure the heterogeneous hardware families are actually exercised.
+This keeps the heterogeneous family mix realistic without pre-assigning workloads to exact nodes in the harness.
 
 In other words:
 
@@ -314,6 +337,23 @@ Eco-only workload affinity in the benchmark and docs now uses:
 - `joulie.io/draining NotIn ["true"]`
 
 instead of requiring `draining=false`, because `NotIn ["true"]` is safer when the label is temporarily absent.
+
+The benchmark policy path now uses percentage-based CPU and GPU intents:
+
+- `cpu.packagePowerCapPctOfMax`
+- `gpu.powerCap.capPctOfMax`
+
+The operator writes those percentages into `NodePowerProfile`, and the agent resolves them on each node against discovered or inventory-derived hardware limits. That keeps the control contract consistent across CPU and GPU:
+
+- policy expresses relative intent,
+- agent resolves node-local enforcement from those percentages,
+- discovery and inventory still provide the hardware-aware bounds and fallback hints.
+
+In other words:
+
+- the benchmark no longer relies on a global fixed eco watt cap being copied into every heterogeneous node profile,
+- CPU and GPU intents are both expressed as `% of max`,
+- node-local hardware facts decide what that percentage means on a given node.
 
 If you need one-pod-per-node-instance coverage, use a heavier benchmark config than the debug profile.
 
@@ -362,8 +402,41 @@ For workload types, "energy-savings exposure" is not a direct per-job energy met
 
 That keeps the analysis interpretable without pretending we have exact per-job energy accounting.
 
+Workload-type tradeoff views also tag low-sample groups in the CSVs. Plot generation filters out unstable low-count workload categories by default so a handful of jobs does not dominate the visual story.
+
+## Hardware physics model
+
+The simulator uses the `CappedBoardGPUModel` with per-GPU-family physics parameters calibrated from vendor specifications and published power/performance data:
+
+| GPU family | idleWattsPerGpu | computeGamma | memoryEpsilon | memoryGamma | Notes |
+|---|---|---|---|---|---|
+| NVIDIA H100 NVL | 60 W | 1.50 | 0.15 | 0.90 | NVLink fabric idle overhead ~20-30 W; steep compute regression under capping (MLPerf Power v3.1/v4.0) |
+| NVIDIA H100 80GB HBM3 | 100 W | 1.40 | 0.15 | 0.90 | SXM5 socket + NVLink bridge; ~800 W board idle / 8 GPUs |
+| NVIDIA L40S | 35 W | 1.20 | 0.25 | 1.10 | GDDR6; inference-focused; moderate compute regression |
+| AMD Instinct MI300X | 120 W | 0.85 | 0.10 | 0.85 | HBM3 unified memory; compute holds up well under throttling; high idle from coherency circuits |
+| AMD Radeon PRO W7900 | 25 W | 1.10 | 0.30 | 1.20 | GDDR6; workstation GPU; memory bandwidth more sensitive to power capping |
+
+**computeGamma** controls how steeply compute throughput falls when the GPU is power-capped: `computeScale = (capW / natW)^computeGamma`. H100 NVL (γ=1.5) degrades steeply because it is FLOPS-density optimized and its performance is tightly coupled to its power budget. MI300X (γ=0.85) degrades gently because its unified memory APU-like design allows the processor to sustain throughput even at lower clocks.
+
+**memoryEpsilon / memoryGamma** control HBM3 vs GDDR6 bandwidth sensitivity: `memScale = 1 - ε*(1-ratio)^γ`. HBM3 (ε=0.10-0.15) is robust because it is independently clocked and self-refreshes efficiently. GDDR6 (ε=0.25-0.30) is more sensitive because its bandwidth is directly tied to memory clock frequency.
+
+Sources: NVIDIA H100 NVL spec; AMD MI300X architecture whitepaper; MLCommons MLPerf Training v4.1 power submissions; "Characterizing Power Management Opportunities on DGX H100" (NeurIPS'23 Systems Workshop); AMD ROCm documentation.
+
+## GPU job placement in the benchmark
+
+The retargeting step (`05_sweep.py`) now maps GPU jobs to the correct vendor extended resource (`nvidia.com/gpu` or `amd.com/gpu`) using a unified family-first pool that reflects the actual cluster composition. After that rewrite, Kubernetes performs the real node-level placement. This replaces earlier harness behavior that pinned jobs to exact nodes and distorted queueing.
+
+## Benchmark trace job classification
+
+`trace_stats()` classifies performance/eco/general jobs by parsing the actual affinity structure rather than string-matching the serialized JSON. The naive string approach produced false positives for performance jobs (which have `joulie.io/power-profile NotIn [eco]`) because unrelated affinity expressions can also contain `"In"` operators.
+
+## Related experiment
+
+- [03 - Homogeneous H100 Benchmark](../03-homogeneous-h100-benchmark/README.md) — identical workload and policy parameters on a homogeneous H100 NVL cluster, to test the hypothesis that heterogeneity limits Joulie's scheduling efficiency.
+
 ## Known caveats
 
 - Simulator power telemetry intentionally distinguishes averaged vs instantaneous power. When comparing results to real GPU runs, remember that NVML power telemetry on many modern NVIDIA GPUs is itself averaged over a 1-second window.
 - Real CPU package power is often reconstructed from energy-counter deltas, so sampling cadence and averaging windows matter there as well.
 - This harness is a reproducible simulation/benchmark path, not yet an external-meter calibration harness. External-meter validation remains the next step for bare-metal model calibration.
+- In the heterogeneous cluster, Joulie applies a uniform power-cap percentage across GPU families with very different throttling characteristics. A per-family `hp_min` policy extension would let the operator reserve more performance nodes for MI300X workloads (which tolerate throttling well) while keeping H100 NVL nodes uncapped for compute-bound jobs.

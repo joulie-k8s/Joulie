@@ -705,6 +705,35 @@ func TestInitWorkloadEngineFromTraceParsesGPUResourceKey(t *testing.T) {
 	}
 }
 
+func TestInitWorkloadEngineFromTraceReadsDirectoryOfParts(t *testing.T) {
+	dir := t.TempDir()
+	partA := filepath.Join(dir, "part-000.jsonl")
+	partB := filepath.Join(dir, "part-001.jsonl")
+	if err := os.WriteFile(partA, []byte(`{"type":"job","jobId":"job-a","submitTimeOffsetSec":2}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write partA: %v", err)
+	}
+	if err := os.WriteFile(partB, []byte(`{"type":"job","jobId":"job-b","submitTimeOffsetSec":1}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write partB: %v", err)
+	}
+
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil,
+		nil,
+		200,
+		prometheus.NewRegistry(),
+	)
+	if err := s.initWorkloadEngineFromTrace(dir); err != nil {
+		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	}
+	if len(s.workload.jobs) != 2 {
+		t.Fatalf("jobs=%d want=2", len(s.workload.jobs))
+	}
+	if s.workload.jobs[0].JobID != "job-b" || s.workload.jobs[1].JobID != "job-a" {
+		t.Fatalf("unexpected job order from trace parts: %+v", s.workload.jobs)
+	}
+}
+
 func TestInitWorkloadEngineFromTraceRejectsNonIntegerGPURequest(t *testing.T) {
 	trace := `{"type":"job","jobId":"bad-gpu","submitTimeOffsetSec":0,"podTemplate":{"requests":{"cpu":"1","nvidia.com/gpu":"0.5"}}}`
 	path := filepath.Join(t.TempDir(), "trace.jsonl")

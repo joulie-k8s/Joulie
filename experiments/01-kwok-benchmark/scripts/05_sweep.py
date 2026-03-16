@@ -6,15 +6,19 @@ import os
 import pathlib
 import subprocess
 import time
+from collections import deque
 
 import yaml
 
 DEFAULT_CONFIG = pathlib.Path("experiments/01-kwok-benchmark/configs/benchmark.yaml")
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", "experiments/01-kwok-benchmark/results"))
+START_TS = time.time()
 
 
 def log(msg: str):
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    print(f"[sweep {now}] {msg}", flush=True)
+    elapsed = time.time() - START_TS
+    print(f"[sweep {now} +{elapsed:8.1f}s] {msg}", flush=True)
 
 
 def run(cmd, check=True, capture=False):
@@ -70,16 +74,28 @@ def generate_canonical_seed_trace(
     mean_inter_arrival_sec: float,
     perf_ratio: float,
     eco_ratio: float,
-    cpu_units_min: float,
-    cpu_units_max: float,
+    gpu_ratio: float,
+    burst_day_probability: float,
+    burst_mean_jobs: float,
+    burst_multiplier: float,
+    emit_workload_records: bool,
+    work_scale: float,
+    allowed_workload_types: list[str] | None,
 ) -> pathlib.Path:
-    traces_dir = pathlib.Path("experiments/01-kwok-benchmark/results/traces")
+    traces_dir = RESULTS / "traces"
     traces_dir.mkdir(parents=True, exist_ok=True)
     ratio_id = f"perf_{str(perf_ratio).replace('.', '_')}_eco_{str(eco_ratio).replace('.', '_')}"
-    units_id = f"cpuu_{str(cpu_units_min).replace('.', '_')}_{str(cpu_units_max).replace('.', '_')}"
+    workload_id = (
+        f"gpur_{str(gpu_ratio).replace('.', '_')}"
+        f"_burstp_{str(burst_day_probability).replace('.', '_')}"
+        f"_burstm_{str(burst_multiplier).replace('.', '_')}"
+        f"_burstjobs_{str(burst_mean_jobs).replace('.', '_')}"
+        f"_meta_{'on' if emit_workload_records else 'off'}"
+        f"_wscale_{str(work_scale).replace('.', '_')}"
+    )
     trace_name = (
         f"seed_{seed}_jobs_{jobs}_mia_{str(mean_inter_arrival_sec).replace('.', '_')}_"
-        f"{ratio_id}_{units_id}_canonical.jsonl"
+        f"{ratio_id}_{workload_id}_canonical.jsonl"
     )
     trace_path = traces_dir / trace_name
     if trace_path.exists():
@@ -101,28 +117,213 @@ def generate_canonical_seed_trace(
         str(trace_path),
         "--mean-inter-arrival-sec",
         str(mean_inter_arrival_sec),
-        "--cpu-units-min",
-        str(cpu_units_min),
-        "--cpu-units-max",
-        str(cpu_units_max),
+        "--perf-ratio",
+        str(perf_ratio),
+        "--eco-ratio",
+        str(eco_ratio),
+        "--gpu-ratio",
+        str(gpu_ratio),
+        "--burst-day-probability",
+        str(burst_day_probability),
+        "--burst-mean-jobs",
+        str(burst_mean_jobs),
+        "--burst-multiplier",
+        str(burst_multiplier),
+        "--emit-workload-records",
+        str(emit_workload_records).lower(),
     ]
-    cmd.extend(
-        [
-            "--perf-ratio",
-            str(perf_ratio),
-            "--eco-ratio",
-            str(eco_ratio),
-        ]
-    )
     run(cmd, check=True)
+    if work_scale != 1.0 or allowed_workload_types:
+        allowed = set(allowed_workload_types or [])
+        filtered_scaled_lines = []
+        for raw in trace_path.read_text().splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            rec = json.loads(raw)
+            if allowed and rec.get("workloadType") not in allowed:
+                continue
+            if rec.get("type", "job") == "job":
+                work = rec.get("work")
+                if isinstance(work, dict):
+                    if "cpuUnits" in work:
+                        work["cpuUnits"] = float(work["cpuUnits"]) * work_scale
+                    if "gpuUnits" in work:
+                        work["gpuUnits"] = float(work["gpuUnits"]) * work_scale
+            filtered_scaled_lines.append(json.dumps(rec, separators=(",", ":")))
+        trace_path.write_text("\n".join(filtered_scaled_lines) + ("\n" if filtered_scaled_lines else ""))
     count = sum(1 for l in trace_path.read_text().splitlines() if l.strip())
     log(f"canonical seed trace generated records={count} file={trace_path}")
     return trace_path
 
 
+def _pod_power_class(affinity) -> str:
+    if not isinstance(affinity, dict):
+        return "general"
+    node_aff = affinity.get("nodeAffinity") or {}
+    required = node_aff.get("requiredDuringSchedulingIgnoredDuringExecution") or {}
+    for term in required.get("nodeSelectorTerms") or []:
+        for expr in (term.get("matchExpressions") or []) if isinstance(term, dict) else []:
+            if not isinstance(expr, dict):
+                continue
+            if expr.get("key") != "joulie.io/power-profile":
+                continue
+            op = expr.get("operator", "")
+            vals = expr.get("values") or []
+            if op == "In" and "eco" in vals:
+                return "eco"
+            if op == "NotIn" and "eco" in vals:
+                return "perf"
+    return "general"
+
+
+def load_kwok_nodes() -> list[dict]:
+    out = run(["kubectl", "get", "nodes", "-l", "type=kwok", "-o", "json"], capture=True)
+    items = json.loads(out.stdout).get("items", [])
+    nodes = []
+    for item in items:
+        meta = item.get("metadata", {})
+        labels = meta.get("labels", {}) or {}
+        name = meta.get("name", "")
+        nodes.append(
+            {
+                "name": name,
+                "cpu_model": labels.get("joulie.io/hw.cpu-model", ""),
+            }
+        )
+    return nodes
+
+
+def rotate_pick(pool: deque[dict]) -> dict:
+    item = pool[0]
+    pool.rotate(-1)
+    return item
+
+
+def build_family_first_pool(nodes: list[dict], family_key: str) -> deque[dict]:
+    by_family: dict[str, list[dict]] = {}
+    for node in nodes:
+        family = str(node.get(family_key) or "")
+        by_family.setdefault(family, []).append(node)
+    ordered: list[dict] = []
+    seen_names: set[str] = set()
+    for family in sorted(by_family):
+        first = by_family[family][0]
+        ordered.append(first)
+        seen_names.add(first["name"])
+    for node in nodes:
+        if node["name"] in seen_names:
+            continue
+        ordered.append(node)
+    return deque(ordered)
+
+
+def ensure_required_term(affinity: dict | None) -> dict:
+    if not isinstance(affinity, dict):
+        affinity = {}
+    node_affinity = affinity.setdefault("nodeAffinity", {})
+    required = node_affinity.setdefault("requiredDuringSchedulingIgnoredDuringExecution", {})
+    terms = required.setdefault("nodeSelectorTerms", [])
+    if not isinstance(terms, list) or not terms:
+        terms = [{"matchExpressions": []}]
+        required["nodeSelectorTerms"] = terms
+    return affinity
+
+
+def add_required_expr(affinity: dict | None, expr: dict) -> dict:
+    affinity = ensure_required_term(affinity)
+    terms = affinity["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"]
+    for term in terms:
+        exprs = term.setdefault("matchExpressions", [])
+        if not any(e.get("key") == expr.get("key") for e in exprs if isinstance(e, dict)):
+            exprs.append(expr)
+    return affinity
+
+
+def strip_power_profile_affinity(affinity: dict | None) -> dict | None:
+    if not isinstance(affinity, dict):
+        return affinity
+    node_aff = affinity.get("nodeAffinity")
+    if not isinstance(node_aff, dict):
+        return affinity
+    required = node_aff.get("requiredDuringSchedulingIgnoredDuringExecution")
+    if not isinstance(required, dict):
+        return affinity
+    terms = required.get("nodeSelectorTerms")
+    if not isinstance(terms, list):
+        return affinity
+    keep_terms = []
+    for term in terms:
+        if not isinstance(term, dict):
+            continue
+        exprs = term.get("matchExpressions", [])
+        if not isinstance(exprs, list):
+            continue
+        kept_exprs = [
+            e
+            for e in exprs
+            if isinstance(e, dict) and e.get("key") not in {"joulie.io/power-profile", "joulie.io/draining"}
+        ]
+        if kept_exprs:
+            keep_terms.append({"matchExpressions": kept_exprs})
+    if keep_terms:
+        required["nodeSelectorTerms"] = keep_terms
+        return affinity
+    node_aff.pop("requiredDuringSchedulingIgnoredDuringExecution", None)
+    if not node_aff:
+        affinity.pop("nodeAffinity", None)
+    return affinity or None
+
+
+def retarget_trace_for_cluster(trace_path: pathlib.Path) -> pathlib.Path:
+    """Assign node/family affinities so each job targets a specific CPU node or CPU model family."""
+    nodes = load_kwok_nodes()
+    cpu_pool = build_family_first_pool(nodes, "cpu_model")
+    if not cpu_pool:
+        raise SystemExit("expected CPU KWOK nodes to exist before generating the benchmark trace")
+
+    out_path = trace_path.with_name(trace_path.stem + "_targeted.jsonl")
+    if out_path.exists():
+        return out_path
+
+    total_job_count = 0
+    lines = []
+    for raw in trace_path.read_text().splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        rec = json.loads(raw)
+        if rec.get("type", "job") != "job":
+            lines.append(json.dumps(rec, separators=(",", ":")))
+            continue
+
+        total_job_count += 1
+        pod_tpl = rec.get("podTemplate")
+        if not isinstance(pod_tpl, dict):
+            lines.append(json.dumps(rec, separators=(",", ":")))
+            continue
+
+        affinity = pod_tpl.get("affinity")
+        # Keep CPU workloads on the synthetic CPU-only pool, but let Kubernetes place them on
+        # any compatible KWOK node instead of pre-assigning a concrete node in the harness.
+        pod_tpl["affinity"] = add_required_expr(
+            affinity,
+            {"key": "joulie.io/hw.kind", "operator": "In", "values": ["cpu-only"]},
+        )
+
+        lines.append(json.dumps(rec, separators=(",", ":")))
+
+    out_path.write_text("\n".join(lines) + ("\n" if lines else ""))
+    log(f"retargeted canonical trace jobs_total={total_job_count} cpu_nodes={len(nodes)}")
+    return out_path
+
+
 def derive_baseline_trace(baseline: str, canonical_trace: pathlib.Path, strip_affinity_for_a: bool) -> pathlib.Path:
     traces_dir = canonical_trace.parent
-    out_name = canonical_trace.name.replace("_canonical.jsonl", f"_baseline_{baseline}.jsonl")
+    stem = canonical_trace.stem
+    if stem.endswith("_targeted"):
+        stem = stem[: -len("_targeted")]
+    out_name = f"{stem}_baseline_{baseline}.jsonl"
     out_path = traces_dir / out_name
     if out_path.exists():
         return out_path
@@ -139,7 +340,9 @@ def derive_baseline_trace(baseline: str, canonical_trace: pathlib.Path, strip_af
         rec = json.loads(raw)
         pod_tpl = rec.get("podTemplate")
         if isinstance(pod_tpl, dict):
-            pod_tpl.pop("affinity", None)
+            pod_tpl["affinity"] = strip_power_profile_affinity(pod_tpl.get("affinity"))
+            if not pod_tpl.get("affinity"):
+                pod_tpl.pop("affinity", None)
         lines.append(json.dumps(rec, separators=(",", ":")))
     out_path.write_text("\n".join(lines) + ("\n" if lines else ""))
     return out_path
@@ -165,8 +368,15 @@ def cleanup_workload_pods():
 
 def reset_control_state():
     log("resetting control state (profiles + node power labels)")
-    run(["kubectl", "delete", "nodepowerprofiles", "--all", "--ignore-not-found"], check=False)
-    run(["kubectl", "delete", "telemetryprofiles", "--all", "--ignore-not-found"], check=False)
+    resources = {"nodepowerprofiles": "nodepowerprofiles.joulie.io", "telemetryprofiles": "telemetryprofiles.joulie.io"}
+    available = set(
+        line.strip()
+        for line in run(["kubectl", "api-resources", "-o", "name"], capture=True, check=False).stdout.splitlines()
+        if line.strip()
+    )
+    for short, full in resources.items():
+        if short in available or full in available:
+            run(["kubectl", "delete", short, "--all", "--ignore-not-found"], check=False)
     run(
         [
             "kubectl",
@@ -175,6 +385,18 @@ def reset_control_state():
             "-l",
             "joulie.io/managed=true",
             "joulie.io/power-profile-",
+        ],
+        check=False,
+    )
+    run(
+        [
+            "kubectl",
+            "label",
+            "nodes",
+            "-l",
+            "joulie.io/managed=true",
+            "joulie.io/draining=false",
+            "--overwrite",
         ],
         check=False,
     )
@@ -201,6 +423,7 @@ def wait_zero_active_workload_pods(timeout_sec: int):
         active = sum(
             1
             for p in items
+            if not str(((p.get("metadata", {}) or {}).get("name", ""))).startswith("sim-bootstrap-")
             if p.get("status", {}).get("phase") in ("Pending", "Running")
         )
         if active == 0:
@@ -222,9 +445,12 @@ def main():
     ap.add_argument("--settle-seconds", type=int, default=None)
     ap.add_argument("--cleanup-timeout", type=int, default=None)
     ap.add_argument("--perf-ratio", type=float, default=None)
-    ap.add_argument("--eco-ratio", type=float, default=None, help="must be 0 for this benchmark profile")
-    ap.add_argument("--cpu-units-min", type=float, default=None)
-    ap.add_argument("--cpu-units-max", type=float, default=None)
+    ap.add_argument("--eco-ratio", type=float, default=None)
+    ap.add_argument("--gpu-ratio", type=float, default=None)
+    ap.add_argument("--burst-day-probability", type=float, default=None)
+    ap.add_argument("--burst-mean-jobs", type=float, default=None)
+    ap.add_argument("--burst-multiplier", type=float, default=None)
+    ap.add_argument("--emit-workload-records", type=str, default="")
     ap.add_argument("--baselines", type=str, default="")
     args = ap.parse_args()
 
@@ -249,34 +475,58 @@ def main():
     )
     time_scale = float(get_cfg(cfg, "run", "time_scale", default=60.0))
     perf_ratio = (
-        args.perf_ratio if args.perf_ratio is not None else float(get_cfg(cfg, "workload", "perf_ratio", default=0.30))
+        args.perf_ratio if args.perf_ratio is not None else float(get_cfg(cfg, "workload", "perf_ratio", default=0.20))
     )
     eco_ratio = (
         args.eco_ratio if args.eco_ratio is not None else float(get_cfg(cfg, "workload", "eco_ratio", default=0.00))
     )
-    cpu_units_min = (
-        args.cpu_units_min
-        if args.cpu_units_min is not None
-        else float(get_cfg(cfg, "workload", "cpu_units_min", default=600.0))
+    gpu_ratio = (
+        args.gpu_ratio if args.gpu_ratio is not None else float(get_cfg(cfg, "workload", "gpu_ratio", default=0.00))
     )
-    cpu_units_max = (
-        args.cpu_units_max
-        if args.cpu_units_max is not None
-        else float(get_cfg(cfg, "workload", "cpu_units_max", default=3600.0))
+    burst_day_probability = (
+        args.burst_day_probability
+        if args.burst_day_probability is not None
+        else float(get_cfg(cfg, "workload", "burst_day_probability", default=0.20))
     )
+    burst_mean_jobs = (
+        args.burst_mean_jobs
+        if args.burst_mean_jobs is not None
+        else float(get_cfg(cfg, "workload", "burst_mean_jobs", default=8.0))
+    )
+    burst_multiplier = (
+        args.burst_multiplier
+        if args.burst_multiplier is not None
+        else float(get_cfg(cfg, "workload", "burst_multiplier", default=2.0))
+    )
+    emit_workload_records_raw = (
+        args.emit_workload_records
+        if args.emit_workload_records.strip()
+        else get_cfg(cfg, "workload", "emit_workload_records", default=True)
+    )
+    emit_workload_records = str(emit_workload_records_raw).strip().lower() not in {"false", "0", "no"}
+    work_scale = float(get_cfg(cfg, "workload", "work_scale", default=1.0))
     baseline_a_strip_affinity = bool(get_cfg(cfg, "workload", "baseline_a_strip_affinity", default=True))
+    allowed_workload_types = get_cfg(cfg, "workload", "allowed_workload_types", default=None)
+    if allowed_workload_types is not None and not isinstance(allowed_workload_types, list):
+        raise SystemExit("workload.allowed_workload_types must be a YAML list when set")
 
     baselines_raw = args.baselines if args.baselines.strip() else get_cfg(cfg, "run", "baselines", default=["A", "B", "C"])
     baselines = to_baselines(baselines_raw)
 
     if perf_ratio < 0 or eco_ratio < 0:
         raise SystemExit("perf_ratio and eco_ratio must be >= 0")
+    if gpu_ratio < 0 or gpu_ratio > 1:
+        raise SystemExit("gpu_ratio must be in [0,1]")
     if perf_ratio + eco_ratio > 1:
         raise SystemExit("perf_ratio + eco_ratio must be <= 1")
-    if cpu_units_min <= 0:
-        raise SystemExit("cpu_units_min must be > 0")
-    if cpu_units_max < cpu_units_min:
-        raise SystemExit("cpu_units_max must be >= cpu_units_min")
+    if burst_day_probability < 0 or burst_day_probability > 1:
+        raise SystemExit("burst_day_probability must be in [0,1]")
+    if burst_mean_jobs < 0:
+        raise SystemExit("burst_mean_jobs must be >= 0")
+    if burst_multiplier < 1:
+        raise SystemExit("burst_multiplier must be >= 1")
+    if work_scale <= 0:
+        raise SystemExit("work_scale must be > 0")
 
     total_runs = len(baselines) * seeds
     done = 0
@@ -286,6 +536,8 @@ def main():
     )
 
     install_env_base = os.environ.copy()
+    inventory_source = str(get_cfg(cfg, "inventory", "source", default="experiments/01-kwok-benchmark/configs/cluster-nodes.yaml"))
+    run(["bash", "experiments/01-kwok-benchmark/scripts/00_generate_assets.sh", inventory_source], check=True)
 
     # Image and manifest config
     install_env_base["JOULIE_REGISTRY"] = str(get_cfg(cfg, "images", "joulie_registry", default="registry.cern.ch/mbunino/joulie"))
@@ -294,7 +546,7 @@ def main():
     install_env_base["SIM_IMAGE"] = str(get_cfg(cfg, "images", "sim_image", default="joulie-simulator"))
     install_env_base["SIM_TAG"] = str(get_cfg(cfg, "images", "sim_tag", default=""))
 
-    simulator_manifest = get_cfg(cfg, "install", "simulator_manifest", default="")
+    simulator_manifest = get_cfg(cfg, "simulator", "manifest", default="") or get_cfg(cfg, "install", "simulator_manifest", default="")
     if simulator_manifest:
         install_env_base["SIMULATOR_MANIFEST"] = str(simulator_manifest)
 
@@ -304,11 +556,24 @@ def main():
     install_env_base["QUEUE_HP_MIN"] = str(get_cfg(cfg, "policy", "queue_aware", "hp_min", default=1))
     install_env_base["QUEUE_HP_MAX"] = str(get_cfg(cfg, "policy", "queue_aware", "hp_max", default=5))
     install_env_base["QUEUE_PERF_PER_HP_NODE"] = str(get_cfg(cfg, "policy", "queue_aware", "perf_per_hp_node", default=10))
-    install_env_base["PERFORMANCE_CAP_WATTS"] = str(get_cfg(cfg, "policy", "caps", "performance_watts", default=500))
-    install_env_base["ECO_CAP_WATTS"] = str(get_cfg(cfg, "policy", "caps", "eco_watts", default=140))
+    install_env_base["CPU_PERFORMANCE_CAP_PCT_OF_MAX"] = str(
+        get_cfg(cfg, "policy", "caps", "cpu_performance_pct_of_max", default=100)
+    )
+    install_env_base["CPU_ECO_CAP_PCT_OF_MAX"] = str(
+        get_cfg(cfg, "policy", "caps", "cpu_eco_pct_of_max", default=80)
+    )
+    install_env_base["CPU_WRITE_ABSOLUTE_CAPS"] = str(get_cfg(cfg, "policy", "cpu_write_absolute_caps", default=False)).lower()
     install_env_base["OPERATOR_RECONCILE_INTERVAL"] = str(get_cfg(cfg, "policy", "loop", "operator_reconcile_interval", default="20s"))
     install_env_base["AGENT_RECONCILE_INTERVAL"] = str(get_cfg(cfg, "policy", "loop", "agent_reconcile_interval", default="10s"))
     install_env_base["SIM_BASE_SPEED_PER_CORE"] = str(get_cfg(cfg, "simulator", "base_speed_per_core", default=1.0))
+    # GENERATED_CLASSES/CATALOG: prefer env vars already set by 30_run_overnight.sh, fall back to generated/ dir
+    install_env_base["GENERATED_CLASSES"] = os.environ.get(
+        "GENERATED_CLASSES", "experiments/01-kwok-benchmark/generated/10-node-classes.yaml"
+    )
+    install_env_base["GENERATED_CATALOG"] = os.environ.get(
+        "GENERATED_CATALOG", "experiments/01-kwok-benchmark/generated/hardware.generated.yaml"
+    )
+
     log(
         "configured images "
         f"sim={install_env_base['SIM_REGISTRY']}/{install_env_base['SIM_IMAGE']}"
@@ -318,7 +583,9 @@ def main():
     )
     log(
         "configured policy "
-        f"caps(perf={install_env_base['PERFORMANCE_CAP_WATTS']}W eco={install_env_base['ECO_CAP_WATTS']}W) "
+        f"caps(cpu_perf={install_env_base['CPU_PERFORMANCE_CAP_PCT_OF_MAX']}% "
+        f"cpu_eco={install_env_base['CPU_ECO_CAP_PCT_OF_MAX']}% "
+        f"cpu_abs={install_env_base['CPU_WRITE_ABSOLUTE_CAPS']}) "
         f"static.hp_frac={install_env_base['STATIC_HP_FRAC']} "
         f"queue(base={install_env_base['QUEUE_HP_BASE_FRAC']} min={install_env_base['QUEUE_HP_MIN']} "
         f"max={install_env_base['QUEUE_HP_MAX']} perf_per_hp={install_env_base['QUEUE_PERF_PER_HP_NODE']}) "
@@ -363,9 +630,15 @@ def main():
                 mean_inter_arrival_sec=mean_inter_arrival_sec,
                 perf_ratio=perf_ratio,
                 eco_ratio=eco_ratio,
-                cpu_units_min=cpu_units_min,
-                cpu_units_max=cpu_units_max,
+                gpu_ratio=gpu_ratio,
+                burst_day_probability=burst_day_probability,
+                burst_mean_jobs=burst_mean_jobs,
+                burst_multiplier=burst_multiplier,
+                emit_workload_records=emit_workload_records,
+                work_scale=work_scale,
+                allowed_workload_types=allowed_workload_types,
             )
+            canonical_trace = retarget_trace_for_cluster(canonical_trace)
             trace_file = derive_baseline_trace(
                 baseline=baseline,
                 canonical_trace=canonical_trace,
@@ -392,6 +665,8 @@ def main():
                     str(timeout),
                     "--time-scale",
                     str(time_scale),
+                    "--benchmark-config",
+                    str(cfg_path),
                     "--trace-file",
                     str(trace_file),
                 ],
