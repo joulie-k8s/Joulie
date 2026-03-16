@@ -504,7 +504,10 @@ def patch_node_gpu_cap(node: str, cap_watts_per_gpu: int) -> None:
     patch = {
         "spec": {
             "gpu": {
-                "capWattsPerGpu": cap_watts_per_gpu,
+                "powerCap": {
+                    "scope": "perGpu",
+                    "capWattsPerGpu": cap_watts_per_gpu,
+                }
             }
         }
     }
