@@ -2,13 +2,14 @@
 import datetime as dt
 import json
 import math
+import os
 import pathlib
 import re
 
 import pandas as pd
 
 ROOT = pathlib.Path("experiments/01-kwok-benchmark")
-RESULTS = ROOT / "results"
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "results"))).resolve()
 RUN_ID_RE = re.compile(r"_b([ABC])_s(\d+)$")
 
 
@@ -56,6 +57,26 @@ def to_float(v):
     except (TypeError, ValueError):
         return None
     return None
+
+
+def workload_pod_status(pods_doc: dict):
+    if not isinstance(pods_doc, dict):
+        return None, None
+    items = pods_doc.get("items")
+    if not isinstance(items, list):
+        return None, None
+    total = 0
+    active = 0
+    for item in items:
+        meta = item.get("metadata", {}) or {}
+        labels = meta.get("labels", {}) or {}
+        if labels.get("app.kubernetes.io/part-of") != "joulie-sim-workload":
+            continue
+        total += 1
+        phase = (item.get("status", {}) or {}).get("phase", "")
+        if phase in {"Pending", "Running"}:
+            active += 1
+    return total, active
 
 
 def integrate_energy_joules_from_events(events_doc: dict, time_scale: float):
@@ -152,6 +173,13 @@ def collect_one_run(run_dir: pathlib.Path):
     if energy_sim_j is not None and sim_seconds and sim_seconds > 0:
         avg_cluster_power_w = energy_sim_j / sim_seconds
 
+    workload_pods_total, workload_pods_active = workload_pod_status(load_json_file(run_dir / "pods.json"))
+    run_completed = workload_pods_active == 0 if workload_pods_active is not None else False
+    if workload_pods_active is None:
+        run_outcome = "unknown"
+    else:
+        run_outcome = "completed" if run_completed else "incomplete"
+
     return {
         "run_id": run_dir.name,
         "baseline": baseline,
@@ -170,6 +198,10 @@ def collect_one_run(run_dir: pathlib.Path):
         "energy_source": energy_source,
         "sim_event_count": sim_event_count,
         "telemetry_event_count": telemetry_event_count,
+        "workload_pods_total_at_collection": workload_pods_total,
+        "workload_pods_active_at_collection": workload_pods_active,
+        "run_completed": run_completed,
+        "run_outcome": run_outcome,
         "trace_sha256": run_summary.get("trace_sha256", ""),
         "git_commit": metadata.get("git_commit", ""),
     }
@@ -195,6 +227,44 @@ def main():
     df.sort_values(["baseline", "seed", "run_id"], inplace=True)
     df.to_csv(out, index=False)
     print(f"wrote {out}")
+
+    numeric_metrics = [
+        "wall_seconds",
+        "throughput_jobs_per_sim_hour",
+        "energy_sim_kwh_est",
+        "avg_cluster_power_w_est",
+    ]
+    baseline_rows = []
+    for baseline, grp in df.groupby("baseline"):
+        completed = grp[grp["run_completed"] == True].copy()
+        row = {
+            "baseline": baseline,
+            "runs_total": len(grp),
+            "runs_completed": len(completed),
+            "runs_incomplete": len(grp) - len(completed),
+            "completion_rate_pct": 100.0 * len(completed) / len(grp) if len(grp) else None,
+        }
+        for metric in numeric_metrics:
+            series = pd.to_numeric(completed[metric], errors="coerce").dropna()
+            if series.empty:
+                row[f"{metric}_mean"] = None
+                row[f"{metric}_std"] = None
+                row[f"{metric}_ci95"] = None
+                continue
+            mean = float(series.mean())
+            std = float(series.std(ddof=1)) if len(series) > 1 else 0.0
+            ci95 = 1.96 * std / math.sqrt(len(series)) if len(series) > 1 else 0.0
+            row[f"{metric}_mean"] = mean
+            row[f"{metric}_std"] = std
+            row[f"{metric}_ci95"] = ci95
+        baseline_rows.append(row)
+
+    baseline_out = RESULTS / "baseline_summary.csv"
+    baseline_df = pd.DataFrame(baseline_rows)
+    if not baseline_df.empty:
+        baseline_df.sort_values(["baseline"], inplace=True)
+    baseline_df.to_csv(baseline_out, index=False)
+    print(f"wrote {baseline_out}")
 
 
 if __name__ == "__main__":

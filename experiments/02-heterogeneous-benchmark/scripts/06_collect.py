@@ -75,6 +75,26 @@ def to_float(v):
     return None
 
 
+def workload_pod_status(pods_doc: dict):
+    if not isinstance(pods_doc, dict):
+        return None, None
+    items = pods_doc.get("items")
+    if not isinstance(items, list):
+        return None, None
+    total = 0
+    active = 0
+    for item in items:
+        meta = item.get("metadata", {}) or {}
+        labels = meta.get("labels", {}) or {}
+        if labels.get("app.kubernetes.io/part-of") != "joulie-sim-workload":
+            continue
+        total += 1
+        phase = (item.get("status", {}) or {}).get("phase", "")
+        if phase in {"Pending", "Running"}:
+            active += 1
+    return total, active
+
+
 def prettify_cpu_family(value: str) -> str:
     if not value:
         return "CPU"
@@ -340,6 +360,13 @@ def collect_one_run(run_dir: pathlib.Path):
     if energy_sim_j is not None and sim_seconds and sim_seconds > 0:
         avg_cluster_power_w = energy_sim_j / sim_seconds
 
+    workload_pods_total, workload_pods_active = workload_pod_status(load_json_file(run_dir / "pods.json"))
+    run_completed = workload_pods_active == 0 if workload_pods_active is not None else False
+    if workload_pods_active is None:
+        run_outcome = "unknown"
+    else:
+        run_outcome = "completed" if run_completed else "incomplete"
+
     return {
         "run_id": run_dir.name,
         "baseline": baseline,
@@ -359,6 +386,10 @@ def collect_one_run(run_dir: pathlib.Path):
         "energy_source": energy_source,
         "sim_event_count": sim_event_count,
         "telemetry_event_count": telemetry_event_count,
+        "workload_pods_total_at_collection": workload_pods_total,
+        "workload_pods_active_at_collection": workload_pods_active,
+        "run_completed": run_completed,
+        "run_outcome": run_outcome,
         "trace_sha256": run_summary.get("trace_sha256", ""),
         "git_commit": metadata.get("git_commit", ""),
     }
@@ -388,6 +419,11 @@ def main():
     df.sort_values(["baseline", "seed", "run_id"], inplace=True)
     df.to_csv(out, index=False)
     print(f"wrote {out}")
+
+    completed_run_ids = set(df[df["run_completed"] == True]["run_id"].tolist())
+    completed_df = df[df["run_completed"] == True].copy()
+    job_rows = [row for row in job_rows if row["run_id"] in completed_run_ids]
+    hw_energy_rows = [row for row in hw_energy_rows if row["run_id"] in completed_run_ids]
 
     if job_rows:
         jobs_out = RESULTS / "job_details.csv"
@@ -528,9 +564,16 @@ def main():
     ]
     baseline_rows = []
     for baseline, grp in df.groupby("baseline"):
-        row = {"baseline": baseline, "runs": len(grp)}
+        completed = grp[grp["run_completed"] == True].copy()
+        row = {
+            "baseline": baseline,
+            "runs_total": len(grp),
+            "runs_completed": len(completed),
+            "runs_incomplete": len(grp) - len(completed),
+            "completion_rate_pct": 100.0 * len(completed) / len(grp) if len(grp) else None,
+        }
         for metric in numeric_metrics:
-            series = pd.to_numeric(grp[metric], errors="coerce").dropna()
+            series = pd.to_numeric(completed[metric], errors="coerce").dropna()
             if series.empty:
                 row[f"{metric}_mean"] = None
                 row[f"{metric}_std"] = None

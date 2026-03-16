@@ -31,8 +31,6 @@ workload:
   allowed_workload_types:
     - debug_eval
     - single_gpu_training
-    - distributed_training
-    - parameter_server_training
     - cpu_preprocess
     - cpu_analytics
 

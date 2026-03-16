@@ -3,6 +3,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 import pathlib
 import tempfile
 import subprocess
@@ -11,7 +12,7 @@ import time
 from urllib.request import urlopen
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-RESULTS = ROOT / "results"
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "results"))).resolve()
 TRACE_CONFIGMAP_PREFIX = "joulie-simulator-workload-trace"
 TRACE_PART_SIZE_BYTES = 900_000
 
