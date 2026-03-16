@@ -9,32 +9,24 @@ import (
 func TestParsePodHints(t *testing.T) {
 	labels := map[string]string{"joulie.io/power-profile": "eco"}
 	annotations := map[string]string{
-		"joulie.io/reschedulable":  "true",
-		"joulie.io/cpu-sensitivity": "low",
+		"joulie.io/reschedulable": "true",
 	}
 	hints := ParsePodHints(labels, annotations)
-	if hints.WorkloadClass != "best-effort" {
-		t.Errorf("expected best-effort from eco label, got %s", hints.WorkloadClass)
+	if hints.WorkloadClass != "standard" {
+		t.Errorf("expected standard from eco label, got %s", hints.WorkloadClass)
 	}
 	if !hints.Reschedulable {
 		t.Error("expected reschedulable=true")
-	}
-	if hints.CPUSensitivity != "low" {
-		t.Errorf("expected cpu-sensitivity=low, got %s", hints.CPUSensitivity)
 	}
 }
 
 func TestParsePodHintsExplicitClass(t *testing.T) {
 	annotations := map[string]string{
-		"joulie.io/workload-class":  "performance",
-		"joulie.io/gpu-sensitivity": "high",
+		"joulie.io/workload-class": "performance",
 	}
 	hints := ParsePodHints(nil, annotations)
 	if hints.WorkloadClass != "performance" {
 		t.Errorf("expected performance, got %s", hints.WorkloadClass)
-	}
-	if hints.GPUSensitivity != "high" {
-		t.Errorf("expected gpu-sensitivity=high, got %s", hints.GPUSensitivity)
 	}
 }
 
@@ -82,12 +74,13 @@ func TestClassifyMemoryBound(t *testing.T) {
 
 func TestClassifyGPUBound(t *testing.T) {
 	c := NewClassifier(DefaultClassifierConfig())
-	hints := PodHints{WorkloadClass: "standard", GPUSensitivity: "high"}
+	hints := PodHints{WorkloadClass: "standard"}
 	m := PodMetrics{
 		CPUUtilPct:        40,
 		CPUBoundRatio:     0.10,
 		MemoryBoundRatio:  0.10,
 		GPUEnergyJoules:   80,
+		GPUUtilPct:        85,
 		TotalEnergyJoules: 100,
 		CPUEnergyJoules:   10,
 		DRAMEnergyJoules:  10,
@@ -98,7 +91,7 @@ func TestClassifyGPUBound(t *testing.T) {
 		t.Error("expected GPU intensity to be set for GPU-heavy workload")
 	}
 	if wp.GPU.CapSensitivity != "high" {
-		t.Errorf("expected high GPU cap sensitivity from hint, got %s", wp.GPU.CapSensitivity)
+		t.Errorf("expected high GPU cap sensitivity for compute+high GPU, got %s", wp.GPU.CapSensitivity)
 	}
 }
 
@@ -120,13 +113,12 @@ func TestClassifyNoKepler(t *testing.T) {
 
 func TestFromHintsOnly(t *testing.T) {
 	hints := PodHints{
-		WorkloadClass:  "best-effort",
-		Reschedulable:  true,
-		CPUSensitivity: "low",
+		WorkloadClass: "standard",
+		Reschedulable: true,
 	}
 	wp := fromHintsOnly(hints)
-	if wp.Criticality.Class != "best-effort" {
-		t.Errorf("expected best-effort, got %s", wp.Criticality.Class)
+	if wp.Criticality.Class != "standard" {
+		t.Errorf("expected standard, got %s", wp.Criticality.Class)
 	}
 	if !wp.Migratability.Reschedulable {
 		t.Error("expected reschedulable=true")
@@ -177,16 +169,6 @@ func TestClassificationReasonPopulated(t *testing.T) {
 	}
 	if !strings.Contains(wp.ClassificationReason, "cpu-bound=compute") {
 		t.Errorf("expected reason to mention compute-bound, got %q", wp.ClassificationReason)
-	}
-}
-
-func TestClassificationReasonAnnotationOverride(t *testing.T) {
-	c := NewClassifier(DefaultClassifierConfig())
-	hints := PodHints{WorkloadClass: "standard", CPUSensitivity: "low"}
-	m := PodMetrics{CPUUtilPct: 90}
-	wp := c.classify(hints, m)
-	if !strings.Contains(wp.ClassificationReason, "annotation override") {
-		t.Errorf("expected reason to mention annotation override, got %q", wp.ClassificationReason)
 	}
 }
 
@@ -335,7 +317,7 @@ func TestClassifyKeplerOverrideToMemory(t *testing.T) {
 
 func TestConfidenceClampedToOne(t *testing.T) {
 	// All signals present: should not exceed 1.0
-	hints := PodHints{WorkloadClass: "performance", CPUSensitivity: "high", GPUSensitivity: "high"}
+	hints := PodHints{WorkloadClass: "performance"}
 	m := PodMetrics{CPUUtilPct: 90, KeplerUsed: true, TotalEnergyJoules: 100}
 	conf := computeConfidence(hints, m)
 	if conf > 1.0 {
@@ -386,19 +368,6 @@ func TestClassifyCPUMediumIntensity(t *testing.T) {
 	wp := c.classify(PodHints{}, m)
 	if wp.CPU.Intensity != "medium" {
 		t.Errorf("expected medium CPU intensity at 50%%, got %s", wp.CPU.Intensity)
-	}
-}
-
-func TestClassifyGPUHintOverrideSetsIntensity(t *testing.T) {
-	// GPU sensitivity hint with no GPU metrics should set intensity to medium
-	c := NewClassifier(DefaultClassifierConfig())
-	m := PodMetrics{CPUUtilPct: 50}
-	wp := c.classify(PodHints{GPUSensitivity: "high"}, m)
-	if wp.GPU.Intensity != "medium" {
-		t.Errorf("expected GPU intensity=medium from hint override, got %s", wp.GPU.Intensity)
-	}
-	if wp.GPU.CapSensitivity != "high" {
-		t.Errorf("expected GPU cap sensitivity=high from hint, got %s", wp.GPU.CapSensitivity)
 	}
 }
 

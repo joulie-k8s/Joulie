@@ -5,8 +5,8 @@
 // implements the Filter and Prioritize endpoints of the scheduler extender
 // protocol.
 //
-// The extender reads NodeTwin and WorkloadProfile CRs to make
-// placement decisions. It does NOT run heavy simulation inline.
+// The extender reads NodeTwin CRs for placement decisions. It uses a single
+// pod annotation (joulie.io/workload-class) and adaptive scoring.
 //
 // Resilience: twin data older than TWIN_STALENESS_THRESHOLD (default 5m) is
 // treated as stale and the node receives a neutral score instead of potentially
@@ -38,19 +38,30 @@ import (
 )
 
 var (
-	nodeTwinGVR        = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
-	workloadProfileGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "workloadprofiles"}
+	nodeTwinGVR     = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
+	nodeHardwareGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
 
 	twinStateCache    map[string]*joulie.NodeTwinStatus
 	twinStateMu       sync.RWMutex
 	twinStateCacheTTL = 30 * time.Second
 	lastCacheRefresh  time.Time
 
+	// NodeHardware cache: tracks GPU presence per node.
+	nodeHWCache        map[string]nodeHWInfo
+	nodeHWMu           sync.RWMutex
+	lastNodeHWRefresh  time.Time
+
 	// twinStalenessThreshold: if a NodeTwin.status.lastUpdated is older than
 	// this, the scheduler treats it as stale and falls back to a neutral score.
 	// Default 5 minutes. Override via TWIN_STALENESS_THRESHOLD env var.
 	twinStalenessThreshold = durationEnvOrDefault("TWIN_STALENESS_THRESHOLD", 5*time.Minute)
 )
+
+// nodeHWInfo holds minimal hardware facts needed for scoring.
+type nodeHWInfo struct {
+	GPUPresent bool
+	GPUCount   int
+}
 
 // ExtenderArgs is the request body for filter/prioritize calls.
 type ExtenderArgs struct {
@@ -110,8 +121,9 @@ type PodMeta struct {
 }
 
 type PodBody struct {
-	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
-	Affinity     *AffinitySpec     `json:"affinity,omitempty"`
+	NodeSelector map[string]string  `json:"nodeSelector,omitempty"`
+	Affinity     *AffinitySpec      `json:"affinity,omitempty"`
+	Containers   []ContainerSpec    `json:"containers,omitempty"`
 }
 
 type AffinitySpec struct {
@@ -134,6 +146,16 @@ type NodeSelectorRequirement struct {
 	Key      string   `json:"key"`
 	Operator string   `json:"operator"`
 	Values   []string `json:"values,omitempty"`
+}
+
+// ContainerSpec holds minimal container fields for GPU detection.
+type ContainerSpec struct {
+	Resources ResourceSpec `json:"resources,omitempty"`
+}
+
+type ResourceSpec struct {
+	Requests map[string]interface{} `json:"requests,omitempty"`
+	Limits   map[string]interface{} `json:"limits,omitempty"`
 }
 
 var dynClient dynamic.Interface
@@ -206,12 +228,8 @@ func handlePrioritize(w http.ResponseWriter, r *http.Request) {
 // filterNodes applies Joulie filter logic to candidate nodes.
 //
 // Filter rules:
-//  1. Reject eco nodes for performance pods.
-//     performance pods must run on uncapped (performance) nodes.
-//  2. All other pods pass all nodes. Eco pods can run on performance nodes.
-//
-// Draining nodes are NOT filtered out; they receive a score penalty in prioritizeNodes.
-// Draining = node is transitioning from performance to eco (still has performance pods).
+//  1. Performance pods are rejected from eco and draining nodes.
+//  2. Standard pods pass all nodes.
 func filterNodes(ctx context.Context, args ExtenderArgs) ExtenderFilterResult {
 	result := ExtenderFilterResult{
 		FailedNodes: make(map[string]string),
@@ -259,20 +277,20 @@ func filterNodes(ctx context.Context, args ExtenderArgs) ExtenderFilterResult {
 }
 
 // shouldFilterNode returns a non-empty rejection reason if this node should be
-// excluded for this pod. Only performance-class pods are strictly filtered from eco nodes.
+// excluded for this pod. Performance pods are rejected from eco and draining nodes.
 func shouldFilterNode(nodeName string, states map[string]*joulie.NodeTwinStatus, labels map[string]string, isPerformance bool) string {
 	if !isPerformance {
-		return "" // standard/best-effort pods can go anywhere
+		return "" // standard pods can go anywhere
 	}
 
 	state, hasState := states[nodeName]
-	if hasState && (state.SchedulableClass == "eco") {
-		return "joulie: performance pod requires performance node, but node is eco"
+	if hasState && (state.SchedulableClass == "eco" || state.SchedulableClass == "draining") {
+		return "joulie: performance pod rejected from eco/draining node"
 	}
 
-	// Also check node label directly (works without NodeTwinState)
+	// Label fallback (works without NodeTwin status)
 	if labels != nil && labels["joulie.io/power-profile"] == "eco" {
-		return "joulie: performance pod requires performance node, but node is eco (via label)"
+		return "joulie: performance pod rejected from eco node (label fallback)"
 	}
 	return ""
 }
@@ -288,20 +306,38 @@ func podWorkloadClass(pod PodSpec) string {
 	return "standard"
 }
 
-// prioritizeNodes scores candidate nodes using NodeTwinState.
+// podRequestsGPU returns true if the pod requests any GPU resources.
+func podRequestsGPU(pod PodSpec) bool {
+	for _, c := range pod.Spec.Containers {
+		for k := range c.Resources.Requests {
+			if k == "nvidia.com/gpu" || k == "amd.com/gpu" || k == "gpu.intel.com/i915" {
+				return true
+			}
+		}
+		for k := range c.Resources.Limits {
+			if k == "nvidia.com/gpu" || k == "amd.com/gpu" || k == "gpu.intel.com/i915" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// prioritizeNodes scores candidate nodes using NodeTwin status.
 //
 // Scoring formula:
 //
-//	base = powerHeadroom×0.4 + (100-coolingStress)×0.3 + (100-psuStress)×0.3
+//	base = powerHeadroom * 0.4 + (100 - coolingStress) * 0.3 + (100 - psuStress) * 0.3
 //
 // Adjustments:
-//   - best-effort + eco node: +5 (save performance capacity)
-//   - draining node: -20 (operator is trying to drain it, avoid adding load)
-//   - cpu/gpu sensitivity: blend base with cap headroom (70/30)
+//   - Adaptive pressure relief: when performance nodes are congested, standard pods
+//     get a penalty on performance nodes (up to -30), steering them toward eco nodes.
+//   - CPU-only pod on GPU node: -30 (avoid wasting GPU idle power on CPU-only work).
 func prioritizeNodes(ctx context.Context, args ExtenderArgs) ExtenderPriorityList {
 	states := getNodeTwinStates(ctx)
+	hwInfo := getNodeHardwareInfo(ctx)
 
-	// Parse pod for workload profile hints
+	// Parse pod for workload class
 	podBytes, err := json.Marshal(args.Pod)
 	if err != nil {
 		log.Printf("warning: cannot marshal pod for scoring: %v", err)
@@ -311,25 +347,42 @@ func prioritizeNodes(ctx context.Context, args ExtenderArgs) ExtenderPriorityLis
 		log.Printf("warning: cannot unmarshal pod for scoring: %v", err)
 	}
 	wpClass := podWorkloadClass(pod)
-	cpuSensitivity := pod.Metadata.Annotations["joulie.io/cpu-sensitivity"]
-	gpuSensitivity := pod.Metadata.Annotations["joulie.io/gpu-sensitivity"]
+	gpuRequested := podRequestsGPU(pod)
+
+	perfPressure := computePerfPressure(states)
 
 	var result ExtenderPriorityList
 	if args.Nodes != nil {
 		for _, node := range args.Nodes.Items {
-			score := scoreNode(node.Metadata.Name, states, wpClass, cpuSensitivity, gpuSensitivity)
+			score := scoreNode(node.Metadata.Name, states, hwInfo, wpClass, perfPressure, gpuRequested)
 			result = append(result, HostPriority{Host: node.Metadata.Name, Score: score})
 		}
 	} else if args.NodeNames != nil {
 		for _, nodeName := range *args.NodeNames {
-			score := scoreNode(nodeName, states, wpClass, cpuSensitivity, gpuSensitivity)
+			score := scoreNode(nodeName, states, hwInfo, wpClass, perfPressure, gpuRequested)
 			result = append(result, HostPriority{Host: nodeName, Score: score})
 		}
 	}
 	return result
 }
 
-func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, wpClass, cpuSensitivity, gpuSensitivity string) int64 {
+// computePerfPressure returns the average congestion (0-100) across performance nodes.
+// 0 = perf nodes idle, 100 = perf nodes saturated.
+func computePerfPressure(states map[string]*joulie.NodeTwinStatus) float64 {
+	var total, count float64
+	for _, s := range states {
+		if s.SchedulableClass == "performance" && !isTwinStale(s) {
+			total += 100 - s.PredictedPowerHeadroomScore
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	return total / count
+}
+
+func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo map[string]nodeHWInfo, wpClass string, perfPressure float64, gpuRequested bool) int64 {
 	state, ok := states[nodeName]
 	if !ok {
 		return 50 // neutral score if no twin state
@@ -345,24 +398,15 @@ func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, wpClas
 
 	score := headroom*0.4 + (100-coolStress)*0.3 + (100-psuStress)*0.3
 
-	// Draining: node is transitioning from performance → eco, avoid adding new load.
-	if state.SchedulableClass == "draining" {
-		score -= 20
+	// Adaptive pressure relief: when performance nodes are congested,
+	// steer standard pods away from them to preserve capacity for performance pods.
+	if wpClass == "standard" && state.SchedulableClass == "performance" {
+		score -= perfPressure * 0.3 // up to -30 at full saturation
 	}
 
-	// best-effort workloads: slight preference for eco nodes to preserve performance capacity.
-	if wpClass == "best-effort" && state.SchedulableClass == "eco" {
-		score += 5
-	}
-
-	// Cap sensitivity: blend base score with cap headroom for sensitive workloads.
-	if cpuSensitivity == "high" {
-		cpuHeadroom := state.EffectiveCapState.CPUPct
-		score = score*0.7 + cpuHeadroom*0.3
-	}
-	if gpuSensitivity == "high" {
-		gpuHeadroom := state.EffectiveCapState.GPUPct
-		score = score*0.7 + gpuHeadroom*0.3
+	// CPU-only pod on GPU node: strongly discourage to avoid wasting GPU idle power.
+	if hw, ok := hwInfo[nodeName]; ok && hw.GPUPresent && !gpuRequested {
+		score -= 30
 	}
 
 	if score < 0 {
@@ -374,7 +418,9 @@ func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, wpClas
 	return int64(score)
 }
 
-// getNodeTwinStates retrieves NodeTwinState objects, using a short-lived cache.
+// --- NodeTwin cache ---
+
+// getNodeTwinStates retrieves NodeTwin status objects, using a short-lived cache.
 func getNodeTwinStates(ctx context.Context) map[string]*joulie.NodeTwinStatus {
 	twinStateMu.RLock()
 	if time.Since(lastCacheRefresh) < twinStateCacheTTL && twinStateCache != nil {
@@ -398,7 +444,7 @@ func getNodeTwinStates(ctx context.Context) map[string]*joulie.NodeTwinStatus {
 	list, err := dynClient.Resource(nodeTwinGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
-			log.Printf("failed to list NodeTwinState: %v", err)
+			log.Printf("failed to list NodeTwin: %v", err)
 		}
 		return make(map[string]*joulie.NodeTwinStatus)
 	}
@@ -451,6 +497,9 @@ func parseTwinState(u unstructured.Unstructured) (string, *joulie.NodeTwinStatus
 		if v, ok := status["hardwareDensityScore"].(float64); ok {
 			ts.HardwareDensityScore = v
 		}
+		if v, ok := status["estimatedPUE"].(float64); ok {
+			ts.EstimatedPUE = v
+		}
 		if v, ok := status["lastUpdated"].(string); ok {
 			if t, err := time.Parse(time.RFC3339, v); err == nil {
 				ts.LastUpdated = t
@@ -458,6 +507,79 @@ func parseTwinState(u unstructured.Unstructured) (string, *joulie.NodeTwinStatus
 		}
 	}
 	return nodeName, ts
+}
+
+// --- NodeHardware cache ---
+
+// getNodeHardwareInfo retrieves NodeHardware objects, using a short-lived cache.
+func getNodeHardwareInfo(ctx context.Context) map[string]nodeHWInfo {
+	nodeHWMu.RLock()
+	if time.Since(lastNodeHWRefresh) < twinStateCacheTTL && nodeHWCache != nil {
+		defer nodeHWMu.RUnlock()
+		return nodeHWCache
+	}
+	nodeHWMu.RUnlock()
+
+	nodeHWMu.Lock()
+	defer nodeHWMu.Unlock()
+
+	if time.Since(lastNodeHWRefresh) < twinStateCacheTTL && nodeHWCache != nil {
+		return nodeHWCache
+	}
+
+	if dynClient == nil {
+		return make(map[string]nodeHWInfo)
+	}
+
+	list, err := dynClient.Resource(nodeHardwareGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Printf("failed to list NodeHardware: %v", err)
+		}
+		return make(map[string]nodeHWInfo)
+	}
+
+	hw := make(map[string]nodeHWInfo, len(list.Items))
+	for _, item := range list.Items {
+		nodeName, info := parseNodeHardware(item)
+		if nodeName != "" {
+			hw[nodeName] = info
+		}
+	}
+	nodeHWCache = hw
+	lastNodeHWRefresh = time.Now()
+	return hw
+}
+
+// parseNodeHardware extracts minimal hardware info from a NodeHardware unstructured object.
+func parseNodeHardware(u unstructured.Unstructured) (string, nodeHWInfo) {
+	spec, _, _ := unstructured.NestedMap(u.Object, "spec")
+	var info nodeHWInfo
+
+	var nodeName string
+	if spec != nil {
+		if v, ok := spec["nodeName"].(string); ok {
+			nodeName = v
+		}
+	}
+
+	// GPU info is in spec.gpu
+	if spec != nil {
+		if gpu, ok := spec["gpu"].(map[string]interface{}); ok {
+			if v, ok := gpu["present"].(bool); ok {
+				info.GPUPresent = v
+			}
+			if v, ok := gpu["count"].(int64); ok {
+				info.GPUCount = int(v)
+			} else if v, ok := gpu["count"].(float64); ok {
+				info.GPUCount = int(v)
+			}
+			if info.GPUCount > 0 {
+				info.GPUPresent = true
+			}
+		}
+	}
+	return nodeName, info
 }
 
 // isTwinStale returns true if the twin data is too old to trust for scheduling.
@@ -480,5 +602,3 @@ func durationEnvOrDefault(key string, fallback time.Duration) time.Duration {
 	}
 	return d
 }
-
-

@@ -117,10 +117,9 @@ type WorkloadCriticality struct {
 	// Class is the QoS class for power-aware scheduling.
 	//
 	// performance: must run on uncapped (performance) nodes.
-	//   The scheduler extender rejects eco nodes for these pods.
-	// standard: prefers performance nodes, tolerates eco with some slowdown.
-	// best-effort: fine on eco nodes; scheduler gives eco nodes a slight bonus
-	//   to preserve performance capacity for critical work.
+	//   The scheduler extender rejects eco and draining nodes for these pods.
+	// standard: can run on any node; adaptive scoring steers toward eco
+	//   when performance nodes are congested.
 	Class string `json:"class,omitempty"`
 }
 
@@ -181,6 +180,9 @@ type NodeTwinStatus struct {
 	PredictedPsuStressScore     float64                    `json:"predictedPsuStressScore,omitempty"`
 	EffectiveCapState           CapState                   `json:"effectiveCapState,omitempty"`
 	HardwareDensityScore        float64                    `json:"hardwareDensityScore,omitempty"`
+	// EstimatedPUE is the estimated Power Usage Effectiveness for this node.
+	// PUE = 1.0 + overhead. Ranges from ~1.05 (idle, cool) to ~1.40 (stressed cooling).
+	EstimatedPUE                float64                    `json:"estimatedPUE,omitempty"`
 	RescheduleRecommendations   []RescheduleRecommendation `json:"rescheduleRecommendations,omitempty"`
 	GPUSlicingRecommendation    *GPUSlicingRecommendation  `json:"gpuSlicingRecommendation,omitempty"`
 	ControlStatus               *ControlStatus             `json:"controlStatus,omitempty"`

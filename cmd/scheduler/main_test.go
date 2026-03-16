@@ -9,7 +9,8 @@ import (
 
 func TestScoreNodeNoState(t *testing.T) {
 	states := map[string]*joulie.NodeTwinStatus{}
-	score := scoreNode("node1", states, "", "", "")
+	hwInfo := map[string]nodeHWInfo{}
+	score := scoreNode("node1", states, hwInfo, "standard", 0, false)
 	if score != 50 {
 		t.Errorf("expected neutral score 50 when no state, got %d", score)
 	}
@@ -35,37 +36,23 @@ func TestScoreNodeEcoHighHeadroom(t *testing.T) {
 			LastUpdated:                 now,
 		},
 	}
-	// best-effort workload: eco preferred when headroom is better
-	s1 := scoreNode("node1", states, "best-effort", "", "")
-	s2 := scoreNode("node2", states, "best-effort", "", "")
+	hwInfo := map[string]nodeHWInfo{}
+	// Standard workload on eco node with high headroom should outscore stressed perf node
+	s1 := scoreNode("node1", states, hwInfo, "standard", 0, false)
+	s2 := scoreNode("node2", states, hwInfo, "standard", 0, false)
 	if s1 <= s2 {
-		t.Errorf("eco node with high headroom should outscore stressed performance node for best-effort: %d vs %d", s1, s2)
+		t.Errorf("eco node with high headroom should outscore stressed performance node for standard: %d vs %d", s1, s2)
 	}
 }
 
-func TestScoreNodeDrainingPenalty(t *testing.T) {
-	now := time.Now()
+func TestScoreNodeDrainingFiltered(t *testing.T) {
 	states := map[string]*joulie.NodeTwinStatus{
-		"draining-node": {
-			SchedulableClass:            "draining",
-			PredictedPowerHeadroomScore: 80,
-			PredictedCoolingStressScore: 10,
-			PredictedPsuStressScore:     10,
-			LastUpdated:                 now,
-		},
-		"normal-node": {
-			SchedulableClass:            "performance",
-			PredictedPowerHeadroomScore: 80,
-			PredictedCoolingStressScore: 10,
-			PredictedPsuStressScore:     10,
-			LastUpdated:                 now,
-		},
+		"draining-node": {SchedulableClass: "draining"},
 	}
-	// draining node should score lower than identical non-draining node
-	sDraining := scoreNode("draining-node", states, "standard", "", "")
-	sNormal := scoreNode("normal-node", states, "standard", "", "")
-	if sDraining >= sNormal {
-		t.Errorf("draining node should score lower: draining=%d normal=%d", sDraining, sNormal)
+	// Draining nodes ARE filtered for performance pods (same as eco).
+	reason := shouldFilterNode("draining-node", states, nil, true)
+	if reason == "" {
+		t.Error("draining node should be filtered for performance pod")
 	}
 }
 
@@ -73,7 +60,6 @@ func TestFilterNodesEcoRejected(t *testing.T) {
 	states := map[string]*joulie.NodeTwinStatus{
 		"eco-node": {SchedulableClass: "eco"},
 	}
-	// Performance pod requires non-eco
 	reason := shouldFilterNode("eco-node", states, nil, true)
 	if reason == "" {
 		t.Error("expected eco node to be filtered for performance pod")
@@ -84,7 +70,6 @@ func TestFilterNodesStandardAccepted(t *testing.T) {
 	states := map[string]*joulie.NodeTwinStatus{
 		"eco-node": {SchedulableClass: "eco"},
 	}
-	// Standard pod can go anywhere
 	reason := shouldFilterNode("eco-node", states, nil, false)
 	if reason != "" {
 		t.Errorf("expected eco node to be accepted for standard pod, got: %s", reason)
@@ -98,18 +83,19 @@ func TestScoreNodeStaleTwinFallsBackToNeutral(t *testing.T) {
 			PredictedPowerHeadroomScore: 90,
 			PredictedCoolingStressScore: 5,
 			PredictedPsuStressScore:     5,
-			LastUpdated:                 time.Now().Add(-10 * time.Minute), // 10 min ago = stale
+			LastUpdated:                 time.Now().Add(-10 * time.Minute),
 		},
 		"fresh-node": {
 			SchedulableClass:            "performance",
 			PredictedPowerHeadroomScore: 90,
 			PredictedCoolingStressScore: 5,
 			PredictedPsuStressScore:     5,
-			LastUpdated:                 time.Now(), // just updated
+			LastUpdated:                 time.Now(),
 		},
 	}
-	sStale := scoreNode("stale-node", states, "standard", "", "")
-	sFresh := scoreNode("fresh-node", states, "standard", "", "")
+	hwInfo := map[string]nodeHWInfo{}
+	sStale := scoreNode("stale-node", states, hwInfo, "standard", 0, false)
+	sFresh := scoreNode("fresh-node", states, hwInfo, "standard", 0, false)
 	if sStale != 50 {
 		t.Errorf("stale node should get neutral score 50, got %d", sStale)
 	}
@@ -122,7 +108,6 @@ func TestScoreNodeStaleTwinFallsBackToNeutral(t *testing.T) {
 }
 
 func TestIsTwinStaleWithZeroTimestamp(t *testing.T) {
-	// Zero timestamp = operator hasn't populated status yet; treat as stale
 	ts := &joulie.NodeTwinStatus{}
 	if !isTwinStale(ts) {
 		t.Error("zero LastUpdated should be treated as stale (unpopulated twin)")
@@ -143,22 +128,24 @@ func TestIsTwinStaleWithOldTimestamp(t *testing.T) {
 	}
 }
 
-func TestFilterNodesDrainingNotFiltered(t *testing.T) {
+func TestFilterNodesDrainingFilteredForPerformance(t *testing.T) {
 	states := map[string]*joulie.NodeTwinStatus{
 		"draining-node": {SchedulableClass: "draining"},
 	}
-	// Draining nodes are NOT filtered (they're penalized in scoring instead).
-	// The node is transitioning to eco but hasn't completed - existing perf pods
-	// need to finish, and filtering would prevent that.
+	// Performance pods are rejected from draining nodes.
 	reason := shouldFilterNode("draining-node", states, nil, true)
+	if reason == "" {
+		t.Error("draining node should be filtered for performance pod")
+	}
+	// Standard pods can still land on draining nodes.
+	reason = shouldFilterNode("draining-node", states, nil, false)
 	if reason != "" {
-		t.Errorf("draining node should not be filtered (only penalized in scoring), got: %s", reason)
+		t.Errorf("draining node should accept standard pod, got: %s", reason)
 	}
 }
 
 func TestFilterNodesNoStateAccepted(t *testing.T) {
 	states := map[string]*joulie.NodeTwinStatus{}
-	// No twin state = allow scheduling (don't block if operator hasn't run yet)
 	reason := shouldFilterNode("new-node", states, nil, true)
 	if reason != "" {
 		t.Errorf("expected no filter for unknown node, got: %s", reason)
@@ -175,7 +162,8 @@ func TestScoreNodeAllZeroStress(t *testing.T) {
 			LastUpdated:                 time.Now(),
 		},
 	}
-	score := scoreNode("ideal", states, "standard", "", "")
+	hwInfo := map[string]nodeHWInfo{}
+	score := scoreNode("ideal", states, hwInfo, "standard", 0, false)
 	// headroom*0.4 + (100-0)*0.3 + (100-0)*0.3 = 40+30+30 = 100
 	if score != 100 {
 		t.Errorf("expected perfect score 100 for zero stress, got %d", score)
@@ -192,52 +180,144 @@ func TestScoreNodeAllMaxStress(t *testing.T) {
 			LastUpdated:                 time.Now(),
 		},
 	}
-	score := scoreNode("stressed", states, "standard", "", "")
+	hwInfo := map[string]nodeHWInfo{}
+	score := scoreNode("stressed", states, hwInfo, "standard", 0, false)
 	if score != 0 {
 		t.Errorf("expected minimum score 0 for max stress, got %d", score)
 	}
 }
 
-func TestScoreNodeBestEffortEcoBonus(t *testing.T) {
+func TestScoreNodeAdaptivePressureRelief(t *testing.T) {
+	now := time.Now()
 	states := map[string]*joulie.NodeTwinStatus{
-		"eco": {
-			SchedulableClass:            "eco",
-			PredictedPowerHeadroomScore: 50,
-			PredictedCoolingStressScore: 30,
-			PredictedPsuStressScore:     30,
-			LastUpdated:                 time.Now(),
-		},
-		"perf": {
+		"perf-node": {
 			SchedulableClass:            "performance",
 			PredictedPowerHeadroomScore: 50,
 			PredictedCoolingStressScore: 30,
 			PredictedPsuStressScore:     30,
-			LastUpdated:                 time.Now(),
+			LastUpdated:                 now,
+		},
+		"eco-node": {
+			SchedulableClass:            "eco",
+			PredictedPowerHeadroomScore: 50,
+			PredictedCoolingStressScore: 30,
+			PredictedPsuStressScore:     30,
+			LastUpdated:                 now,
 		},
 	}
-	sEco := scoreNode("eco", states, "best-effort", "", "")
-	sPerf := scoreNode("perf", states, "best-effort", "", "")
-	if sEco <= sPerf {
-		t.Errorf("eco node should get bonus for best-effort: eco=%d perf=%d", sEco, sPerf)
+	hwInfo := map[string]nodeHWInfo{}
+
+	// With high perf pressure, standard pods should prefer eco over performance
+	highPressure := 80.0
+	sPerfNode := scoreNode("perf-node", states, hwInfo, "standard", highPressure, false)
+	sEcoNode := scoreNode("eco-node", states, hwInfo, "standard", highPressure, false)
+	if sEcoNode <= sPerfNode {
+		t.Errorf("standard pod under high pressure should prefer eco node: eco=%d perf=%d", sEcoNode, sPerfNode)
+	}
+
+	// With zero pressure, both should score the same
+	sPerfNoPressure := scoreNode("perf-node", states, hwInfo, "standard", 0, false)
+	sEcoNoPressure := scoreNode("eco-node", states, hwInfo, "standard", 0, false)
+	if sPerfNoPressure != sEcoNoPressure {
+		t.Errorf("with zero pressure, same-stats nodes should score equally: perf=%d eco=%d", sPerfNoPressure, sEcoNoPressure)
 	}
 }
 
-func TestScoreNodeCapSensitivityWithFreshData(t *testing.T) {
+func TestScoreNodeCPUOnlyGPUPenalty(t *testing.T) {
+	now := time.Now()
 	states := map[string]*joulie.NodeTwinStatus{
-		"node1": {
-			SchedulableClass:            "eco",
-			PredictedPowerHeadroomScore: 60,
-			PredictedCoolingStressScore: 20,
-			PredictedPsuStressScore:     20,
-			EffectiveCapState:           joulie.CapState{CPUPct: 100, GPUPct: 100},
-			LastUpdated:                 time.Now(),
+		"gpu-node": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 80,
+			PredictedCoolingStressScore: 10,
+			PredictedPsuStressScore:     10,
+			LastUpdated:                 now,
+		},
+		"cpu-node": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 80,
+			PredictedCoolingStressScore: 10,
+			PredictedPsuStressScore:     10,
+			LastUpdated:                 now,
 		},
 	}
-	// High CPU sensitivity should blend cap headroom into score
-	sNormal := scoreNode("node1", states, "standard", "", "")
-	sCPUSensitive := scoreNode("node1", states, "standard", "high", "")
-	// With CPUPct=100, blending should increase score
-	if sCPUSensitive < sNormal {
-		t.Errorf("high cpu sensitivity with 100%% cap should increase score: normal=%d sensitive=%d", sNormal, sCPUSensitive)
+	hwInfo := map[string]nodeHWInfo{
+		"gpu-node": {GPUPresent: true, GPUCount: 8},
+		"cpu-node": {GPUPresent: false, GPUCount: 0},
+	}
+
+	// CPU-only pod should prefer CPU-only node over GPU node
+	sGPU := scoreNode("gpu-node", states, hwInfo, "standard", 0, false)
+	sCPU := scoreNode("cpu-node", states, hwInfo, "standard", 0, false)
+	if sGPU >= sCPU {
+		t.Errorf("CPU-only pod should prefer CPU node over GPU node: gpu=%d cpu=%d", sGPU, sCPU)
+	}
+
+	// GPU pod should NOT get the penalty
+	sGPUPod := scoreNode("gpu-node", states, hwInfo, "standard", 0, true)
+	if sGPUPod != sCPU {
+		t.Errorf("GPU pod on GPU node should score same as CPU pod on CPU node: gpuPod=%d cpuOnCpu=%d", sGPUPod, sCPU)
+	}
+}
+
+func TestComputePerfPressure(t *testing.T) {
+	now := time.Now()
+	states := map[string]*joulie.NodeTwinStatus{
+		"perf1": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 40, // pressure = 60
+			LastUpdated:                 now,
+		},
+		"perf2": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 20, // pressure = 80
+			LastUpdated:                 now,
+		},
+		"eco1": {
+			SchedulableClass:            "eco",
+			PredictedPowerHeadroomScore: 10, // should be ignored
+			LastUpdated:                 now,
+		},
+	}
+	pressure := computePerfPressure(states)
+	expected := 70.0 // (60+80)/2
+	if pressure != expected {
+		t.Errorf("expected perfPressure=%.1f, got %.1f", expected, pressure)
+	}
+}
+
+func TestComputePerfPressureEmpty(t *testing.T) {
+	states := map[string]*joulie.NodeTwinStatus{}
+	pressure := computePerfPressure(states)
+	if pressure != 0 {
+		t.Errorf("expected 0 pressure for empty states, got %.1f", pressure)
+	}
+}
+
+func TestPodWorkloadClass(t *testing.T) {
+	// Default
+	pod := PodSpec{}
+	if podWorkloadClass(pod) != "standard" {
+		t.Errorf("expected default 'standard', got %s", podWorkloadClass(pod))
+	}
+
+	// Annotated
+	pod.Metadata.Annotations = map[string]string{"joulie.io/workload-class": "performance"}
+	if podWorkloadClass(pod) != "performance" {
+		t.Errorf("expected 'performance', got %s", podWorkloadClass(pod))
+	}
+}
+
+func TestPodRequestsGPU(t *testing.T) {
+	// No GPU
+	pod := PodSpec{Spec: PodBody{Containers: []ContainerSpec{{}}}}
+	if podRequestsGPU(pod) {
+		t.Error("expected no GPU request")
+	}
+
+	// GPU in requests
+	pod.Spec.Containers[0].Resources.Requests = map[string]interface{}{"nvidia.com/gpu": "1"}
+	if !podRequestsGPU(pod) {
+		t.Error("expected GPU request detected")
 	}
 }

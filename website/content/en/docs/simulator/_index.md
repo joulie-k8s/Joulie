@@ -15,7 +15,7 @@ The simulator mirrors the real Joulie architecture:
 - simulated workloads carry `WorkloadProfile`-compatible fields (criticality, migratability, cap sensitivity),
 - facility stress model (`simulator/pkg/facility`) provides PSU and cooling stress signals.
 
-The heterogeneous cluster control loop benchmark (`experiments/04-heterogeneous_cluster_control_loop/`) demonstrates the full architecture across three scenarios: baseline, caps-only, and caps+scheduler steering.
+The heterogeneous benchmark (`experiments/02-heterogeneous-benchmark/`) demonstrates the full architecture across three baselines: no Joulie, static partition, and queue-aware policy with scheduler extender steering.
 
 Use simulator docs after you are familiar with the core operator/agent control loop in Getting Started + Architecture.
 

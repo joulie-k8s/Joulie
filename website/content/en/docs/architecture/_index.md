@@ -39,7 +39,7 @@ The operator contains three controllers that share the same reconcile entry poin
 
 - **Twin controller**: ingests per-node telemetry into `NodeTwin.status`. Runs the `CoolingModel` and PSU stress computations. Makes facility stress signals available to the scheduler extender.
 - **Policy controller**: reads `NodeTwin.status` + pod demand signals, runs the policy algorithm (`pkg/operator/policy/`), writes `NodeTwin.spec` and the `joulie.io/power-profile` node label. The state machine (`pkg/operator/fsm/`) enforces downgrade guards: nodes cannot transition from performance to eco while performance-sensitive pods are still running. Transition state is tracked via `NodeTwin.status.schedulableClass`.
-- **Migration controller**: evaluates node stress levels and workload migratability (`pkg/operator/migration/`). When CoolingStress or PSUStress exceeds thresholds, generates reschedule recommendations for reschedulable best-effort workloads.
+- **Migration controller**: evaluates node stress levels and workload migratability (`pkg/operator/migration/`). When CoolingStress or PSUStress exceeds thresholds, generates reschedule recommendations for reschedulable standard workloads.
 
 ### Agent
 
@@ -51,7 +51,7 @@ It discovers local hardware, publishes `NodeHardware`, reads `NodeTwin.spec`, an
 The scheduler extender is a read-only HTTP service that participates in the Kubernetes scheduling cycle.
 
 - **Filter**: rejects eco nodes for performance pods (hard rule).
-- **Score**: ranks nodes using `score = headroom*0.4 + (100-coolingStress)*0.3 + (100-psuStress)*0.3`, with workload-class adjustments (best-effort +5 on eco, draining -20).
+- **Score**: ranks nodes using `score = headroom*0.4 + (100-coolingStress)*0.3 + (100-psuStress)*0.3`, with workload-class adjustments (standard +5 on eco when performance nodes are congested, draining -20).
 
 ### kubectl plugin
 

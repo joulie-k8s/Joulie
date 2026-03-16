@@ -128,7 +128,7 @@ This keeps scheduling decisions lightweight (one cache lookup per node per sched
 
 The twin also drives operator decisions:
 
-- **Migration triggers**: when CoolingStress or PSUStress exceeds 70 on a node, the twin generates reschedule recommendations for reschedulable best-effort workloads. The operator can then trigger migration away from stressed nodes.
+- **Migration triggers**: when CoolingStress or PSUStress exceeds 70 on a node, the twin generates reschedule recommendations for reschedulable standard workloads. The operator can then trigger migration away from stressed nodes.
 - **Transition guard**: when a node is transitioning from performance to eco, the twin sets `schedulableClass` to `draining` until all performance pods have completed or been rescheduled.
 - **GPU slicing suggestions**: for GPU nodes with slicing support, the twin recommends the best MIG or time-slicing configuration based on the dominant GPU workload intensity pattern. These are advisory: the admin applies them during planned maintenance. See [GPU Slicing Recommendations]({{< relref "/docs/architecture/dra.md" >}}).
 

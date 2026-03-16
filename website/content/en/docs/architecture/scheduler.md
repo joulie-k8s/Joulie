@@ -3,7 +3,7 @@ title: "Scheduler Extender"
 weight: 40
 ---
 
-Joulie ships a scheduler extender that steers workloads away from eco nodes and thermally or electrically stressed nodes.
+Joulie ships a scheduler extender that steers workloads toward appropriate nodes based on power profile, thermal stress, and hardware capabilities.
 
 ## Why a scheduler component is needed
 
@@ -31,18 +31,13 @@ The scheduler extender is always deployed as part of Joulie. Without it, pods ru
 
 ## Filter logic
 
-The extender applies one hard rule: **performance pods are rejected from eco nodes**.
+The extender applies one hard rule: **performance pods are rejected from eco and draining nodes**.
 
-### Eco node rejection for performance pods
+A pod is treated as performance if it carries `joulie.io/workload-class: performance`.
 
-A pod is treated as performance if:
+For such pods, the extender rejects any node whose `NodeTwin.status` has `schedulableClass` set to `"eco"` or `"draining"`. A label-based fallback also rejects nodes with `joulie.io/power-profile: eco` when no NodeTwin status is present.
 
-- it carries `joulie.io/workload-class: performance`, or
-- a matching `WorkloadProfile` has `criticality: performance`.
-
-For such pods, the extender rejects any node whose `NodeTwin.status` has `schedulableClass: eco`.
-
-All other pods (`standard`, `best-effort`, and unannotated pods) pass the filter unconditionally.
+Standard pods (the default, or `joulie.io/workload-class: standard`) pass the filter unconditionally. Unknown nodes (no NodeTwin state) are allowed for all pod classes.
 
 ## Score logic
 
@@ -56,40 +51,66 @@ score = headroom * 0.4 + (100 - coolingStress) * 0.3 + (100 - psuStress) * 0.3
 
 Where:
 
-- `headroom`: available CPU/GPU compute headroom on the node (0-100), from `NodeTwin.status.PredictedPowerHeadroomScore`.
-- `coolingStress`: predicted % of cooling capacity in use (0-100), from `NodeTwin.status.PredictedCoolingStressScore`.
-- `psuStress`: predicted % of PDU/rack PSU capacity in use (0-100), from `NodeTwin.status.PredictedPsuStressScore`.
+- `headroom`: available power headroom on the node (0-100), from `NodeTwin.status.predictedPowerHeadroomScore`.
+- `coolingStress`: predicted cooling stress (0-100), from `NodeTwin.status.predictedCoolingStressScore`.
+- `psuStress`: predicted PSU stress (0-100), from `NodeTwin.status.predictedPsuStressScore`.
 
 Higher scores are better.
 A node with high headroom and low facility stress receives the highest score.
-If a node has no `NodeTwin.status`, a neutral score of 50 is returned.
 
-### Workload class adjustments
+### Stale twin fallback
 
-| Condition | Adjustment |
-|-----------|-----------|
-| `schedulableClass == "draining"` | -20 (avoid adding load to transitioning nodes) |
-| `workload-class == "best-effort"` AND `schedulableClass == "eco"` | +5 (concentrate batch work on eco nodes) |
+If the NodeTwin's `lastUpdated` timestamp is older than 5 minutes (configurable via `TWIN_STALENESS_THRESHOLD`), the node receives a neutral score of 50. This prevents stale data from an operator that may have stopped updating from influencing placement. Nodes with no `lastUpdated` timestamp at all are also treated as stale.
 
-### Cap sensitivity scoring
+### Adaptive performance pressure relief
 
-For workloads that annotate sensitivity:
+For standard pods on performance nodes, a pressure penalty is applied:
 
 ```
-joulie.io/cpu-sensitivity: high  → score = score*0.7 + cpuCapHeadroom*0.3
-joulie.io/gpu-sensitivity: high  → score = score*0.7 + gpuCapHeadroom*0.3
+if workloadClass == "standard" AND schedulableClass == "performance":
+    score -= perfPressure * 0.3
 ```
 
-This blends the base score with remaining cap headroom for sensitive workloads, penalizing nodes that are near their cap ceiling.
+Where `perfPressure` is computed once per scoring batch as the average congestion across all performance nodes:
 
-All scores are clamped to `[0, 100]`.
+```
+perfPressure = average(100 - headroom) across all non-stale performance nodes
+```
 
-## Data sources: NodeTwin CR
+At full saturation (`perfPressure = 100`), this subtracts up to 30 points from the score on performance nodes. The effect steers standard pods toward eco nodes when performance nodes are congested, preserving performance capacity for performance-class workloads.
 
-The extender reads `NodeTwin` CRs (one per managed node).
-Values are cached with a 30-second TTL to avoid hitting the API server on every scheduling decision.
+When performance nodes are idle (`perfPressure = 0`), there is no penalty and standard pods spread normally.
+
+### CPU-only pod GPU penalty
+
+CPU-only pods (those not requesting `nvidia.com/gpu`, `amd.com/gpu`, or `gpu.intel.com/i915`) receive a -30 score penalty on GPU nodes. GPU presence is detected from cached NodeHardware CRs. This discourages CPU-only workloads from occupying GPU nodes where they waste GPU idle power.
+
+Pods that request GPU resources do not receive this penalty.
+
+### Score clamping
+
+All scores are clamped to `[0, 100]`. Nodes with no NodeTwin state receive a neutral score of 50.
+
+## Data sources
+
+The extender reads two types of Joulie CRs, both cached with a 30-second TTL to avoid hitting the API server on every scheduling decision:
+
+- **NodeTwin CRs** - provide `schedulableClass`, `predictedPowerHeadroomScore`, `predictedCoolingStressScore`, `predictedPsuStressScore`, and `lastUpdated` for filter and score decisions.
+- **NodeHardware CRs** - provide GPU presence information for the CPU-only GPU penalty.
 
 `NodeTwin.status` is populated by the operator's twin controller, which runs the digital twin model using telemetry from Prometheus and `NodeHardware`.
+
+## Summary
+
+| Condition | Effect |
+|-----------|--------|
+| Performance pod + eco/draining node | Hard reject (filter) |
+| Standard pod + any node | Allowed (no filter) |
+| Unknown node (no NodeTwin) + any pod | Allowed, neutral score (50) |
+| High headroom, low stress | High score |
+| Standard pod + performance node under pressure | Score penalty (up to -30) |
+| CPU-only pod + GPU node | Score penalty (-30) |
+| Stale or missing NodeTwin | Neutral score (50) |
 
 ## What the extender does not do
 

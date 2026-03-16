@@ -47,6 +47,7 @@ func reconcileNodeTwin(ctx context.Context, dynClient dynamic.Interface, nodeNam
 		PredictedPsuStressScore:     out.PredictedPsuStressScore,
 		EffectiveCapState:           out.EffectiveCapState,
 		HardwareDensityScore:        out.HardwareDensityScore,
+		EstimatedPUE:                out.EstimatedPUE,
 		GPUSlicingRecommendation:    out.GPUSlicingRecommendation,
 		LastUpdated:                 out.LastUpdated,
 	}
@@ -340,6 +341,7 @@ func nodeTwinStatusToMap(status joulie.NodeTwinStatus) map[string]interface{} {
 		"predictedCoolingStressScore": status.PredictedCoolingStressScore,
 		"predictedPsuStressScore":     status.PredictedPsuStressScore,
 		"hardwareDensityScore":        status.HardwareDensityScore,
+		"estimatedPUE":                status.EstimatedPUE,
 		"lastUpdated":                 status.LastUpdated.Format(time.RFC3339),
 		"effectiveCapState": map[string]interface{}{
 			"cpuPct": status.EffectiveCapState.CPUPct,

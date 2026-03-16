@@ -75,8 +75,7 @@ Joulie uses a single `joulie.io/workload-class` pod annotation to drive placemen
 | Class | Scheduler behavior |
 |-------|-------------------|
 | `performance` | Hard-rejected from eco nodes. Must run on full-power nodes. |
-| `standard` | Default. Prefers performance nodes, tolerates eco. |
-| `best-effort` | Slight preference for eco nodes. Leaves performance capacity free. |
+| `standard` | Default. Can run on any node. Adaptive scoring steers toward eco when performance nodes are congested. |
 
 ## Digital twin
 
@@ -118,7 +117,7 @@ The twin outputs are written to `NodeTwin.status` (one per managed node). The sc
 
 ### How it feeds the operator
 
-When CoolingStress or PSUStress exceeds 70 on a node, the twin generates reschedule recommendations for reschedulable best-effort workloads, enabling the operator to trigger migration away from stressed nodes.
+When CoolingStress or PSUStress exceeds 70 on a node, the twin generates reschedule recommendations for reschedulable standard workloads, enabling the operator to trigger migration away from stressed nodes.
 
 For GPU nodes with slicing support, the twin also produces GPU slicing recommendations (MIG or time-slicing) based on observed workload intensity patterns. These are advisory: cluster admins review and apply them during maintenance windows.
 

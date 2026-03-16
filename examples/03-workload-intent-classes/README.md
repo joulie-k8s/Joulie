@@ -5,7 +5,7 @@ This example demonstrates scheduler adaptation to Joulie profile flips even when
 You will run:
 
 - operator policy loop that flips node profiles every `N` minutes,
-- two Deployments with scheduling classes (`performance`, `best-effort`) expressed via the `joulie.io/workload-class` pod annotation,
+- two Deployments with scheduling classes (`performance`, `standard`) expressed via the `joulie.io/workload-class` pod annotation,
 - a recycler CronJob that periodically deletes pods so new pods are rescheduled against the latest node profile.
 
 ## 1) Preconditions
@@ -75,9 +75,8 @@ Note: `servicemonitor-operator.yaml` assumes Prometheus Operator release label `
 
 What each workload expresses (single source of truth is the `joulie.io/workload-class` annotation):
 
-- `performance`: the scheduler extender hard-rejects eco nodes for this pod
-- `best-effort`: the extender prefers eco nodes for this pod
-- no annotation: implicit `standard` class, prefers performance nodes but tolerates eco
+- `performance`: the scheduler extender hard-rejects eco and draining nodes for this pod
+- `standard` (or no annotation): can run on any node; adaptive scoring steers toward eco when performance nodes are congested
 
 ## 3) Observe pod movement across nodes
 
@@ -86,7 +85,7 @@ watch -n 5 'kubectl -n joulie-intent-demo get pods -o wide; echo; kubectl get no
 ```
 
 You should see pods recreated roughly every minute by the recycler, then placed according to the profile labels currently set by the operator.
-If a node is transitioning `ActivePerformance -> ActiveEco` and still has running performance workloads, the operator sets `NodeTwinState.schedulableClass` to `draining` and the extender applies a score penalty to avoid placing new workloads there.
+If a node is transitioning `ActivePerformance -> ActiveEco` and still has running performance workloads, the operator sets `NodeTwinState.schedulableClass` to `draining` and the extender filters it out for performance pods (same as eco).
 
 ## 4) Grafana dashboard for this demo
 

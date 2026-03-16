@@ -43,7 +43,7 @@ spec:
                   properties:
                     class:
                       type: string
-                      enum: ["performance", "standard", "best-effort"]
+                      enum: ["performance", "standard"]
                 migratability:
                   type: object
                   properties:

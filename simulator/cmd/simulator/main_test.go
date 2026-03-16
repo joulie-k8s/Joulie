@@ -551,7 +551,7 @@ func TestInjectTraceJobsSetsExtendedResourceLimits(t *testing.T) {
 		jobs: []*simJob{
 			{
 				JobID:             "gpu-1",
-				Class:             "general",
+				Class:             "standard",
 				Namespace:         "default",
 				SubmitOffsetSec:   0,
 				RequestedCPUCores: 2,
@@ -591,7 +591,7 @@ func TestInjectTraceJobsUsesAMDResourceAndSelector(t *testing.T) {
 		jobs: []*simJob{
 			{
 				JobID:             "gpu-amd-1",
-				Class:             "general",
+				Class:             "standard",
 				Namespace:         "default",
 				SubmitOffsetSec:   0,
 				RequestedCPUCores: 2,
@@ -635,7 +635,7 @@ func TestInjectTraceJobsAddsKWOKToleration(t *testing.T) {
 		jobs: []*simJob{
 			{
 				JobID:             "cpu-1",
-				Class:             "general",
+				Class:             "standard",
 				Namespace:         "default",
 				SubmitOffsetSec:   0,
 				RequestedCPUCores: 1,

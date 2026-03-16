@@ -24,8 +24,9 @@ That model drives two things:
 2. **Scheduling decisions**: a scheduler extender reads the twin's computed
    `NodeTwin.status` (power headroom, predicted cooling stress, PSU load) to steer
    new pods toward nodes with the best energy-efficiency / performance trade-off.
-   Performance workloads are kept on uncapped nodes; best-effort batch jobs
-   are directed to eco (capped) nodes to preserve performance capacity.
+   Performance workloads are kept on uncapped nodes; standard workloads
+   can run on any node, with adaptive scoring that steers toward eco nodes
+   when performance nodes are congested.
 
 The feedback loop: telemetry → twin update → cap decisions → new pod placement →
 updated telemetry. This keeps the cluster's power envelope stable and prevents
@@ -74,8 +75,7 @@ Joulie uses a single `joulie.io/workload-class` pod annotation to drive placemen
 | Class | Scheduler behavior |
 |-------|--------------------|
 | `performance` | Hard-rejects eco (capped) nodes. Must run on full-power nodes. |
-| `standard` | Default. Prefers performance nodes, tolerates eco. |
-| `best-effort` | Slight preference for eco nodes. Leaves performance capacity free. |
+| `standard` | Default. Can run on any node. Adaptive scoring steers toward eco when performance nodes are congested. |
 
 The scheduler extender is always deployed as part of Joulie (lightweight HTTP server).
 Without it, pods run anywhere and get standard Kubernetes scheduling.
@@ -85,7 +85,7 @@ Without it, pods run anywhere and get standard Kubernetes scheduling.
 | Label / Annotation | Where | Purpose |
 |--------------------|-------|---------|
 | `joulie.io/power-profile` | Node label | `eco` or `performance`. Set by operator. |
-| `joulie.io/workload-class` | Pod annotation | `performance`, `standard`, `best-effort`. |
+| `joulie.io/workload-class` | Pod annotation | `performance`, `standard`. |
 | `joulie.io/reschedulable` | Pod annotation | `true` if pod can be restarted on another node. |
 | `joulie.io/cpu-sensitivity` | Pod annotation | `high`/`medium`/`low`. Overrides classifier output. |
 | `joulie.io/gpu-sensitivity` | Pod annotation | `high`/`medium`/`low`. Overrides classifier output. |
@@ -110,9 +110,9 @@ simulator/          Workload and power simulator for offline experiments
 charts/joulie/      Helm chart (includes Grafana dashboard)
 config/crd/         CRD manifests
 experiments/        Benchmark experiments
-  01-kwok-benchmark/
+  01-cpu-only-benchmark/
   02-heterogeneous-benchmark/
-  04-heterogeneous_cluster_control_loop/
+  03-homogeneous-h100-benchmark/
 examples/           Runnable examples
 website/            Documentation site
 ```
@@ -130,7 +130,7 @@ helm install joulie charts/joulie \
 
 # Annotate a performance pod
 kubectl annotate pod my-gpu-job joulie.io/workload-class=performance
-kubectl annotate pod my-batch-job joulie.io/workload-class=best-effort joulie.io/reschedulable=true
+kubectl annotate pod my-batch-job joulie.io/workload-class=standard joulie.io/reschedulable=true
 ```
 
 See the [docs](https://joulie-k8s.github.io/Joulie/) for full setup instructions.
@@ -138,12 +138,12 @@ See the [docs](https://joulie-k8s.github.io/Joulie/) for full setup instructions
 ## Run the experiments
 
 ```bash
-# Fast simulation (no cluster needed) - 3 scenarios, ~200 jobs, ~1s
-go run ./experiments/04-heterogeneous_cluster_control_loop/
+# CPU-only benchmark (KWOK cluster)
+experiments/01-cpu-only-benchmark/scripts/05_sweep.py --config experiments/01-cpu-only-benchmark/configs/benchmark-debug.yaml
 
-# On a KWOK cluster
-experiments/04-heterogeneous_cluster_control_loop/scripts/10_setup_cluster.sh
-experiments/04-heterogeneous_cluster_control_loop/scripts/20_run_scenarios.sh
-python3 experiments/04-heterogeneous_cluster_control_loop/scripts/30_collect.py
-python3 experiments/04-heterogeneous_cluster_control_loop/scripts/40_plot.py
+# Heterogeneous benchmark (KWOK cluster)
+experiments/02-heterogeneous-benchmark/scripts/05_sweep.py --config experiments/02-heterogeneous-benchmark/configs/benchmark-debug.yaml
+
+# Homogeneous H100 benchmark (KWOK cluster)
+experiments/03-homogeneous-h100-benchmark/scripts/05_sweep.py --config experiments/03-homogeneous-h100-benchmark/configs/benchmark-debug.yaml
 ```

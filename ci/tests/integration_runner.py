@@ -250,8 +250,8 @@ def mk_pod_yaml(
 
     workload_class sets the ``joulie.io/workload-class`` annotation which is the
     single source of truth for placement intent.  Valid values: ``performance``,
-    ``standard``, ``best-effort``.  When empty no annotation is added (defaults
-    to ``standard`` in the scheduler extender).
+    ``standard``.  When empty no annotation is added (defaults to ``standard``
+    in the scheduler extender).
     """
     lines = [
         "apiVersion: v1",
@@ -643,11 +643,11 @@ def test_fsm_and_labels(ctx: Ctx) -> None:
     delete_pod("joulie-it", "perf-a")
     wait_node_eco_ready(ctx.eco_node)
 
-    # Best-effort pod must not trigger draining.
-    apply_yaml(mk_pod_yaml("besteffort-a"))
-    wait_pod_phase("joulie-it", "besteffort-a", "Running")
+    # Standard pod (no annotation) must not trigger draining.
+    apply_yaml(mk_pod_yaml("standard-a"))
+    wait_pod_phase("joulie-it", "standard-a", "Running")
     wait_node_eco_ready(ctx.eco_node)
-    delete_pod("joulie-it", "besteffort-a")
+    delete_pod("joulie-it", "standard-a")
 
     # eco → performance clears draining immediately.
     set_static_hp_frac("1")
@@ -686,7 +686,7 @@ def test_scheduling(ctx: Ctx) -> None:
 
     The ``joulie.io/workload-class`` annotation is the single source of truth
     for placement intent.  The scheduler extender filters eco nodes for
-    ``performance`` pods; ``standard`` and ``best-effort`` pods can go anywhere.
+    ``performance`` pods; ``standard`` pods can go anywhere.
 
     With two nodes:
     - frac=1 → both nodes in performance
@@ -745,26 +745,6 @@ def test_scheduling(ctx: Ctx) -> None:
     wait_pod_phase("joulie-it", "sch-std-on-eco", "Running")
     delete_pod("joulie-it", "sch-std-on-eco")
 
-    # --- Best-effort pod schedules on eco node (no restriction) ---
-    delete_pod("joulie-it", "sch-be-on-eco")
-    apply_yaml(mk_pod_yaml(
-        "sch-be-on-eco",
-        workload_class="best-effort",
-        node_selector={"kubernetes.io/hostname": ctx.eco_node},
-    ))
-    wait_pod_phase("joulie-it", "sch-be-on-eco", "Running")
-    delete_pod("joulie-it", "sch-be-on-eco")
-
-    # --- Best-effort pod schedules on performance node ---
-    delete_pod("joulie-it", "sch-be-on-perf")
-    apply_yaml(mk_pod_yaml(
-        "sch-be-on-perf",
-        workload_class="best-effort",
-        node_selector={"kubernetes.io/hostname": ctx.perf_node},
-    ))
-    wait_pod_phase("joulie-it", "sch-be-on-perf", "Running")
-    delete_pod("joulie-it", "sch-be-on-perf")
-
     # NOTE: Draining is no longer a node label. The scheduler extender
     # handles draining via NodeTwinState.schedulableClass scoring penalty.
 
@@ -783,7 +763,7 @@ def test_classification_matrix(ctx: Ctx) -> None:
       a node that WILL transition to eco).
     - Then trigger frac=0: operator tries to move eco_node to eco.
       · If pod is performance → draining=true  (guarded transition)
-      · If pod is standard/best-effort/unset → eco_node goes to eco directly
+      · If pod is standard/unset → eco_node goes to eco directly
     - Clean up and wait for eco_node to settle in eco before next case.
     """
     log("IT-CLS-*")
@@ -792,8 +772,7 @@ def test_classification_matrix(ctx: Ctx) -> None:
     cases: list[tuple[str, str, bool]] = [
         ("cls-01-perf-class", "performance", True),
         ("cls-02-standard-class", "standard", False),
-        ("cls-03-best-effort-class", "best-effort", False),
-        ("cls-04-no-annotation", "", False),
+        ("cls-03-no-annotation", "", False),
     ]
 
     for name, wc, expect_perf in cases:

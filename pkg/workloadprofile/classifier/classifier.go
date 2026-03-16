@@ -78,30 +78,24 @@ func DefaultClassifierConfig() ClassifierConfig {
 // PodHints are static classification hints from pod labels/annotations.
 // These override or seed the dynamic classification.
 type PodHints struct {
-	// WorkloadClass: "performance" | "standard" | "best-effort"
+	// WorkloadClass: "performance" | "standard"
 	// Set via joulie.io/workload-class annotation.
 	WorkloadClass string
 	// Reschedulable: pod can be safely restarted/rescheduled.
 	// Set via joulie.io/reschedulable=true annotation.
 	Reschedulable bool
-	// CPUSensitivity: "high" | "medium" | "low" - overrides dynamic classification.
-	CPUSensitivity string
-	// GPUSensitivity: "high" | "medium" | "low" - overrides dynamic classification.
-	GPUSensitivity string
 }
 
 // ParsePodHints extracts classification hints from pod labels and annotations.
 //
 // Supported annotations:
 //
-//	joulie.io/workload-class     = "performance" | "standard" | "best-effort"
+//	joulie.io/workload-class     = "performance" | "standard"
 //	joulie.io/reschedulable      = "true" | "false"
-//	joulie.io/cpu-sensitivity    = "high" | "medium" | "low"   (optional override)
-//	joulie.io/gpu-sensitivity    = "high" | "medium" | "low"   (optional override)
 //
 // Supported labels (for compatibility with existing workload labels):
 //
-//	joulie.io/power-profile      = "eco" → maps to best-effort
+//	joulie.io/power-profile      = "eco" → maps to standard
 func ParsePodHints(labels, annotations map[string]string) PodHints {
 	hints := PodHints{
 		WorkloadClass: "standard", // default
@@ -116,17 +110,11 @@ func ParsePodHints(labels, annotations map[string]string) PodHints {
 	if v := annotations["joulie.io/workload-class"]; v != "" {
 		hints.WorkloadClass = v
 	} else if labels["joulie.io/power-profile"] == "eco" {
-		hints.WorkloadClass = "best-effort"
+		hints.WorkloadClass = "standard"
 	}
 
 	hints.Reschedulable = annotations["joulie.io/reschedulable"] == "true"
 
-	if v := annotations["joulie.io/cpu-sensitivity"]; v != "" {
-		hints.CPUSensitivity = v
-	}
-	if v := annotations["joulie.io/gpu-sensitivity"]; v != "" {
-		hints.GPUSensitivity = v
-	}
 	return hints
 }
 
@@ -248,12 +236,6 @@ func (c *Classifier) classify(hints PodHints, m PodMetrics) joulie.WorkloadProfi
 		}
 	}
 
-	// Override from hints
-	if hints.CPUSensitivity != "" {
-		cpuCapSensitivity = hints.CPUSensitivity
-		reasons = append(reasons, fmt.Sprintf("cpu-cap-sensitivity=%s (annotation override)", hints.CPUSensitivity))
-	}
-
 	wp.CPU = joulie.WorkloadCPUProfile{
 		Intensity:         cpuIntensity,
 		Bound:             cpuBound,
@@ -299,15 +281,6 @@ func (c *Classifier) classify(hints PodHints, m PodMetrics) joulie.WorkloadProfi
 		}
 	}
 
-	// Override from hints
-	if hints.GPUSensitivity != "" {
-		gpuCapSensitivity = hints.GPUSensitivity
-		if gpuCapSensitivity != "none" && gpuIntensity == "none" {
-			gpuIntensity = "medium" // user says sensitive, assume medium presence
-		}
-		reasons = append(reasons, fmt.Sprintf("gpu-cap-sensitivity=%s (annotation override)", hints.GPUSensitivity))
-	}
-
 	wp.GPU = joulie.WorkloadGPUProfile{
 		Intensity:         gpuIntensity,
 		Bound:             gpuBound,
@@ -327,15 +300,6 @@ func (c *Classifier) classify(hints PodHints, m PodMetrics) joulie.WorkloadProfi
 // fromHintsOnly builds a profile from static hints only (no metrics available).
 // Confidence is low.
 func fromHintsOnly(hints PodHints) joulie.WorkloadProfileStatus {
-	cpuSens := hints.CPUSensitivity
-	if cpuSens == "" {
-		cpuSens = "medium"
-	}
-	gpuSens := hints.GPUSensitivity
-	if gpuSens == "" {
-		gpuSens = "none"
-	}
-
 	return joulie.WorkloadProfileStatus{
 		Criticality: joulie.WorkloadCriticality{Class: hints.WorkloadClass},
 		Migratability: joulie.WorkloadMigratability{
@@ -344,12 +308,12 @@ func fromHintsOnly(hints PodHints) joulie.WorkloadProfileStatus {
 		CPU: joulie.WorkloadCPUProfile{
 			Intensity:      "medium",
 			Bound:          "mixed",
-			CapSensitivity: cpuSens,
+			CapSensitivity: "medium",
 		},
 		GPU: joulie.WorkloadGPUProfile{
 			Intensity:      "none",
 			Bound:          "none",
-			CapSensitivity: gpuSens,
+			CapSensitivity: "none",
 		},
 		ClassificationReason: "hints only (no metrics available)",
 		Confidence:           0.3, // low confidence without metrics
@@ -365,10 +329,6 @@ func computeConfidence(hints PodHints, m PodMetrics) float64 {
 	if hints.WorkloadClass != "" && hints.WorkloadClass != "standard" {
 		confidence += 0.2 // explicit class annotation
 	}
-	if hints.CPUSensitivity != "" || hints.GPUSensitivity != "" {
-		confidence += 0.1
-	}
-
 	// Metrics availability adds confidence
 	if m.CPUUtilPct > 0 {
 		confidence += 0.2

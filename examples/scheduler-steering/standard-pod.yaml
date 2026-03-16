@@ -1,15 +1,14 @@
-# Best-effort workload: can run on eco nodes.
-# The scheduler extender will prefer eco nodes with available headroom.
+# Standard workload: can run on any node (including eco).
+# The scheduler extender adaptively steers standard pods toward eco nodes
+# when performance nodes are under pressure.
 apiVersion: v1
 kind: Pod
 metadata:
-  name: best-effort-job
+  name: standard-job
   labels:
-    app: best-effort-job
+    app: standard-job
   annotations:
-    # Hints for the Joulie scheduler extender
-    joulie.io/workload-class: "best-effort"
-    joulie.io/cpu-sensitivity: "low"
+    joulie.io/workload-class: "standard"
 spec:
   nodeSelector:
     joulie.io/managed: "true"

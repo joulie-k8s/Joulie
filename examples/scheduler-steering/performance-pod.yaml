@@ -1,5 +1,5 @@
-# Performance workload: must not land on eco nodes.
-# The scheduler extender will filter out any node with schedulableClass=eco.
+# Performance workload: must not land on eco or draining nodes.
+# The scheduler extender will filter out any node with schedulableClass=eco or draining.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -8,7 +8,6 @@ metadata:
     app: performance-app
   annotations:
     joulie.io/workload-class: "performance"
-    joulie.io/gpu-sensitivity: "high"
 spec:
   containers:
     - name: app

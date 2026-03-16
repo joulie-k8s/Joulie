@@ -17,7 +17,7 @@ func TestEvaluateNodeNoStress(t *testing.T) {
 			Ref: joulie.WorkloadRef{Kind: "Job", Namespace: "default", Name: "job1"},
 			Profile: joulie.WorkloadProfileStatus{
 				Migratability: joulie.WorkloadMigratability{Reschedulable: true},
-				Criticality:   joulie.WorkloadCriticality{Class: "best-effort"},
+				Criticality:   joulie.WorkloadCriticality{Class: "standard"},
 			},
 		},
 	}
@@ -38,7 +38,7 @@ func TestEvaluateNodeHighStress(t *testing.T) {
 			Ref: joulie.WorkloadRef{Kind: "Job", Namespace: "default", Name: "reschedulable-job"},
 			Profile: joulie.WorkloadProfileStatus{
 				Migratability: joulie.WorkloadMigratability{Reschedulable: true},
-				Criticality:   joulie.WorkloadCriticality{Class: "best-effort"},
+				Criticality:   joulie.WorkloadCriticality{Class: "standard"},
 			},
 		},
 		{

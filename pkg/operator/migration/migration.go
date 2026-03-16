@@ -17,8 +17,8 @@ type PolicyConfig struct {
 	PSUStressThreshold float64
 	// OnlyReschedulable: only recommend reschedulable workloads.
 	OnlyReschedulable bool
-	// OnlyBestEffort: only recommend best-effort workloads.
-	OnlyBestEffort bool
+	// OnlyStandard: only recommend standard (non-performance) workloads.
+	OnlyStandard bool
 }
 
 // DefaultPolicy returns the default migration policy configuration.
@@ -27,7 +27,7 @@ func DefaultPolicy() PolicyConfig {
 		CoolingStressThreshold: 70,
 		PSUStressThreshold:     70,
 		OnlyReschedulable:      true,
-		OnlyBestEffort:         false,
+		OnlyStandard:           false,
 	}
 }
 
@@ -52,7 +52,7 @@ func EvaluateNode(twinState joulie.NodeTwinStatus, workloads []WorkloadOnNode, c
 		if cfg.OnlyReschedulable && !w.Profile.Migratability.Reschedulable {
 			continue
 		}
-		if cfg.OnlyBestEffort && w.Profile.Criticality.Class != "best-effort" {
+		if cfg.OnlyStandard && w.Profile.Criticality.Class != "standard" {
 			continue
 		}
 		recs = append(recs, joulie.RescheduleRecommendation{

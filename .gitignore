@@ -81,3 +81,4 @@ website/.hugo_build.lock
 /operator
 /simulator
 /kubectl-joulie
+/workloadgen

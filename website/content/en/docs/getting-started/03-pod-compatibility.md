@@ -8,7 +8,7 @@ weight = 3
 Joulie uses a single pod annotation to express workload placement intent:
 
 ```
-joulie.io/workload-class: performance | standard | best-effort
+joulie.io/workload-class: performance | standard
 ```
 
 The scheduler extender reads this annotation and steers pods accordingly. No node affinity rules are needed.
@@ -18,8 +18,7 @@ The scheduler extender reads this annotation and steers pods accordingly. No nod
 | Class | Behavior |
 |-------|----------|
 | `performance` | Must run on full-power nodes. The extender hard-rejects eco nodes. |
-| `standard` | Default. Prefers performance nodes, tolerates eco. |
-| `best-effort` | Prefers eco nodes, leaves performance capacity free for critical workloads. |
+| `standard` | Default. Can run on any node. Adaptive scoring steers toward eco when performance nodes are congested. |
 
 If no annotation is present and no `WorkloadProfile` matches the pod, the extender treats it as `standard`.
 
@@ -70,9 +69,9 @@ spec:
     image: ghcr.io/example/app:latest
 {{< /highlight >}}
 
-## Best-effort pod
+## Standard pod (batch / non-critical)
 
-Best-effort pods are steered toward eco nodes, freeing performance capacity for critical workloads.
+Standard pods can run on any node. The scheduler uses adaptive scoring to steer them toward eco nodes when performance nodes are congested.
 
 {{< highlight yaml "linenos=table,hl_lines=6-7" >}}
 apiVersion: v1
@@ -80,7 +79,7 @@ kind: Pod
 metadata:
   name: my-batch-job
   annotations:
-    joulie.io/workload-class: best-effort
+    joulie.io/workload-class: standard
 spec:
   containers:
   - name: app
@@ -120,7 +119,7 @@ For finer control, add sensitivity annotations so the extender can prefer nodes 
 
 | Annotation | Values | Effect |
 |---|---|---|
-| `joulie.io/workload-class` | `performance`, `standard`, `best-effort` | Controls eco/performance placement |
+| `joulie.io/workload-class` | `performance`, `standard` | Controls eco/performance placement |
 | `joulie.io/cpu-sensitivity` | `high`, `medium`, `low` | Scales penalty on capped CPU nodes |
 | `joulie.io/gpu-sensitivity` | `high`, `medium`, `low` | Scales penalty on capped GPU nodes |
 

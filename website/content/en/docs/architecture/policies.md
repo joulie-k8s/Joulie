@@ -16,7 +16,6 @@ Use this page after:
 Policy demand classification is derived from the `joulie.io/workload-class` pod annotation or a matching `WorkloadProfile`:
 
 - `performance`: pod carries `joulie.io/workload-class: performance`.
-- `best-effort`: pod carries `joulie.io/workload-class: best-effort`.
 - `standard` (default): no annotation or `joulie.io/workload-class: standard`.
 
 ## Shared Reconcile Flow

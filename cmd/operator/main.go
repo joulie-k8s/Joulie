@@ -319,19 +319,28 @@ func reconcileWithCatalog(
 		plan[i].SourceProfile = currentProfileOrDefault(nodesByName[plan[i].NodeName])
 		plan[i].Draining = false
 		plan[i].State = assignmentState(plan[i].Profile, plan[i].Draining)
-		if cpuWriteAbsolute {
-			plan[i].CPUCapPctOfMax = nil
-			if nh, ok := nodeHardwareByName[plan[i].NodeName]; ok {
-				if abs, ok := computeAbsoluteCPUCap(plan[i].Profile, nh, hardwareCatalog, perfCap, ecoCap); ok {
-					plan[i].CapWatts = abs
+		// Skip CPU cap on GPU nodes: CPU is ~6% of GPU node power; capping it
+		// saves ~1.2% but slows GPU data feed by ~4.5%, costing 3.8x more energy
+		// than saved (exp-03 finding). GPU nodes get only GPU caps.
+		hasGPU := false
+		if n := nodeObjs[plan[i].NodeName]; n != nil {
+			hasGPU = discoverGPUCount(*n) > 0
+		}
+		if !hasGPU {
+			if cpuWriteAbsolute {
+				plan[i].CPUCapPctOfMax = nil
+				if nh, ok := nodeHardwareByName[plan[i].NodeName]; ok {
+					if abs, ok := computeAbsoluteCPUCap(plan[i].Profile, nh, hardwareCatalog, perfCap, ecoCap); ok {
+						plan[i].CapWatts = abs
+					}
 				}
+			} else {
+				pct := cpuEcoCapPct
+				if plan[i].Profile == profilePerformance {
+					pct = cpuPerfCapPct
+				}
+				plan[i].CPUCapPctOfMax = floatPtr(pct)
 			}
-		} else {
-			pct := cpuEcoCapPct
-			if plan[i].Profile == profilePerformance {
-				pct = cpuPerfCapPct
-			}
-			plan[i].CPUCapPctOfMax = floatPtr(pct)
 		}
 		if n := nodeObjs[plan[i].NodeName]; n != nil {
 			plan[i].GPU = computeGPUIntentForNodeWithHardware(*n, plan[i].Profile, gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, nodeHardwareByName[plan[i].NodeName], hardwareCatalog)

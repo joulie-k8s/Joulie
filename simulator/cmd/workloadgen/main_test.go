@@ -55,8 +55,6 @@ func TestExpandLogicalWorkloadAddsWorkloadMetadata(t *testing.T) {
 			GPUResource: "nvidia.com/gpu",
 			CPUUnits:    100,
 			GPUUnits:    200,
-			CPUSense:    0.6,
-			GPUSense:    0.8,
 			IntentClass: "performance",
 		}},
 	}

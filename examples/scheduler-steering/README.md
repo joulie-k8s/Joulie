@@ -10,9 +10,10 @@ placement based on node power profiles and twin state.
 
 ## What this example shows
 
-1. The scheduler extender filters out eco nodes for performance workloads
-2. Best-effort workloads are allowed on eco nodes
+1. The scheduler extender filters out eco and draining nodes for performance workloads
+2. Standard workloads can run on any node; adaptive scoring steers them toward eco when performance nodes are congested
 3. Node scoring favors nodes with high power headroom and low thermal stress
+4. CPU-only pods are penalized on GPU nodes to avoid wasting GPU idle power
 
 ## Setup
 
@@ -34,11 +35,11 @@ kubectl apply -f nodetwinstate-fixture.yaml
 ### 3. Submit workloads
 
 ```bash
-# Performance workload: will avoid eco nodes
+# Performance workload: will avoid eco and draining nodes
 kubectl apply -f performance-pod.yaml
 
-# Best-effort workload: can run on eco nodes
-kubectl apply -f best-effort-pod.yaml
+# Standard workload: can run anywhere; prefers eco when perf nodes are congested
+kubectl apply -f standard-pod.yaml
 ```
 
 ### 4. Observe placement

@@ -75,6 +75,7 @@ type Output struct {
 	PredictedPsuStressScore     float64
 	EffectiveCapState           joulie.CapState
 	HardwareDensityScore        float64
+	EstimatedPUE                float64
 	RescheduleRecommendations   []joulie.RescheduleRecommendation
 	GPUSlicingRecommendation    *joulie.GPUSlicingRecommendation
 	LastUpdated                 time.Time
@@ -132,6 +133,11 @@ func Compute(in Input) Output {
 
 	// PSU stress score: proxy based on cluster power load
 	out.PredictedPsuStressScore = computePSUStress(in)
+
+	// Estimated PUE: derived from cooling stress.
+	// At 0 stress: PUE = 1.05 (best-case datacenter overhead).
+	// At 100 stress: PUE = 1.40 (stressed cooling, high overhead).
+	out.EstimatedPUE = 1.0 + 0.05 + (out.PredictedCoolingStressScore/100.0)*0.35
 
 	// Reschedule recommendations
 	out.RescheduleRecommendations = computeRescheduleRecommendations(in)
@@ -197,11 +203,11 @@ func computeRescheduleRecommendations(in Input) []joulie.RescheduleRecommendatio
 		return recs
 	}
 
-	// Find reschedulable best-effort workloads
+	// Find reschedulable standard workloads
 	for _, w := range in.Workloads {
-		if w.Migratability.Reschedulable && w.Criticality.Class == "best-effort" {
+		if w.Migratability.Reschedulable && w.Criticality.Class == "standard" {
 			recs = append(recs, joulie.RescheduleRecommendation{
-				Reason: "node under thermal/power stress, workload is reschedulable best-effort",
+				Reason: "node under thermal/power stress, workload is reschedulable standard",
 			})
 		}
 	}

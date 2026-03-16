@@ -90,15 +90,23 @@ SIM_ACTUAL_IMAGE=$(actual_image_from_workload "joulie-sim-demo" "deploy/joulie-t
 
 echo "simulator deployment image in use: ${SIM_ACTUAL_IMAGE}"
 
-kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_nodepowerprofiles.yaml"
 kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_nodehardwares.yaml"
-kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_telemetryprofiles.yaml"
+kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_nodetwins.yaml"
+kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_workloadprofiles.yaml"
 
 if [[ "$BASELINE" == "A" ]]; then
   echo "baseline A selected: simulator only (no operator/agent)"
   helm uninstall joulie -n joulie-system >/dev/null 2>&1 || true
   exit 0
 fi
+
+# Baselines B and C both enable the scheduler extender for adaptive placement.
+SCHED_ENABLED=true
+SCHED_ARGS=(
+  --set "schedulerExtender.enabled=true"
+  --set "schedulerExtender.image.repository=${JOULIE_REGISTRY}/joulie-scheduler"
+  --set "schedulerExtender.image.tag=${JOULIE_TAG}"
+)
 
 helm upgrade --install joulie "$ROOT/charts/joulie" -n joulie-system --create-namespace \
   -f "$EXAMPLE_DIR/manifests/30-joulie-values-pool.yaml" \
@@ -118,13 +126,21 @@ helm upgrade --install joulie "$ROOT/charts/joulie" -n joulie-system --create-na
   --set "operator.env.QUEUE_PERF_PER_HP_NODE=${QUEUE_PERF_PER_HP_NODE}" \
   --set "operator.env.CPU_PERFORMANCE_CAP_PCT_OF_MAX=${CPU_PERFORMANCE_CAP_PCT_OF_MAX}" \
   --set "operator.env.CPU_ECO_CAP_PCT_OF_MAX=${CPU_ECO_CAP_PCT_OF_MAX}" \
-  --set "operator.env.CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS}"
+  --set "operator.env.CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS}" \
+  "${SCHED_ARGS[@]}"
 
 kubectl -n joulie-system rollout status deploy/joulie-operator
 kubectl -n joulie-system rollout status statefulset/joulie-agent-pool
+kubectl -n joulie-system rollout status deploy/joulie-scheduler-extender --timeout=120s
+echo "scheduler extender deployed for baseline ${BASELINE}"
 
-for n in $(kubectl get nodes -l joulie.io/managed=true -o jsonpath='{.items[*].metadata.name}'); do
-  sed "s/TARGET_NODE/$n/g" "$EXAMPLE_DIR/manifests/40-telemetryprofile-template.yaml" | kubectl apply -f -
-done
+# Configure agent telemetry/control to use the simulator HTTP endpoints.
+kubectl -n joulie-system set env statefulset/joulie-agent-pool \
+  JOULIE_TELEMETRY_SOURCE_TYPE=http \
+  JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
+  JOULIE_CONTROL_TYPE=http \
+  JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
+  JOULIE_CONTROL_MODE=dvfs
+kubectl -n joulie-system rollout status statefulset/joulie-agent-pool
 
 echo "components installed for baseline ${BASELINE}"

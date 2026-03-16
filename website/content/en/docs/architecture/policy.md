@@ -31,8 +31,7 @@ CRD definitions live in:
 Workload class is determined from the `joulie.io/workload-class` pod annotation or from a matching `WorkloadProfile`:
 
 - `performance` demand: pod carries `joulie.io/workload-class: performance` or a matching profile with `criticality: performance`.
-- `best-effort` demand: pod carries `joulie.io/workload-class: best-effort` or a matching profile with `criticality: best-effort`.
-- `standard` demand (default): no annotation, or `joulie.io/workload-class: standard`. No class-specific adjustments.
+- `standard` demand (default): no annotation, or `joulie.io/workload-class: standard`. Can run on any node; adaptive scoring steers toward eco when performance nodes are congested.
 
 ## Supply model (nodes)
 

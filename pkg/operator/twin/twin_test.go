@@ -69,14 +69,14 @@ func TestRescheduleRecommendations(t *testing.T) {
 		ClusterTotalPowerW: 45000, // high PSU stress
 		Workloads: []joulie.WorkloadProfileStatus{
 			{
-				Criticality:   joulie.WorkloadCriticality{Class: "best-effort"},
+				Criticality:   joulie.WorkloadCriticality{Class: "standard"},
 				Migratability: joulie.WorkloadMigratability{Reschedulable: true},
 			},
 		},
 	}
 	out := Compute(in)
 	if len(out.RescheduleRecommendations) == 0 {
-		t.Errorf("expected reschedule recommendations under high stress with reschedulable best-effort workloads")
+		t.Errorf("expected reschedule recommendations under high stress with reschedulable standard workloads")
 	}
 }
 
@@ -309,7 +309,7 @@ func TestRescheduleNoRecsWhenDraining(t *testing.T) {
 			GPU: joulie.NodeHardwareGPU{Present: true, Count: 8, CapRange: joulie.GPUCapRange{MaxWatts: 400}},
 		},
 		Workloads: []joulie.WorkloadProfileStatus{
-			{Criticality: joulie.WorkloadCriticality{Class: "best-effort"}, Migratability: joulie.WorkloadMigratability{Reschedulable: true}},
+			{Criticality: joulie.WorkloadCriticality{Class: "standard"}, Migratability: joulie.WorkloadMigratability{Reschedulable: true}},
 		},
 	})
 	if len(out.RescheduleRecommendations) != 0 {

@@ -37,7 +37,7 @@ spec:
     name: llm-training-v2
 status:
   criticality:
-    class: standard            # performance | standard | best-effort
+    class: standard            # performance | standard
   migratability:
     reschedulable: true
   cpu:
@@ -60,8 +60,7 @@ status:
 **criticality.class**
 
 - `performance`: the scheduler extender hard-rejects eco nodes for this workload and prefers high-headroom performance nodes.
-- `standard`: neutral treatment; the extender scores normally without class-specific adjustments. Prefers performance nodes, tolerates eco.
-- `best-effort`: the extender prefers eco nodes for this workload, concentrating it away from performance nodes.
+- `standard`: can run on any node. Adaptive scoring steers toward eco when performance nodes are congested.
 
 **migratability.reschedulable**
 
@@ -252,7 +251,7 @@ The classifier reads the following annotations as high-confidence hints that ove
 
 | Annotation | Values |
 |---|---|
-| `joulie.io/workload-class` | `performance`, `standard`, `best-effort` |
+| `joulie.io/workload-class` | `performance`, `standard` |
 | `joulie.io/reschedulable` | `true`, `false` |
 | `joulie.io/cpu-sensitivity` | `high`, `medium`, `low` |
 | `joulie.io/gpu-sensitivity` | `high`, `medium`, `low` |

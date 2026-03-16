@@ -28,7 +28,7 @@ The agent then enforces those targets node-by-node.
 
 ## Migration recommendations
 
-When node stress (CoolingStress or PSUStress) exceeds configured thresholds, the migration controller (`pkg/operator/migration/`) evaluates which workloads can be safely rescheduled. It generates reschedule recommendations written to `NodeTwin.status.rescheduleRecommendations` for reschedulable best-effort workloads. These recommendations are surfaced via `kubectl joulie recommend`.
+When node stress (CoolingStress or PSUStress) exceeds configured thresholds, the migration controller (`pkg/operator/migration/`) evaluates which workloads can be safely rescheduled. It generates reschedule recommendations written to `NodeTwin.status.rescheduleRecommendations` for reschedulable standard workloads. These recommendations are surfaced via `kubectl joulie recommend`.
 
 ## Control boundary with the agent
 

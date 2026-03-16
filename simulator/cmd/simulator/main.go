@@ -1928,7 +1928,7 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 		workloadType, _ := rec["workloadType"].(string)
 		podRole, _ := rec["podRole"].(string)
 		gang, _ := rec["gang"].(bool)
-		class := "general"
+		class := "standard"
 		if podTpl, ok := rec["podTemplate"].(map[string]any); ok {
 			if affinityRaw, ok := podTpl["affinity"].(map[string]any); ok {
 				class = classifyClassFromAffinityMap(affinityRaw)
@@ -2129,6 +2129,7 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 					"sim.joulie.io/workloadId":   j.WorkloadID,
 					"sim.joulie.io/workloadType": j.WorkloadType,
 					"sim.joulie.io/podRole":      j.PodRole,
+					"joulie.io/workload-class":   j.Class,
 				},
 			},
 			Spec: corev1.PodSpec{
@@ -2216,39 +2217,17 @@ func affinityForIntentClass(intent string) *corev1.Affinity {
 				},
 			},
 		}
-	case "eco":
-		return &corev1.Affinity{
-			NodeAffinity: &corev1.NodeAffinity{
-				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-					NodeSelectorTerms: []corev1.NodeSelectorTerm{
-						{
-							MatchExpressions: []corev1.NodeSelectorRequirement{
-								{
-									Key:      "joulie.io/power-profile",
-									Operator: corev1.NodeSelectorOpIn,
-									Values:   []string{"eco"},
-								},
-								{
-									Key:      "joulie.io/draining",
-									Operator: corev1.NodeSelectorOpNotIn,
-									Values:   []string{"true"},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
 	default:
-		// General/flexible class: no explicit power-profile affinity constraint.
+		// Standard class: no explicit power-profile affinity constraint.
+		// The scheduler extender handles adaptive scoring via the annotation.
 		return nil
 	}
 }
 
 func classifyClassFromPodSpec(spec *corev1.PodSpec) string {
-	// No power-profile scheduling constraint means implicit flexible/general class.
+	// No power-profile scheduling constraint means standard class.
 	if spec == nil || spec.Affinity == nil || spec.Affinity.NodeAffinity == nil || spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-		return "general"
+		return "standard"
 	}
 	required := spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
 	perfAllowed := false
@@ -2289,26 +2268,23 @@ func classifyClassFromPodSpec(spec *corev1.PodSpec) string {
 		perfAllowed = perfAllowed || termPerf
 		ecoAllowed = ecoAllowed || termEco
 	}
-	switch {
-	case perfAllowed && !ecoAllowed:
+	if perfAllowed && !ecoAllowed {
 		return "performance"
-	case ecoAllowed && !perfAllowed:
-		return "eco"
-	default:
-		return "general"
 	}
+	// Legacy "eco" intent and anything else maps to "standard".
+	return "standard"
 }
 
 func classifyClassFromAffinityMap(affinityRaw map[string]any) string {
 	b, err := json.Marshal(map[string]any{"affinity": affinityRaw})
 	if err != nil {
-		return "general"
+		return "standard"
 	}
 	var wrapper struct {
 		Affinity *corev1.Affinity `json:"affinity"`
 	}
 	if err := json.Unmarshal(b, &wrapper); err != nil {
-		return "general"
+		return "standard"
 	}
 	spec := &corev1.PodSpec{Affinity: wrapper.Affinity}
 	return classifyClassFromPodSpec(spec)

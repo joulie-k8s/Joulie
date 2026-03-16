@@ -96,6 +96,9 @@ spec:
                 hardwareDensityScore:
                   type: number
                   description: "Relative compute density score"
+                estimatedPUE:
+                  type: number
+                  description: "Estimated Power Usage Effectiveness (1.05-1.40)"
                 rescheduleRecommendations:
                   type: array
                   items:

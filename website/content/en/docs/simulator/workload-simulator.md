@@ -266,29 +266,28 @@ Generated fields:
 
 | Field | Values | Effect |
 |-------|--------|--------|
-| `criticality.class` | `performance`, `standard`, `best-effort` | Scheduler hard-rejects eco placement for performance workloads |
+| `criticality.class` | `performance`, `standard` | Scheduler hard-rejects eco placement for performance workloads |
 | `migratability.reschedulable` | `true` / `false` | Operator considers workload for rescheduling under pressure |
 | `cpu.capSensitivity` | `high`, `medium`, `low` | Scheduler prefers uncapped nodes for high-sensitivity workloads |
 | `gpu.capSensitivity` | `high`, `medium`, `low` | As above, for GPU headroom |
 | `cpu.bound` | `compute`, `memory`, `io`, `mixed` | Affects slowdown model under CPU throttling |
 | `gpu.bound` | `compute`, `memory`, `mixed`, `none` | Affects slowdown model under GPU cap |
 
-Best-effort jobs are marked reschedulable by default. Performance jobs are not reschedulable. Standard jobs may be reschedulable.
+Standard jobs are marked reschedulable by default. Performance jobs are not reschedulable.
 
 These fields are used by:
 - the simulated operator twin (`pkg/operator/twin`) to compute headroom and stress scores,
 - the scheduler extender (`cmd/scheduler`) to apply workload-class-aware scoring,
 - the migration controller (`pkg/operator/migration`) to generate reschedule recommendations.
 
-The heterogeneous cluster control loop benchmark (`experiments/04-heterogeneous_cluster_control_loop/`) exercises all three scenarios (baseline, caps-only, caps+scheduler) using a mixed batch with all the above profile variants.
+The heterogeneous benchmark (`experiments/02-heterogeneous-benchmark/`) exercises all three baselines using a mixed batch with all the above profile variants.
 
 ## Scheduling class inference
 
 Workload class is inferred from pod scheduling constraints:
 
-- `performance`
-- `eco`
-- `general` (unconstrained)
+- `performance` (avoids eco nodes via affinity)
+- `standard` (unconstrained)
 
 This is used for workload counters and class-based completion metrics.
 
