@@ -503,9 +503,9 @@ def main():
         raise SystemExit("run collect first: scripts/06_collect.py")
     PLOTS.mkdir(parents=True, exist_ok=True)
 
-    df = pd.read_csv(summary)
+    df_all = pd.read_csv(summary)
     ensure_numeric(
-        df,
+        df_all,
         [
             "wall_seconds",
             "jobs_total",
@@ -518,13 +518,13 @@ def main():
             "avg_cluster_power_w_est",
         ],
     )
-    df = filter_completed_runs(df)
+    plot_completion_summary(df_all)
+    df = filter_completed_runs(df_all)
 
     plot_runtime_distribution(df)
     plot_throughput_vs_energy(df)
     plot_energy_vs_makespan(df)
     plot_baseline_summary_bars(df)
-    plot_completion_summary(df)
     plot_relative_tradeoff_scatter(df)
     plot_relative_tradeoff_bars(df)
     plot_workload_type_tradeoff()
