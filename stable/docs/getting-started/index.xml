@@ -12,13 +12,16 @@
 &lt;li&gt;&lt;strong&gt;Operator&lt;/strong&gt; (&lt;code&gt;cmd/operator&lt;/code&gt;): cluster-level policy brain
 &lt;ul&gt;
 &lt;li&gt;decides desired node power profile/cap assignments&lt;/li&gt;
+&lt;li&gt;resolves discovered hardware against the inventory&lt;/li&gt;
 &lt;li&gt;writes desired state as &lt;code&gt;NodePowerProfile&lt;/code&gt;&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;Agent&lt;/strong&gt; (&lt;code&gt;cmd/agent&lt;/code&gt;): node-level actuator
 &lt;ul&gt;
+&lt;li&gt;discovers local CPU/GPU hardware and capability&lt;/li&gt;
 &lt;li&gt;reads desired state and telemetry configuration&lt;/li&gt;
-&lt;li&gt;enforces power controls (CPU now, GPU path planned)&lt;/li&gt;
+&lt;li&gt;enforces power controls (CPU + GPU)&lt;/li&gt;
+&lt;li&gt;publishes discovered hardware as &lt;code&gt;NodeHardware&lt;/code&gt;&lt;/li&gt;
 &lt;li&gt;exports metrics/status&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
@@ -31,6 +34,11 @@
 &lt;/ul&gt;
 &lt;h2 id="key-crds"&gt;Key CRDs&lt;/h2&gt;
 &lt;ul&gt;
+&lt;li&gt;&lt;code&gt;NodeHardware&lt;/code&gt; (&lt;code&gt;joulie.io/v1alpha1&lt;/code&gt;)
+&lt;ul&gt;
+&lt;li&gt;discovered CPU/GPU identity, capability, and cap-range visibility for one node&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
 &lt;li&gt;&lt;code&gt;NodePowerProfile&lt;/code&gt; (&lt;code&gt;joulie.io/v1alpha1&lt;/code&gt;)
 &lt;ul&gt;
 &lt;li&gt;desired node policy state (&lt;code&gt;performance&lt;/code&gt; / &lt;code&gt;eco&lt;/code&gt;, optional power cap)&lt;/li&gt;
