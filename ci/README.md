@@ -7,7 +7,7 @@ It starts a lightweight custom **2-node k3s** cluster (server + worker) as Dagge
 - FSM transitions and node labels (`joulie.io/power-profile`) with draining state tracked in `NodeTwinState.schedulableClass`
 - scheduler extender behavior driven by `joulie.io/workload-class` pod annotations
 - workload-class classification and draining behavior (via NodeTwinState)
-- TelemetryProfile HTTP routing smoke test (CPU + GPU control paths)
+- agent telemetry/control HTTP routing smoke test (CPU + GPU control paths)
 
 ## Layout
 
@@ -79,7 +79,7 @@ dagger -m ./ci call integration \
 
 Always executed:
 
-- `IT-BOOT-01 / IT-HELM-01` (`test_boot_and_install`): waits for a ready node, installs Joulie via Helm, verifies CRDs, creates `joulie-it`, and installs shared HTTP mock + TelemetryProfile.
+- `IT-BOOT-01 / IT-HELM-01` (`test_boot_and_install`): waits for a ready node, installs Joulie via Helm, verifies CRDs, creates `joulie-it`, and installs shared HTTP mock + configures agent telemetry env vars.
 - `IT-TP-01` (`test_telemetry_http`): validates telemetry/control HTTP plumbing by asserting mock GET/POST counters increase; on non-GPU nodes it validates graceful GPU-control degradation instead of hard failure.
 
 Executed in full scope (`IT_SCOPE=all` or `full`):

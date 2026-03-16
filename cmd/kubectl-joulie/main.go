@@ -23,7 +23,7 @@ import (
 )
 
 var (
-	nodeTwinStateGVR   = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
+	nodeTwinGVR   = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
 	nodeHardwareGVR    = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
 	workloadProfileGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "workloadprofiles"}
 )
@@ -116,9 +116,9 @@ func fetchTwinStates(client dynamic.Interface) []nodeState {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	list, err := client.Resource(nodeTwinStateGVR).List(ctx, metav1.ListOptions{})
+	list, err := client.Resource(nodeTwinGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot list NodeTwinStates: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: cannot list NodeTwins: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -185,7 +185,7 @@ func runStatus() {
 	states := fetchTwinStates(client)
 
 	if len(states) == 0 {
-		fmt.Println("No NodeTwinState resources found. Is Joulie installed?")
+		fmt.Println("No NodeTwin resources found. Is Joulie installed?")
 		return
 	}
 
@@ -274,7 +274,7 @@ func runRecommend() {
 	states := fetchTwinStates(client)
 
 	if len(states) == 0 {
-		fmt.Println("No NodeTwinState resources found. Is Joulie installed?")
+		fmt.Println("No NodeTwin resources found. Is Joulie installed?")
 		return
 	}
 

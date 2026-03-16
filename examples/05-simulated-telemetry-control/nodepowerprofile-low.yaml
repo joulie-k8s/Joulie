@@ -1,5 +1,5 @@
 apiVersion: joulie.io/v1alpha1
-kind: NodePowerProfile
+kind: NodeTwin
 metadata:
   name: sim-http-demo-profile-target-node
   labels:

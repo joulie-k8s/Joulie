@@ -49,10 +49,10 @@ kubectl -n joulie-system rollout status deployment/joulie-operator
 
 ```bash
 kubectl -n joulie-system logs deploy/joulie-operator --tail=200
-kubectl get nodepowerprofiles -o wide
+kubectl get nodetwins -o wide
 ```
 
-You should see periodic assignment logs and one `NodePowerProfile` per eligible (managed, non-reserved) node.
+You should see periodic assignment logs and one `NodeTwin` per eligible (managed, non-reserved) node.
 
 ## 4) Visualize in Grafana
 

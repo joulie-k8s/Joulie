@@ -37,7 +37,7 @@ Check operator output:
 ```bash
 kubectl -n joulie-system logs deploy/joulie-operator --tail=200 | grep "assigned profiles"
 kubectl -n joulie-system logs deploy/joulie-operator --tail=200 | grep "transition deferred"
-kubectl get nodepowerprofiles -o wide
+kubectl get nodetwins -o wide
 kubectl get nodes -L joulie.io/power-profile
 ```
 
@@ -59,7 +59,7 @@ kubectl apply -f examples/03-workload-intent-classes/recycler.yaml
 kubectl apply -f examples/03-workload-intent-classes/servicemonitor-operator.yaml
 
 # sanity checks
-kubectl get nodepowerprofiles -o wide
+kubectl get nodetwins -o wide
 kubectl get nodes -L joulie.io/power-profile
 kubectl -n joulie-intent-demo get pods -o wide
 kubectl -n joulie-system logs deploy/joulie-operator --tail=200 | egrep "assigned profiles|transition deferred"
@@ -82,7 +82,7 @@ What each workload expresses (single source of truth is the `joulie.io/workload-
 ## 3) Observe pod movement across nodes
 
 ```bash
-watch -n 5 'kubectl -n joulie-intent-demo get pods -o wide; echo; kubectl get nodepowerprofiles -o wide; echo; kubectl get nodes -L joulie.io/power-profile'
+watch -n 5 'kubectl -n joulie-intent-demo get pods -o wide; echo; kubectl get nodetwins -o wide; echo; kubectl get nodes -L joulie.io/power-profile'
 ```
 
 You should see pods recreated roughly every minute by the recycler, then placed according to the profile labels currently set by the operator.

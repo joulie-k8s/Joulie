@@ -19,7 +19,7 @@ scenarios:
     cpuCapPct: 65
     gpuCapPct: 65
     description: >
-      Operator applies 65% CPU and GPU power caps via NodePowerProfile CRs.
+      Operator applies 65% CPU and GPU power caps via NodeTwin CRs.
       Agent enforces via RAPL (CPU) and NVML (GPU).
       No scheduler steering: pods still placed by default scheduler.
       Performance jobs may land on capped nodes.

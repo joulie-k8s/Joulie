@@ -268,7 +268,6 @@ func upsertNodeTwinStatus(ctx context.Context, dynClient dynamic.Interface, node
 }
 
 // upsertNodeTwinSpec creates or updates the spec portion of a NodeTwin CR.
-// This replaces the old upsertNodeProfile which wrote to a separate NodePowerProfile CRD.
 func upsertNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, a NodeAssignment) error {
 	name := sanitizeName(a.NodeName)
 	spec := map[string]any{

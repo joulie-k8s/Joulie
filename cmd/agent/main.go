@@ -91,7 +91,7 @@ type DesiredState struct {
 	GPU           *GPUPowerCap
 }
 
-type NodePowerProfile struct {
+type NodeTwinSpec struct {
 	Name          string
 	NodeName      string
 	Profile       string
@@ -536,10 +536,10 @@ func reconcileOnce(
 
 	if selected == nil {
 		metrics.setBackendMode("none")
-		_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nodeName, "none", "none", "no NodePowerProfile selected")
-		_ = updateTelemetryGPUStatus(ctx, dyn, telemetry, nodeName, "none", "none", "no NodePowerProfile selected", nil)
+		_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nodeName, "none", "none", "no NodeTwin selected")
+		_ = updateTelemetryGPUStatus(ctx, dyn, telemetry, nodeName, "none", "none", "no NodeTwin selected", nil)
 		if *lastRaplKey != "" {
-			log.Printf("no NodePowerProfile found for node %s; leaving current settings untouched", nodeName)
+			log.Printf("no NodeTwin found for node %s; leaving current settings untouched", nodeName)
 			*lastRaplKey = ""
 		}
 		return nil
@@ -592,7 +592,7 @@ func reconcileOnce(
 		msg := "no GPU cap intent"
 		if allocatableGPUCount(node) > 0 {
 			msg = "no GPU cap intent for GPU node; leaving current GPU state unchanged"
-			log.Printf("warning: node=%s has allocatable GPUs but NodePowerProfile has no gpu.powerCap; leaving GPU state unchanged", nodeName)
+			log.Printf("warning: node=%s has allocatable GPUs but NodeTwin has no gpu.powerCap; leaving GPU state unchanged", nodeName)
 		}
 		_ = updateTelemetryGPUStatus(ctx, dyn, telemetry, nodeName, "none", "none", msg, nil)
 	}
@@ -1368,7 +1368,7 @@ func resolveTelemetryConfigForNode(ctx context.Context, dyn dynamic.Interface, n
 	return resolveTelemetryConfigFromEnv(), nil
 }
 
-func getNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, nodeName string) (*NodePowerProfile, error) {
+func getNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, nodeName string) (*NodeTwinSpec, error) {
 	ul, err := dyn.Resource(nodeTwinGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -1385,9 +1385,9 @@ func getNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, nodeName string
 	return nil, nil
 }
 
-// parseNodeTwinAsProfile reads the spec of a NodeTwin CR into the agent's NodePowerProfile struct.
-func parseNodeTwinAsProfile(u unstructured.Unstructured) NodePowerProfile {
-	np := NodePowerProfile{Name: u.GetName()}
+// parseNodeTwinAsProfile reads the spec of a NodeTwin CR into the agent's NodeTwinSpec struct.
+func parseNodeTwinAsProfile(u unstructured.Unstructured) NodeTwinSpec {
+	np := NodeTwinSpec{Name: u.GetName()}
 	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "nodeName"); ok {
 		np.NodeName = v
 	}

@@ -1,5 +1,5 @@
 apiVersion: joulie.io/v1alpha1
-kind: NodePowerProfile
+kind: NodeTwin
 metadata:
   name: stress-ng-demo-profile
 spec:

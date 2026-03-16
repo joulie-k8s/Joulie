@@ -2,12 +2,12 @@
 # Run all 3 scenarios (A-C) against a live KWOK cluster.
 #
 # For each scenario:
-#   1. Reset state (delete NodePowerProfiles, reset labels)
+#   1. Reset state (delete NodeTwins, reset labels)
 #   2. Install/uninstall Joulie components via 15_install_components.sh
-#   3. Apply scenario-specific NodePowerProfiles and eco labels
+#   3. Apply scenario-specific NodeTwins and eco labels
 #   4. Deploy test workloads with joulie.io/workload-class annotations
 #   5. Wait for convergence
-#   6. Collect snapshots: NodeTwinState, NodeHardware, NodePowerProfile, nodes, pods
+#   6. Collect snapshots: NodeTwinState, NodeHardware, NodeTwin, nodes, pods
 #   7. Write per-scenario metrics JSON to results/
 #
 # Fast simulation alternative (no cluster needed):
@@ -69,10 +69,8 @@ ECO_COUNT=$(python3 -c "import math; print(int(math.ceil($NODE_COUNT * $ECO_NODE
 
 reset_state() {
   echo "  Resetting cluster state..."
-  # Delete NodePowerProfiles
-  kubectl delete nodepowerprofile --all --ignore-not-found 2>/dev/null || true
-  # Delete NodeTwinStates
-  kubectl delete nodetwinstate --all --ignore-not-found 2>/dev/null || true
+  # Delete NodeTwins
+  kubectl delete nodetwin --all --ignore-not-found 2>/dev/null || true
   # Reset power-profile labels to performance
   for NODE in $ALL_NODES; do
     kubectl label node "$NODE" joulie.io/power-profile=performance --overwrite 2>/dev/null || true
@@ -95,7 +93,7 @@ apply_eco_profiles() {
       # Eco node
       kubectl apply -f - <<EOF
 apiVersion: joulie.io/v1alpha1
-kind: NodePowerProfile
+kind: NodeTwin
 metadata:
   name: $NODE
 spec:
@@ -133,9 +131,8 @@ collect_snapshot() {
   local scenario_dir="$1"
   echo "  Collecting cluster snapshots..."
 
-  kubectl get nodetwinstate -o yaml > "$scenario_dir/nodetwinstates.yaml" 2>/dev/null || true
+  kubectl get nodetwin -o yaml > "$scenario_dir/nodetwins.yaml" 2>/dev/null || true
   kubectl get nodehardware -o yaml > "$scenario_dir/nodehardwares.yaml" 2>/dev/null || true
-  kubectl get nodepowerprofile -o yaml > "$scenario_dir/nodepowerprofiles.yaml" 2>/dev/null || true
   kubectl get nodes -o json > "$scenario_dir/nodes.json"
   kubectl get pods -A -o json > "$scenario_dir/pods.json"
 
@@ -196,7 +193,7 @@ for SCENARIO in A B C; do
   # 3. Apply scenario-specific configuration
   case "$SCENARIO" in
     A)
-      echo "  Scenario A: No Joulie - baseline (no NodePowerProfiles, no scheduler extender)"
+      echo "  Scenario A: No Joulie - baseline (no NodeTwins, no scheduler extender)"
       ;;
     B)
       echo "  Scenario B: Caps only - eco profiles on ${ECO_COUNT} nodes, no scheduler"

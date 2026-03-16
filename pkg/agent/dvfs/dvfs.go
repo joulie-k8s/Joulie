@@ -344,14 +344,18 @@ func (d *Controller) readPowerWatts() (float64, bool, error) {
 			continue
 		}
 		w := (float64(deltaUJ) / 1_000_000.0) / dt
-		d.Metrics.RaplPowerWatts.WithLabelValues(d.Metrics.Node, zone).Set(w)
+		if d.Metrics != nil {
+			d.Metrics.RaplPowerWatts.WithLabelValues(d.Metrics.Node, zone).Set(w)
+		}
 		totalW += w
 		count++
 	}
 	if count == 0 {
 		return 0, false, nil
 	}
-	d.Metrics.RaplPackageTotalW.WithLabelValues(d.Metrics.Node).Set(totalW)
+	if d.Metrics != nil {
+		d.Metrics.RaplPackageTotalW.WithLabelValues(d.Metrics.Node).Set(totalW)
+	}
 	return totalW, true, nil
 }
 
