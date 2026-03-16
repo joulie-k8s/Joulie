@@ -194,7 +194,7 @@ func CountPerformanceSensitivePods(pods []corev1.Pod) int {
 		if p.DeletionTimestamp != nil {
 			continue
 		}
-		if p.Status.Phase == "Succeeded" || p.Status.Phase == "Failed" {
+		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed || p.Status.Phase == corev1.PodPending {
 			continue
 		}
 		if !IsPerformanceSensitivePod(p) {

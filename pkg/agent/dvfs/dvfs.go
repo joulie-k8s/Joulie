@@ -167,6 +167,9 @@ func (d *Controller) Reconcile(capWatts float64, controlClient *control.HTTPCont
 	if capWatts <= 0 {
 		return "", nil
 	}
+	if d.Metrics == nil {
+		return "", fmt.Errorf("dvfs: Metrics not initialized")
+	}
 	powerW, hasPower, err := d.readPowerWatts()
 	if err != nil {
 		return "", err
@@ -246,7 +249,9 @@ func (d *Controller) RestoreAllMax() (int, error) {
 	written, err := d.applyThrottlePct(0, nil, 0)
 	if err == nil {
 		d.ThrottlePct = 0
-		d.Metrics.ThrottlePct.WithLabelValues(d.Metrics.Node).Set(0)
+		if d.Metrics != nil {
+			d.Metrics.ThrottlePct.WithLabelValues(d.Metrics.Node).Set(0)
+		}
 		d.updateCPUFreqMetrics()
 	}
 	return written, err
@@ -317,7 +322,9 @@ func (d *Controller) readPowerWatts() (float64, bool, error) {
 		if err != nil {
 			continue
 		}
-		d.Metrics.RaplEnergyUJ.WithLabelValues(d.Metrics.Node, zone).Set(float64(currentUJ))
+		if d.Metrics != nil {
+			d.Metrics.RaplEnergyUJ.WithLabelValues(d.Metrics.Node, zone).Set(float64(currentUJ))
+		}
 		s, ok := d.Samples[f]
 		if !ok {
 			rangeUJ, _ := readInt64(filepath.Join(filepath.Dir(f), "max_energy_range_uj"))

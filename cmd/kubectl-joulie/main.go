@@ -23,7 +23,7 @@ import (
 )
 
 var (
-	nodeTwinStateGVR   = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwinstates"}
+	nodeTwinStateGVR   = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
 	nodeHardwareGVR    = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
 	workloadProfileGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "workloadprofiles"}
 )

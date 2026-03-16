@@ -58,7 +58,7 @@ metadata:
   name: joulie-scheduler-extender
 rules:
   - apiGroups: ["joulie.io"]
-    resources: ["nodetwinstates", "workloadprofiles"]
+    resources: ["nodetwins", "workloadprofiles"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["nodes", "pods"]

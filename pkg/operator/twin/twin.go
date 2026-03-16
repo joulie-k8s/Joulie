@@ -119,6 +119,10 @@ func Compute(in Input) Output {
 	}
 	out.HardwareDensityScore = math.Min(100, math.Max(0, out.HardwareDensityScore))
 
+	// Apply defaulted cap values so downstream helpers see consistent inputs.
+	in.CPUCapPct = cpuPct
+	in.GPUCapPct = gpuPct
+
 	// Power headroom score: how much power budget is left
 	// Higher score = more headroom = better for new workloads
 	out.PredictedPowerHeadroomScore = computePowerHeadroom(in)

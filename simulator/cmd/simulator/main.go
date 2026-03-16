@@ -442,10 +442,6 @@ func (s *simulator) modelForNode(node string) simModel {
 	return s.model
 }
 
-func (s *simulator) nodePower(node string, st *nodeState) float64 {
-	model := s.modelForNode(node)
-	return s.nodePowerWithModel(st, model)
-}
 
 func (s *simulator) nodePowerWithModel(st *nodeState, model simModel) float64 {
 	s.updateNodeDynamicsWithModel(st, model)
@@ -594,16 +590,6 @@ func cpuPowerWithModel(st *nodeState, model simModel) float64 {
 	return math.Min(p, capW+model.RaplHeadW)
 }
 
-func (s *simulator) updateNodeMetrics(node string, st *nodeState) {
-	power := s.nodePower(node, st)
-	s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
-	s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
-	s.nodePowerW.WithLabelValues(node).Set(power)
-	s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
-	s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
-	s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
-	s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
-}
 
 func (s *simulator) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
@@ -626,10 +612,20 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := s.getNode(node)
-	s.updateNodeMetrics(node, st)
-	power := s.nodePower(node, st)
 	modelForTelemetry := s.modelForNode(node)
-	s.recordEvent("telemetry", node, map[string]any{
+
+	// Hold lock while computing power and reading nodeState fields to avoid
+	// races with advanceJobProgress and handleControl.
+	s.mu.Lock()
+	power := s.nodePowerWithModel(st, modelForTelemetry)
+	s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
+	s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
+	s.nodePowerW.WithLabelValues(node).Set(power)
+	s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
+	s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
+	s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
+	s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
+	eventPayload := map[string]any{
 		"packagePowerWatts":        power,
 		"instantPackagePowerWatts": st.CPUInstantPowerWatts + st.GPUPowerWatts,
 		"capWatts":                 st.CapWatts,
@@ -647,10 +643,8 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		"memoryIntensity":          st.MemoryIntensity,
 		"ioIntensity":              st.IOIntensity,
 		"cpuFeedIntensity":         st.CPUFeedIntensity,
-	})
-	log.Printf("telemetry node=%s powerW=%.2f capW=%.2f throttlePct=%d pods=%d", node, power, st.CapWatts, st.ThrottlePct, st.PodsRunning)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	}
+	resp := map[string]any{
 		"node":                     node,
 		"packagePowerWatts":        power,
 		"instantPackagePowerWatts": math.Round((st.CPUInstantPowerWatts+st.GPUPowerWatts)*100) / 100,
@@ -698,7 +692,14 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 			"byIntentClass": st.ByIntentClass,
 		},
 		"ts": time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	logMsg := fmt.Sprintf("telemetry node=%s powerW=%.2f capW=%.2f throttlePct=%d pods=%d", node, power, st.CapWatts, st.ThrottlePct, st.PodsRunning)
+	s.mu.Unlock()
+
+	s.recordEvent("telemetry", node, eventPayload)
+	log.Print(logMsg)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
@@ -795,13 +796,17 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 	st.LastAction = payload.Action
 	st.LastResult = result
 	st.LastUpdate = time.Now().UTC()
-	s.mu.Unlock()
 
-	s.controlsTotal.WithLabelValues(node, payload.Action).Inc()
-	s.controlResult.WithLabelValues(node, payload.Action, result).Inc()
-	s.updateNodeMetrics(node, st)
-	power := s.nodePower(node, st)
-	s.recordEvent("control", node, map[string]any{
+	// Compute power and snapshot state for response while still holding the lock.
+	power := s.nodePowerWithModel(st, model)
+	s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
+	s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
+	s.nodePowerW.WithLabelValues(node).Set(power)
+	s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
+	s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
+	s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
+	s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
+	eventPayload := map[string]any{
 		"action":            payload.Action,
 		"capWatts":          st.CapWatts,
 		"targetCapWatts":    st.TargetCapWatts,
@@ -809,11 +814,8 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 		"powerWatts":        power,
 		"podsRunning":       st.PodsRunning,
 		"gpuCapWattsPerGpu": st.GPUCapWattsPerGpu,
-	})
-	log.Printf("control node=%s action=%s capW=%.2f throttlePct=%d powerW=%.2f pods=%d", node, payload.Action, st.CapWatts, st.ThrottlePct, power, st.PodsRunning)
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	}
+	resp := map[string]any{
 		"ok":      result == "applied",
 		"result":  result,
 		"node":    node,
@@ -833,7 +835,17 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 			"gpuDevices":               st.GPUDevices,
 		},
 		"simulatedPackagePowerWatts": power,
-	})
+	}
+	logMsg := fmt.Sprintf("control node=%s action=%s capW=%.2f throttlePct=%d powerW=%.2f pods=%d", node, payload.Action, st.CapWatts, st.ThrottlePct, power, st.PodsRunning)
+	s.mu.Unlock()
+
+	s.controlsTotal.WithLabelValues(node, payload.Action).Inc()
+	s.controlResult.WithLabelValues(node, payload.Action, result).Inc()
+	s.recordEvent("control", node, eventPayload)
+	log.Print(logMsg)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *simulator) handleState(w http.ResponseWriter, r *http.Request) {
@@ -851,8 +863,18 @@ func (s *simulator) handleState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing node", status)
 		return
 	}
+	model := s.modelForNode(node)
 	st := s.getNode(node)
-	s.updateNodeMetrics(node, st)
+	s.mu.Lock()
+	power := s.nodePowerWithModel(st, model)
+	s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
+	s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
+	s.nodePowerW.WithLabelValues(node).Set(power)
+	s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
+	s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
+	s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
+	s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
+	s.mu.Unlock()
 	_ = json.NewEncoder(w).Encode(map[string]any{"node": node, "state": st})
 }
 
@@ -1179,8 +1201,18 @@ func (s *simulator) startPodPolling(interval time.Duration) {
 			if !s.nodeSelected(labels) {
 				continue
 			}
+			model := s.modelForNode(node)
 			st := s.getNode(node)
-			s.updateNodeMetrics(node, st)
+			s.mu.Lock()
+			power := s.nodePowerWithModel(st, model)
+			s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
+			s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
+			s.nodePowerW.WithLabelValues(node).Set(power)
+			s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
+			s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
+			s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
+			s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
+			s.mu.Unlock()
 		}
 		<-ticker.C
 	}
@@ -2391,6 +2423,10 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 				totalCPUFeedWeight += weight
 			}
 		}
+		// Snapshot values we need after releasing the lock.
+		var snapCPUCapacity float64
+		var snapThermalThrottle float64
+		var snapGPUCapPerGpu float64
 		if st != nil {
 			cpuCapacity := st.CPUCapacityCores
 			if cpuCapacity <= 0 {
@@ -2424,11 +2460,14 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			} else {
 				st.CPUFeedIntensity = 0
 			}
+			snapCPUCapacity = st.CPUCapacityCores
+			snapThermalThrottle = st.CPUThermalThrottle
+			snapGPUCapPerGpu = st.GPUCapWattsPerGpu
 			s.mu.Unlock()
 		}
 		cpuCapacity := 16.0
-		if st != nil && st.CPUCapacityCores > 0 {
-			cpuCapacity = st.CPUCapacityCores
+		if snapCPUCapacity > 0 {
+			cpuCapacity = snapCPUCapacity
 		}
 		cpuShareFactor := 1.0
 		if totalCPUReq > cpuCapacity && cpuCapacity > 0 {
@@ -2448,10 +2487,7 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 					continue
 				}
 			}
-			jobThermalThrottle := 0.0
-			if st != nil {
-				jobThermalThrottle = st.CPUThermalThrottle
-			}
+			jobThermalThrottle := snapThermalThrottle
 			jobCPUMul := cpuThroughputMultiplier(freqScale, j.CPUWorkClass, model, j.MemoryIntensity, j.IOIntensity, jobThermalThrottle)
 			if j.CPUUnitsRemaining > 0 {
 				cpuThrottleFactor := cpuThrottleImpactFactor(jobCPUMul, j)
@@ -2476,11 +2512,11 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 				}
 				gpuMul := gpuModel.ThroughputMultiplier(phys.DeviceState{
 					Utilization:      clamp01(j.GPUUtilTarget),
-					CapWatts:         st.GPUCapWattsPerGpu,
+					CapWatts:         snapGPUCapPerGpu,
 					MaxCapWatts:      model.GPU.MaxWattsPerGPU,
 					MemoryIntensity:  j.MemoryIntensity,
 					CPUFeedIntensity: j.CPUFeedIntensity,
-					ThermalThrottle:  firstDeviceThermalThrottle(st),
+					ThermalThrottle:  snapThermalThrottle,
 					Class:            j.GPUWorkClass,
 				}, j.GPUWorkClass)
 				cpuFeedFactor := cpuFeedThrottleFactor(jobCPUMul, j)

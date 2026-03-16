@@ -344,3 +344,19 @@ func TestCountPerformanceSensitivePods(t *testing.T) {
 		t.Errorf("CountPerformanceSensitivePods() = %d, want 1", got)
 	}
 }
+
+func TestCountPerformanceSensitivePodsPendingSkipped(t *testing.T) {
+	// Regression: Pending pods must not block draining.
+	pods := []corev1.Pod{
+		{
+			Spec: corev1.PodSpec{
+				NodeSelector: map[string]string{PowerProfileLabelKey: ProfilePerformance},
+			},
+			Status: corev1.PodStatus{Phase: corev1.PodPending},
+		},
+	}
+	got := CountPerformanceSensitivePods(pods)
+	if got != 0 {
+		t.Errorf("Pending pods should not count as performance-sensitive, got %d", got)
+	}
+}

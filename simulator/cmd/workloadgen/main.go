@@ -202,7 +202,6 @@ func generateTrace(cfg generatorConfig) error {
 	}
 	defer f.Close()
 	w := bufio.NewWriter(f)
-	defer w.Flush()
 
 	rng := rand.New(rand.NewSource(cfg.Seed))
 	arrivals := arrivalState{burstHourByDay: map[int]int{}}
@@ -224,7 +223,7 @@ func generateTrace(cfg generatorConfig) error {
 			}
 		}
 	}
-	return nil
+	return w.Flush()
 }
 
 func writeJSONL(w *bufio.Writer, v any) error {

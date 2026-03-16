@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -175,6 +175,12 @@ func (r *MetricsReader) FetchPodMetrics(ctx context.Context, namespace, podName 
 		m.KeplerUsed = true
 	}
 
+	// If no primary utilization signal was obtained, report an error so the
+	// caller falls back to hints-only classification.
+	if m.CPUUtilPct == 0 && m.GPUUtilPct == 0 && m.MemoryPressurePct == 0 && m.CPUUsageCores == 0 {
+		return m, fmt.Errorf("no utilization metrics available for pod %s/%s", namespace, podName)
+	}
+
 	// --- Derive classification ratios from primary util signals ---
 	// CPUBoundRatio: CPU is heavily used and GPU/memory are not
 	if m.CPUUtilPct > 0 {
@@ -243,9 +249,5 @@ type promResult struct {
 }
 
 func encodeQuery(q string) string {
-	return strings.NewReplacer(
-		" ", "%20", "{", "%7B", "}", "%7D",
-		`"`, "%22", "=", "%3D", "[", "%5B", "]", "%5D",
-		"(", "%28", ")", "%29", "/", "%2F",
-	).Replace(q)
+	return url.QueryEscape(q)
 }

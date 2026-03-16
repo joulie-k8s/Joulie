@@ -116,9 +116,9 @@ def wait_node_label(node: str, key: str, val: str, timeout_sec: int = 120) -> No
 
 
 def get_node_twin_state_schedulable_class(node: str) -> str:
-    """Read schedulableClass from the NodeTwinState CR for a node."""
+    """Read schedulableClass from the NodeTwin CR for a node."""
     out = kubectl(
-        ["get", "nodetwinstate", node, "-o", "json"],
+        ["get", "nodetwin", node, "-o", "json"],
         capture=True,
     )
     obj = json.loads(out.stdout)
@@ -171,10 +171,10 @@ def discover_perf_and_eco_nodes(nodes: list[str], timeout_sec: int = 120) -> tup
         for node in nodes:
             labels = get_node_labels(node)
             profile = labels.get("joulie.io/power-profile", "")
-            draining = labels.get("joulie.io/draining", "false")
-            if profile == "performance" and draining == "false":
+            # Draining is tracked via NodeTwinState.schedulableClass, not labels.
+            if profile == "performance":
                 perf.append(node)
-            elif profile == "eco" and draining in ("false", ""):
+            elif profile == "eco":
                 eco.append(node)
         if len(perf) == 1 and len(eco) == 1:
             return perf[0], eco[0]
@@ -441,39 +441,29 @@ def install_http_mock() -> None:
 
 
 def apply_telemetry_profile(node: str) -> None:
-    apply_yaml(
-        textwrap.dedent(
-            f"""\
-            apiVersion: joulie.io/v1alpha1
-            kind: TelemetryProfile
-            metadata:
-              name: it-http-{node.replace('.', '-')}
-            spec:
-              target:
-                scope: node
-                nodeName: {node}
-              sources:
-                cpu:
-                  type: http
-                  http:
-                    endpoint: http://joulie-http-mock.joulie-it.svc.cluster.local:8080/telemetry/{{node}}
-                    timeoutSeconds: 3
-              controls:
-                cpu:
-                  type: http
-                  http:
-                    endpoint: http://joulie-http-mock.joulie-it.svc.cluster.local:8080/control/{{node}}
-                    timeoutSeconds: 3
-                    mode: dvfs
-                gpu:
-                  type: http
-                  http:
-                    endpoint: http://joulie-http-mock.joulie-it.svc.cluster.local:8080/control/{{node}}
-                    timeoutSeconds: 3
-                    mode: powercap
-            """
+    """Configure agent telemetry via env vars (replaces the removed TelemetryProfile CRD)."""
+    mock_base = "http://joulie-http-mock.joulie-it.svc.cluster.local:8080"
+    envs = [
+        "TELEMETRY_CPU_SOURCE=http",
+        f"TELEMETRY_CPU_HTTP_ENDPOINT={mock_base}/telemetry/{node}",
+        "TELEMETRY_CPU_CONTROL=http",
+        f"TELEMETRY_CPU_CONTROL_HTTP_ENDPOINT={mock_base}/control/{node}",
+        "TELEMETRY_CPU_CONTROL_MODE=dvfs",
+        "TELEMETRY_GPU_CONTROL=http",
+        f"TELEMETRY_GPU_CONTROL_HTTP_ENDPOINT={mock_base}/control/{node}",
+        "TELEMETRY_GPU_CONTROL_MODE=powercap",
+        "TELEMETRY_HTTP_TIMEOUT_SECONDS=3",
+    ]
+    # Set env vars on the agent pool statefulset (or daemonset depending on mode).
+    for target in ["statefulset/joulie-agent-pool", "daemonset/joulie-agent"]:
+        result = kubectl(
+            ["-n", "joulie-system", "set", "env", target] + envs,
+            check=False,
+            capture=True,
         )
-    )
+        if result.returncode == 0:
+            wait_rollout("joulie-system", target)
+            break
 
 
 def get_mock_stats() -> dict[str, Any]:
@@ -495,36 +485,27 @@ def get_mock_stats() -> dict[str, Any]:
 
 
 def patch_node_gpu_cap(node: str, cap_watts_per_gpu: int) -> None:
-    out = kubectl(["get", "nodepowerprofiles", "-o", "json"], capture=True).stdout
-    items = json.loads(out).get("items", [])
-    name = None
-    for item in items:
-        if item.get("spec", {}).get("nodeName") == node:
-            name = item.get("metadata", {}).get("name")
-            break
-    if not name:
-        raise RuntimeError(f"nodepowerprofile for node {node} not found")
+    """Patch NodeTwin spec to set GPU power cap intent."""
+    name = node.replace(".", "-")
     patch = {
         "spec": {
             "gpu": {
-                "powerCap": {
-                    "scope": "perGpu",
-                    "capWattsPerGpu": cap_watts_per_gpu,
-                }
+                "capWattsPerGpu": cap_watts_per_gpu,
             }
         }
     }
-    kubectl(["patch", "nodepowerprofile", name, "--type=merge", "-p", json.dumps(patch)])
+    kubectl(["patch", "nodetwin", name, "--type=merge", "-p", json.dumps(patch)])
 
 
-def get_telemetryprofile_gpu_control_status(node: str) -> tuple[str, str]:
-    name = f"it-http-{node.replace('.', '-')}"
-    out = kubectl(["get", "telemetryprofile", name, "-o", "json"], capture=True, check=False)
+def get_nodetwin_gpu_control_status(node: str) -> tuple[str, str]:
+    """Read GPU control status from the NodeTwin CR."""
+    name = node.replace(".", "-")
+    out = kubectl(["get", "nodetwin", name, "-o", "json"], capture=True, check=False)
     if out.returncode != 0 or not out.stdout.strip():
         return "", ""
     status = json.loads(out.stdout).get("status", {})
-    gpu = status.get("control", {}).get("gpu", {})
-    return str(gpu.get("result", "")), str(gpu.get("message", ""))
+    ctrl = status.get("controlStatus", {}).get("gpu", {})
+    return str(ctrl.get("result", "")), str(ctrl.get("message", ""))
 
 
 def dump_debug() -> None:
@@ -535,8 +516,9 @@ def dump_debug() -> None:
         ["kubectl", "get", "pods", "-A", "-o", "wide"],
         ["kubectl", "describe", "pods", "-A"],
         ["kubectl", "get", "events", "-A", "--sort-by=.lastTimestamp"],
-        ["kubectl", "get", "nodepowerprofiles", "-o", "yaml"],
-        ["kubectl", "get", "telemetryprofiles", "-o", "yaml"],
+        ["kubectl", "get", "nodetwins", "-o", "yaml"],
+        ["kubectl", "get", "nodehardwares", "-o", "yaml"],
+        ["kubectl", "get", "workloadprofiles", "-o", "yaml"],
         ["kubectl", "-n", "joulie-system", "logs", "deploy/joulie-operator", "--tail=200"],
         ["kubectl", "-n", "joulie-system", "logs", "statefulset/joulie-agent-pool", "--tail=200"],
     ]
@@ -589,8 +571,9 @@ def test_boot_and_install() -> Ctx:
         kubectl(["label", "node", node, "joulie.io/managed=true", "--overwrite"])
 
     install_joulie()
-    kubectl(["get", "crd", "nodepowerprofiles.joulie.io"])
-    kubectl(["get", "crd", "telemetryprofiles.joulie.io"])
+    kubectl(["get", "crd", "nodehardwares.joulie.io"])
+    kubectl(["get", "crd", "nodetwins.joulie.io"])
+    kubectl(["get", "crd", "workloadprofiles.joulie.io"])
     kubectl(["create", "ns", "joulie-it"], check=False)
     set_static_hp_frac("0")
     perf_node, eco_node = discover_perf_and_eco_nodes(list(EXPECTED_NODES))
@@ -624,7 +607,7 @@ def test_telemetry_http(ctx: Ctx) -> None:
     else:
         if gpu_posts > 0:
             log(f"unexpected gpu POSTs on non-GPU node (still tolerating): stats={stats}")
-        result, message = get_telemetryprofile_gpu_control_status(ctx.eco_node)
+        result, message = get_nodetwin_gpu_control_status(ctx.eco_node)
         if result not in ("none", "blocked", "error"):
             raise AssertionError(
                 f"expected graceful non-GPU handling (none/blocked/error), got result={result!r}, message={message!r}"

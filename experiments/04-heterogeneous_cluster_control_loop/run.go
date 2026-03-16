@@ -108,17 +108,27 @@ func main() {
 		results = append(results, result)
 
 		// Write per-scenario results
-		data, _ := json.MarshalIndent(result, "", "  ")
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			log.Printf("  WARNING: marshal scenario %s: %v", sc.Name, err)
+			continue
+		}
 		path := fmt.Sprintf("%s/scenario_%s_metrics.json", outDir, sc.Name)
-		os.WriteFile(path, data, 0644)
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			log.Printf("  WARNING: write %s: %v", path, err)
+		}
 		log.Printf("  Energy: %.2f kWh, Makespan: %.0fs, Peak cooling: %.1f%%",
 			result.TotalEnergyKWh, result.MakespanS, result.PeakCoolingStress)
 	}
 
 	// Write comparison
 	comp := buildComparison(results)
-	compData, _ := json.MarshalIndent(comp, "", "  ")
-	os.WriteFile(fmt.Sprintf("%s/comparison.json", outDir), compData, 0644)
+	compData, err := json.MarshalIndent(comp, "", "  ")
+	if err != nil {
+		log.Printf("WARNING: marshal comparison: %v", err)
+	} else if err := os.WriteFile(fmt.Sprintf("%s/comparison.json", outDir), compData, 0644); err != nil {
+		log.Printf("WARNING: write comparison.json: %v", err)
+	}
 
 	// Print summary table
 	printSummaryTable(results)

@@ -219,8 +219,8 @@ func detectRAPLCapRange(sockets int) joulie.CPUCapRange {
 				maxW := v / 1e6 // uW -> W
 				if maxW > cr.MaxWattsPerSocket {
 					cr.MaxWattsPerSocket = maxW
+					cr.MinWattsPerSocket = maxW * 0.1 // ~10% as practical minimum
 				}
-				cr.MinWattsPerSocket = maxW * 0.1 // ~10% as practical minimum
 			}
 		}
 	}

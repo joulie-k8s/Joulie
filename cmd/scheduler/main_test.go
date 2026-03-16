@@ -16,6 +16,7 @@ func TestScoreNodeNoState(t *testing.T) {
 }
 
 func TestScoreNodeEcoHighHeadroom(t *testing.T) {
+	now := time.Now()
 	states := map[string]*joulie.NodeTwinStatus{
 		"node1": {
 			SchedulableClass:            "eco",
@@ -23,6 +24,7 @@ func TestScoreNodeEcoHighHeadroom(t *testing.T) {
 			PredictedCoolingStressScore: 10,
 			PredictedPsuStressScore:     10,
 			EffectiveCapState:           joulie.CapState{CPUPct: 60, GPUPct: 60},
+			LastUpdated:                 now,
 		},
 		"node2": {
 			SchedulableClass:            "performance",
@@ -30,6 +32,7 @@ func TestScoreNodeEcoHighHeadroom(t *testing.T) {
 			PredictedCoolingStressScore: 70,
 			PredictedPsuStressScore:     70,
 			EffectiveCapState:           joulie.CapState{CPUPct: 100, GPUPct: 100},
+			LastUpdated:                 now,
 		},
 	}
 	// best-effort workload: eco preferred when headroom is better
@@ -41,18 +44,21 @@ func TestScoreNodeEcoHighHeadroom(t *testing.T) {
 }
 
 func TestScoreNodeDrainingPenalty(t *testing.T) {
+	now := time.Now()
 	states := map[string]*joulie.NodeTwinStatus{
 		"draining-node": {
 			SchedulableClass:            "draining",
 			PredictedPowerHeadroomScore: 80,
 			PredictedCoolingStressScore: 10,
 			PredictedPsuStressScore:     10,
+			LastUpdated:                 now,
 		},
 		"normal-node": {
 			SchedulableClass:            "performance",
 			PredictedPowerHeadroomScore: 80,
 			PredictedCoolingStressScore: 10,
 			PredictedPsuStressScore:     10,
+			LastUpdated:                 now,
 		},
 	}
 	// draining node should score lower than identical non-draining node
@@ -116,10 +122,10 @@ func TestScoreNodeStaleTwinFallsBackToNeutral(t *testing.T) {
 }
 
 func TestIsTwinStaleWithZeroTimestamp(t *testing.T) {
-	// Zero timestamp = operator hasn't set it yet; should not be treated as stale
+	// Zero timestamp = operator hasn't populated status yet; treat as stale
 	ts := &joulie.NodeTwinStatus{}
-	if isTwinStale(ts) {
-		t.Error("zero LastUpdated should not be treated as stale")
+	if !isTwinStale(ts) {
+		t.Error("zero LastUpdated should be treated as stale (unpopulated twin)")
 	}
 }
 

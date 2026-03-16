@@ -463,7 +463,7 @@ func parseTwinState(u unstructured.Unstructured) (string, *joulie.NodeTwinStatus
 // isTwinStale returns true if the twin data is too old to trust for scheduling.
 func isTwinStale(ts *joulie.NodeTwinStatus) bool {
 	if ts.LastUpdated.IsZero() {
-		return false // no timestamp = operator hasn't set it yet; don't penalize
+		return true // no timestamp = operator hasn't populated status yet; treat as stale
 	}
 	return time.Since(ts.LastUpdated) > twinStalenessThreshold
 }

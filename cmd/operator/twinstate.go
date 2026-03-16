@@ -89,10 +89,14 @@ func fetchNodeHardware(ctx context.Context, dynClient dynamic.Interface, nodeNam
 		if v, ok := cpu["model"].(string); ok {
 			hw.CPU.Model = v
 		}
-		if v, ok := cpu["sockets"].(int64); ok {
+		if v, ok := cpu["sockets"].(float64); ok {
+			hw.CPU.Sockets = int(v)
+		} else if v, ok := cpu["sockets"].(int64); ok {
 			hw.CPU.Sockets = int(v)
 		}
-		if v, ok := cpu["totalCores"].(int64); ok {
+		if v, ok := cpu["totalCores"].(float64); ok {
+			hw.CPU.TotalCores = int(v)
+		} else if v, ok := cpu["totalCores"].(int64); ok {
 			hw.CPU.TotalCores = int(v)
 		}
 		if v, ok := cpu["driverFamily"].(string); ok {
@@ -118,7 +122,9 @@ func fetchNodeHardware(ctx context.Context, dynClient dynamic.Interface, nodeNam
 		if v, ok := gpu["model"].(string); ok {
 			hw.GPU.Model = v
 		}
-		if v, ok := gpu["count"].(int64); ok {
+		if v, ok := gpu["count"].(float64); ok {
+			hw.GPU.Count = int(v)
+		} else if v, ok := gpu["count"].(int64); ok {
 			hw.GPU.Count = int(v)
 		}
 		if cr, ok := gpu["capRangePerGpu"].(map[string]interface{}); ok {
@@ -136,7 +142,8 @@ func fetchNodeHardware(ctx context.Context, dynClient dynamic.Interface, nodeNam
 	return hw
 }
 
-// fetchWorkloadProfilesForNode returns WorkloadProfile statuses for pods on this node.
+// fetchWorkloadProfilesForNode returns WorkloadProfile statuses for pods running on this node.
+// Only profiles whose spec.nodeName matches are returned.
 func fetchWorkloadProfilesForNode(ctx context.Context, dynClient dynamic.Interface, nodeName string) []joulie.WorkloadProfileStatus {
 	var profiles []joulie.WorkloadProfileStatus
 
@@ -149,6 +156,10 @@ func fetchWorkloadProfilesForNode(ctx context.Context, dynClient dynamic.Interfa
 	}
 
 	for _, item := range list.Items {
+		specNode, _, _ := unstructured.NestedString(item.Object, "spec", "nodeName")
+		if specNode != nodeName {
+			continue
+		}
 		status, _, _ := unstructured.NestedMap(item.Object, "status")
 		if status == nil {
 			continue
@@ -208,6 +219,9 @@ func upsertNodeTwinStatus(ctx context.Context, dynClient dynamic.Interface, node
 
 	// Ensure the object exists first (it may have been created by upsertNodeTwinSpec)
 	_, err = dynClient.Resource(nodeTwinGVR).Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get NodeTwin %s: %w", nodeName, err)
+	}
 	if apierrors.IsNotFound(err) {
 		// Create a minimal object; spec will be filled by upsertNodeTwinSpec
 		obj := &unstructured.Unstructured{

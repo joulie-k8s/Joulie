@@ -249,6 +249,10 @@ func TestComputeZeroCapsDefaultToFull(t *testing.T) {
 	if out.EffectiveCapState.GPUPct != 100 {
 		t.Errorf("expected GPU cap default to 100, got %f", out.EffectiveCapState.GPUPct)
 	}
+	// Regression: computePowerHeadroom must use the defaulted cap values, not 0.
+	if out.PredictedPowerHeadroomScore == 0 {
+		t.Error("headroom must be non-zero when caps default to 100% (uncapped)")
+	}
 }
 
 func TestComputeNegativeCapsDefaultToFull(t *testing.T) {

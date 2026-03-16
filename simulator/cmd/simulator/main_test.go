@@ -193,7 +193,8 @@ func TestThermalTelemetryTracksHeatingAndAveraging(t *testing.T) {
 	st.IOIntensity = 0.02
 	st.LastUpdate = time.Now().Add(-2 * time.Second)
 
-	power := s.nodePower("node-hot", st)
+	model := s.modelForNode("node-hot")
+	power := s.nodePowerWithModel(st, model)
 	if power <= 0 {
 		t.Fatalf("expected positive power")
 	}
