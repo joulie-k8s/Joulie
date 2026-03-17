@@ -9,11 +9,11 @@ Before installing Joulie, understand the control model.
 
 ## What Joulie is
 
-Joulie is a Kubernetes-native **digital twin** for energy-efficient data centers.
+Joulie is a Kubernetes-native energy management system that uses **per-node digital twins** to optimize data center power consumption.
 
 It continuously ingests telemetry from every node (CPU/GPU power draw via RAPL and NVML/DCGM, per-pod resource utilization via cAdvisor, and optional energy counters from [Kepler](https://github.com/sustainable-computing-io/kepler)) to maintain an up-to-date model of each node's thermal and power state.
 
-That digital twin model drives two outcomes:
+These per-node digital twins drive two outcomes:
 
 1. **Energy control**: the operator writes desired power state into `NodeTwin` CRs (CPU and GPU power caps). The node agent reads `NodeTwin.spec` and enforces them.
 2. **Scheduling decisions**: the scheduler extender reads computed `NodeTwin.status` (power headroom, predicted cooling stress, PSU load) to steer new pods toward nodes with the best energy-efficiency / performance trade-off.
@@ -79,51 +79,17 @@ Joulie uses a single `joulie.io/workload-class` pod annotation to drive placemen
 
 ## Digital twin
 
-The digital twin is the core predictive engine of Joulie. It is an O(1) parametric model that predicts the impact of scheduling and power-cap decisions without running a full simulation for each scheduling decision.
+The digital twin is the core predictive engine of Joulie. It is a lightweight O(1) parametric model that predicts the impact of scheduling and power-cap decisions without running a full simulation for each scheduling decision.
 
-### What it computes
+For each managed node, the twin produces three scores written to `NodeTwin.status`:
 
-For each managed node, the twin produces three scores:
-
-- **Power headroom** (0-100): how much power budget remains before hitting thermal or PSU limits. Higher is better for new workload placement.
-- **CoolingStress** (0-100): predicted percentage of cooling capacity in use. High values mean the node is near its thermal limit and risks throttling.
+- **Power headroom** (0-100): remaining power budget before hitting thermal or PSU limits. Higher is better for new workload placement.
+- **CoolingStress** (0-100): predicted percentage of cooling capacity in use. High values mean the node is near its thermal limit.
 - **PSUStress** (0-100): predicted percentage of PDU/rack power capacity in use. High values mean the rack is near its power supply limit.
 
-### CoolingStress formula
+The scheduler extender caches these scores (30-second TTL) and uses them for filter and score decisions. The operator uses them to trigger migration recommendations when stress exceeds thresholds.
 
-The default `LinearCoolingModel` computes:
-
-```
-coolingStress = (nodePower / referenceNodePower) * 80 + max(0, temp - 20) * 0.5
-```
-
-Where `referenceNodePower` defaults to 4000 W (a 2-socket EPYC + 8x H100 reference node). The result is clamped to [0, 100].
-
-### PSUStress formula
-
-```
-psuStress = clusterPower / referenceRackCapacity * 100
-```
-
-Where `referenceRackCapacity` defaults to 50 kW. The result is clamped to [0, 100].
-
-### CoolingModel interface
-
-The `CoolingModel` interface is pluggable. The default implementation is `LinearCoolingModel`, an algebraic proxy suitable for initial deployments. A future implementation will use openModelica reduced-order thermal simulation via the same interface for higher-fidelity predictions.
-
-### How it feeds the scheduler
-
-The twin outputs are written to `NodeTwin.status` (one per managed node). The scheduler extender caches these with a 30-second TTL and uses them in its filter and score logic to steer pods toward nodes with the best energy/performance trade-off.
-
-### How it feeds the operator
-
-When CoolingStress or PSUStress exceeds 70 on a node, the twin generates reschedule recommendations for reschedulable standard workloads, enabling the operator to trigger migration away from stressed nodes.
-
-For GPU nodes with slicing support, the twin also produces GPU slicing recommendations (MIG or time-slicing) based on observed workload intensity patterns. These are advisory: cluster admins review and apply them during maintenance windows.
-
-### Implementation
-
-The twin is implemented in `pkg/operator/twin/twin.go`.
+For formula details, the pluggable `CoolingModel` interface, and GPU slicing recommendations, see [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}).
 
 ## Digital twin feedback loop
 

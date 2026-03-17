@@ -6,7 +6,7 @@ menu:
     weight: 10
 ---
 
-Joulie is a Kubernetes-native digital twin for energy-efficient data centers.
+Joulie is a Kubernetes-native energy management system that uses per-node digital twins to optimize data center power consumption.
 It ingests real-time telemetry from every node (CPU/GPU power draw, thermal state, per-pod utilization) to maintain a continuously updated model of the cluster's energy state.
 That model drives two things: power cap enforcement (via RAPL and NVML) and scheduling decisions that steer workloads toward the most energy-efficient nodes.
 
@@ -40,7 +40,7 @@ Core mental model:
 
 ## What to expect
 
-- **Digital twin model**: telemetry → twin state → cap decisions and scheduling.
+- **Per-node digital twins**: telemetry → twin state → cap decisions and scheduling.
 - **Kubernetes-native contracts**: 2 user-facing CRDs (`NodeHardware`, `NodeTwin`) + scheduling constraints as intent/supply language.
 - **Workload classification**: automatic profiling via Kepler/cAdvisor metrics with transparent classification reasons.
 - **Observability tooling**: `kubectl joulie` plugin, Grafana dashboard, Prometheus metrics.

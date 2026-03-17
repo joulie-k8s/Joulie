@@ -86,6 +86,10 @@ Overrides are logged in the `classificationReason` field for auditability (e.g.,
 
 When Kepler is not deployed, the classifier falls back to utilization-based rules only. Classification still works; the main loss is the ability to distinguish compute-bound from memory-bound workloads when both CPU and memory utilization are moderate (30-60%). In this ambiguous range, the classifier defaults to `mixed` boundness.
 
+### Simulator fallback (sim annotations)
+
+When running in simulation mode without a real Prometheus, the classifier can read utilization data from `sim.joulie.io/*` pod annotations set by the simulator. Enable with `CLASSIFY_SIM_ANNOTATION_FALLBACK=true`. The classifier applies its normal heuristic rules to the annotation values, with optional Gaussian noise (`CLASSIFY_SIM_NOISE_PCT`, default 10%) to simulate measurement error. See [Online workload classification]({{< relref "/docs/simulator/simulator.md" >}}) for details.
+
 ## Confidence scoring
 
 Every `WorkloadProfile` carries a `confidence` field (0 to 1) that indicates how much data backs the classification:
