@@ -43,19 +43,19 @@ policy:
     # divides by run.time_scale to get the wall-clock interval.
     queue_aware_operator_reconcile_sim_seconds: 300
   static:
-    hp_frac: 0.45
+    hp_frac: 0.30
   queue_aware:
-    hp_base_frac: 0.50
+    hp_base_frac: 0.30
     hp_min: 2
-    hp_max: 8
-    perf_per_hp_node: 18
+    hp_max: 15
+    perf_per_hp_node: 20
 
 images:
   joulie_registry: registry.cern.ch/mbunino/joulie
-  joulie_tag: dev0.2.0
+  joulie_tag: dev0.1.1
   sim_registry: registry.cern.ch/mbunino/joulie
   sim_image: joulie-simulator
-  sim_tag: dev0.2.0
+  sim_tag: dev0.1.1
 
 inventory:
   source: experiments/01-cpu-only-benchmark/configs/cluster-nodes.yaml
