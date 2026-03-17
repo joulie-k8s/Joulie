@@ -4,7 +4,7 @@
 &lt;ol&gt;
 &lt;li&gt;Node labels define simulated hardware identity.&lt;/li&gt;
 &lt;li&gt;Operator resolves hardware from &lt;code&gt;NodeHardware&lt;/code&gt; when available, otherwise from labels/inventory fallback.&lt;/li&gt;
-&lt;li&gt;Operator writes desired node profile (&lt;code&gt;NodePowerProfile&lt;/code&gt;).&lt;/li&gt;
+&lt;li&gt;Operator writes desired node profile (&lt;code&gt;NodeTwin.spec&lt;/code&gt;).&lt;/li&gt;
 &lt;li&gt;Agent reads desired state and sends control intents.&lt;/li&gt;
 &lt;li&gt;Simulator emulates telemetry/control behavior per node and exposes HTTP endpoints.&lt;/li&gt;
 &lt;li&gt;Next reconcile loop reacts to updated simulated state.&lt;/li&gt;
