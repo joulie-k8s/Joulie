@@ -1,0 +1,100 @@
+{
+  "Scenarios": [
+    {
+      "Scenario": "A: Baseline (no Joulie)",
+      "TotalEnergyKWh": 285.29545039873295,
+      "MakespanS": 394473.1160816292,
+      "P50CompletionS": 182741.84561453023,
+      "P95CompletionS": 381659.76586984616,
+      "AvgPendingS": 187184.54300323603,
+      "PeakRackPowerW": 3473,
+      "AvgRackPowerW": 3473,
+      "P95RackPowerW": 3473,
+      "PeakCoolingStress": 6.019866666666667,
+      "AvgCoolingStress": 6.019866666666667,
+      "PeakPSUStress": 6.946,
+      "EcoPct": 0,
+      "SliceUtilization": 0,
+      "EnergyDelayProduct": 405148987161720.25,
+      "NodeProfileChurn": 0,
+      "RescheduledJobs": 0,
+      "TotalReschedulingOverheadS": 0
+    },
+    {
+      "Scenario": "B: Caps only",
+      "TotalEnergyKWh": 224.60896266146588,
+      "MakespanS": 477965.00283561746,
+      "P50CompletionS": 222309.57260177558,
+      "P95CompletionS": 462933.81666497944,
+      "AvgPendingS": 227224.85747835613,
+      "PeakRackPowerW": 3473,
+      "AvgRackPowerW": 3472.9999999999973,
+      "P95RackPowerW": 3473,
+      "PeakCoolingStress": 6.019866666666667,
+      "AvgCoolingStress": 6.019866666666667,
+      "PeakPSUStress": 6.946,
+      "EcoPct": 100,
+      "SliceUtilization": 0,
+      "EnergyDelayProduct": 386478804511413.5,
+      "NodeProfileChurn": 0,
+      "RescheduledJobs": 0,
+      "TotalReschedulingOverheadS": 0
+    },
+    {
+      "Scenario": "C: Caps + Scheduler",
+      "TotalEnergyKWh": 120.96373821604858,
+      "MakespanS": 328335.42478245415,
+      "P50CompletionS": 75996.35643262665,
+      "P95CompletionS": 298378.47126002144,
+      "AvgPendingS": 97211.80418448412,
+      "PeakRackPowerW": 5191,
+      "AvgRackPowerW": 5182.165383468157,
+      "P95RackPowerW": 5191,
+      "PeakCoolingStress": 8.997733333333334,
+      "AvgCoolingStress": 8.969254666666693,
+      "PeakPSUStress": 10.382,
+      "EcoPct": 100,
+      "SliceUtilization": 0,
+      "EnergyDelayProduct": 142980049333583.62,
+      "NodeProfileChurn": 0,
+      "RescheduledJobs": 0,
+      "TotalReschedulingOverheadS": 0
+    },
+    {
+      "Scenario": "D: Caps + Scheduler + DRA",
+      "TotalEnergyKWh": 123.29098016151262,
+      "MakespanS": 334861.76413949457,
+      "P50CompletionS": 75996.35643262665,
+      "P95CompletionS": 304306.0275466132,
+      "AvgPendingS": 98724.86247623348,
+      "PeakRackPowerW": 5191,
+      "AvgRackPowerW": 5182.251926109544,
+      "P95RackPowerW": 5191,
+      "PeakCoolingStress": 8.997733333333334,
+      "AvgCoolingStress": 8.969254666666693,
+      "PeakPSUStress": 10.382,
+      "EcoPct": 100,
+      "SliceUtilization": 0.947154585860216,
+      "EnergyDelayProduct": 148627566429737.56,
+      "NodeProfileChurn": 0,
+      "RescheduledJobs": 0,
+      "TotalReschedulingOverheadS": 0
+    }
+  ],
+  "BaselineEnergy": 285.29545039873295,
+  "EnergySavingsPct": {
+    "B: Caps only": 21.271453033145384,
+    "C: Caps + Scheduler": 57.600537251124074,
+    "D: Caps + Scheduler + DRA": 56.78480677164694
+  },
+  "MakespanRatioPct": {
+    "B: Caps only": 21.165418719361124,
+    "C: Caps + Scheduler": -16.766083315418893,
+    "D: Caps + Scheduler + DRA": -15.111638667360822
+  },
+  "CoolingSavingsPct": {
+    "B: Caps only": 0,
+    "C: Caps + Scheduler": -49.46731932047222,
+    "D: Caps + Scheduler + DRA": -49.46731932047222
+  }
+}

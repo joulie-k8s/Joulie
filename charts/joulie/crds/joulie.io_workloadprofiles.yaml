@@ -1,0 +1,99 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: workloadprofiles.joulie.io
+spec:
+  group: joulie.io
+  names:
+    kind: WorkloadProfile
+    listKind: WorkloadProfileList
+    plural: workloadprofiles
+    singular: workloadprofile
+    shortNames:
+      - wp
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                nodeName:
+                  type: string
+                  description: Node the workload is running on.
+                workloadRef:
+                  type: object
+                  properties:
+                    kind: { type: string }
+                    namespace: { type: string }
+                    name: { type: string }
+                  required:
+                    - kind
+                    - name
+            status:
+              type: object
+              properties:
+                criticality:
+                  type: object
+                  properties:
+                    class:
+                      type: string
+                      enum: ["performance", "standard"]
+                migratability:
+                  type: object
+                  properties:
+                    reschedulable: { type: boolean }
+                cpu:
+                  type: object
+                  properties:
+                    intensity:
+                      type: string
+                      enum: ["high", "medium", "low"]
+                    bound:
+                      type: string
+                      enum: ["compute", "memory", "io", "mixed"]
+                    avgUtilizationPct: { type: number }
+                    capSensitivity:
+                      type: string
+                      enum: ["high", "medium", "low"]
+                gpu:
+                  type: object
+                  properties:
+                    intensity:
+                      type: string
+                      enum: ["high", "medium", "low", "none"]
+                    bound:
+                      type: string
+                      enum: ["compute", "memory", "mixed", "none"]
+                    avgUtilizationPct: { type: number }
+                    capSensitivity:
+                      type: string
+                      enum: ["high", "medium", "low", "none"]
+                rescheduleRecommended: { type: boolean }
+                rescheduleReason: { type: string }
+                classificationReason: { type: string }
+                confidence: { type: number }
+                lastUpdated: { type: string }
+      additionalPrinterColumns:
+        - name: Node
+          type: string
+          jsonPath: .spec.nodeName
+        - name: Criticality
+          type: string
+          jsonPath: .status.criticality.class
+        - name: CPU-Bound
+          type: string
+          jsonPath: .status.cpu.bound
+        - name: GPU-Bound
+          type: string
+          jsonPath: .status.gpu.bound
+        - name: Reschedulable
+          type: boolean
+          jsonPath: .status.migratability.reschedulable
+      subresources:
+        status: {}

@@ -1,0 +1,332 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "prometheus"
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "description": "Joulie cluster energy state overview",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Cluster Overview",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 80 }
+            ]
+          },
+          "unit": "percent"
+        }
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Avg Cooling Stress",
+      "type": "gauge",
+      "targets": [
+        {
+          "expr": "avg(joulie_operator_node_cooling_stress)",
+          "legendFormat": "Avg Cooling Stress"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 80 }
+            ]
+          },
+          "unit": "percent"
+        }
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 1 },
+      "id": 2,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Avg PSU Stress",
+      "type": "gauge",
+      "targets": [
+        {
+          "expr": "avg(joulie_operator_node_psu_stress)",
+          "legendFormat": "Avg PSU Stress"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 30 },
+              { "color": "green", "value": 60 }
+            ]
+          },
+          "unit": "percent"
+        }
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 1 },
+      "id": 3,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Avg Power Headroom",
+      "type": "gauge",
+      "targets": [
+        {
+          "expr": "avg(joulie_operator_node_power_headroom)",
+          "legendFormat": "Avg Headroom"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 1 },
+      "id": 4,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "horizontal"
+      },
+      "title": "Node Profile Distribution",
+      "type": "bargauge",
+      "targets": [
+        {
+          "expr": "count(joulie_operator_node_state{state=\"ActivePerformance\"} == 1)",
+          "legendFormat": "Performance"
+        },
+        {
+          "expr": "count(joulie_operator_node_state{state=\"ActiveEco\"} == 1)",
+          "legendFormat": "Eco"
+        },
+        {
+          "expr": "count(joulie_operator_node_state{state=\"DrainingPerformance\"} == 1)",
+          "legendFormat": "Draining"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
+      "id": 101,
+      "title": "Per-Node Stress",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-GrYlRd" },
+          "custom": { "fillOpacity": 80 },
+          "max": 100,
+          "min": 0,
+          "unit": "percent"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 5,
+      "title": "Cooling Stress by Node",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_operator_node_cooling_stress",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-GrYlRd" },
+          "custom": { "fillOpacity": 80 },
+          "max": 100,
+          "min": 0,
+          "unit": "percent"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 6,
+      "title": "PSU Stress by Node",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_operator_node_psu_stress",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
+      "id": 102,
+      "title": "Agent Power Metrics",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "id": 7,
+      "title": "RAPL Package Power (per node)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_agent_rapl_package_total_watts",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "id": 8,
+      "title": "Policy Cap (per node)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_agent_policy_cap_watts",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "id": 103,
+      "title": "State Transitions",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "fillOpacity": 50, "stacking": { "mode": "normal" } }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "id": 9,
+      "title": "State Transitions (rate/5m)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (from_state, to_state) (rate(joulie_operator_state_transitions_total[5m]))",
+          "legendFormat": "{{from_state}} -> {{to_state}}"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "fillOpacity": 50 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "id": 10,
+      "title": "Agent Reconcile Errors (rate/5m)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (node) (rate(joulie_agent_reconcile_errors_total[5m]))",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "id": 104,
+      "title": "DVFS & Throttling",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0,
+          "custom": { "fillOpacity": 30 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
+      "id": 11,
+      "title": "DVFS Throttle Percentage",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_agent_dvfs_throttle_pct",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "pressurehpa",
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
+      "id": 12,
+      "title": "Compute Density Score",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_operator_node_compute_density",
+          "legendFormat": "{{node}} ({{component}})"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["joulie", "energy", "kubernetes"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Joulie - Cluster Energy Overview",
+  "uid": "joulie-overview",
+  "version": 1
+}

@@ -73,7 +73,7 @@ def generate_canonical_seed_trace(
     jobs: int,
     mean_inter_arrival_sec: float,
     perf_ratio: float,
-    eco_ratio: float,
+    compute_bound_perf_boost: float,
     gpu_ratio: float,
     gpu_request_per_job: float,
     burst_day_probability: float,
@@ -85,7 +85,7 @@ def generate_canonical_seed_trace(
 ) -> pathlib.Path:
     traces_dir = RESULTS / "traces"
     traces_dir.mkdir(parents=True, exist_ok=True)
-    ratio_id = f"perf_{str(perf_ratio).replace('.', '_')}_eco_{str(eco_ratio).replace('.', '_')}"
+    ratio_id = f"perf_{str(perf_ratio).replace('.', '_')}_cbpb_{str(compute_bound_perf_boost).replace('.', '_')}"
     workload_id = (
         f"gpur_{str(gpu_ratio).replace('.', '_')}"
         f"_greq_{str(gpu_request_per_job).replace('.', '_')}"
@@ -124,8 +124,8 @@ def generate_canonical_seed_trace(
         [
             "--perf-ratio",
             str(perf_ratio),
-            "--eco-ratio",
-            str(eco_ratio),
+            "--compute-bound-perf-boost",
+            str(compute_bound_perf_boost),
             "--gpu-ratio",
             str(gpu_ratio),
             "--gpu-request",
@@ -262,7 +262,7 @@ def strip_power_profile_affinity(affinity: dict | None) -> dict | None:
         kept_exprs = [
             e
             for e in exprs
-            if isinstance(e, dict) and e.get("key") not in {"joulie.io/power-profile", "joulie.io/draining"}
+            if isinstance(e, dict) and e.get("key") not in {"joulie.io/power-profile"}
         ]
         if kept_exprs:
             keep_terms.append({"matchExpressions": kept_exprs})
@@ -444,8 +444,7 @@ def reset_control_state():
             "nodes",
             "-l",
             "joulie.io/managed=true",
-            "joulie.io/draining=false",
-            "--overwrite",
+            "joulie.io/draining-",
         ],
         check=False,
     )
@@ -494,7 +493,7 @@ def main():
     ap.add_argument("--settle-seconds", type=int, default=None)
     ap.add_argument("--cleanup-timeout", type=int, default=None)
     ap.add_argument("--perf-ratio", type=float, default=None)
-    ap.add_argument("--eco-ratio", type=float, default=None, help="must be 0 for this benchmark profile")
+    ap.add_argument("--compute-bound-perf-boost", type=float, default=None)
     ap.add_argument("--gpu-ratio", type=float, default=None)
     ap.add_argument("--gpu-request-per-job", type=float, default=None)
     ap.add_argument("--burst-day-probability", type=float, default=None)
@@ -527,8 +526,8 @@ def main():
     perf_ratio = (
         args.perf_ratio if args.perf_ratio is not None else float(get_cfg(cfg, "workload", "perf_ratio", default=0.30))
     )
-    eco_ratio = (
-        args.eco_ratio if args.eco_ratio is not None else float(get_cfg(cfg, "workload", "eco_ratio", default=0.00))
+    compute_bound_perf_boost = (
+        args.compute_bound_perf_boost if args.compute_bound_perf_boost is not None else float(get_cfg(cfg, "workload", "compute_bound_perf_boost", default=3.5))
     )
     gpu_ratio = (
         args.gpu_ratio if args.gpu_ratio is not None else float(get_cfg(cfg, "workload", "gpu_ratio", default=0.00))
@@ -568,12 +567,12 @@ def main():
     baselines_raw = args.baselines if args.baselines.strip() else get_cfg(cfg, "run", "baselines", default=["A", "B", "C"])
     baselines = to_baselines(baselines_raw)
 
-    if perf_ratio < 0 or eco_ratio < 0:
-        raise SystemExit("perf_ratio and eco_ratio must be >= 0")
+    if perf_ratio < 0:
+        raise SystemExit("perf_ratio must be >= 0")
+    if compute_bound_perf_boost < 1:
+        raise SystemExit("compute_bound_perf_boost must be >= 1")
     if gpu_ratio < 0 or gpu_ratio > 1:
         raise SystemExit("gpu_ratio must be in [0,1]")
-    if perf_ratio + eco_ratio > 1:
-        raise SystemExit("perf_ratio + eco_ratio must be <= 1")
     if gpu_request_per_job < 0:
         raise SystemExit("gpu_request_per_job must be >= 0")
     if burst_day_probability < 0 or burst_day_probability > 1:
@@ -628,6 +627,12 @@ def main():
     install_env_base["OPERATOR_RECONCILE_INTERVAL"] = str(get_cfg(cfg, "policy", "loop", "operator_reconcile_interval", default="20s"))
     install_env_base["AGENT_RECONCILE_INTERVAL"] = str(get_cfg(cfg, "policy", "loop", "agent_reconcile_interval", default="10s"))
     install_env_base["SIM_BASE_SPEED_PER_CORE"] = str(get_cfg(cfg, "simulator", "base_speed_per_core", default=1.0))
+    install_env_base["SIM_CLASSIFIER_MISCLASSIFY_RATE"] = str(get_cfg(cfg, "simulator", "classifier_misclassify_rate", default=0.10))
+    install_env_base["SIM_FACILITY_AMBIENT_BASE_C"] = str(get_cfg(cfg, "simulator", "facility_ambient_base_c", default=22.0))
+    install_env_base["SIM_FACILITY_AMBIENT_AMPLITUDE_C"] = str(get_cfg(cfg, "simulator", "facility_ambient_amplitude_c", default=8.0))
+    install_env_base["SIM_FACILITY_AMBIENT_PERIOD_SEC"] = str(get_cfg(cfg, "simulator", "facility_ambient_period_sec", default=600))
+    install_env_base["ENABLE_CLASSIFIER"] = str(get_cfg(cfg, "operator", "enable_classifier", default=True)).lower()
+    install_env_base["ENABLE_FACILITY_METRICS"] = str(get_cfg(cfg, "operator", "enable_facility_metrics", default=False)).lower()
     log(
         "configured images "
         f"sim={install_env_base['SIM_REGISTRY']}/{install_env_base['SIM_IMAGE']}"
@@ -664,6 +669,13 @@ def main():
             install_env["POLICY_TYPE"] = baseline_policy[baseline]
         else:
             install_env.pop("POLICY_TYPE", None)
+        # For queue-aware (baseline C), compute the operator reconcile interval
+        # from simulated seconds divided by time_scale.
+        if baseline == "C":
+            qa_sim_sec = float(get_cfg(cfg, "policy", "loop", "queue_aware_operator_reconcile_sim_seconds", default=300))
+            qa_wall_sec = max(1, int(qa_sim_sec / time_scale))
+            install_env["OPERATOR_RECONCILE_INTERVAL"] = f"{qa_wall_sec}s"
+            log(f"baseline C: queue-aware operator reconcile = {qa_sim_sec}s simulated / {time_scale} = {qa_wall_sec}s wall")
         run_with_env(
             [
                 "bash",
@@ -686,7 +698,7 @@ def main():
                 jobs=jobs,
                 mean_inter_arrival_sec=mean_inter_arrival_sec,
                 perf_ratio=perf_ratio,
-                eco_ratio=eco_ratio,
+                compute_bound_perf_boost=compute_bound_perf_boost,
                 gpu_ratio=gpu_ratio,
                 gpu_request_per_job=gpu_request_per_job,
                 burst_day_probability=burst_day_probability,

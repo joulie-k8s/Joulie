@@ -36,4 +36,68 @@ KWOK_VER=${KWOK_VER:-$(curl -s https://api.github.com/repos/kubernetes-sigs/kwok
 kubectl apply -f "https://github.com/kubernetes-sigs/kwok/releases/download/${KWOK_VER}/kwok.yaml"
 kubectl apply -f "https://github.com/kubernetes-sigs/kwok/releases/download/${KWOK_VER}/stage-fast.yaml"
 
+# ---------------------------------------------------------------------------
+# Configure kube-scheduler to call the Joulie scheduler extender.
+# ignorable=true means baseline A (no extender deployed) proceeds without
+# delay: DNS lookup for the missing Service returns NXDOMAIN immediately.
+# ---------------------------------------------------------------------------
+CTRL_CONTAINER="${CLUSTER_NAME}-control-plane"
+
+docker exec "$CTRL_CONTAINER" tee /etc/kubernetes/joulie-scheduler-config.yaml > /dev/null <<'SCHED_CFG'
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+profiles:
+- schedulerName: default-scheduler
+extenders:
+- urlPrefix: "http://joulie-scheduler-extender.joulie-system.svc.cluster.local:9876"
+  filterVerb: "filter"
+  prioritizeVerb: "prioritize"
+  weight: 5
+  enableHTTPS: false
+  nodeCacheCapable: false
+  ignorable: true
+SCHED_CFG
+
+docker cp "$CTRL_CONTAINER":/etc/kubernetes/manifests/kube-scheduler.yaml /tmp/kube-scheduler-patch.yaml
+python3 <<'PY'
+import yaml
+
+with open("/tmp/kube-scheduler-patch.yaml") as f:
+    manifest = yaml.safe_load(f)
+
+container = manifest["spec"]["containers"][0]
+cmd = container["command"]
+if any("joulie-scheduler-config" in arg for arg in cmd):
+    print("kube-scheduler: extender already configured, skipping")
+    exit(0)
+
+cmd.append("--config=/etc/kubernetes/joulie-scheduler-config.yaml")
+
+container.setdefault("volumeMounts", []).append({
+    "mountPath": "/etc/kubernetes/joulie-scheduler-config.yaml",
+    "name": "joulie-scheduler-config",
+    "readOnly": True,
+})
+
+manifest["spec"].setdefault("volumes", []).append({
+    "hostPath": {
+        "path": "/etc/kubernetes/joulie-scheduler-config.yaml",
+        "type": "File",
+    },
+    "name": "joulie-scheduler-config",
+})
+
+with open("/tmp/kube-scheduler-patch.yaml", "w") as f:
+    yaml.dump(manifest, f, default_flow_style=False)
+print("kube-scheduler: extender configuration applied")
+PY
+
+docker cp /tmp/kube-scheduler-patch.yaml "$CTRL_CONTAINER":/tmp/kube-scheduler-new.yaml
+docker exec "$CTRL_CONTAINER" mv /tmp/kube-scheduler-new.yaml /etc/kubernetes/manifests/kube-scheduler.yaml
+rm -f /tmp/kube-scheduler-patch.yaml
+
+echo "waiting for kube-scheduler to restart with extender config..."
+sleep 5
+kubectl wait --for=condition=Ready pod -l component=kube-scheduler -n kube-system --timeout=60s
+
 echo "cluster ready: kind-${CLUSTER_NAME} (kubeconfig=${KUBECONFIG}) with KWOK ${KWOK_VER}"

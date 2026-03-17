@@ -17,7 +17,7 @@ Benchmark policy intentionally generates only:
 - performance-constrained pods (`perf_ratio`)
 - unconstrained pods (remaining ratio)
 
-Strict eco-only workload generation is disabled (`eco_ratio=0`) to avoid benchmark-side placement artifacts.
+Compute-bound workloads are boosted toward performance class (`compute_bound_perf_boost=3.5`) for realistic scheduling behavior.
 
 Current trace behavior:
 

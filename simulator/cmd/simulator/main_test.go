@@ -193,7 +193,8 @@ func TestThermalTelemetryTracksHeatingAndAveraging(t *testing.T) {
 	st.IOIntensity = 0.02
 	st.LastUpdate = time.Now().Add(-2 * time.Second)
 
-	power := s.nodePower("node-hot", st)
+	model := s.modelForNode("node-hot")
+	power := s.nodePowerWithModel(st, model)
 	if power <= 0 {
 		t.Fatalf("expected positive power")
 	}
@@ -550,7 +551,7 @@ func TestInjectTraceJobsSetsExtendedResourceLimits(t *testing.T) {
 		jobs: []*simJob{
 			{
 				JobID:             "gpu-1",
-				Class:             "general",
+				Class:             "standard",
 				Namespace:         "default",
 				SubmitOffsetSec:   0,
 				RequestedCPUCores: 2,
@@ -590,7 +591,7 @@ func TestInjectTraceJobsUsesAMDResourceAndSelector(t *testing.T) {
 		jobs: []*simJob{
 			{
 				JobID:             "gpu-amd-1",
-				Class:             "general",
+				Class:             "standard",
 				Namespace:         "default",
 				SubmitOffsetSec:   0,
 				RequestedCPUCores: 2,
@@ -634,7 +635,7 @@ func TestInjectTraceJobsAddsKWOKToleration(t *testing.T) {
 		jobs: []*simJob{
 			{
 				JobID:             "cpu-1",
-				Class:             "general",
+				Class:             "standard",
 				Namespace:         "default",
 				SubmitOffsetSec:   0,
 				RequestedCPUCores: 1,
@@ -1045,5 +1046,348 @@ classes:
 	}
 	if classes[0].Model.DefaultCapW == nil || *classes[0].Model.DefaultCapW != 4500 {
 		t.Fatalf("defaultCapW override missing: %#v", classes[0].Model.DefaultCapW)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Intent-class classification tests
+// ---------------------------------------------------------------------------
+
+func TestClassifyClassFromPodSpecPerformance(t *testing.T) {
+	spec := &corev1.PodSpec{
+		Affinity: &corev1.Affinity{
+			NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{
+						{
+							MatchExpressions: []corev1.NodeSelectorRequirement{
+								{
+									Key:      "joulie.io/power-profile",
+									Operator: corev1.NodeSelectorOpNotIn,
+									Values:   []string{"eco"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	if got := classifyClassFromPodSpec(spec); got != "performance" {
+		t.Fatalf("expected 'performance', got %q", got)
+	}
+}
+
+func TestClassifyClassFromPodSpecStandard(t *testing.T) {
+	spec := &corev1.PodSpec{}
+	if got := classifyClassFromPodSpec(spec); got != "standard" {
+		t.Fatalf("expected 'standard', got %q", got)
+	}
+}
+
+func TestClassifyClassFromPodSpecNilSpec(t *testing.T) {
+	if got := classifyClassFromPodSpec(nil); got != "standard" {
+		t.Fatalf("expected 'standard', got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// affinityForIntentClass tests
+// ---------------------------------------------------------------------------
+
+func TestAffinityForIntentClassPerformance(t *testing.T) {
+	aff := affinityForIntentClass("performance")
+	if aff == nil || aff.NodeAffinity == nil {
+		t.Fatalf("expected non-nil affinity for performance")
+	}
+	required := aff.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	if required == nil || len(required.NodeSelectorTerms) == 0 {
+		t.Fatalf("expected NodeSelectorTerms")
+	}
+	expr := required.NodeSelectorTerms[0].MatchExpressions[0]
+	if expr.Key != "joulie.io/power-profile" || expr.Operator != corev1.NodeSelectorOpNotIn {
+		t.Fatalf("unexpected expression: %+v", expr)
+	}
+	found := false
+	for _, v := range expr.Values {
+		if v == "eco" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected 'eco' in NotIn values, got %v", expr.Values)
+	}
+}
+
+func TestAffinityForIntentClassStandard(t *testing.T) {
+	if aff := affinityForIntentClass("standard"); aff != nil {
+		t.Fatalf("expected nil affinity for standard, got %+v", aff)
+	}
+}
+
+func TestAffinityForIntentClassRoundTrip(t *testing.T) {
+	aff := affinityForIntentClass("performance")
+	spec := &corev1.PodSpec{Affinity: aff}
+	if got := classifyClassFromPodSpec(spec); got != "performance" {
+		t.Fatalf("round-trip: expected 'performance', got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Trace loading tests
+// ---------------------------------------------------------------------------
+
+func TestLoadTraceReadsExplicitIntentClass(t *testing.T) {
+	trace := `{"type":"job","jobId":"j1","submitTimeOffsetSec":0,"intentClass":"performance","podTemplate":{"requests":{"cpu":"1"}}}` + "\n"
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	if err := os.WriteFile(path, []byte(trace), 0o644); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil, nil, 200, prometheus.NewRegistry(),
+	)
+	if err := s.initWorkloadEngineFromTrace(path); err != nil {
+		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	}
+	if len(s.workload.jobs) != 1 {
+		t.Fatalf("jobs=%d want=1", len(s.workload.jobs))
+	}
+	if got := s.workload.jobs[0].Class; got != "performance" {
+		t.Fatalf("expected Class='performance', got %q", got)
+	}
+}
+
+func TestLoadTraceInfersIntentFromAffinityWhenNoExplicitField(t *testing.T) {
+	// Old-style trace: no intentClass field, but has affinity NotIn eco.
+	trace := `{"type":"job","jobId":"j1","submitTimeOffsetSec":0,"podTemplate":{"requests":{"cpu":"1"},"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"joulie.io/power-profile","operator":"NotIn","values":["eco"]}]}]}}}}}` + "\n"
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	if err := os.WriteFile(path, []byte(trace), 0o644); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil, nil, 200, prometheus.NewRegistry(),
+	)
+	if err := s.initWorkloadEngineFromTrace(path); err != nil {
+		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	}
+	if got := s.workload.jobs[0].Class; got != "performance" {
+		t.Fatalf("expected Class='performance' inferred from affinity, got %q", got)
+	}
+}
+
+func TestLoadTraceDefaultsToStandardWithNoAffinityNoField(t *testing.T) {
+	trace := `{"type":"job","jobId":"j1","submitTimeOffsetSec":0,"podTemplate":{"requests":{"cpu":"2"}}}` + "\n"
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	if err := os.WriteFile(path, []byte(trace), 0o644); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil, nil, 200, prometheus.NewRegistry(),
+	)
+	if err := s.initWorkloadEngineFromTrace(path); err != nil {
+		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	}
+	if got := s.workload.jobs[0].Class; got != "standard" {
+		t.Fatalf("expected Class='standard', got %q", got)
+	}
+}
+
+func TestLoadTraceNeverProducesStaleClassNames(t *testing.T) {
+	staleNames := []string{"general", "eco", "batch"}
+	lines := []string{
+		`{"type":"job","jobId":"j1","submitTimeOffsetSec":0,"podTemplate":{"requests":{"cpu":"1"}}}`,
+		`{"type":"job","jobId":"j2","submitTimeOffsetSec":1,"intentClass":"performance","podTemplate":{"requests":{"cpu":"1"}}}`,
+		`{"type":"job","jobId":"j3","submitTimeOffsetSec":2,"intentClass":"standard","podTemplate":{"requests":{"cpu":"1"}}}`,
+	}
+	trace := strings.Join(lines, "\n") + "\n"
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	if err := os.WriteFile(path, []byte(trace), 0o644); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil, nil, 200, prometheus.NewRegistry(),
+	)
+	if err := s.initWorkloadEngineFromTrace(path); err != nil {
+		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	}
+	for _, j := range s.workload.jobs {
+		for _, stale := range staleNames {
+			if j.Class == stale {
+				t.Fatalf("job %s has stale class name %q", j.JobID, j.Class)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Pod injection tests
+// ---------------------------------------------------------------------------
+
+func newTestSimulatorWithJobs(jobs []*simJob) (*simulator, kubernetes.Interface) {
+	now := time.Now()
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		nil, nil, 200, prometheus.NewRegistry(),
+	)
+	s.workload = &workloadEngine{
+		startTime: now.Add(-2 * time.Second),
+		jobs:      jobs,
+	}
+	kube := k8sfake.NewSimpleClientset()
+	s.injectTraceJobs(context.Background(), kube, now)
+	return s, kube
+}
+
+func TestInjectTraceJobsSetsWorkloadClassAnnotation(t *testing.T) {
+	cases := []struct {
+		name  string
+		class string
+	}{
+		{"performance pod", "performance"},
+		{"standard pod", "standard"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			job := &simJob{
+				JobID:             "j-" + tc.class,
+				Class:             tc.class,
+				Namespace:         "default",
+				SubmitOffsetSec:   0,
+				RequestedCPUCores: 1,
+				PodName:           "sim-j-" + tc.class,
+			}
+			_, kube := newTestSimulatorWithJobs([]*simJob{job})
+			pod, err := kube.CoreV1().Pods("default").Get(context.Background(), job.PodName, metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get pod: %v", err)
+			}
+			if got := pod.Annotations["joulie.io/workload-class"]; got != tc.class {
+				t.Fatalf("expected annotation joulie.io/workload-class=%q, got %q", tc.class, got)
+			}
+		})
+	}
+}
+
+func TestInjectTraceJobsPerformancePodHasAffinityNotInEco(t *testing.T) {
+	job := &simJob{
+		JobID:             "perf-1",
+		Class:             "performance",
+		Namespace:         "default",
+		SubmitOffsetSec:   0,
+		RequestedCPUCores: 1,
+		PodName:           "sim-perf-1",
+	}
+	_, kube := newTestSimulatorWithJobs([]*simJob{job})
+	pod, err := kube.CoreV1().Pods("default").Get(context.Background(), "sim-perf-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	aff := pod.Spec.Affinity
+	if aff == nil || aff.NodeAffinity == nil {
+		t.Fatalf("expected affinity on performance pod")
+	}
+	required := aff.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	if required == nil || len(required.NodeSelectorTerms) == 0 {
+		t.Fatalf("expected NodeSelectorTerms on performance pod")
+	}
+	foundNotInEco := false
+	for _, term := range required.NodeSelectorTerms {
+		for _, expr := range term.MatchExpressions {
+			if expr.Key == "joulie.io/power-profile" && expr.Operator == corev1.NodeSelectorOpNotIn {
+				for _, v := range expr.Values {
+					if v == "eco" {
+						foundNotInEco = true
+					}
+				}
+			}
+		}
+	}
+	if !foundNotInEco {
+		t.Fatalf("expected NotIn eco affinity on performance pod, got %+v", aff)
+	}
+}
+
+func TestInjectTraceJobsStandardPodHasNoAffinity(t *testing.T) {
+	job := &simJob{
+		JobID:             "std-1",
+		Class:             "standard",
+		Namespace:         "default",
+		SubmitOffsetSec:   0,
+		RequestedCPUCores: 1,
+		PodName:           "sim-std-1",
+	}
+	_, kube := newTestSimulatorWithJobs([]*simJob{job})
+	pod, err := kube.CoreV1().Pods("default").Get(context.Background(), "sim-std-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	// Standard pods should have nil affinity (no power-profile constraint).
+	if pod.Spec.Affinity != nil {
+		t.Fatalf("expected nil affinity for standard pod, got %+v", pod.Spec.Affinity)
+	}
+}
+
+func TestInjectTraceJobsNeverSetsNodeName(t *testing.T) {
+	jobs := []*simJob{
+		{
+			JobID:             "perf-nn",
+			Class:             "performance",
+			Namespace:         "default",
+			SubmitOffsetSec:   0,
+			RequestedCPUCores: 1,
+			PodName:           "sim-perf-nn",
+		},
+		{
+			JobID:             "std-nn",
+			Class:             "standard",
+			Namespace:         "default",
+			SubmitOffsetSec:   0,
+			RequestedCPUCores: 1,
+			PodName:           "sim-std-nn",
+		},
+	}
+	_, kube := newTestSimulatorWithJobs(jobs)
+	for _, j := range jobs {
+		pod, err := kube.CoreV1().Pods("default").Get(context.Background(), j.PodName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("get pod %s: %v", j.PodName, err)
+		}
+		if pod.Spec.NodeName != "" {
+			t.Fatalf("pod %s has NodeName=%q; injected pods must not set NodeName (bypasses scheduler)", j.PodName, pod.Spec.NodeName)
+		}
+	}
+}
+
+func TestInjectTraceJobsHasSimAnnotations(t *testing.T) {
+	job := &simJob{
+		JobID:             "annotated-1",
+		WorkloadID:        "wl-42",
+		WorkloadType:      "training",
+		PodRole:           "worker",
+		Class:             "standard",
+		Namespace:         "default",
+		SubmitOffsetSec:   0,
+		RequestedCPUCores: 1,
+		PodName:           "sim-annotated-1",
+	}
+	_, kube := newTestSimulatorWithJobs([]*simJob{job})
+	pod, err := kube.CoreV1().Pods("default").Get(context.Background(), "sim-annotated-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	expected := map[string]string{
+		"sim.joulie.io/jobId":        "annotated-1",
+		"sim.joulie.io/workloadId":   "wl-42",
+		"sim.joulie.io/workloadType": "training",
+		"sim.joulie.io/podRole":      "worker",
+	}
+	for key, want := range expected {
+		if got := pod.Annotations[key]; got != want {
+			t.Fatalf("annotation %s: got %q, want %q", key, got, want)
+		}
 	}
 }

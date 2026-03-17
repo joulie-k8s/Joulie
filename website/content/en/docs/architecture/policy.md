@@ -8,7 +8,7 @@ This page defines Joulie's core contract:
 - **demand** comes from pod scheduling constraints,
 - **supply** is exposed by node power-profile labels,
 - **discovered hardware** is published through `NodeHardware`,
-- **desired state** is published through `NodePowerProfile`.
+- **desired state** is published through `NodeTwin`.
 
 ## APIs
 
@@ -19,55 +19,40 @@ Group/version:
 CRDs:
 
 - `NodeHardware` (`nodehardwares`, cluster-scoped)
-- `NodePowerProfile` (`nodepowerprofiles`, cluster-scoped)
-- `TelemetryProfile` (`telemetryprofiles`, cluster-scoped)
+- `NodeTwin` (`nodetwins`, cluster-scoped)
 
 CRD definitions live in:
 
 - `config/crd/bases/joulie.io_nodehardwares.yaml`
-- `config/crd/bases/joulie.io_nodepowerprofiles.yaml`
-- `config/crd/bases/joulie.io_telemetryprofiles.yaml`
+- `config/crd/bases/joulie.io_nodetwins.yaml`
 
 ## Demand model (workloads)
 
-Workload class is inferred from Kubernetes scheduling constraints on key:
+Workload class is determined from the `joulie.io/workload-class` pod annotation or from a matching `WorkloadProfile`:
 
-- `joulie.io/power-profile`
-
-Classification:
-
-- `performance` demand:
-  - pod excludes eco in required scheduling constraints (recommended pattern: `NotIn ["eco"]`)
-  - compatibility path: explicit `nodeSelector` `joulie.io/power-profile=performance`
-- `eco` demand:
-  - pod requires `joulie.io/power-profile=eco`
-  - advanced pattern: also exclude `joulie.io/draining=true` with `NotIn ["true"]`
-- `general` demand:
-  - no explicit power-profile requirement (unconstrained)
-
-Classification source is affinity/selector, not a custom intent label.
+- `performance` demand: pod carries `joulie.io/workload-class: performance` or a matching profile with `criticality: performance`.
+- `standard` demand (default): no annotation, or `joulie.io/workload-class: standard`. Can run on any node; adaptive scoring steers toward eco when performance nodes are congested.
 
 ## Supply model (nodes)
 
-Node supply is represented by label:
+Node supply is represented by:
 
-- `joulie.io/power-profile=performance|eco`
-- `joulie.io/draining=true|false`
+- `joulie.io/power-profile=performance|eco` (node label, set by operator)
+- `NodeTwin.status.schedulableClass` (internal, set by operator twin controller)
 
 Semantics:
 
 - `performance`: full-performance supply
 - `eco`: low-power supply
-- `draining=true`: transition safeguard active while node is moving toward eco
+- `draining` (schedulableClass only): transition safeguard active while node is moving toward eco; the scheduler extender applies a score penalty
 
-For eco-only placement, prefer excluding `joulie.io/draining=true` rather than requiring `draining=false`.
-That pattern is more robust because unlabeled nodes remain eligible while actively draining nodes are still excluded.
+The `schedulableClass` field is internal to the operator and scheduler extender. Users interact only with the `joulie.io/workload-class` pod annotation for placement intent.
 
-## Desired-state object: `NodePowerProfile`
+## Desired-state + twin output: `NodeTwin`
 
-`NodePowerProfile` is the operator-to-agent contract for one node.
+`NodeTwin` is the operator-to-agent contract for one node. The `spec` carries desired state; the `status` carries twin output (including control feedback and schedulable class).
 
-Main fields:
+Main spec fields:
 
 - `spec.nodeName` (required)
 - `spec.profile` (required, `performance|eco`)
@@ -95,7 +80,7 @@ Example:
 
 ```yaml
 apiVersion: joulie.io/v1alpha1
-kind: NodePowerProfile
+kind: NodeTwin
 metadata:
   name: node-kwok-gpu-nvidia-0
 spec:
@@ -200,54 +185,26 @@ The operator uses `NodeHardware` as the source of truth for:
 In simulator-first setups, the operator can fall back to node hardware labels when `NodeHardware` has not been published yet.
 This keeps simulator examples lightweight while preserving the same architecture once the agent starts publishing discovered hardware.
 
-## Telemetry/control routing: `TelemetryProfile`
+## Telemetry/control backend selection
 
-`TelemetryProfile` is the routing contract that tells the agent where telemetry comes from and where control intents should be sent.
+Telemetry and control backend selection is configured via environment variables on the agent, not through a CRD.
 
 At the policy-model level, the important distinction is:
 
-- `NodePowerProfile` says what state a node should reach
+- `NodeTwin.spec` says what state a node should reach
 - `NodeHardware` says what the node is and what it can do
-- `TelemetryProfile` says how the agent should observe and actuate that node
+- Agent environment variables say how the agent should observe and actuate that node
 
-High-level shape:
+Key environment variables:
 
-- `spec.target`: which node or scope the profile applies to
-- `spec.sources`: telemetry backends (`cpu`, `gpu`, `thermal`, `context`)
-- `spec.controls`: control backends (`cpu`, `gpu`)
-- `status.control`: per-control outcome written back by the agent
+- `TELEMETRY_CPU_SOURCE`: telemetry backend for CPU (`host`, `http`)
+- `TELEMETRY_CPU_CONTROL`: control backend for CPU (`host`, `http`)
+- `TELEMETRY_GPU_SOURCE`: telemetry backend for GPU (`host`, `http`)
+- `TELEMETRY_GPU_CONTROL`: control backend for GPU (`host`, `http`)
 
-Example:
+Default is `host` backends (real node interfaces). For simulator/KWOK setups, set these to `http` with the appropriate endpoint environment variables pointing at the simulator service (e.g., `http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local`).
 
-```yaml
-apiVersion: joulie.io/v1alpha1
-kind: TelemetryProfile
-metadata:
-  name: sim-http-kwok-gpu-nvidia-0
-spec:
-  target:
-    scope: node
-    nodeName: kwok-gpu-nvidia-0
-  sources:
-    cpu:
-      type: http
-      http:
-        endpoint: http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node}
-        timeoutSeconds: 2
-  controls:
-    cpu:
-      type: http
-      http:
-        endpoint: http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}
-        timeoutSeconds: 2
-        mode: dvfs
-    gpu:
-      type: http
-      http:
-        endpoint: http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}
-        timeoutSeconds: 2
-        mode: powercap
-```
+Control feedback is written to `NodeTwin.status.controlStatus` by the agent.
 
 The full runtime contract, backend types, HTTP payloads, and status semantics are documented in [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}}).
 
@@ -258,7 +215,7 @@ The full runtime contract, backend types, HTTP payloads, and status semantics ar
 3. Operator observes demand/supply and computes new node targets.
 4. Agent publishes `NodeHardware`.
 5. Operator resolves discovered hardware against the inventory.
-6. Operator writes `NodePowerProfile` and updates node supply labels.
+6. Operator writes `NodeTwin` and updates node supply labels.
 7. Agent enforces controls and reports status/metrics.
 
 ## Next step

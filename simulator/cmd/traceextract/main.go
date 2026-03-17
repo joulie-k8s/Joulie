@@ -31,7 +31,6 @@ func main() {
 
 	s := bufio.NewScanner(in)
 	w := bufio.NewWriter(out)
-	defer w.Flush()
 	n := 0
 	for s.Scan() {
 		line := s.Bytes()
@@ -48,12 +47,19 @@ func main() {
 		if _, ok := obj["schemaVersion"]; !ok {
 			obj["schemaVersion"] = "v1"
 		}
-		b, _ := json.Marshal(obj)
+		b, err := json.Marshal(obj)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: marshal failed, skipping record: %v\n", err)
+			continue
+		}
 		_, _ = w.Write(append(b, '\n'))
 		n++
 	}
 	if err := s.Err(); err != nil {
 		panic(err)
+	}
+	if err := w.Flush(); err != nil {
+		panic(fmt.Sprintf("flush output: %v", err))
 	}
 	fmt.Printf("wrote %d records to %s\n", n, outPath)
 }

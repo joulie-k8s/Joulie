@@ -55,4 +55,5 @@ kubectl get nodes -o wide
 echo "[ci] running integration suite"
 echo "[ci] operator image: ${JOULIE_OPERATOR_IMAGE_REPOSITORY:-unset}:${JOULIE_OPERATOR_IMAGE_TAG:-unset}"
 echo "[ci] agent image: ${JOULIE_AGENT_IMAGE_REPOSITORY:-unset}:${JOULIE_AGENT_IMAGE_TAG:-unset}"
+echo "[ci] scheduler image: ${JOULIE_SCHEDULER_IMAGE_REPOSITORY:-unset}:${JOULIE_SCHEDULER_IMAGE_TAG:-unset}"
 python3 ci/tests/integration_runner.py

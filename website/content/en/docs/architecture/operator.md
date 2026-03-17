@@ -18,12 +18,43 @@ At each reconcile tick, the operator:
 1. selects eligible managed nodes,
 2. reads `NodeHardware` when available and falls back to node labels when it is not,
 3. resolves hardware identity against the shared inventory,
-4. classifies workload demand from pod scheduling constraints,
-5. runs a policy algorithm to compute a plan,
+4. classifies workload demand from pod scheduling constraints and `WorkloadProfile` data,
+5. runs a policy algorithm (`pkg/operator/policy/`) to compute a plan,
 6. applies transition guards for safe downgrades,
-7. writes desired node targets (`NodePowerProfile`) and node supply labels.
+7. evaluates node stress for migration recommendations (`pkg/operator/migration/`),
+8. writes desired node targets (`NodeTwin.spec`) and the `joulie.io/power-profile` node label.
 
 The agent then enforces those targets node-by-node.
+
+In addition to the reconcile loop, the operator runs three background controllers:
+
+## Workload classifier
+
+The classifier (`cmd/operator/classifier.go`) watches running pods on managed nodes and produces `WorkloadProfile` CRs using two-phase classification: static hints from pod annotations, then dynamic metrics from Prometheus and Kepler.
+
+Enabled by default (`ENABLE_CLASSIFIER=true`). The classifier scans pods every `CLASSIFY_INTERVAL` (default 30s) and re-classifies each pod at most once per `RECLASSIFY_INTERVAL` (default 15m). Orphaned `WorkloadProfile` CRs (pods deleted) are cleaned up every 5 minutes.
+
+See [Workload Classification]({{< relref "/docs/architecture/workload-classification.md" >}}) for the full classification pipeline and rules.
+
+## Facility metrics
+
+The facility metrics poller (`cmd/operator/facility.go`) queries Prometheus for data-center-level signals: ambient temperature, total IT power, and cooling power. These feed into the twin computation for PUE estimation and cooling stress refinement.
+
+Disabled by default (`ENABLE_FACILITY_METRICS=false`). When enabled, the poller runs every `FACILITY_POLL_INTERVAL` (default 30s) and computes PUE as `(IT power + cooling power) / IT power`. The ambient temperature is passed to the twin's `LinearCoolingModel` for temperature-aware stress scoring. The scheduler extender then weights marginal power costs by PUE.
+
+See [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md" >}}) for the full list of facility env vars.
+
+## Migration recommendations and active rescheduling
+
+When node stress (CoolingStress or PSUStress) exceeds configured thresholds, the migration controller (`pkg/operator/migration/`) evaluates which workloads can be safely rescheduled. It generates reschedule recommendations written to `NodeTwin.status.rescheduleRecommendations` for reschedulable standard workloads. These recommendations are surfaced via `kubectl joulie recommend`.
+
+The active rescheduler (`cmd/operator/rescheduler.go`) optionally acts on these recommendations by evicting misplaced pods via the Kubernetes Eviction API (policy/v1). Disabled by default (`ENABLE_ACTIVE_RESCHEDULING=false`). When enabled:
+
+- It reads `NodeTwin.status.rescheduleRecommendations` every `RESCHEDULE_INTERVAL` (default 60s).
+- It verifies each recommended pod has the `joulie.io/reschedulable=true` annotation.
+- It evicts at most `RESCHEDULE_MAX_EVICTIONS_PER_NODE` pods per node per cycle (default 1).
+- `kube-scheduler` re-places evicted pods using the extender, which steers them to better nodes.
+- `RESCHEDULE_DRY_RUN=true` logs decisions without executing evictions.
 
 ## Control boundary with the agent
 
@@ -49,15 +80,14 @@ This separation keeps policy logic portable while actuator details stay node-loc
 6. Run policy (`static_partition`, `queue_aware_v1`, or debug `rule_swap_v1`).
 7. For planned `performance -> eco` transitions, run downgrade guard:
    - publish `profile=eco` as desired state
-   - keep `joulie.io/draining=true` while performance-sensitive pods are still present
-8. Persist desired state through `NodePowerProfile` and update node labels:
-   - `joulie.io/power-profile`
-   - `joulie.io/draining`
+   - set `NodeTwin.status.schedulableClass` to `draining` while performance pods are still present
+8. Persist desired state through `NodeTwin.spec` and update the `joulie.io/power-profile` node label.
 
 The important distinction is:
 
-- `NodePowerProfile` expresses desired target state for enforcement,
-- node labels express scheduler-facing supply state during transitions.
+- `NodeTwin.spec` expresses desired target state for enforcement,
+- `joulie.io/power-profile` node label expresses the current power profile,
+- `NodeTwin.status` holds twin output including `schedulableClass`, which expresses transition state (including `draining`) for the scheduler extender.
 
 ## Power intent configuration knobs
 
@@ -85,7 +115,7 @@ High-level behavior:
   - when `GPU_WRITE_ABSOLUTE_CAPS=false`, operator writes percentage intent,
   - when `GPU_WRITE_ABSOLUTE_CAPS=true`, operator may write resolved `capWattsPerGpu` in addition to `capPctOfMax`, when model-based mapping is available.
 
-This is why GPU `NodePowerProfile` objects may contain both normalized intent and resolved absolute caps at the same time.
+This is why GPU `NodeTwin.spec` objects may contain both normalized intent and resolved absolute caps at the same time.
 
 ## Heterogeneous planning
 
@@ -113,13 +143,13 @@ Joulie models two scheduler-facing supply states:
 - `performance`
 - `eco`
 
-`DrainingPerformance` is an internal operator FSM state tracked while `profile=eco` and `joulie.io/draining=true`.
+`DrainingPerformance` is an internal operator FSM state tracked via `NodeTwin.status.schedulableClass = "draining"`.
 
 That state means:
 
 - the operator wants the node to end up in eco,
-- the transition is still guarded because performance-sensitive pods are present,
-- advanced eco-only placement can avoid the node until draining clears by excluding `joulie.io/draining=true`.
+- the transition is still guarded because performance pods are still present,
+- the scheduler extender sees `schedulableClass: draining` and applies a score penalty to avoid placing new workloads on the node.
 
 ## Why this model
 
@@ -131,4 +161,7 @@ That state means:
 
 1. [Joulie Agent]({{< relref "/docs/architecture/agent.md" >}})
 2. [Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}})
-3. [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
+3. [Workload Classification]({{< relref "/docs/architecture/workload-classification.md" >}})
+4. [Energy-Aware Scheduling]({{< relref "/docs/architecture/energy-aware-scheduling.md" >}})
+5. [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
+6. [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md" >}})

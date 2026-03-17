@@ -1,0 +1,26 @@
+# Standard workload: can run on any node (including eco).
+# The scheduler extender adaptively steers standard pods toward eco nodes
+# when performance nodes are under pressure.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: standard-job
+  labels:
+    app: standard-job
+  annotations:
+    joulie.io/workload-class: "standard"
+spec:
+  nodeSelector:
+    joulie.io/managed: "true"
+  containers:
+    - name: worker
+      image: busybox:latest
+      command: ["sleep", "1800"]
+      resources:
+        requests:
+          cpu: "1"
+          memory: "2Gi"
+        limits:
+          cpu: "2"
+          memory: "4Gi"
+  restartPolicy: Never

@@ -1,0 +1,11 @@
+{{- if .Values.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "joulie.fullname" . }}-grafana-dashboard
+  labels:
+    {{- toYaml .Values.grafanaDashboard.labels | nindent 4 }}
+data:
+  joulie-overview.json: |-
+    {{- .Files.Get "dashboards/joulie-overview.json" | nindent 4 }}
+{{- end }}

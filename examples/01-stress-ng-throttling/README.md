@@ -35,7 +35,7 @@ Make sure the pod runs on `TARGET_NODE`.
 ## 3. Apply high baseline node profile
 
 ```bash
-sed "s/__TARGET_NODE__/$TARGET_NODE/" examples/01-stress-ng-throttling/nodepowerprofile-high.yaml | kubectl apply -f -
+sed "s/__TARGET_NODE__/$TARGET_NODE/" examples/01-stress-ng-throttling/nodetwin-high.yaml | kubectl apply -f -
 kubectl -n joulie-examples logs -f deploy/stress-ng-demo
 ```
 
@@ -44,7 +44,7 @@ The workload prints `stress-ng --metrics-brief` every ~25s.
 ## 4. Apply low node profile (throttle)
 
 ```bash
-sed "s/__TARGET_NODE__/$TARGET_NODE/" examples/01-stress-ng-throttling/nodepowerprofile-low.yaml | kubectl apply -f -
+sed "s/__TARGET_NODE__/$TARGET_NODE/" examples/01-stress-ng-throttling/nodetwin-low.yaml | kubectl apply -f -
 kubectl -n joulie-examples logs -f deploy/stress-ng-demo
 ```
 
@@ -94,7 +94,7 @@ If you kill the stress workload while low policy is still applied, frequencies m
 To bring frequencies up again, apply a less restrictive policy (or high policy):
 
 ```bash
-sed "s/__TARGET_NODE__/$TARGET_NODE/" examples/01-stress-ng-throttling/nodepowerprofile-high.yaml | kubectl apply -f -
+sed "s/__TARGET_NODE__/$TARGET_NODE/" examples/01-stress-ng-throttling/nodetwin-high.yaml | kubectl apply -f -
 ```
 
 Then monitor agent logs for `throttle-down` steps (meaning less throttling), and monitor host `scaling_max_freq` values rising.
@@ -108,7 +108,7 @@ sudo ../../scripts/restore-cpufreq.sh
 ## 8. Cleanup
 
 ```bash
-kubectl delete nodepowerprofile stress-ng-demo-profile --ignore-not-found
+kubectl delete nodetwin stress-ng-demo-profile --ignore-not-found
 kubectl delete -f examples/01-stress-ng-throttling/stress-ng-deployment.yaml --ignore-not-found
 kubectl delete -f examples/01-stress-ng-throttling/namespace.yaml --ignore-not-found
 ```

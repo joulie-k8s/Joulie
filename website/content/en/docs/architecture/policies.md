@@ -4,7 +4,7 @@ weight: 40
 ---
 
 
-This page documents the controller policy algorithms implemented in `cmd/operator/main.go`.
+This page documents the controller policy algorithms implemented in `pkg/operator/policy/`.
 
 Use this page after:
 
@@ -13,11 +13,10 @@ Use this page after:
 
 ## Classification Input
 
-Policy demand classification is derived from pod scheduling constraints on `joulie.io/power-profile`:
+Policy demand classification is derived from the `joulie.io/workload-class` pod annotation or a matching `WorkloadProfile`:
 
-- `performance-only`: pod excludes eco in required scheduling constraints.
-- `eco-only`: pod can run only on `eco`; advanced eco-only placement should also exclude `joulie.io/draining=true`.
-- `general` (implicit unconstrained): no explicit power-profile constraint, or both profiles allowed.
+- `performance`: pod carries `joulie.io/workload-class: performance`.
+- `standard` (default): no annotation or `joulie.io/workload-class: standard`.
 
 ## Shared Reconcile Flow
 
@@ -28,8 +27,8 @@ Each reconcile tick:
 3. Sort eligible nodes by normalized compute density (highest first).
 4. Preserve at least one performance-capable node per discovered hardware family whenever the requested HP count allows it.
 5. Build a desired plan with the selected policy.
-6. Apply downgrade guard (sets `draining=true` while blocking pods still run).
-7. Write `NodePowerProfile` and update node labels (`joulie.io/power-profile`, `joulie.io/draining`).
+6. Apply downgrade guard (sets `NodeTwin.status.schedulableClass` to `draining` while blocking pods still run).
+7. Write `NodeTwin.spec` and update the `joulie.io/power-profile` node label.
 
 In other words, policies still decide *how many* high-performance nodes are needed, but the density-aware ordering influences *which* nodes get those assignments.
 
@@ -104,16 +103,13 @@ This policy is intended for debugging only, not as default production behavior.
 
 When planned profile is `eco` on a node currently `performance`:
 
-1. Count active performance-sensitive pods on that node.
+1. Count active performance pods on that node.
 2. If count > 0:
    - keep desired profile as `eco`,
-   - set node label `joulie.io/draining=true`,
+   - set `NodeTwin.status.schedulableClass` to `draining`,
    - record transition as deferred in operator FSM/metrics.
 3. If count == 0:
    - keep desired profile `eco`,
-   - set node label `joulie.io/draining=false`.
+   - set `NodeTwin.status.schedulableClass` to `eco`.
 
-For pod authors, the practical rule is:
-
-- if you need eco-only placement, exclude draining nodes with `joulie.io/draining NotIn ["true"]`
-- do not rely on `draining=false` as a required scheduling constraint
+The scheduler extender reads `schedulableClass` and applies a -20 score penalty for draining nodes, discouraging new workload placement during transitions.

@@ -5,7 +5,7 @@ This example demonstrates scheduler adaptation to Joulie profile flips even when
 You will run:
 
 - operator policy loop that flips node profiles every `N` minutes,
-- two Deployments with scheduling classes (`performance`, `eco`) expressed via node affinity,
+- two Deployments with scheduling classes (`performance`, `standard`) expressed via the `joulie.io/workload-class` pod annotation,
 - a recycler CronJob that periodically deletes pods so new pods are rescheduled against the latest node profile.
 
 ## 1) Preconditions
@@ -37,7 +37,7 @@ Check operator output:
 ```bash
 kubectl -n joulie-system logs deploy/joulie-operator --tail=200 | grep "assigned profiles"
 kubectl -n joulie-system logs deploy/joulie-operator --tail=200 | grep "transition deferred"
-kubectl get nodepowerprofiles -o wide
+kubectl get nodetwins -o wide
 kubectl get nodes -L joulie.io/power-profile
 ```
 
@@ -59,7 +59,7 @@ kubectl apply -f examples/03-workload-intent-classes/recycler.yaml
 kubectl apply -f examples/03-workload-intent-classes/servicemonitor-operator.yaml
 
 # sanity checks
-kubectl get nodepowerprofiles -o wide
+kubectl get nodetwins -o wide
 kubectl get nodes -L joulie.io/power-profile
 kubectl -n joulie-intent-demo get pods -o wide
 kubectl -n joulie-system logs deploy/joulie-operator --tail=200 | egrep "assigned profiles|transition deferred"
@@ -73,21 +73,19 @@ watch -n 5 'kubectl -n joulie-intent-demo get pods -o wide; echo; kubectl get no
 
 Note: `servicemonitor-operator.yaml` assumes Prometheus Operator release label `release: telemetry` in namespace `default`.
 
-What each workload expresses (single source of truth is affinity):
+What each workload expresses (single source of truth is the `joulie.io/workload-class` annotation):
 
-- `performance`: recommended pattern is `joulie.io/power-profile NotIn ["eco"]`
-- `eco`: hard requires `joulie.io/power-profile=eco`
-- no power-profile affinity: implicit unconstrained/general scheduling class
+- `performance`: the scheduler extender hard-rejects eco and draining nodes for this pod
+- `standard` (or no annotation): can run on any node; adaptive scoring steers toward eco when performance nodes are congested
 
 ## 3) Observe pod movement across nodes
 
 ```bash
-watch -n 5 'kubectl -n joulie-intent-demo get pods -o wide; echo; kubectl get nodepowerprofiles -o wide; echo; kubectl get nodes -L joulie.io/power-profile'
+watch -n 5 'kubectl -n joulie-intent-demo get pods -o wide; echo; kubectl get nodetwins -o wide; echo; kubectl get nodes -L joulie.io/power-profile'
 ```
 
 You should see pods recreated roughly every minute by the recycler, then placed according to the profile labels currently set by the operator.
-If a node is transitioning `ActivePerformance -> ActiveEco` and still has running `performance`-class workloads (classified from pod scheduling constraints), the operator marks the node as draining with `joulie.io/draining=true`.
-Advanced eco-only constraints can use `joulie.io/draining=false` to avoid mid-transition nodes.
+If a node is transitioning `ActivePerformance -> ActiveEco` and still has running performance workloads, the operator sets `NodeTwinState.schedulableClass` to `draining` and the extender filters it out for performance pods (same as eco).
 
 ## 4) Grafana dashboard for this demo
 
@@ -110,8 +108,6 @@ Dashboard highlights:
   - `applied` transitions and `deferred` transitions from operator guard logic
 - `Kubernetes Node Label Profile (kube_node_labels)`:
   - actual `joulie.io/power-profile` label value from Kubernetes
-- `Kubernetes Draining Flag (kube_node_labels)`:
-  - actual `joulie.io/draining` transition flag from Kubernetes
 - `Pods by Node`:
   - shows how workload pods land on nodes as profiles flip
 - `Pod Re-creations (5m)`:

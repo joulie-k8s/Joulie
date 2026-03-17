@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -185,6 +186,18 @@ type simulator struct {
 	controlResult   *prometheus.CounterVec
 
 	workload *workloadEngine
+
+	// Classifier uncertainty: fraction of jobs whose class is flipped.
+	classifierMisclassifyRate float64
+
+	// Facility ambient temperature parameters.
+	facilityBaseAmbientTempC float64
+	facilityTempAmplitudeC   float64
+	facilityTempPeriodH      float64
+
+	// Facility Prometheus gauges.
+	facilityAmbientTemp prometheus.Gauge
+	facilityPUE         prometheus.Gauge
 }
 
 func main() {
@@ -231,6 +244,19 @@ func main() {
 			log.Printf("warning: workload trace disabled: %v", err)
 		}
 	}
+
+	// Classifier uncertainty configuration.
+	s.classifierMisclassifyRate = floatEnv("SIM_CLASSIFIER_MISCLASSIFY_RATE", 0.0)
+	if s.classifierMisclassifyRate > 0 {
+		log.Printf("classifier uncertainty enabled misclassify_rate=%.4f", s.classifierMisclassifyRate)
+	}
+
+	// Facility ambient temperature configuration.
+	s.facilityBaseAmbientTempC = floatEnv("SIM_FACILITY_AMBIENT_TEMP_C", 20.0)
+	s.facilityTempAmplitudeC = floatEnv("SIM_FACILITY_TEMP_AMPLITUDE_C", 5.0)
+	s.facilityTempPeriodH = floatEnv("SIM_FACILITY_TEMP_PERIOD_H", 24.0)
+	log.Printf("facility model base_temp=%.1fC amplitude=%.1fC period=%.1fh",
+		s.facilityBaseAmbientTempC, s.facilityTempAmplitudeC, s.facilityTempPeriodH)
 
 	if boolEnv("SIM_K8S_POD_WATCH", true) {
 		go s.startPodPolling(durationEnv("SIM_POLL_INTERVAL", 15*time.Second))
@@ -338,6 +364,14 @@ func newSimulatorWithRegisterer(model simModel, selector labels.Selector, classe
 			Name: "joulie_sim_control_actions_total",
 			Help: "Control actions by node/action/result",
 		}, []string{"node", "action", "result"}),
+		facilityAmbientTemp: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "joulie_sim_facility_ambient_temp_celsius",
+			Help: "Simulated facility ambient temperature in Celsius",
+		}),
+		facilityPUE: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "joulie_sim_facility_pue",
+			Help: "Simulated facility Power Usage Effectiveness",
+		}),
 	}
 
 	reg.MustRegister(
@@ -356,6 +390,8 @@ func newSimulatorWithRegisterer(model simModel, selector labels.Selector, classe
 		s.jobCompleted,
 		s.jobCompletion,
 		s.controlResult,
+		s.facilityAmbientTemp,
+		s.facilityPUE,
 	)
 	return s
 }
@@ -442,10 +478,6 @@ func (s *simulator) modelForNode(node string) simModel {
 	return s.model
 }
 
-func (s *simulator) nodePower(node string, st *nodeState) float64 {
-	model := s.modelForNode(node)
-	return s.nodePowerWithModel(st, model)
-}
 
 func (s *simulator) nodePowerWithModel(st *nodeState, model simModel) float64 {
 	s.updateNodeDynamicsWithModel(st, model)
@@ -594,16 +626,6 @@ func cpuPowerWithModel(st *nodeState, model simModel) float64 {
 	return math.Min(p, capW+model.RaplHeadW)
 }
 
-func (s *simulator) updateNodeMetrics(node string, st *nodeState) {
-	power := s.nodePower(node, st)
-	s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
-	s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
-	s.nodePowerW.WithLabelValues(node).Set(power)
-	s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
-	s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
-	s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
-	s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
-}
 
 func (s *simulator) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
@@ -626,10 +648,20 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := s.getNode(node)
-	s.updateNodeMetrics(node, st)
-	power := s.nodePower(node, st)
 	modelForTelemetry := s.modelForNode(node)
-	s.recordEvent("telemetry", node, map[string]any{
+
+	// Hold lock while computing power and reading nodeState fields to avoid
+	// races with advanceJobProgress and handleControl.
+	s.mu.Lock()
+	power := s.nodePowerWithModel(st, modelForTelemetry)
+	s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
+	s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
+	s.nodePowerW.WithLabelValues(node).Set(power)
+	s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
+	s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
+	s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
+	s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
+	eventPayload := map[string]any{
 		"packagePowerWatts":        power,
 		"instantPackagePowerWatts": st.CPUInstantPowerWatts + st.GPUPowerWatts,
 		"capWatts":                 st.CapWatts,
@@ -647,10 +679,8 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		"memoryIntensity":          st.MemoryIntensity,
 		"ioIntensity":              st.IOIntensity,
 		"cpuFeedIntensity":         st.CPUFeedIntensity,
-	})
-	log.Printf("telemetry node=%s powerW=%.2f capW=%.2f throttlePct=%d pods=%d", node, power, st.CapWatts, st.ThrottlePct, st.PodsRunning)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	}
+	resp := map[string]any{
 		"node":                     node,
 		"packagePowerWatts":        power,
 		"instantPackagePowerWatts": math.Round((st.CPUInstantPowerWatts+st.GPUPowerWatts)*100) / 100,
@@ -698,7 +728,14 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 			"byIntentClass": st.ByIntentClass,
 		},
 		"ts": time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	logMsg := fmt.Sprintf("telemetry node=%s powerW=%.2f capW=%.2f throttlePct=%d pods=%d", node, power, st.CapWatts, st.ThrottlePct, st.PodsRunning)
+	s.mu.Unlock()
+
+	s.recordEvent("telemetry", node, eventPayload)
+	log.Print(logMsg)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
@@ -795,13 +832,17 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 	st.LastAction = payload.Action
 	st.LastResult = result
 	st.LastUpdate = time.Now().UTC()
-	s.mu.Unlock()
 
-	s.controlsTotal.WithLabelValues(node, payload.Action).Inc()
-	s.controlResult.WithLabelValues(node, payload.Action, result).Inc()
-	s.updateNodeMetrics(node, st)
-	power := s.nodePower(node, st)
-	s.recordEvent("control", node, map[string]any{
+	// Compute power and snapshot state for response while still holding the lock.
+	power := s.nodePowerWithModel(st, model)
+	s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
+	s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
+	s.nodePowerW.WithLabelValues(node).Set(power)
+	s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
+	s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
+	s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
+	s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
+	eventPayload := map[string]any{
 		"action":            payload.Action,
 		"capWatts":          st.CapWatts,
 		"targetCapWatts":    st.TargetCapWatts,
@@ -809,11 +850,8 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 		"powerWatts":        power,
 		"podsRunning":       st.PodsRunning,
 		"gpuCapWattsPerGpu": st.GPUCapWattsPerGpu,
-	})
-	log.Printf("control node=%s action=%s capW=%.2f throttlePct=%d powerW=%.2f pods=%d", node, payload.Action, st.CapWatts, st.ThrottlePct, power, st.PodsRunning)
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	}
+	resp := map[string]any{
 		"ok":      result == "applied",
 		"result":  result,
 		"node":    node,
@@ -833,7 +871,17 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 			"gpuDevices":               st.GPUDevices,
 		},
 		"simulatedPackagePowerWatts": power,
-	})
+	}
+	logMsg := fmt.Sprintf("control node=%s action=%s capW=%.2f throttlePct=%d powerW=%.2f pods=%d", node, payload.Action, st.CapWatts, st.ThrottlePct, power, st.PodsRunning)
+	s.mu.Unlock()
+
+	s.controlsTotal.WithLabelValues(node, payload.Action).Inc()
+	s.controlResult.WithLabelValues(node, payload.Action, result).Inc()
+	s.recordEvent("control", node, eventPayload)
+	log.Print(logMsg)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *simulator) handleState(w http.ResponseWriter, r *http.Request) {
@@ -851,8 +899,18 @@ func (s *simulator) handleState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing node", status)
 		return
 	}
+	model := s.modelForNode(node)
 	st := s.getNode(node)
-	s.updateNodeMetrics(node, st)
+	s.mu.Lock()
+	power := s.nodePowerWithModel(st, model)
+	s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
+	s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
+	s.nodePowerW.WithLabelValues(node).Set(power)
+	s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
+	s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
+	s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
+	s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
+	s.mu.Unlock()
 	_ = json.NewEncoder(w).Encode(map[string]any{"node": node, "state": st})
 }
 
@@ -940,6 +998,31 @@ func (s *simulator) accumulateEnergy(dt float64) {
 		s.energyTotalJ += e
 	}
 	s.energyLastTs = time.Now().UTC()
+}
+
+// updateFacilityMetrics computes time-varying ambient temperature and PUE,
+// then updates the corresponding Prometheus gauges. The ambient temperature
+// follows a sinusoidal curve and the PUE is modelled as a linear function
+// of ambient temperature (higher temperature requires more cooling energy).
+func (s *simulator) updateFacilityMetrics(now time.Time) {
+	periodSec := s.facilityTempPeriodH * 3600.0
+	if periodSec <= 0 {
+		periodSec = 24.0 * 3600.0
+	}
+	elapsed := now.Sub(s.workload.startTime).Seconds()
+	ambientTemp := s.facilityBaseAmbientTempC +
+		s.facilityTempAmplitudeC*math.Sin(2*math.Pi*elapsed/periodSec)
+	s.facilityAmbientTemp.Set(ambientTemp)
+
+	// Simple PUE model: baseline 1.1 at 15C, increasing linearly with temperature.
+	// PUE = 1.1 + 0.008 * (ambientTemp - 15). Clamped to [1.0, 3.0].
+	pue := 1.1 + 0.008*(ambientTemp-15.0)
+	if pue < 1.0 {
+		pue = 1.0
+	} else if pue > 3.0 {
+		pue = 3.0
+	}
+	s.facilityPUE.Set(math.Round(pue*1000) / 1000)
 }
 
 type debugNode struct {
@@ -1179,8 +1262,18 @@ func (s *simulator) startPodPolling(interval time.Duration) {
 			if !s.nodeSelected(labels) {
 				continue
 			}
+			model := s.modelForNode(node)
 			st := s.getNode(node)
-			s.updateNodeMetrics(node, st)
+			s.mu.Lock()
+			power := s.nodePowerWithModel(st, model)
+			s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
+			s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
+			s.nodePowerW.WithLabelValues(node).Set(power)
+			s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
+			s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
+			s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
+			s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
+			s.mu.Unlock()
 		}
 		<-ticker.C
 	}
@@ -1833,6 +1926,27 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 		}
 	}
 	sort.Slice(engine.jobs, func(i, j int) bool { return engine.jobs[i].SubmitOffsetSec < engine.jobs[j].SubmitOffsetSec })
+
+	// Apply classifier misclassification: randomly flip a fraction of job classes
+	// between "performance" and "standard" to simulate classifier errors.
+	if s.classifierMisclassifyRate > 0 {
+		flipped := 0
+		for _, j := range engine.jobs {
+			if rand.Float64() < s.classifierMisclassifyRate {
+				switch j.Class {
+				case "performance":
+					j.Class = "standard"
+					flipped++
+				case "standard":
+					j.Class = "performance"
+					flipped++
+				}
+			}
+		}
+		log.Printf("classifier misclassification applied rate=%.4f flipped=%d/%d",
+			s.classifierMisclassifyRate, flipped, len(engine.jobs))
+	}
+
 	s.workload = engine
 	log.Printf("workload trace loaded jobs=%d parts=%d path=%s", len(engine.jobs), len(tracePaths), path)
 	return nil
@@ -1896,8 +2010,10 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 		workloadType, _ := rec["workloadType"].(string)
 		podRole, _ := rec["podRole"].(string)
 		gang, _ := rec["gang"].(bool)
-		class := "general"
-		if podTpl, ok := rec["podTemplate"].(map[string]any); ok {
+		class := "standard"
+		if ic, ok := rec["intentClass"].(string); ok && ic != "" {
+			class = ic
+		} else if podTpl, ok := rec["podTemplate"].(map[string]any); ok {
 			if affinityRaw, ok := podTpl["affinity"].(map[string]any); ok {
 				class = classifyClassFromAffinityMap(affinityRaw)
 			}
@@ -2066,6 +2182,7 @@ func (s *simulator) startWorkloadLoop(interval time.Duration) {
 		}
 		last = now
 		s.accumulateEnergy(dt)
+		s.updateFacilityMetrics(now)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		s.injectTraceJobs(ctx, kube, now)
 		s.advanceJobProgress(ctx, kube, dt, now)
@@ -2097,6 +2214,7 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 					"sim.joulie.io/workloadId":   j.WorkloadID,
 					"sim.joulie.io/workloadType": j.WorkloadType,
 					"sim.joulie.io/podRole":      j.PodRole,
+					"joulie.io/workload-class":   j.Class,
 				},
 			},
 			Spec: corev1.PodSpec{
@@ -2184,39 +2302,17 @@ func affinityForIntentClass(intent string) *corev1.Affinity {
 				},
 			},
 		}
-	case "eco":
-		return &corev1.Affinity{
-			NodeAffinity: &corev1.NodeAffinity{
-				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-					NodeSelectorTerms: []corev1.NodeSelectorTerm{
-						{
-							MatchExpressions: []corev1.NodeSelectorRequirement{
-								{
-									Key:      "joulie.io/power-profile",
-									Operator: corev1.NodeSelectorOpIn,
-									Values:   []string{"eco"},
-								},
-								{
-									Key:      "joulie.io/draining",
-									Operator: corev1.NodeSelectorOpNotIn,
-									Values:   []string{"true"},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
 	default:
-		// General/flexible class: no explicit power-profile affinity constraint.
+		// Standard class: no explicit power-profile affinity constraint.
+		// The scheduler extender handles adaptive scoring via the annotation.
 		return nil
 	}
 }
 
 func classifyClassFromPodSpec(spec *corev1.PodSpec) string {
-	// No power-profile scheduling constraint means implicit flexible/general class.
+	// No power-profile scheduling constraint means standard class.
 	if spec == nil || spec.Affinity == nil || spec.Affinity.NodeAffinity == nil || spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-		return "general"
+		return "standard"
 	}
 	required := spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
 	perfAllowed := false
@@ -2257,26 +2353,23 @@ func classifyClassFromPodSpec(spec *corev1.PodSpec) string {
 		perfAllowed = perfAllowed || termPerf
 		ecoAllowed = ecoAllowed || termEco
 	}
-	switch {
-	case perfAllowed && !ecoAllowed:
+	if perfAllowed && !ecoAllowed {
 		return "performance"
-	case ecoAllowed && !perfAllowed:
-		return "eco"
-	default:
-		return "general"
 	}
+	// Legacy "eco" intent and anything else maps to "standard".
+	return "standard"
 }
 
 func classifyClassFromAffinityMap(affinityRaw map[string]any) string {
 	b, err := json.Marshal(map[string]any{"affinity": affinityRaw})
 	if err != nil {
-		return "general"
+		return "standard"
 	}
 	var wrapper struct {
 		Affinity *corev1.Affinity `json:"affinity"`
 	}
 	if err := json.Unmarshal(b, &wrapper); err != nil {
-		return "general"
+		return "standard"
 	}
 	spec := &corev1.PodSpec{Affinity: wrapper.Affinity}
 	return classifyClassFromPodSpec(spec)
@@ -2391,6 +2484,10 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 				totalCPUFeedWeight += weight
 			}
 		}
+		// Snapshot values we need after releasing the lock.
+		var snapCPUCapacity float64
+		var snapThermalThrottle float64
+		var snapGPUCapPerGpu float64
 		if st != nil {
 			cpuCapacity := st.CPUCapacityCores
 			if cpuCapacity <= 0 {
@@ -2424,11 +2521,14 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			} else {
 				st.CPUFeedIntensity = 0
 			}
+			snapCPUCapacity = st.CPUCapacityCores
+			snapThermalThrottle = st.CPUThermalThrottle
+			snapGPUCapPerGpu = st.GPUCapWattsPerGpu
 			s.mu.Unlock()
 		}
 		cpuCapacity := 16.0
-		if st != nil && st.CPUCapacityCores > 0 {
-			cpuCapacity = st.CPUCapacityCores
+		if snapCPUCapacity > 0 {
+			cpuCapacity = snapCPUCapacity
 		}
 		cpuShareFactor := 1.0
 		if totalCPUReq > cpuCapacity && cpuCapacity > 0 {
@@ -2448,10 +2548,7 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 					continue
 				}
 			}
-			jobThermalThrottle := 0.0
-			if st != nil {
-				jobThermalThrottle = st.CPUThermalThrottle
-			}
+			jobThermalThrottle := snapThermalThrottle
 			jobCPUMul := cpuThroughputMultiplier(freqScale, j.CPUWorkClass, model, j.MemoryIntensity, j.IOIntensity, jobThermalThrottle)
 			if j.CPUUnitsRemaining > 0 {
 				cpuThrottleFactor := cpuThrottleImpactFactor(jobCPUMul, j)
@@ -2476,11 +2573,11 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 				}
 				gpuMul := gpuModel.ThroughputMultiplier(phys.DeviceState{
 					Utilization:      clamp01(j.GPUUtilTarget),
-					CapWatts:         st.GPUCapWattsPerGpu,
+					CapWatts:         snapGPUCapPerGpu,
 					MaxCapWatts:      model.GPU.MaxWattsPerGPU,
 					MemoryIntensity:  j.MemoryIntensity,
 					CPUFeedIntensity: j.CPUFeedIntensity,
-					ThermalThrottle:  firstDeviceThermalThrottle(st),
+					ThermalThrottle:  snapThermalThrottle,
 					Class:            j.GPUWorkClass,
 				}, j.GPUWorkClass)
 				cpuFeedFactor := cpuFeedThrottleFactor(jobCPUMul, j)

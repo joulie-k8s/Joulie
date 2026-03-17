@@ -9,13 +9,13 @@ run:
   cleanup_timeout: 600
 
 workload:
-  # Research-cluster / HEP-style overnight mix — identical to experiment 02 for a fair
+  # Research-cluster / HEP-style overnight mix - identical to experiment 02 for a fair
   # homogeneous vs heterogeneous comparison:
   # - most jobs are flexible exploratory runs, preprocessing, or analytics
   # - a meaningful minority remains performance-sensitive
   # - explicit eco-only jobs stay disabled (uncommon in practice)
   perf_ratio: 0.15
-  eco_ratio: 0.00
+  compute_bound_perf_boost: 3.5
   gpu_ratio: 0.45
   gpu_request_per_job: 1
   burst_day_probability: 0.25
@@ -45,6 +45,10 @@ policy:
   loop:
     operator_reconcile_interval: "20s"
     agent_reconcile_interval: "10s"
+    # Queue-aware (baseline C) uses a slower operator reconcile to avoid
+    # thrashing node profiles. Value is in simulated seconds; the sweep script
+    # divides by run.time_scale to get the wall-clock interval.
+    queue_aware_operator_reconcile_sim_seconds: 300
   static:
     hp_frac: 0.45
   queue_aware:

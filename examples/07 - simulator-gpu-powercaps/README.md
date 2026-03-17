@@ -8,11 +8,11 @@ This example validates GPU capping end-to-end in simulator mode on a small heter
 
 It demonstrates that tighter GPU caps reduce simulated GPU power and increase completion time for GPU jobs.
 
-The example uses the three contracts with separate roles:
+The example uses two contracts with separate roles:
 
 - node labels: simulated hardware identity bootstrap
-- `TelemetryProfile`: simulator HTTP routing
-- `NodePowerProfile`: desired caps/profile
+- `NodeTwin`: desired caps/profile
+- agent env vars: simulator HTTP telemetry/control routing
 
 `NodeHardware` is published automatically by the agent for observability and operator planning.
 You do not need to create it by hand for this example.
@@ -29,7 +29,7 @@ The host code paths are designed for NVIDIA/AMD bare metal, but this example is 
 - `manifests/10-node-classes.yaml`: simulator hardware classes with GPU model caps
 - `manifests/20-simulator.yaml`: simulator deployment using class config + GPU trace
 - `manifests/30-joulie-values-pool.yaml`: Joulie Helm values for pool mode + GPU cap policy
-- `manifests/40-telemetryprofile-template.yaml`: node-scoped HTTP telemetry/control profile template
+- `manifests/40-agent-telemetry-env.yaml`: ConfigMap with agent telemetry/control env vars for simulator HTTP routing
 - `manifests/50-workload-trace-configmap.yaml`: mixed CPU/GPU workload trace
 
 ## Run
@@ -87,12 +87,15 @@ helm upgrade --install joulie ../../charts/joulie \
   -f manifests/30-joulie-values-pool.yaml
 ```
 
-6. Create one TelemetryProfile per managed node:
+6. Configure agent telemetry/control routing to the simulator:
 
 ```bash
-for n in $(kubectl get nodes -l joulie.io/managed=true -o jsonpath='{.items[*].metadata.name}'); do
-  sed "s/TARGET_NODE/$n/g" manifests/40-telemetryprofile-template.yaml | kubectl apply -f -
-done
+kubectl -n joulie-system set env daemonset/joulie-agent \
+  JOULIE_TELEMETRY_SOURCE_TYPE=http \
+  JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
+  JOULIE_CONTROL_TYPE=http \
+  JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
+  JOULIE_CONTROL_MODE=dvfs
 ```
 
 7. Observe control + energy behavior:

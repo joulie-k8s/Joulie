@@ -59,6 +59,7 @@ This pushes:
 
 - `registry.cern.ch/mbunino/joulie/joulie-agent:<tag>`
 - `registry.cern.ch/mbunino/joulie/joulie-operator:<tag>`
+- `registry.cern.ch/mbunino/joulie/joulie-scheduler:<tag>`
 
 You can also do build+push+install in one command:
 
@@ -112,7 +113,7 @@ Joulie control is a desired-state loop:
 
 - agent discovers per-node hardware and publishes `NodeHardware`,
 - operator resolves hardware/inventory and decides per-node target state,
-- operator writes that desired state as `NodePowerProfile`,
+- operator writes that desired state into `NodeTwin.spec`,
 - node labels (`joulie.io/power-profile`) expose current supply to the scheduler,
 - agent enforces node-local controls from desired state and telemetry/control profile.
 
@@ -124,8 +125,6 @@ Meaning of the key node labels:
   - node currently offers high-performance supply
 - `joulie.io/power-profile=eco`
   - node currently offers low-power supply (resources are throttled according to the selected policy)
-- `joulie.io/draining=true|false`
-  - transition flag used while moving toward eco under safeguards
 
 Read the architecture path after this quickstart:
 
@@ -139,7 +138,7 @@ Architecture overview:
 
 ### Central operator mode
 
-The operator continuously writes `NodePowerProfile` assignments from the active policy (for example static partition or queue-aware), mapping desired states to node profiles (`performance`/`eco`).
+The operator continuously writes `NodeTwin.spec` assignments from the active policy (for example static partition or queue-aware), mapping desired states to node profiles (`performance`/`eco`).
 
 Configuration details:
 
@@ -152,7 +151,7 @@ Verify:
 
 ```bash
 kubectl get nodehardwares
-kubectl get nodepowerprofiles
+kubectl get nodetwins
 kubectl -n joulie-system logs deploy/joulie-operator --tail=100
 kubectl -n joulie-system logs -l app.kubernetes.io/name=joulie-agent --tail=100
 ```
@@ -185,6 +184,48 @@ For fake-node workload + power simulation (real scheduler, fake [KWOK](https://k
 - [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
 - [Hardware Modeling and Physical Power Model]({{< relref "/docs/hardware/hardware-modeling.md" >}})
 - [KWOK Simulator Example](https://github.com/joulie-k8s/Joulie/tree/main/examples/06-simulator-kwok)
+
+## kubectl plugin
+
+The `kubectl-joulie` plugin adds `kubectl joulie status` and `kubectl joulie recommend` commands for inspecting Joulie cluster energy state.
+
+### Install from release (Harbor/OCI)
+
+Download the pre-built binary for your platform from the CERN OCI registry using [ORAS](https://oras.land/):
+
+```bash
+# Pick your platform: linux-amd64, linux-arm64, darwin-amd64, darwin-arm64
+PLATFORM="linux-amd64"
+VERSION="<version>"
+
+oras pull "registry.cern.ch/mbunino/joulie/kubectl-joulie:${VERSION}-${PLATFORM}"
+chmod +x "kubectl-joulie-${PLATFORM}"
+sudo install "kubectl-joulie-${PLATFORM}" /usr/local/bin/kubectl-joulie
+```
+
+Alternatively, download from the [GitHub release assets](https://github.com/joulie-k8s/Joulie/releases):
+
+```bash
+PLATFORM="linux-amd64"
+VERSION="<version>"
+
+curl -sLO "https://github.com/joulie-k8s/Joulie/releases/download/v${VERSION}/kubectl-joulie-${PLATFORM}"
+chmod +x "kubectl-joulie-${PLATFORM}"
+sudo install "kubectl-joulie-${PLATFORM}" /usr/local/bin/kubectl-joulie
+```
+
+### Install from source
+
+```bash
+make kubectl-plugin-install
+```
+
+### Usage
+
+```bash
+kubectl joulie status      # Show energy state of all Joulie-managed nodes
+kubectl joulie recommend   # Show power optimization recommendations
+```
 
 ## Next step
 

@@ -12,7 +12,7 @@ The host code paths are designed to work on bare metal (NVIDIA + AMD) when GPU n
 
 ## Contract model
 
-`NodePowerProfile.spec.gpu.powerCap` defines a per-GPU cap intent:
+`NodeTwin.spec.gpu.powerCap` defines a per-GPU cap intent:
 
 - `scope: perGpu`
 - `capWattsPerGpu` (absolute, optional)
@@ -69,12 +69,12 @@ This makes it easier to compare:
 
 ## Scheduling guidance
 
-Keep workload intent guidance unchanged:
+Workload placement intent is expressed via the `joulie.io/workload-class` pod annotation:
 
-- performance-sensitive pods: prefer `NotIn ["eco"]`
-- eco-only (advanced): `In ["eco"]` and optionally `joulie.io/draining NotIn ["true"]`
+- `performance`: must run on full-power nodes (extender hard-rejects eco nodes)
+- `standard`: default, can run on any node; adaptive scoring steers toward eco when performance nodes are congested
 
-GPU resource requests (`nvidia.com/gpu`, `amd.com/gpu`) are orthogonal to Joulie power-profile labels.
+GPU resource requests (`nvidia.com/gpu`, `amd.com/gpu`) are independent from Joulie workload classes.
 Joulie GPU capping is node-level and not a GPU slicing API.
 
 ## Example

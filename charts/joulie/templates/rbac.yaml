@@ -7,13 +7,10 @@ rules:
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["joulie.io"]
-    resources: ["nodepowerprofiles"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["joulie.io"]
-    resources: ["telemetryprofiles"]
+    resources: ["nodetwins"]
     verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["joulie.io"]
-    resources: ["telemetryprofiles/status"]
+    resources: ["nodetwins/status"]
     verbs: ["update", "patch"]
   - apiGroups: ["joulie.io"]
     resources: ["nodehardwares"]
@@ -46,15 +43,24 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
   - apiGroups: ["joulie.io"]
-    resources: ["nodepowerprofiles"]
+    resources: ["nodetwins"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["joulie.io"]
-    resources: ["telemetryprofiles"]
-    verbs: ["get", "list", "watch", "update", "patch"]
+    resources: ["nodetwins/status"]
+    verbs: ["update", "patch"]
   - apiGroups: ["joulie.io"]
     resources: ["nodehardwares"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["joulie.io"]
+    resources: ["workloadprofiles"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["joulie.io"]
+    resources: ["workloadprofiles/status"]
+    verbs: ["update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -68,3 +74,30 @@ subjects:
   - kind: ServiceAccount
     name: joulie-operator
     namespace: {{ .Release.Namespace }}
+{{- if .Values.schedulerExtender.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: joulie-scheduler-extender
+rules:
+  - apiGroups: ["joulie.io"]
+    resources: ["nodetwins", "nodehardwares", "workloadprofiles"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: joulie-scheduler-extender
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: joulie-scheduler-extender
+subjects:
+  - kind: ServiceAccount
+    name: joulie-scheduler-extender
+    namespace: {{ .Release.Namespace }}
+{{- end }}

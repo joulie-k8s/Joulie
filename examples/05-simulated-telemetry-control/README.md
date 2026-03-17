@@ -22,11 +22,11 @@ Why this is practical:
 
 ## What this demonstrates
 
-- `TelemetryProfile.spec.sources.cpu.type=http`: agent reads observed power from HTTP.
-- `TelemetryProfile.spec.controls.cpu.type=http`: agent sends control intents to HTTP.
+- Agent env var `JOULIE_TELEMETRY_SOURCE_TYPE=http`: agent reads observed power from HTTP.
+- Agent env var `JOULIE_CONTROL_TYPE=http`: agent sends control intents to HTTP.
 - Two control modes:
-  - `mode: rapl` -> agent sends RAPL-like cap command over HTTP.
-  - `mode: dvfs` -> agent uses DVFS loop and sends throttle percentage over HTTP.
+  - `JOULIE_CONTROL_MODE=rapl` -> agent sends RAPL-like cap command over HTTP.
+  - `JOULIE_CONTROL_MODE=dvfs` -> agent uses DVFS loop and sends throttle percentage over HTTP.
 - Same setup can be applied to all managed worker nodes (not just one node).
 
 ## Prerequisites
@@ -38,26 +38,26 @@ Why this is practical:
   Agent auto-detects whether host cpufreq files exist:
   - if present, host DVFS writes are available;
   - if missing, host DVFS writes are disabled;
-  - DVFS still works when control is routed to HTTP (`spec.controls.cpu.type=http`).
+  - DVFS still works when control is routed to HTTP via agent env vars.
 
-## NodePowerProfile vs TelemetryProfile
+## NodeTwin vs agent telemetry env vars
 
-Both are needed and they have different roles:
+These have different roles:
 
-- `NodePowerProfile`: desired power target for a node (what to enforce).
-- `TelemetryProfile`: where to read inputs and where to send control intents (how to observe/actuate).
+- `NodeTwin`: desired power target for a node (what to enforce).
+- Agent telemetry env vars: where to read inputs and where to send control intents (how to observe/actuate).
 
 In this example:
 
-- `NodePowerProfile` sets low cap (`120W`) per managed node.
-- `TelemetryProfile` routes for each managed node:
-  - input power reads to simulator HTTP (`spec.sources.cpu.http.endpoint`),
-  - control writes to simulator HTTP (`spec.controls.cpu.http.endpoint`).
+- `NodeTwin` sets low cap (`120W`) per managed node.
+- Agent env vars configure for each managed node:
+  - input power reads to simulator HTTP (`JOULIE_TELEMETRY_HTTP_ENDPOINT`),
+  - control writes to simulator HTTP (`JOULIE_CONTROL_HTTP_ENDPOINT`).
 
 Agent usage:
 
-1. read local `NodePowerProfile` for desired cap,
-2. read matching node-scoped `TelemetryProfile` for source/control routing,
+1. read local `NodeTwin` for desired cap,
+2. read agent env vars for source/control routing,
 3. execute backend (`rapl` or `dvfs`) accordingly.
 
 ## 1. Deploy simulator
@@ -98,32 +98,31 @@ The simulator already auto-scopes to those nodes via:
 
 ## 3. Pre-clean old demo resources (recommended)
 
-This avoids duplicate TelemetryProfiles targeting the same node.
-
 ```bash
-kubectl delete telemetryprofile sim-http-demo --ignore-not-found
-kubectl delete telemetryprofiles -l app.kubernetes.io/part-of=sim-http-demo --ignore-not-found
-kubectl delete nodepowerprofiles -l app.kubernetes.io/part-of=sim-http-demo --ignore-not-found
+kubectl delete nodetwins -l app.kubernetes.io/part-of=sim-http-demo --ignore-not-found
 ```
 
-## 4. Apply NodePowerProfile on all managed nodes
+## 4. Apply NodeTwin on all managed nodes
 
 ```bash
 for n in $(kubectl get nodes -l joulie.io/managed=true -o jsonpath='{.items[*].metadata.name}'); do
-  sed "s/target-node/$n/g" examples/05-simulated-telemetry-control/nodepowerprofile-low.yaml | kubectl apply -f -
+  sed "s/target-node/$n/g" examples/05-simulated-telemetry-control/nodetwin-low.yaml | kubectl apply -f -
 done
 
-kubectl get nodepowerprofiles -l app.kubernetes.io/part-of=sim-http-demo -o wide
+kubectl get nodetwins -l app.kubernetes.io/part-of=sim-http-demo -o wide
 ```
 
-## 5. Apply TelemetryProfile in RAPL mode on all managed nodes
+## 5. Configure agent telemetry in RAPL mode
+
+Set agent env vars on the DaemonSet to route telemetry and control to the simulator over HTTP:
 
 ```bash
-for n in $(kubectl get nodes -l joulie.io/managed=true -o jsonpath='{.items[*].metadata.name}'); do
-  sed "s/target-node/$n/g" examples/05-simulated-telemetry-control/telemetryprofile-http-rapl.yaml | kubectl apply -f -
-done
-
-kubectl get telemetryprofiles -l app.kubernetes.io/part-of=sim-http-demo
+kubectl -n joulie-system set env daemonset/joulie-agent \
+  JOULIE_TELEMETRY_SOURCE_TYPE=http \
+  JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
+  JOULIE_CONTROL_TYPE=http \
+  JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
+  JOULIE_CONTROL_MODE=rapl
 ```
 
 Watch agent logs across nodes:
@@ -161,18 +160,15 @@ You should see lines like:
 ## 6. Switch all managed nodes to DVFS mode
 
 ```bash
-for n in $(kubectl get nodes -l joulie.io/managed=true -o jsonpath='{.items[*].metadata.name}'); do
-  sed "s/target-node/$n/g" examples/05-simulated-telemetry-control/telemetryprofile-http-dvfs.yaml | kubectl apply -f -
-done
+kubectl -n joulie-system set env daemonset/joulie-agent JOULIE_CONTROL_MODE=dvfs
 ```
 
 In simulator logs you should now see `dvfs.set_throttle_pct` POSTs for nodes that are in constrained state.
 
-## 7. Inspect control status in TelemetryProfile CRs
+## 7. Verify agent control mode
 
 ```bash
-kubectl get telemetryprofiles -l app.kubernetes.io/part-of=sim-http-demo \
-  -o custom-columns=NAME:.metadata.name,NODE:.spec.target.nodeName,BACKEND:.status.control.cpu.backend,RESULT:.status.control.cpu.result,UPDATED:.status.control.cpu.updatedAt
+kubectl -n joulie-system get daemonset joulie-agent -o jsonpath='{.spec.template.spec.containers[0].env}' | jq
 ```
 
 ## 8. Grafana dashboard (simulator loop)
@@ -192,8 +188,7 @@ It shows:
 ## 9. Cleanup
 
 ```bash
-kubectl delete telemetryprofiles -l app.kubernetes.io/part-of=sim-http-demo --ignore-not-found
-kubectl delete nodepowerprofiles -l app.kubernetes.io/part-of=sim-http-demo --ignore-not-found
+kubectl delete nodetwins -l app.kubernetes.io/part-of=sim-http-demo --ignore-not-found
 kubectl delete -f examples/05-simulated-telemetry-control/servicemonitor-simulator.yaml --ignore-not-found
 kubectl delete -f simulator/deploy/simulator.yaml --ignore-not-found
 kubectl delete -f examples/05-simulated-telemetry-control/namespace.yaml --ignore-not-found

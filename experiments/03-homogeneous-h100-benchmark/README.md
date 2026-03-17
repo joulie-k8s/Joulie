@@ -14,9 +14,9 @@ Running the identical workload trace on a homogeneous H100 cluster isolates thes
 
 ## Cluster inventory
 
-- **33 H100 NVL nodes** (8 GPUs × 192 cores × 1536 GiB RAM each) — matches the total GPU node count of experiment 02
+- **33 H100 NVL nodes** (8 GPUs × 192 cores × 1536 GiB RAM each) - matches the total GPU node count of experiment 02
 - **8 CPU-only nodes** (same mix as experiment 02: 2 highcore, 2 highfreq, 4 intensive)
-- **Total: 41 nodes** — same as experiment 02 for a fair comparison
+- **Total: 41 nodes** - same as experiment 02 for a fair comparison
 
 The cluster description lives in:
 
@@ -46,16 +46,16 @@ experiments/03-homogeneous-h100-benchmark/scripts/20_run_benchmark.sh \
 
 ## Benchmark configs
 
-- [benchmark-debug.yaml](configs/benchmark-debug.yaml) — 32 jobs, 1 seed, fast iteration
-- [benchmark.yaml](configs/benchmark.yaml) — 120 jobs, 2 seeds
-- [benchmark-overnight.yaml](configs/benchmark-overnight.yaml) — 2500 jobs, 3 seeds, identical workload parameters to experiment 02 overnight config for a controlled comparison
+- [benchmark-debug.yaml](configs/benchmark-debug.yaml) - 32 jobs, 1 seed, fast iteration
+- [benchmark.yaml](configs/benchmark.yaml) - 120 jobs, 2 seeds
+- [benchmark-overnight.yaml](configs/benchmark-overnight.yaml) - 2500 jobs, 3 seeds, identical workload parameters to experiment 02 overnight config for a controlled comparison
 
 ## Comparing results with experiment 02
 
 To compare energy/throughput tradeoffs between homogeneous and heterogeneous clusters:
 
 1. Run both experiments with the same `benchmark-overnight.yaml` workload parameters (they share the same default parameters by design).
-2. Compare `results/baseline_summary.csv` from each experiment — look at `energy_total_wh` and `makespan_s` across baselines B and C.
+2. Compare `results/baseline_summary.csv` from each experiment - look at `energy_total_wh` and `makespan_s` across baselines B and C.
 3. The `hardware_family_tradeoff_vs_a.png` plots show per-family energy savings in experiment 02; in experiment 03 there is only one family (H100 NVL), so the plot shows a single point.
 
 ## Notes

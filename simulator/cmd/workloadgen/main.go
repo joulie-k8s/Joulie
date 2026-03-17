@@ -23,6 +23,7 @@ type jobRecord struct {
 	Gang                bool               `json:"gang,omitempty"`
 	SubmitTimeOffsetSec float64            `json:"submitTimeOffsetSec"`
 	Namespace           string             `json:"namespace"`
+	IntentClass         string             `json:"intentClass"`
 	PodTemplate         podTemplateRec     `json:"podTemplate"`
 	Work                workRec            `json:"work"`
 	Sensitivity         sensitivityRec     `json:"sensitivity"`
@@ -40,6 +41,7 @@ type workloadRecord struct {
 	WorkloadType        string             `json:"workloadType"`
 	Gang                bool               `json:"gang,omitempty"`
 	DurationSec         float64            `json:"durationSec"`
+	IntentClass         string             `json:"intentClass"`
 	WorkloadClass       workloadClass      `json:"workloadClass"`
 	SharedIntensity     workloadProfileRec `json:"sharedIntensityProfile"`
 	Pods                []workloadPodRec   `json:"pods"`
@@ -64,6 +66,8 @@ type workRec struct {
 	GPUUnits float64 `json:"gpuUnits"`
 }
 
+// sensitivityRec is retained for trace schema backward compatibility but
+// no longer populated. The scheduler uses only joulie.io/workload-class.
 type sensitivityRec struct {
 	CPU float64 `json:"cpu"`
 	GPU float64 `json:"gpu"`
@@ -87,9 +91,9 @@ type generatorConfig struct {
 	Namespace           string
 	MeanInterArrival    float64
 	Seed                int64
-	PerfRatio           float64
-	EcoRatio            float64
-	NoAffinityOnly      bool
+	PerfRatio              float64
+	ComputeBoundPerfBoost  float64
+	NoAffinityOnly         bool
 	GPURatio            float64
 	GPURequestPerJob    float64
 	CPURatePerCore      float64
@@ -124,8 +128,6 @@ type logicalPod struct {
 	GPUResource string
 	CPUUnits    float64
 	GPUUnits    float64
-	CPUSense    float64
-	GPUSense    float64
 	IntentClass string
 }
 
@@ -148,8 +150,8 @@ func parseFlags() generatorConfig {
 	flag.StringVar(&cfg.Namespace, "namespace", "default", "namespace for generated workloads")
 	flag.Float64Var(&cfg.MeanInterArrival, "mean-inter-arrival-sec", 5, "baseline mean inter-arrival seconds before hourly seasonality")
 	flag.Int64Var(&cfg.Seed, "seed", time.Now().UnixNano(), "rng seed")
-	flag.Float64Var(&cfg.PerfRatio, "perf-ratio", 0.30, "ratio of performance-constrained workloads")
-	flag.Float64Var(&cfg.EcoRatio, "eco-ratio", 0.00, "ratio of eco-constrained workloads")
+	flag.Float64Var(&cfg.PerfRatio, "perf-ratio", 0.30, "base ratio of performance-constrained workloads")
+	flag.Float64Var(&cfg.ComputeBoundPerfBoost, "compute-bound-perf-boost", 3.5, "multiplier for performance probability of compute-bound workloads")
 	flag.BoolVar(&cfg.NoAffinityOnly, "no-affinity-only", false, "if true, do not emit power-profile affinity")
 	flag.Float64Var(&cfg.GPURatio, "gpu-ratio", 0.80, "ratio of logical workloads that use GPUs")
 	flag.Float64Var(&cfg.GPURequestPerJob, "gpu-request", 1, "GPU request per worker/trial pod when using the legacy single-job mode semantics")
@@ -178,13 +180,11 @@ func parseFlags() generatorConfig {
 	if cfg.PerfRatio < 0 {
 		cfg.PerfRatio = 0
 	}
-	if cfg.EcoRatio < 0 {
-		cfg.EcoRatio = 0
+	if cfg.PerfRatio > 1 {
+		cfg.PerfRatio = 1
 	}
-	if cfg.PerfRatio+cfg.EcoRatio > 1 {
-		total := cfg.PerfRatio + cfg.EcoRatio
-		cfg.PerfRatio /= total
-		cfg.EcoRatio /= total
+	if cfg.ComputeBoundPerfBoost < 1 {
+		cfg.ComputeBoundPerfBoost = 1
 	}
 	_ = outPath
 	setOutputPath(outPath)
@@ -202,7 +202,6 @@ func generateTrace(cfg generatorConfig) error {
 	}
 	defer f.Close()
 	w := bufio.NewWriter(f)
-	defer w.Flush()
 
 	rng := rand.New(rand.NewSource(cfg.Seed))
 	arrivals := arrivalState{burstHourByDay: map[int]int{}}
@@ -224,7 +223,7 @@ func generateTrace(cfg generatorConfig) error {
 			}
 		}
 	}
-	return nil
+	return w.Flush()
 }
 
 func writeJSONL(w *bufio.Writer, v any) error {
@@ -261,6 +260,7 @@ func workloadToRecord(wl logicalWorkload) workloadRecord {
 		WorkloadType:        wl.Type,
 		Gang:                wl.Gang,
 		DurationSec:         wl.DurationSec,
+		IntentClass:         wl.Class,
 		WorkloadClass:       workloadClass{CPU: wl.CPUClass, GPU: wl.GPUClass},
 		SharedIntensity:     wl.Profile,
 		Pods:                pods,
@@ -289,7 +289,7 @@ func expandLogicalWorkload(wl logicalWorkload, cfg generatorConfig, ordinal *int
 			}
 			intent := p.IntentClass
 			if intent == "" {
-				intent = sampleIntentClass(rand.New(rand.NewSource(int64(len(jobID))+13)), cfg, false)
+				intent = sampleIntentClass(rand.New(rand.NewSource(int64(len(jobID))+13)), cfg, wl.CPUClass, wl.GPUClass)
 			}
 			out = append(out, jobRecord{
 				Type:                "job",
@@ -301,12 +301,13 @@ func expandLogicalWorkload(wl logicalWorkload, cfg generatorConfig, ordinal *int
 				Gang:                wl.Gang,
 				SubmitTimeOffsetSec: wl.SubmitSec,
 				Namespace:           wl.Namespace,
+				IntentClass:         intent,
 				PodTemplate: podTemplateRec{
 					Affinity: affinityForClass(intent),
 					Requests: requests,
 				},
 				Work:            workRec{CPUUnits: p.CPUUnits, GPUUnits: p.GPUUnits},
-				Sensitivity:     sensitivityRec{CPU: p.CPUSense, GPU: p.GPUSense},
+				Sensitivity:     sensitivityRec{},
 				WorkloadClass:   workloadClass{CPU: wl.CPUClass, GPU: wl.GPUClass},
 				WorkloadProfile: wl.Profile,
 				Tags:            append([]string{}, wl.Tags...),
@@ -318,18 +319,19 @@ func expandLogicalWorkload(wl logicalWorkload, cfg generatorConfig, ordinal *int
 
 func sampleLogicalWorkload(rng *rand.Rand, idx int, submitSec float64, cfg generatorConfig) logicalWorkload {
 	hasGPU := rng.Float64() < cfg.GPURatio
-	intent := sampleIntentClass(rng, cfg, cfg.NoAffinityOnly)
 	wlType := sampleWorkloadType(rng, hasGPU)
 	totalGPUs := 0
 	if hasGPU {
 		totalGPUs = sampleTotalGPUs(rng)
 	}
 	cpuClass, gpuClass := classesForType(wlType)
+	intent := sampleIntentClass(rng, cfg, cpuClass, gpuClass)
 	profile := sampleSharedProfile(rng, wlType, totalGPUs, cpuClass, gpuClass)
 	durationSec := sampleDurationSec(rng, wlType, totalGPUs)
 	wl := logicalWorkload{
 		ID:          fmt.Sprintf("workload-%06d", idx),
 		Type:        wlType,
+		Class:       intent,
 		SubmitSec:   submitSec,
 		Namespace:   cfg.Namespace,
 		Gang:        wlType == "distributed_training" || wlType == "parameter_server_training",
@@ -343,18 +345,23 @@ func sampleLogicalWorkload(rng *rand.Rand, idx int, submitSec float64, cfg gener
 	return wl
 }
 
-func sampleIntentClass(rng *rand.Rand, cfg generatorConfig, noAffinity bool) string {
-	if noAffinity {
-		return "general"
+func sampleIntentClass(rng *rand.Rand, cfg generatorConfig, cpuClass, gpuClass string) string {
+	if cfg.NoAffinityOnly {
+		return "standard"
 	}
-	p := rng.Float64()
-	if p < cfg.PerfRatio {
+
+	isComputeBound := strings.Contains(cpuClass, "compute") ||
+		strings.Contains(gpuClass, "compute")
+
+	ratio := cfg.PerfRatio
+	if isComputeBound {
+		ratio = math.Min(1.0, ratio*cfg.ComputeBoundPerfBoost)
+	}
+
+	if rng.Float64() < ratio {
 		return "performance"
 	}
-	if p < cfg.PerfRatio+cfg.EcoRatio {
-		return "eco"
-	}
-	return "general"
+	return "standard"
 }
 
 func sampleWorkloadType(rng *rand.Rand, hasGPU bool) string {
@@ -514,8 +521,6 @@ func buildPodsForWorkload(rng *rand.Rand, wl logicalWorkload, totalGPUs int, int
 			GPUResource: gpuResource,
 			CPUUnits:    cpuUnits,
 			GPUUnits:    gpuUnits,
-			CPUSense:    cpuSensitivityForType(wl.Type, role),
-			GPUSense:    gpuSensitivityForType(wl.Type),
 			IntentClass: intent,
 		})
 	}
@@ -623,35 +628,9 @@ func sampleMemoryPerGPU(rng *rand.Rand, wlType string, g int) float64 {
 	return clampRange(v, 1, 256)
 }
 
-func cpuSensitivityForType(wlType, role string) float64 {
-	switch {
-	case role == "ps":
-		return 0.45
-	case role == "launcher" || role == "controller":
-		return 0.25
-	case wlType == "cpu_preprocess":
-		return 0.75
-	case wlType == "cpu_analytics":
-		return 0.90
-	default:
-		return 0.65
-	}
-}
-
-func gpuSensitivityForType(wlType string) float64 {
-	switch wlType {
-	case "debug_eval":
-		return 0.55
-	case "hpo_experiment":
-		return 0.65
-	case "single_gpu_training":
-		return 0.85
-	case "distributed_training", "parameter_server_training":
-		return 0.90
-	default:
-		return 1.0
-	}
-}
+// cpuSensitivityForType and gpuSensitivityForType were removed.
+// The scheduler now uses only joulie.io/workload-class (performance|standard)
+// for routing decisions, not per-resource sensitivity annotations.
 
 func gpuUtilMeanBySize(totalGPUs int) float64 {
 	switch {
@@ -923,8 +902,9 @@ func defaultCPUFeedIntensity(hasGPU bool, rng *rand.Rand) float64 {
 }
 
 func affinityForClass(class string) map[string]any {
-	switch class {
-	case "performance":
+	if class == "performance" {
+		// Safety net: even without the scheduler extender, performance pods
+		// avoid eco nodes via native Kubernetes node affinity.
 		return map[string]any{
 			"nodeAffinity": map[string]any{
 				"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
@@ -938,25 +918,7 @@ func affinityForClass(class string) map[string]any {
 				},
 			},
 		}
-	case "eco":
-		return map[string]any{
-			"nodeAffinity": map[string]any{
-				"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
-					"nodeSelectorTerms": []map[string]any{{
-						"matchExpressions": []map[string]any{{
-							"key":      "joulie.io/power-profile",
-							"operator": "In",
-							"values":   []string{"eco"},
-						}, {
-							"key":      "joulie.io/draining",
-							"operator": "NotIn",
-							"values":   []string{"true"},
-						}},
-					}},
-				},
-			},
-		}
-	default:
-		return nil
 	}
+	// "standard" and anything else: no affinity constraint.
+	return nil
 }

@@ -8,21 +8,25 @@ SIM_NAMESPACE ?= joulie-sim-demo
 SIM_IMAGE ?= joulie-simulator
 
 # Image names must follow joulie-<component>, where <component> matches cmd/<component>.
-IMAGES ?= joulie-agent joulie-operator
+IMAGES ?= joulie-agent joulie-operator joulie-scheduler
 
-.PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-examples simulator-build simulator-push simulator-build-push simulator-install simulator-build-push-deploy simulator-logs docs-serve
+.PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-experiments test-all test-examples kubectl-plugin kubectl-plugin-install kubectl-plugin-push kubectl-plugin-build-push simulator-build simulator-push simulator-build-push simulator-install simulator-build-push-deploy simulator-logs docs-serve
 
 help:
 	@echo "Targets:"
 	@echo "  make install TAG=<tag> [HELM_VALUES=values/joulie.yaml]  Helm install/upgrade"
 	@echo "  make uninstall                        Helm uninstall and remove CRD"
-	@echo "  make build TAG=<tag>                  Build all images"
+	@echo "  make build TAG=<tag>                  Build all images (agent+operator+scheduler)"
 	@echo "  make push TAG=<tag>                   Push all images"
 	@echo "  make build-push TAG=<tag>             Build and push all images"
-	@echo "  make build-push-all TAG=<tag>         Build and push agent+operator+simulator"
-	@echo "  make rollout TAG=<tag>                Update and roll out agent+operator images"
+	@echo "  make build-push-all TAG=<tag>         Build and push all images + simulator"
+	@echo "  make rollout TAG=<tag>                Update and roll out all component images"
 	@echo "  make build-push-rollout TAG=<tag>     Build, push, update image, wait rollout"
 	@echo "  make build-push-install TAG=<tag>     Build, push, install manifests, wait rollout"
+	@echo "  make kubectl-plugin                   Build kubectl-joulie plugin binary"
+	@echo "  make kubectl-plugin-install            Build and install kubectl-joulie to /usr/local/bin"
+	@echo "  make kubectl-plugin-push TAG=<tag>    Push kubectl-joulie to Harbor (requires oras)"
+	@echo "  make kubectl-plugin-build-push TAG=<tag> Build and push kubectl-joulie to Harbor"
 	@echo "  make test                             Run unit tests"
 	@echo "  make test-examples                    Validate example YAML manifests (kubectl dry-run client)"
 	@echo "  make simulator-build TAG=<tag>        Build simulator image"
@@ -46,13 +50,16 @@ install:
 		-f "$(HELM_VALUES)" \
 		--set agent.image.repository="$(REGISTRY)/joulie-agent" \
 		--set operator.image.repository="$(REGISTRY)/joulie-operator" \
+		--set schedulerExtender.image.repository="$(REGISTRY)/joulie-scheduler" \
 		--set agent.image.tag="$(TAG)" \
-		--set operator.image.tag="$(TAG)"
+		--set operator.image.tag="$(TAG)" \
+		--set schedulerExtender.image.tag="$(TAG)"
 
 uninstall:
 	helm uninstall "$(HELM_RELEASE)" -n "$(NAMESPACE)" || true
-	kubectl delete crd nodepowerprofiles.joulie.io --ignore-not-found=true
-	kubectl delete crd telemetryprofiles.joulie.io --ignore-not-found=true
+	kubectl delete crd nodetwins.joulie.io --ignore-not-found=true
+	kubectl delete crd nodehardwares.joulie.io --ignore-not-found=true
+	kubectl delete crd workloadprofiles.joulie.io --ignore-not-found=true
 
 build:
 	@for img in $(if $(IMAGE),$(IMAGE),$(IMAGES)); do \
@@ -78,11 +85,15 @@ rollout:
 		-f "$(HELM_VALUES)" \
 		--set agent.image.repository="$(REGISTRY)/joulie-agent" \
 		--set operator.image.repository="$(REGISTRY)/joulie-operator" \
+		--set schedulerExtender.image.repository="$(REGISTRY)/joulie-scheduler" \
 		--set agent.image.tag="$(TAG)" \
-		--set operator.image.tag="$(TAG)"
+		--set operator.image.tag="$(TAG)" \
+		--set schedulerExtender.image.tag="$(TAG)"
 	@echo "Waiting for rollout to complete"
 	kubectl -n "$(NAMESPACE)" rollout status daemonset/joulie-agent
 	kubectl -n "$(NAMESPACE)" rollout status deployment/joulie-operator
+	@kubectl -n "$(NAMESPACE)" get deploy/joulie-scheduler-extender >/dev/null 2>&1 && \
+		kubectl -n "$(NAMESPACE)" rollout status deploy/joulie-scheduler-extender || true
 
 build-push-rollout: build-push rollout
 
@@ -90,9 +101,33 @@ build-push-install: build-push install
 	@echo "Waiting for rollout to complete"
 	kubectl -n "$(NAMESPACE)" rollout status daemonset/joulie-agent
 	kubectl -n "$(NAMESPACE)" rollout status deployment/joulie-operator
+	@kubectl -n "$(NAMESPACE)" get deploy/joulie-scheduler-extender >/dev/null 2>&1 && \
+		kubectl -n "$(NAMESPACE)" rollout status deploy/joulie-scheduler-extender || true
+
+kubectl-plugin:
+	CGO_ENABLED=0 go build -o bin/kubectl-joulie ./cmd/kubectl-joulie
+
+kubectl-plugin-install: kubectl-plugin
+	install bin/kubectl-joulie /usr/local/bin/kubectl-joulie
+
+kubectl-plugin-push: kubectl-plugin
+	@command -v oras >/dev/null 2>&1 || { echo "oras CLI is required (https://oras.land/)"; exit 1; }
+	oras push "$(REGISTRY)/kubectl-joulie:$(TAG)" \
+		"bin/kubectl-joulie:application/octet-stream"
+
+kubectl-plugin-build-push: kubectl-plugin kubectl-plugin-push
 
 test:
 	go test ./...
+
+test-experiments:
+	@echo "Running experiment sanity tests..."
+	python3 -m pytest experiments/01-cpu-only-benchmark/scripts/test_sweep.py -q --tb=short
+	python3 -m pytest experiments/02-heterogeneous-benchmark/scripts/test_sweep.py -q --tb=short
+	python3 -m pytest experiments/03-homogeneous-h100-benchmark/scripts/test_sweep.py -q --tb=short
+	@echo "All experiment sanity tests passed."
+
+test-all: test test-experiments test-examples
 
 test-examples:
 	@set -e; \

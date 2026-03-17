@@ -1,29 +1,18 @@
-apiVersion: joulie.io/v1alpha1
-kind: TelemetryProfile
-metadata:
-  name: sim-http-target-node
-  labels:
-    app.kubernetes.io/part-of: sim-kwok-demo
-spec:
-  target:
-    scope: node
-    nodeName: target-node
-  sources:
-    cpu:
-      type: http
-      http:
-        endpoint: http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node}
-        timeoutSeconds: 2
-  controls:
-    cpu:
-      type: http
-      http:
-        endpoint: http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}
-        timeoutSeconds: 2
-        mode: dvfs
-    gpu:
-      type: http
-      http:
-        endpoint: http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}
-        timeoutSeconds: 2
-        mode: powercap
+# TelemetryProfile CRD has been removed.
+# Telemetry/control routing is now configured via agent env vars.
+#
+# Set these on the agent DaemonSet (or StatefulSet in pool mode):
+#
+#   JOULIE_TELEMETRY_SOURCE_TYPE=http
+#   JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node}
+#   JOULIE_CONTROL_TYPE=http
+#   JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}
+#   JOULIE_CONTROL_MODE=dvfs
+#
+# Example:
+#   kubectl -n joulie-system set env daemonset/joulie-agent \
+#     JOULIE_TELEMETRY_SOURCE_TYPE=http \
+#     JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
+#     JOULIE_CONTROL_TYPE=http \
+#     JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
+#     JOULIE_CONTROL_MODE=dvfs

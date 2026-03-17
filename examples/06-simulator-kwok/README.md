@@ -66,10 +66,15 @@ helm upgrade --install joulie ../../charts/joulie \
 
 ## 6. Route telemetry/control to simulator
 
+Configure agent env vars to route telemetry and control to the simulator over HTTP:
+
 ```bash
-for n in $(kubectl get nodes -l joulie.io/managed=true -o jsonpath='{.items[*].metadata.name}'); do
-  sed "s/target-node/$n/g" manifests/20-telemetryprofile-simulator.yaml | kubectl apply -f -
-done
+kubectl -n joulie-system set env daemonset/joulie-agent \
+  JOULIE_TELEMETRY_SOURCE_TYPE=http \
+  JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
+  JOULIE_CONTROL_TYPE=http \
+  JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
+  JOULIE_CONTROL_MODE=dvfs
 ```
 
 ## 7. Load trace workload
@@ -86,7 +91,7 @@ The simulator reads `SIM_WORKLOAD_TRACE_PATH=/etc/joulie-sim-trace/trace.jsonl` 
 ```bash
 kubectl get nodes -L type,joulie.io/managed
 kubectl get pods -A -l app.kubernetes.io/part-of=joulie-sim-workload -o wide
-kubectl get nodepowerprofiles
+kubectl get nodetwins
 kubectl -n joulie-system logs -l app.kubernetes.io/name=joulie-agent --tail=200 | egrep 'controller started|dvfs-control|applied policy'
 kubectl -n joulie-sim-demo logs deploy/joulie-telemetry-sim --tail=200 | egrep 'control node=|job completed'
 ```
@@ -103,7 +108,7 @@ curl -s localhost:18080/debug/events | jq
 
 - infra pods (`joulie-simulator`, operator, agent pool) schedule on real kind node(s),
 - fake workload pods are scheduled on fake KWOK nodes,
-- operator writes `NodePowerProfile` for managed fake nodes,
+- operator writes `NodeTwin` for managed fake nodes,
 - exactly one pool shard controls each node,
 - simulator power/freq telemetry changes with controls,
 - job completion slows under stronger caps/throttling.

@@ -1,5 +1,5 @@
 nodes:
-  # 33 H100 NVL nodes — same total GPU node count as experiment 02 but a single family.
+  # 33 H100 NVL nodes - same total GPU node count as experiment 02 but a single family.
   # Hypothesis: Joulie performs better on a homogeneous cluster because every node can accept
   # any GPU job, eliminating the vendor/product-specific placement constraints that restrict
   # policy flexibility in the heterogeneous case.
@@ -15,7 +15,7 @@ nodes:
     gpu_min_cap_watts: 200
     gpu_max_cap_watts: 400
 
-  # CPU-only nodes — identical to experiment 02 for a fair CPU workload comparison.
+  # CPU-only nodes - identical to experiment 02 for a fair CPU workload comparison.
   - node_name_prefix: kwok-cpu-highcore
     replicas: 2
     vendor: none

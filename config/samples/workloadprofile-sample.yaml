@@ -1,0 +1,28 @@
+apiVersion: joulie.io/v1alpha1
+kind: WorkloadProfile
+metadata:
+  name: llm-training-job
+  namespace: default
+spec:
+  workloadRef:
+    kind: Job
+    namespace: default
+    name: llm-training-v2
+status:
+  criticality:
+    class: standard
+  migratability:
+    reschedulable: true
+  cpu:
+    intensity: medium
+    bound: memory
+    avgUtilizationPct: 45
+    capSensitivity: low
+  gpu:
+    intensity: high
+    bound: compute
+    avgUtilizationPct: 92
+    capSensitivity: high
+  classificationReason: "cpu-intensity=medium (util 45%); cpu-bound=memory (mem-pressure 68%>50%); gpu-intensity=high (util 92%≥70%)"
+  confidence: 0.85
+  lastUpdated: "2026-03-13T12:00:00Z"

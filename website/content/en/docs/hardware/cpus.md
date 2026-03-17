@@ -3,11 +3,11 @@ title: "CPU Support and Power Capping"
 weight: 5
 ---
 
-Joulie supports node-level CPU power capping through `NodePowerProfile` intents enforced by the agent.
+Joulie supports node-level CPU power capping through `NodeTwin` intents enforced by the agent.
 
 ## Contract model
 
-CPU intent is defined in `NodePowerProfile.spec.cpu`:
+CPU intent is defined in `NodeTwin.spec.cpu`:
 
 - `packagePowerCapWatts` (optional absolute cap)
 - `packagePowerCapPctOfMax` (optional normalized profile intent)
@@ -20,7 +20,7 @@ Precedence:
 ## Policy behavior
 
 Operator profile assignment remains `performance` vs `eco`.
-CPU cap values are generated per profile and written into `NodePowerProfile`:
+CPU cap values are generated per profile and written into `NodeTwin.spec`:
 
 - performance profile typically maps to a higher cap (often 100%)
 - eco profile maps to a lower cap
@@ -54,12 +54,12 @@ See [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) fo
 
 ## Scheduling guidance
 
-Workload intent classification is based on node selector/affinity using `joulie.io/power-profile`:
+Workload placement intent is expressed via the `joulie.io/workload-class` pod annotation:
 
-- performance-sensitive workloads: typically exclude `eco`
-- eco-only workloads: explicitly require `eco`, and if they must avoid transition-guarded nodes, exclude `joulie.io/draining=true` with `NotIn ["true"]`
+- `performance`: must run on full-power nodes (extender hard-rejects eco nodes)
+- `standard`: default, can run on any node; adaptive scoring steers toward eco when performance nodes are congested
 
-This classification drives operator profile assignment; CPU capping is then enforced through `NodePowerProfile`.
+The scheduler extender enforces these classes; CPU capping is then enforced through `NodeTwin.spec`.
 
 ## Related docs
 

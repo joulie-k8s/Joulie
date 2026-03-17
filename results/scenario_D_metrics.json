@@ -1,0 +1,20 @@
+{
+  "Scenario": "D: Caps + Scheduler + DRA",
+  "TotalEnergyKWh": 123.29098016151262,
+  "MakespanS": 334861.76413949457,
+  "P50CompletionS": 75996.35643262665,
+  "P95CompletionS": 304306.0275466132,
+  "AvgPendingS": 98724.86247623348,
+  "PeakRackPowerW": 5191,
+  "AvgRackPowerW": 5182.251926109544,
+  "P95RackPowerW": 5191,
+  "PeakCoolingStress": 8.997733333333334,
+  "AvgCoolingStress": 8.969254666666693,
+  "PeakPSUStress": 10.382,
+  "EcoPct": 100,
+  "SliceUtilization": 0.947154585860216,
+  "EnergyDelayProduct": 148627566429737.56,
+  "NodeProfileChurn": 0,
+  "RescheduledJobs": 0,
+  "TotalReschedulingOverheadS": 0
+}

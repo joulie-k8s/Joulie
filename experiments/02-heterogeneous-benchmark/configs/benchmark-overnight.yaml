@@ -15,7 +15,7 @@ workload:
   # - explicit eco-only jobs stay disabled because they are uncommon in practice
   #   and make the benchmark more about benchmark-side placement than policy value
   perf_ratio: 0.15
-  eco_ratio: 0.00
+  compute_bound_perf_boost: 3.5
   # Many jobs are GPU-backed, but CPU-side preprocessing/analytics is still common.
   gpu_ratio: 0.45
   gpu_request_per_job: 1
@@ -49,6 +49,10 @@ policy:
   loop:
     operator_reconcile_interval: "20s"
     agent_reconcile_interval: "10s"
+    # Queue-aware (baseline C) uses a slower operator reconcile to avoid
+    # thrashing node profiles. Value is in simulated seconds; the sweep script
+    # divides by run.time_scale to get the wall-clock interval.
+    queue_aware_operator_reconcile_sim_seconds: 300
   static:
     hp_frac: 0.45
   queue_aware:

@@ -8,6 +8,7 @@ tmp.*
 *.tgz
 *.tar.gz
 kubeconfig.yaml
+*.jsonl
 
 # Python bytecode
 __pycache__/
@@ -74,3 +75,11 @@ go.work.sum
 website/public/
 website/resources/
 website/.hugo_build.lock
+
+# Compiled Go binaries (root-level)
+/agent
+/scheduler
+/operator
+/simulator
+/kubectl-joulie
+/workloadgen

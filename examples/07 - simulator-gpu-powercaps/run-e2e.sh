@@ -76,8 +76,7 @@ collect_diagnostics() {
   k get pods -A -o wide >"$out/pods-wide.txt" 2>&1 || true
   k describe pods -A >"$out/pods.describe.txt" 2>&1 || true
   k get events -A --sort-by=.lastTimestamp >"$out/events.txt" 2>&1 || true
-  k get nodepowerprofiles -o yaml >"$out/nodepowerprofiles.yaml" 2>&1 || true
-  k get telemetryprofiles -o yaml >"$out/telemetryprofiles.yaml" 2>&1 || true
+  k get nodetwins -o yaml >"$out/nodetwins.yaml" 2>&1 || true
   k -n joulie-system get all >"$out/joulie-system.all.txt" 2>&1 || true
   k -n joulie-sim-demo get all >"$out/joulie-sim-demo.all.txt" 2>&1 || true
 
@@ -179,8 +178,7 @@ main() {
   run k -n kube-system rollout status deploy/kwok-controller --timeout=240s
 
   log "cleaning previous simulator/kwok state for deterministic run"
-  run k delete telemetryprofiles --all --ignore-not-found=true
-  run k delete nodepowerprofiles --all --ignore-not-found=true
+  run k delete nodetwins --all --ignore-not-found=true
   run k -n default delete pod -l app.kubernetes.io/part-of=joulie-sim-workload --ignore-not-found=true
   run k delete nodes -l type=kwok --ignore-not-found=true
 
@@ -207,8 +205,7 @@ main() {
   run k -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim --timeout=240s
 
   log "applying latest CRDs (helm does not upgrade CRDs on release upgrade)"
-  run k apply -f "$ROOT_DIR/charts/joulie/crds/joulie.io_nodepowerprofiles.yaml"
-  run k apply -f "$ROOT_DIR/charts/joulie/crds/joulie.io_telemetryprofiles.yaml"
+  run k apply -f "$ROOT_DIR/charts/joulie/crds/joulie.io_nodetwins.yaml"
 
   log "installing joulie chart in pool mode"
   run helm upgrade --install joulie "$ROOT_DIR/charts/joulie" \
@@ -225,40 +222,29 @@ main() {
   run k -n joulie-system rollout status deploy/joulie-operator --timeout=240s
   run k -n joulie-system rollout status statefulset/joulie-agent-pool --timeout=240s
 
-  log "creating per-node telemetry profiles"
-  mapfile -t managed_nodes < <(k get nodes -l joulie.io/managed=true -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
-  if [[ "${#managed_nodes[@]}" -eq 0 ]]; then
-    log "no managed nodes found"
-    return 1
-  fi
-  for n in "${managed_nodes[@]}"; do
-    log "applying telemetry profile for node=$n"
-    sed "s/TARGET_NODE/${n}/g" "$EXAMPLE_DIR/manifests/40-telemetryprofile-template.yaml" | k apply -f -
-  done
+  log "configuring agent telemetry/control env vars for simulator HTTP routing"
+  run k -n joulie-system set env statefulset/joulie-agent-pool \
+    JOULIE_TELEMETRY_SOURCE_TYPE=http \
+    JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
+    JOULIE_CONTROL_TYPE=http \
+    JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
+    JOULIE_CONTROL_MODE=dvfs
+  run k -n joulie-system rollout status statefulset/joulie-agent-pool --timeout=240s
 
   wait_for_jq_expr 300 5 \
-    "[[ \$(k get nodepowerprofiles -o json | jq '.items | length') -ge 3 ]]" \
-    "nodepowerprofiles created"
-
-  wait_for_jq_expr 300 5 \
-    "[[ \$(k get telemetryprofiles -o json | jq '.items | length') -ge 3 ]]" \
-    "telemetryprofiles created"
+    "[[ \$(k get nodetwins -o json | jq '.items | length') -ge 3 ]]" \
+    "nodetwins created"
 
   wait_for_jq_expr 240 5 \
     "[[ \$(k -n default get pods -l app.kubernetes.io/part-of=joulie-sim-workload -o json | jq '.items | length') -ge 3 ]]" \
     "simulator injected workload pods"
 
   wait_for_jq_expr 300 5 \
-    "[[ \$(k get telemetryprofiles -o json | jq '[.items[] | select(.status.control.gpu.result == \"applied\")] | length') -ge 2 ]]" \
-    "gpu control applied on gpu nodes"
-
-  wait_for_jq_expr 180 5 \
     "[[ \$(k -n joulie-sim-demo logs deploy/joulie-telemetry-sim --tail=2000 | grep -c 'action=gpu.set_power_cap_watts') -ge 2 ]]" \
     "simulator observed gpu power-cap control actions"
 
   run k get nodes -L type,joulie.io/managed,joulie.io/power-profile,joulie.io/gpu.product
-  run k get nodepowerprofiles -o yaml
-  run k get telemetryprofiles -o yaml
+  run k get nodetwins -o yaml
 
   log "end-to-end validation complete"
 }

@@ -9,7 +9,7 @@ done
 
 python3 - <<'PY'
 from importlib import util
-mods = ["yaml", "pandas", "matplotlib"]
+mods = ["yaml", "pandas", "matplotlib", "pytest"]
 missing = [m for m in mods if util.find_spec(m) is None]
 if missing:
     raise SystemExit(
@@ -17,7 +17,7 @@ if missing:
         + ", ".join(missing)
         + " (install with: python -m pip install -r experiments/01-cpu-only-benchmark/requirements.txt)"
     )
-print("python modules: ok (yaml, pandas, matplotlib)")
+print("python modules: ok (yaml, pandas, matplotlib, pytest)")
 PY
 
 echo "prereqs check passed"

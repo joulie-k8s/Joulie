@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -15,6 +14,8 @@ import (
 	"time"
 
 	"github.com/matbun/joulie/pkg/hwinv"
+	"github.com/matbun/joulie/pkg/operator/fsm"
+	"github.com/matbun/joulie/pkg/operator/policy"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	corev1 "k8s.io/api/core/v1"
@@ -29,12 +30,11 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-var profileGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodepowerprofiles"}
 var nodeHardwareGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
 
 const (
 	powerProfileLabelKey  = "joulie.io/power-profile"
-	drainingLabelKey      = "joulie.io/draining"
+
 	profilePerformance    = "performance"
 	profileEco            = "eco"
 	workloadClassUnknown  = "unknown"
@@ -43,23 +43,23 @@ const (
 	workloadClassPerfOnly = "performance-only"
 )
 
-type NodeAssignment struct {
-	NodeName       string
-	Profile        string
-	CapWatts       float64
-	CPUCapPctOfMax *float64
-	GPU            *GPUCapIntent
-	ManagedBy      string
-	SourceProfile  string
-	SourceDrain    bool
-	Draining       bool
-	State          string
+// NodeAssignment and GPUCapIntent are defined in pkg/operator/policy.
+type NodeAssignment = policy.NodeAssignment
+type GPUCapIntent = policy.GPUCapIntent
+
+// kubeNodeOps adapts kubernetes.Interface to the fsm.NodeOps interface.
+type kubeNodeOps struct {
+	kube kubernetes.Interface
 }
 
-type GPUCapIntent struct {
-	Scope          string
-	CapWattsPerGPU *float64
-	CapPctOfMax    *float64
+func (k *kubeNodeOps) RunningPerformanceSensitivePodCount(ctx context.Context, nodeName string) (int, error) {
+	pods, err := k.kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: "spec.nodeName=" + nodeName,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return fsm.CountPerformanceSensitivePods(pods.Items), nil
 }
 
 type GPUModelCaps struct {
@@ -134,7 +134,7 @@ func main() {
 	selector := envOrDefault("NODE_SELECTOR", "node-role.kubernetes.io/worker")
 	reservedLabel := envOrDefault("RESERVED_LABEL_KEY", "joulie.io/reserved")
 	profileLabel := envOrDefault("POWER_PROFILE_LABEL", "joulie.io/power-profile")
-	drainingLabel := envOrDefault("DRAINING_LABEL", drainingLabelKey)
+
 	perfCap := floatEnv("PERFORMANCE_CAP_WATTS", 5000)
 	ecoCap := floatEnv("ECO_CAP_WATTS", 120)
 	cpuPerfCapPct := floatEnv("CPU_PERFORMANCE_CAP_PCT_OF_MAX", 100)
@@ -175,13 +175,69 @@ func main() {
 	}
 	startMetricsServer(metricsAddr)
 
+	// --- Facility metrics (data-center level) ---
+	fm := &facilityMetrics{}
+	facCfg := facilityConfig{
+		enabled:            boolEnv("ENABLE_FACILITY_METRICS", false),
+		prometheusAddress:  envOrDefault("FACILITY_PROMETHEUS_ADDRESS", "http://prometheus-operated.monitoring:9090"),
+		pollInterval:       durationEnv("FACILITY_POLL_INTERVAL", 30*time.Second),
+		ambientTempMetric:  envOrDefault("FACILITY_AMBIENT_TEMP_METRIC", "datacenter_ambient_temperature_celsius"),
+		itPowerMetric:      envOrDefault("FACILITY_IT_POWER_METRIC", "datacenter_total_it_power_watts"),
+		coolingPowerMetric: envOrDefault("FACILITY_COOLING_POWER_METRIC", "datacenter_cooling_power_watts"),
+	}
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+	go facilityMetricsLoop(bgCtx, fm, facCfg)
+
+	// --- Workload classifier ---
+	if boolEnv("ENABLE_CLASSIFIER", true) {
+		clsCfg := classifierConfig{
+			classifyInterval:   durationEnv("CLASSIFY_INTERVAL", 30*time.Second),
+			reclassifyInterval: durationEnv("RECLASSIFY_INTERVAL", 15*time.Minute),
+			metricsWindow:      durationEnv("CLASSIFY_METRICS_WINDOW", 10*time.Minute),
+			prometheusAddress:  envOrDefault("PROMETHEUS_ADDRESS", "http://prometheus-operated.monitoring:9090"),
+			keplerAvailable:    boolEnv("KEPLER_AVAILABLE", true),
+			minConfidence:      floatEnv("CLASSIFY_MIN_CONFIDENCE", 0.5),
+			nodeSelector:       selector,
+		}
+		go classifierLoop(bgCtx, kube, dyn, clsCfg)
+	}
+
+	// --- Active rescheduler ---
+	reschCfg := reschedulerConfig{
+		enabled:             boolEnv("ENABLE_ACTIVE_RESCHEDULING", false),
+		interval:            durationEnv("RESCHEDULE_INTERVAL", 60*time.Second),
+		maxEvictionsPerNode: intEnv("RESCHEDULE_MAX_EVICTIONS_PER_NODE", 1),
+		dryRun:              boolEnv("RESCHEDULE_DRY_RUN", false),
+	}
+	go reschedulerLoop(bgCtx, kube, dyn, reschCfg)
+
+	// --- Periodic WorkloadProfile cleanup ---
+	go func() {
+		cleanupTicker := time.NewTicker(5 * time.Minute)
+		defer cleanupTicker.Stop()
+		for {
+			select {
+			case <-bgCtx.Done():
+				return
+			case <-cleanupTicker.C:
+				ctx, cancel := context.WithTimeout(bgCtx, 10*time.Second)
+				if err := cleanupOrphanedWorkloadProfiles(ctx, kube, dyn); err != nil {
+					log.Printf("[cleanup] WorkloadProfile cleanup: %v", err)
+				}
+				cancel()
+			}
+		}
+	}()
+
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		if err := reconcileWithCatalog(
-			ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, drainingLabel, reconcileEvery,
+		if err := reconcileWithCatalogAndFacility(
+			ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, reconcileEvery,
 			perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
 			cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
 			gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, hardwareCatalog,
+			fm,
 		); err != nil {
 			log.Printf("reconcile failed: %v", err)
 		}
@@ -209,7 +265,6 @@ func reconcile(
 	selector labels.Selector,
 	reservedLabel string,
 	profileLabel string,
-	drainingLabel string,
 	interval time.Duration,
 	perfCap float64,
 	ecoCap float64,
@@ -229,7 +284,7 @@ func reconcile(
 	gpuProductLabelKeys []string,
 ) error {
 	return reconcileWithCatalog(
-		ctx, kube, dyn, selector, reservedLabel, profileLabel, drainingLabel, interval,
+		ctx, kube, dyn, selector, reservedLabel, profileLabel, interval,
 		perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
 		cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
 		gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, loadHardwareCatalog(),
@@ -243,7 +298,6 @@ func reconcileWithCatalog(
 	selector labels.Selector,
 	reservedLabel string,
 	profileLabel string,
-	drainingLabel string,
 	interval time.Duration,
 	perfCap float64,
 	ecoCap float64,
@@ -271,13 +325,10 @@ func reconcileWithCatalog(
 	eligible := make([]string, 0)
 	nodesByName := make(map[string]string, len(nodes.Items))
 	nodeObjs := make(map[string]*corev1.Node, len(nodes.Items))
-	drainingByName := make(map[string]bool, len(nodes.Items))
 	for _, n := range nodes.Items {
 		node := n
 		nodeObjs[n.Name] = &node
-		prof, draining := normalizeNodeLabels(n.Labels[profileLabel], n.Labels[drainingLabel])
-		nodesByName[n.Name] = prof
-		drainingByName[n.Name] = draining
+		nodesByName[n.Name] = currentProfileOrDefault(n.Labels[profileLabel])
 		if n.Spec.Unschedulable {
 			continue
 		}
@@ -322,22 +373,30 @@ func reconcileWithCatalog(
 	plan := buildPlanByPolicy(ctx, kube, policyType, eligible, nodeHardwareByName, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
 	for i := range plan {
 		plan[i].SourceProfile = currentProfileOrDefault(nodesByName[plan[i].NodeName])
-		plan[i].SourceDrain = drainingByName[plan[i].NodeName]
 		plan[i].Draining = false
 		plan[i].State = assignmentState(plan[i].Profile, plan[i].Draining)
-		if cpuWriteAbsolute {
-			plan[i].CPUCapPctOfMax = nil
-			if nh, ok := nodeHardwareByName[plan[i].NodeName]; ok {
-				if abs, ok := computeAbsoluteCPUCap(plan[i].Profile, nh, hardwareCatalog, perfCap, ecoCap); ok {
-					plan[i].CapWatts = abs
+		// Skip CPU cap on GPU nodes: CPU is ~6% of GPU node power; capping it
+		// saves ~1.2% but slows GPU data feed by ~4.5%, costing 3.8x more energy
+		// than saved (exp-03 finding). GPU nodes get only GPU caps.
+		hasGPU := false
+		if n := nodeObjs[plan[i].NodeName]; n != nil {
+			hasGPU = discoverGPUCount(*n) > 0
+		}
+		if !hasGPU {
+			if cpuWriteAbsolute {
+				plan[i].CPUCapPctOfMax = nil
+				if nh, ok := nodeHardwareByName[plan[i].NodeName]; ok {
+					if abs, ok := computeAbsoluteCPUCap(plan[i].Profile, nh, hardwareCatalog, perfCap, ecoCap); ok {
+						plan[i].CapWatts = abs
+					}
 				}
+			} else {
+				pct := cpuEcoCapPct
+				if plan[i].Profile == profilePerformance {
+					pct = cpuPerfCapPct
+				}
+				plan[i].CPUCapPctOfMax = floatPtr(pct)
 			}
-		} else {
-			pct := cpuEcoCapPct
-			if plan[i].Profile == profilePerformance {
-				pct = cpuPerfCapPct
-			}
-			plan[i].CPUCapPctOfMax = floatPtr(pct)
 		}
 		if n := nodeObjs[plan[i].NodeName]; n != nil {
 			plan[i].GPU = computeGPUIntentForNodeWithHardware(*n, plan[i].Profile, gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, nodeHardwareByName[plan[i].NodeName], hardwareCatalog)
@@ -353,12 +412,60 @@ func reconcileWithCatalog(
 		}
 	}
 	applyDowngradeGuards(ctx, kube, plan, nodesByName)
+
+	// Build per-rack estimated power for topology-aware PSU stress.
+	// Sum each node's estimated power (CPU + GPU at current cap %) per rack.
+	rackPowerEstimates := make(map[string]float64)
+	nodeRack := make(map[string]string)
+	nodeZone := make(map[string]string)
 	for _, a := range plan {
-		if err := upsertNodeProfile(ctx, dyn, a); err != nil {
+		if n := nodeObjs[a.NodeName]; n != nil {
+			rack := n.Labels["joulie.io/rack"]
+			zone := n.Labels["joulie.io/cooling-zone"]
+			nodeRack[a.NodeName] = rack
+			nodeZone[a.NodeName] = zone
+			if rack != "" {
+				cpuPct := 100.0
+				if a.CPUCapPctOfMax != nil {
+					cpuPct = *a.CPUCapPctOfMax
+				}
+				gpuPct := 100.0
+				if a.GPU != nil && a.GPU.CapPctOfMax != nil {
+					gpuPct = *a.GPU.CapPctOfMax
+				}
+				nodePowerW := estimateNodePowerW(nodeHardwareByName[a.NodeName], cpuPct, gpuPct)
+				rackPowerEstimates[rack] += nodePowerW
+			}
+		}
+	}
+
+	for _, a := range plan {
+		if err := upsertNodeTwinSpec(ctx, dyn, a); err != nil {
 			return err
 		}
-		if err := upsertNodeLabels(ctx, kube, profileLabel, drainingLabel, a); err != nil {
+		if err := upsertNodeLabels(ctx, kube, profileLabel, a); err != nil {
 			return err
+		}
+		cpuPct := 100.0
+		if a.CPUCapPctOfMax != nil {
+			cpuPct = *a.CPUCapPctOfMax
+		}
+		gpuPct := 100.0
+		if a.GPU != nil && a.GPU.CapPctOfMax != nil {
+			gpuPct = *a.GPU.CapPctOfMax
+		}
+		var topo *nodeTopology
+		rack := nodeRack[a.NodeName]
+		zone := nodeZone[a.NodeName]
+		if rack != "" || zone != "" {
+			topo = &nodeTopology{
+				rack:            rack,
+				coolingZone:     zone,
+				rackTotalPowerW: rackPowerEstimates[rack],
+			}
+		}
+		if err := reconcileNodeTwin(ctx, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo); err != nil {
+			log.Printf("warning: reconcileNodeTwin %s: %v", a.NodeName, err)
 		}
 		recordNodeStateMetrics(a.NodeName, a.State)
 		recordNodeProfileLabelMetrics(a.NodeName, a.Profile)
@@ -369,26 +476,62 @@ func reconcileWithCatalog(
 	return nil
 }
 
-func currentProfileOrDefault(in string) string {
-	if in == profilePerformance || in == profileEco {
-		return in
+// reconcileWithCatalogAndFacility wraps reconcileWithCatalog and passes facility metrics
+// to the twin computation via reconcileNodeTwin. This enables PUE estimation from
+// real data-center metrics (ambient temperature, IT power, cooling power).
+func reconcileWithCatalogAndFacility(
+	ctx context.Context,
+	kube kubernetes.Interface,
+	dyn dynamic.Interface,
+	selector labels.Selector,
+	reservedLabel string,
+	profileLabel string,
+	interval time.Duration,
+	perfCap float64,
+	ecoCap float64,
+	policyType string,
+	staticHPFrac float64,
+	queueHPBaseFrac float64,
+	queueHPMin int,
+	queueHPMax int,
+	queuePerfPerHPNode int,
+	cpuPerfCapPct float64,
+	cpuEcoCapPct float64,
+	cpuWriteAbsolute bool,
+	gpuPerfCapPct float64,
+	gpuEcoCapPct float64,
+	gpuWriteAbsolute bool,
+	gpuModelCaps map[string]GPUModelCaps,
+	gpuProductLabelKeys []string,
+	hardwareCatalog *hwinv.Catalog,
+	fm *facilityMetrics,
+) error {
+	// Store facility metrics in package-level vars for use by reconcileNodeTwin.
+	if fm != nil {
+		ambientC, itPowerW, _ := fm.get()
+		facilityAmbientTempC = ambientC
+		facilityClusterPowerW = itPowerW
 	}
-	return "unknown"
+	return reconcileWithCatalog(
+		ctx, kube, dyn, selector, reservedLabel, profileLabel, interval,
+		perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
+		cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
+		gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, hardwareCatalog,
+	)
 }
 
-func assignmentState(profile string, draining bool) string {
-	if draining {
-		return "DrainingPerformance"
-	}
-	switch profile {
-	case profilePerformance:
-		return "ActivePerformance"
-	case profileEco:
-		return "ActiveEco"
-	default:
-		return "Unknown"
-	}
-}
+// facilityAmbientTempC and facilityClusterPowerW are set by reconcileWithCatalogAndFacility
+// and read by reconcileNodeTwin to pass to the twin computation.
+var (
+	facilityAmbientTempC  float64
+	facilityClusterPowerW float64
+)
+
+// Delegate to fsm package.
+var (
+	currentProfileOrDefault = fsm.CurrentProfileOrDefault
+	assignmentState         = fsm.AssignmentState
+)
 
 func recordNodeStateMetrics(nodeName, state string) {
 	activePerf := 0.0
@@ -439,77 +582,33 @@ func applyDowngradeGuards(
 	plan []NodeAssignment,
 	currentProfiles map[string]string,
 ) {
-	for i := range plan {
-		a := &plan[i]
-		if a.Profile != profileEco {
-			a.Profile, a.Draining = computeDesiredLabels(a.Profile, 0)
-			a.State = assignmentState(a.Profile, a.Draining)
-			continue
-		}
-		current := currentProfiles[a.NodeName]
-		if current != profilePerformance && current != profileEco {
-			// New/unknown node state; mark draining based on current pod mix.
-		}
-		count, err := runningPerformanceSensitivePodCountOnNode(ctx, kube, a.NodeName)
-		if err != nil {
-			log.Printf("warning: cannot classify running pods on node=%s: %v", a.NodeName, err)
-			continue
-		}
-		a.Profile, a.Draining = computeDesiredLabels(a.Profile, count)
-		a.State = assignmentState(a.Profile, a.Draining)
+	ops := &kubeNodeOps{kube: kube}
+	fsm.ApplyDowngradeGuards(ctx, ops, plan, currentProfiles)
+	// Record metrics for guarded transitions.
+	for _, a := range plan {
 		if a.Draining {
 			operatorStateTransitions.WithLabelValues(a.NodeName, "ActivePerformance", "ActiveEco", "deferred").Inc()
-			log.Printf("transition guarded node=%s desired=eco draining=true reason=running-performance-sensitive-pods count=%d", a.NodeName, count)
 		}
 	}
 }
 
-// computeDesiredLabels maps desired profile + running performance-sensitive pods
-// to node labels.
-// Rules:
-// - desired performance => (performance, draining=false)
-// - desired eco + perfPods>0 => (eco, draining=true)
-// - desired eco + perfPods=0 => (eco, draining=false)
-func computeDesiredLabels(desiredProfile string, perfPods int) (string, bool) {
-	switch currentProfileOrDefault(desiredProfile) {
-	case profilePerformance:
-		return profilePerformance, false
-	case profileEco:
-		return profileEco, perfPods > 0
-	default:
-		return "unknown", false
-	}
-}
+// computeDesiredLabels delegates to fsm.ComputeDesiredLabels.
+var computeDesiredLabels = fsm.ComputeDesiredLabels
 
-func runningPerformanceSensitivePodCountOnNode(
-	ctx context.Context,
-	kube kubernetes.Interface,
-	nodeName string,
-) (int, error) {
-	pods, err := kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{
-		FieldSelector: "spec.nodeName=" + nodeName,
-	})
-	if err != nil {
-		return 0, err
+// toHardwareInfoMap converts the operator's NodeHardware map to the minimal
+// policy.NodeHardwareInfo map needed by the policy algorithms.
+func toHardwareInfoMap(hw map[string]NodeHardware) map[string]policy.NodeHardwareInfo {
+	out := make(map[string]policy.NodeHardwareInfo, len(hw))
+	for k, v := range hw {
+		out[k] = policy.NodeHardwareInfo{
+			CPUModel:    v.CPUModel,
+			CPURawModel: v.CPURawModel,
+			GPUModel:    v.GPUModel,
+			GPURawModel: v.GPURawModel,
+			GPUCount:    v.GPUCount,
+		}
 	}
-	count := 0
-	for _, p := range pods.Items {
-		if p.DeletionTimestamp != nil {
-			continue
-		}
-		if p.Status.Phase == "Succeeded" || p.Status.Phase == "Failed" {
-			continue
-		}
-		if !isPerformanceSensitivePod(&p) {
-			continue
-		}
-		count++
-	}
-	return count, nil
-}
-
-func buildPlan(nodes []string, interval time.Duration, perfCap, ecoCap float64) []NodeAssignment {
-	return buildPlanAt(nodes, interval, perfCap, ecoCap, time.Now())
+	return out
 }
 
 func buildPlanByPolicy(
@@ -522,217 +621,23 @@ func buildPlanByPolicy(
 	perfCap, ecoCap, staticHPFrac, queueHPBaseFrac float64,
 	queueHPMin, queueHPMax, queuePerfPerHPNode int,
 ) []NodeAssignment {
+	hw := toHardwareInfoMap(nodeHardwareByName)
 	switch policyType {
 	case "static_partition", "":
-		return buildStaticPlan(nodes, nodeHardwareByName, perfCap, ecoCap, staticHPFrac)
+		return policy.BuildStaticPlan(nodes, hw, perfCap, ecoCap, staticHPFrac)
 	case "queue_aware_v1":
 		perfIntentPods, err := runningPerformanceSensitivePodCountAllNodes(ctx, kube)
 		if err != nil {
 			log.Printf("warning: cannot classify running pods for queue_aware_v1: %v; falling back to static fraction", err)
-			return buildStaticPlan(nodes, nodeHardwareByName, perfCap, ecoCap, queueHPBaseFrac)
+			return policy.BuildStaticPlan(nodes, hw, perfCap, ecoCap, queueHPBaseFrac)
 		}
-		return buildQueueAwarePlan(nodes, nodeHardwareByName, perfCap, ecoCap, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode, perfIntentPods)
+		return policy.BuildQueueAwarePlan(nodes, hw, perfCap, ecoCap, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode, perfIntentPods)
 	case "rule_swap_v1":
-		return buildPlan(nodes, interval, perfCap, ecoCap)
+		return policy.BuildRuleSwapPlan(nodes, interval, perfCap, ecoCap)
 	default:
 		log.Printf("warning: unknown POLICY_TYPE=%q, falling back to static_partition", policyType)
-		return buildStaticPlan(nodes, nodeHardwareByName, perfCap, ecoCap, staticHPFrac)
+		return policy.BuildStaticPlan(nodes, hw, perfCap, ecoCap, staticHPFrac)
 	}
-}
-
-func buildPlanAt(nodes []string, interval time.Duration, perfCap, ecoCap float64, now time.Time) []NodeAssignment {
-	phase := int((now.Unix() / int64(interval.Seconds())) % 2)
-	plan := make([]NodeAssignment, 0, len(nodes))
-	for i, n := range nodes {
-		profile := "performance"
-		cap := perfCap
-		if i == 0 && (phase%2 == 0) {
-			profile = "eco"
-			cap = ecoCap
-		}
-		if i == 1 && (phase%2 == 1) {
-			profile = "eco"
-			cap = ecoCap
-		}
-		plan = append(plan, NodeAssignment{NodeName: n, Profile: profile, CapWatts: cap, ManagedBy: "rule-swap-v1"})
-	}
-	if len(nodes) == 1 {
-		if phase%2 == 0 {
-			plan[0].Profile = "eco"
-			plan[0].CapWatts = ecoCap
-		} else {
-			plan[0].Profile = "performance"
-			plan[0].CapWatts = perfCap
-		}
-	}
-	return plan
-}
-
-func buildStaticPlan(nodes []string, nodeHardwareByName map[string]NodeHardware, perfCap, ecoCap, hpFrac float64) []NodeAssignment {
-	n := len(nodes)
-	if n == 0 {
-		return nil
-	}
-	if hpFrac < 0 {
-		hpFrac = 0
-	}
-	if hpFrac > 1 {
-		hpFrac = 1
-	}
-	hpCount := int(math.Round(float64(n) * hpFrac))
-	if hpCount < 0 {
-		hpCount = 0
-	}
-	if hpCount > n {
-		hpCount = n
-	}
-
-	hpCount = enforceFamilyPerformanceFloor(nodes, nodeHardwareByName, hpCount)
-	perfNodes := selectPerformanceNodes(nodes, nodeHardwareByName, hpCount)
-
-	plan := make([]NodeAssignment, 0, n)
-	for _, node := range nodes {
-		profile := "eco"
-		cap := ecoCap
-		if perfNodes[node] {
-			profile = "performance"
-			cap = perfCap
-		}
-		plan = append(plan, NodeAssignment{
-			NodeName:  node,
-			Profile:   profile,
-			CapWatts:  cap,
-			ManagedBy: "static-partition-v1",
-		})
-	}
-	return plan
-}
-
-func buildQueueAwarePlan(nodes []string, nodeHardwareByName map[string]NodeHardware, perfCap, ecoCap, hpBaseFrac float64, hpMin, hpMax, perfPerHPNode, perfIntentPods int) []NodeAssignment {
-	n := len(nodes)
-	if n == 0 {
-		return nil
-	}
-	if hpBaseFrac < 0 {
-		hpBaseFrac = 0
-	}
-	if hpBaseFrac > 1 {
-		hpBaseFrac = 1
-	}
-	if hpMin < 0 {
-		hpMin = 0
-	}
-	if hpMax <= 0 {
-		hpMax = n
-	}
-	if hpMax < hpMin {
-		hpMax = hpMin
-	}
-	if perfPerHPNode <= 0 {
-		perfPerHPNode = 1
-	}
-	baseCount := int(math.Round(float64(n) * hpBaseFrac))
-	queueNeed := int(math.Ceil(float64(perfIntentPods) / float64(perfPerHPNode)))
-	hpCount := baseCount
-	if queueNeed > hpCount {
-		hpCount = queueNeed
-	}
-	if hpCount < hpMin {
-		hpCount = hpMin
-	}
-	if hpCount > hpMax {
-		hpCount = hpMax
-	}
-	if hpCount > n {
-		hpCount = n
-	}
-	if hpCount < 0 {
-		hpCount = 0
-	}
-	hpCount = enforceFamilyPerformanceFloor(nodes, nodeHardwareByName, hpCount)
-
-	perfNodes := selectPerformanceNodes(nodes, nodeHardwareByName, hpCount)
-	plan := make([]NodeAssignment, 0, n)
-	for _, node := range nodes {
-		profile := "eco"
-		cap := ecoCap
-		if perfNodes[node] {
-			profile = "performance"
-			cap = perfCap
-		}
-		plan = append(plan, NodeAssignment{
-			NodeName:  node,
-			Profile:   profile,
-			CapWatts:  cap,
-			ManagedBy: "queue-aware-v1",
-		})
-	}
-	return plan
-}
-
-func enforceFamilyPerformanceFloor(nodes []string, nodeHardwareByName map[string]NodeHardware, hpCount int) int {
-	families := make(map[string]struct{}, len(nodes))
-	for _, node := range nodes {
-		families[nodePerformanceFamily(node, nodeHardwareByName)] = struct{}{}
-	}
-	if len(families) > hpCount {
-		hpCount = len(families)
-	}
-	if hpCount > len(nodes) {
-		hpCount = len(nodes)
-	}
-	return hpCount
-}
-
-func selectPerformanceNodes(nodes []string, nodeHardwareByName map[string]NodeHardware, hpCount int) map[string]bool {
-	perfNodes := make(map[string]bool, hpCount)
-	seenFamilies := make(map[string]struct{}, len(nodes))
-	for _, node := range nodes {
-		family := nodePerformanceFamily(node, nodeHardwareByName)
-		if _, ok := seenFamilies[family]; ok {
-			continue
-		}
-		perfNodes[node] = true
-		seenFamilies[family] = struct{}{}
-		if len(perfNodes) >= hpCount {
-			return perfNodes
-		}
-	}
-	for _, node := range nodes {
-		if perfNodes[node] {
-			continue
-		}
-		perfNodes[node] = true
-		if len(perfNodes) >= hpCount {
-			break
-		}
-	}
-	return perfNodes
-}
-
-func nodePerformanceFamily(node string, nodeHardwareByName map[string]NodeHardware) string {
-	nh, ok := nodeHardwareByName[node]
-	if !ok {
-		return "unknown:" + node
-	}
-	if nh.GPUCount > 0 {
-		model := strings.TrimSpace(nh.GPUModel)
-		if model == "" {
-			model = strings.TrimSpace(nh.GPURawModel)
-		}
-		if model == "" {
-			model = "unknown-gpu"
-		}
-		return "gpu:" + model
-	}
-	model := strings.TrimSpace(nh.CPUModel)
-	if model == "" {
-		model = strings.TrimSpace(nh.CPURawModel)
-	}
-	if model == "" {
-		model = "unknown-cpu"
-	}
-	return "cpu:" + model
 }
 
 func runningPerformanceSensitivePodCountAllNodes(
@@ -743,102 +648,24 @@ func runningPerformanceSensitivePodCountAllNodes(
 	if err != nil {
 		return 0, err
 	}
-	count := 0
-	for _, p := range pods.Items {
-		if p.DeletionTimestamp != nil {
-			continue
-		}
-		if p.Status.Phase == "Succeeded" || p.Status.Phase == "Failed" {
-			continue
-		}
-		if !isPerformanceSensitivePod(&p) {
-			continue
-		}
-		count++
-	}
-	return count, nil
+	return fsm.CountPerformanceSensitivePods(pods.Items), nil
 }
 
-func isPerformanceSensitivePod(p *corev1.Pod) bool {
-	return podExcludesEco(p)
-}
+// Delegate pod classification to fsm package.
+var (
+	isPerformanceSensitivePod = fsm.IsPerformanceSensitivePod
+	classifyPodByScheduling   = fsm.ClassifyPodByScheduling
+	podExcludesEco            = fsm.PodExcludesEco
+	podIsEcoOnly              = fsm.PodIsEcoOnly
+)
 
-func classifyPodByScheduling(p *corev1.Pod) string {
-	if podExcludesEco(p) {
-		return workloadClassPerfOnly
-	}
-	if podIsEcoOnly(p) {
-		return workloadClassEcoOnly
-	}
-	return workloadClassGeneral
-}
-
-func podExcludesEco(p *corev1.Pod) bool {
-	// Compatibility path: explicit selector on profile=performance.
-	if strings.TrimSpace(p.Spec.NodeSelector[powerProfileLabelKey]) == profilePerformance {
-		return true
-	}
-	required := p.Spec.Affinity
-	if required == nil || required.NodeAffinity == nil || required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-		return false
-	}
-	for _, term := range required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
-		for _, expr := range term.MatchExpressions {
-			if expr.Key != powerProfileLabelKey {
-				continue
-			}
-			switch expr.Operator {
-			case corev1.NodeSelectorOpNotIn:
-				if containsString(expr.Values, profileEco) {
-					return true
-				}
-			case corev1.NodeSelectorOpIn:
-				if len(expr.Values) > 0 && !containsString(expr.Values, profileEco) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func podIsEcoOnly(p *corev1.Pod) bool {
-	if strings.TrimSpace(p.Spec.NodeSelector[powerProfileLabelKey]) == profileEco {
-		return true
-	}
-	required := p.Spec.Affinity
-	if required == nil || required.NodeAffinity == nil || required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-		return false
-	}
-	for _, term := range required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
-		for _, expr := range term.MatchExpressions {
-			if expr.Key != powerProfileLabelKey {
-				continue
-			}
-			if expr.Operator == corev1.NodeSelectorOpIn && len(expr.Values) > 0 && !containsString(expr.Values, profilePerformance) && containsString(expr.Values, profileEco) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func containsString(in []string, v string) bool {
-	for _, x := range in {
-		if strings.TrimSpace(x) == v {
-			return true
-		}
-	}
-	return false
-}
-
-func normalizeNodeLabels(profileVal, drainingVal string) (string, bool) {
-	prof := currentProfileOrDefault(profileVal)
-	draining := strings.EqualFold(strings.TrimSpace(drainingVal), "true")
-	if prof == "unknown" {
-		return prof, false
-	}
-	return prof, draining
+func runningPerformanceSensitivePodCountOnNode(
+	ctx context.Context,
+	kube kubernetes.Interface,
+	nodeName string,
+) (int, error) {
+	ops := &kubeNodeOps{kube: kube}
+	return ops.RunningPerformanceSensitivePodCount(ctx, nodeName)
 }
 
 func summarizePlan(plan []NodeAssignment) string {
@@ -1252,6 +1079,19 @@ func nodeDensityScore(nh NodeHardware) float64 {
 	return nh.CPUComputeDensity + nh.GPUComputeDensity
 }
 
+// estimateNodePowerW estimates the total power draw of a node from its hardware
+// specs and current cap percentages. Used for per-rack PSU stress aggregation.
+func estimateNodePowerW(nh NodeHardware, cpuCapPct, gpuCapPct float64) float64 {
+	var powerW float64
+	if nh.CPUCapMaxWatts > 0 {
+		powerW += nh.CPUCapMaxWatts * float64(nh.CPUSockets) * (cpuCapPct / 100.0)
+	}
+	if nh.GPUCapMaxWatts > 0 {
+		powerW += nh.GPUCapMaxWatts * float64(nh.GPUCount) * (gpuCapPct / 100.0)
+	}
+	return powerW
+}
+
 func floatPtr(v float64) *float64 {
 	vv := v
 	return &vv
@@ -1269,88 +1109,22 @@ func warnNoGPUIntentOnce(nodeName, profile, reason string) {
 	log.Printf("warning: node=%s profile=%s has allocatable GPUs but no gpu.powerCap intent (%s); continuing without GPU control", nodeName, profile, reason)
 }
 
-func upsertNodeProfile(ctx context.Context, dyn dynamic.Interface, a NodeAssignment) error {
-	name := fmt.Sprintf("node-%s", sanitizeName(a.NodeName))
-	spec := map[string]any{
-		"nodeName": a.NodeName,
-		"profile":  a.Profile,
-		"policy": map[string]any{
-			"name": a.ManagedBy,
-		},
-	}
-	cpu := map[string]any{}
-	if a.CPUCapPctOfMax != nil {
-		cpu["packagePowerCapPctOfMax"] = *a.CPUCapPctOfMax
-	} else {
-		cpu["packagePowerCapWatts"] = a.CapWatts
-	}
-	spec["cpu"] = cpu
-	if a.GPU != nil {
-		powerCap := map[string]any{
-			"scope": "perGpu",
-		}
-		if a.GPU.CapWattsPerGPU != nil {
-			powerCap["capWattsPerGpu"] = *a.GPU.CapWattsPerGPU
-		}
-		if a.GPU.CapPctOfMax != nil {
-			powerCap["capPctOfMax"] = *a.GPU.CapPctOfMax
-		}
-		spec["gpu"] = map[string]any{
-			"powerCap": powerCap,
-		}
-	}
-	obj := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "joulie.io/v1alpha1",
-		"kind":       "NodePowerProfile",
-		"metadata": map[string]any{
-			"name": name,
-			"labels": map[string]any{
-				"joulie.io/managed-by": "operator",
-			},
-		},
-		"spec": spec,
-	}}
+// upsertNodeProfile is replaced by upsertNodeTwinSpec in twinstate.go
 
-	res := dyn.Resource(profileGVR)
-	existing, err := res.Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("get NodePowerProfile %s: %w", name, err)
-		}
-		_, err := res.Create(ctx, obj, metav1.CreateOptions{})
-		if err != nil {
-			return fmt.Errorf("create NodePowerProfile %s: %w", name, err)
-		}
-		return nil
-	}
-
-	existing.Object["spec"] = obj.Object["spec"]
-	if _, err := res.Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("update NodePowerProfile %s: %w", name, err)
-	}
-	return nil
-}
-
-func upsertNodeLabels(ctx context.Context, kube kubernetes.Interface, profileLabel, drainingLabel string, a NodeAssignment) error {
+func upsertNodeLabels(ctx context.Context, kube kubernetes.Interface, profileLabel string, a NodeAssignment) error {
 	labelValue := a.Profile
-	drainingValue := "false"
-	if a.Draining {
-		drainingValue = "true"
-	}
 	node, err := kube.CoreV1().Nodes().Get(ctx, a.NodeName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("get node %s before patch: %w", a.NodeName, err)
 	}
 	currentProfile := strings.TrimSpace(node.Labels[profileLabel])
-	currentDraining := strings.TrimSpace(node.Labels[drainingLabel])
-	if currentProfile == labelValue && currentDraining == drainingValue {
+	if currentProfile == labelValue {
 		return nil
 	}
 	patch := map[string]any{
 		"metadata": map[string]any{
 			"labels": map[string]string{
-				profileLabel:  labelValue,
-				drainingLabel: drainingValue,
+				profileLabel: labelValue,
 			},
 		},
 	}
@@ -1359,7 +1133,7 @@ func upsertNodeLabels(ctx context.Context, kube kubernetes.Interface, profileLab
 		return fmt.Errorf("marshal node label patch for %s: %w", a.NodeName, err)
 	}
 	if _, err := kube.CoreV1().Nodes().Patch(ctx, a.NodeName, types.MergePatchType, rawPatch, metav1.PatchOptions{}); err != nil {
-		return fmt.Errorf("patch node %s labels %s=%s %s=%s: %w", a.NodeName, profileLabel, labelValue, drainingLabel, drainingValue, err)
+		return fmt.Errorf("patch node %s label %s=%s: %w", a.NodeName, profileLabel, labelValue, err)
 	}
 	return nil
 }

@@ -1,0 +1,83 @@
+{{- if .Values.schedulerExtender.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: joulie-scheduler-extender
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "joulie.labels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: joulie-scheduler-extender
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "joulie.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler-extender
+spec:
+  replicas: {{ .Values.schedulerExtender.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: scheduler-extender
+  template:
+    metadata:
+      labels:
+        {{- include "joulie.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: scheduler-extender
+    spec:
+      serviceAccountName: joulie-scheduler-extender
+      {{- if .Values.schedulerExtender.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      {{- with .Values.schedulerExtender.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: extender
+          image: "{{ .Values.schedulerExtender.image.repository }}:{{ .Values.schedulerExtender.image.tag }}"
+          ports:
+            - name: http
+              containerPort: {{ .Values.schedulerExtender.port }}
+              protocol: TCP
+          env:
+            - name: EXTENDER_ADDR
+              value: ":{{ .Values.schedulerExtender.port }}"
+            {{- range $key, $value := .Values.schedulerExtender.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: joulie-scheduler-extender
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "joulie.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler-extender
+spec:
+  selector:
+    app.kubernetes.io/component: scheduler-extender
+  ports:
+    - name: http
+      port: {{ .Values.schedulerExtender.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

@@ -86,6 +86,9 @@ if [[ "${CLEAN_RESULTS:-false}" == "true" ]]; then
   rm -f "$RESULTS_DIR"/baseline_summary.csv
 fi
 run_step "prerequisites check" bash experiments/03-homogeneous-h100-benchmark/scripts/00_prereqs_check.sh
+run_step "sanity tests (experiment)" python3 -m pytest experiments/03-homogeneous-h100-benchmark/scripts/test_sweep.py -q --tb=short
+run_step "sanity tests (simulator)" go test -count=1 ./simulator/cmd/workloadgen/... ./simulator/cmd/simulator/...
+run_step "sanity tests (contracts)" go test -count=1 ./tests/contracts/...
 run_step "benchmark sweep" python3 experiments/03-homogeneous-h100-benchmark/scripts/05_sweep.py --config "$CFG"
 run_step "result collection" python3 experiments/03-homogeneous-h100-benchmark/scripts/06_collect.py
 run_step "plot generation" python3 experiments/03-homogeneous-h100-benchmark/scripts/07_plot.py

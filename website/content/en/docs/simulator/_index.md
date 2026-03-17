@@ -8,6 +8,15 @@ Joulie simulator provides a digital-twin path for controlled evaluation.
 
 It keeps scheduling behavior real while simulating telemetry/control dynamics and workload progression.
 
+The simulator mirrors the real Joulie architecture:
+- simulated operator computes desired state (`NodeTwin.spec`, `NodeTwin.status`),
+- simulated agent realizes caps on virtual devices,
+- simulated scheduler extender reads `NodeTwin.status` and applies workload-class-aware scoring,
+- simulated workloads carry `WorkloadProfile`-compatible fields (criticality, migratability, cap sensitivity),
+- facility stress model (`simulator/pkg/facility`) provides PSU and cooling stress signals.
+
+The heterogeneous benchmark (`experiments/02-heterogeneous-benchmark/`) demonstrates the full architecture across three baselines: no Joulie, static partition, and queue-aware policy with scheduler extender steering.
+
 Use simulator docs after you are familiar with the core operator/agent control loop in Getting Started + Architecture.
 
 ## Read in this order

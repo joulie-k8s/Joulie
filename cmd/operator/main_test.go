@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/matbun/joulie/pkg/hwinv"
+	"github.com/matbun/joulie/pkg/operator/policy"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -85,14 +86,14 @@ func TestSortNodesByDensityPrefersGPUHeavyNodes(t *testing.T) {
 func TestBuildStaticPlanPreservesOnePerformanceNodePerHardwareFamily(t *testing.T) {
 	t.Parallel()
 	nodes := []string{"h100-a", "h100-b", "mi300x-a", "cpu-a"}
-	hw := map[string]NodeHardware{
-		"h100-a":   {GPUModel: "NVIDIA-H100", GPUCount: 8, GPUComputeDensity: 1000},
-		"h100-b":   {GPUModel: "NVIDIA-H100", GPUCount: 8, GPUComputeDensity: 900},
-		"mi300x-a": {GPUModel: "AMD-Instinct-MI300X", GPUCount: 8, GPUComputeDensity: 800},
-		"cpu-a":    {CPUModel: "AMD-EPYC-9654", CPUComputeDensity: 200},
+	hw := map[string]policy.NodeHardwareInfo{
+		"h100-a":   {GPUModel: "NVIDIA-H100", GPUCount: 8},
+		"h100-b":   {GPUModel: "NVIDIA-H100", GPUCount: 8},
+		"mi300x-a": {GPUModel: "AMD-Instinct-MI300X", GPUCount: 8},
+		"cpu-a":    {CPUModel: "AMD-EPYC-9654"},
 	}
 
-	plan := buildStaticPlan(nodes, hw, 5000, 120, 0.25)
+	plan := policy.BuildStaticPlan(nodes, hw, 5000, 120, 0.25)
 	perfByNode := map[string]bool{}
 	for _, a := range plan {
 		perfByNode[a.NodeName] = a.Profile == profilePerformance
@@ -111,20 +112,20 @@ func TestBuildStaticPlanPreservesOnePerformanceNodePerHardwareFamily(t *testing.
 func TestBuildQueueAwarePlanPreservesOnePerformanceNodePerHardwareFamily(t *testing.T) {
 	t.Parallel()
 	nodes := []string{"w7900-a", "w7900-b", "l40s-a", "cpu-a"}
-	hw := map[string]NodeHardware{
-		"w7900-a": {GPUModel: "AMD-Radeon-PRO-W7900", GPUCount: 4, GPUComputeDensity: 700},
-		"w7900-b": {GPUModel: "AMD-Radeon-PRO-W7900", GPUCount: 4, GPUComputeDensity: 650},
-		"l40s-a":  {GPUModel: "NVIDIA-L40S", GPUCount: 8, GPUComputeDensity: 900},
-		"cpu-a":   {CPUModel: "Intel-Xeon-Gold-6530", CPUComputeDensity: 180},
+	hw := map[string]policy.NodeHardwareInfo{
+		"w7900-a": {GPUModel: "AMD-Radeon-PRO-W7900", GPUCount: 4},
+		"w7900-b": {GPUModel: "AMD-Radeon-PRO-W7900", GPUCount: 4},
+		"l40s-a":  {GPUModel: "NVIDIA-L40S", GPUCount: 8},
+		"cpu-a":   {CPUModel: "Intel-Xeon-Gold-6530"},
 	}
 
-	plan := buildQueueAwarePlan(nodes, hw, 5000, 120, 0.10, 0, 2, 10, 0)
+	plan := policy.BuildQueueAwarePlan(nodes, hw, 5000, 120, 0.10, 0, 2, 10, 0)
 	perfFamilies := map[string]bool{}
 	for _, a := range plan {
 		if a.Profile != profilePerformance {
 			continue
 		}
-		perfFamilies[nodePerformanceFamily(a.NodeName, hw)] = true
+		perfFamilies[policy.NodeFamily(a.NodeName, hw)] = true
 	}
 	for _, family := range []string{"gpu:AMD-Radeon-PRO-W7900", "gpu:NVIDIA-L40S", "cpu:Intel-Xeon-Gold-6530"} {
 		if !perfFamilies[family] {
@@ -158,7 +159,7 @@ func TestBuildPlanAtTwoNodesAlternatesEcoNode(t *testing.T) {
 	perfCap := 5000.0
 	ecoCap := 120.0
 
-	planEven := buildPlanAt(nodes, interval, perfCap, ecoCap, time.Unix(120, 0)) // phase=0
+	planEven := policy.BuildRuleSwapPlanAt(nodes, interval, perfCap, ecoCap, time.Unix(120, 0)) // phase=0
 	if len(planEven) != 2 {
 		t.Fatalf("planEven len=%d", len(planEven))
 	}
@@ -166,7 +167,7 @@ func TestBuildPlanAtTwoNodesAlternatesEcoNode(t *testing.T) {
 		t.Fatalf("unexpected even plan profiles: %#v", planEven)
 	}
 
-	planOdd := buildPlanAt(nodes, interval, perfCap, ecoCap, time.Unix(180, 0)) // phase=1
+	planOdd := policy.BuildRuleSwapPlanAt(nodes, interval, perfCap, ecoCap, time.Unix(180, 0)) // phase=1
 	if len(planOdd) != 2 {
 		t.Fatalf("planOdd len=%d", len(planOdd))
 	}
@@ -182,12 +183,12 @@ func TestBuildPlanAtSingleNodeAlternatesProfile(t *testing.T) {
 	perfCap := 5000.0
 	ecoCap := 120.0
 
-	planEven := buildPlanAt(nodes, interval, perfCap, ecoCap, time.Unix(120, 0))
+	planEven := policy.BuildRuleSwapPlanAt(nodes, interval, perfCap, ecoCap, time.Unix(120, 0))
 	if planEven[0].Profile != "eco" || planEven[0].CapWatts != ecoCap {
 		t.Fatalf("unexpected single-node even plan: %#v", planEven[0])
 	}
 
-	planOdd := buildPlanAt(nodes, interval, perfCap, ecoCap, time.Unix(180, 0))
+	planOdd := policy.BuildRuleSwapPlanAt(nodes, interval, perfCap, ecoCap, time.Unix(180, 0))
 	if planOdd[0].Profile != "performance" || planOdd[0].CapWatts != perfCap {
 		t.Fatalf("unexpected single-node odd plan: %#v", planOdd[0])
 	}
@@ -376,11 +377,11 @@ func TestComputeDesiredLabelsIdempotent(t *testing.T) {
 	}
 }
 
-func TestUpsertNodeProfileCreateAndUpdate(t *testing.T) {
+func TestUpsertNodeTwinSpecCreateAndUpdate(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{
-		profileGVR: "NodePowerProfileList",
+		nodeTwinGVR: "NodeTwinList",
 	})
 	ctx := context.Background()
 
@@ -390,13 +391,13 @@ func TestUpsertNodeProfileCreateAndUpdate(t *testing.T) {
 		CapWatts:  120,
 		ManagedBy: "rule-swap-v1",
 	}
-	if err := upsertNodeProfile(ctx, dyn, a); err != nil {
+	if err := upsertNodeTwinSpec(ctx, dyn, a); err != nil {
 		t.Fatalf("upsert create failed: %v", err)
 	}
 
-	got, err := dyn.Resource(profileGVR).Get(ctx, "node-node-a", metav1.GetOptions{})
+	got, err := dyn.Resource(nodeTwinGVR).Get(ctx, "node-a", metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("get created profile: %v", err)
+		t.Fatalf("get created NodeTwin: %v", err)
 	}
 	profile, _, _ := unstructured.NestedString(got.Object, "spec", "profile")
 	if profile != "eco" {
@@ -405,12 +406,12 @@ func TestUpsertNodeProfileCreateAndUpdate(t *testing.T) {
 
 	a.Profile = "performance"
 	a.CapWatts = 5000
-	if err := upsertNodeProfile(ctx, dyn, a); err != nil {
+	if err := upsertNodeTwinSpec(ctx, dyn, a); err != nil {
 		t.Fatalf("upsert update failed: %v", err)
 	}
-	got, err = dyn.Resource(profileGVR).Get(ctx, "node-node-a", metav1.GetOptions{})
+	got, err = dyn.Resource(nodeTwinGVR).Get(ctx, "node-a", metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("get updated profile: %v", err)
+		t.Fatalf("get updated NodeTwin: %v", err)
 	}
 	profile, _, _ = unstructured.NestedString(got.Object, "spec", "profile")
 	if profile != "performance" {
@@ -424,7 +425,7 @@ func TestUpsertNodeLabels(t *testing.T) {
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a", Labels: map[string]string{}}},
 	)
 	a := NodeAssignment{NodeName: "node-a", Profile: "eco", Draining: true}
-	if err := upsertNodeLabels(context.Background(), client, "joulie.io/power-profile", "joulie.io/draining", a); err != nil {
+	if err := upsertNodeLabels(context.Background(), client, "joulie.io/power-profile", a); err != nil {
 		t.Fatalf("upsertNodeLabels failed: %v", err)
 	}
 	n, err := client.CoreV1().Nodes().Get(context.Background(), "node-a", metav1.GetOptions{})
@@ -434,8 +435,9 @@ func TestUpsertNodeLabels(t *testing.T) {
 	if got := n.Labels["joulie.io/power-profile"]; got != "eco" {
 		t.Fatalf("label=%s want=eco", got)
 	}
-	if got := n.Labels["joulie.io/draining"]; got != "true" {
-		t.Fatalf("draining=%s want=true", got)
+	// Draining is NOT set as a node label; it is tracked in NodeTwinState.schedulableClass only.
+	if _, hasDraining := n.Labels["joulie.io/draining"]; hasDraining {
+		t.Fatalf("joulie.io/draining label should not be set on node")
 	}
 }
 
@@ -446,13 +448,12 @@ func TestUpsertNodeLabelsIsIdempotent(t *testing.T) {
 			Name: "node-a",
 			Labels: map[string]string{
 				"joulie.io/power-profile": "eco",
-				"joulie.io/draining":      "false",
 			},
 		}},
 	)
 	a := NodeAssignment{NodeName: "node-a", Profile: "eco", Draining: false}
 	before := len(client.Actions())
-	if err := upsertNodeLabels(context.Background(), client, "joulie.io/power-profile", "joulie.io/draining", a); err != nil {
+	if err := upsertNodeLabels(context.Background(), client, "joulie.io/power-profile", a); err != nil {
 		t.Fatalf("upsertNodeLabels failed: %v", err)
 	}
 	after := len(client.Actions())
@@ -469,7 +470,9 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-b", Labels: map[string]string{"joulie.io/managed": "true"}}},
 	)
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
-		profileGVR: "NodePowerProfileList",
+		nodeTwinGVR:         "NodeTwinList",
+		twinNodeHardwareGVR: "NodeHardwareList",
+		workloadProfileGVR:  "WorkloadProfileList",
 	})
 	selector, err := labels.Parse("joulie.io/managed=true")
 	if err != nil {
@@ -482,7 +485,6 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 		selector,
 		"joulie.io/reserved",
 		"joulie.io/power-profile",
-		"joulie.io/draining",
 		time.Minute,
 		5000,
 		120,
@@ -504,7 +506,7 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 		t.Fatalf("reconcile error: %v", err)
 	}
 
-	ul, err := dyn.Resource(profileGVR).List(context.Background(), metav1.ListOptions{})
+	ul, err := dyn.Resource(nodeTwinGVR).List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		t.Fatalf("list profiles: %v", err)
 	}
@@ -523,8 +525,9 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 		case "eco":
 			eco++
 		}
-		if _, ok := n.Labels["joulie.io/draining"]; !ok {
-			t.Fatalf("missing draining label on node %s", n.Name)
+		// Draining is NOT a node label; it is tracked in NodeTwinState.schedulableClass only.
+		if _, hasDraining := n.Labels["joulie.io/draining"]; hasDraining {
+			t.Fatalf("unexpected joulie.io/draining label on node %s", n.Name)
 		}
 	}
 	if perf != 1 || eco != 1 {
@@ -535,14 +538,14 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 func TestBuildStaticPlan(t *testing.T) {
 	t.Parallel()
 	nodes := []string{"node-a", "node-b", "node-c", "node-d", "node-e"}
-	hw := map[string]NodeHardware{
+	hw := map[string]policy.NodeHardwareInfo{
 		"node-a": {CPUModel: "same-cpu"},
 		"node-b": {CPUModel: "same-cpu"},
 		"node-c": {CPUModel: "same-cpu"},
 		"node-d": {CPUModel: "same-cpu"},
 		"node-e": {CPUModel: "same-cpu"},
 	}
-	plan := buildStaticPlan(nodes, hw, 5000, 120, 0.6)
+	plan := policy.BuildStaticPlan(nodes, hw, 5000, 120, 0.6)
 	if len(plan) != len(nodes) {
 		t.Fatalf("len(plan)=%d", len(plan))
 	}
@@ -563,7 +566,7 @@ func TestBuildStaticPlan(t *testing.T) {
 func TestBuildQueueAwarePlan(t *testing.T) {
 	t.Parallel()
 	nodes := []string{"node-a", "node-b", "node-c", "node-d", "node-e"}
-	hw := map[string]NodeHardware{
+	hw := map[string]policy.NodeHardwareInfo{
 		"node-a": {CPUModel: "same-cpu"},
 		"node-b": {CPUModel: "same-cpu"},
 		"node-c": {CPUModel: "same-cpu"},
@@ -572,7 +575,7 @@ func TestBuildQueueAwarePlan(t *testing.T) {
 	}
 
 	// Base 60% of 5 => 3 performance nodes at idle.
-	plan := buildQueueAwarePlan(nodes, hw, 5000, 120, 0.6, 1, 5, 10, 0)
+	plan := policy.BuildQueueAwarePlan(nodes, hw, 5000, 120, 0.6, 1, 5, 10, 0)
 	perf := 0
 	for _, a := range plan {
 		if a.Profile == "performance" {
@@ -584,7 +587,7 @@ func TestBuildQueueAwarePlan(t *testing.T) {
 	}
 
 	// 40 performance-intent pods with perfPerHPNode=10 => 4 performance nodes.
-	plan = buildQueueAwarePlan(nodes, hw, 5000, 120, 0.6, 1, 5, 10, 40)
+	plan = policy.BuildQueueAwarePlan(nodes, hw, 5000, 120, 0.6, 1, 5, 10, 40)
 	perf = 0
 	for _, a := range plan {
 		if a.Profile == "performance" {
