@@ -46,7 +46,7 @@ func TestIsPackageEnergyFileValid(t *testing.T) {
 }
 
 func TestIsPackageEnergyFileSubdomain(t *testing.T) {
-	// Sub-domain: two colons (e.g. intel-rapl:0:1) — should be rejected
+	// Sub-domain: two colons (e.g. intel-rapl:0:1) - should be rejected
 	if IsPackageEnergyFile("/host-sys/class/powercap/intel-rapl:0:1/energy_uj") {
 		t.Error("expected false for sub-domain energy file")
 	}

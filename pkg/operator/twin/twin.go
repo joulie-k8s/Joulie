@@ -65,6 +65,12 @@ type Input struct {
 	// Facility signals
 	ClusterTotalPowerW float64
 	OutsideTempC       float64 // 0 if unknown
+	// Topology: optional rack/cooling-zone labels from the node.
+	// When set, PSU stress is computed per-rack and cooling stress uses
+	// per-zone ambient temperature instead of the global facility value.
+	Rack            string  // joulie.io/rack label value
+	CoolingZone     string  // joulie.io/cooling-zone label value
+	RackTotalPowerW float64 // sum of estimated power for all nodes in this rack; 0 = use ClusterTotalPowerW
 }
 
 // Output is the computed NodeTwinState fields.
@@ -175,14 +181,21 @@ func computeCoolingStress(in Input) float64 {
 }
 
 // computePSUStress returns a 0-100 stress score for PSU (rack power supply units).
+// When topology is enabled and RackTotalPowerW is set, stress is computed
+// per-rack instead of cluster-wide, giving a more accurate picture of PDU
+// headroom for the node's physical rack.
 func computePSUStress(in Input) float64 {
-	if in.ClusterTotalPowerW <= 0 {
+	powerW := in.RackTotalPowerW
+	if powerW <= 0 {
+		powerW = in.ClusterTotalPowerW
+	}
+	if powerW <= 0 {
 		return 0
 	}
-	// Rough proxy: cluster power relative to some reference rack capacity
-	// In a real deployment this would use actual PDU/PSU readings
+	// Reference rack capacity: 50kW. In a real deployment this could be
+	// per-rack from facility data; for now it is a shared constant.
 	const referenceRackCapacityW = 50000.0 // 50kW rack
-	stress := (in.ClusterTotalPowerW / referenceRackCapacityW) * 100.0
+	stress := (powerW / referenceRackCapacityW) * 100.0
 	return math.Min(100, math.Max(0, stress))
 }
 

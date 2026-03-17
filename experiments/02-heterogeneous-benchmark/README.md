@@ -432,7 +432,7 @@ The retargeting step (`05_sweep.py`) now maps GPU jobs to the correct vendor ext
 
 ## Related experiment
 
-- [03 - Homogeneous H100 Benchmark](../03-homogeneous-h100-benchmark/README.md) — identical workload and policy parameters on a homogeneous H100 NVL cluster, to test the hypothesis that heterogeneity limits Joulie's scheduling efficiency.
+- [03 - Homogeneous H100 Benchmark](../03-homogeneous-h100-benchmark/README.md) - identical workload and policy parameters on a homogeneous H100 NVL cluster, to test the hypothesis that heterogeneity limits Joulie's scheduling efficiency.
 
 ## Known caveats
 

@@ -9,7 +9,7 @@ run:
   cleanup_timeout: 600
 
 workload:
-  # Research-cluster / HEP-style overnight mix — identical to experiment 02 for a fair
+  # Research-cluster / HEP-style overnight mix - identical to experiment 02 for a fair
   # homogeneous vs heterogeneous comparison:
   # - most jobs are flexible exploratory runs, preprocessing, or analytics
   # - a meaningful minority remains performance-sensitive

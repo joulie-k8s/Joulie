@@ -76,6 +76,11 @@ var (
 
 	// marginalCoeff holds the tunable coefficients for power estimation.
 	marginalCoeff = loadCoefficients()
+
+	// evictionHistoryTTL controls how long eviction context influences
+	// scheduling. After this duration, the scheduler "forgets" the eviction
+	// and schedules normally. Default 30 minutes.
+	evictionHistoryTTL = durationEnvOrDefault("EVICTION_HISTORY_TTL", 30*time.Minute)
 )
 
 // nodeHWInfo holds hardware facts needed for scoring and marginal estimation.
@@ -143,10 +148,19 @@ type PodSpec struct {
 }
 
 type PodMeta struct {
-	Name        string            `json:"name"`
-	Namespace   string            `json:"namespace"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	Annotations map[string]string `json:"annotations,omitempty"`
+	Name            string            `json:"name"`
+	Namespace       string            `json:"namespace"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Annotations     map[string]string `json:"annotations,omitempty"`
+	OwnerReferences []OwnerRef        `json:"ownerReferences,omitempty"`
+}
+
+// OwnerRef captures the minimal owner reference fields needed for eviction
+// history lookup.
+type OwnerRef struct {
+	APIVersion string `json:"apiVersion,omitempty"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
 }
 
 type PodBody struct {
@@ -297,7 +311,17 @@ func filterNodes(ctx context.Context, args ExtenderArgs) ExtenderFilterResult {
 	}
 
 	isPerformance := podWorkloadClass(pod) == "performance"
+	eviction := getEvictionHistory(ctx, pod)
 	states := getNodeTwinStates(ctx)
+
+	// If the pod's owner was previously evicted from an eco node, treat it
+	// as a performance pod for filtering purposes to prevent re-placement
+	// on eco/draining nodes.
+	if eviction != nil && eviction.fromClass == "eco" {
+		isPerformance = true
+		log.Printf("eviction-history: pod %s/%s owner was evicted from eco; filtering as performance",
+			pod.Metadata.Namespace, pod.Metadata.Name)
+	}
 
 	var passedNodes []NodeItem
 	var passedNames []string
@@ -374,6 +398,69 @@ func podRequestsGPU(pod PodSpec) bool {
 	return false
 }
 
+// evictionInfo captures the eviction context from a pod's owner annotations.
+// When the rescheduler evicts a pod, it annotates the owner (ReplicaSet, etc.)
+// so the scheduler can avoid re-placing the replacement pod in the same
+// situation.
+type evictionInfo struct {
+	fromClass string    // schedulableClass of the node the pod was evicted from
+	reason    string    // eviction reason (e.g., cooling_stress, psu_stress)
+	evictedAt time.Time // when the eviction happened
+}
+
+// getEvictionHistory looks up the pod's owner (via ownerReferences) and reads
+// eviction context annotations set by the rescheduler. Returns nil if no
+// recent eviction history exists.
+func getEvictionHistory(ctx context.Context, pod PodSpec) *evictionInfo {
+	if len(pod.Metadata.OwnerReferences) == 0 || k8sClient == nil {
+		return nil
+	}
+
+	owner := pod.Metadata.OwnerReferences[0]
+	ns := pod.Metadata.Namespace
+
+	var annotations map[string]string
+	switch owner.Kind {
+	case "ReplicaSet":
+		rs, err := k8sClient.AppsV1().ReplicaSets(ns).Get(ctx, owner.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil
+		}
+		annotations = rs.Annotations
+	case "StatefulSet":
+		ss, err := k8sClient.AppsV1().StatefulSets(ns).Get(ctx, owner.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil
+		}
+		annotations = ss.Annotations
+	case "Job":
+		j, err := k8sClient.BatchV1().Jobs(ns).Get(ctx, owner.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil
+		}
+		annotations = j.Annotations
+	default:
+		return nil
+	}
+
+	fromClass := annotations["joulie.io/last-eviction-from-class"]
+	reason := annotations["joulie.io/last-eviction-reason"]
+	timeStr := annotations["joulie.io/last-eviction-time"]
+	if fromClass == "" || timeStr == "" {
+		return nil
+	}
+
+	t, err := time.Parse(time.RFC3339, timeStr)
+	if err != nil {
+		return nil
+	}
+	if time.Since(t) > evictionHistoryTTL {
+		return nil // eviction too old; schedule normally
+	}
+
+	return &evictionInfo{fromClass: fromClass, reason: reason, evictedAt: t}
+}
+
 // prioritizeNodes scores candidate nodes using NodeTwin status and (when
 // enabled) marginal power estimation from pod resource requests.
 //
@@ -415,16 +502,17 @@ func prioritizeNodes(ctx context.Context, args ExtenderArgs) ExtenderPriorityLis
 	}
 
 	perfPressure := computePerfPressure(states)
+	eviction := getEvictionHistory(ctx, pod)
 
 	var result ExtenderPriorityList
 	if args.Nodes != nil {
 		for _, node := range args.Nodes.Items {
-			score := scoreNode(node.Metadata.Name, states, hwInfo, wpClass, perfPressure, gpuRequested, podDemand)
+			score := scoreNode(node.Metadata.Name, states, hwInfo, wpClass, perfPressure, gpuRequested, podDemand, eviction)
 			result = append(result, HostPriority{Host: node.Metadata.Name, Score: score})
 		}
 	} else if args.NodeNames != nil {
 		for _, nodeName := range *args.NodeNames {
-			score := scoreNode(nodeName, states, hwInfo, wpClass, perfPressure, gpuRequested, podDemand)
+			score := scoreNode(nodeName, states, hwInfo, wpClass, perfPressure, gpuRequested, podDemand, eviction)
 			result = append(result, HostPriority{Host: nodeName, Score: score})
 		}
 	}
@@ -447,7 +535,7 @@ func computePerfPressure(states map[string]*joulie.NodeTwinStatus) float64 {
 	return total / count
 }
 
-func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo map[string]nodeHWInfo, wpClass string, perfPressure float64, gpuRequested bool, podDemand *powerest.PodDemand) int64 {
+func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo map[string]nodeHWInfo, wpClass string, perfPressure float64, gpuRequested bool, podDemand *powerest.PodDemand, eviction *evictionInfo) int64 {
 	state, ok := states[nodeName]
 	if !ok {
 		return 50 // neutral score if no twin state
@@ -473,19 +561,39 @@ func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo
 	hw, hasHW := hwInfo[nodeName]
 
 	// Marginal power estimation: pod-specific score adjustment.
+	// When the twin provides an estimated PUE, the marginal power delta is
+	// multiplied by PUE to reflect the true facility-level energy cost.
+	// A pod on a node with PUE 1.8 costs more than one with PUE 1.2.
 	if marginalScoringEnabled && podDemand != nil && hasHW {
 		nodeProfile := hwInfoToProfile(nodeName, hw)
 		est := powerest.EstimateMarginalImpact(*podDemand, &nodeProfile, coolStress, psuStress, marginalCoeff)
+
+		// Apply PUE multiplier: facility-level energy cost.
+		pue := state.EstimatedPUE
+		if pue > 1.0 {
+			est.DeltaCPUWatts *= pue
+			est.DeltaGPUWatts *= pue
+			est.DeltaTotalWatts *= pue
+		}
+
 		adj := powerest.ComputeScoreAdjustment(est)
 		score -= adj.TotalPenalty
 
-		log.Printf("marginal: node=%s pod_cpu=%.2f pod_gpu=%d delta=%.1fW penalty=%.1f [%s]",
+		log.Printf("marginal: node=%s pod_cpu=%.2f pod_gpu=%d delta=%.1fW pue=%.3f penalty=%.1f [%s]",
 			nodeName, podDemand.CPUCores, podDemand.GPUCount,
-			est.DeltaTotalWatts, adj.TotalPenalty, adj.Explanation)
+			est.DeltaTotalWatts, pue, adj.TotalPenalty, adj.Explanation)
 	} else if hasHW && hw.GPUPresent && !gpuRequested {
 		// Legacy fallback: flat penalty for CPU-only pod on GPU node
 		// (used when marginal scoring is disabled).
 		score -= 30
+	}
+
+	// Eviction history penalty: if the pod's owner was previously evicted
+	// from a node of this class, penalize to steer placement elsewhere.
+	if eviction != nil && state.SchedulableClass == eviction.fromClass {
+		score -= 25
+		log.Printf("eviction-history: node=%s penalized -25 (pod was evicted from %s class, reason=%s)",
+			nodeName, eviction.fromClass, eviction.reason)
 	}
 
 	if score < 0 {

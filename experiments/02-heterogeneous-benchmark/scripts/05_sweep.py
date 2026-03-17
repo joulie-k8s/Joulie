@@ -627,6 +627,12 @@ def main():
     install_env_base["OPERATOR_RECONCILE_INTERVAL"] = str(get_cfg(cfg, "policy", "loop", "operator_reconcile_interval", default="20s"))
     install_env_base["AGENT_RECONCILE_INTERVAL"] = str(get_cfg(cfg, "policy", "loop", "agent_reconcile_interval", default="10s"))
     install_env_base["SIM_BASE_SPEED_PER_CORE"] = str(get_cfg(cfg, "simulator", "base_speed_per_core", default=1.0))
+    install_env_base["SIM_CLASSIFIER_MISCLASSIFY_RATE"] = str(get_cfg(cfg, "simulator", "classifier_misclassify_rate", default=0.10))
+    install_env_base["SIM_FACILITY_AMBIENT_BASE_C"] = str(get_cfg(cfg, "simulator", "facility_ambient_base_c", default=22.0))
+    install_env_base["SIM_FACILITY_AMBIENT_AMPLITUDE_C"] = str(get_cfg(cfg, "simulator", "facility_ambient_amplitude_c", default=8.0))
+    install_env_base["SIM_FACILITY_AMBIENT_PERIOD_SEC"] = str(get_cfg(cfg, "simulator", "facility_ambient_period_sec", default=600))
+    install_env_base["ENABLE_CLASSIFIER"] = str(get_cfg(cfg, "operator", "enable_classifier", default=True)).lower()
+    install_env_base["ENABLE_FACILITY_METRICS"] = str(get_cfg(cfg, "operator", "enable_facility_metrics", default=False)).lower()
     log(
         "configured images "
         f"sim={install_env_base['SIM_REGISTRY']}/{install_env_base['SIM_IMAGE']}"

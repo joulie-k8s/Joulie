@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -185,6 +186,18 @@ type simulator struct {
 	controlResult   *prometheus.CounterVec
 
 	workload *workloadEngine
+
+	// Classifier uncertainty: fraction of jobs whose class is flipped.
+	classifierMisclassifyRate float64
+
+	// Facility ambient temperature parameters.
+	facilityBaseAmbientTempC float64
+	facilityTempAmplitudeC   float64
+	facilityTempPeriodH      float64
+
+	// Facility Prometheus gauges.
+	facilityAmbientTemp prometheus.Gauge
+	facilityPUE         prometheus.Gauge
 }
 
 func main() {
@@ -231,6 +244,19 @@ func main() {
 			log.Printf("warning: workload trace disabled: %v", err)
 		}
 	}
+
+	// Classifier uncertainty configuration.
+	s.classifierMisclassifyRate = floatEnv("SIM_CLASSIFIER_MISCLASSIFY_RATE", 0.0)
+	if s.classifierMisclassifyRate > 0 {
+		log.Printf("classifier uncertainty enabled misclassify_rate=%.4f", s.classifierMisclassifyRate)
+	}
+
+	// Facility ambient temperature configuration.
+	s.facilityBaseAmbientTempC = floatEnv("SIM_FACILITY_AMBIENT_TEMP_C", 20.0)
+	s.facilityTempAmplitudeC = floatEnv("SIM_FACILITY_TEMP_AMPLITUDE_C", 5.0)
+	s.facilityTempPeriodH = floatEnv("SIM_FACILITY_TEMP_PERIOD_H", 24.0)
+	log.Printf("facility model base_temp=%.1fC amplitude=%.1fC period=%.1fh",
+		s.facilityBaseAmbientTempC, s.facilityTempAmplitudeC, s.facilityTempPeriodH)
 
 	if boolEnv("SIM_K8S_POD_WATCH", true) {
 		go s.startPodPolling(durationEnv("SIM_POLL_INTERVAL", 15*time.Second))
@@ -338,6 +364,14 @@ func newSimulatorWithRegisterer(model simModel, selector labels.Selector, classe
 			Name: "joulie_sim_control_actions_total",
 			Help: "Control actions by node/action/result",
 		}, []string{"node", "action", "result"}),
+		facilityAmbientTemp: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "joulie_sim_facility_ambient_temp_celsius",
+			Help: "Simulated facility ambient temperature in Celsius",
+		}),
+		facilityPUE: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "joulie_sim_facility_pue",
+			Help: "Simulated facility Power Usage Effectiveness",
+		}),
 	}
 
 	reg.MustRegister(
@@ -356,6 +390,8 @@ func newSimulatorWithRegisterer(model simModel, selector labels.Selector, classe
 		s.jobCompleted,
 		s.jobCompletion,
 		s.controlResult,
+		s.facilityAmbientTemp,
+		s.facilityPUE,
 	)
 	return s
 }
@@ -962,6 +998,31 @@ func (s *simulator) accumulateEnergy(dt float64) {
 		s.energyTotalJ += e
 	}
 	s.energyLastTs = time.Now().UTC()
+}
+
+// updateFacilityMetrics computes time-varying ambient temperature and PUE,
+// then updates the corresponding Prometheus gauges. The ambient temperature
+// follows a sinusoidal curve and the PUE is modelled as a linear function
+// of ambient temperature (higher temperature requires more cooling energy).
+func (s *simulator) updateFacilityMetrics(now time.Time) {
+	periodSec := s.facilityTempPeriodH * 3600.0
+	if periodSec <= 0 {
+		periodSec = 24.0 * 3600.0
+	}
+	elapsed := now.Sub(s.workload.startTime).Seconds()
+	ambientTemp := s.facilityBaseAmbientTempC +
+		s.facilityTempAmplitudeC*math.Sin(2*math.Pi*elapsed/periodSec)
+	s.facilityAmbientTemp.Set(ambientTemp)
+
+	// Simple PUE model: baseline 1.1 at 15C, increasing linearly with temperature.
+	// PUE = 1.1 + 0.008 * (ambientTemp - 15). Clamped to [1.0, 3.0].
+	pue := 1.1 + 0.008*(ambientTemp-15.0)
+	if pue < 1.0 {
+		pue = 1.0
+	} else if pue > 3.0 {
+		pue = 3.0
+	}
+	s.facilityPUE.Set(math.Round(pue*1000) / 1000)
 }
 
 type debugNode struct {
@@ -1865,6 +1926,27 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 		}
 	}
 	sort.Slice(engine.jobs, func(i, j int) bool { return engine.jobs[i].SubmitOffsetSec < engine.jobs[j].SubmitOffsetSec })
+
+	// Apply classifier misclassification: randomly flip a fraction of job classes
+	// between "performance" and "standard" to simulate classifier errors.
+	if s.classifierMisclassifyRate > 0 {
+		flipped := 0
+		for _, j := range engine.jobs {
+			if rand.Float64() < s.classifierMisclassifyRate {
+				switch j.Class {
+				case "performance":
+					j.Class = "standard"
+					flipped++
+				case "standard":
+					j.Class = "performance"
+					flipped++
+				}
+			}
+		}
+		log.Printf("classifier misclassification applied rate=%.4f flipped=%d/%d",
+			s.classifierMisclassifyRate, flipped, len(engine.jobs))
+	}
+
 	s.workload = engine
 	log.Printf("workload trace loaded jobs=%d parts=%d path=%s", len(engine.jobs), len(tracePaths), path)
 	return nil
@@ -2100,6 +2182,7 @@ func (s *simulator) startWorkloadLoop(interval time.Duration) {
 		}
 		last = now
 		s.accumulateEnergy(dt)
+		s.updateFacilityMetrics(now)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		s.injectTraceJobs(ctx, kube, now)
 		s.advanceJobProgress(ctx, kube, dt, now)

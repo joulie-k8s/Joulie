@@ -175,13 +175,69 @@ func main() {
 	}
 	startMetricsServer(metricsAddr)
 
+	// --- Facility metrics (data-center level) ---
+	fm := &facilityMetrics{}
+	facCfg := facilityConfig{
+		enabled:            boolEnv("ENABLE_FACILITY_METRICS", false),
+		prometheusAddress:  envOrDefault("FACILITY_PROMETHEUS_ADDRESS", "http://prometheus-operated.monitoring:9090"),
+		pollInterval:       durationEnv("FACILITY_POLL_INTERVAL", 30*time.Second),
+		ambientTempMetric:  envOrDefault("FACILITY_AMBIENT_TEMP_METRIC", "datacenter_ambient_temperature_celsius"),
+		itPowerMetric:      envOrDefault("FACILITY_IT_POWER_METRIC", "datacenter_total_it_power_watts"),
+		coolingPowerMetric: envOrDefault("FACILITY_COOLING_POWER_METRIC", "datacenter_cooling_power_watts"),
+	}
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+	go facilityMetricsLoop(bgCtx, fm, facCfg)
+
+	// --- Workload classifier ---
+	if boolEnv("ENABLE_CLASSIFIER", true) {
+		clsCfg := classifierConfig{
+			classifyInterval:   durationEnv("CLASSIFY_INTERVAL", 30*time.Second),
+			reclassifyInterval: durationEnv("RECLASSIFY_INTERVAL", 15*time.Minute),
+			metricsWindow:      durationEnv("CLASSIFY_METRICS_WINDOW", 10*time.Minute),
+			prometheusAddress:  envOrDefault("PROMETHEUS_ADDRESS", "http://prometheus-operated.monitoring:9090"),
+			keplerAvailable:    boolEnv("KEPLER_AVAILABLE", true),
+			minConfidence:      floatEnv("CLASSIFY_MIN_CONFIDENCE", 0.5),
+			nodeSelector:       selector,
+		}
+		go classifierLoop(bgCtx, kube, dyn, clsCfg)
+	}
+
+	// --- Active rescheduler ---
+	reschCfg := reschedulerConfig{
+		enabled:             boolEnv("ENABLE_ACTIVE_RESCHEDULING", false),
+		interval:            durationEnv("RESCHEDULE_INTERVAL", 60*time.Second),
+		maxEvictionsPerNode: intEnv("RESCHEDULE_MAX_EVICTIONS_PER_NODE", 1),
+		dryRun:              boolEnv("RESCHEDULE_DRY_RUN", false),
+	}
+	go reschedulerLoop(bgCtx, kube, dyn, reschCfg)
+
+	// --- Periodic WorkloadProfile cleanup ---
+	go func() {
+		cleanupTicker := time.NewTicker(5 * time.Minute)
+		defer cleanupTicker.Stop()
+		for {
+			select {
+			case <-bgCtx.Done():
+				return
+			case <-cleanupTicker.C:
+				ctx, cancel := context.WithTimeout(bgCtx, 10*time.Second)
+				if err := cleanupOrphanedWorkloadProfiles(ctx, kube, dyn); err != nil {
+					log.Printf("[cleanup] WorkloadProfile cleanup: %v", err)
+				}
+				cancel()
+			}
+		}
+	}()
+
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		if err := reconcileWithCatalog(
+		if err := reconcileWithCatalogAndFacility(
 			ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, reconcileEvery,
 			perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
 			cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
 			gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, hardwareCatalog,
+			fm,
 		); err != nil {
 			log.Printf("reconcile failed: %v", err)
 		}
@@ -356,6 +412,33 @@ func reconcileWithCatalog(
 		}
 	}
 	applyDowngradeGuards(ctx, kube, plan, nodesByName)
+
+	// Build per-rack estimated power for topology-aware PSU stress.
+	// Sum each node's estimated power (CPU + GPU at current cap %) per rack.
+	rackPowerEstimates := make(map[string]float64)
+	nodeRack := make(map[string]string)
+	nodeZone := make(map[string]string)
+	for _, a := range plan {
+		if n := nodeObjs[a.NodeName]; n != nil {
+			rack := n.Labels["joulie.io/rack"]
+			zone := n.Labels["joulie.io/cooling-zone"]
+			nodeRack[a.NodeName] = rack
+			nodeZone[a.NodeName] = zone
+			if rack != "" {
+				cpuPct := 100.0
+				if a.CPUCapPctOfMax != nil {
+					cpuPct = *a.CPUCapPctOfMax
+				}
+				gpuPct := 100.0
+				if a.GPU != nil && a.GPU.CapPctOfMax != nil {
+					gpuPct = *a.GPU.CapPctOfMax
+				}
+				nodePowerW := estimateNodePowerW(nodeHardwareByName[a.NodeName], cpuPct, gpuPct)
+				rackPowerEstimates[rack] += nodePowerW
+			}
+		}
+	}
+
 	for _, a := range plan {
 		if err := upsertNodeTwinSpec(ctx, dyn, a); err != nil {
 			return err
@@ -371,7 +454,17 @@ func reconcileWithCatalog(
 		if a.GPU != nil && a.GPU.CapPctOfMax != nil {
 			gpuPct = *a.GPU.CapPctOfMax
 		}
-		if err := reconcileNodeTwin(ctx, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining); err != nil {
+		var topo *nodeTopology
+		rack := nodeRack[a.NodeName]
+		zone := nodeZone[a.NodeName]
+		if rack != "" || zone != "" {
+			topo = &nodeTopology{
+				rack:            rack,
+				coolingZone:     zone,
+				rackTotalPowerW: rackPowerEstimates[rack],
+			}
+		}
+		if err := reconcileNodeTwin(ctx, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo); err != nil {
 			log.Printf("warning: reconcileNodeTwin %s: %v", a.NodeName, err)
 		}
 		recordNodeStateMetrics(a.NodeName, a.State)
@@ -382,6 +475,57 @@ func reconcileWithCatalog(
 	log.Printf("assigned profiles policy=%s interval=%s nodes=%d plan=%s", policyType, interval, len(eligible), summarizePlan(plan))
 	return nil
 }
+
+// reconcileWithCatalogAndFacility wraps reconcileWithCatalog and passes facility metrics
+// to the twin computation via reconcileNodeTwin. This enables PUE estimation from
+// real data-center metrics (ambient temperature, IT power, cooling power).
+func reconcileWithCatalogAndFacility(
+	ctx context.Context,
+	kube kubernetes.Interface,
+	dyn dynamic.Interface,
+	selector labels.Selector,
+	reservedLabel string,
+	profileLabel string,
+	interval time.Duration,
+	perfCap float64,
+	ecoCap float64,
+	policyType string,
+	staticHPFrac float64,
+	queueHPBaseFrac float64,
+	queueHPMin int,
+	queueHPMax int,
+	queuePerfPerHPNode int,
+	cpuPerfCapPct float64,
+	cpuEcoCapPct float64,
+	cpuWriteAbsolute bool,
+	gpuPerfCapPct float64,
+	gpuEcoCapPct float64,
+	gpuWriteAbsolute bool,
+	gpuModelCaps map[string]GPUModelCaps,
+	gpuProductLabelKeys []string,
+	hardwareCatalog *hwinv.Catalog,
+	fm *facilityMetrics,
+) error {
+	// Store facility metrics in package-level vars for use by reconcileNodeTwin.
+	if fm != nil {
+		ambientC, itPowerW, _ := fm.get()
+		facilityAmbientTempC = ambientC
+		facilityClusterPowerW = itPowerW
+	}
+	return reconcileWithCatalog(
+		ctx, kube, dyn, selector, reservedLabel, profileLabel, interval,
+		perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
+		cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
+		gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, hardwareCatalog,
+	)
+}
+
+// facilityAmbientTempC and facilityClusterPowerW are set by reconcileWithCatalogAndFacility
+// and read by reconcileNodeTwin to pass to the twin computation.
+var (
+	facilityAmbientTempC  float64
+	facilityClusterPowerW float64
+)
 
 // Delegate to fsm package.
 var (
@@ -933,6 +1077,19 @@ func computeGPUNodeDensity(spec hwinv.GPUModelSpec, count int) float64 {
 
 func nodeDensityScore(nh NodeHardware) float64 {
 	return nh.CPUComputeDensity + nh.GPUComputeDensity
+}
+
+// estimateNodePowerW estimates the total power draw of a node from its hardware
+// specs and current cap percentages. Used for per-rack PSU stress aggregation.
+func estimateNodePowerW(nh NodeHardware, cpuCapPct, gpuCapPct float64) float64 {
+	var powerW float64
+	if nh.CPUCapMaxWatts > 0 {
+		powerW += nh.CPUCapMaxWatts * float64(nh.CPUSockets) * (cpuCapPct / 100.0)
+	}
+	if nh.GPUCapMaxWatts > 0 {
+		powerW += nh.GPUCapMaxWatts * float64(nh.GPUCount) * (gpuCapPct / 100.0)
+	}
+	return powerW
 }
 
 func floatPtr(v float64) *float64 {

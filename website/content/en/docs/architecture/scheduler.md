@@ -87,6 +87,36 @@ CPU-only pods (those not requesting `nvidia.com/gpu`, `amd.com/gpu`, or `gpu.int
 
 Pods that request GPU resources do not receive this penalty.
 
+### PUE-weighted marginal power estimation
+
+When facility metrics are enabled (`ENABLE_FACILITY_METRICS=true`), the operator computes PUE from real data-center metrics and writes `NodeTwin.status.estimatedPUE`. The scheduler extender uses this to weight marginal power estimates:
+
+```
+if estimatedPUE > 1.0:
+    deltaCPUWatts  *= estimatedPUE
+    deltaGPUWatts  *= estimatedPUE
+    deltaTotalWatts *= estimatedPUE
+```
+
+This means a pod placed on a node with PUE 1.6 is treated as costing 60% more energy than one with PUE 1.0. The effect is that the scheduler prefers nodes in more efficiently cooled parts of the facility, reducing total energy consumption including cooling overhead.
+
+Without facility metrics, PUE defaults to 1.0 and the multiplier has no effect.
+
+### Eviction history awareness
+
+When the active rescheduler evicts a pod, it annotates the pod's owner (ReplicaSet or StatefulSet) with eviction context:
+
+- `joulie.io/last-eviction-from-class`: the schedulableClass of the node the pod was evicted from (e.g., `eco`)
+- `joulie.io/last-eviction-reason`: the eviction reason (e.g., `cooling_stress`)
+- `joulie.io/last-eviction-time`: RFC3339 timestamp
+
+The scheduler reads these annotations when placing the replacement pod:
+
+- **Filter**: if a pod's owner was evicted from an eco node, eco and draining nodes are rejected (same as performance pod filtering). This prevents a standard pod from being re-placed on an eco node where it was previously throttled.
+- **Score**: nodes matching the evicted-from class receive a -25 score penalty.
+
+Eviction context expires after `EVICTION_HISTORY_TTL` (default 30 minutes). After expiry, the scheduler schedules normally again.
+
 ### Score clamping
 
 All scores are clamped to `[0, 100]`. Nodes with no NodeTwin state receive a neutral score of 50.
@@ -111,6 +141,7 @@ The extender reads two types of Joulie CRs, both cached with a 30-second TTL to 
 | Standard pod + performance node under pressure | Score penalty (up to -30) |
 | CPU-only pod + GPU node | Score penalty (-30) |
 | Stale or missing NodeTwin | Neutral score (50) |
+| Pod owner evicted from eco class | Hard reject eco/draining (filter) + score penalty (-25) |
 
 ## What the extender does not do
 

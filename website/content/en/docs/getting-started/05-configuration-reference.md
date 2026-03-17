@@ -72,12 +72,58 @@ Complete reference for all Joulie environment variables. These are set via Helm 
 | `QUEUE_HP_MAX` | `1000000` | Maximum performance nodes in `queue_aware_v1` |
 | `QUEUE_PERF_PER_HP_NODE` | `10` | Performance pods per performance node ratio in `queue_aware_v1` |
 
+### Workload classifier
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_CLASSIFIER` | `true` | Enable the workload classifier loop |
+| `CLASSIFY_INTERVAL` | `30s` | How often the classifier scans running pods |
+| `RECLASSIFY_INTERVAL` | `15m` | Minimum time before re-classifying an already-classified pod |
+| `CLASSIFY_METRICS_WINDOW` | `10m` | Prometheus query lookback window for dynamic metrics |
+| `PROMETHEUS_ADDRESS` | `http://prometheus-operated.monitoring:9090` | Prometheus endpoint for classifier queries |
+| `KEPLER_AVAILABLE` | `true` | Whether Kepler energy metrics are available in Prometheus |
+| `CLASSIFY_MIN_CONFIDENCE` | `0.5` | Minimum confidence score for a profile to influence scheduling |
+
+### Active rescheduler
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_ACTIVE_RESCHEDULING` | `false` | Enable active pod eviction for misplaced workloads |
+| `RESCHEDULE_INTERVAL` | `60s` | How often the rescheduler evaluates recommendations |
+| `RESCHEDULE_MAX_EVICTIONS_PER_NODE` | `1` | Maximum pod evictions per node per rescheduler cycle |
+| `RESCHEDULE_DRY_RUN` | `false` | If `true`, log eviction decisions without executing them |
+
+### Facility metrics
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_FACILITY_METRICS` | `false` | Enable polling data-center-level metrics from Prometheus |
+| `FACILITY_PROMETHEUS_ADDRESS` | `http://prometheus-operated.monitoring:9090` | Prometheus endpoint for facility metric queries |
+| `FACILITY_POLL_INTERVAL` | `30s` | How often facility metrics are polled |
+| `FACILITY_AMBIENT_TEMP_METRIC` | `datacenter_ambient_temperature_celsius` | PromQL metric name for ambient temperature |
+| `FACILITY_IT_POWER_METRIC` | `datacenter_total_it_power_watts` | PromQL metric name for total IT power draw |
+| `FACILITY_COOLING_POWER_METRIC` | `datacenter_cooling_power_watts` | PromQL metric name for cooling infrastructure power |
+| `FACILITY_ZONE_AMBIENT_METRIC_TEMPLATE` | (empty) | PromQL template for per-zone ambient temperature, e.g. `datacenter_ambient_temperature_celsius{zone="%s"}`. Use `%s` as the zone name placeholder. Empty = disabled. |
+| `FACILITY_RACK_POWER_METRIC_TEMPLATE` | (empty) | PromQL template for per-rack power draw, e.g. `datacenter_rack_power_watts{rack="%s"}`. Use `%s` as the rack name placeholder. Empty = disabled. |
+
+### Node topology
+
+Joulie supports optional per-rack PSU stress and per-zone cooling stress. This is activated by adding standard node labels:
+
+- `joulie.io/rack`: physical rack identifier (e.g., `rack-1`)
+- `joulie.io/cooling-zone`: cooling zone identifier (e.g., `zone-a`)
+
+When these labels are present, the operator computes PSU stress per-rack (sum of estimated node power within the rack) instead of cluster-wide, and uses per-zone ambient temperature from facility metrics instead of the global value. The twin model interfaces remain the same; topology just groups nodes for more accurate stress computation.
+
+Nodes without topology labels fall back to cluster-wide stress computation.
+
 ## Scheduler extender
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `9876` | HTTP port for the scheduler extender |
 | `CACHE_TTL` | `30s` | TTL for the NodeTwin status cache |
+| `EVICTION_HISTORY_TTL` | `30m` | How long eviction context influences scheduling decisions |
 
 ## kubectl plugin
 

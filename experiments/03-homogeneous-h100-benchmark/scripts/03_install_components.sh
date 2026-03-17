@@ -30,6 +30,12 @@ OPERATOR_RECONCILE_INTERVAL=${OPERATOR_RECONCILE_INTERVAL:-20s}
 AGENT_RECONCILE_INTERVAL=${AGENT_RECONCILE_INTERVAL:-10s}
 GENERATED_CLASSES=${GENERATED_CLASSES:-$EXAMPLE_DIR/manifests/10-node-classes.yaml}
 GENERATED_CATALOG=${GENERATED_CATALOG:-$ROOT/simulator/catalog/hardware.generated.yaml}
+SIM_CLASSIFIER_MISCLASSIFY_RATE=${SIM_CLASSIFIER_MISCLASSIFY_RATE:-0.10}
+SIM_FACILITY_AMBIENT_BASE_C=${SIM_FACILITY_AMBIENT_BASE_C:-22.0}
+SIM_FACILITY_AMBIENT_AMPLITUDE_C=${SIM_FACILITY_AMBIENT_AMPLITUDE_C:-8.0}
+SIM_FACILITY_AMBIENT_PERIOD_SEC=${SIM_FACILITY_AMBIENT_PERIOD_SEC:-600}
+ENABLE_CLASSIFIER=${ENABLE_CLASSIFIER:-true}
+ENABLE_FACILITY_METRICS=${ENABLE_FACILITY_METRICS:-false}
 
 actual_image_from_workload() {
   local ns=$1
@@ -76,7 +82,11 @@ kubectl -n joulie-sim-demo patch deploy/joulie-telemetry-sim --type='json' -p='[
 ]'
 kubectl -n joulie-sim-demo set env deploy/joulie-telemetry-sim \
   SIM_NODE_CLASS_CONFIG=/etc/joulie-sim/node-classes.yaml \
-  SIM_HARDWARE_CATALOG_PATH=/etc/joulie-sim-catalog/hardware.generated.yaml
+  SIM_HARDWARE_CATALOG_PATH=/etc/joulie-sim-catalog/hardware.generated.yaml \
+  SIM_CLASSIFIER_MISCLASSIFY_RATE="$SIM_CLASSIFIER_MISCLASSIFY_RATE" \
+  SIM_FACILITY_AMBIENT_BASE_C="$SIM_FACILITY_AMBIENT_BASE_C" \
+  SIM_FACILITY_AMBIENT_AMPLITUDE_C="$SIM_FACILITY_AMBIENT_AMPLITUDE_C" \
+  SIM_FACILITY_AMBIENT_PERIOD_SEC="$SIM_FACILITY_AMBIENT_PERIOD_SEC"
 if [[ -n "$SIM_BASE_SPEED_PER_CORE" ]]; then
   kubectl -n joulie-sim-demo set env deploy/joulie-telemetry-sim SIM_BASE_SPEED_PER_CORE="$SIM_BASE_SPEED_PER_CORE"
 fi
@@ -137,6 +147,8 @@ helm upgrade --install joulie "$ROOT/charts/joulie" -n joulie-system --create-na
   --set "operator.env.GPU_PERFORMANCE_CAP_PCT_OF_MAX=${GPU_PERFORMANCE_CAP_PCT_OF_MAX}" \
   --set "operator.env.GPU_ECO_CAP_PCT_OF_MAX=${GPU_ECO_CAP_PCT_OF_MAX}" \
   --set "operator.env.GPU_WRITE_ABSOLUTE_CAPS=${GPU_WRITE_ABSOLUTE_CAPS}" \
+  --set "operator.env.ENABLE_CLASSIFIER=${ENABLE_CLASSIFIER}" \
+  --set "operator.env.ENABLE_FACILITY_METRICS=${ENABLE_FACILITY_METRICS}" \
   "${SCHED_ARGS[@]}"
 
 kubectl -n joulie-system rollout status deploy/joulie-operator

@@ -24,19 +24,44 @@ var (
 	workloadProfileGVR  = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "workloadprofiles"}
 )
 
+// nodeTopology holds the physical topology context for a node.
+type nodeTopology struct {
+	rack            string
+	coolingZone     string
+	rackTotalPowerW float64
+	zoneAmbientC    float64 // per-zone ambient; 0 = use global
+}
+
 // reconcileNodeTwin computes and publishes NodeTwin status for one node.
-func reconcileNodeTwin(ctx context.Context, dynClient dynamic.Interface, nodeName, profile string, cpuCapPct, gpuCapPct float64, draining bool) error {
+func reconcileNodeTwin(ctx context.Context, dynClient dynamic.Interface, nodeName, profile string, cpuCapPct, gpuCapPct float64, draining bool, topo *nodeTopology) error {
 	hw := fetchNodeHardware(ctx, dynClient, nodeName)
 	workloads := fetchWorkloadProfilesForNode(ctx, dynClient, nodeName)
 
+	outsideTempC := facilityAmbientTempC
+	var rack, coolingZone string
+	var rackPowerW float64
+	if topo != nil {
+		rack = topo.rack
+		coolingZone = topo.coolingZone
+		rackPowerW = topo.rackTotalPowerW
+		if topo.zoneAmbientC > 0 {
+			outsideTempC = topo.zoneAmbientC
+		}
+	}
+
 	in := twin.Input{
-		NodeName:  nodeName,
-		Hardware:  hw,
-		Profile:   profile,
-		CPUCapPct: cpuCapPct,
-		GPUCapPct: gpuCapPct,
-		Draining:  draining,
-		Workloads: workloads,
+		NodeName:           nodeName,
+		Hardware:           hw,
+		Profile:            profile,
+		CPUCapPct:          cpuCapPct,
+		GPUCapPct:          gpuCapPct,
+		Draining:           draining,
+		Workloads:          workloads,
+		ClusterTotalPowerW: facilityClusterPowerW,
+		OutsideTempC:       outsideTempC,
+		Rack:               rack,
+		CoolingZone:        coolingZone,
+		RackTotalPowerW:    rackPowerW,
 	}
 	out := twin.Compute(in)
 

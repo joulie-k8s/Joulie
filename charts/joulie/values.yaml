@@ -51,6 +51,16 @@ operator:
     HARDWARE_CATALOG_PATH: "simulator/catalog/hardware.yaml"
     GPU_MODEL_CAPS_JSON: "{}"
     GPU_PRODUCT_LABEL_KEYS: "joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product,amd.com/gpu.family"
+    ENABLE_CLASSIFIER: "true"
+    CLASSIFY_INTERVAL: "30s"
+    PROMETHEUS_ADDRESS: "http://prometheus-operated.monitoring:9090"
+    KEPLER_AVAILABLE: "true"
+    ENABLE_ACTIVE_RESCHEDULING: "false"
+    RESCHEDULE_INTERVAL: "60s"
+    RESCHEDULE_MAX_EVICTIONS_PER_NODE: "1"
+    ENABLE_FACILITY_METRICS: "false"
+    FACILITY_PROMETHEUS_ADDRESS: "http://prometheus-operated.monitoring:9090"
+    FACILITY_POLL_INTERVAL: "30s"
   service:
     enabled: true
     port: 8081

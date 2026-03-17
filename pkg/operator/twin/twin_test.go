@@ -354,6 +354,91 @@ func TestLinearCoolingModelHighTemp(t *testing.T) {
 	}
 }
 
+// --- Topology-aware tests ---
+
+func TestPSUStressUsesPerRackPower(t *testing.T) {
+	// When RackTotalPowerW is set, PSU stress should use it instead of ClusterTotalPowerW
+	inCluster := Input{
+		NodeName:           "n",
+		Profile:            "performance",
+		CPUCapPct:          100,
+		GPUCapPct:          100,
+		ClusterTotalPowerW: 40000, // high cluster power
+	}
+	inRack := Input{
+		NodeName:           "n",
+		Profile:            "performance",
+		CPUCapPct:          100,
+		GPUCapPct:          100,
+		ClusterTotalPowerW: 40000, // high cluster power
+		Rack:               "rack-1",
+		RackTotalPowerW:    10000, // low per-rack power
+	}
+
+	outCluster := Compute(inCluster)
+	outRack := Compute(inRack)
+
+	if outRack.PredictedPsuStressScore >= outCluster.PredictedPsuStressScore {
+		t.Errorf("per-rack PSU stress should be lower than cluster-wide: rack=%.1f cluster=%.1f",
+			outRack.PredictedPsuStressScore, outCluster.PredictedPsuStressScore)
+	}
+}
+
+func TestPSUStressFallsBackToClusterWide(t *testing.T) {
+	// When RackTotalPowerW is 0, should use ClusterTotalPowerW
+	in := Input{
+		NodeName:           "n",
+		Profile:            "performance",
+		CPUCapPct:          100,
+		GPUCapPct:          100,
+		ClusterTotalPowerW: 30000,
+		Rack:               "rack-1",
+		RackTotalPowerW:    0, // no per-rack data
+	}
+	out := Compute(in)
+	// Should compute based on cluster power (30000/50000 * 100 = 60)
+	if out.PredictedPsuStressScore < 50 || out.PredictedPsuStressScore > 70 {
+		t.Errorf("expected PSU stress around 60 from cluster power, got %.1f", out.PredictedPsuStressScore)
+	}
+}
+
+func TestCoolingStressUsesPerZoneAmbient(t *testing.T) {
+	hw := joulie.NodeHardware{
+		CPU: joulie.NodeHardwareCPU{
+			Sockets:  2,
+			CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 360},
+		},
+	}
+	// Cool zone
+	inCool := Input{
+		NodeName:    "n",
+		Hardware:    hw,
+		Profile:     "eco",
+		CPUCapPct:   60,
+		GPUCapPct:   60,
+		OutsideTempC: 18,
+		CoolingZone: "zone-cool",
+	}
+	// Hot zone
+	inHot := Input{
+		NodeName:    "n",
+		Hardware:    hw,
+		Profile:     "eco",
+		CPUCapPct:   60,
+		GPUCapPct:   60,
+		OutsideTempC: 35,
+		CoolingZone: "zone-hot",
+	}
+
+	outCool := Compute(inCool)
+	outHot := Compute(inHot)
+
+	if outCool.PredictedCoolingStressScore >= outHot.PredictedCoolingStressScore {
+		t.Errorf("hot zone should have higher cooling stress: cool=%.1f hot=%.1f",
+			outCool.PredictedCoolingStressScore, outHot.PredictedCoolingStressScore)
+	}
+}
+
 func TestGPUSlicingMediumIntensityRecommendation(t *testing.T) {
 	in := Input{
 		NodeName: "gpu-med",

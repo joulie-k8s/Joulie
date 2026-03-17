@@ -43,6 +43,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
   - apiGroups: ["joulie.io"]
     resources: ["nodetwins"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
@@ -54,7 +57,10 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: ["joulie.io"]
     resources: ["workloadprofiles"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["joulie.io"]
+    resources: ["workloadprofiles/status"]
+    verbs: ["update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
