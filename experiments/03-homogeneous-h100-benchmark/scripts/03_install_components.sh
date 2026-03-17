@@ -158,6 +158,14 @@ echo "scheduler extender deployed for baseline ${BASELINE}"
 
 # Configure agent telemetry/control to use the simulator HTTP endpoints.
 kubectl -n joulie-system set env statefulset/joulie-agent-pool \
+  TELEMETRY_CPU_SOURCE=http \
+  TELEMETRY_CPU_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
+  TELEMETRY_CPU_CONTROL=http \
+  TELEMETRY_CPU_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
+  TELEMETRY_CPU_CONTROL_MODE=dvfs \
+  TELEMETRY_GPU_CONTROL=http \
+  TELEMETRY_GPU_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
+  TELEMETRY_GPU_CONTROL_MODE=dvfs \
   JOULIE_TELEMETRY_SOURCE_TYPE=http \
   JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
   JOULIE_CONTROL_TYPE=http \

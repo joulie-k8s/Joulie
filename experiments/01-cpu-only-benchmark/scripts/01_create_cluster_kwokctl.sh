@@ -43,9 +43,11 @@ kubectl apply -f "https://github.com/kubernetes-sigs/kwok/releases/download/${KW
 # ---------------------------------------------------------------------------
 CTRL_CONTAINER="${CLUSTER_NAME}-control-plane"
 
-docker exec "$CTRL_CONTAINER" tee /etc/kubernetes/joulie-scheduler-config.yaml > /dev/null <<'SCHED_CFG'
+cat >/tmp/joulie-scheduler-config.yaml <<'SCHED_CFG'
 apiVersion: kubescheduler.config.k8s.io/v1
 kind: KubeSchedulerConfiguration
+clientConnection:
+  kubeconfig: /etc/kubernetes/scheduler.conf
 profiles:
 - schedulerName: default-scheduler
 extenders:
@@ -57,6 +59,8 @@ extenders:
   nodeCacheCapable: false
   ignorable: true
 SCHED_CFG
+docker exec -i "$CTRL_CONTAINER" sh -c 'cat > /etc/kubernetes/joulie-scheduler-config.yaml' < /tmp/joulie-scheduler-config.yaml
+rm -f /tmp/joulie-scheduler-config.yaml
 
 docker cp "$CTRL_CONTAINER":/etc/kubernetes/manifests/kube-scheduler.yaml /tmp/kube-scheduler-patch.yaml
 python3 <<'PY'
@@ -92,8 +96,7 @@ with open("/tmp/kube-scheduler-patch.yaml", "w") as f:
 print("kube-scheduler: extender configuration applied")
 PY
 
-docker cp /tmp/kube-scheduler-patch.yaml "$CTRL_CONTAINER":/tmp/kube-scheduler-new.yaml
-docker exec "$CTRL_CONTAINER" mv /tmp/kube-scheduler-new.yaml /etc/kubernetes/manifests/kube-scheduler.yaml
+docker exec -i "$CTRL_CONTAINER" sh -c 'cat > /etc/kubernetes/manifests/kube-scheduler.yaml' < /tmp/kube-scheduler-patch.yaml
 rm -f /tmp/kube-scheduler-patch.yaml
 
 echo "waiting for kube-scheduler to restart with extender config..."

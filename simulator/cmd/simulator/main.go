@@ -22,6 +22,7 @@ import (
 	"github.com/matbun/joulie/simulator/pkg/phys"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -196,8 +197,10 @@ type simulator struct {
 	facilityTempPeriodH      float64
 
 	// Facility Prometheus gauges.
-	facilityAmbientTemp prometheus.Gauge
-	facilityPUE         prometheus.Gauge
+	facilityAmbientTemp  prometheus.Gauge
+	facilityPUE          prometheus.Gauge
+	facilityITPowerW     prometheus.Gauge
+	facilityCoolingPowerW prometheus.Gauge
 }
 
 func main() {
@@ -277,6 +280,7 @@ func main() {
 	mux.HandleFunc("/debug/jobs", s.handleDebugJobs)
 	mux.HandleFunc("/debug/events", s.handleDebugEvents)
 	mux.HandleFunc("/debug/energy", s.handleDebugEnergy)
+	mux.HandleFunc("/api/v1/query", s.handleFakePrometheusQuery)
 
 	log.Printf("listening on %s", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
@@ -372,6 +376,14 @@ func newSimulatorWithRegisterer(model simModel, selector labels.Selector, classe
 			Name: "joulie_sim_facility_pue",
 			Help: "Simulated facility Power Usage Effectiveness",
 		}),
+		facilityITPowerW: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "joulie_sim_facility_it_power_watts",
+			Help: "Simulated total IT power draw in watts",
+		}),
+		facilityCoolingPowerW: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "joulie_sim_facility_cooling_power_watts",
+			Help: "Simulated cooling infrastructure power in watts",
+		}),
 	}
 
 	reg.MustRegister(
@@ -392,6 +404,8 @@ func newSimulatorWithRegisterer(model simModel, selector labels.Selector, classe
 		s.controlResult,
 		s.facilityAmbientTemp,
 		s.facilityPUE,
+		s.facilityITPowerW,
+		s.facilityCoolingPowerW,
 	)
 	return s
 }
@@ -1014,6 +1028,17 @@ func (s *simulator) updateFacilityMetrics(now time.Time) {
 		s.facilityTempAmplitudeC*math.Sin(2*math.Pi*elapsed/periodSec)
 	s.facilityAmbientTemp.Set(ambientTemp)
 
+	// Compute total IT power from all node states.
+	var itPowerW float64
+	s.mu.RLock()
+	for _, st := range s.state {
+		if st.TotalAvgPowerWatts > 0 {
+			itPowerW += st.TotalAvgPowerWatts
+		}
+	}
+	s.mu.RUnlock()
+	s.facilityITPowerW.Set(math.Round(itPowerW*100) / 100)
+
 	// Simple PUE model: baseline 1.1 at 15C, increasing linearly with temperature.
 	// PUE = 1.1 + 0.008 * (ambientTemp - 15). Clamped to [1.0, 3.0].
 	pue := 1.1 + 0.008*(ambientTemp-15.0)
@@ -1023,6 +1048,84 @@ func (s *simulator) updateFacilityMetrics(now time.Time) {
 		pue = 3.0
 	}
 	s.facilityPUE.Set(math.Round(pue*1000) / 1000)
+
+	// Cooling power = total facility power - IT power = IT * (PUE - 1).
+	coolingPowerW := itPowerW * (pue - 1.0)
+	s.facilityCoolingPowerW.Set(math.Round(coolingPowerW*100) / 100)
+}
+
+// handleFakePrometheusQuery serves a minimal /api/v1/query endpoint that
+// returns facility metrics in the Prometheus instant-query response format.
+// This allows the operator's facility metrics poller to query the simulator
+// directly, without needing a real Prometheus instance in simulation.
+func (s *simulator) handleFakePrometheusQuery(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("query")
+	if query == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "missing query parameter"})
+		return
+	}
+
+	val, ok := s.facilityMetricValue(query)
+	if !ok {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status": "success",
+			"data": map[string]any{
+				"resultType": "vector",
+				"result":     []any{},
+			},
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status": "success",
+		"data": map[string]any{
+			"resultType": "vector",
+			"result": []any{
+				map[string]any{
+					"metric": map[string]string{},
+					"value":  []any{float64(time.Now().Unix()), strconv.FormatFloat(val, 'f', -1, 64)},
+				},
+			},
+		},
+	})
+}
+
+// facilityMetricValue resolves a query string to the current facility metric value.
+func (s *simulator) facilityMetricValue(query string) (float64, bool) {
+	// Strip surrounding whitespace for robustness.
+	q := strings.TrimSpace(query)
+	switch {
+	case strings.Contains(q, "ambient") && strings.Contains(q, "temp"),
+		q == "datacenter_ambient_temperature_celsius",
+		q == "joulie_sim_facility_ambient_temp_celsius":
+		return gaugeValue(s.facilityAmbientTemp), true
+	case strings.Contains(q, "it_power") || strings.Contains(q, "it_power_watts"),
+		q == "datacenter_total_it_power_watts",
+		q == "joulie_sim_facility_it_power_watts":
+		return gaugeValue(s.facilityITPowerW), true
+	case strings.Contains(q, "cooling") && strings.Contains(q, "power"),
+		q == "datacenter_cooling_power_watts",
+		q == "joulie_sim_facility_cooling_power_watts":
+		return gaugeValue(s.facilityCoolingPowerW), true
+	case strings.Contains(q, "pue"),
+		q == "joulie_sim_facility_pue":
+		return gaugeValue(s.facilityPUE), true
+	default:
+		return 0, false
+	}
+}
+
+// gaugeValue reads the current value from a Prometheus gauge.
+func gaugeValue(g prometheus.Gauge) float64 {
+	m := &dto.Metric{}
+	if err := g.Write(m); err != nil {
+		return 0
+	}
+	return m.GetGauge().GetValue()
 }
 
 type debugNode struct {

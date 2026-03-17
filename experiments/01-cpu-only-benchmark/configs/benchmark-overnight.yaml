@@ -55,10 +55,10 @@ policy:
 
 images:
   joulie_registry: registry.cern.ch/mbunino/joulie
-  joulie_tag: dev0.0.15
+  joulie_tag: dev0.1.0
   sim_registry: registry.cern.ch/mbunino/joulie
   sim_image: joulie-simulator
-  sim_tag: dev0.0.15
+  sim_tag: dev0.1.0
 
 inventory:
   source: experiments/01-cpu-only-benchmark/configs/cluster-nodes.yaml
