@@ -41,8 +41,5 @@ jobs:
           version: "latest"
           verb: call
           module: ./ci
-          args: integration --source=. --username env:CERN_REGISTRY_USER --password env:CERN_REGISTRY_PASSWORD
+          args: integration --source=.
           cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
-        env:
-          CERN_REGISTRY_USER: ${{ secrets.CERN_REGISTRY_USER }}
-          CERN_REGISTRY_PASSWORD: ${{ secrets.CERN_REGISTRY_PASSWORD }}

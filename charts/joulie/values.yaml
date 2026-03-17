@@ -66,6 +66,9 @@ schedulerExtender:
     tag: latest
   port: 9876
   replicas: 1
+  hostNetwork: false
+  nodeSelector: {}
+  env: {}
 
 grafanaDashboard:
   enabled: false  # enable if Grafana sidecar is configured to auto-provision dashboards

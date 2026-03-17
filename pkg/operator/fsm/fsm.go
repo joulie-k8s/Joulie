@@ -30,7 +30,8 @@ const (
 	StateActiveEco          = "ActiveEco"
 	StateUnknown            = "Unknown"
 
-	PowerProfileLabelKey = "joulie.io/power-profile"
+	PowerProfileLabelKey    = "joulie.io/power-profile"
+	WorkloadClassAnnotation = "joulie.io/workload-class"
 
 	WorkloadClassPerfOnly = "performance-only"
 	WorkloadClassEcoOnly  = "eco-only"
@@ -134,8 +135,11 @@ func ClassifyPodByScheduling(p *corev1.Pod) string {
 }
 
 // PodExcludesEco returns true if the pod explicitly targets performance nodes
-// via nodeSelector or node affinity, meaning it should not run on eco nodes.
+// via the workload-class annotation, nodeSelector, or node affinity.
 func PodExcludesEco(p *corev1.Pod) bool {
+	if strings.TrimSpace(p.Annotations[WorkloadClassAnnotation]) == ProfilePerformance {
+		return true
+	}
 	if strings.TrimSpace(p.Spec.NodeSelector[PowerProfileLabelKey]) == ProfilePerformance {
 		return true
 	}

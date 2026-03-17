@@ -470,7 +470,9 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-b", Labels: map[string]string{"joulie.io/managed": "true"}}},
 	)
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
-		nodeTwinGVR: "NodeTwinList",
+		nodeTwinGVR:         "NodeTwinList",
+		twinNodeHardwareGVR: "NodeHardwareList",
+		workloadProfileGVR:  "WorkloadProfileList",
 	})
 	selector, err := labels.Parse("joulie.io/managed=true")
 	if err != nil {

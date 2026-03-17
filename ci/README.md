@@ -23,7 +23,6 @@ Prerequisites:
 
 - Docker or Podman runtime
 - `dagger` CLI
-- `CERN_REGISTRY_USER` and `CERN_REGISTRY_PASSWORD` exported in your shell
 
 From repo root:
 
@@ -35,20 +34,18 @@ Or directly:
 
 ```bash
 dagger -m ./ci call integration \
-  --source=. \
-  --username env:CERN_REGISTRY_USER \
-  --password env:CERN_REGISTRY_PASSWORD
+  --source=.
 ```
 
 From within `ci/`:
 
 ```bash
-dagger call integration --source=.. --username env:CERN_REGISTRY_USER --password env:CERN_REGISTRY_PASSWORD
+dagger call integration --source=..
 ```
 
-The pipeline builds `agent` and `operator` images from this repo and publishes them
-to the CERN registry with a `dev-*` tag, then installs Helm using those exact tags.
-`latest` is never used by integration tests.
+The pipeline builds the Joulie images from this repo, publishes them to a
+throwaway in-pipeline registry with a `dev-*` tag, then installs Helm using
+those exact tags. `latest` is never used by integration tests.
 
 ## Scope Selection
 
@@ -62,17 +59,13 @@ Examples:
 ```bash
 dagger -m ./ci call integration \
   --source=. \
-  --it-scope all \
-  --username env:CERN_REGISTRY_USER \
-  --password env:CERN_REGISTRY_PASSWORD
+  --it-scope all
 ```
 
 ```bash
 dagger -m ./ci call integration \
   --source=. \
-  --it-scope gpu-only \
-  --username env:CERN_REGISTRY_USER \
-  --password env:CERN_REGISTRY_PASSWORD
+  --it-scope gpu-only
 ```
 
 ## Test list (one line each)

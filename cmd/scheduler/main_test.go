@@ -5,12 +5,16 @@ import (
 	"time"
 
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/scheduler/powerest"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
+
+// --- Legacy twin-based scoring (nil podDemand = no marginal scoring) ---
 
 func TestScoreNodeNoState(t *testing.T) {
 	states := map[string]*joulie.NodeTwinStatus{}
 	hwInfo := map[string]nodeHWInfo{}
-	score := scoreNode("node1", states, hwInfo, "standard", 0, false)
+	score := scoreNode("node1", states, hwInfo, "standard", 0, false, nil)
 	if score != 50 {
 		t.Errorf("expected neutral score 50 when no state, got %d", score)
 	}
@@ -37,9 +41,8 @@ func TestScoreNodeEcoHighHeadroom(t *testing.T) {
 		},
 	}
 	hwInfo := map[string]nodeHWInfo{}
-	// Standard workload on eco node with high headroom should outscore stressed perf node
-	s1 := scoreNode("node1", states, hwInfo, "standard", 0, false)
-	s2 := scoreNode("node2", states, hwInfo, "standard", 0, false)
+	s1 := scoreNode("node1", states, hwInfo, "standard", 0, false, nil)
+	s2 := scoreNode("node2", states, hwInfo, "standard", 0, false, nil)
 	if s1 <= s2 {
 		t.Errorf("eco node with high headroom should outscore stressed performance node for standard: %d vs %d", s1, s2)
 	}
@@ -49,7 +52,6 @@ func TestScoreNodeDrainingFiltered(t *testing.T) {
 	states := map[string]*joulie.NodeTwinStatus{
 		"draining-node": {SchedulableClass: "draining"},
 	}
-	// Draining nodes ARE filtered for performance pods (same as eco).
 	reason := shouldFilterNode("draining-node", states, nil, true)
 	if reason == "" {
 		t.Error("draining node should be filtered for performance pod")
@@ -94,8 +96,8 @@ func TestScoreNodeStaleTwinFallsBackToNeutral(t *testing.T) {
 		},
 	}
 	hwInfo := map[string]nodeHWInfo{}
-	sStale := scoreNode("stale-node", states, hwInfo, "standard", 0, false)
-	sFresh := scoreNode("fresh-node", states, hwInfo, "standard", 0, false)
+	sStale := scoreNode("stale-node", states, hwInfo, "standard", 0, false, nil)
+	sFresh := scoreNode("fresh-node", states, hwInfo, "standard", 0, false, nil)
 	if sStale != 50 {
 		t.Errorf("stale node should get neutral score 50, got %d", sStale)
 	}
@@ -132,12 +134,10 @@ func TestFilterNodesDrainingFilteredForPerformance(t *testing.T) {
 	states := map[string]*joulie.NodeTwinStatus{
 		"draining-node": {SchedulableClass: "draining"},
 	}
-	// Performance pods are rejected from draining nodes.
 	reason := shouldFilterNode("draining-node", states, nil, true)
 	if reason == "" {
 		t.Error("draining node should be filtered for performance pod")
 	}
-	// Standard pods can still land on draining nodes.
 	reason = shouldFilterNode("draining-node", states, nil, false)
 	if reason != "" {
 		t.Errorf("draining node should accept standard pod, got: %s", reason)
@@ -163,8 +163,7 @@ func TestScoreNodeAllZeroStress(t *testing.T) {
 		},
 	}
 	hwInfo := map[string]nodeHWInfo{}
-	score := scoreNode("ideal", states, hwInfo, "standard", 0, false)
-	// headroom*0.4 + (100-0)*0.3 + (100-0)*0.3 = 40+30+30 = 100
+	score := scoreNode("ideal", states, hwInfo, "standard", 0, false, nil)
 	if score != 100 {
 		t.Errorf("expected perfect score 100 for zero stress, got %d", score)
 	}
@@ -181,7 +180,7 @@ func TestScoreNodeAllMaxStress(t *testing.T) {
 		},
 	}
 	hwInfo := map[string]nodeHWInfo{}
-	score := scoreNode("stressed", states, hwInfo, "standard", 0, false)
+	score := scoreNode("stressed", states, hwInfo, "standard", 0, false, nil)
 	if score != 0 {
 		t.Errorf("expected minimum score 0 for max stress, got %d", score)
 	}
@@ -207,17 +206,15 @@ func TestScoreNodeAdaptivePressureRelief(t *testing.T) {
 	}
 	hwInfo := map[string]nodeHWInfo{}
 
-	// With high perf pressure, standard pods should prefer eco over performance
 	highPressure := 80.0
-	sPerfNode := scoreNode("perf-node", states, hwInfo, "standard", highPressure, false)
-	sEcoNode := scoreNode("eco-node", states, hwInfo, "standard", highPressure, false)
+	sPerfNode := scoreNode("perf-node", states, hwInfo, "standard", highPressure, false, nil)
+	sEcoNode := scoreNode("eco-node", states, hwInfo, "standard", highPressure, false, nil)
 	if sEcoNode <= sPerfNode {
 		t.Errorf("standard pod under high pressure should prefer eco node: eco=%d perf=%d", sEcoNode, sPerfNode)
 	}
 
-	// With zero pressure, both should score the same
-	sPerfNoPressure := scoreNode("perf-node", states, hwInfo, "standard", 0, false)
-	sEcoNoPressure := scoreNode("eco-node", states, hwInfo, "standard", 0, false)
+	sPerfNoPressure := scoreNode("perf-node", states, hwInfo, "standard", 0, false, nil)
+	sEcoNoPressure := scoreNode("eco-node", states, hwInfo, "standard", 0, false, nil)
 	if sPerfNoPressure != sEcoNoPressure {
 		t.Errorf("with zero pressure, same-stats nodes should score equally: perf=%d eco=%d", sPerfNoPressure, sEcoNoPressure)
 	}
@@ -246,15 +243,15 @@ func TestScoreNodeCPUOnlyGPUPenalty(t *testing.T) {
 		"cpu-node": {GPUPresent: false, GPUCount: 0},
 	}
 
-	// CPU-only pod should prefer CPU-only node over GPU node
-	sGPU := scoreNode("gpu-node", states, hwInfo, "standard", 0, false)
-	sCPU := scoreNode("cpu-node", states, hwInfo, "standard", 0, false)
+	// CPU-only pod should prefer CPU-only node over GPU node (legacy penalty)
+	sGPU := scoreNode("gpu-node", states, hwInfo, "standard", 0, false, nil)
+	sCPU := scoreNode("cpu-node", states, hwInfo, "standard", 0, false, nil)
 	if sGPU >= sCPU {
 		t.Errorf("CPU-only pod should prefer CPU node over GPU node: gpu=%d cpu=%d", sGPU, sCPU)
 	}
 
 	// GPU pod should NOT get the penalty
-	sGPUPod := scoreNode("gpu-node", states, hwInfo, "standard", 0, true)
+	sGPUPod := scoreNode("gpu-node", states, hwInfo, "standard", 0, true, nil)
 	if sGPUPod != sCPU {
 		t.Errorf("GPU pod on GPU node should score same as CPU pod on CPU node: gpuPod=%d cpuOnCpu=%d", sGPUPod, sCPU)
 	}
@@ -265,22 +262,22 @@ func TestComputePerfPressure(t *testing.T) {
 	states := map[string]*joulie.NodeTwinStatus{
 		"perf1": {
 			SchedulableClass:            "performance",
-			PredictedPowerHeadroomScore: 40, // pressure = 60
+			PredictedPowerHeadroomScore: 40,
 			LastUpdated:                 now,
 		},
 		"perf2": {
 			SchedulableClass:            "performance",
-			PredictedPowerHeadroomScore: 20, // pressure = 80
+			PredictedPowerHeadroomScore: 20,
 			LastUpdated:                 now,
 		},
 		"eco1": {
 			SchedulableClass:            "eco",
-			PredictedPowerHeadroomScore: 10, // should be ignored
+			PredictedPowerHeadroomScore: 10,
 			LastUpdated:                 now,
 		},
 	}
 	pressure := computePerfPressure(states)
-	expected := 70.0 // (60+80)/2
+	expected := 70.0
 	if pressure != expected {
 		t.Errorf("expected perfPressure=%.1f, got %.1f", expected, pressure)
 	}
@@ -295,13 +292,11 @@ func TestComputePerfPressureEmpty(t *testing.T) {
 }
 
 func TestPodWorkloadClass(t *testing.T) {
-	// Default
 	pod := PodSpec{}
 	if podWorkloadClass(pod) != "standard" {
 		t.Errorf("expected default 'standard', got %s", podWorkloadClass(pod))
 	}
 
-	// Annotated
 	pod.Metadata.Annotations = map[string]string{"joulie.io/workload-class": "performance"}
 	if podWorkloadClass(pod) != "performance" {
 		t.Errorf("expected 'performance', got %s", podWorkloadClass(pod))
@@ -309,15 +304,233 @@ func TestPodWorkloadClass(t *testing.T) {
 }
 
 func TestPodRequestsGPU(t *testing.T) {
-	// No GPU
 	pod := PodSpec{Spec: PodBody{Containers: []ContainerSpec{{}}}}
 	if podRequestsGPU(pod) {
 		t.Error("expected no GPU request")
 	}
 
-	// GPU in requests
 	pod.Spec.Containers[0].Resources.Requests = map[string]interface{}{"nvidia.com/gpu": "1"}
 	if !podRequestsGPU(pod) {
 		t.Error("expected GPU request detected")
+	}
+}
+
+// --- Marginal power scoring tests ---
+
+func TestScoreNodeMarginalCPUOnlyPrefersSmaller(t *testing.T) {
+	// With marginal scoring, a CPU-only pod should score better on a smaller
+	// CPU-only node than a large GPU node (lower marginal impact + idle GPU waste).
+	savedEnabled := marginalScoringEnabled
+	savedCoeff := marginalCoeff
+	marginalScoringEnabled = true
+	marginalCoeff = powerest.DefaultCoefficients()
+	defer func() {
+		marginalScoringEnabled = savedEnabled
+		marginalCoeff = savedCoeff
+	}()
+
+	now := time.Now()
+	states := map[string]*joulie.NodeTwinStatus{
+		"small-cpu": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 70,
+			PredictedCoolingStressScore: 20,
+			PredictedPsuStressScore:     15,
+			LastUpdated:                 now,
+		},
+		"big-gpu": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 70,
+			PredictedCoolingStressScore: 20,
+			PredictedPsuStressScore:     15,
+			LastUpdated:                 now,
+		},
+	}
+	hwInfo := map[string]nodeHWInfo{
+		"small-cpu": {CPUTotalCores: 32, CPUSockets: 1, CPUMaxWattsTotal: 270},
+		"big-gpu":   {CPUTotalCores: 96, CPUSockets: 2, CPUMaxWattsTotal: 720, GPUPresent: true, GPUCount: 8, GPUMaxWattsPerGPU: 700},
+	}
+	demand := &powerest.PodDemand{CPUCores: 4, WorkloadClass: "standard"}
+
+	sSmall := scoreNode("small-cpu", states, hwInfo, "standard", 0, false, demand)
+	sBig := scoreNode("big-gpu", states, hwInfo, "standard", 0, false, demand)
+	if sSmall <= sBig {
+		t.Errorf("CPU-only pod should prefer small CPU node over big GPU node with marginal scoring: small=%d big=%d", sSmall, sBig)
+	}
+}
+
+func TestScoreNodeMarginalGPUPodPrefersLowerImpact(t *testing.T) {
+	savedEnabled := marginalScoringEnabled
+	savedCoeff := marginalCoeff
+	marginalScoringEnabled = true
+	marginalCoeff = powerest.DefaultCoefficients()
+	defer func() {
+		marginalScoringEnabled = savedEnabled
+		marginalCoeff = savedCoeff
+	}()
+
+	now := time.Now()
+	states := map[string]*joulie.NodeTwinStatus{
+		"dense-gpu": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 70,
+			PredictedCoolingStressScore: 20,
+			PredictedPsuStressScore:     15,
+			LastUpdated:                 now,
+		},
+		"small-gpu": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 70,
+			PredictedCoolingStressScore: 20,
+			PredictedPsuStressScore:     15,
+			LastUpdated:                 now,
+		},
+	}
+	hwInfo := map[string]nodeHWInfo{
+		"dense-gpu": {CPUTotalCores: 96, CPUSockets: 2, CPUMaxWattsTotal: 720, GPUPresent: true, GPUCount: 8, GPUMaxWattsPerGPU: 700},
+		"small-gpu": {CPUTotalCores: 32, CPUSockets: 1, CPUMaxWattsTotal: 270, GPUPresent: true, GPUCount: 2, GPUMaxWattsPerGPU: 350},
+	}
+	demand := &powerest.PodDemand{CPUCores: 4, GPUCount: 1, GPUVendor: "nvidia", WorkloadClass: "standard"}
+
+	sSmall := scoreNode("small-gpu", states, hwInfo, "standard", 0, false, demand)
+	sDense := scoreNode("dense-gpu", states, hwInfo, "standard", 0, false, demand)
+	if sSmall <= sDense {
+		t.Errorf("1-GPU pod should prefer smaller GPU node: small=%d dense=%d", sSmall, sDense)
+	}
+}
+
+func TestScoreNodeMarginalDisabledPreservesLegacy(t *testing.T) {
+	savedEnabled := marginalScoringEnabled
+	marginalScoringEnabled = false
+	defer func() { marginalScoringEnabled = savedEnabled }()
+
+	now := time.Now()
+	states := map[string]*joulie.NodeTwinStatus{
+		"gpu-node": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 80,
+			PredictedCoolingStressScore: 10,
+			PredictedPsuStressScore:     10,
+			LastUpdated:                 now,
+		},
+	}
+	hwInfo := map[string]nodeHWInfo{
+		"gpu-node": {GPUPresent: true, GPUCount: 8},
+	}
+	// Even with podDemand provided, marginal scoring is off: legacy -30 penalty applies.
+	demand := &powerest.PodDemand{CPUCores: 4, WorkloadClass: "standard"}
+	score := scoreNode("gpu-node", states, hwInfo, "standard", 0, false, demand)
+	// base = 80*0.4 + 90*0.3 + 90*0.3 = 32+27+27 = 86, minus 30 = 56
+	if score != 56 {
+		t.Errorf("with marginal disabled, expected legacy score 56, got %d", score)
+	}
+}
+
+func TestScoreNodeMarginalNoHardwarePreservesBase(t *testing.T) {
+	savedEnabled := marginalScoringEnabled
+	savedCoeff := marginalCoeff
+	marginalScoringEnabled = true
+	marginalCoeff = powerest.DefaultCoefficients()
+	defer func() {
+		marginalScoringEnabled = savedEnabled
+		marginalCoeff = savedCoeff
+	}()
+
+	now := time.Now()
+	states := map[string]*joulie.NodeTwinStatus{
+		"unknown-hw": {
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 80,
+			PredictedCoolingStressScore: 10,
+			PredictedPsuStressScore:     10,
+			LastUpdated:                 now,
+		},
+	}
+	hwInfo := map[string]nodeHWInfo{} // no hardware data
+	demand := &powerest.PodDemand{CPUCores: 4, WorkloadClass: "standard"}
+
+	score := scoreNode("unknown-hw", states, hwInfo, "standard", 0, false, demand)
+	// No hw data = no marginal penalty, no legacy penalty. base = 86.
+	if score != 86 {
+		t.Errorf("no hardware data should preserve base score 86, got %d", score)
+	}
+}
+
+// --- parseNodeHardware ---
+
+func TestParseNodeHardwareFromStatus(t *testing.T) {
+	obj := unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"spec": map[string]interface{}{
+				"nodeName": "test-node",
+			},
+			"status": map[string]interface{}{
+				"cpu": map[string]interface{}{
+					"model":      "EPYC-9654",
+					"totalCores": float64(96),
+					"sockets":    float64(2),
+					"capRange": map[string]interface{}{
+						"maxWattsPerSocket": float64(360),
+					},
+				},
+				"gpu": map[string]interface{}{
+					"present": true,
+					"model":   "H100-SXM",
+					"vendor":  "nvidia",
+					"count":   float64(8),
+					"capRangePerGpu": map[string]interface{}{
+						"maxWatts": float64(700),
+					},
+				},
+				"memory": map[string]interface{}{
+					"totalBytes": float64(1099511627776),
+				},
+			},
+		},
+	}
+	name, info := parseNodeHardware(obj)
+	if name != "test-node" {
+		t.Errorf("expected node name 'test-node', got %q", name)
+	}
+	if info.CPUTotalCores != 96 {
+		t.Errorf("expected 96 cores, got %d", info.CPUTotalCores)
+	}
+	if info.CPUSockets != 2 {
+		t.Errorf("expected 2 sockets, got %d", info.CPUSockets)
+	}
+	if info.CPUMaxWattsTotal != 720 {
+		t.Errorf("expected 720W CPU total, got %.0f", info.CPUMaxWattsTotal)
+	}
+	if !info.GPUPresent {
+		t.Error("expected GPU present")
+	}
+	if info.GPUCount != 8 {
+		t.Errorf("expected 8 GPUs, got %d", info.GPUCount)
+	}
+	if info.GPUMaxWattsPerGPU != 700 {
+		t.Errorf("expected 700W per GPU, got %.0f", info.GPUMaxWattsPerGPU)
+	}
+	if info.GPUModel != "H100-SXM" {
+		t.Errorf("expected GPU model H100-SXM, got %q", info.GPUModel)
+	}
+	if info.MemoryBytes != 1099511627776 {
+		t.Errorf("expected memory 1TiB, got %d", info.MemoryBytes)
+	}
+}
+
+func TestParseNodeHardwareNoStatus(t *testing.T) {
+	obj := unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"spec": map[string]interface{}{
+				"nodeName": "empty-node",
+			},
+		},
+	}
+	name, info := parseNodeHardware(obj)
+	if name != "empty-node" {
+		t.Errorf("expected 'empty-node', got %q", name)
+	}
+	if info.GPUPresent || info.CPUTotalCores != 0 {
+		t.Error("expected empty hw info for node with no status")
 	}
 }

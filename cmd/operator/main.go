@@ -363,6 +363,17 @@ func reconcileWithCatalog(
 		if err := upsertNodeLabels(ctx, kube, profileLabel, a); err != nil {
 			return err
 		}
+		cpuPct := 100.0
+		if a.CPUCapPctOfMax != nil {
+			cpuPct = *a.CPUCapPctOfMax
+		}
+		gpuPct := 100.0
+		if a.GPU != nil && a.GPU.CapPctOfMax != nil {
+			gpuPct = *a.GPU.CapPctOfMax
+		}
+		if err := reconcileNodeTwin(ctx, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining); err != nil {
+			log.Printf("warning: reconcileNodeTwin %s: %v", a.NodeName, err)
+		}
 		recordNodeStateMetrics(a.NodeName, a.State)
 		recordNodeProfileLabelMetrics(a.NodeName, a.Profile)
 		recordTransitionMetrics(a)

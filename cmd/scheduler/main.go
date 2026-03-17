@@ -8,6 +8,16 @@
 // The extender reads NodeTwin CRs for placement decisions. It uses a single
 // pod annotation (joulie.io/workload-class) and adaptive scoring.
 //
+// Scoring combines two complementary signals:
+//   - Twin-based score: "how healthy is this node right now?" (from NodeTwin.status)
+//   - Marginal power estimate: "how much worse would this node get if this pod
+//     landed here?" (from pod resource requests + NodeHardware power envelope)
+//
+// The marginal estimate is gated by ENABLE_MARGINAL_POWER_SCORING (default true).
+// When enabled, the scheduler estimates per-pod incremental CPU/GPU power draw,
+// projects cooling and PSU stress deltas, and applies score penalties that steer
+// pods toward nodes where they would cause the least additional stress.
+//
 // Resilience: twin data older than TWIN_STALENESS_THRESHOLD (default 5m) is
 // treated as stale and the node receives a neutral score instead of potentially
 // misleading values from an operator that may have crashed.
@@ -22,12 +32,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/scheduler/powerest"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -43,24 +57,39 @@ var (
 
 	twinStateCache    map[string]*joulie.NodeTwinStatus
 	twinStateMu       sync.RWMutex
-	twinStateCacheTTL = 30 * time.Second
+	twinStateCacheTTL = envDurationOrDefault("CACHE_TTL", 30*time.Second)
 	lastCacheRefresh  time.Time
 
-	// NodeHardware cache: tracks GPU presence per node.
-	nodeHWCache        map[string]nodeHWInfo
-	nodeHWMu           sync.RWMutex
-	lastNodeHWRefresh  time.Time
+	// NodeHardware cache: tracks hardware power envelope per node.
+	nodeHWCache       map[string]nodeHWInfo
+	nodeHWMu          sync.RWMutex
+	lastNodeHWRefresh time.Time
 
 	// twinStalenessThreshold: if a NodeTwin.status.lastUpdated is older than
 	// this, the scheduler treats it as stale and falls back to a neutral score.
 	// Default 5 minutes. Override via TWIN_STALENESS_THRESHOLD env var.
 	twinStalenessThreshold = durationEnvOrDefault("TWIN_STALENESS_THRESHOLD", 5*time.Minute)
+
+	// marginalScoringEnabled gates the pod-specific marginal power estimation.
+	// When false, the scheduler uses only the twin-based score (legacy behavior).
+	marginalScoringEnabled = boolEnvOrDefault("ENABLE_MARGINAL_POWER_SCORING", true)
+
+	// marginalCoeff holds the tunable coefficients for power estimation.
+	marginalCoeff = loadCoefficients()
 )
 
-// nodeHWInfo holds minimal hardware facts needed for scoring.
+// nodeHWInfo holds hardware facts needed for scoring and marginal estimation.
 type nodeHWInfo struct {
-	GPUPresent bool
-	GPUCount   int
+	GPUPresent        bool
+	GPUCount          int
+	CPUTotalCores     int
+	CPUSockets        int
+	CPUMaxWattsTotal  float64 // maxWattsPerSocket * sockets
+	GPUMaxWattsPerGPU float64
+	CPUModel          string
+	GPUModel          string
+	GPUVendor         string
+	MemoryBytes       int64
 }
 
 // ExtenderArgs is the request body for filter/prioritize calls.
@@ -161,6 +190,19 @@ type ResourceSpec struct {
 var dynClient dynamic.Interface
 var k8sClient *kubernetes.Clientset
 
+func envDurationOrDefault(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Printf("warning: invalid %s=%q, using default %s", key, v, def)
+		return def
+	}
+	return d
+}
+
 func main() {
 	addr := os.Getenv("EXTENDER_ADDR")
 	if addr == "" {
@@ -181,10 +223,19 @@ func main() {
 		}
 	}
 
+	log.Printf("marginal power scoring enabled=%v", marginalScoringEnabled)
+	if marginalScoringEnabled {
+		log.Printf("coefficients: cpuUtil=%.2f gpuUtilStd=%.2f gpuUtilPerf=%.2f idleGPU=%.0fW refNode=%.0fW refRack=%.0fW",
+			marginalCoeff.CPUUtilCoeff, marginalCoeff.GPUUtilCoeffStandard,
+			marginalCoeff.GPUUtilCoeffPerformance, marginalCoeff.IdleGPUWattsPerDevice,
+			marginalCoeff.ReferenceNodePowerW, marginalCoeff.ReferenceRackCapacityW)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/filter", handleFilter)
 	mux.HandleFunc("/prioritize", handlePrioritize)
 	mux.HandleFunc("/healthz", handleHealthz)
+	mux.HandleFunc("/debug/scoring", handleDebugScoring)
 
 	log.Printf("Joulie scheduler extender starting on %s", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
@@ -323,21 +374,25 @@ func podRequestsGPU(pod PodSpec) bool {
 	return false
 }
 
-// prioritizeNodes scores candidate nodes using NodeTwin status.
+// prioritizeNodes scores candidate nodes using NodeTwin status and (when
+// enabled) marginal power estimation from pod resource requests.
 //
-// Scoring formula:
+// Base scoring formula (twin-based):
 //
 //	base = powerHeadroom * 0.4 + (100 - coolingStress) * 0.3 + (100 - psuStress) * 0.3
 //
 // Adjustments:
 //   - Adaptive pressure relief: when performance nodes are congested, standard pods
 //     get a penalty on performance nodes (up to -30), steering them toward eco nodes.
-//   - CPU-only pod on GPU node: -30 (avoid wasting GPU idle power on CPU-only work).
+//   - Marginal power estimate (when ENABLE_MARGINAL_POWER_SCORING=true):
+//     per-pod incremental CPU/GPU power draw estimate, projected cooling/PSU stress
+//     deltas, and idle GPU waste penalty. This makes scoring pod-specific rather
+//     than purely node-centric.
 func prioritizeNodes(ctx context.Context, args ExtenderArgs) ExtenderPriorityList {
 	states := getNodeTwinStates(ctx)
 	hwInfo := getNodeHardwareInfo(ctx)
 
-	// Parse pod for workload class
+	// Parse pod for workload class and (if marginal scoring enabled) resource demand.
 	podBytes, err := json.Marshal(args.Pod)
 	if err != nil {
 		log.Printf("warning: cannot marshal pod for scoring: %v", err)
@@ -349,17 +404,27 @@ func prioritizeNodes(ctx context.Context, args ExtenderArgs) ExtenderPriorityLis
 	wpClass := podWorkloadClass(pod)
 	gpuRequested := podRequestsGPU(pod)
 
+	// Build pod demand for marginal estimation.
+	var podDemand *powerest.PodDemand
+	if marginalScoringEnabled {
+		podRaw, _ := args.Pod.(map[string]interface{})
+		if podRaw != nil {
+			d := powerest.ExtractPodDemand(podRaw, wpClass)
+			podDemand = &d
+		}
+	}
+
 	perfPressure := computePerfPressure(states)
 
 	var result ExtenderPriorityList
 	if args.Nodes != nil {
 		for _, node := range args.Nodes.Items {
-			score := scoreNode(node.Metadata.Name, states, hwInfo, wpClass, perfPressure, gpuRequested)
+			score := scoreNode(node.Metadata.Name, states, hwInfo, wpClass, perfPressure, gpuRequested, podDemand)
 			result = append(result, HostPriority{Host: node.Metadata.Name, Score: score})
 		}
 	} else if args.NodeNames != nil {
 		for _, nodeName := range *args.NodeNames {
-			score := scoreNode(nodeName, states, hwInfo, wpClass, perfPressure, gpuRequested)
+			score := scoreNode(nodeName, states, hwInfo, wpClass, perfPressure, gpuRequested, podDemand)
 			result = append(result, HostPriority{Host: nodeName, Score: score})
 		}
 	}
@@ -382,7 +447,7 @@ func computePerfPressure(states map[string]*joulie.NodeTwinStatus) float64 {
 	return total / count
 }
 
-func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo map[string]nodeHWInfo, wpClass string, perfPressure float64, gpuRequested bool) int64 {
+func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo map[string]nodeHWInfo, wpClass string, perfPressure float64, gpuRequested bool, podDemand *powerest.PodDemand) int64 {
 	state, ok := states[nodeName]
 	if !ok {
 		return 50 // neutral score if no twin state
@@ -396,7 +461,8 @@ func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo
 	coolStress := state.PredictedCoolingStressScore
 	psuStress := state.PredictedPsuStressScore
 
-	score := headroom*0.4 + (100-coolStress)*0.3 + (100-psuStress)*0.3
+	baseScore := headroom*0.4 + (100-coolStress)*0.3 + (100-psuStress)*0.3
+	score := baseScore
 
 	// Adaptive pressure relief: when performance nodes are congested,
 	// steer standard pods away from them to preserve capacity for performance pods.
@@ -404,8 +470,21 @@ func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo
 		score -= perfPressure * 0.3 // up to -30 at full saturation
 	}
 
-	// CPU-only pod on GPU node: strongly discourage to avoid wasting GPU idle power.
-	if hw, ok := hwInfo[nodeName]; ok && hw.GPUPresent && !gpuRequested {
+	hw, hasHW := hwInfo[nodeName]
+
+	// Marginal power estimation: pod-specific score adjustment.
+	if marginalScoringEnabled && podDemand != nil && hasHW {
+		nodeProfile := hwInfoToProfile(nodeName, hw)
+		est := powerest.EstimateMarginalImpact(*podDemand, &nodeProfile, coolStress, psuStress, marginalCoeff)
+		adj := powerest.ComputeScoreAdjustment(est)
+		score -= adj.TotalPenalty
+
+		log.Printf("marginal: node=%s pod_cpu=%.2f pod_gpu=%d delta=%.1fW penalty=%.1f [%s]",
+			nodeName, podDemand.CPUCores, podDemand.GPUCount,
+			est.DeltaTotalWatts, adj.TotalPenalty, adj.Explanation)
+	} else if hasHW && hw.GPUPresent && !gpuRequested {
+		// Legacy fallback: flat penalty for CPU-only pod on GPU node
+		// (used when marginal scoring is disabled).
 		score -= 30
 	}
 
@@ -416,6 +495,22 @@ func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo
 		score = 100
 	}
 	return int64(score)
+}
+
+// hwInfoToProfile converts the cached nodeHWInfo into a powerest.NodePowerProfile.
+func hwInfoToProfile(nodeName string, hw nodeHWInfo) powerest.NodePowerProfile {
+	return powerest.NodePowerProfile{
+		NodeName:          nodeName,
+		CPUModel:          hw.CPUModel,
+		GPUModel:          hw.GPUModel,
+		CPUTotalCores:     hw.CPUTotalCores,
+		CPUSockets:        hw.CPUSockets,
+		CPUMaxWattsTotal:  hw.CPUMaxWattsTotal,
+		GPUCount:          hw.GPUCount,
+		GPUMaxWattsPerGPU: hw.GPUMaxWattsPerGPU,
+		HasGPU:            hw.GPUPresent,
+		MemoryBytes:       hw.MemoryBytes,
+	}
 }
 
 // --- NodeTwin cache ---
@@ -551,9 +646,12 @@ func getNodeHardwareInfo(ctx context.Context) map[string]nodeHWInfo {
 	return hw
 }
 
-// parseNodeHardware extracts minimal hardware info from a NodeHardware unstructured object.
+// parseNodeHardware extracts hardware info from a NodeHardware unstructured object.
+// The CRD stores hardware data in status (written by the agent as a subresource),
+// while spec only contains nodeName.
 func parseNodeHardware(u unstructured.Unstructured) (string, nodeHWInfo) {
 	spec, _, _ := unstructured.NestedMap(u.Object, "spec")
+	status, _, _ := unstructured.NestedMap(u.Object, "status")
 	var info nodeHWInfo
 
 	var nodeName string
@@ -563,23 +661,75 @@ func parseNodeHardware(u unstructured.Unstructured) (string, nodeHWInfo) {
 		}
 	}
 
-	// GPU info is in spec.gpu
-	if spec != nil {
-		if gpu, ok := spec["gpu"].(map[string]interface{}); ok {
-			if v, ok := gpu["present"].(bool); ok {
-				info.GPUPresent = v
+	if status == nil {
+		return nodeName, info
+	}
+
+	// CPU info from status.cpu
+	if cpu, ok := status["cpu"].(map[string]interface{}); ok {
+		info.CPUTotalCores = intFromMap(cpu, "totalCores")
+		info.CPUSockets = intFromMap(cpu, "sockets")
+		if v, ok := cpu["model"].(string); ok {
+			info.CPUModel = v
+		}
+		if capRange, ok := cpu["capRange"].(map[string]interface{}); ok {
+			maxPerSocket := floatFromMap(capRange, "maxWattsPerSocket")
+			sockets := info.CPUSockets
+			if sockets <= 0 {
+				sockets = 1
 			}
-			if v, ok := gpu["count"].(int64); ok {
-				info.GPUCount = int(v)
-			} else if v, ok := gpu["count"].(float64); ok {
-				info.GPUCount = int(v)
-			}
-			if info.GPUCount > 0 {
-				info.GPUPresent = true
-			}
+			info.CPUMaxWattsTotal = maxPerSocket * float64(sockets)
 		}
 	}
+
+	// GPU info from status.gpu
+	if gpu, ok := status["gpu"].(map[string]interface{}); ok {
+		if v, ok := gpu["present"].(bool); ok {
+			info.GPUPresent = v
+		}
+		info.GPUCount = intFromMap(gpu, "count")
+		if info.GPUCount > 0 {
+			info.GPUPresent = true
+		}
+		if v, ok := gpu["model"].(string); ok {
+			info.GPUModel = v
+		}
+		if v, ok := gpu["vendor"].(string); ok {
+			info.GPUVendor = v
+		}
+		if capRange, ok := gpu["capRangePerGpu"].(map[string]interface{}); ok {
+			info.GPUMaxWattsPerGPU = floatFromMap(capRange, "maxWatts")
+		}
+	}
+
+	// Memory from status.memory
+	if mem, ok := status["memory"].(map[string]interface{}); ok {
+		info.MemoryBytes = int64(floatFromMap(mem, "totalBytes"))
+	}
+
 	return nodeName, info
+}
+
+// intFromMap extracts an integer from a map, handling both int64 and float64.
+func intFromMap(m map[string]interface{}, key string) int {
+	if v, ok := m[key].(int64); ok {
+		return int(v)
+	}
+	if v, ok := m[key].(float64); ok {
+		return int(v)
+	}
+	return 0
+}
+
+// floatFromMap extracts a float64 from a map.
+func floatFromMap(m map[string]interface{}, key string) float64 {
+	if v, ok := m[key].(float64); ok {
+		return v
+	}
+	if v, ok := m[key].(int64); ok {
+		return float64(v)
+	}
+	return 0
 }
 
 // isTwinStale returns true if the twin data is too old to trust for scheduling.
@@ -602,3 +752,107 @@ func durationEnvOrDefault(key string, fallback time.Duration) time.Duration {
 	}
 	return d
 }
+
+func boolEnvOrDefault(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		log.Printf("warning: invalid %s=%q, using default %v", key, v, fallback)
+		return fallback
+	}
+	return b
+}
+
+func floatEnvOrDefault(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		log.Printf("warning: invalid %s=%q, using default %.2f", key, v, fallback)
+		return fallback
+	}
+	return f
+}
+
+// loadCoefficients builds powerest.Coefficients from environment variables,
+// falling back to production defaults.
+func loadCoefficients() powerest.Coefficients {
+	c := powerest.DefaultCoefficients()
+	c.CPUUtilCoeff = floatEnvOrDefault("MARGINAL_CPU_UTIL_COEFF", c.CPUUtilCoeff)
+	c.GPUUtilCoeffStandard = floatEnvOrDefault("MARGINAL_GPU_UTIL_COEFF_STANDARD", c.GPUUtilCoeffStandard)
+	c.GPUUtilCoeffPerformance = floatEnvOrDefault("MARGINAL_GPU_UTIL_COEFF_PERFORMANCE", c.GPUUtilCoeffPerformance)
+	c.IdleGPUWattsPerDevice = floatEnvOrDefault("MARGINAL_IDLE_GPU_WASTE_WATTS", c.IdleGPUWattsPerDevice)
+	c.ReferenceNodePowerW = floatEnvOrDefault("MARGINAL_REF_NODE_POWER_W", c.ReferenceNodePowerW)
+	c.ReferenceRackCapacityW = floatEnvOrDefault("MARGINAL_REF_RACK_CAPACITY_W", c.ReferenceRackCapacityW)
+	return c
+}
+
+// --- Debug endpoint (Phase 4: observability) ---
+
+// debugScoringResponse is the JSON output of /debug/scoring.
+type debugScoringResponse struct {
+	MarginalScoringEnabled bool                    `json:"marginalScoringEnabled"`
+	Coefficients           powerest.Coefficients   `json:"coefficients"`
+	Nodes                  []debugNodeScoringEntry  `json:"nodes"`
+}
+
+type debugNodeScoringEntry struct {
+	NodeName              string  `json:"nodeName"`
+	SchedulableClass      string  `json:"schedulableClass"`
+	Headroom              float64 `json:"headroom"`
+	CoolingStress         float64 `json:"coolingStress"`
+	PsuStress             float64 `json:"psuStress"`
+	BaseScore             float64 `json:"baseScore"`
+	CPUTotalCores         int     `json:"cpuTotalCores"`
+	CPUMaxWattsTotal      float64 `json:"cpuMaxWattsTotal"`
+	GPUCount              int     `json:"gpuCount"`
+	GPUMaxWattsPerGPU     float64 `json:"gpuMaxWattsPerGPU"`
+	HasGPU                bool    `json:"hasGpu"`
+	Stale                 bool    `json:"stale"`
+}
+
+func handleDebugScoring(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	states := getNodeTwinStates(ctx)
+	hwInfo := getNodeHardwareInfo(ctx)
+
+	resp := debugScoringResponse{
+		MarginalScoringEnabled: marginalScoringEnabled,
+		Coefficients:           marginalCoeff,
+	}
+
+	for nodeName, state := range states {
+		entry := debugNodeScoringEntry{
+			NodeName:         nodeName,
+			SchedulableClass: state.SchedulableClass,
+			Headroom:         state.PredictedPowerHeadroomScore,
+			CoolingStress:    state.PredictedCoolingStressScore,
+			PsuStress:        state.PredictedPsuStressScore,
+			BaseScore:        state.PredictedPowerHeadroomScore*0.4 + (100-state.PredictedCoolingStressScore)*0.3 + (100-state.PredictedPsuStressScore)*0.3,
+			Stale:            isTwinStale(state),
+		}
+		if hw, ok := hwInfo[nodeName]; ok {
+			entry.CPUTotalCores = hw.CPUTotalCores
+			entry.CPUMaxWattsTotal = hw.CPUMaxWattsTotal
+			entry.GPUCount = hw.GPUCount
+			entry.GPUMaxWattsPerGPU = hw.GPUMaxWattsPerGPU
+			entry.HasGPU = hw.GPUPresent
+		}
+		resp.Nodes = append(resp.Nodes, entry)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("warning: failed to encode debug response: %v", err)
+	}
+}
+
+// unused import guard
+var _ = math.Max
+var _ = strings.TrimSpace
+var _ = strconv.ParseBool

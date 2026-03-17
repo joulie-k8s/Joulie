@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -1480,32 +1481,38 @@ func updateTelemetryGPUStatus(ctx context.Context, dyn dynamic.Interface, cfg *T
 func updateNodeTwinControlStatus(ctx context.Context, dyn dynamic.Interface, nodeName, component, backend, result, message string) error {
 	name := sanitizeNodeObjectName(nodeName)
 	res := dyn.Resource(nodeTwinGVR)
-	obj, err := res.Get(ctx, name, metav1.GetOptions{})
+
+	// Use MergePatch on the status subresource to avoid overwriting fields
+	// written by the operator (e.g. schedulableClass, predicted scores).
+	patch := map[string]interface{}{
+		"status": map[string]interface{}{
+			"controlStatus": map[string]interface{}{
+				component: map[string]interface{}{
+					"backend":   backend,
+					"result":    result,
+					"message":   message,
+					"updatedAt": time.Now().UTC().Format(time.RFC3339),
+				},
+			},
+		},
+	}
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshal controlStatus patch: %w", err)
+	}
+	_, err = res.Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{}, "status")
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil // NodeTwin not yet created by operator
 		}
+		// Fallback: patch without status subresource
+		_, err = res.Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+		if err != nil && apierrors.IsNotFound(err) {
+			return nil
+		}
 		return err
 	}
-	for _, kv := range []struct {
-		val  interface{}
-		path []string
-	}{
-		{backend, []string{"status", "controlStatus", component, "backend"}},
-		{result, []string{"status", "controlStatus", component, "result"}},
-		{message, []string{"status", "controlStatus", component, "message"}},
-		{time.Now().UTC().Format(time.RFC3339), []string{"status", "controlStatus", component, "updatedAt"}},
-	} {
-		if err := unstructured.SetNestedField(obj.Object, kv.val, kv.path...); err != nil {
-			return fmt.Errorf("set %s: %w", kv.path[len(kv.path)-1], err)
-		}
-	}
-	_, err = res.UpdateStatus(ctx, obj, metav1.UpdateOptions{})
-	if err == nil {
-		return nil
-	}
-	_, err = res.Update(ctx, obj, metav1.UpdateOptions{})
-	return err
+	return nil
 }
 
 func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeName string, hw HardwareInfo) error {
@@ -1550,7 +1557,6 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 			"driverFamily":       hw.CPUDriverFamily,
 			"controlAvailable":   hw.CPUControl,
 			"telemetryAvailable": hw.CPUTelemetry,
-			"quality":            qualityValue(hw.CPUModel != "", hw.CPURawModel != ""),
 			"warnings":           stringAnySlice(warningSlice(hw.CPUModel == "" && hw.CPURawModel != "", "cpu model not recognized")),
 		},
 		"gpu": map[string]any{
@@ -1561,7 +1567,6 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 			"currentCapWatts":    hw.GPUCurrentCapW,
 			"controlAvailable":   hw.GPUControl,
 			"telemetryAvailable": hw.GPUTelemetry,
-			"quality":            qualityValue(hw.GPUModel != "", hw.GPURawModel != ""),
 			"warnings":           stringAnySlice(warningSlice(hw.GPUCount > 0 && hw.GPUModel == "" && hw.GPURawModel != "", "gpu model not recognized")),
 		},
 		"capabilities": map[string]any{
@@ -1635,16 +1640,6 @@ func sanitizeNodeObjectName(nodeName string) string {
 	name := strings.ToLower(strings.TrimSpace(nodeName))
 	name = strings.NewReplacer(".", "-", "_", "-", "/", "-").Replace(name)
 	return strings.Trim(name, "-")
-}
-
-func qualityValue(recognized, haveRaw bool) string {
-	if recognized {
-		return "exact"
-	}
-	if haveRaw {
-		return "heuristic"
-	}
-	return "unavailable"
 }
 
 func overallQuality(hw HardwareInfo) string {

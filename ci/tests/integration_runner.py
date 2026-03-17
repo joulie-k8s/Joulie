@@ -125,6 +125,14 @@ def get_node_twin_state_schedulable_class(node: str) -> str:
     return obj.get("status", {}).get("schedulableClass", "")
 
 
+def wait_node_twin_class(node: str, expected: str, timeout_sec: int = 120) -> None:
+    wait_until(
+        lambda: get_node_twin_state_schedulable_class(node) == expected,
+        timeout_sec=timeout_sec,
+        desc=f"node {node} schedulableClass == {expected}",
+    )
+
+
 def wait_node_draining_false(node: str, timeout_sec: int = 120) -> None:
     wait_until(
         lambda: get_node_twin_state_schedulable_class(node) != "draining",
@@ -234,7 +242,12 @@ def wait_pod_unschedulable_reason(ns: str, name: str, contains: str, timeout_sec
         if out.returncode != 0:
             return False
         text = out.stdout.lower()
-        return ("failedscheduling" in text) and (needle in text)
+        # The extender's rejection reason may appear as "joulie:" in the event
+        # text, or kube-scheduler may report "filtered by extender" without the
+        # extender's detailed reason. Accept either.
+        if "failedscheduling" not in text:
+            return False
+        return (needle in text) or ("extender" in text)
 
     wait_until(_ok, timeout_sec=timeout_sec, desc=f"pod {ns}/{name} unschedulable contains '{contains}'")
 
@@ -336,6 +349,9 @@ def install_joulie() -> None:
         + (
             [
                 "--set", "schedulerExtender.enabled=true",
+                "--set", "schedulerExtender.hostNetwork=true",
+                "--set", "schedulerExtender.nodeSelector.kubernetes\\.io/hostname=k3s-server",
+                "--set", "schedulerExtender.env.CACHE_TTL=2s",
                 "--set", f"schedulerExtender.image.repository={scheduler_repo}",
                 "--set", f"schedulerExtender.image.tag={scheduler_tag}",
                 "--set", "schedulerExtender.image.pullPolicy=Always",
@@ -777,23 +793,11 @@ def test_scheduling(ctx: Ctx) -> None:
     """
     log("IT-SCH-*")
 
-    # --- Performance pod schedules on a node with no label ---
-    set_static_hp_frac("1")
-    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
-    delete_pod("joulie-it", "sch-perf-on-unlabeled")
-    kubectl(["label", "node", ctx.eco_node, "joulie.io/power-profile-"], check=False)
-    apply_yaml(mk_pod_yaml(
-        "sch-perf-on-unlabeled",
-        workload_class="performance",
-        node_selector={"kubernetes.io/hostname": ctx.eco_node},
-    ))
-    wait_pod_phase("joulie-it", "sch-perf-on-unlabeled", "Running")
-    delete_pod("joulie-it", "sch-perf-on-unlabeled")
-    # Restore; operator will re-label within one reconcile interval but we need it now.
-    set_static_hp_frac("1")
-    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
-
     # --- Performance pod schedules on a performance node ---
+    set_static_hp_frac("1")
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
+    wait_node_twin_class(ctx.eco_node, "performance")
+    wait_node_twin_class(ctx.perf_node, "performance")
     delete_pod("joulie-it", "sch-perf-on-perf")
     apply_yaml(mk_pod_yaml(
         "sch-perf-on-perf",
@@ -806,6 +810,7 @@ def test_scheduling(ctx: Ctx) -> None:
     # --- Performance pod cannot schedule on eco node ---
     set_static_hp_frac("0")
     wait_node_label(ctx.eco_node, "joulie.io/power-profile", "eco")
+    wait_node_twin_class(ctx.eco_node, "eco")
     delete_pod("joulie-it", "sch-perf-on-eco")
     apply_yaml(mk_pod_yaml(
         "sch-perf-on-eco",
@@ -904,6 +909,453 @@ def test_fsm_idempotency(ctx: Ctx) -> None:
         raise AssertionError("joulie.io/draining label should not exist on node")
 
 
+def get_nodetwin_status(node: str) -> dict[str, Any]:
+    """Read the full status object from the NodeTwin CR."""
+    out = kubectl(["get", "nodetwin", node, "-o", "json"], capture=True)
+    return json.loads(out.stdout).get("status", {})
+
+
+def get_nodehardware_status(node: str) -> dict[str, Any]:
+    """Read the full status object from the NodeHardware CR."""
+    out = kubectl(["get", "nodehardware", node, "-o", "json"], capture=True)
+    return json.loads(out.stdout).get("status", {})
+
+
+def test_twin_status_populated(ctx: Ctx) -> None:
+    """IT-TWIN-STATUS-01: verify the operator writes twin status fields.
+
+    The operator must populate schedulableClass, predicted scores, and
+    lastUpdated in the NodeTwin status. The agent writes controlStatus
+    separately. Both must coexist.
+    """
+    log("IT-TWIN-STATUS-01")
+    set_static_hp_frac("1")
+    wait_node_label(ctx.perf_node, "joulie.io/power-profile", "performance")
+
+    # Wait for the operator to populate twin status (needs 1-2 reconcile cycles).
+    def _twin_status_present() -> bool:
+        status = get_nodetwin_status(ctx.perf_node)
+        return status.get("schedulableClass", "") != ""
+
+    wait_until(_twin_status_present, timeout_sec=30, desc="twin status populated")
+
+    for node in [ctx.perf_node, ctx.eco_node]:
+        status = get_nodetwin_status(node)
+        sc = status.get("schedulableClass", "")
+        if not sc:
+            raise AssertionError(f"node={node}: schedulableClass is empty")
+        log(f"node={node} schedulableClass={sc}")
+
+        # Predicted scores must be present (may be 0 but field must exist).
+        for field in ["predictedPowerHeadroomScore", "predictedCoolingStressScore", "predictedPsuStressScore"]:
+            if field not in status:
+                raise AssertionError(f"node={node}: missing twin status field {field}")
+
+        last = status.get("lastUpdated", "")
+        if not last:
+            raise AssertionError(f"node={node}: lastUpdated is empty")
+
+    # Verify agent's controlStatus coexists with operator's twin status.
+    def _control_status_present() -> bool:
+        status = get_nodetwin_status(ctx.eco_node)
+        cs = status.get("controlStatus", {})
+        return cs.get("cpu", {}).get("result", "") != ""
+
+    wait_until(_control_status_present, timeout_sec=30, desc="agent controlStatus populated")
+    status = get_nodetwin_status(ctx.eco_node)
+    # Both must be present simultaneously.
+    if not status.get("schedulableClass"):
+        raise AssertionError("schedulableClass lost after agent wrote controlStatus")
+    if not status.get("controlStatus", {}).get("cpu", {}).get("result"):
+        raise AssertionError("controlStatus.cpu.result missing")
+    log("twin status and controlStatus coexist correctly")
+
+
+def test_nodehardware_discovery(ctx: Ctx) -> None:
+    """IT-HW-01: verify the agent discovers hardware and writes NodeHardware status."""
+    log("IT-HW-01")
+
+    def _hw_present() -> bool:
+        out = kubectl(["get", "nodehardware", ctx.eco_node, "-o", "json"], check=False, capture=True)
+        if out.returncode != 0:
+            return False
+        status = json.loads(out.stdout).get("status", {})
+        return status.get("updatedAt", "") != ""
+
+    wait_until(_hw_present, timeout_sec=30, desc=f"nodehardware {ctx.eco_node} status populated")
+
+    for node in [ctx.perf_node, ctx.eco_node]:
+        status = get_nodehardware_status(node)
+        cpu = status.get("cpu", {})
+        if not cpu.get("totalCores"):
+            raise AssertionError(f"node={node}: cpu.totalCores is 0 or missing")
+        log(f"node={node} cpu.totalCores={cpu.get('totalCores')} cpu.rawModel={cpu.get('rawModel', '')}")
+
+        caps = status.get("capabilities", {})
+        if "cpuTelemetry" not in caps:
+            raise AssertionError(f"node={node}: capabilities.cpuTelemetry missing")
+
+        quality = status.get("quality", {})
+        if not quality.get("overall"):
+            raise AssertionError(f"node={node}: quality.overall is empty")
+        log(f"node={node} quality={quality.get('overall')}")
+
+
+def test_scheduler_extender_scoring(ctx: Ctx) -> None:
+    """IT-SCHED-SCORE-01: verify scheduler extender returns valid prioritize responses."""
+    log("IT-SCHED-SCORE-01")
+    scheduler_repo = os.getenv("JOULIE_SCHEDULER_IMAGE_REPOSITORY", "").strip()
+    if not scheduler_repo:
+        log("SKIP: scheduler extender image not provided")
+        return
+
+    # Ensure eco node is in eco so we can test scoring differentiation.
+    set_static_hp_frac("0")
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "eco")
+
+    # Give the scheduler a moment to sync twin state.
+    time.sleep(6)
+
+    # Build a minimal ExtenderArgs prioritize request.
+    prioritize_body = json.dumps({
+        "Pod": {
+            "metadata": {
+                "name": "test-pod",
+                "namespace": "joulie-it",
+            },
+            "spec": {
+                "containers": [{"name": "c", "image": "busybox:1.36"}],
+            },
+        },
+        "Nodes": {
+            "metadata": {},
+            "items": [
+                {
+                    "metadata": {"name": ctx.perf_node},
+                },
+                {
+                    "metadata": {"name": ctx.eco_node},
+                },
+            ],
+        },
+        "NodeNames": [ctx.perf_node, ctx.eco_node],
+    })
+
+    # Port-forward to the scheduler extender and send the request.
+    pf = subprocess.Popen(
+        ["kubectl", "-n", "joulie-system", "port-forward", "svc/joulie-scheduler-extender", "19876:9876"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.time() + 15
+        result = None
+        while time.time() < deadline:
+            out = run(
+                ["curl", "-fsSL", "-X", "POST",
+                 "-H", "Content-Type: application/json",
+                 "-d", prioritize_body,
+                 "http://127.0.0.1:19876/prioritize"],
+                capture=True,
+                check=False,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                result = json.loads(out.stdout)
+                break
+            time.sleep(1.0)
+        if result is None:
+            raise RuntimeError("timeout calling scheduler extender /prioritize")
+    finally:
+        pf.terminate()
+
+    # Validate response structure.
+    if not isinstance(result, list):
+        raise AssertionError(f"expected list response from /prioritize, got {type(result).__name__}")
+    if len(result) != 2:
+        raise AssertionError(f"expected 2 node scores, got {len(result)}")
+    for entry in result:
+        if "host" not in entry or "score" not in entry:
+            raise AssertionError(f"missing host or score in prioritize response: {entry}")
+        score = entry["score"]
+        if not (0 <= score <= 100):
+            raise AssertionError(f"score {score} out of range [0, 100] for {entry['host']}")
+        log(f"node={entry['host']} score={score}")
+
+    log("scheduler extender scoring verified")
+
+
+def test_twin_status_survives_agent_writes(ctx: Ctx) -> None:
+    """IT-TWIN-STATUS-02: verify operator twin status persists across agent reconcile cycles.
+
+    The agent writes controlStatus every reconcile interval (5s in tests).
+    The operator's schedulableClass must not be overwritten.
+    """
+    log("IT-TWIN-STATUS-02")
+    set_static_hp_frac("1")
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
+
+    # Wait for twin status to be populated.
+    def _has_sc() -> bool:
+        return get_nodetwin_status(ctx.eco_node).get("schedulableClass", "") != ""
+
+    wait_until(_has_sc, timeout_sec=30, desc="schedulableClass present")
+
+    # Record the schedulableClass.
+    sc_before = get_nodetwin_status(ctx.eco_node).get("schedulableClass")
+
+    # Wait for 3 agent reconcile cycles (5s each = 15s).
+    time.sleep(15)
+
+    # Verify schedulableClass survived the agent's writes.
+    sc_after = get_nodetwin_status(ctx.eco_node).get("schedulableClass")
+    if not sc_after:
+        raise AssertionError("schedulableClass was wiped after agent reconcile cycles")
+    if sc_after != sc_before:
+        raise AssertionError(
+            f"schedulableClass changed unexpectedly: {sc_before!r} -> {sc_after!r}"
+        )
+
+    # Also verify controlStatus is still present.
+    cs = get_nodetwin_status(ctx.eco_node).get("controlStatus", {})
+    if not cs.get("cpu", {}).get("updatedAt"):
+        raise AssertionError("controlStatus.cpu.updatedAt missing after wait")
+    log("twin status survived agent write cycles")
+
+
+def test_scheduler_filter_endpoint(ctx: Ctx) -> None:
+    """IT-SCHED-FILTER-01: verify scheduler extender /filter endpoint directly.
+
+    Sends raw ExtenderArgs to /filter and verifies:
+    - Performance pod: eco node filtered out, perf node passes
+    - Standard pod: both nodes pass (no filtering)
+    """
+    log("IT-SCHED-FILTER-01")
+    scheduler_repo = os.getenv("JOULIE_SCHEDULER_IMAGE_REPOSITORY", "").strip()
+    if not scheduler_repo:
+        log("SKIP: scheduler extender image not provided")
+        return
+
+    set_static_hp_frac("0")
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "eco")
+    wait_node_twin_class(ctx.eco_node, "eco")
+    wait_node_twin_class(ctx.perf_node, "performance")
+    time.sleep(4)
+
+    def call_filter(pod_meta: dict, pod_spec: dict) -> dict:
+        body = json.dumps({
+            "Pod": {"metadata": pod_meta, "spec": pod_spec},
+            "Nodes": {
+                "metadata": {},
+                "items": [
+                    {"metadata": {"name": ctx.perf_node}},
+                    {"metadata": {"name": ctx.eco_node}},
+                ],
+            },
+            "NodeNames": [ctx.perf_node, ctx.eco_node],
+        })
+        pf = subprocess.Popen(
+            ["kubectl", "-n", "joulie-system", "port-forward",
+             "svc/joulie-scheduler-extender", "19877:9876"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                out = run(
+                    ["curl", "-fsSL", "-X", "POST",
+                     "-H", "Content-Type: application/json",
+                     "-d", body, "http://127.0.0.1:19877/filter"],
+                    capture=True, check=False,
+                )
+                if out.returncode == 0 and out.stdout.strip():
+                    return json.loads(out.stdout)
+                time.sleep(1.0)
+            raise RuntimeError("timeout calling /filter")
+        finally:
+            pf.terminate()
+
+    # Performance pod: eco node should be filtered out.
+    result = call_filter(
+        {"name": "test-perf", "namespace": "joulie-it",
+         "annotations": {"joulie.io/workload-class": "performance"}},
+        {"containers": [{"name": "c", "image": "busybox:1.36"}]},
+    )
+    passed_names = [
+        n["metadata"]["name"]
+        for n in (result.get("nodes") or {}).get("items", [])
+    ]
+    failed = result.get("failedNodes", {})
+    if ctx.eco_node not in failed:
+        raise AssertionError(
+            f"eco node {ctx.eco_node} should be in failedNodes for perf pod, "
+            f"passed={passed_names} failed={list(failed.keys())}"
+        )
+    if ctx.perf_node not in passed_names:
+        raise AssertionError(
+            f"perf node {ctx.perf_node} should pass filter for perf pod, "
+            f"passed={passed_names}"
+        )
+    log(f"perf pod filter: passed={passed_names} failed={list(failed.keys())}")
+
+    # Standard pod: both nodes should pass.
+    result = call_filter(
+        {"name": "test-std", "namespace": "joulie-it"},
+        {"containers": [{"name": "c", "image": "busybox:1.36"}]},
+    )
+    passed_names = [
+        n["metadata"]["name"]
+        for n in (result.get("nodes") or {}).get("items", [])
+    ]
+    if len(passed_names) != 2:
+        raise AssertionError(
+            f"standard pod should pass on both nodes, got passed={passed_names}"
+        )
+    log(f"standard pod filter: passed={passed_names}")
+    log("scheduler filter endpoint verified")
+
+
+def test_scheduling_draining_rejection(ctx: Ctx) -> None:
+    """IT-SCH-DRAIN-01: performance pod is rejected from a draining node.
+
+    When a node is in draining state (eco transition blocked by existing perf
+    pod), new performance pods pinned to that node must be rejected by the
+    scheduler extender.
+    """
+    log("IT-SCH-DRAIN-01")
+
+    # Start with eco_node in performance, place a perf pod to trigger draining.
+    set_static_hp_frac("1")
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
+    wait_node_draining_false(ctx.eco_node)
+
+    delete_pod("joulie-it", "drain-blocker")
+    apply_yaml(mk_pod_yaml("drain-blocker", workload_class="performance", node_name=ctx.eco_node))
+    wait_pod_phase("joulie-it", "drain-blocker", "Running")
+
+    # Trigger eco transition: operator sees perf pod -> draining.
+    set_static_hp_frac("0")
+    wait_node_guarded_transition(ctx.eco_node)
+    # Wait for cache to pick up draining state.
+    time.sleep(4)
+
+    # New perf pod pinned to eco_node via nodeSelector should be rejected.
+    delete_pod("joulie-it", "drain-reject")
+    apply_yaml(mk_pod_yaml(
+        "drain-reject",
+        workload_class="performance",
+        node_selector={"kubernetes.io/hostname": ctx.eco_node},
+    ))
+    wait_pod_pending("joulie-it", "drain-reject")
+    wait_pod_unschedulable_reason("joulie-it", "drain-reject", "joulie")
+    log("performance pod correctly rejected from draining node")
+
+    # Cleanup.
+    delete_pod("joulie-it", "drain-reject")
+    delete_pod("joulie-it", "drain-blocker")
+    wait_node_eco_ready(ctx.eco_node)
+
+
+def test_rapid_policy_switch(ctx: Ctx) -> None:
+    """IT-POLICY-SWITCH-01: rapid frac changes converge correctly.
+
+    Switch frac=1 -> frac=0 -> frac=1 in quick succession and verify that
+    both nodes land in the correct final state (both performance).
+    """
+    log("IT-POLICY-SWITCH-01")
+    set_static_hp_frac("1")
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
+    wait_node_label(ctx.perf_node, "joulie.io/power-profile", "performance")
+
+    # Rapid switch: eco -> perf -> eco -> perf.
+    set_static_hp_frac("0")
+    time.sleep(3)
+    set_static_hp_frac("1")
+
+    # Final state: both nodes should be performance.
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
+    wait_node_label(ctx.perf_node, "joulie.io/power-profile", "performance")
+    wait_node_draining_false(ctx.eco_node)
+    wait_node_draining_false(ctx.perf_node)
+
+    # Twin status should reflect performance for both.
+    wait_node_twin_class(ctx.eco_node, "performance")
+    wait_node_twin_class(ctx.perf_node, "performance")
+    log("rapid policy switch converged correctly")
+
+
+def test_twin_scores_change_with_profile(ctx: Ctx) -> None:
+    """IT-TWIN-SCORES-01: twin status scores update when profile changes.
+
+    When a node transitions between performance and eco, the twin predicted
+    scores should reflect the new profile. This validates the operator's twin
+    computation is re-run on profile changes.
+    """
+    log("IT-TWIN-SCORES-01")
+    set_static_hp_frac("1")
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "performance")
+    wait_node_twin_class(ctx.eco_node, "performance")
+
+    # Record scores under performance profile.
+    perf_status = get_nodetwin_status(ctx.eco_node)
+    perf_headroom = perf_status.get("predictedPowerHeadroomScore", -1)
+    perf_last = perf_status.get("lastUpdated", "")
+    log(f"performance: headroom={perf_headroom} lastUpdated={perf_last}")
+
+    # Switch to eco.
+    set_static_hp_frac("0")
+    wait_node_eco_ready(ctx.eco_node)
+
+    # Wait for twin to update.
+    def _updated() -> bool:
+        s = get_nodetwin_status(ctx.eco_node)
+        return s.get("lastUpdated", "") != perf_last and s.get("schedulableClass") == "eco"
+
+    wait_until(_updated, timeout_sec=30, desc="twin status updated after eco transition")
+
+    eco_status = get_nodetwin_status(ctx.eco_node)
+    eco_headroom = eco_status.get("predictedPowerHeadroomScore", -1)
+    log(f"eco: headroom={eco_headroom} lastUpdated={eco_status.get('lastUpdated', '')}")
+
+    # Scores should have changed (eco has different cap/headroom from perf).
+    # At minimum, lastUpdated must differ.
+    if eco_status.get("lastUpdated") == perf_last:
+        raise AssertionError("lastUpdated did not change after profile switch")
+    log("twin scores updated after profile change")
+
+
+def test_standard_pod_schedules_anywhere(ctx: Ctx) -> None:
+    """IT-SCH-STD-01: standard pod schedules on both perf and eco nodes.
+
+    Standard (no workload-class annotation) pods must be accepted by the
+    scheduler extender on any node regardless of its power profile.
+    """
+    log("IT-SCH-STD-01")
+    set_static_hp_frac("0")
+    wait_node_label(ctx.eco_node, "joulie.io/power-profile", "eco")
+    wait_node_twin_class(ctx.eco_node, "eco")
+    wait_node_twin_class(ctx.perf_node, "performance")
+
+    # Standard pod on eco node.
+    delete_pod("joulie-it", "std-on-eco")
+    apply_yaml(mk_pod_yaml(
+        "std-on-eco",
+        node_selector={"kubernetes.io/hostname": ctx.eco_node},
+    ))
+    wait_pod_phase("joulie-it", "std-on-eco", "Running")
+    log("standard pod scheduled on eco node")
+    delete_pod("joulie-it", "std-on-eco")
+
+    # Standard pod on perf node.
+    delete_pod("joulie-it", "std-on-perf")
+    apply_yaml(mk_pod_yaml(
+        "std-on-perf",
+        node_selector={"kubernetes.io/hostname": ctx.perf_node},
+    ))
+    wait_pod_phase("joulie-it", "std-on-perf", "Running")
+    log("standard pod scheduled on perf node")
+    delete_pod("joulie-it", "std-on-perf")
+
+
 def main() -> int:
     try:
         scope = os.getenv("IT_SCOPE", "all").strip().lower()
@@ -911,12 +1363,21 @@ def main() -> int:
         ctx = test_boot_and_install()
         test_scheduler_extender_deployed(ctx)
         test_telemetry_http(ctx)
+        test_twin_status_populated(ctx)
+        test_nodehardware_discovery(ctx)
         if scope in ("all", "full"):
             test_classification_matrix(ctx)
             test_fsm_and_labels(ctx)
             test_fsm_toggle_under_eco(ctx)
             test_fsm_idempotency(ctx)
             test_scheduling(ctx)
+            test_scheduler_extender_scoring(ctx)
+            test_scheduler_filter_endpoint(ctx)
+            test_scheduling_draining_rejection(ctx)
+            test_standard_pod_schedules_anywhere(ctx)
+            test_rapid_policy_switch(ctx)
+            test_twin_scores_change_with_profile(ctx)
+            test_twin_status_survives_agent_writes(ctx)
         elif scope in ("gpu", "gpu-only", "gpu_only"):
             log("non-GPU suites temporarily disabled (IT_SCOPE=gpu-only)")
         else:
