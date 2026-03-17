@@ -2,12 +2,12 @@
   "default": "stable",
   "versions": [
     {
-      "name": "stable",
-      "path": "/Joulie/stable/"
-    },
-    {
       "name": "main",
       "path": "/Joulie/main/"
+    },
+    {
+      "name": "stable",
+      "path": "/Joulie/stable/"
     },
     {
       "name": "v0.0.5",
