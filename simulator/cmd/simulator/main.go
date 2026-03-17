@@ -2317,7 +2317,10 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 					"sim.joulie.io/workloadId":   j.WorkloadID,
 					"sim.joulie.io/workloadType": j.WorkloadType,
 					"sim.joulie.io/podRole":      j.PodRole,
-					"joulie.io/workload-class":   j.Class,
+					"sim.joulie.io/cpu-util-pct":        strconv.FormatFloat(j.CPUUtilTarget*100, 'f', 1, 64),
+				"sim.joulie.io/gpu-util-pct":        strconv.FormatFloat(j.GPUUtilTarget*100, 'f', 1, 64),
+				"sim.joulie.io/memory-pressure-pct": strconv.FormatFloat(j.MemoryIntensity*100, 'f', 1, 64),
+				"sim.joulie.io/io-intensity":        strconv.FormatFloat(j.IOIntensity, 'f', 2, 64),
 				},
 			},
 			Spec: corev1.PodSpec{

@@ -29,7 +29,7 @@ simulator:
   manifest: examples/07 - simulator-gpu-powercaps/manifests/20-simulator.yaml
   # Classifier uncertainty: fraction of jobs whose workload class is randomly
   # flipped during trace loading to simulate misclassification.
-  classifier_misclassify_rate: 0.10
+  classifier_misclassify_rate: 0.0
   # Facility metric simulation: sinusoidal ambient temperature variation.
   facility_ambient_base_c: 22.0
   facility_ambient_amplitude_c: 8.0
@@ -60,10 +60,10 @@ policy:
 
 images:
   joulie_registry: registry.cern.ch/mbunino/joulie
-  joulie_tag: dev0.1.0
+  joulie_tag: dev0.2.0
   sim_registry: registry.cern.ch/mbunino/joulie
   sim_image: joulie-simulator
-  sim_tag: dev0.1.0
+  sim_tag: dev0.2.0
 
 inventory:
   source: experiments/03-homogeneous-h100-benchmark/configs/cluster-nodes.yaml

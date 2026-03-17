@@ -1243,33 +1243,39 @@ func newTestSimulatorWithJobs(jobs []*simJob) (*simulator, kubernetes.Interface)
 	return s, kube
 }
 
-func TestInjectTraceJobsSetsWorkloadClassAnnotation(t *testing.T) {
-	cases := []struct {
-		name  string
-		class string
-	}{
-		{"performance pod", "performance"},
-		{"standard pod", "standard"},
+func TestInjectTraceJobsSetsSimUtilAnnotations(t *testing.T) {
+	job := &simJob{
+		JobID:             "j-compute",
+		Class:             "performance",
+		Namespace:         "default",
+		SubmitOffsetSec:   0,
+		RequestedCPUCores: 4,
+		CPUUtilTarget:     0.85,
+		GPUUtilTarget:     0.0,
+		MemoryIntensity:   0.20,
+		IOIntensity:       0.10,
+		PodName:           "sim-j-compute",
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			job := &simJob{
-				JobID:             "j-" + tc.class,
-				Class:             tc.class,
-				Namespace:         "default",
-				SubmitOffsetSec:   0,
-				RequestedCPUCores: 1,
-				PodName:           "sim-j-" + tc.class,
-			}
-			_, kube := newTestSimulatorWithJobs([]*simJob{job})
-			pod, err := kube.CoreV1().Pods("default").Get(context.Background(), job.PodName, metav1.GetOptions{})
-			if err != nil {
-				t.Fatalf("get pod: %v", err)
-			}
-			if got := pod.Annotations["joulie.io/workload-class"]; got != tc.class {
-				t.Fatalf("expected annotation joulie.io/workload-class=%q, got %q", tc.class, got)
-			}
-		})
+	_, kube := newTestSimulatorWithJobs([]*simJob{job})
+	pod, err := kube.CoreV1().Pods("default").Get(context.Background(), job.PodName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	// Should NOT have joulie.io/workload-class (no more cheating).
+	if got := pod.Annotations["joulie.io/workload-class"]; got != "" {
+		t.Fatalf("expected no joulie.io/workload-class annotation, got %q", got)
+	}
+	// Should have sim utilization annotations.
+	expected := map[string]string{
+		"sim.joulie.io/cpu-util-pct":        "85.0",
+		"sim.joulie.io/gpu-util-pct":        "0.0",
+		"sim.joulie.io/memory-pressure-pct": "20.0",
+		"sim.joulie.io/io-intensity":        "0.10",
+	}
+	for key, want := range expected {
+		if got := pod.Annotations[key]; got != want {
+			t.Errorf("annotation %s: got %q, want %q", key, got, want)
+		}
 	}
 }
 

@@ -33,7 +33,9 @@ func classifierLoop(ctx context.Context, kube kubernetes.Interface, dyn dynamic.
 			Timeout:         5 * time.Second,
 			KeplerAvailable: cfg.keplerAvailable,
 		},
-		MinConfidence: cfg.minConfidence,
+		MinConfidence:         cfg.minConfidence,
+		SimAnnotationFallback: cfg.simAnnotationFallback,
+		SimNoisePct:           cfg.simNoisePct,
 	})
 
 	// Track last classification time per pod to avoid reclassifying too often.
@@ -58,13 +60,15 @@ func classifierLoop(ctx context.Context, kube kubernetes.Interface, dyn dynamic.
 }
 
 type classifierConfig struct {
-	classifyInterval     time.Duration
-	reclassifyInterval   time.Duration
-	metricsWindow        time.Duration
-	prometheusAddress    string
-	keplerAvailable      bool
-	minConfidence        float64
-	nodeSelector         string
+	classifyInterval      time.Duration
+	reclassifyInterval    time.Duration
+	metricsWindow         time.Duration
+	prometheusAddress     string
+	keplerAvailable       bool
+	minConfidence         float64
+	nodeSelector          string
+	simAnnotationFallback bool
+	simNoisePct           float64
 }
 
 func classifyAllPods(

@@ -44,6 +44,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,6 +65,16 @@ type ClassifierConfig struct {
 	// MinConfidence is the minimum confidence to publish a profile.
 	// Below this, static/default values are used.
 	MinConfidence float64
+	// SimAnnotationFallback enables reading sim.joulie.io/* annotations as a
+	// fallback when Prometheus metrics are unavailable. This is used in
+	// simulation environments where the simulator exposes per-pod utilization
+	// data via pod annotations instead of real Prometheus metrics.
+	SimAnnotationFallback bool
+	// SimNoisePct adds Gaussian noise to sim annotation values to simulate
+	// measurement error. A value of 10 means +/-10% noise on utilization
+	// values. Zero disables noise. This makes the classifier occasionally
+	// cross heuristic thresholds and produce realistic misclassifications.
+	SimNoisePct float64
 }
 
 // DefaultClassifierConfig returns sensible defaults.
@@ -143,14 +155,116 @@ func NewClassifier(cfg ClassifierConfig) *Classifier {
 func (c *Classifier) ClassifyPod(ctx context.Context, namespace, podName string, labels, annotations map[string]string) (joulie.WorkloadProfileStatus, error) {
 	hints := ParsePodHints(labels, annotations)
 
-	// Fetch metrics
+	// Fetch metrics from Prometheus.
 	m, err := c.metrics.FetchPodMetrics(ctx, namespace, podName, c.cfg.MetricsWindow)
 	if err != nil {
+		// Fallback: read sim annotations when Prometheus is unavailable.
+		if c.cfg.SimAnnotationFallback {
+			if simM, ok := ParseSimAnnotations(annotations, c.cfg.SimNoisePct); ok {
+				simM.PodName = podName
+				simM.Namespace = namespace
+				wp := c.classify(hints, simM)
+				// Derive criticality class from utilization if no explicit hint.
+				if hints.WorkloadClass == "" || hints.WorkloadClass == "standard" {
+					wp.Criticality.Class = deriveClassFromMetrics(simM)
+				}
+				return wp, nil
+			}
+		}
 		log.Printf("classifier: metrics unavailable for %s/%s (%v), using hints only", namespace, podName, err)
 		return fromHintsOnly(hints), nil
 	}
 
-	return c.classify(hints, m), nil
+	wp := c.classify(hints, m)
+	// Derive criticality class from utilization if no explicit hint.
+	if hints.WorkloadClass == "" || hints.WorkloadClass == "standard" {
+		if c.cfg.SimAnnotationFallback {
+			wp.Criticality.Class = deriveClassFromMetrics(m)
+		}
+	}
+	return wp, nil
+}
+
+// ParseSimAnnotations reads simulated utilization data from pod annotations.
+// The simulator sets these annotations from the trace workloadProfile data,
+// allowing the classifier to classify pods without real Prometheus metrics.
+// Returns (PodMetrics, true) if at least one sim annotation was found.
+func ParseSimAnnotations(annotations map[string]string, noisePct float64) (PodMetrics, bool) {
+	if annotations == nil {
+		return PodMetrics{}, false
+	}
+	var m PodMetrics
+	found := false
+
+	if v, err := strconv.ParseFloat(annotations["sim.joulie.io/cpu-util-pct"], 64); err == nil {
+		m.CPUUtilPct = addNoise(v, noisePct)
+		m.CPUUsageCores = m.CPUUtilPct / 100.0 // normalized
+		m.CPURequestCores = 1.0
+		found = true
+	}
+	if v, err := strconv.ParseFloat(annotations["sim.joulie.io/gpu-util-pct"], 64); err == nil {
+		m.GPUUtilPct = addNoise(v, noisePct)
+		found = true
+	}
+	if v, err := strconv.ParseFloat(annotations["sim.joulie.io/memory-pressure-pct"], 64); err == nil {
+		m.MemoryPressurePct = addNoise(v, noisePct)
+		found = true
+	}
+
+	// Derive classification ratios (same logic as FetchPodMetrics).
+	if m.CPUUtilPct > 0 {
+		maxOther := m.GPUUtilPct
+		if m.MemoryPressurePct > maxOther {
+			maxOther = m.MemoryPressurePct
+		}
+		if m.CPUUtilPct > 60 && maxOther < 30 {
+			m.CPUBoundRatio = m.CPUUtilPct / 100.0
+		}
+	}
+	if m.MemoryPressurePct > 50 && m.CPUUtilPct < 60 {
+		m.MemoryBoundRatio = m.MemoryPressurePct / 100.0
+	}
+	m.GPUDominant = m.GPUUtilPct > 40 && m.GPUUtilPct > m.CPUUtilPct
+
+	return m, found
+}
+
+// addNoise adds Gaussian noise to a value. noisePct=10 means +/-10% noise.
+// Result is clamped to [0, 100].
+func addNoise(val, noisePct float64) float64 {
+	if noisePct <= 0 {
+		return val
+	}
+	noise := rand.NormFloat64() * (noisePct / 100.0) * val
+	v := val + noise
+	if v < 0 {
+		v = 0
+	}
+	if v > 100 {
+		v = 100
+	}
+	return v
+}
+
+// deriveClassFromMetrics infers "performance" or "standard" from utilization
+// data when no explicit workload-class annotation is present. This simulates
+// what a real online classifier would do: observe the workload and decide.
+//
+// A pod is classified as "performance" if it is compute-intensive enough that
+// power capping would materially degrade its performance:
+//   - High CPU utilization (>65%) and compute-bound (low memory pressure)
+//   - High GPU utilization (>50%) indicating active GPU compute
+//   - GPU-dominant workload (GPU util > CPU util)
+func deriveClassFromMetrics(m PodMetrics) string {
+	// GPU-intensive workloads are performance-sensitive.
+	if m.GPUDominant || m.GPUUtilPct > 50 {
+		return "performance"
+	}
+	// CPU compute-bound at high utilization.
+	if m.CPUUtilPct > 65 && m.MemoryPressurePct < 50 {
+		return "performance"
+	}
+	return "standard"
 }
 
 // classify applies heuristic rules to produce a WorkloadProfileStatus.
