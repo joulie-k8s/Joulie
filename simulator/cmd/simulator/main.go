@@ -700,71 +700,96 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	st := s.getNode(node)
 	modelForTelemetry := s.modelForNode(node)
 
-	// Hold lock while computing power and reading nodeState fields to avoid
-	// races with advanceJobProgress and handleControl.
+	// Snapshot state under lock, then build response outside lock to minimize
+	// contention with the workload loop and pod polling goroutines.
 	s.mu.Lock()
 	power := s.nodePowerWithModel(st, modelForTelemetry)
-	s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
-	s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
+	snap := struct {
+		capW, throttlePct, cpuUtil, freqScale, cpuAvgPower, cpuInstantPower float64
+		cpuWorkClass, gpuWorkClass                                          string
+		capSaturated                                                        bool
+		podsRunning                                                         int
+		gpuPowerW, gpuCapPerGpu, gpuTargetCapPerGpu, gpuUtil                float64
+		gpuPerfMul, memIntensity, ioIntensity, cpuFeedIntensity             float64
+		cpuThermalThrottle, cpuTempC, targetCapW                            float64
+		byIntentClass                                                       map[string]int
+	}{
+		capW: st.CapWatts, throttlePct: float64(st.ThrottlePct),
+		cpuUtil: st.CPUUtil, freqScale: st.FreqScale,
+		cpuAvgPower: st.CPUAvgPowerWatts, cpuInstantPower: st.CPUInstantPowerWatts,
+		cpuWorkClass: st.CPUWorkClass, gpuWorkClass: st.GPUWorkClass,
+		capSaturated: st.CapSaturated, podsRunning: st.PodsRunning,
+		gpuPowerW: st.GPUPowerWatts, gpuCapPerGpu: st.GPUCapWattsPerGpu,
+		gpuTargetCapPerGpu: st.GPUTargetCapWattsPerGpu, gpuUtil: st.GPUUtil,
+		gpuPerfMul: st.GPUPerfMultiplier, memIntensity: st.MemoryIntensity,
+		ioIntensity: st.IOIntensity, cpuFeedIntensity: st.CPUFeedIntensity,
+		cpuThermalThrottle: st.CPUThermalThrottle, cpuTempC: st.CPUTemperatureC,
+		targetCapW: st.TargetCapWatts, byIntentClass: st.ByIntentClass,
+	}
+	gpuAvgPowerVal := gpuAvgPower(st)
+	s.mu.Unlock()
+
+	// Prometheus metric updates are thread-safe, no lock needed.
+	s.nodeCapW.WithLabelValues(node).Set(snap.capW)
+	s.nodeThrottlePct.WithLabelValues(node).Set(snap.throttlePct)
 	s.nodePowerW.WithLabelValues(node).Set(power)
-	s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
-	s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
-	s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
-	s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
+	s.nodePods.WithLabelValues(node).Set(float64(snap.podsRunning))
+	s.nodeUtilCPU.WithLabelValues(node).Set(snap.cpuUtil)
+	s.nodeFreqScale.WithLabelValues(node).Set(snap.freqScale)
+	s.nodeRaplCapW.WithLabelValues(node).Set(snap.capW)
 	eventPayload := map[string]any{
 		"packagePowerWatts":        power,
-		"instantPackagePowerWatts": st.CPUInstantPowerWatts + st.GPUPowerWatts,
-		"capWatts":                 st.CapWatts,
-		"throttlePct":              st.ThrottlePct,
-		"freqScale":                st.FreqScale,
-		"cpuUtil":                  st.CPUUtil,
-		"cpuWorkClass":             st.CPUWorkClass,
-		"capSaturated":             st.CapSaturated,
-		"podsRunning":              st.PodsRunning,
-		"gpuPowerWatts":            st.GPUPowerWatts,
-		"gpuCapWattsPerGpu":        st.GPUCapWattsPerGpu,
-		"gpuUtil":                  st.GPUUtil,
-		"gpuWorkClass":             st.GPUWorkClass,
-		"gpuPerfMultiplier":        st.GPUPerfMultiplier,
-		"memoryIntensity":          st.MemoryIntensity,
-		"ioIntensity":              st.IOIntensity,
-		"cpuFeedIntensity":         st.CPUFeedIntensity,
+		"instantPackagePowerWatts": snap.cpuInstantPower + snap.gpuPowerW,
+		"capWatts":                 snap.capW,
+		"throttlePct":              snap.throttlePct,
+		"freqScale":                snap.freqScale,
+		"cpuUtil":                  snap.cpuUtil,
+		"cpuWorkClass":             snap.cpuWorkClass,
+		"capSaturated":             snap.capSaturated,
+		"podsRunning":              snap.podsRunning,
+		"gpuPowerWatts":            snap.gpuPowerW,
+		"gpuCapWattsPerGpu":        snap.gpuCapPerGpu,
+		"gpuUtil":                  snap.gpuUtil,
+		"gpuWorkClass":             snap.gpuWorkClass,
+		"gpuPerfMultiplier":        snap.gpuPerfMul,
+		"memoryIntensity":          snap.memIntensity,
+		"ioIntensity":              snap.ioIntensity,
+		"cpuFeedIntensity":         snap.cpuFeedIntensity,
 	}
 	resp := map[string]any{
 		"node":                     node,
 		"packagePowerWatts":        power,
-		"instantPackagePowerWatts": math.Round((st.CPUInstantPowerWatts+st.GPUPowerWatts)*100) / 100,
+		"instantPackagePowerWatts": math.Round((snap.cpuInstantPower+snap.gpuPowerW)*100) / 100,
 		"cpu": map[string]any{
-			"packagePowerWatts":  st.CPUAvgPowerWatts,
-			"instantPowerWatts":  st.CPUInstantPowerWatts,
-			"utilization":        st.CPUUtil,
-			"memoryIntensity":    st.MemoryIntensity,
-			"ioIntensity":        st.IOIntensity,
-			"workClass":          st.CPUWorkClass,
-			"freqScale":          st.FreqScale,
-			"throttlePct":        st.ThrottlePct,
-			"thermalThrottlePct": st.CPUThermalThrottle * 100.0,
-			"temperatureC":       st.CPUTemperatureC,
-			"capWatts":           st.CapWatts,
-			"targetCapWatts":     st.TargetCapWatts,
-			"raplCapWatts":       st.CapWatts,
-			"capSaturated":       st.CapSaturated,
+			"packagePowerWatts":  snap.cpuAvgPower,
+			"instantPowerWatts":  snap.cpuInstantPower,
+			"utilization":        snap.cpuUtil,
+			"memoryIntensity":    snap.memIntensity,
+			"ioIntensity":        snap.ioIntensity,
+			"workClass":          snap.cpuWorkClass,
+			"freqScale":          snap.freqScale,
+			"throttlePct":        snap.throttlePct,
+			"thermalThrottlePct": snap.cpuThermalThrottle * 100.0,
+			"temperatureC":       snap.cpuTempC,
+			"capWatts":           snap.capW,
+			"targetCapWatts":     snap.targetCapW,
+			"raplCapWatts":       snap.capW,
+			"capSaturated":       snap.capSaturated,
 		},
 		"gpu": map[string]any{
 			"present":               modelForTelemetry.GPU.Count > 0,
 			"vendor":                modelForTelemetry.GPU.Vendor,
 			"product":               modelForTelemetry.GPU.Product,
 			"count":                 modelForTelemetry.GPU.Count,
-			"powerWattsTotal":       st.GPUPowerWatts,
-			"avgPowerWattsTotal":    gpuAvgPower(st),
-			"capWattsPerGpuApplied": st.GPUCapWattsPerGpu,
-			"capWattsPerGpuTarget":  st.GPUTargetCapWattsPerGpu,
-			"utilization":           st.GPUUtil,
-			"memoryIntensity":       st.MemoryIntensity,
-			"cpuFeedIntensity":      st.CPUFeedIntensity,
-			"workClass":             st.GPUWorkClass,
-			"perfMultiplier":        st.GPUPerfMultiplier,
-			"devices":               st.GPUDevices,
+			"powerWattsTotal":       snap.gpuPowerW,
+			"avgPowerWattsTotal":    gpuAvgPowerVal,
+			"capWattsPerGpuApplied": snap.gpuCapPerGpu,
+			"capWattsPerGpuTarget":  snap.gpuTargetCapPerGpu,
+			"utilization":           snap.gpuUtil,
+			"memoryIntensity":       snap.memIntensity,
+			"cpuFeedIntensity":      snap.cpuFeedIntensity,
+			"workClass":             snap.gpuWorkClass,
+			"perfMultiplier":        snap.gpuPerfMul,
 		},
 		"hardwareModel": map[string]any{
 			"cpuModel":       modelForTelemetry.CPUModel,
@@ -774,13 +799,12 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 			"gpuProvenance":  modelForTelemetry.GPU.Provenance,
 		},
 		"pods": map[string]any{
-			"running":       st.PodsRunning,
-			"byIntentClass": st.ByIntentClass,
+			"running":       snap.podsRunning,
+			"byIntentClass": snap.byIntentClass,
 		},
 		"ts": time.Now().UTC().Format(time.RFC3339),
 	}
-	logMsg := fmt.Sprintf("telemetry node=%s powerW=%.2f capW=%.2f throttlePct=%d pods=%d", node, power, st.CapWatts, st.ThrottlePct, st.PodsRunning)
-	s.mu.Unlock()
+	logMsg := fmt.Sprintf("telemetry node=%s powerW=%.2f capW=%.2f throttlePct=%.0f pods=%d", node, power, snap.capW, snap.throttlePct, snap.podsRunning)
 
 	s.recordEvent("telemetry", node, eventPayload)
 	log.Print(logMsg)
@@ -883,23 +907,42 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 	st.LastResult = result
 	st.LastUpdate = time.Now().UTC()
 
-	// Compute power and snapshot state for response while still holding the lock.
+	// Compute power and snapshot state, then release lock quickly.
 	power := s.nodePowerWithModel(st, model)
-	s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
-	s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
+	ctrlSnap := struct {
+		capW, targetCapW, freqScale, cpuUtil         float64
+		throttlePct, targetThrottlePct                int
+		podsRunning                                   int
+		gpuCapPerGpu, gpuTargetCapPerGpu              float64
+		lastAction, lastResult                        string
+		lastUpdate                                    string
+	}{
+		capW: st.CapWatts, targetCapW: st.TargetCapWatts,
+		freqScale: st.FreqScale, cpuUtil: st.CPUUtil,
+		throttlePct: st.ThrottlePct, targetThrottlePct: st.TargetThrottlePct,
+		podsRunning: st.PodsRunning,
+		gpuCapPerGpu: st.GPUCapWattsPerGpu, gpuTargetCapPerGpu: st.GPUTargetCapWattsPerGpu,
+		lastAction: st.LastAction, lastResult: st.LastResult,
+		lastUpdate: st.LastUpdate.Format(time.RFC3339),
+	}
+	s.mu.Unlock()
+
+	// Prometheus updates and response building outside lock.
+	s.nodeCapW.WithLabelValues(node).Set(ctrlSnap.capW)
+	s.nodeThrottlePct.WithLabelValues(node).Set(float64(ctrlSnap.throttlePct))
 	s.nodePowerW.WithLabelValues(node).Set(power)
-	s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
-	s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
-	s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
-	s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
+	s.nodePods.WithLabelValues(node).Set(float64(ctrlSnap.podsRunning))
+	s.nodeUtilCPU.WithLabelValues(node).Set(ctrlSnap.cpuUtil)
+	s.nodeFreqScale.WithLabelValues(node).Set(ctrlSnap.freqScale)
+	s.nodeRaplCapW.WithLabelValues(node).Set(ctrlSnap.capW)
 	eventPayload := map[string]any{
 		"action":            payload.Action,
-		"capWatts":          st.CapWatts,
-		"targetCapWatts":    st.TargetCapWatts,
-		"throttlePct":       st.ThrottlePct,
+		"capWatts":          ctrlSnap.capW,
+		"targetCapWatts":    ctrlSnap.targetCapW,
+		"throttlePct":       ctrlSnap.throttlePct,
 		"powerWatts":        power,
-		"podsRunning":       st.PodsRunning,
-		"gpuCapWattsPerGpu": st.GPUCapWattsPerGpu,
+		"podsRunning":       ctrlSnap.podsRunning,
+		"gpuCapWattsPerGpu": ctrlSnap.gpuCapPerGpu,
 	}
 	resp := map[string]any{
 		"ok":      result == "applied",
@@ -907,23 +950,21 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 		"node":    node,
 		"message": message,
 		"state": map[string]any{
-			"capWatts":                 st.CapWatts,
-			"throttlePct":              st.ThrottlePct,
-			"targetThrottlePct":        st.TargetThrottlePct,
-			"freqScale":                st.FreqScale,
-			"cpuUtil":                  st.CPUUtil,
-			"lastAction":               st.LastAction,
-			"lastResult":               st.LastResult,
-			"lastUpdate":               st.LastUpdate.Format(time.RFC3339),
-			"podsRunning":              st.PodsRunning,
-			"gpuCapWattsPerGpuApplied": st.GPUCapWattsPerGpu,
-			"gpuCapWattsPerGpuTarget":  st.GPUTargetCapWattsPerGpu,
-			"gpuDevices":               st.GPUDevices,
+			"capWatts":                 ctrlSnap.capW,
+			"throttlePct":              ctrlSnap.throttlePct,
+			"targetThrottlePct":        ctrlSnap.targetThrottlePct,
+			"freqScale":                ctrlSnap.freqScale,
+			"cpuUtil":                  ctrlSnap.cpuUtil,
+			"lastAction":               ctrlSnap.lastAction,
+			"lastResult":               ctrlSnap.lastResult,
+			"lastUpdate":               ctrlSnap.lastUpdate,
+			"podsRunning":              ctrlSnap.podsRunning,
+			"gpuCapWattsPerGpuApplied": ctrlSnap.gpuCapPerGpu,
+			"gpuCapWattsPerGpuTarget":  ctrlSnap.gpuTargetCapPerGpu,
 		},
 		"simulatedPackagePowerWatts": power,
 	}
-	logMsg := fmt.Sprintf("control node=%s action=%s capW=%.2f throttlePct=%d powerW=%.2f pods=%d", node, payload.Action, st.CapWatts, st.ThrottlePct, power, st.PodsRunning)
-	s.mu.Unlock()
+	logMsg := fmt.Sprintf("control node=%s action=%s capW=%.2f throttlePct=%d powerW=%.2f pods=%d", node, payload.Action, ctrlSnap.capW, ctrlSnap.throttlePct, power, ctrlSnap.podsRunning)
 
 	s.controlsTotal.WithLabelValues(node, payload.Action).Inc()
 	s.controlResult.WithLabelValues(node, payload.Action, result).Inc()
@@ -1364,6 +1405,9 @@ func (s *simulator) startPodPolling(interval time.Duration) {
 		log.Printf("warning: pod polling disabled (no in-cluster config): %v", err)
 		return
 	}
+	cfg.Timeout = 8 * time.Second
+	cfg.QPS = 20
+	cfg.Burst = 40
 	kube, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Printf("warning: pod polling disabled (kube client): %v", err)
@@ -1397,22 +1441,46 @@ func (s *simulator) startPodPolling(interval time.Duration) {
 
 		s.refreshNodeStateFromKubeData(counts, podsDetailed, nodes)
 
+		// Compute power for all selected nodes in a single lock hold to
+		// reduce lock acquisition overhead.
+		type pollSnap struct {
+			node                   string
+			power, capW, cpuUtil   float64
+			throttlePct            int
+			podsRunning            int
+			freqScale              float64
+		}
+		var pollSnaps []pollSnap
+		s.mu.Lock()
 		for node, labels := range nodes {
 			if !s.nodeSelected(labels) {
 				continue
 			}
-			model := s.modelForNode(node)
-			st := s.getNode(node)
-			s.mu.Lock()
+			// Access nodeModels directly since we already hold the write lock.
+			model := s.model
+			if m, ok := s.nodeModels[node]; ok {
+				model = m
+			}
+			st := s.state[node]
+			if st == nil {
+				continue
+			}
 			power := s.nodePowerWithModel(st, model)
-			s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
-			s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
-			s.nodePowerW.WithLabelValues(node).Set(power)
-			s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
-			s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
-			s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
-			s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
-			s.mu.Unlock()
+			pollSnaps = append(pollSnaps, pollSnap{
+				node: node, power: power, capW: st.CapWatts,
+				cpuUtil: st.CPUUtil, throttlePct: st.ThrottlePct,
+				podsRunning: st.PodsRunning, freqScale: st.FreqScale,
+			})
+		}
+		s.mu.Unlock()
+		for _, ps := range pollSnaps {
+			s.nodeCapW.WithLabelValues(ps.node).Set(ps.capW)
+			s.nodeThrottlePct.WithLabelValues(ps.node).Set(float64(ps.throttlePct))
+			s.nodePowerW.WithLabelValues(ps.node).Set(ps.power)
+			s.nodePods.WithLabelValues(ps.node).Set(float64(ps.podsRunning))
+			s.nodeUtilCPU.WithLabelValues(ps.node).Set(ps.cpuUtil)
+			s.nodeFreqScale.WithLabelValues(ps.node).Set(ps.freqScale)
+			s.nodeRaplCapW.WithLabelValues(ps.node).Set(ps.capW)
 		}
 		<-ticker.C
 	}
@@ -2319,6 +2387,9 @@ func (s *simulator) startWorkloadLoop(interval time.Duration) {
 		log.Printf("warning: workload loop disabled (no in-cluster config): %v", err)
 		return
 	}
+	cfg.Timeout = 8 * time.Second
+	cfg.QPS = 30
+	cfg.Burst = 50
 	kube, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Printf("warning: workload loop disabled (kube client): %v", err)
@@ -2328,6 +2399,7 @@ func (s *simulator) startWorkloadLoop(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	last := time.Now().UTC()
+	tickCount := 0
 	for {
 		now := time.Now().UTC()
 		dt := now.Sub(last).Seconds()
@@ -2335,11 +2407,17 @@ func (s *simulator) startWorkloadLoop(interval time.Duration) {
 			dt = interval.Seconds()
 		}
 		last = now
+		tickCount++
+		if tickCount <= 5 || tickCount%30 == 0 {
+			log.Printf("workload tick %d dt=%.2fs jobs=%d", tickCount, dt, len(s.workload.jobs))
+		}
 		s.accumulateEnergy(dt)
 		s.updateFacilityMetrics(now)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		s.injectTraceJobs(ctx, kube, now)
-		s.advanceJobProgress(ctx, kube, dt, now)
+		if ctx.Err() == nil {
+			s.advanceJobProgress(ctx, kube, dt, now)
+		}
 		cancel()
 		<-ticker.C
 	}
@@ -2349,7 +2427,14 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 	if s.workload == nil {
 		return
 	}
+	// Rate-limit pod injection to avoid overwhelming the K8s API server.
+	// At most 20 pods per tick; remaining jobs will be injected on the next tick.
+	const maxInjectPerTick = 20
+	injected := 0
 	for _, j := range s.workload.jobs {
+		if injected >= maxInjectPerTick {
+			break
+		}
 		if j.Submitted {
 			continue
 		}
@@ -2427,7 +2512,10 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 				pod.Spec.NodeSelector["feature.node.kubernetes.io/pci-1002.present"] = "true"
 			}
 		}
-		if _, err := kube.CoreV1().Pods(j.Namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+		createCtx, createCancel := context.WithTimeout(ctx, 3*time.Second)
+		_, err := kube.CoreV1().Pods(j.Namespace).Create(createCtx, pod, metav1.CreateOptions{})
+		createCancel()
+		if err != nil {
 			if !apierrors.IsAlreadyExists(err) {
 				log.Printf("warning: create workload pod job=%s: %v", j.JobID, err)
 				continue
@@ -2435,6 +2523,7 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 		}
 		j.Submitted = true
 		j.SubmittedAt = now
+		injected++
 		s.jobSubmitted.WithLabelValues(j.Class).Inc()
 	}
 }
@@ -2575,7 +2664,13 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			runningByWorkload[j.WorkloadID]++
 		}
 	}
+	// Clean up pods for completed jobs, rate-limited to avoid blocking the loop.
+	deletesThisTick := 0
+	const maxDeletesPerTick = 10
 	for _, j := range s.workload.jobs {
+		if deletesThisTick >= maxDeletesPerTick || ctx.Err() != nil {
+			break
+		}
 		if !j.Completed {
 			continue
 		}
@@ -2585,11 +2680,20 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 		}
 		j.NodeName = p.Node
 		s.ensureWorkloadPodDeleted(kube, j)
+		deletesThisTick++
 	}
 	for node, jobs := range byNode {
+		if ctx.Err() != nil {
+			break
+		}
 		s.mu.RLock()
 		st := s.state[node]
-		model := s.modelForNode(node)
+		// Access nodeModels directly to avoid recursive RLock (which deadlocks
+		// when a writer is waiting, due to Go RWMutex writer-priority semantics).
+		model := s.model
+		if m, ok := s.nodeModels[node]; ok {
+			model = m
+		}
 		freqScale := 1.0
 		gpuCapFactor := 1.0
 		gpuCount := 0.0
@@ -2812,7 +2916,7 @@ func (s *simulator) ensureWorkloadPodDeleted(kube kubernetes.Interface, j *simJo
 	}
 	grace := int64(0)
 	propagation := metav1.DeletePropagationBackground
-	deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	deleteCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	err := kube.CoreV1().Pods(j.Namespace).Delete(deleteCtx, j.PodName, metav1.DeleteOptions{
 		GracePeriodSeconds: &grace,

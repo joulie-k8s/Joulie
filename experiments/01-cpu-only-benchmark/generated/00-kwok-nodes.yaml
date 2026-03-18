@@ -63,6 +63,254 @@ status:
 apiVersion: v1
 kind: Node
 metadata:
+  name: kwok-cpu-highcore-2
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9965 192-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highcore-2"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9965-192-Core-Processor"
+    joulie.io/hw.cpu-cores: "384"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highcore-3
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9965 192-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highcore-3"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9965-192-Core-Processor"
+    joulie.io/hw.cpu-cores: "384"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highcore-4
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9965 192-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highcore-4"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9965-192-Core-Processor"
+    joulie.io/hw.cpu-cores: "384"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highcore-5
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9965 192-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highcore-5"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9965-192-Core-Processor"
+    joulie.io/hw.cpu-cores: "384"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highcore-6
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9965 192-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highcore-6"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9965-192-Core-Processor"
+    joulie.io/hw.cpu-cores: "384"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highcore-7
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9965 192-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highcore-7"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9965-192-Core-Processor"
+    joulie.io/hw.cpu-cores: "384"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highcore-8
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9965 192-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highcore-8"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9965-192-Core-Processor"
+    joulie.io/hw.cpu-cores: "384"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highcore-9
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9965 192-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highcore-9"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9965-192-Core-Processor"
+    joulie.io/hw.cpu-cores: "384"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "384"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
   name: kwok-cpu-highfreq-0
   annotations:
     kwok.x-k8s.io/node: fake
@@ -102,6 +350,254 @@ metadata:
     type: kwok
     joulie.io/managed: "true"
     joulie.io/node-name: "kwok-cpu-highfreq-1"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9375F-32-Core-Processor"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highfreq-2
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9375F 32-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highfreq-2"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9375F-32-Core-Processor"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highfreq-3
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9375F 32-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highfreq-3"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9375F-32-Core-Processor"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highfreq-4
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9375F 32-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highfreq-4"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9375F-32-Core-Processor"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highfreq-5
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9375F 32-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highfreq-5"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9375F-32-Core-Processor"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highfreq-6
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9375F 32-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highfreq-6"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9375F-32-Core-Processor"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highfreq-7
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9375F 32-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highfreq-7"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9375F-32-Core-Processor"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highfreq-8
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9375F 32-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highfreq-8"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9375F-32-Core-Processor"
+    joulie.io/hw.cpu-cores: "64"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+  capacity:
+    cpu: "64"
+    memory: "770Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-highfreq-9
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9375F 32-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-highfreq-9"
     joulie.io/hw.cpu-model: "AMD-EPYC-9375F-32-Core-Processor"
     joulie.io/hw.cpu-cores: "64"
     joulie.io/hw.cpu-sockets: "2"
@@ -226,6 +722,502 @@ metadata:
     type: kwok
     joulie.io/managed: "true"
     joulie.io/node-name: "kwok-cpu-intensive-3"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-4
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-4"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-5
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-5"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-6
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-6"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-7
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-7"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-8
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-8"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-9
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-9"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-10
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-10"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-11
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-11"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-12
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-12"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-13
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-13"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-14
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-14"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-15
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-15"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-16
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-16"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-17
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-17"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-18
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-18"
+    joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
+    joulie.io/hw.cpu-cores: "192"
+    joulie.io/hw.cpu-sockets: "2"
+    joulie.io/hw.gpu-count: "0"
+    joulie.io/hw.kind: "cpu-only"
+spec:
+  taints:
+    - key: kwok.x-k8s.io/node
+      value: fake
+      effect: NoSchedule
+status:
+  allocatable:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+  capacity:
+    cpu: "192"
+    memory: "1536Gi"
+    pods: "110"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: kwok-cpu-intensive-19
+  annotations:
+    kwok.x-k8s.io/node: fake
+    joulie.io/raw.cpu-model: "AMD EPYC 9655 96-Core Processor"
+  labels:
+    type: kwok
+    joulie.io/managed: "true"
+    joulie.io/node-name: "kwok-cpu-intensive-19"
     joulie.io/hw.cpu-model: "AMD-EPYC-9655-96-Core-Processor"
     joulie.io/hw.cpu-cores: "192"
     joulie.io/hw.cpu-sockets: "2"
