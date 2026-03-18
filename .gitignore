@@ -3,6 +3,7 @@
 #
 runs/
 results/
+_old_results/
 tmp/
 tmp.*
 *.tgz
