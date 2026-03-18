@@ -421,6 +421,8 @@ func initKubeClients() (kubernetes.Interface, dynamic.Interface) {
 	if err != nil {
 		log.Fatalf("in-cluster config: %v", err)
 	}
+	cfg.QPS = 50
+	cfg.Burst = 100
 	kube, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Fatalf("kube client: %v", err)

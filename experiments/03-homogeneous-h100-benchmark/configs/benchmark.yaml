@@ -38,7 +38,7 @@ simulator:
 
 policy:
   cpu_write_absolute_caps: false
-  gpu_write_absolute_caps: false
+  gpu_write_absolute_caps: true
   caps:
     cpu_performance_pct_of_max: 100
     cpu_eco_pct_of_max: 80

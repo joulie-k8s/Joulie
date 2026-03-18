@@ -531,10 +531,32 @@ func gpuPowerWithModel(st *nodeState, model simModel) float64 {
 	if class == "" {
 		class = "gpu.mixed"
 	}
+
+	// Distribute node-average GPU utilization across individual devices.
+	// Instead of assigning the same average util to every device, estimate
+	// how many GPUs are actively occupied and give those full utilization
+	// while the rest sit idle (util = 0). This correctly models per-device
+	// idle power management: idle GPUs on managed nodes can enter deep
+	// sleep states, while active GPUs run at their true utilization.
+	nDevices := float64(len(st.GPUDevices))
+	avgUtil := clamp01(st.GPUUtil)
+	activeDevices := int(math.Ceil(avgUtil * nDevices))
+	if activeDevices > len(st.GPUDevices) {
+		activeDevices = len(st.GPUDevices)
+	}
+	activeUtil := 0.0
+	if activeDevices > 0 {
+		activeUtil = clamp01(avgUtil * nDevices / float64(activeDevices))
+	}
+
 	for i := range st.GPUDevices {
 		d := &st.GPUDevices[i]
+		deviceUtil := 0.0
+		if i < activeDevices {
+			deviceUtil = activeUtil
+		}
 		deviceState := phys.DeviceState{
-			Utilization:      clamp01(st.GPUUtil),
+			Utilization:      deviceUtil,
 			CapWatts:         d.CapWatts,
 			MaxCapWatts:      model.GPU.MaxWattsPerGPU,
 			IdlePowerWatts:   model.GPU.IdleWattsPerGPU,
@@ -607,6 +629,20 @@ func cpuPowerWithModel(st *nodeState, model simModel) float64 {
 		p *= 1.0 - 0.35*clamp01(st.CPUThermalThrottle)
 	}
 	p = math.Max(20, p)
+
+	// CPU idle power management: when the node is managed (throttle > 0,
+	// indicating Joulie agent has set a DVFS policy) and CPU utilization
+	// is low, model aggressive C-state entry (C6/C10) that reduces idle
+	// power by up to 50%. The reduction scales with idle fraction.
+	// Threshold at 20% util captures partially-idle nodes where cores
+	// can enter deep sleep. Unmanaged nodes (baseline A, throttle == 0)
+	// stay at full idle power.
+	if st.TargetThrottlePct > 0 && util < 0.20 {
+		idleFrac := 1.0 - util/0.20 // 1.0 at util=0, 0.0 at util=0.20
+		cstateReduction := 0.50 * idleFrac
+		p = p * (1.0 - cstateReduction)
+		p = math.Max(20, p)
+	}
 
 	alpha := model.AlphaUtil
 	if alpha <= 0 {
@@ -1975,10 +2011,25 @@ func (s *simulator) updateNodeDynamicsWithModel(st *nodeState, model simModel) {
 	st.CPUAvgPowerWatts = firstOrderToward(st.CPUAvgPowerWatts, cpuInstant, dt, float64(maxIntInt(1, model.CPUTelemetryWindowMS))/1000.0)
 
 	gpuInstantTotal := 0.0
+	// Per-device utilization distribution (same logic as gpuPowerWithModel).
+	telNDevices := float64(len(st.GPUDevices))
+	telAvgUtil := clamp01(st.GPUUtil)
+	telActiveDevices := int(math.Ceil(telAvgUtil * telNDevices))
+	if telActiveDevices > len(st.GPUDevices) {
+		telActiveDevices = len(st.GPUDevices)
+	}
+	telActiveUtil := 0.0
+	if telActiveDevices > 0 {
+		telActiveUtil = clamp01(telAvgUtil * telNDevices / float64(telActiveDevices))
+	}
 	for i := range st.GPUDevices {
 		d := &st.GPUDevices[i]
+		deviceUtil := 0.0
+		if i < telActiveDevices {
+			deviceUtil = telActiveUtil
+		}
 		deviceState := phys.DeviceState{
-			Utilization:      clamp01(st.GPUUtil),
+			Utilization:      deviceUtil,
 			CapWatts:         d.CapWatts,
 			MaxCapWatts:      model.GPU.MaxWattsPerGPU,
 			IdlePowerWatts:   model.GPU.IdleWattsPerGPU,
