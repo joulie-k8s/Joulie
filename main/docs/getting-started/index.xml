@@ -1,13 +1,8 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Getting Started on Joulie</title><link>https://joulie-k8s.github.io/Joulie/main/docs/getting-started/</link><description>Recent content in Getting Started on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://joulie-k8s.github.io/Joulie/main/docs/getting-started/index.xml" rel="self" type="application/rss+xml"/><item><title>Core Concepts</title><link>https://joulie-k8s.github.io/Joulie/main/docs/getting-started/core-concepts/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/main/docs/getting-started/core-concepts/</guid><description>&lt;p&gt;Before installing Joulie, understand the control model.&lt;/p&gt;
 &lt;h2 id="what-joulie-is"&gt;What Joulie is&lt;/h2&gt;
-&lt;p&gt;Joulie is a Kubernetes-native &lt;strong&gt;digital twin&lt;/strong&gt; for energy-efficient data centers.&lt;/p&gt;
+&lt;p&gt;Joulie is a Kubernetes-native energy management system that uses &lt;strong&gt;per-node digital twins&lt;/strong&gt; to optimize data center power consumption.&lt;/p&gt;
 &lt;p&gt;It continuously ingests telemetry from every node (CPU/GPU power draw via RAPL and NVML/DCGM, per-pod resource utilization via cAdvisor, and optional energy counters from &lt;a href="https://github.com/sustainable-computing-io/kepler"&gt;Kepler&lt;/a&gt;) to maintain an up-to-date model of each node&amp;rsquo;s thermal and power state.&lt;/p&gt;
-&lt;p&gt;That digital twin model drives two outcomes:&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;&lt;strong&gt;Energy control&lt;/strong&gt;: the operator writes desired power state into &lt;code&gt;NodeTwin&lt;/code&gt; CRs (CPU and GPU power caps). The node agent reads &lt;code&gt;NodeTwin.spec&lt;/code&gt; and enforces them.&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;Scheduling decisions&lt;/strong&gt;: the scheduler extender reads computed &lt;code&gt;NodeTwin.status&lt;/code&gt; (power headroom, predicted cooling stress, PSU load) to steer new pods toward nodes with the best energy-efficiency / performance trade-off.&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;The feedback loop: telemetry → twin update → cap decisions → new pod placement → updated telemetry. This keeps the cluster&amp;rsquo;s power envelope stable and prevents cooling or PSU spikes without sacrificing critical workload performance.&lt;/p&gt;</description></item><item><title>Quickstart</title><link>https://joulie-k8s.github.io/Joulie/main/docs/getting-started/quickstart/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/main/docs/getting-started/quickstart/</guid><description>&lt;p&gt;This page is the fastest path to run Joulie.
+&lt;p&gt;These per-node digital twins drive two outcomes:&lt;/p&gt;</description></item><item><title>Quickstart</title><link>https://joulie-k8s.github.io/Joulie/main/docs/getting-started/quickstart/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/main/docs/getting-started/quickstart/</guid><description>&lt;p&gt;This page is the fastest path to run Joulie.
 For conceptual context first, read &lt;a href="https://joulie-k8s.github.io/Joulie/main/docs/getting-started/core-concepts/"&gt;Core Concepts&lt;/a&gt;.&lt;/p&gt;
 &lt;h2 id="prerequisites"&gt;Prerequisites&lt;/h2&gt;
 &lt;ul&gt;
@@ -395,6 +390,16 @@ It is a namespaced CRD (&lt;code&gt;joulie.io/v1alpha1&lt;/code&gt;) that the op
  &lt;td&gt;&lt;code&gt;CLASSIFY_MIN_CONFIDENCE&lt;/code&gt;&lt;/td&gt;
  &lt;td&gt;&lt;code&gt;0.5&lt;/code&gt;&lt;/td&gt;
  &lt;td&gt;Minimum confidence score for a profile to influence scheduling&lt;/td&gt;
+ &lt;/tr&gt;
+ &lt;tr&gt;
+ &lt;td&gt;&lt;code&gt;CLASSIFY_SIM_ANNOTATION_FALLBACK&lt;/code&gt;&lt;/td&gt;
+ &lt;td&gt;&lt;code&gt;false&lt;/code&gt;&lt;/td&gt;
+ &lt;td&gt;When &lt;code&gt;true&lt;/code&gt;, classifier reads &lt;code&gt;sim.joulie.io/*&lt;/code&gt; pod annotations as fallback when Prometheus metrics are unavailable (simulator mode)&lt;/td&gt;
+ &lt;/tr&gt;
+ &lt;tr&gt;
+ &lt;td&gt;&lt;code&gt;CLASSIFY_SIM_NOISE_PCT&lt;/code&gt;&lt;/td&gt;
+ &lt;td&gt;&lt;code&gt;10&lt;/code&gt;&lt;/td&gt;
+ &lt;td&gt;Gaussian noise percentage added to sim-annotation utilization values before classification (simulates measurement error)&lt;/td&gt;
  &lt;/tr&gt;
  &lt;/tbody&gt;
 &lt;/table&gt;
