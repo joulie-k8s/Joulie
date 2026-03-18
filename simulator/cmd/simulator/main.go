@@ -2536,6 +2536,9 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 	if s.workload == nil {
 		return
 	}
+	// Stall detection runs unconditionally via defer, even if pod listing fails.
+	defer s.detectStalledJobs(kube, now)
+
 	pods, err := podDetailFunc(ctx, kube)
 	if err != nil {
 		log.Printf("warning: workload progress list pods: %v", err)
@@ -2763,10 +2766,16 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 		}
 	}
 
-	// Stall detection: force-complete jobs that haven't made progress for
-	// 120 wall-clock seconds. This prevents individual stuck jobs (e.g.,
-	// gang scheduling deadlocks, unschedulable pods) from blocking the
-	// entire benchmark run.
+}
+
+// detectStalledJobs force-completes jobs that haven't made progress for
+// 120 wall-clock seconds. This prevents individual stuck jobs (e.g.,
+// gang scheduling deadlocks, unschedulable pods) from blocking the
+// entire benchmark run. Called via defer so it runs even if pod listing fails.
+func (s *simulator) detectStalledJobs(kube kubernetes.Interface, now time.Time) {
+	if s.workload == nil {
+		return
+	}
 	const stallTimeoutSec = 120.0
 	for _, j := range s.workload.jobs {
 		if j.Completed || !j.Submitted {
