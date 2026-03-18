@@ -1,0 +1,64 @@
+image:
+  repository: registry.cern.ch/mbunino/joulie/joulie-simulator
+  tag: latest
+  pullPolicy: Always
+
+replicas: 1
+
+env:
+  SIM_ADDR: ":18080"
+  SIM_K8S_POD_WATCH: "true"
+  SIM_POLL_INTERVAL: "15s"
+  SIM_EVENT_BUFFER: "500"
+  SIM_NODE_SELECTOR: "joulie.io/managed=true"
+  SIM_NODE_CLASS_CONFIG: "/etc/joulie-sim/node-classes.yaml"
+  SIM_BASE_IDLE_W: "80"
+  SIM_POD_W: "120"
+  SIM_DVFS_DROP_W_PER_PCT: "1.8"
+  SIM_RAPL_HEADROOM_W: "5"
+  SIM_DEFAULT_CAP_W: "5000"
+
+# Node class overrides mounted as /etc/joulie-sim/node-classes.yaml.
+# Set to null to skip the ConfigMap entirely.
+nodeClasses:
+  classes:
+    - name: intel-default
+      matchLabels:
+        feature.node.kubernetes.io/cpu-model.vendor_id: Intel
+      model:
+        baseIdleW: 70
+        podW: 110
+        dvfsDropWPerPct: 1.6
+        raplHeadW: 5
+        defaultCapW: 5000
+    - name: amd-default
+      matchLabels:
+        feature.node.kubernetes.io/cpu-model.vendor_id: AMD
+      model:
+        baseIdleW: 80
+        podW: 120
+        dvfsDropWPerPct: 1.8
+        raplHeadW: 5
+        defaultCapW: 5000
+
+# Optional workload trace ConfigMap.
+# Set a file name and content to mount a trace at /etc/joulie-sim/trace.jsonl
+# and auto-set SIM_WORKLOAD_TRACE_PATH.
+workloadTrace: {}
+  # fileName: trace.jsonl
+  # content: |
+  #   {"type":"job","schemaVersion":"v1","jobId":"job-1",...}
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels:
+    release: telemetry
+
+service:
+  port: 80
+  annotations: {}
+
+resources: {}
+nodeSelector: {}
+tolerations: []

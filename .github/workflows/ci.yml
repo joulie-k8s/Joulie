@@ -30,9 +30,13 @@ jobs:
       - name: Setup Helm
         uses: azure/setup-helm@v4
 
-      - name: Lint chart
-        run: helm lint charts/joulie
+      - name: Lint charts
+        run: |
+          helm lint charts/joulie
+          helm lint charts/joulie-simulator
 
-      - name: Render chart
-        run: helm template joulie charts/joulie -f values/joulie.yaml >/dev/null
+      - name: Render charts
+        run: |
+          helm template joulie charts/joulie -f values/joulie.yaml >/dev/null
+          helm template joulie-simulator charts/joulie-simulator >/dev/null
 

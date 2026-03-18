@@ -26,7 +26,31 @@ Current scope includes CPU and GPU-cap simulation with trace-driven completion s
 - `cmd/traceextract`: trace normalizer/extractor helper (`input telemetry/export -> trace schema`)
 - `waok8s/`: external WAO code reference sandbox
 
-## Build
+## Install from release (recommended)
+
+The simulator has its own Helm chart, published to the CERN OCI registry on every release:
+
+```bash
+helm upgrade --install joulie-simulator oci://registry.cern.ch/mbunino/joulie/joulie-sim \
+  --version <version> \
+  -n joulie-sim-demo \
+  --create-namespace \
+  --set image.tag=<version>
+```
+
+Or use the make target (uses the local chart source):
+
+```bash
+make simulator-install TAG=<version>
+```
+
+To uninstall:
+
+```bash
+make simulator-uninstall
+```
+
+## Build from source (when developing)
 
 From repo root:
 
@@ -42,15 +66,7 @@ make simulator-build TAG=<tag>
 make simulator-push TAG=<tag>
 ```
 
-## Deploy
-
-```bash
-kubectl apply -f simulator/deploy/simulator.yaml
-kubectl -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim
-kubectl -n joulie-sim-demo logs -f deploy/joulie-telemetry-sim
-```
-
-With dynamic image tag override:
+Then install using the local chart:
 
 ```bash
 make simulator-install TAG=<tag>
