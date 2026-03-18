@@ -383,3 +383,185 @@ func TestClassificationSummaryHighConfidence(t *testing.T) {
 		t.Errorf("expected GPU info in summary when GPU active, got %q", s)
 	}
 }
+
+// --- Sim annotation fallback tests ---
+
+func TestParseSimAnnotationsComputeBound(t *testing.T) {
+	ann := map[string]string{
+		"sim.joulie.io/cpu-util-pct":        "85.0",
+		"sim.joulie.io/gpu-util-pct":        "0.0",
+		"sim.joulie.io/memory-pressure-pct": "20.0",
+		"sim.joulie.io/io-intensity":        "0.10",
+	}
+	m, ok := ParseSimAnnotations(ann, 0)
+	if !ok {
+		t.Fatal("expected sim annotations to be parsed")
+	}
+	if m.CPUUtilPct != 85.0 {
+		t.Errorf("expected CPUUtilPct=85.0, got %f", m.CPUUtilPct)
+	}
+	if m.GPUUtilPct != 0.0 {
+		t.Errorf("expected GPUUtilPct=0.0, got %f", m.GPUUtilPct)
+	}
+	if m.MemoryPressurePct != 20.0 {
+		t.Errorf("expected MemoryPressurePct=20.0, got %f", m.MemoryPressurePct)
+	}
+	if m.CPUBoundRatio == 0 {
+		t.Error("expected non-zero CPUBoundRatio for compute-bound workload")
+	}
+	if m.GPUDominant {
+		t.Error("expected GPUDominant=false")
+	}
+}
+
+func TestParseSimAnnotationsGPUDominant(t *testing.T) {
+	ann := map[string]string{
+		"sim.joulie.io/cpu-util-pct":        "30.0",
+		"sim.joulie.io/gpu-util-pct":        "90.0",
+		"sim.joulie.io/memory-pressure-pct": "15.0",
+	}
+	m, ok := ParseSimAnnotations(ann, 0)
+	if !ok {
+		t.Fatal("expected sim annotations to be parsed")
+	}
+	if !m.GPUDominant {
+		t.Error("expected GPUDominant=true for high GPU util")
+	}
+}
+
+func TestParseSimAnnotationsEmpty(t *testing.T) {
+	_, ok := ParseSimAnnotations(nil, 0)
+	if ok {
+		t.Error("expected false for nil annotations")
+	}
+	_, ok = ParseSimAnnotations(map[string]string{"foo": "bar"}, 0)
+	if ok {
+		t.Error("expected false for annotations without sim keys")
+	}
+}
+
+func TestParseSimAnnotationsWithNoise(t *testing.T) {
+	ann := map[string]string{
+		"sim.joulie.io/cpu-util-pct": "50.0",
+	}
+	// With 20% noise, values should vary but stay in [0, 100].
+	for i := 0; i < 100; i++ {
+		m, ok := ParseSimAnnotations(ann, 20)
+		if !ok {
+			t.Fatal("expected sim annotations to be parsed")
+		}
+		if m.CPUUtilPct < 0 || m.CPUUtilPct > 100 {
+			t.Fatalf("CPUUtilPct out of range: %f", m.CPUUtilPct)
+		}
+	}
+}
+
+func TestDeriveClassFromMetricsPerformance(t *testing.T) {
+	tests := []struct {
+		name string
+		m    PodMetrics
+		want string
+	}{
+		{
+			name: "high CPU compute-bound",
+			m:    PodMetrics{CPUUtilPct: 80, MemoryPressurePct: 20},
+			want: "performance",
+		},
+		{
+			name: "GPU dominant",
+			m:    PodMetrics{CPUUtilPct: 30, GPUUtilPct: 70, GPUDominant: true},
+			want: "performance",
+		},
+		{
+			name: "high GPU util",
+			m:    PodMetrics{CPUUtilPct: 40, GPUUtilPct: 60},
+			want: "performance",
+		},
+		{
+			name: "low utilization standard",
+			m:    PodMetrics{CPUUtilPct: 20, GPUUtilPct: 5, MemoryPressurePct: 10},
+			want: "standard",
+		},
+		{
+			name: "memory bound standard",
+			m:    PodMetrics{CPUUtilPct: 40, GPUUtilPct: 0, MemoryPressurePct: 70},
+			want: "standard",
+		},
+		{
+			name: "borderline CPU",
+			m:    PodMetrics{CPUUtilPct: 64, MemoryPressurePct: 30},
+			want: "standard",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := deriveClassFromMetrics(tc.m)
+			if got != tc.want {
+				t.Errorf("deriveClassFromMetrics(%s): got %s, want %s", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyPodWithSimAnnotations(t *testing.T) {
+	cfg := DefaultClassifierConfig()
+	cfg.SimAnnotationFallback = true
+	cfg.SimNoisePct = 0 // deterministic
+	cfg.Prometheus.Address = "http://localhost:1" // unreachable
+	c := NewClassifier(cfg)
+
+	// High CPU compute-bound pod - should be classified as performance.
+	ann := map[string]string{
+		"sim.joulie.io/cpu-util-pct":        "85.0",
+		"sim.joulie.io/gpu-util-pct":        "0.0",
+		"sim.joulie.io/memory-pressure-pct": "15.0",
+	}
+	wp, err := c.ClassifyPod(nil, "default", "compute-pod", nil, ann)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wp.Criticality.Class != "performance" {
+		t.Errorf("expected performance for high CPU compute-bound, got %s", wp.Criticality.Class)
+	}
+	if wp.CPU.Intensity != "high" {
+		t.Errorf("expected high CPU intensity, got %s", wp.CPU.Intensity)
+	}
+
+	// Low utilization pod - should be standard.
+	ann2 := map[string]string{
+		"sim.joulie.io/cpu-util-pct":        "15.0",
+		"sim.joulie.io/gpu-util-pct":        "0.0",
+		"sim.joulie.io/memory-pressure-pct": "10.0",
+	}
+	wp2, err := c.ClassifyPod(nil, "default", "idle-pod", nil, ann2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wp2.Criticality.Class != "standard" {
+		t.Errorf("expected standard for low utilization, got %s", wp2.Criticality.Class)
+	}
+}
+
+func TestClassifyPodGPUSimAnnotations(t *testing.T) {
+	cfg := DefaultClassifierConfig()
+	cfg.SimAnnotationFallback = true
+	cfg.SimNoisePct = 0
+	cfg.Prometheus.Address = "http://localhost:1"
+	c := NewClassifier(cfg)
+
+	ann := map[string]string{
+		"sim.joulie.io/cpu-util-pct":        "30.0",
+		"sim.joulie.io/gpu-util-pct":        "85.0",
+		"sim.joulie.io/memory-pressure-pct": "20.0",
+	}
+	wp, err := c.ClassifyPod(nil, "default", "gpu-training", nil, ann)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if wp.Criticality.Class != "performance" {
+		t.Errorf("expected performance for GPU-dominant workload, got %s", wp.Criticality.Class)
+	}
+	if wp.GPU.Intensity != "high" {
+		t.Errorf("expected high GPU intensity, got %s", wp.GPU.Intensity)
+	}
+}

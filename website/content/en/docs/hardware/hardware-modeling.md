@@ -419,6 +419,24 @@ So in the fallback model:
 - lower `freqScale` lowers power,
 - and lower `freqScale` also reduces throughput according to workload class.
 
+## 5.7 CPU idle power management (C-states)
+
+On managed nodes (where the agent has set a DVFS throttle), the simulator models aggressive CPU C-state entry (C6/C10) at low utilization.
+
+When a managed node has CPU utilization below 20%, the simulator reduces idle power by up to 50%, scaling linearly with the idle fraction:
+
+```text
+if throttlePct > 0 and util < 0.20:
+    idleFrac = 1 - util / 0.20
+    cstateReduction = 0.50 * idleFrac
+    P_cpu = P_cpu * (1 - cstateReduction)
+    P_cpu = max(20, P_cpu)
+```
+
+This models the real hardware behavior where cores on lightly-loaded nodes can enter deep sleep states (C6, C10) that significantly reduce package power. The key distinction is that only Joulie-managed nodes benefit from this: the agent's DVFS policy enables the OS to aggressively enter deep C-states, while unmanaged nodes (baseline without Joulie) remain at full idle power because their power governor is not optimized for idle efficiency.
+
+The 20W floor prevents unrealistically low power values. In practice, even in the deepest sleep state, platform power (memory controllers, PCH, fans) prevents the package from reaching zero.
+
 ## 6. GPU physical model
 
 At the GPU side, Joulie models both:
@@ -506,7 +524,24 @@ This keeps the simulator honest about two things that often get confused in expe
 - a device can be *within cap* and still lose performance because of thermal pressure
 - a telemetry trace can look smoother and slower-moving than the underlying internal power changes because exported power is averaged
 
-## 6.7 Generic fallback GPU model
+## 6.7 GPU idle power management (D3cold)
+
+On managed eco-profile nodes, the simulator models GPU deep idle power states (D3cold via NVML).
+
+When a GPU device is managed (power cap set below maximum) and has no active work (utilization near zero), the simulator reduces idle power by 90%:
+
+```text
+if capWatts < maxCapWatts * 0.99 and utilization < 0.01:
+    idleFloor = idleWattsPerGPU * 0.10
+```
+
+This models the real hardware behavior where the agent can activate D3cold or similar deep power states on GPUs that have no active work. On a multi-GPU node where only some GPUs are active, the idle GPUs can enter deep sleep while the active ones continue at full power.
+
+The simulator also distributes node-average GPU utilization across individual devices rather than applying a uniform average to all GPUs. Active GPUs run at their true utilization while idle GPUs sit at zero. This correctly models per-device idle power management and prevents the average-utilization approach from underestimating the savings on nodes with mixed active/idle GPUs.
+
+Unmanaged GPUs (cap equal to maximum, i.e., no Joulie control) remain at their full idle power level.
+
+## 6.8 Generic fallback GPU model
 
 When a GPU platform is not represented by a catalog entry, Joulie falls back to the generic GPU model configured through the base profile.
 

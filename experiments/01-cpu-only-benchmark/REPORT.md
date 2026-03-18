@@ -28,9 +28,9 @@ CPU-only cluster - no GPU nodes.
 
 | Node prefix | Count | CPU | Cores | RAM |
 |---|---:|---|---:|---:|
-| kwok-cpu-highcore | 2 | AMD EPYC 9965 192-Core | 384 (2×192) | 1536 GiB |
-| kwok-cpu-highfreq | 2 | AMD EPYC 9375F 32-Core | 64 (2×32) | 770 GiB |
-| kwok-cpu-intensive | 4 | AMD EPYC 9655 96-Core | 192 (2×96) | 1536 GiB |
+| kwok-cpu-highcore | 2 | AMD EPYC 9965 192-Core | 384 (2x192) | 1536 GiB |
+| kwok-cpu-highfreq | 2 | AMD EPYC 9375F 32-Core | 64 (2x32) | 770 GiB |
+| kwok-cpu-intensive | 4 | AMD EPYC 9655 96-Core | 192 (2x96) | 1536 GiB |
 
 Total: **8 nodes**, **2304 CPU cores**, **0 GPUs**.
 
@@ -50,21 +50,21 @@ where `u` = CPU utilization, `f` = frequency scale.
 | AMD EPYC 9375F | 60 | 480 | 1.10 | 1.25 | 2800 | 4200 |
 | AMD EPYC 9655 | 95 | 760 | 1.12 | 1.28 | 1500 | 3600 |
 
-When policy sets `cpu_eco_pct_of_max=80`, RAPL caps are set to 80% of each node's peak modeled power. If the resulting cap cannot be satisfied at `FMinMHz`, the node is marked `CapSaturated`.
+When policy sets `cpu_eco_pct_of_max=65`, RAPL caps are set to 65% of each node's peak modeled power. If the resulting cap cannot be satisfied at `FMinMHz`, the node is marked `CapSaturated`.
 
 ### 1.4 Run configuration
 
-From [`configs/benchmark-overnight.yaml`](./configs/benchmark-overnight.yaml) (used for run `0004`):
+From [`configs/benchmark.yaml`](./configs/benchmark.yaml):
 
 | Parameter | Value |
 |---|---|
 | Baselines | A, B, C |
 | Seeds | 3 |
-| Mean inter-arrival | 0.12 s |
-| Time scale | 60× |
-| Timeout per run | 14400 s |
-| Perf ratio | 15% |
-| Eco ratio | 0% |
+| Jobs | 300 |
+| Mean inter-arrival | 0.20 s |
+| Time scale | 60x |
+| Timeout per run | 1800 s |
+| Perf ratio | 20% |
 | GPU ratio | 0% |
 | Work scale | 0.15 |
 | Allowed workload types | `cpu_preprocess`, `cpu_analytics` |
@@ -83,20 +83,20 @@ From [`configs/benchmark-overnight.yaml`](./configs/benchmark-overnight.yaml) (u
 
 Pods are classified from their `joulie.io/power-profile` scheduling constraints:
 
-- `performance` only → performance-sensitive
-- `eco` only → eco-only
-- both or unconstrained → general
-- unknown → treated as performance-sensitive (safe default)
+- `performance` only -> performance-sensitive
+- `eco` only -> eco-only
+- both or unconstrained -> general
+- unknown -> treated as performance-sensitive (safe default)
 
 ### 2.2 Static partition (`static_partition`)
 
 Given `N` managed nodes:
 
 - `hpCount = round(N * STATIC_HP_FRAC)`
-- First `hpCount` nodes → `performance` profile (full frequency, no cap)
-- Remaining → `eco` profile (RAPL cap at `cpu_eco_pct_of_max` of peak)
+- First `hpCount` nodes -> `performance` profile (full frequency, no cap)
+- Remaining -> `eco` profile (RAPL cap at `cpu_eco_pct_of_max` of peak)
 
-In this run: `STATIC_HP_FRAC=0.45`, so on 8 nodes: 4 performance, 4 eco.
+In this run: `STATIC_HP_FRAC=0.30`, so on 8 nodes: 2 performance, 6 eco.
 
 ### 2.3 Queue-aware (`queue_aware_v1`)
 
@@ -110,11 +110,11 @@ Then:
 
 - `hpCount = clamp(max(baseCount, queueNeed), QUEUE_HP_MIN, QUEUE_HP_MAX, N)`
 
-In this run: `QUEUE_HP_BASE_FRAC=0.50`, `QUEUE_HP_MIN=2`, `QUEUE_HP_MAX=8`, `QUEUE_PERF_PER_HP_NODE=18`.
+In this run: `QUEUE_HP_BASE_FRAC=0.30`, `QUEUE_HP_MIN=2`, `QUEUE_HP_MAX=15`, `QUEUE_PERF_PER_HP_NODE=20`.
 
 ### 2.4 Downgrade guard
 
-When a node transitions `performance → eco`, the operator defers the cap change while performance-sensitive pods are still running there, marking it `joulie.io/draining=true` until safe.
+When a node transitions `performance -> eco`, the operator defers the cap change while performance-sensitive pods are still running there, marking it `joulie.io/draining=true` until safe.
 
 ---
 
@@ -132,7 +132,7 @@ P(u, f) = IdleW + (PeakW - IdleW) * u^AlphaUtil * f^BetaFreq
 
 At each simulator tick:
 
-1. Policy writes `rapl.set_power_cap_watts` → updates `CapWatts` (clamped to `[MinCapW, MaxCapW]`).
+1. Policy writes `rapl.set_power_cap_watts` -> updates `CapWatts` (clamped to `[MinCapW, MaxCapW]`).
 2. If `P(u, f) > CapWatts`, solver finds the maximum feasible `f`:
    - `f_target = solveFreqScaleForCap(u, CapWatts)`
    - clamped to `[FMinMHz/FMaxMHz, 1.0]`
@@ -171,43 +171,44 @@ Effective slowdown from throttling (single-job, no sharing):
 slowdown = 1 / (1 - (1-f) * sensitivityCPU)
 ```
 
-For `cpu_preprocess` and `cpu_analytics`, `sensitivityCPU ∈ [0.7, 0.9]`, so a 20% frequency reduction (eco cap at 80%) translates to roughly 14–18% speed reduction on the worst case.
+For `cpu_preprocess` and `cpu_analytics`, `sensitivityCPU in [0.7, 0.9]`, so a 35% frequency reduction (eco cap at 65%) translates to roughly 25-32% speed reduction on the worst case.
 
 ---
 
 ## 4. Measured Results
 
-Latest run: `runs/0004_20260315T184603Z_u73c6961c754a4509a74e94ce3964b5bc`
 Source: [`runs/latest/results/summary.csv`](./runs/latest/results/summary.csv)
 
 ### 4.1 Per-seed results
 
 | Baseline | Seed | Wall (s) | Throughput (jobs/sim-hr) | Energy (kWh sim) | Avg power (W) |
 |---|---:|---:|---:|---:|---:|
-| A | 1 | 1048.97 | 285.99 | 20.65 | 1181.1 |
-| A | 2 | 1073.38 | 279.49 | 23.85 | 1333.2 |
-| A | 3 | 1164.21 | 257.69 | 23.24 | 1197.6 |
-| B | 1 | 1068.72 | 280.71 | 18.57 | 1042.8 |
-| B | 2 | 1072.93 | 279.61 | 23.46 | 1312.1 |
-| B | 3 | 1142.27 | 262.63 | 20.32 | 1067.5 |
-| C | 1 | 1064.50 | 281.82 | 19.42 | 1094.6 |
-| C | 2 | 1073.04 | 279.58 | 22.82 | 1276.2 |
-| C | 3 | 1144.72 | 262.07 | 22.59 | 1183.8 |
+| A | 1 | 317.98 | 113.21 | 17.63 | 3326 |
+| A | 2 | 276.18 | 130.35 | 15.01 | 3261 |
+| A | 3 | 239.74 | 150.17 | 13.25 | 3315 |
+| B | 1 | 330.14 | 109.04 | 12.22 | 2221 |
+| B | 2 | 275.86 | 130.50 | 10.10 | 2197 |
+| B | 3 | 240.20 | 149.87 | 8.98 | 2242 |
+| C | 1 | 328.92 | 109.45 | 12.25 | 2235 |
+| C | 2 | 275.26 | 130.78 | 9.99 | 2177 |
+| C | 3 | 239.66 | 150.21 | 9.02 | 2259 |
 
-### 4.2 Baseline means (all 3 seeds completed)
+All 9 runs completed successfully (no timeouts, no gang deadlocks).
+
+### 4.2 Baseline means (all 3 seeds)
 
 | Baseline | Mean wall (s) | Mean throughput (jobs/sim-hr) | Mean energy (kWh sim) | Mean power (W) |
 |---|---:|---:|---:|---:|
-| A | 1095.5 | 274.39 | 22.58 | 1237.3 |
-| B | 1094.6 | 274.32 | 20.79 | 1140.8 |
-| C | 1094.1 | 274.49 | 21.61 | 1184.9 |
+| A | 278.0 | 131.24 | 15.30 | 3301 |
+| B | 282.1 | 129.80 | 10.43 | 2220 |
+| C | 281.3 | 130.15 | 10.42 | 2224 |
 
 ### 4.3 Relative to A
 
-| Baseline | Energy Δ | Throughput Δ | Power Δ |
+| Baseline | Energy Delta | Throughput Delta | Power Delta |
 |---|---:|---:|---:|
-| B | **−7.9%** | −0.02% (negligible) | −7.8% |
-| C | **−4.3%** | +0.04% (negligible) | −4.2% |
+| B | **-31.8%** | -1.1% (negligible) | -32.7% |
+| C | **-31.9%** | -0.8% (negligible) | -32.6% |
 
 ---
 
@@ -221,49 +222,49 @@ Plots are in: [`img/`](./img/)
 
 - All three baselines complete within nearly identical wall-time windows.
 - Run-to-run jitter (seed variance) is larger than any inter-baseline difference.
-- Confirms that power capping at 80% does not measurably affect total job completion time on this CPU-only workload mix.
+- Confirms that power capping at 65% does not measurably affect total job completion time on this CPU-only workload mix.
 
 ### 5.2 Energy vs makespan
 
 ![Energy vs Makespan](./img/energy_vs_makespan.png)
 
-- B is consistently shifted to lower energy with near-identical makespan across all 3 seeds.
-- C shows slightly higher variance than B; one seed (seed 2) lands close to A energy.
-- Stable ordering: B < C < A in energy for most seeds.
+- B and C are consistently shifted to lower energy with near-identical makespan across all 3 seeds.
+- Both Joulie baselines cluster tightly together, indicating that static and queue-aware policies behave similarly on this CPU-only workload.
 
 ### 5.3 Baseline means
 
 ![Baseline Means](./img/baseline_means.png)
 
 - Energy is the clear differentiator; throughput and wall-time bars are indistinguishable.
-- B achieves the largest energy reduction, driven by 4 nodes running at 80% CPU cap for the full run duration.
+- B and C achieve roughly the same ~32% energy reduction, driven by 6 nodes (75% of cluster) running at 65% CPU cap.
 
 ### 5.4 Completion summary
 
 ![Completion Summary](./img/completion_summary.png)
 
-- All 3 seeds completed for all baselines (B and C have 100% completion rate).
+- All 3 seeds completed for all baselines (100% completion rate).
 - No gang-scheduling or timeout issues on this CPU-only workload.
 
 ---
 
 ## 6. Interpretation
 
-### Why does energy reduce without throughput penalty?
+### Why does energy reduce by ~32% without throughput penalty?
 
-The CPU-only workload types (`cpu_preprocess`, `cpu_analytics`) in this experiment have moderate CPU-frequency sensitivity (`sensitivityCPU ∈ [0.7, 0.9]`). A 20% frequency reduction (eco cap at 80%) produces a 14–18% per-job slowdown. However:
+The CPU-only workload types (`cpu_preprocess`, `cpu_analytics`) in this experiment have moderate CPU-frequency sensitivity (`sensitivityCPU in [0.7, 0.9]`). A 35% frequency reduction (eco cap at 65%) produces a 25-32% per-job slowdown. However:
 
-1. **Cluster is over-provisioned**: 2304 cores spread over 8 nodes with only ~5000 lightweight CPU jobs means even eco nodes have spare capacity - jobs can use more cores to compensate.
-2. **Scheduling load-balances**: unconstrained jobs naturally land on both performance and eco nodes; the scheduler fills eco nodes with general jobs at reduced frequency, while performance-sensitive jobs land on the 4 uncapped nodes.
-3. **Energy scales with power × time**: eco nodes draw less power for the same simulated duration → energy falls without extending total makespan.
+1. **Cluster is over-provisioned**: 2304 cores spread over 8 nodes with only 300 lightweight CPU jobs means even eco nodes have spare capacity - jobs can use more cores to compensate.
+2. **Scheduling load-balances**: unconstrained jobs naturally land on both performance and eco nodes; the scheduler fills eco nodes with general jobs at reduced frequency, while performance-sensitive jobs land on the 2 uncapped nodes.
+3. **Energy scales with power x time**: eco nodes draw significantly less power for the same simulated duration -> energy falls without extending total makespan.
+4. **Aggressive cap (65%) maximizes savings**: compared to previous runs at 80% eco cap that achieved ~8% savings, the 65% cap reduces power draw on eco nodes by roughly 35%, leading to ~32% total cluster energy savings.
 
-### Why is static better than queue-aware here?
+### Why are static and queue-aware nearly identical here?
 
-`static_partition` (B) outperforms `queue_aware_v1` (C) in this run because:
+Both `static_partition` (B) and `queue_aware_v1` (C) achieve the same ~32% energy reduction because:
 
-- With only 15% performance-affinity jobs, the queue-aware policy rarely needs to scale up the HP node count beyond its base fraction.
-- The operator reconcile interval (20 s) introduces lag - when the queue bursts, queue-aware may temporarily expand HP nodes after performance pods already landed elsewhere.
-- Static provides a guaranteed 4-node eco block throughout the run, accumulating savings steadily.
+- With only 20% performance-affinity jobs on a small 8-node cluster, the queue-aware policy rarely needs to adjust HP node count beyond its base fraction.
+- Both policies maintain a similar eco/performance split throughout the run.
+- The operator reconcile interval (20 s) is fast enough that queue-aware can respond to demand, but demand is steady enough that it converges to a static-like split.
 
 ### Known limitations
 
@@ -277,15 +278,15 @@ The CPU-only workload types (`cpu_preprocess`, `cpu_analytics`) in this experime
 
 The strongest observed benefit is:
 
-- **energy reduction (−7.9% for static, −4.3% for queue-aware) with negligible throughput penalty** in a CPU-only mixed-workload cluster.
+- **energy reduction (-31.8% for static, -31.9% for queue-aware) with negligible throughput penalty** in a CPU-only mixed-workload cluster with 65% eco cap.
 
-`static_partition` is the most robust policy for this regime - predictable savings, no visible scheduling-performance impact, easy to reason about. `queue_aware_v1` is better suited when the performance-sensitive fraction is larger or more bursty.
+Both policies perform equivalently on CPU-only clusters. `static_partition` is simpler to configure and reason about; `queue_aware_v1` becomes more valuable when the performance-sensitive fraction is larger or more bursty.
 
 ---
 
 ## 8. Reproducibility
 
-- Config: [`configs/benchmark-overnight.yaml`](./configs/benchmark-overnight.yaml)
+- Config: [`configs/benchmark.yaml`](./configs/benchmark.yaml)
 - Sweep script: [`scripts/05_sweep.py`](./scripts/05_sweep.py)
 - Collection: [`scripts/06_collect.py`](./scripts/06_collect.py)
 - Plotting: [`scripts/07_plot.py`](./scripts/07_plot.py)

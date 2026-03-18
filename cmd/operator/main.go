@@ -165,6 +165,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("in-cluster config: %v", err)
 	}
+	cfg.QPS = 50
+	cfg.Burst = 100
 	kube, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Fatalf("kube client: %v", err)
@@ -192,13 +194,15 @@ func main() {
 	// --- Workload classifier ---
 	if boolEnv("ENABLE_CLASSIFIER", true) {
 		clsCfg := classifierConfig{
-			classifyInterval:   durationEnv("CLASSIFY_INTERVAL", 30*time.Second),
-			reclassifyInterval: durationEnv("RECLASSIFY_INTERVAL", 15*time.Minute),
-			metricsWindow:      durationEnv("CLASSIFY_METRICS_WINDOW", 10*time.Minute),
-			prometheusAddress:  envOrDefault("PROMETHEUS_ADDRESS", "http://prometheus-operated.monitoring:9090"),
-			keplerAvailable:    boolEnv("KEPLER_AVAILABLE", true),
-			minConfidence:      floatEnv("CLASSIFY_MIN_CONFIDENCE", 0.5),
-			nodeSelector:       selector,
+			classifyInterval:      durationEnv("CLASSIFY_INTERVAL", 30*time.Second),
+			reclassifyInterval:    durationEnv("RECLASSIFY_INTERVAL", 15*time.Minute),
+			metricsWindow:         durationEnv("CLASSIFY_METRICS_WINDOW", 10*time.Minute),
+			prometheusAddress:     envOrDefault("PROMETHEUS_ADDRESS", "http://prometheus-operated.monitoring:9090"),
+			keplerAvailable:       boolEnv("KEPLER_AVAILABLE", true),
+			minConfidence:         floatEnv("CLASSIFY_MIN_CONFIDENCE", 0.5),
+			nodeSelector:          selector,
+			simAnnotationFallback: boolEnv("CLASSIFY_SIM_ANNOTATION_FALLBACK", false),
+			simNoisePct:           floatEnv("CLASSIFY_SIM_NOISE_PCT", 10),
 		}
 		go classifierLoop(bgCtx, kube, dyn, clsCfg)
 	}

@@ -83,6 +83,8 @@ Complete reference for all Joulie environment variables. These are set via Helm 
 | `PROMETHEUS_ADDRESS` | `http://prometheus-operated.monitoring:9090` | Prometheus endpoint for classifier queries |
 | `KEPLER_AVAILABLE` | `true` | Whether Kepler energy metrics are available in Prometheus |
 | `CLASSIFY_MIN_CONFIDENCE` | `0.5` | Minimum confidence score for a profile to influence scheduling |
+| `CLASSIFY_SIM_ANNOTATION_FALLBACK` | `false` | When `true`, classifier reads `sim.joulie.io/*` pod annotations as fallback when Prometheus metrics are unavailable (simulator mode) |
+| `CLASSIFY_SIM_NOISE_PCT` | `10` | Gaussian noise percentage added to sim-annotation utilization values before classification (simulates measurement error) |
 
 ### Active rescheduler
 

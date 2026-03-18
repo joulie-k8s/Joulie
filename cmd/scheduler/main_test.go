@@ -215,8 +215,8 @@ func TestScoreNodeAdaptivePressureRelief(t *testing.T) {
 
 	sPerfNoPressure := scoreNode("perf-node", states, hwInfo, "standard", 0, false, nil, nil)
 	sEcoNoPressure := scoreNode("eco-node", states, hwInfo, "standard", 0, false, nil, nil)
-	if sPerfNoPressure != sEcoNoPressure {
-		t.Errorf("with zero pressure, same-stats nodes should score equally: perf=%d eco=%d", sPerfNoPressure, sEcoNoPressure)
+	if sEcoNoPressure <= sPerfNoPressure {
+		t.Errorf("with zero pressure, standard pod should prefer eco node (profile bonus): eco=%d perf=%d", sEcoNoPressure, sPerfNoPressure)
 	}
 }
 

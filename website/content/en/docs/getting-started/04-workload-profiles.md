@@ -177,56 +177,12 @@ Joulie includes a workload profile classifier in `pkg/workloadprofile/classifier
 
 Classification uses a two-phase approach:
 
-1. **Static hints**: pod labels and annotations are parsed first. These are fast and zero-overhead but require the user or deployment tooling to supply them.
-2. **Dynamic metrics**: Prometheus/Kepler metrics measured while the workload runs are used to infer CPU/GPU intensity and boundness automatically.
+1. **Static hints**: pod annotations are parsed first (`joulie.io/workload-class`, sensitivity annotations). These provide immediate, zero-latency classification at pod creation.
+2. **Dynamic metrics**: Prometheus/Kepler metrics measured while the workload runs are used to infer CPU/GPU intensity and boundness automatically. When [Kepler](https://github.com/sustainable-computing-io/kepler) is deployed, energy ratios can override utilization-based classification for more precise compute-vs-memory distinction.
 
-### Classification rules
+Classification degrades gracefully: annotations alone yield confidence 0.3, utilization metrics raise it to 0.5, and Kepler energy data pushes it to 0.7+.
 
-The classifier uses utilization percentage as the primary signal, with Kepler energy ratios as enrichment:
-
-**CPU intensity** (from `CPUUtilPct`):
-
-| Utilization | Intensity |
-|-------------|-----------|
-| ≥ 75% | `high` |
-| ≥ 30% | `medium` |
-| < 30% | `low` |
-
-**CPU boundness** (primary: utilization + memory pressure; enrichment: Kepler energy ratios):
-
-| Condition | Bound | Cap sensitivity |
-|-----------|-------|----------------|
-| GPU dominant (GPUUtilPct > 40 and > CPUUtilPct) | `mixed` | `low` |
-| CPUUtilPct > 65 and MemoryPressurePct < 50 | `compute` | `high` (if util > 70%) |
-| MemoryPressurePct > 50 and CPUUtilPct < 60 | `memory` | `low` |
-| CPUUtilPct < 20 | `io` | `low` |
-
-When Kepler is available, energy ratios can override the utilization-based classification:
-
-- `CPUBoundRatio > 0.70` → override to `compute`
-- `MemoryBoundRatio > 0.40` → override to `memory`
-
-**GPU intensity** (from `GPUUtilPct` or Kepler GPU energy):
-
-| Utilization | Intensity |
-|-------------|-----------|
-| ≥ 70% | `high` |
-| ≥ 25% | `medium` |
-| < 25% | `low` |
-
-### Kepler metrics used
-
-[Kepler](https://github.com/sustainable-computing-io/kepler) (Kubernetes-based Efficient Power Level Exporter) instruments the kernel via eBPF to produce per-container energy counters, scraped by Prometheus. The classifier reads three Kepler metrics over a configurable window (default 10 minutes):
-
-| Kepler metric | Used for |
-|---|---|
-| `kepler_container_package_joules_total` | CPU package energy → CPU-bound ratio |
-| `kepler_container_dram_joules_total` | DRAM energy → memory-bound ratio |
-| `kepler_container_gpu_joules_total` | GPU energy → GPU intensity and GPU-bound ratio |
-
-### Confidence without Kepler
-
-When Kepler is not available, utilization % signals are still used and classification remains functional. Confidence is slightly lower because Kepler energy ratios provide a stronger signal for compute-vs-memory distinction when CPU and memory utilization are both elevated.
+For the full classification rules, threshold tables, and Kepler integration details, see [Workload Classification]({{< relref "/docs/architecture/workload-classification.md" >}}).
 
 ### Installing Kepler
 
@@ -239,13 +195,7 @@ helm install kepler kepler/kepler \
   --set serviceMonitor.enabled=true
 ```
 
-Verify Kepler is scraping by querying Prometheus:
-
-```promql
-sum(rate(kepler_container_package_joules_total[5m])) by (pod_name, namespace)
-```
-
-### Supported pod annotations for seeding the classifier
+### Supported pod annotations
 
 The classifier reads the following annotations as high-confidence hints that override metric-derived values:
 
@@ -255,20 +205,6 @@ The classifier reads the following annotations as high-confidence hints that ove
 | `joulie.io/reschedulable` | `true`, `false` |
 | `joulie.io/cpu-sensitivity` | `high`, `medium`, `low` |
 | `joulie.io/gpu-sensitivity` | `high`, `medium`, `low` |
-
-### Current status and future work
-
-The current implementation uses **threshold-based heuristic rules**, effectively a hand-coded decision tree over utilization percentages and energy ratios. This is intentional: the rules are simple to audit and replace.
-
-The `classificationReason` field provides a built-in audit trail, making it possible to verify and debug classification decisions without reading source code.
-
-A future ML model would:
-
-- Collect a labeled training dataset pairing Kepler metrics with manually-verified `WorkloadProfile` values.
-- Train a lightweight multi-class classifier (Random Forest or XGBoost) on features: `CPUBoundRatio`, `MemoryBoundRatio`, `GPUEnergyFraction`, `CPUUtilPct`, job duration.
-- Export as ONNX and embed in the binary, or serve via a sidecar inference service.
-
-The classifier's `classify(hints, metrics)` function is the only code that would need to change; the rest of the pipeline (metrics reading, hint parsing, confidence computation, reason tracking) stays the same.
 
 ## Inspecting WorkloadProfiles
 

@@ -4,7 +4,7 @@ linkTitle: "Architecture"
 weight: 20
 ---
 
-Architecture explains how Joulie's digital twin turns telemetry into enforcement decisions.
+Architecture explains how Joulie's per-node digital twins turn telemetry into enforcement decisions.
 
 If you are new, first read:
 
@@ -45,7 +45,7 @@ The operator contains three reconcile-loop controllers and three background cont
 
 **Background controllers** (run on independent intervals):
 
-- **Workload classifier** (`ENABLE_CLASSIFIER=true` by default): watches running pods, queries Prometheus/Kepler metrics, and writes `WorkloadProfile` CRs. Two-phase classification: static hints from annotations, then dynamic metrics.
+- **Workload classifier** (`ENABLE_CLASSIFIER=true` by default): watches running pods, queries Prometheus/Kepler metrics, and writes `WorkloadProfile` CRs. Two-phase classification: static hints from annotations, then dynamic metrics. In simulator mode, the classifier can fall back to `sim.joulie.io/*` pod annotations when Prometheus is unavailable (`CLASSIFY_SIM_ANNOTATION_FALLBACK=true`).
 - **Facility metrics poller** (`ENABLE_FACILITY_METRICS=false` by default): queries Prometheus for ambient temperature, IT power, and cooling power. Computes PUE for twin and scheduler consumption.
 - **Active rescheduler** (`ENABLE_ACTIVE_RESCHEDULING=false` by default): reads `NodeTwin.status.rescheduleRecommendations` and evicts misplaced pods via the Kubernetes Eviction API. Only affects pods with the `joulie.io/reschedulable=true` annotation. Before eviction, annotates the pod's owner with eviction context so the scheduler avoids re-placing the replacement pod in the same situation.
 

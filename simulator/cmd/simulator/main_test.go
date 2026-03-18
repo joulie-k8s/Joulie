@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1242,33 +1243,39 @@ func newTestSimulatorWithJobs(jobs []*simJob) (*simulator, kubernetes.Interface)
 	return s, kube
 }
 
-func TestInjectTraceJobsSetsWorkloadClassAnnotation(t *testing.T) {
-	cases := []struct {
-		name  string
-		class string
-	}{
-		{"performance pod", "performance"},
-		{"standard pod", "standard"},
+func TestInjectTraceJobsSetsSimUtilAnnotations(t *testing.T) {
+	job := &simJob{
+		JobID:             "j-compute",
+		Class:             "performance",
+		Namespace:         "default",
+		SubmitOffsetSec:   0,
+		RequestedCPUCores: 4,
+		CPUUtilTarget:     0.85,
+		GPUUtilTarget:     0.0,
+		MemoryIntensity:   0.20,
+		IOIntensity:       0.10,
+		PodName:           "sim-j-compute",
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			job := &simJob{
-				JobID:             "j-" + tc.class,
-				Class:             tc.class,
-				Namespace:         "default",
-				SubmitOffsetSec:   0,
-				RequestedCPUCores: 1,
-				PodName:           "sim-j-" + tc.class,
-			}
-			_, kube := newTestSimulatorWithJobs([]*simJob{job})
-			pod, err := kube.CoreV1().Pods("default").Get(context.Background(), job.PodName, metav1.GetOptions{})
-			if err != nil {
-				t.Fatalf("get pod: %v", err)
-			}
-			if got := pod.Annotations["joulie.io/workload-class"]; got != tc.class {
-				t.Fatalf("expected annotation joulie.io/workload-class=%q, got %q", tc.class, got)
-			}
-		})
+	_, kube := newTestSimulatorWithJobs([]*simJob{job})
+	pod, err := kube.CoreV1().Pods("default").Get(context.Background(), job.PodName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	// Should NOT have joulie.io/workload-class (no more cheating).
+	if got := pod.Annotations["joulie.io/workload-class"]; got != "" {
+		t.Fatalf("expected no joulie.io/workload-class annotation, got %q", got)
+	}
+	// Should have sim utilization annotations.
+	expected := map[string]string{
+		"sim.joulie.io/cpu-util-pct":        "85.0",
+		"sim.joulie.io/gpu-util-pct":        "0.0",
+		"sim.joulie.io/memory-pressure-pct": "20.0",
+		"sim.joulie.io/io-intensity":        "0.10",
+	}
+	for key, want := range expected {
+		if got := pod.Annotations[key]; got != want {
+			t.Errorf("annotation %s: got %q, want %q", key, got, want)
+		}
 	}
 }
 
@@ -1390,4 +1397,227 @@ func TestInjectTraceJobsHasSimAnnotations(t *testing.T) {
 			t.Fatalf("annotation %s: got %q, want %q", key, got, want)
 		}
 	}
+}
+
+// --- Fake Prometheus query endpoint tests ---
+
+func TestHandleFakePrometheusQueryAmbientTemp(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 100, DefaultCapW: 5000},
+		nil, nil, 10, prometheus.NewRegistry(),
+	)
+	s.facilityAmbientTemp.Set(22.5)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/query?query=datacenter_ambient_temperature_celsius", nil)
+	w := httptest.NewRecorder()
+	s.handleFakePrometheusQuery(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+
+	val := parsePrometheusScalarResponse(t, w.Body.Bytes())
+	if math.Abs(val-22.5) > 0.01 {
+		t.Errorf("expected 22.5, got %f", val)
+	}
+}
+
+func TestHandleFakePrometheusQueryITPower(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 100, DefaultCapW: 5000},
+		nil, nil, 10, prometheus.NewRegistry(),
+	)
+	s.facilityITPowerW.Set(4200.0)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/query?query=datacenter_total_it_power_watts", nil)
+	w := httptest.NewRecorder()
+	s.handleFakePrometheusQuery(w, req)
+
+	val := parsePrometheusScalarResponse(t, w.Body.Bytes())
+	if math.Abs(val-4200.0) > 0.01 {
+		t.Errorf("expected 4200, got %f", val)
+	}
+}
+
+func TestHandleFakePrometheusQueryCoolingPower(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 100, DefaultCapW: 5000},
+		nil, nil, 10, prometheus.NewRegistry(),
+	)
+	s.facilityCoolingPowerW.Set(800.0)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/query?query=datacenter_cooling_power_watts", nil)
+	w := httptest.NewRecorder()
+	s.handleFakePrometheusQuery(w, req)
+
+	val := parsePrometheusScalarResponse(t, w.Body.Bytes())
+	if math.Abs(val-800.0) > 0.01 {
+		t.Errorf("expected 800, got %f", val)
+	}
+}
+
+func TestHandleFakePrometheusQueryPUE(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 100, DefaultCapW: 5000},
+		nil, nil, 10, prometheus.NewRegistry(),
+	)
+	s.facilityPUE.Set(1.25)
+
+	for _, query := range []string{"joulie_sim_facility_pue", "some_pue_metric"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/query?query="+query, nil)
+		w := httptest.NewRecorder()
+		s.handleFakePrometheusQuery(w, req)
+
+		val := parsePrometheusScalarResponse(t, w.Body.Bytes())
+		if math.Abs(val-1.25) > 0.01 {
+			t.Errorf("query=%s: expected 1.25, got %f", query, val)
+		}
+	}
+}
+
+func TestHandleFakePrometheusQueryUnknownMetric(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 100, DefaultCapW: 5000},
+		nil, nil, 10, prometheus.NewRegistry(),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/query?query=unknown_metric_xyz", nil)
+	w := httptest.NewRecorder()
+	s.handleFakePrometheusQuery(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, expected 200 with empty result", w.Code)
+	}
+
+	var resp struct {
+		Status string `json:"status"`
+		Data   struct {
+			Result []any `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Status != "success" {
+		t.Errorf("expected success, got %s", resp.Status)
+	}
+	if len(resp.Data.Result) != 0 {
+		t.Errorf("expected empty result for unknown metric, got %d", len(resp.Data.Result))
+	}
+}
+
+func TestHandleFakePrometheusQueryMissingParam(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 100, DefaultCapW: 5000},
+		nil, nil, 10, prometheus.NewRegistry(),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/query", nil)
+	w := httptest.NewRecorder()
+	s.handleFakePrometheusQuery(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleFakePrometheusQuerySimMetricNames(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 100, DefaultCapW: 5000},
+		nil, nil, 10, prometheus.NewRegistry(),
+	)
+	s.facilityAmbientTemp.Set(18.0)
+	s.facilityITPowerW.Set(3000.0)
+	s.facilityCoolingPowerW.Set(500.0)
+
+	tests := []struct {
+		query string
+		want  float64
+	}{
+		{"joulie_sim_facility_ambient_temp_celsius", 18.0},
+		{"joulie_sim_facility_it_power_watts", 3000.0},
+		{"joulie_sim_facility_cooling_power_watts", 500.0},
+	}
+	for _, tc := range tests {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/query?query="+tc.query, nil)
+		w := httptest.NewRecorder()
+		s.handleFakePrometheusQuery(w, req)
+
+		val := parsePrometheusScalarResponse(t, w.Body.Bytes())
+		if math.Abs(val-tc.want) > 0.01 {
+			t.Errorf("query=%s: expected %f, got %f", tc.query, tc.want, val)
+		}
+	}
+}
+
+func TestUpdateFacilityMetricsComputesITAndCoolingPower(t *testing.T) {
+	s := newSimulatorWithRegisterer(
+		simModel{BaseIdleW: 200, DefaultCapW: 5000},
+		nil, nil, 10, prometheus.NewRegistry(),
+	)
+	s.facilityBaseAmbientTempC = 25.0
+	s.facilityTempAmplitudeC = 0.0 // no oscillation for determinism
+	s.facilityTempPeriodH = 24.0
+	s.workload = &workloadEngine{startTime: time.Now()}
+
+	// Create two nodes with known power.
+	nodeA := s.getNode("node-a")
+	nodeA.TotalAvgPowerWatts = 300.0
+	nodeB := s.getNode("node-b")
+	nodeB.TotalAvgPowerWatts = 500.0
+
+	s.updateFacilityMetrics(time.Now())
+
+	itPower := gaugeValue(s.facilityITPowerW)
+	if math.Abs(itPower-800.0) > 0.01 {
+		t.Errorf("expected IT power 800W, got %.2f", itPower)
+	}
+
+	ambientTemp := gaugeValue(s.facilityAmbientTemp)
+	if math.Abs(ambientTemp-25.0) > 0.5 {
+		t.Errorf("expected ambient ~25C, got %.2f", ambientTemp)
+	}
+
+	coolingPower := gaugeValue(s.facilityCoolingPowerW)
+	// PUE at 25C = 1.1 + 0.008*(25-15) = 1.18. Cooling = 800 * 0.18 = 144W.
+	expectedCooling := 800.0 * (1.18 - 1.0)
+	if math.Abs(coolingPower-expectedCooling) > 1.0 {
+		t.Errorf("expected cooling ~%.0fW, got %.2f", expectedCooling, coolingPower)
+	}
+}
+
+// parsePrometheusScalarResponse parses a Prometheus instant query JSON response
+// and returns the scalar value. Mirrors the format expected by the operator's
+// queryPrometheusScalar function.
+func parsePrometheusScalarResponse(t *testing.T, body []byte) float64 {
+	t.Helper()
+	var resp struct {
+		Status string `json:"status"`
+		Data   struct {
+			Result []struct {
+				Value []any `json:"value"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode prometheus response: %v", err)
+	}
+	if resp.Status != "success" {
+		t.Fatalf("expected status=success, got %s", resp.Status)
+	}
+	if len(resp.Data.Result) == 0 {
+		t.Fatal("empty result set")
+	}
+	if len(resp.Data.Result[0].Value) < 2 {
+		t.Fatal("value array too short")
+	}
+	valStr, ok := resp.Data.Result[0].Value[1].(string)
+	if !ok {
+		t.Fatalf("value[1] is not a string: %T", resp.Data.Result[0].Value[1])
+	}
+	v, err := strconv.ParseFloat(valStr, 64)
+	if err != nil {
+		t.Fatalf("parse float %q: %v", valStr, err)
+	}
+	return v
 }

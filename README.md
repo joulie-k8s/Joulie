@@ -4,19 +4,19 @@
 
 # Joulie
 
-**A Kubernetes-native digital twin for energy-efficient data centers.**
+**Kubernetes-native energy management for data centers, powered by digital twins.**
 
 Visit the docs at [joulie-k8s.github.io/Joulie](https://joulie-k8s.github.io/Joulie/)
 
 ## What it is
 
-Joulie builds a real-time digital twin of your Kubernetes cluster's energy state.
+Joulie uses per-node digital twins to model your Kubernetes cluster's energy state in real time.
 It continuously ingests telemetry (CPU/GPU power draw via RAPL and NVML/DCGM,
 per-pod resource utilization via cAdvisor, and optional energy counters from
 [Kepler](https://github.com/sustainable-computing-io/kepler)) to maintain an
 up-to-date model of every node's thermal and power state.
 
-That model drives two things:
+These per-node digital twins drive two things:
 
 1. **Energy control**: the operator writes desired power state into `NodeTwin` CRs
    (CPU and GPU power caps). The node agent reads `NodeTwin.spec` and enforces them.
@@ -44,8 +44,8 @@ As AI and scientific workloads scale, clusters face:
 - **Carbon cost**: flat power profiles waste energy during low-demand periods
 
 Joulie addresses these by making the scheduler and operator aware of the physical
-energy state of the cluster in real time, and by providing a digital twin that
-can predict the impact of scheduling decisions before they are made.
+energy state of the cluster in real time, using per-node digital twins that
+predict the impact of scheduling decisions before they are made.
 
 ## Architecture
 
@@ -54,7 +54,7 @@ Joulie has five components:
 | Component | What it does |
 |-----------|-------------|
 | **Agent** (`cmd/agent`) | Runs on every node. Discovers hardware (CPU/GPU caps, slicing modes). Enforces RAPL/NVML power caps. Publishes `NodeHardware` CR. Reads `NodeTwin.spec` for desired state. Writes control feedback to `NodeTwin.status.controlStatus`. |
-| **Operator** (`cmd/operator`) | Cluster-wide control loop. Reads `NodeHardware` + Prometheus metrics. Runs the digital twin model. Writes `NodeTwin` (spec = desired power state, status = twin output). Classifies workloads into `WorkloadProfile` CRs. Triggers pod migration under thermal/PSU pressure. |
+| **Operator** (`cmd/operator`) | Cluster-wide control loop. Reads `NodeHardware` + Prometheus metrics. Runs the digital twin model. Writes `NodeTwin` (spec = desired power state, status = twin output). Classifies workloads into `WorkloadProfile` CRs. Generates migration recommendations under thermal/PSU pressure (opt-in active eviction). |
 | **Scheduler extender** (`cmd/scheduler`) | HTTP extender for kube-scheduler. Reads `NodeTwin.status` (30s TTL cache). Rejects eco nodes for performance pods. Scores nodes by power headroom and stress. |
 | **kubectl plugin** (`cmd/kubectl-joulie`) | `kubectl joulie status` for cluster energy overview. `kubectl joulie recommend` for GPU slicing and reschedule suggestions. |
 | **Digital twin** (`pkg/operator/twin`) | O(1) parametric model. Computes power headroom, cooling stress (% of cooling capacity), PSU stress (% of PDU capacity), and GPU slicing recommendations. CoolingModel is pluggable (default: linear proxy; future: openModelica thermal simulation). |

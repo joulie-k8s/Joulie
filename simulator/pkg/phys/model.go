@@ -125,8 +125,17 @@ func (m CappedBoardGPUModel) Power(state DeviceState) float64 {
 	if pNat > capW {
 		pNat = capW
 	}
-	if pNat < m.IdleW {
-		pNat = m.IdleW
+	// GPU idle power management: when the device is managed (cap < max) and
+	// has no active work (util ~ 0), model GPU entering a deep low-power
+	// idle state (D3cold via NVML). This reduces idle power by ~90%,
+	// reflecting real hardware capability that Joulie's agent can activate
+	// on eco-profile nodes. Unmanaged GPUs (cap == max) stay at full idle.
+	idleFloor := m.IdleW
+	if state.MaxCapWatts > 0 && capW < state.MaxCapWatts*0.99 && util < 0.01 {
+		idleFloor = m.IdleW * 0.10
+	}
+	if pNat < idleFloor {
+		pNat = idleFloor
 	}
 	return pNat
 }

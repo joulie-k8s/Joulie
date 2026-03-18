@@ -552,6 +552,16 @@ func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo
 	baseScore := headroom*0.4 + (100-coolStress)*0.3 + (100-psuStress)*0.3
 	score := baseScore
 
+	// Profile-aware scoring: steer pods toward their matching profile.
+	// Performance pods get a bonus on performance nodes to ensure they run
+	// at full power. Standard pods get a bonus on eco nodes so that
+	// performance node capacity is preserved for performance workloads.
+	if wpClass == "performance" && state.SchedulableClass == "performance" {
+		score += 15
+	}
+	if wpClass == "standard" && state.SchedulableClass == "eco" {
+		score += 10
+	}
 	// Adaptive pressure relief: when performance nodes are congested,
 	// steer standard pods away from them to preserve capacity for performance pods.
 	if wpClass == "standard" && state.SchedulableClass == "performance" {

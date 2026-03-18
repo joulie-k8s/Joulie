@@ -22,6 +22,7 @@ import (
 	"github.com/matbun/joulie/simulator/pkg/phys"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -196,8 +197,10 @@ type simulator struct {
 	facilityTempPeriodH      float64
 
 	// Facility Prometheus gauges.
-	facilityAmbientTemp prometheus.Gauge
-	facilityPUE         prometheus.Gauge
+	facilityAmbientTemp  prometheus.Gauge
+	facilityPUE          prometheus.Gauge
+	facilityITPowerW     prometheus.Gauge
+	facilityCoolingPowerW prometheus.Gauge
 }
 
 func main() {
@@ -277,6 +280,7 @@ func main() {
 	mux.HandleFunc("/debug/jobs", s.handleDebugJobs)
 	mux.HandleFunc("/debug/events", s.handleDebugEvents)
 	mux.HandleFunc("/debug/energy", s.handleDebugEnergy)
+	mux.HandleFunc("/api/v1/query", s.handleFakePrometheusQuery)
 
 	log.Printf("listening on %s", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
@@ -372,6 +376,14 @@ func newSimulatorWithRegisterer(model simModel, selector labels.Selector, classe
 			Name: "joulie_sim_facility_pue",
 			Help: "Simulated facility Power Usage Effectiveness",
 		}),
+		facilityITPowerW: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "joulie_sim_facility_it_power_watts",
+			Help: "Simulated total IT power draw in watts",
+		}),
+		facilityCoolingPowerW: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "joulie_sim_facility_cooling_power_watts",
+			Help: "Simulated cooling infrastructure power in watts",
+		}),
 	}
 
 	reg.MustRegister(
@@ -392,6 +404,8 @@ func newSimulatorWithRegisterer(model simModel, selector labels.Selector, classe
 		s.controlResult,
 		s.facilityAmbientTemp,
 		s.facilityPUE,
+		s.facilityITPowerW,
+		s.facilityCoolingPowerW,
 	)
 	return s
 }
@@ -517,10 +531,32 @@ func gpuPowerWithModel(st *nodeState, model simModel) float64 {
 	if class == "" {
 		class = "gpu.mixed"
 	}
+
+	// Distribute node-average GPU utilization across individual devices.
+	// Instead of assigning the same average util to every device, estimate
+	// how many GPUs are actively occupied and give those full utilization
+	// while the rest sit idle (util = 0). This correctly models per-device
+	// idle power management: idle GPUs on managed nodes can enter deep
+	// sleep states, while active GPUs run at their true utilization.
+	nDevices := float64(len(st.GPUDevices))
+	avgUtil := clamp01(st.GPUUtil)
+	activeDevices := int(math.Ceil(avgUtil * nDevices))
+	if activeDevices > len(st.GPUDevices) {
+		activeDevices = len(st.GPUDevices)
+	}
+	activeUtil := 0.0
+	if activeDevices > 0 {
+		activeUtil = clamp01(avgUtil * nDevices / float64(activeDevices))
+	}
+
 	for i := range st.GPUDevices {
 		d := &st.GPUDevices[i]
+		deviceUtil := 0.0
+		if i < activeDevices {
+			deviceUtil = activeUtil
+		}
 		deviceState := phys.DeviceState{
-			Utilization:      clamp01(st.GPUUtil),
+			Utilization:      deviceUtil,
 			CapWatts:         d.CapWatts,
 			MaxCapWatts:      model.GPU.MaxWattsPerGPU,
 			IdlePowerWatts:   model.GPU.IdleWattsPerGPU,
@@ -594,6 +630,20 @@ func cpuPowerWithModel(st *nodeState, model simModel) float64 {
 	}
 	p = math.Max(20, p)
 
+	// CPU idle power management: when the node is managed (throttle > 0,
+	// indicating Joulie agent has set a DVFS policy) and CPU utilization
+	// is low, model aggressive C-state entry (C6/C10) that reduces idle
+	// power by up to 50%. The reduction scales with idle fraction.
+	// Threshold at 20% util captures partially-idle nodes where cores
+	// can enter deep sleep. Unmanaged nodes (baseline A, throttle == 0)
+	// stay at full idle power.
+	if st.TargetThrottlePct > 0 && util < 0.20 {
+		idleFrac := 1.0 - util/0.20 // 1.0 at util=0, 0.0 at util=0.20
+		cstateReduction := 0.50 * idleFrac
+		p = p * (1.0 - cstateReduction)
+		p = math.Max(20, p)
+	}
+
 	alpha := model.AlphaUtil
 	if alpha <= 0 {
 		alpha = 1
@@ -650,71 +700,96 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	st := s.getNode(node)
 	modelForTelemetry := s.modelForNode(node)
 
-	// Hold lock while computing power and reading nodeState fields to avoid
-	// races with advanceJobProgress and handleControl.
+	// Snapshot state under lock, then build response outside lock to minimize
+	// contention with the workload loop and pod polling goroutines.
 	s.mu.Lock()
 	power := s.nodePowerWithModel(st, modelForTelemetry)
-	s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
-	s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
+	snap := struct {
+		capW, throttlePct, cpuUtil, freqScale, cpuAvgPower, cpuInstantPower float64
+		cpuWorkClass, gpuWorkClass                                          string
+		capSaturated                                                        bool
+		podsRunning                                                         int
+		gpuPowerW, gpuCapPerGpu, gpuTargetCapPerGpu, gpuUtil                float64
+		gpuPerfMul, memIntensity, ioIntensity, cpuFeedIntensity             float64
+		cpuThermalThrottle, cpuTempC, targetCapW                            float64
+		byIntentClass                                                       map[string]int
+	}{
+		capW: st.CapWatts, throttlePct: float64(st.ThrottlePct),
+		cpuUtil: st.CPUUtil, freqScale: st.FreqScale,
+		cpuAvgPower: st.CPUAvgPowerWatts, cpuInstantPower: st.CPUInstantPowerWatts,
+		cpuWorkClass: st.CPUWorkClass, gpuWorkClass: st.GPUWorkClass,
+		capSaturated: st.CapSaturated, podsRunning: st.PodsRunning,
+		gpuPowerW: st.GPUPowerWatts, gpuCapPerGpu: st.GPUCapWattsPerGpu,
+		gpuTargetCapPerGpu: st.GPUTargetCapWattsPerGpu, gpuUtil: st.GPUUtil,
+		gpuPerfMul: st.GPUPerfMultiplier, memIntensity: st.MemoryIntensity,
+		ioIntensity: st.IOIntensity, cpuFeedIntensity: st.CPUFeedIntensity,
+		cpuThermalThrottle: st.CPUThermalThrottle, cpuTempC: st.CPUTemperatureC,
+		targetCapW: st.TargetCapWatts, byIntentClass: st.ByIntentClass,
+	}
+	gpuAvgPowerVal := gpuAvgPower(st)
+	s.mu.Unlock()
+
+	// Prometheus metric updates are thread-safe, no lock needed.
+	s.nodeCapW.WithLabelValues(node).Set(snap.capW)
+	s.nodeThrottlePct.WithLabelValues(node).Set(snap.throttlePct)
 	s.nodePowerW.WithLabelValues(node).Set(power)
-	s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
-	s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
-	s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
-	s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
+	s.nodePods.WithLabelValues(node).Set(float64(snap.podsRunning))
+	s.nodeUtilCPU.WithLabelValues(node).Set(snap.cpuUtil)
+	s.nodeFreqScale.WithLabelValues(node).Set(snap.freqScale)
+	s.nodeRaplCapW.WithLabelValues(node).Set(snap.capW)
 	eventPayload := map[string]any{
 		"packagePowerWatts":        power,
-		"instantPackagePowerWatts": st.CPUInstantPowerWatts + st.GPUPowerWatts,
-		"capWatts":                 st.CapWatts,
-		"throttlePct":              st.ThrottlePct,
-		"freqScale":                st.FreqScale,
-		"cpuUtil":                  st.CPUUtil,
-		"cpuWorkClass":             st.CPUWorkClass,
-		"capSaturated":             st.CapSaturated,
-		"podsRunning":              st.PodsRunning,
-		"gpuPowerWatts":            st.GPUPowerWatts,
-		"gpuCapWattsPerGpu":        st.GPUCapWattsPerGpu,
-		"gpuUtil":                  st.GPUUtil,
-		"gpuWorkClass":             st.GPUWorkClass,
-		"gpuPerfMultiplier":        st.GPUPerfMultiplier,
-		"memoryIntensity":          st.MemoryIntensity,
-		"ioIntensity":              st.IOIntensity,
-		"cpuFeedIntensity":         st.CPUFeedIntensity,
+		"instantPackagePowerWatts": snap.cpuInstantPower + snap.gpuPowerW,
+		"capWatts":                 snap.capW,
+		"throttlePct":              snap.throttlePct,
+		"freqScale":                snap.freqScale,
+		"cpuUtil":                  snap.cpuUtil,
+		"cpuWorkClass":             snap.cpuWorkClass,
+		"capSaturated":             snap.capSaturated,
+		"podsRunning":              snap.podsRunning,
+		"gpuPowerWatts":            snap.gpuPowerW,
+		"gpuCapWattsPerGpu":        snap.gpuCapPerGpu,
+		"gpuUtil":                  snap.gpuUtil,
+		"gpuWorkClass":             snap.gpuWorkClass,
+		"gpuPerfMultiplier":        snap.gpuPerfMul,
+		"memoryIntensity":          snap.memIntensity,
+		"ioIntensity":              snap.ioIntensity,
+		"cpuFeedIntensity":         snap.cpuFeedIntensity,
 	}
 	resp := map[string]any{
 		"node":                     node,
 		"packagePowerWatts":        power,
-		"instantPackagePowerWatts": math.Round((st.CPUInstantPowerWatts+st.GPUPowerWatts)*100) / 100,
+		"instantPackagePowerWatts": math.Round((snap.cpuInstantPower+snap.gpuPowerW)*100) / 100,
 		"cpu": map[string]any{
-			"packagePowerWatts":  st.CPUAvgPowerWatts,
-			"instantPowerWatts":  st.CPUInstantPowerWatts,
-			"utilization":        st.CPUUtil,
-			"memoryIntensity":    st.MemoryIntensity,
-			"ioIntensity":        st.IOIntensity,
-			"workClass":          st.CPUWorkClass,
-			"freqScale":          st.FreqScale,
-			"throttlePct":        st.ThrottlePct,
-			"thermalThrottlePct": st.CPUThermalThrottle * 100.0,
-			"temperatureC":       st.CPUTemperatureC,
-			"capWatts":           st.CapWatts,
-			"targetCapWatts":     st.TargetCapWatts,
-			"raplCapWatts":       st.CapWatts,
-			"capSaturated":       st.CapSaturated,
+			"packagePowerWatts":  snap.cpuAvgPower,
+			"instantPowerWatts":  snap.cpuInstantPower,
+			"utilization":        snap.cpuUtil,
+			"memoryIntensity":    snap.memIntensity,
+			"ioIntensity":        snap.ioIntensity,
+			"workClass":          snap.cpuWorkClass,
+			"freqScale":          snap.freqScale,
+			"throttlePct":        snap.throttlePct,
+			"thermalThrottlePct": snap.cpuThermalThrottle * 100.0,
+			"temperatureC":       snap.cpuTempC,
+			"capWatts":           snap.capW,
+			"targetCapWatts":     snap.targetCapW,
+			"raplCapWatts":       snap.capW,
+			"capSaturated":       snap.capSaturated,
 		},
 		"gpu": map[string]any{
 			"present":               modelForTelemetry.GPU.Count > 0,
 			"vendor":                modelForTelemetry.GPU.Vendor,
 			"product":               modelForTelemetry.GPU.Product,
 			"count":                 modelForTelemetry.GPU.Count,
-			"powerWattsTotal":       st.GPUPowerWatts,
-			"avgPowerWattsTotal":    gpuAvgPower(st),
-			"capWattsPerGpuApplied": st.GPUCapWattsPerGpu,
-			"capWattsPerGpuTarget":  st.GPUTargetCapWattsPerGpu,
-			"utilization":           st.GPUUtil,
-			"memoryIntensity":       st.MemoryIntensity,
-			"cpuFeedIntensity":      st.CPUFeedIntensity,
-			"workClass":             st.GPUWorkClass,
-			"perfMultiplier":        st.GPUPerfMultiplier,
-			"devices":               st.GPUDevices,
+			"powerWattsTotal":       snap.gpuPowerW,
+			"avgPowerWattsTotal":    gpuAvgPowerVal,
+			"capWattsPerGpuApplied": snap.gpuCapPerGpu,
+			"capWattsPerGpuTarget":  snap.gpuTargetCapPerGpu,
+			"utilization":           snap.gpuUtil,
+			"memoryIntensity":       snap.memIntensity,
+			"cpuFeedIntensity":      snap.cpuFeedIntensity,
+			"workClass":             snap.gpuWorkClass,
+			"perfMultiplier":        snap.gpuPerfMul,
 		},
 		"hardwareModel": map[string]any{
 			"cpuModel":       modelForTelemetry.CPUModel,
@@ -724,13 +799,12 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 			"gpuProvenance":  modelForTelemetry.GPU.Provenance,
 		},
 		"pods": map[string]any{
-			"running":       st.PodsRunning,
-			"byIntentClass": st.ByIntentClass,
+			"running":       snap.podsRunning,
+			"byIntentClass": snap.byIntentClass,
 		},
 		"ts": time.Now().UTC().Format(time.RFC3339),
 	}
-	logMsg := fmt.Sprintf("telemetry node=%s powerW=%.2f capW=%.2f throttlePct=%d pods=%d", node, power, st.CapWatts, st.ThrottlePct, st.PodsRunning)
-	s.mu.Unlock()
+	logMsg := fmt.Sprintf("telemetry node=%s powerW=%.2f capW=%.2f throttlePct=%.0f pods=%d", node, power, snap.capW, snap.throttlePct, snap.podsRunning)
 
 	s.recordEvent("telemetry", node, eventPayload)
 	log.Print(logMsg)
@@ -833,23 +907,42 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 	st.LastResult = result
 	st.LastUpdate = time.Now().UTC()
 
-	// Compute power and snapshot state for response while still holding the lock.
+	// Compute power and snapshot state, then release lock quickly.
 	power := s.nodePowerWithModel(st, model)
-	s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
-	s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
+	ctrlSnap := struct {
+		capW, targetCapW, freqScale, cpuUtil         float64
+		throttlePct, targetThrottlePct                int
+		podsRunning                                   int
+		gpuCapPerGpu, gpuTargetCapPerGpu              float64
+		lastAction, lastResult                        string
+		lastUpdate                                    string
+	}{
+		capW: st.CapWatts, targetCapW: st.TargetCapWatts,
+		freqScale: st.FreqScale, cpuUtil: st.CPUUtil,
+		throttlePct: st.ThrottlePct, targetThrottlePct: st.TargetThrottlePct,
+		podsRunning: st.PodsRunning,
+		gpuCapPerGpu: st.GPUCapWattsPerGpu, gpuTargetCapPerGpu: st.GPUTargetCapWattsPerGpu,
+		lastAction: st.LastAction, lastResult: st.LastResult,
+		lastUpdate: st.LastUpdate.Format(time.RFC3339),
+	}
+	s.mu.Unlock()
+
+	// Prometheus updates and response building outside lock.
+	s.nodeCapW.WithLabelValues(node).Set(ctrlSnap.capW)
+	s.nodeThrottlePct.WithLabelValues(node).Set(float64(ctrlSnap.throttlePct))
 	s.nodePowerW.WithLabelValues(node).Set(power)
-	s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
-	s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
-	s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
-	s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
+	s.nodePods.WithLabelValues(node).Set(float64(ctrlSnap.podsRunning))
+	s.nodeUtilCPU.WithLabelValues(node).Set(ctrlSnap.cpuUtil)
+	s.nodeFreqScale.WithLabelValues(node).Set(ctrlSnap.freqScale)
+	s.nodeRaplCapW.WithLabelValues(node).Set(ctrlSnap.capW)
 	eventPayload := map[string]any{
 		"action":            payload.Action,
-		"capWatts":          st.CapWatts,
-		"targetCapWatts":    st.TargetCapWatts,
-		"throttlePct":       st.ThrottlePct,
+		"capWatts":          ctrlSnap.capW,
+		"targetCapWatts":    ctrlSnap.targetCapW,
+		"throttlePct":       ctrlSnap.throttlePct,
 		"powerWatts":        power,
-		"podsRunning":       st.PodsRunning,
-		"gpuCapWattsPerGpu": st.GPUCapWattsPerGpu,
+		"podsRunning":       ctrlSnap.podsRunning,
+		"gpuCapWattsPerGpu": ctrlSnap.gpuCapPerGpu,
 	}
 	resp := map[string]any{
 		"ok":      result == "applied",
@@ -857,23 +950,21 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 		"node":    node,
 		"message": message,
 		"state": map[string]any{
-			"capWatts":                 st.CapWatts,
-			"throttlePct":              st.ThrottlePct,
-			"targetThrottlePct":        st.TargetThrottlePct,
-			"freqScale":                st.FreqScale,
-			"cpuUtil":                  st.CPUUtil,
-			"lastAction":               st.LastAction,
-			"lastResult":               st.LastResult,
-			"lastUpdate":               st.LastUpdate.Format(time.RFC3339),
-			"podsRunning":              st.PodsRunning,
-			"gpuCapWattsPerGpuApplied": st.GPUCapWattsPerGpu,
-			"gpuCapWattsPerGpuTarget":  st.GPUTargetCapWattsPerGpu,
-			"gpuDevices":               st.GPUDevices,
+			"capWatts":                 ctrlSnap.capW,
+			"throttlePct":              ctrlSnap.throttlePct,
+			"targetThrottlePct":        ctrlSnap.targetThrottlePct,
+			"freqScale":                ctrlSnap.freqScale,
+			"cpuUtil":                  ctrlSnap.cpuUtil,
+			"lastAction":               ctrlSnap.lastAction,
+			"lastResult":               ctrlSnap.lastResult,
+			"lastUpdate":               ctrlSnap.lastUpdate,
+			"podsRunning":              ctrlSnap.podsRunning,
+			"gpuCapWattsPerGpuApplied": ctrlSnap.gpuCapPerGpu,
+			"gpuCapWattsPerGpuTarget":  ctrlSnap.gpuTargetCapPerGpu,
 		},
 		"simulatedPackagePowerWatts": power,
 	}
-	logMsg := fmt.Sprintf("control node=%s action=%s capW=%.2f throttlePct=%d powerW=%.2f pods=%d", node, payload.Action, st.CapWatts, st.ThrottlePct, power, st.PodsRunning)
-	s.mu.Unlock()
+	logMsg := fmt.Sprintf("control node=%s action=%s capW=%.2f throttlePct=%d powerW=%.2f pods=%d", node, payload.Action, ctrlSnap.capW, ctrlSnap.throttlePct, power, ctrlSnap.podsRunning)
 
 	s.controlsTotal.WithLabelValues(node, payload.Action).Inc()
 	s.controlResult.WithLabelValues(node, payload.Action, result).Inc()
@@ -1014,6 +1105,17 @@ func (s *simulator) updateFacilityMetrics(now time.Time) {
 		s.facilityTempAmplitudeC*math.Sin(2*math.Pi*elapsed/periodSec)
 	s.facilityAmbientTemp.Set(ambientTemp)
 
+	// Compute total IT power from all node states.
+	var itPowerW float64
+	s.mu.RLock()
+	for _, st := range s.state {
+		if st.TotalAvgPowerWatts > 0 {
+			itPowerW += st.TotalAvgPowerWatts
+		}
+	}
+	s.mu.RUnlock()
+	s.facilityITPowerW.Set(math.Round(itPowerW*100) / 100)
+
 	// Simple PUE model: baseline 1.1 at 15C, increasing linearly with temperature.
 	// PUE = 1.1 + 0.008 * (ambientTemp - 15). Clamped to [1.0, 3.0].
 	pue := 1.1 + 0.008*(ambientTemp-15.0)
@@ -1023,6 +1125,84 @@ func (s *simulator) updateFacilityMetrics(now time.Time) {
 		pue = 3.0
 	}
 	s.facilityPUE.Set(math.Round(pue*1000) / 1000)
+
+	// Cooling power = total facility power - IT power = IT * (PUE - 1).
+	coolingPowerW := itPowerW * (pue - 1.0)
+	s.facilityCoolingPowerW.Set(math.Round(coolingPowerW*100) / 100)
+}
+
+// handleFakePrometheusQuery serves a minimal /api/v1/query endpoint that
+// returns facility metrics in the Prometheus instant-query response format.
+// This allows the operator's facility metrics poller to query the simulator
+// directly, without needing a real Prometheus instance in simulation.
+func (s *simulator) handleFakePrometheusQuery(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("query")
+	if query == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "missing query parameter"})
+		return
+	}
+
+	val, ok := s.facilityMetricValue(query)
+	if !ok {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status": "success",
+			"data": map[string]any{
+				"resultType": "vector",
+				"result":     []any{},
+			},
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status": "success",
+		"data": map[string]any{
+			"resultType": "vector",
+			"result": []any{
+				map[string]any{
+					"metric": map[string]string{},
+					"value":  []any{float64(time.Now().Unix()), strconv.FormatFloat(val, 'f', -1, 64)},
+				},
+			},
+		},
+	})
+}
+
+// facilityMetricValue resolves a query string to the current facility metric value.
+func (s *simulator) facilityMetricValue(query string) (float64, bool) {
+	// Strip surrounding whitespace for robustness.
+	q := strings.TrimSpace(query)
+	switch {
+	case strings.Contains(q, "ambient") && strings.Contains(q, "temp"),
+		q == "datacenter_ambient_temperature_celsius",
+		q == "joulie_sim_facility_ambient_temp_celsius":
+		return gaugeValue(s.facilityAmbientTemp), true
+	case strings.Contains(q, "it_power") || strings.Contains(q, "it_power_watts"),
+		q == "datacenter_total_it_power_watts",
+		q == "joulie_sim_facility_it_power_watts":
+		return gaugeValue(s.facilityITPowerW), true
+	case strings.Contains(q, "cooling") && strings.Contains(q, "power"),
+		q == "datacenter_cooling_power_watts",
+		q == "joulie_sim_facility_cooling_power_watts":
+		return gaugeValue(s.facilityCoolingPowerW), true
+	case strings.Contains(q, "pue"),
+		q == "joulie_sim_facility_pue":
+		return gaugeValue(s.facilityPUE), true
+	default:
+		return 0, false
+	}
+}
+
+// gaugeValue reads the current value from a Prometheus gauge.
+func gaugeValue(g prometheus.Gauge) float64 {
+	m := &dto.Metric{}
+	if err := g.Write(m); err != nil {
+		return 0
+	}
+	return m.GetGauge().GetValue()
 }
 
 type debugNode struct {
@@ -1225,6 +1405,9 @@ func (s *simulator) startPodPolling(interval time.Duration) {
 		log.Printf("warning: pod polling disabled (no in-cluster config): %v", err)
 		return
 	}
+	cfg.Timeout = 8 * time.Second
+	cfg.QPS = 20
+	cfg.Burst = 40
 	kube, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Printf("warning: pod polling disabled (kube client): %v", err)
@@ -1258,22 +1441,46 @@ func (s *simulator) startPodPolling(interval time.Duration) {
 
 		s.refreshNodeStateFromKubeData(counts, podsDetailed, nodes)
 
+		// Compute power for all selected nodes in a single lock hold to
+		// reduce lock acquisition overhead.
+		type pollSnap struct {
+			node                   string
+			power, capW, cpuUtil   float64
+			throttlePct            int
+			podsRunning            int
+			freqScale              float64
+		}
+		var pollSnaps []pollSnap
+		s.mu.Lock()
 		for node, labels := range nodes {
 			if !s.nodeSelected(labels) {
 				continue
 			}
-			model := s.modelForNode(node)
-			st := s.getNode(node)
-			s.mu.Lock()
+			// Access nodeModels directly since we already hold the write lock.
+			model := s.model
+			if m, ok := s.nodeModels[node]; ok {
+				model = m
+			}
+			st := s.state[node]
+			if st == nil {
+				continue
+			}
 			power := s.nodePowerWithModel(st, model)
-			s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
-			s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
-			s.nodePowerW.WithLabelValues(node).Set(power)
-			s.nodePods.WithLabelValues(node).Set(float64(st.PodsRunning))
-			s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
-			s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
-			s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
-			s.mu.Unlock()
+			pollSnaps = append(pollSnaps, pollSnap{
+				node: node, power: power, capW: st.CapWatts,
+				cpuUtil: st.CPUUtil, throttlePct: st.ThrottlePct,
+				podsRunning: st.PodsRunning, freqScale: st.FreqScale,
+			})
+		}
+		s.mu.Unlock()
+		for _, ps := range pollSnaps {
+			s.nodeCapW.WithLabelValues(ps.node).Set(ps.capW)
+			s.nodeThrottlePct.WithLabelValues(ps.node).Set(float64(ps.throttlePct))
+			s.nodePowerW.WithLabelValues(ps.node).Set(ps.power)
+			s.nodePods.WithLabelValues(ps.node).Set(float64(ps.podsRunning))
+			s.nodeUtilCPU.WithLabelValues(ps.node).Set(ps.cpuUtil)
+			s.nodeFreqScale.WithLabelValues(ps.node).Set(ps.freqScale)
+			s.nodeRaplCapW.WithLabelValues(ps.node).Set(ps.capW)
 		}
 		<-ticker.C
 	}
@@ -1872,10 +2079,25 @@ func (s *simulator) updateNodeDynamicsWithModel(st *nodeState, model simModel) {
 	st.CPUAvgPowerWatts = firstOrderToward(st.CPUAvgPowerWatts, cpuInstant, dt, float64(maxIntInt(1, model.CPUTelemetryWindowMS))/1000.0)
 
 	gpuInstantTotal := 0.0
+	// Per-device utilization distribution (same logic as gpuPowerWithModel).
+	telNDevices := float64(len(st.GPUDevices))
+	telAvgUtil := clamp01(st.GPUUtil)
+	telActiveDevices := int(math.Ceil(telAvgUtil * telNDevices))
+	if telActiveDevices > len(st.GPUDevices) {
+		telActiveDevices = len(st.GPUDevices)
+	}
+	telActiveUtil := 0.0
+	if telActiveDevices > 0 {
+		telActiveUtil = clamp01(telAvgUtil * telNDevices / float64(telActiveDevices))
+	}
 	for i := range st.GPUDevices {
 		d := &st.GPUDevices[i]
+		deviceUtil := 0.0
+		if i < telActiveDevices {
+			deviceUtil = telActiveUtil
+		}
 		deviceState := phys.DeviceState{
-			Utilization:      clamp01(st.GPUUtil),
+			Utilization:      deviceUtil,
 			CapWatts:         d.CapWatts,
 			MaxCapWatts:      model.GPU.MaxWattsPerGPU,
 			IdlePowerWatts:   model.GPU.IdleWattsPerGPU,
@@ -2165,6 +2387,9 @@ func (s *simulator) startWorkloadLoop(interval time.Duration) {
 		log.Printf("warning: workload loop disabled (no in-cluster config): %v", err)
 		return
 	}
+	cfg.Timeout = 8 * time.Second
+	cfg.QPS = 30
+	cfg.Burst = 50
 	kube, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Printf("warning: workload loop disabled (kube client): %v", err)
@@ -2174,6 +2399,7 @@ func (s *simulator) startWorkloadLoop(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	last := time.Now().UTC()
+	tickCount := 0
 	for {
 		now := time.Now().UTC()
 		dt := now.Sub(last).Seconds()
@@ -2181,11 +2407,17 @@ func (s *simulator) startWorkloadLoop(interval time.Duration) {
 			dt = interval.Seconds()
 		}
 		last = now
+		tickCount++
+		if tickCount <= 5 || tickCount%30 == 0 {
+			log.Printf("workload tick %d dt=%.2fs jobs=%d", tickCount, dt, len(s.workload.jobs))
+		}
 		s.accumulateEnergy(dt)
 		s.updateFacilityMetrics(now)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		s.injectTraceJobs(ctx, kube, now)
-		s.advanceJobProgress(ctx, kube, dt, now)
+		if ctx.Err() == nil {
+			s.advanceJobProgress(ctx, kube, dt, now)
+		}
 		cancel()
 		<-ticker.C
 	}
@@ -2195,7 +2427,14 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 	if s.workload == nil {
 		return
 	}
+	// Rate-limit pod injection to avoid overwhelming the K8s API server.
+	// At most 20 pods per tick; remaining jobs will be injected on the next tick.
+	const maxInjectPerTick = 20
+	injected := 0
 	for _, j := range s.workload.jobs {
+		if injected >= maxInjectPerTick {
+			break
+		}
 		if j.Submitted {
 			continue
 		}
@@ -2214,7 +2453,10 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 					"sim.joulie.io/workloadId":   j.WorkloadID,
 					"sim.joulie.io/workloadType": j.WorkloadType,
 					"sim.joulie.io/podRole":      j.PodRole,
-					"joulie.io/workload-class":   j.Class,
+					"sim.joulie.io/cpu-util-pct":        strconv.FormatFloat(j.CPUUtilTarget*100, 'f', 1, 64),
+				"sim.joulie.io/gpu-util-pct":        strconv.FormatFloat(j.GPUUtilTarget*100, 'f', 1, 64),
+				"sim.joulie.io/memory-pressure-pct": strconv.FormatFloat(j.MemoryIntensity*100, 'f', 1, 64),
+				"sim.joulie.io/io-intensity":        strconv.FormatFloat(j.IOIntensity, 'f', 2, 64),
 				},
 			},
 			Spec: corev1.PodSpec{
@@ -2270,7 +2512,10 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 				pod.Spec.NodeSelector["feature.node.kubernetes.io/pci-1002.present"] = "true"
 			}
 		}
-		if _, err := kube.CoreV1().Pods(j.Namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+		createCtx, createCancel := context.WithTimeout(ctx, 3*time.Second)
+		_, err := kube.CoreV1().Pods(j.Namespace).Create(createCtx, pod, metav1.CreateOptions{})
+		createCancel()
+		if err != nil {
 			if !apierrors.IsAlreadyExists(err) {
 				log.Printf("warning: create workload pod job=%s: %v", j.JobID, err)
 				continue
@@ -2278,6 +2523,7 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 		}
 		j.Submitted = true
 		j.SubmittedAt = now
+		injected++
 		s.jobSubmitted.WithLabelValues(j.Class).Inc()
 	}
 }
@@ -2379,6 +2625,9 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 	if s.workload == nil {
 		return
 	}
+	// Stall detection runs unconditionally via defer, even if pod listing fails.
+	defer s.detectStalledJobs(kube, now)
+
 	pods, err := podDetailFunc(ctx, kube)
 	if err != nil {
 		log.Printf("warning: workload progress list pods: %v", err)
@@ -2415,7 +2664,13 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			runningByWorkload[j.WorkloadID]++
 		}
 	}
+	// Clean up pods for completed jobs, rate-limited to avoid blocking the loop.
+	deletesThisTick := 0
+	const maxDeletesPerTick = 10
 	for _, j := range s.workload.jobs {
+		if deletesThisTick >= maxDeletesPerTick || ctx.Err() != nil {
+			break
+		}
 		if !j.Completed {
 			continue
 		}
@@ -2425,11 +2680,20 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 		}
 		j.NodeName = p.Node
 		s.ensureWorkloadPodDeleted(kube, j)
+		deletesThisTick++
 	}
 	for node, jobs := range byNode {
+		if ctx.Err() != nil {
+			break
+		}
 		s.mu.RLock()
 		st := s.state[node]
-		model := s.modelForNode(node)
+		// Access nodeModels directly to avoid recursive RLock (which deadlocks
+		// when a writer is waiting, due to Go RWMutex writer-priority semantics).
+		model := s.model
+		if m, ok := s.nodeModels[node]; ok {
+			model = m
+		}
 		freqScale := 1.0
 		gpuCapFactor := 1.0
 		gpuCount := 0.0
@@ -2605,6 +2869,42 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			log.Printf("job completed id=%s node=%s class=%s elapsed=%.1fs", j.JobID, node, j.Class, j.CompletedAt.Sub(j.SubmittedAt).Seconds())
 		}
 	}
+
+}
+
+// detectStalledJobs force-completes jobs that haven't made progress for
+// 120 wall-clock seconds. This prevents individual stuck jobs (e.g.,
+// gang scheduling deadlocks, unschedulable pods) from blocking the
+// entire benchmark run. Called via defer so it runs even if pod listing fails.
+func (s *simulator) detectStalledJobs(kube kubernetes.Interface, now time.Time) {
+	if s.workload == nil {
+		return
+	}
+	const stallTimeoutSec = 120.0
+	for _, j := range s.workload.jobs {
+		if j.Completed || !j.Submitted {
+			continue
+		}
+		if j.LastProgressAt.IsZero() {
+			if !j.SubmittedAt.IsZero() && now.Sub(j.SubmittedAt).Seconds() > stallTimeoutSec {
+				log.Printf("stall detected: force-completing job id=%s (no progress since submission %.0fs ago)", j.JobID, now.Sub(j.SubmittedAt).Seconds())
+				j.CPUUnitsRemaining = 0
+				j.GPUUnitsRemaining = 0
+				j.Completed = true
+				j.CompletedAt = now
+				s.ensureWorkloadPodDeleted(kube, j)
+			}
+			continue
+		}
+		if now.Sub(j.LastProgressAt).Seconds() > stallTimeoutSec {
+			log.Printf("stall detected: force-completing job id=%s (no progress for %.0fs)", j.JobID, now.Sub(j.LastProgressAt).Seconds())
+			j.CPUUnitsRemaining = 0
+			j.GPUUnitsRemaining = 0
+			j.Completed = true
+			j.CompletedAt = now
+			s.ensureWorkloadPodDeleted(kube, j)
+		}
+	}
 }
 
 func (s *simulator) ensureWorkloadPodDeleted(kube kubernetes.Interface, j *simJob) {
@@ -2616,7 +2916,7 @@ func (s *simulator) ensureWorkloadPodDeleted(kube kubernetes.Interface, j *simJo
 	}
 	grace := int64(0)
 	propagation := metav1.DeletePropagationBackground
-	deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	deleteCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	err := kube.CoreV1().Pods(j.Namespace).Delete(deleteCtx, j.PodName, metav1.DeleteOptions{
 		GracePeriodSeconds: &grace,

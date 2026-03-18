@@ -30,12 +30,14 @@ OPERATOR_RECONCILE_INTERVAL=${OPERATOR_RECONCILE_INTERVAL:-20s}
 AGENT_RECONCILE_INTERVAL=${AGENT_RECONCILE_INTERVAL:-10s}
 GENERATED_CLASSES=${GENERATED_CLASSES:-$EXAMPLE_DIR/manifests/10-node-classes.yaml}
 GENERATED_CATALOG=${GENERATED_CATALOG:-$ROOT/simulator/catalog/hardware.generated.yaml}
-SIM_CLASSIFIER_MISCLASSIFY_RATE=${SIM_CLASSIFIER_MISCLASSIFY_RATE:-0.10}
+SIM_CLASSIFIER_MISCLASSIFY_RATE=${SIM_CLASSIFIER_MISCLASSIFY_RATE:-0.0}
 SIM_FACILITY_AMBIENT_BASE_C=${SIM_FACILITY_AMBIENT_BASE_C:-22.0}
 SIM_FACILITY_AMBIENT_AMPLITUDE_C=${SIM_FACILITY_AMBIENT_AMPLITUDE_C:-8.0}
 SIM_FACILITY_AMBIENT_PERIOD_SEC=${SIM_FACILITY_AMBIENT_PERIOD_SEC:-600}
 ENABLE_CLASSIFIER=${ENABLE_CLASSIFIER:-true}
 ENABLE_FACILITY_METRICS=${ENABLE_FACILITY_METRICS:-false}
+CLASSIFY_SIM_ANNOTATION_FALLBACK=${CLASSIFY_SIM_ANNOTATION_FALLBACK:-true}
+CLASSIFY_SIM_NOISE_PCT=${CLASSIFY_SIM_NOISE_PCT:-10}
 
 actual_image_from_workload() {
   local ns=$1
@@ -149,6 +151,8 @@ helm upgrade --install joulie "$ROOT/charts/joulie" -n joulie-system --create-na
   --set "operator.env.GPU_WRITE_ABSOLUTE_CAPS=${GPU_WRITE_ABSOLUTE_CAPS}" \
   --set "operator.env.ENABLE_CLASSIFIER=${ENABLE_CLASSIFIER}" \
   --set "operator.env.ENABLE_FACILITY_METRICS=${ENABLE_FACILITY_METRICS}" \
+  --set "operator.env.CLASSIFY_SIM_ANNOTATION_FALLBACK=${CLASSIFY_SIM_ANNOTATION_FALLBACK}" \
+  --set "operator.env.CLASSIFY_SIM_NOISE_PCT=${CLASSIFY_SIM_NOISE_PCT}" \
   "${SCHED_ARGS[@]}"
 
 kubectl -n joulie-system rollout status deploy/joulie-operator
@@ -158,6 +162,14 @@ echo "scheduler extender deployed for baseline ${BASELINE}"
 
 # Configure agent telemetry/control to use the simulator HTTP endpoints.
 kubectl -n joulie-system set env statefulset/joulie-agent-pool \
+  TELEMETRY_CPU_SOURCE=http \
+  TELEMETRY_CPU_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
+  TELEMETRY_CPU_CONTROL=http \
+  TELEMETRY_CPU_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
+  TELEMETRY_CPU_CONTROL_MODE=dvfs \
+  TELEMETRY_GPU_CONTROL=http \
+  TELEMETRY_GPU_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
+  TELEMETRY_GPU_CONTROL_MODE=dvfs \
   JOULIE_TELEMETRY_SOURCE_TYPE=http \
   JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
   JOULIE_CONTROL_TYPE=http \

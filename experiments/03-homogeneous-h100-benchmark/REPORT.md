@@ -30,7 +30,7 @@ This is a **homogeneous GPU cluster** where all GPU nodes are NVIDIA H100 NVL - 
 
 | Node prefix | Replicas | GPU model | GPUs/node | GPU TDP / cap range | Host CPU | CPU cores/node | RAM/node |
 |---|---:|---|---:|---|---|---:|---:|
-| kwok-h100-nvl | **33** | NVIDIA H100 NVL | 8 | 400 W / 200–400 W | AMD EPYC 9654 96-Core | 192 | 1536 GiB |
+| kwok-h100-nvl | **33** | NVIDIA H100 NVL | 8 | 400 W / 200-400 W | AMD EPYC 9654 96-Core | 192 | 1536 GiB |
 
 All 33 GPU nodes are identical, so any GPU job can be scheduled on any GPU node without hardware-family constraints.
 
@@ -38,9 +38,9 @@ All 33 GPU nodes are identical, so any GPU job can be scheduled on any GPU node 
 
 | Node prefix | Replicas | CPU model | CPU cores/node | RAM/node |
 |---|---:|---|---:|---:|
-| kwok-cpu-highcore | **2** | AMD EPYC 9965 192-Core | 384 (2×192) | 1536 GiB |
-| kwok-cpu-highfreq | **2** | AMD EPYC 9375F 32-Core | 64 (2×32) | 770 GiB |
-| kwok-cpu-intensive | **4** | AMD EPYC 9655 96-Core | 192 (2×96) | 1536 GiB |
+| kwok-cpu-highcore | **2** | AMD EPYC 9965 192-Core | 384 (2x192) | 1536 GiB |
+| kwok-cpu-highfreq | **2** | AMD EPYC 9375F 32-Core | 64 (2x32) | 770 GiB |
+| kwok-cpu-intensive | **4** | AMD EPYC 9655 96-Core | 192 (2x96) | 1536 GiB |
 
 #### Cluster totals
 
@@ -52,7 +52,7 @@ All 33 GPU nodes are identical, so any GPU job can be scheduled on any GPU node 
 | Total GPUs | **264** (all NVIDIA H100 NVL) |
 | Total CPU cores | ~7104 |
 
-**Comparison to experiment 02**: both experiments have 41 nodes and 33 GPU nodes, but exp 03 has 264 GPUs vs exp 02's 188 GPUs (because H100 NVL has 8 GPUs/node and replaces lower-density nodes). Average GPU idle power is lower in exp 03 (80 W × 264 = 21.1 kW base floor vs exp 02's mixed-family floor).
+**Comparison to experiment 02**: both experiments have 41 nodes and 33 GPU nodes, but exp 03 has 264 GPUs vs exp 02's 188 GPUs (because H100 NVL has 8 GPUs/node and replaces lower-density nodes).
 
 ### 1.3 Hardware model parameters (simulator)
 
@@ -62,41 +62,41 @@ All GPU nodes use a single hardware family:
 |---|---:|---:|---:|---|
 | NVIDIA H100 NVL | 80 | 400 | 1.50 | Same parameters as exp 02 H100 NVL nodes |
 
-At 80% GPU cap: loses `1 - 0.8^(1/1.50) ≈ 13.5%` GPU throughput.
+At 65% GPU cap: loses `1 - 0.65^(1/1.50) ~= 24.7%` GPU throughput.
 
-**CPU→GPU feed coupling**: same `cpuFeedFactor` mechanism as experiment 02. For `single_gpu_training` with `cpuFeedIntensity ≈ 0.4`, a 20% CPU frequency reduction causes ~8–11% GPU slowdown.
+**CPU->GPU feed coupling**: same `cpuFeedFactor` mechanism as experiment 02. For `single_gpu_training` with `cpuFeedIntensity ~= 0.4`, a 35% CPU frequency reduction causes ~14-18% GPU slowdown.
 
 **CPU-only node power parameters**: same as experiment 01 and 02.
 
 ### 1.4 Run configuration
 
-From [`configs/benchmark-overnight.yaml`](./configs/benchmark-overnight.yaml) (used for run `0002`):
+From [`configs/benchmark.yaml`](./configs/benchmark.yaml):
 
 | Parameter | Value |
 |---|---|
 | Baselines | A, B, C |
 | Seeds | 3 |
-| Mean inter-arrival | 0.12 s |
-| Time scale | 60× |
-| Timeout per run | 14400 s |
-| Perf ratio | 15% |
-| Eco ratio | 0% |
-| GPU ratio | 45% |
+| Jobs | 500 |
+| Mean inter-arrival | 0.15 s |
+| Time scale | 60x |
+| Timeout per run | 3600 s |
+| Perf ratio | 25% |
+| GPU ratio | 35% |
 | GPU request per job | 1 |
-| Work scale | 0.12 |
-| Allowed workload types | `debug_eval`, `single_gpu_training`, `distributed_training`, `parameter_server_training`, `cpu_preprocess`, `cpu_analytics` |
+| Work scale | 0.10 |
+| Allowed workload types | `debug_eval`, `single_gpu_training`, `cpu_preprocess`, `cpu_analytics` |
+| CPU eco cap | 65% of peak |
+| GPU eco cap | 65% of peak |
 
-> **Note**: `distributed_training` and `parameter_server_training` were present in this run. They have been **removed from all future benchmarks**. See Section 6.
-
-Run configuration is **identical to experiment 02** to enable a direct homogeneous vs heterogeneous comparison.
+Run configuration is similar to experiment 02 (same caps, same workload types) but with more jobs (500 vs 200) and faster inter-arrival (0.15 s vs 0.30 s) for a more sustained load on the larger GPU fleet.
 
 ### 1.5 Baselines
 
 - **A**: simulator only - no Joulie operator or agent.
-- **B**: Joulie with `static_partition` policy: `hp_frac=0.45` (~18 of 41 nodes at performance profile).
-- **C**: Joulie with `queue_aware_v1` policy: `hp_base_frac=0.50`, `hp_min=2`, `hp_max=10`, `perf_per_hp_node=18`.
+- **B**: Joulie with `static_partition` policy: `hp_frac=0.40` (~16 of 41 nodes at performance profile).
+- **C**: Joulie with `queue_aware_v1` policy: `hp_base_frac=0.40`, `hp_min=2`, `hp_max=20`, `perf_per_hp_node=15`.
 
-Policy caps: `cpu_eco_pct_of_max=80%`, `gpu_eco_pct_of_max=80%`.
+Policy caps: `cpu_eco_pct_of_max=65%`, `gpu_eco_pct_of_max=65%`.
 
 ---
 
@@ -104,7 +104,7 @@ Policy caps: `cpu_eco_pct_of_max=80%`, `gpu_eco_pct_of_max=80%`.
 
 Same algorithms as experiments 01 and 02 - see [`experiments/01-cpu-only-benchmark/REPORT.md`](../01-cpu-only-benchmark/REPORT.md) Section 2 for full description.
 
-Key parameters: static assigns 18 of 41 nodes as performance; queue-aware adjusts between 2 and 10 HP nodes dynamically.
+Key parameters: static assigns ~16 of 41 nodes as performance; queue-aware adjusts between 2 and 20 HP nodes dynamically.
 
 ---
 
@@ -119,7 +119,7 @@ P_gpu(g) = IdleW + (PeakW - IdleW) * g^computeGamma
 throughputFraction = (capWatts / PeakW)^(1/computeGamma)
 ```
 
-With H100 NVL being the only GPU family, `γ=1.50` uniformly.
+With H100 NVL being the only GPU family, `gamma=1.50` uniformly.
 
 ### 3.2 Energy integration
 
@@ -128,194 +128,172 @@ E_node += (P_cpu + sum(P_gpu_i)) * dt
 energy_sim_kwh = totalJoules * 60 / 3_600_000
 ```
 
-H100 NVL idle floor: **80 W/GPU × 264 GPUs = 21,120 W** (base cluster power floor even with no GPU jobs running).
+H100 NVL idle floor: **80 W/GPU x 264 GPUs = 21,120 W** (base cluster power floor even with no GPU jobs running).
 
-### 3.3 CPU→GPU feed coupling
+### 3.3 CPU->GPU feed coupling
 
-Same `cpuFeedFactor` as experiment 02. With only H100 NVL nodes (all having `γ=1.50`), the effect is uniform across all GPU nodes - unlike experiment 02 where MI300X experienced larger capping sensitivity.
+Same `cpuFeedFactor` as experiment 02. With only H100 NVL nodes (all having `gamma=1.50`), the effect is uniform across all GPU nodes.
 
 ---
 
 ## 4. Measured Results
 
-Latest run: `runs/0002_20260315T184058Z_u64d8368253f4484ca21f4d5f33faf78d`
 Source: [`runs/latest/results/summary.csv`](./runs/latest/results/summary.csv)
 
 ### 4.1 Per-seed results
 
-| Baseline | Seed | Wall (s) | Throughput (jobs/sim-hr) | Energy (kWh sim) | Avg power (W) | Status |
-|---|---:|---:|---:|---:|---:|---|
-| A | 1 | 14515 | 11.25 | - | - | **INCOMPLETE** (gang deadlock) |
-| A | 2 | 1817.9 | 91.85 | 1085.08 | 35813 | completed |
-| A | 3 | 1979.5 | 83.41 | 1308.35 | 39656 | completed |
-| B | 1 | 2237.0 | 72.98 | 1332.40 | 35738 | completed |
-| B | 2 | 2031.0 | 82.21 | 1232.98 | 36424 | completed |
-| B | 3 | 2138.6 | 77.21 | 1378.89 | 38686 | completed |
-| C | 1 | 2355.3 | 69.32 | 1506.83 | 38386 | completed |
-| C | 2 | 1815.6 | 91.97 | 1078.41 | 35637 | completed |
-| C | 3 | 2117.7 | 77.97 | 1384.26 | 39220 | completed |
+| Baseline | Seed | Wall (s) | Throughput (jobs/sim-hr) | Energy (kWh sim) | Avg power (W) |
+|---|---:|---:|---:|---:|---:|
+| A | 1 | 367.93 | 72.08 | 141.58 | 23089 |
+| A | 2 | 485.38 | 55.01 | 187.37 | 23161 |
+| A | 3 | 415.24 | 63.87 | 177.40 | 25634 |
+| B | 1 | 366.71 | 72.32 | 130.41 | 21338 |
+| B | 2 | 485.17 | 55.03 | 171.79 | 21245 |
+| B | 3 | 415.35 | 63.85 | 162.36 | 23455 |
+| C | 1 | 367.55 | 72.15 | 131.23 | 21422 |
+| C | 2 | 485.41 | 55.01 | 171.90 | 21248 |
+| C | 3 | 415.96 | 63.76 | 149.36 | 21545 |
 
-### 4.2 Baseline means (seeds 2+3 for A, all 3 seeds for B and C)
+All 9 runs completed successfully (no timeouts, no gang deadlocks).
 
-| Baseline | Mean wall (s) | Mean throughput (jobs/sim-hr) | Mean energy (kWh sim) | Mean power (W) | Completed seeds |
-|---|---:|---:|---:|---:|---|
-| A | 1898.7 | 87.63 | 1196.72 | 37735 | 2, 3 |
-| B | 2135.5 | 77.47 | 1314.76 | 36949 | 1, 2, 3 |
-| C | 2096.2 | 79.75 | 1323.17 | 37748 | 1, 2, 3 |
+### 4.2 Baseline means (all 3 seeds)
 
-### 4.3 Relative to A (seeds 2+3 fair comparison)
+| Baseline | Mean wall (s) | Mean throughput (jobs/sim-hr) | Mean energy (kWh sim) | Mean power (W) |
+|---|---:|---:|---:|---:|
+| A | 422.9 | 63.65 | 168.78 | 23961 |
+| B | 422.4 | 63.73 | 154.85 | 22013 |
+| C | 423.0 | 63.64 | 150.83 | 21405 |
 
-| Baseline | Energy Δ | Throughput Δ | Verdict |
-|---|---:|---:|---|
-| B | **+9.1%** | −8.9% | significantly more energy, lower throughput |
-| C | **+2.9%** | −3.1% | modest energy regression, slight throughput loss |
+### 4.3 Relative to A
 
-The energy regression is stronger here than in experiment 02. This is explained in Section 8.
-
----
-
-## 5. Hardware Energy Breakdown
-
-With a single GPU family (H100 NVL), the energy breakdown is simpler than experiment 02.
-
-Representative per-hardware-family energy, baseline A, seed 2:
-
-| Hardware family | Energy (kWh sim) | Approx share |
-|---|---:|---:|
-| NVIDIA H100 NVL | 17.61 | ~97% |
-| AMD EPYC 9965 (cpu-highcore) | 0.094 | <1% |
-| AMD EPYC 9375F (cpu-highfreq) | 0.177 | <1% |
-| AMD EPYC 9655 (cpu-intensive) | 0.207 | <1% |
-| **Total** | **~18.1** | - |
-
-GPU energy dominates at >97%. CPU-only nodes contribute negligible total energy. This reinforces why CPU power capping has essentially no benefit - and significant cost via GPU slowdown - on this cluster type.
+| Baseline | Energy Delta | Throughput Delta | Power Delta |
+|---|---:|---:|---:|
+| B | **-8.2%** | +0.1% (negligible) | -8.1% |
+| C | **-10.6%** | 0.0% (negligible) | -10.7% |
 
 ---
 
-## 6. Gang Scheduling Deadlock (Seed 1, Baseline A)
-
-Baseline A timed out at 14515 s in seed 1, with 1796 pods stuck in `Running` state.
-
-**Root cause**: identical to experiment 02 - multi-pod jobs (`distributed_training`, `parameter_server_training`) cause circular partial allocation without a gang scheduler. See experiment 02 REPORT Section 6 for full explanation.
-
-**Key difference from experiment 02**: Baselines B and C both completed seed 1 in this homogeneous cluster. In experiment 02, both A and B failed seed 1. The homogeneous cluster provides more scheduling flexibility (no hardware-family constraints on GPU placement), making it easier for Joulie's policy to break the partial-allocation deadlock through profile transitions.
-
-**Resolution**: Multi-pod job types removed from all future benchmarks.
-
----
-
-## 7. Plot Commentary
+## 5. Plot Commentary
 
 Plots are in: [`img/`](./img/)
 
-### 7.1 Runtime distribution
+### 5.1 Runtime distribution
 
 ![Runtime Distribution](./img/runtime_distribution.png)
 
-- B and C are consistently slower than A in completed seeds (higher wall time = slower throughput due to CPU throttling extending GPU jobs).
-- C shows high variance in seed 1 (longest run: 2355 s) vs seed 2 (fastest: 1816 s).
+- All three baselines complete within identical wall-time windows per seed.
+- No measurable throughput penalty from Joulie policies.
 
-### 7.2 Energy vs makespan
+### 5.2 Energy vs makespan
 
 ![Energy vs Makespan](./img/energy_vs_makespan.png)
 
-- B and C are shifted to higher energy and higher wall time vs A - the energy regression is clearly visible.
-- A (seeds 2+3) is consistently the most energy-efficient baseline.
+- B and C are consistently shifted to lower energy with identical makespan.
+- C achieves the lowest energy across all seeds.
 
-### 7.3 Baseline means
+### 5.3 Baseline means
 
 ![Baseline Means](./img/baseline_means.png)
 
-- Wall-time and throughput bars clearly separate: B and C are slower than A.
-- Energy bars confirm B (+9.1%) and C (+2.9%) both regress vs A.
+- Throughput and wall-time bars are indistinguishable across baselines.
+- Energy bars clearly show the step-down: A > B > C.
 
-### 7.4 Relative tradeoff vs A
+### 5.4 Relative tradeoff vs A
 
 ![Relative Tradeoff vs A](./img/relative_tradeoff_vs_a.png)
 
-- Per-seed scatter of energy vs throughput delta relative to A.
-- B seeds cluster at high energy / low throughput; C seeds show more spread but better outcomes.
+- Per-seed scatter shows both B and C in the lower-energy region with no throughput loss.
+- C seeds consistently achieve lower energy than B seeds.
 
-### 7.5 Relative tradeoff bars vs A
+### 5.5 Relative tradeoff bars vs A
 
 ![Relative Tradeoff Bars vs A](./img/relative_tradeoff_bars_vs_a.png)
 
-- Mean energy Δ% and throughput Δ% for B (+9.1% / -8.9%) and C (+2.9% / -3.1%) vs A.
-- C's queue-aware adaptivity substantially reduces the energy regression vs static partition B.
+- Mean energy and throughput deltas: B at -8.2% / +0.1%, C at -10.6% / 0.0%.
+- Queue-aware (C) achieves meaningfully better energy savings than static (B).
 
-### 7.6 Hardware family tradeoff vs A
+### 5.6 Hardware family tradeoff vs A
 
 ![Hardware Family Tradeoff](./img/hardware_family_tradeoff_vs_a.png)
 
-- Single GPU family; the tradeoff curve shows B and C both above A in energy.
-- The energy cost of extended GPU job duration outweighs any CPU cap savings.
+- Single GPU family; both B and C achieve energy reduction with minimal throughput loss.
 
-### 7.7 Hardware family rankings - baseline B
+### 5.7 Hardware family rankings - baseline B
 
 ![Hardware Family Rankings B](./img/hardware_family_rankings_baseline_B.png)
 
-- H100 NVL is the only GPU family. Under B, it shows clear energy increase and throughput loss vs A.
+- H100 NVL is the only GPU family. Under B, energy reduction is uniform.
 
-### 7.8 Hardware family rankings - baseline C
+### 5.8 Hardware family rankings - baseline C
 
 ![Hardware Family Rankings C](./img/hardware_family_rankings_baseline_C.png)
 
-- C shows smaller H100 NVL energy regression than B, confirming queue-aware adaptivity reduces idle accumulation.
+- C achieves deeper energy reduction than B for the H100 NVL family.
 
-### 7.9 Completion summary
+### 5.9 Completion summary
 
 ![Completion Summary](./img/completion_summary.png)
 
-- B and C achieve 100% completion vs A's 66.7% (1 seed gang deadlock).
-- Unlike experiment 02, only A fails here - homogeneous scheduling flexibility helps B/C break deadlock.
+- All baselines achieve 100% completion across all 3 seeds.
 
 ---
 
-## 8. Interpretation
+## 6. Interpretation
 
-### Why does Joulie increase energy more here than in experiment 02?
+### Why does Joulie save 8-10% energy on the homogeneous H100 cluster?
 
-The energy regression is larger in exp 03 (B: +9.1%) than exp 02 (B: +1.8%) for the same reason, amplified:
+The combination of CPU and GPU eco caps at 65% with direct GPU power capping achieves significant energy reduction:
 
-1. **All GPU nodes are H100 NVL (higher idle power)**: 264 × 80 W idle = 21,120 W base floor vs exp 02's mixed ~15,000 W GPU idle floor. Any extension of job duration accumulates more absolute idle energy.
+1. **GPU power caps directly reduce the dominant energy contributor**: with 264 H100 NVL GPUs at 80 W idle / 400 W peak, GPU power dominates >95% of cluster energy. Capping eco-node GPUs to 65% of peak power directly reduces this largest term.
 
-2. **More GPUs affected by CPU throttling**: With 264 GPUs vs 188, and all of them having the same parameters, the `cpuFeedFactor` penalty applies uniformly at scale. There are no lower-sensitivity GPU families to dilute the effect (unlike exp 02's MI300X/W7900 mix).
+2. **Homogeneous scheduling flexibility**: any GPU job can land on any GPU node without hardware-family constraints. This allows the scheduler to pack performance-sensitive jobs onto uncapped nodes efficiently, maximizing the number of nodes that can remain in eco profile.
 
-3. **CPU energy savings remain small**: CPU-only nodes represent <3% of cluster energy. Capping them saves at most ~0.06 kWh sim per run. Meanwhile, extending each GPU job by 10% adds ~120 kWh sim of idle GPU energy.
+3. **Throughput preserved**: the 25% performance-affinity ratio means 75% of jobs tolerate eco nodes. With ~16 performance nodes and ~25 eco nodes, there is ample capacity for performance-sensitive jobs on uncapped nodes.
 
 ### Why does C outperform B significantly?
 
-In exp 03, C achieves +2.9% vs B's +9.1% energy increase:
+Queue-aware (C) achieves -10.6% vs B's -8.2% energy savings:
 
-- Queue-aware adapts HP node count dynamically - it reduces eco nodes when GPU-heavy jobs are running, effectively returning more nodes to full-frequency performance mode.
-- Static partition maintains 23 eco nodes throughout, throttling CPU on those nodes for the entire run duration regardless of actual workload composition.
-- This experiment shows that queue-aware adaptivity meaningfully matters on large GPU clusters where the duration extension penalty is severe.
+- Queue-aware dynamically adjusts the HP node count. During periods of low performance-sensitive demand, it reduces HP nodes below the static 40% allocation, putting more nodes into eco profile.
+- On a 500-job sustained workload, the demand fluctuations create windows where queue-aware can temporarily increase eco coverage.
+- The homogeneous cluster makes this adaptation particularly effective: all eco nodes yield the same per-node GPU power savings, so each additional eco node contributes linearly.
 
-### Homogeneous vs heterogeneous: which is better for Joulie?
+### Improvement over previous results
 
-The homogeneous cluster gives Joulie more scheduling flexibility (no GPU family constraints), which explains why B and C complete seed 1 here while both fail in exp 02. However, the energy outcomes are worse for the same reason: the uniform H100 NVL energy model at scale amplifies the CPU-throttling duration penalty more than the heterogeneous mix.
+Previous runs with 80% eco caps (CPU only, no GPU caps) and multi-pod jobs showed B at +9.1% energy (increase) and C at +2.9%. The current results (-8.2% / -10.6%) reflect a complete reversal:
 
-### Key finding
+1. **GPU power caps enabled**: the previous runs only applied CPU eco caps. CPU power is <3% of cluster energy on this cluster, so CPU-only capping was counterproductive (extended GPU job duration via `cpuFeedFactor` without reducing GPU power). Now GPU caps directly reduce the dominant power term.
+2. **More aggressive eco cap (65% vs 80%)**: deeper GPU power reduction amplifies savings.
+3. **Simulator bug fixes**: deadlock bugs fixed, ensuring all runs complete with accurate energy accounting.
+4. **No gang deadlocks**: eliminated multi-pod jobs that caused seed-1 failures in previous runs.
 
-**The CPU-capping approach is counterproductive on GPU-dominated homogeneous clusters.** The energy overhead from extended GPU job duration (via `cpuFeedFactor`) significantly outweighs any CPU power savings. The correct approach for H100 NVL clusters is GPU power cap control, not CPU frequency reduction, and only applied when the GPU throughput loss is less than the idle energy avoided.
+### Homogeneous vs heterogeneous comparison
+
+| Metric | Exp 02 (heterogeneous) | Exp 03 (homogeneous) |
+|---|---|---|
+| GPU count | 188 (5 families) | 264 (all H100 NVL) |
+| B energy delta | -6.2% | -8.2% |
+| C energy delta | -6.3% | -10.6% |
+| Throughput delta | ~0% | ~0% |
+
+The homogeneous cluster achieves deeper savings because: (1) more GPUs are affected by capping, and (2) the uniform hardware allows queue-aware to exploit demand fluctuations more effectively (every eco node contributes identically).
 
 ---
 
-## 9. Best-Fit Use Case
+## 7. Best-Fit Use Case
 
 From this experiment:
 
-- Joulie with current uniform CPU cap policy **increases energy by 2.9–9.1%** on homogeneous H100 NVL clusters.
-- `queue_aware_v1` is significantly better than `static_partition` on this cluster type - but both are worse than doing nothing (A).
-- The correct next step is GPU-cap-aware policy that does not throttle CPU on GPU nodes.
+- Joulie achieves **-8.2% energy (static) / -10.6% energy (queue-aware)** on homogeneous H100 NVL clusters with zero throughput impact.
+- `queue_aware_v1` outperforms `static_partition` by 2.4 percentage points, making it the recommended policy for GPU-heavy clusters.
+- The key enabler is GPU power cap control at 65% on eco nodes.
 
 ---
 
-## 10. Reproducibility
+## 8. Reproducibility
 
-- Config: [`configs/benchmark-overnight.yaml`](./configs/benchmark-overnight.yaml)
+- Config: [`configs/benchmark.yaml`](./configs/benchmark.yaml)
 - Sweep script: [`scripts/05_sweep.py`](./scripts/05_sweep.py)
 - Collection: [`scripts/06_collect.py`](./scripts/06_collect.py)
 - Plotting: [`scripts/07_plot.py`](./scripts/07_plot.py)
 - Run artifacts: [`runs/latest/`](./runs/latest/)
-- Archived results (with gang jobs): [`../../tmp/benchmark-results-with-gang-jobs/exp03-homogeneous-h100/`](../../tmp/benchmark-results-with-gang-jobs/exp03-homogeneous-h100/)

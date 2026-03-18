@@ -119,9 +119,12 @@ metadata:
 
 Without this annotation, pods are never recommended for rescheduling regardless of node stress. Performance-class pods are never rescheduled.
 
+### Active eviction (opt-in)
+
+When `ENABLE_ACTIVE_RESCHEDULING=true` is set on the operator, the rescheduler acts on recommendations by evicting misplaced pods via the Kubernetes Eviction API (policy/v1). Before eviction, it annotates the pod's owner with eviction context so the scheduler avoids re-placing the replacement pod in the same situation. See [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}}) for configuration details.
+
 ### What rescheduling does not do
 
-- It does not evict pods automatically. The current model is recommendation-only.
 - It does not reschedule performance-class workloads.
 - It does not trigger during normal operation; only when facility stress exceeds the configured threshold.
 

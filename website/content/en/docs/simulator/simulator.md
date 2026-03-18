@@ -64,6 +64,56 @@ The simulator models three facility-level signals that feed `NodeTwin.status` an
 These signals are exported in Prometheus metrics and through the `/state/{node}` HTTP endpoint.
 The scheduler extender reads them from `NodeTwin.status` (populated by the operator twin controller from simulator-sourced telemetry).
 
+### Fake Prometheus query endpoint
+
+The simulator serves a `/api/v1/query` endpoint that returns facility metrics in the standard Prometheus instant-query response format. This allows the operator's facility metrics poller to query the simulator directly without needing a real Prometheus instance.
+
+Supported metrics:
+
+| Query | Gauge |
+|---|---|
+| `datacenter_ambient_temperature_celsius` | Sinusoidal ambient temperature |
+| `datacenter_total_it_power_watts` | Sum of all simulated node power |
+| `datacenter_cooling_power_watts` | Derived from IT power and PUE |
+| Any query containing "pue" | Simulated PUE |
+
+To use it, set `FACILITY_PROMETHEUS_ADDRESS` on the operator to point at the simulator (e.g., `http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local:18080`).
+
+## Online workload classification
+
+In production, the operator's classifier observes running pods and determines their workload class ("performance" or "standard") from CPU/GPU utilization metrics scraped from Prometheus. In simulation, there is no real Prometheus with per-pod metrics. The simulator solves this with two mechanisms:
+
+### Sim utilization annotations
+
+Instead of setting `joulie.io/workload-class` directly on pods (which would give the classifier perfect information), the simulator annotates each pod with its simulated utilization profile:
+
+| Annotation | Description |
+|---|---|
+| `sim.joulie.io/cpu-util-pct` | Simulated CPU utilization (0-100%) |
+| `sim.joulie.io/gpu-util-pct` | Simulated GPU utilization (0-100%) |
+| `sim.joulie.io/memory-pressure-pct` | Simulated memory pressure (0-100%) |
+| `sim.joulie.io/io-intensity` | Simulated I/O intensity (0-1) |
+
+These values come from the `workloadProfile` section of the trace file, which encodes realistic utilization distributions per workload type (e.g., training jobs have high GPU util, preprocessing jobs have high CPU util).
+
+### Classifier sim-annotation fallback
+
+When `CLASSIFY_SIM_ANNOTATION_FALLBACK=true` is set on the operator, the classifier reads sim annotations as a fallback when Prometheus metrics are unavailable. It then applies its normal heuristic rules to determine the workload class:
+
+- High CPU utilization (>65%) with low memory pressure: **performance**
+- High GPU utilization (>50%) or GPU-dominant workload: **performance**
+- Otherwise: **standard**
+
+The classifier naturally misclassifies some pods at boundary conditions. For example, a pod at 63% CPU utilization is classified as "standard" even though its trace intended "performance". This simulates a realistic online classifier.
+
+### Configurable noise
+
+The `CLASSIFY_SIM_NOISE_PCT` env var (default: 10) adds Gaussian noise to the utilization values before classification. With 10% noise, a pod with 70% CPU utilization might be seen as 63% or 77%, causing occasional misclassification at threshold boundaries. This simulates measurement error in real metrics pipelines.
+
+### Why not use the trace class directly?
+
+Setting `joulie.io/workload-class` from the trace is "cheating" because it gives the scheduler and operator perfect workload information that would not be available in a real deployment. The online classification approach is more realistic: the system must observe the workload and decide, with some inherent uncertainty.
+
 ## Validation disclaimer
 
 GPU support has been validated in simulator mode only (no bare-metal GPU access yet).
