@@ -239,6 +239,40 @@ def plot_cooling_ambient(by_baseline: dict[str, pd.DataFrame], out_dir: pathlib.
     print(f"  wrote {out_dir / 'timeseries_cooling.png'}")
 
 
+def export_fmu_timeseries(by_baseline: dict[str, pd.DataFrame], time_scale: float, out_dir: pathlib.Path):
+    """Export per-baseline CSV files in the format expected by the FMU cooling model.
+
+    Columns: timestamp_utc, elapsed_sec, it_power_w, cpu_power_w, gpu_power_w,
+             pue, cooling_power_w, facility_power_w, ambient_temp_c,
+             cluster_cpu_util, cluster_gpu_util, nodes_active, pods_running,
+             energy_cumulative_j, sim_elapsed_sec, sim_hour
+    """
+    fmu_dir = out_dir / "fmu_input"
+    fmu_dir.mkdir(parents=True, exist_ok=True)
+    for baseline, df in by_baseline.items():
+        if df.empty:
+            continue
+        out = df.copy()
+        # Reconstruct elapsed_sec from the binned minutes column.
+        out["elapsed_sec"] = out["elapsed_sim_min"] * 60.0
+        # Simulated elapsed seconds and hour-of-day.
+        out["sim_elapsed_sec"] = out["elapsed_sec"] * time_scale
+        out["sim_hour"] = (out["sim_elapsed_sec"] % 86400) / 3600.0
+        # Synthetic UTC timestamp starting at midnight.
+        out["timestamp_utc"] = pd.to_datetime(out["sim_elapsed_sec"], unit="s", origin="2026-01-01")
+        cols = [
+            "timestamp_utc", "elapsed_sec", "sim_elapsed_sec", "sim_hour",
+            "it_power_w", "cpu_power_w", "gpu_power_w",
+            "pue", "cooling_power_w", "facility_power_w", "ambient_temp_c",
+            "cluster_cpu_util", "cluster_gpu_util", "nodes_active", "pods_running",
+            "energy_cumulative_j",
+        ]
+        present = [c for c in cols if c in out.columns]
+        csv_path = fmu_dir / f"timeseries_baseline_{baseline}.csv"
+        out[present].to_csv(csv_path, index=False)
+        print(f"  wrote FMU input: {csv_path}  ({len(out)} rows)")
+
+
 def main():
     print(f"results dir: {RESULTS}")
     ts_map = discover_timeseries(RESULTS)
@@ -280,6 +314,7 @@ def main():
     plot_gpu_power_panel(by_baseline, PLOTS)
     plot_energy_cumulative(by_baseline, PLOTS)
     plot_cooling_ambient(by_baseline, PLOTS)
+    export_fmu_timeseries(by_baseline, time_scale, RESULTS)
     print(f"all timeseries plots written to {PLOTS}")
 
 
