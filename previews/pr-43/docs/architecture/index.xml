@@ -1,0 +1,330 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Architecture on Joulie</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/</link><description>Recent content in Architecture on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/index.xml" rel="self" type="application/rss+xml"/><item><title>CRD and Policy Model</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/policy/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/policy/</guid><description>&lt;p&gt;This page defines Joulie&amp;rsquo;s core contract:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;demand&lt;/strong&gt; comes from pod scheduling constraints,&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;supply&lt;/strong&gt; is exposed by node power-profile labels,&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;discovered hardware&lt;/strong&gt; is published through &lt;code&gt;NodeHardware&lt;/code&gt;,&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;desired state&lt;/strong&gt; is published through &lt;code&gt;NodeTwin&lt;/code&gt;.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="apis"&gt;APIs&lt;/h2&gt;
+&lt;p&gt;Group/version:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie.io/v1alpha1&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;CRDs:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;NodeHardware&lt;/code&gt; (&lt;code&gt;nodehardwares&lt;/code&gt;, cluster-scoped)&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;NodeTwin&lt;/code&gt; (&lt;code&gt;nodetwins&lt;/code&gt;, cluster-scoped)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;CRD definitions live in:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;config/crd/bases/joulie.io_nodehardwares.yaml&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;config/crd/bases/joulie.io_nodetwins.yaml&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="demand-model-workloads"&gt;Demand model (workloads)&lt;/h2&gt;
+&lt;p&gt;Workload class is determined from the &lt;code&gt;joulie.io/workload-class&lt;/code&gt; pod annotation or from a matching &lt;code&gt;WorkloadProfile&lt;/code&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;performance&lt;/code&gt; demand: pod carries &lt;code&gt;joulie.io/workload-class: performance&lt;/code&gt; or a matching profile with &lt;code&gt;criticality: performance&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;standard&lt;/code&gt; demand (default): no annotation, or &lt;code&gt;joulie.io/workload-class: standard&lt;/code&gt;. Can run on any node; adaptive scoring steers toward eco when performance nodes are congested.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="supply-model-nodes"&gt;Supply model (nodes)&lt;/h2&gt;
+&lt;p&gt;Node supply is represented by:&lt;/p&gt;</description></item><item><title>Joulie Operator</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/operator/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/operator/</guid><description>&lt;p&gt;The operator is Joulie&amp;rsquo;s cluster-level decision engine.&lt;/p&gt;
+&lt;p&gt;It does not write host power interfaces directly.
+Instead, it decides desired node states and publishes them through Kubernetes objects and labels.&lt;/p&gt;
+&lt;p&gt;In practice, the operator answers one question over and over:
+which nodes should currently supply &lt;code&gt;performance&lt;/code&gt; capacity, and which can safely supply &lt;code&gt;eco&lt;/code&gt; capacity?&lt;/p&gt;
+&lt;h2 id="responsibilities"&gt;Responsibilities&lt;/h2&gt;
+&lt;p&gt;At each reconcile tick, the operator:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;selects eligible managed nodes,&lt;/li&gt;
+&lt;li&gt;reads &lt;code&gt;NodeHardware&lt;/code&gt; when available and falls back to node labels when it is not,&lt;/li&gt;
+&lt;li&gt;resolves hardware identity against the shared inventory,&lt;/li&gt;
+&lt;li&gt;classifies workload demand from pod scheduling constraints and &lt;code&gt;WorkloadProfile&lt;/code&gt; data,&lt;/li&gt;
+&lt;li&gt;runs a policy algorithm (&lt;code&gt;pkg/operator/policy/&lt;/code&gt;) to compute a plan,&lt;/li&gt;
+&lt;li&gt;applies transition guards for safe downgrades,&lt;/li&gt;
+&lt;li&gt;evaluates node stress for migration recommendations (&lt;code&gt;pkg/operator/migration/&lt;/code&gt;),&lt;/li&gt;
+&lt;li&gt;writes desired node targets (&lt;code&gt;NodeTwin.spec&lt;/code&gt;) and the &lt;code&gt;joulie.io/power-profile&lt;/code&gt; node label.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;The agent then enforces those targets node-by-node.&lt;/p&gt;</description></item><item><title>Joulie Agent</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/agent/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/agent/</guid><description>&lt;p&gt;The agent is Joulie&amp;rsquo;s node-side enforcement component.&lt;/p&gt;
+&lt;p&gt;It consumes desired state and applies node-local controls through configured backends.&lt;/p&gt;
+&lt;p&gt;If the operator decides &amp;ldquo;this node should now behave like eco&amp;rdquo; or &amp;ldquo;this node should stay performance&amp;rdquo;,
+the agent is the component that turns that intent into concrete control actions.&lt;/p&gt;
+&lt;h2 id="responsibilities"&gt;Responsibilities&lt;/h2&gt;
+&lt;p&gt;At each reconcile tick, the agent:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;identifies its node scope (single node in daemonset mode, sharded set in pool mode),&lt;/li&gt;
+&lt;li&gt;discovers local CPU/GPU hardware and runtime control capability,&lt;/li&gt;
+&lt;li&gt;publishes &lt;code&gt;NodeHardware&lt;/code&gt; for each owned node,&lt;/li&gt;
+&lt;li&gt;reads desired target (&lt;code&gt;NodeTwin.spec&lt;/code&gt;) for each owned node,&lt;/li&gt;
+&lt;li&gt;resolves telemetry/control backend from environment variables (default: host),&lt;/li&gt;
+&lt;li&gt;applies controls (host or HTTP),&lt;/li&gt;
+&lt;li&gt;exports metrics and status.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id="inputs-and-outputs"&gt;Inputs and outputs&lt;/h2&gt;
+&lt;p&gt;Inputs:&lt;/p&gt;</description></item><item><title>Digital Twin</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/digital-twin/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/digital-twin/</guid><description>&lt;p&gt;The digital twin is Joulie&amp;rsquo;s core predictive engine. It is a lightweight O(1) parametric model that predicts the impact of scheduling and power-cap decisions on node thermal and power state, without running a full simulation for each scheduling decision.&lt;/p&gt;
+&lt;h2 id="what-the-digital-twin-computes"&gt;What the digital twin computes&lt;/h2&gt;
+&lt;p&gt;For each managed node, the twin produces three scores stored in &lt;code&gt;NodeTwin.status&lt;/code&gt;:&lt;/p&gt;
+&lt;table&gt;
+ &lt;thead&gt;
+ &lt;tr&gt;
+ &lt;th&gt;Signal&lt;/th&gt;
+ &lt;th&gt;Range&lt;/th&gt;
+ &lt;th&gt;Meaning&lt;/th&gt;
+ &lt;/tr&gt;
+ &lt;/thead&gt;
+ &lt;tbody&gt;
+ &lt;tr&gt;
+ &lt;td&gt;&lt;strong&gt;Power headroom&lt;/strong&gt;&lt;/td&gt;
+ &lt;td&gt;0-100&lt;/td&gt;
+ &lt;td&gt;Remaining power budget before hitting thermal or PSU limits. Higher is better for new workload placement.&lt;/td&gt;
+ &lt;/tr&gt;
+ &lt;tr&gt;
+ &lt;td&gt;&lt;strong&gt;CoolingStress&lt;/strong&gt;&lt;/td&gt;
+ &lt;td&gt;0-100&lt;/td&gt;
+ &lt;td&gt;Predicted percentage of cooling capacity in use. High values indicate the node is near its thermal limit.&lt;/td&gt;
+ &lt;/tr&gt;
+ &lt;tr&gt;
+ &lt;td&gt;&lt;strong&gt;PSUStress&lt;/strong&gt;&lt;/td&gt;
+ &lt;td&gt;0-100&lt;/td&gt;
+ &lt;td&gt;Predicted percentage of PDU/rack power capacity in use. High values indicate the rack is near its power supply limit.&lt;/td&gt;
+ &lt;/tr&gt;
+ &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;The twin also computes:&lt;/p&gt;</description></item><item><title>GPU Slicing Recommendations</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/dra/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/dra/</guid><description>&lt;p&gt;Joulie&amp;rsquo;s digital twin analyzes historical workload patterns and recommends optimal GPU slicing configurations to cluster administrators. This is a recommendation-only system: the operator never changes GPU slicing at runtime.&lt;/p&gt;
+&lt;h2 id="why-recommendations-not-automation"&gt;Why recommendations, not automation&lt;/h2&gt;
+&lt;p&gt;NVIDIA MIG reconfiguration requires a GPU reset: all pods using the GPU must be evicted first. Automating this at runtime would be equivalent to draining nodes, adding complexity and disruption for marginal gains. Instead, Joulie follows a &lt;strong&gt;suggest-and-review&lt;/strong&gt; model:&lt;/p&gt;</description></item><item><title>Policy Algorithms</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/policies/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/policies/</guid><description>&lt;p&gt;This page documents the controller policy algorithms implemented in &lt;code&gt;pkg/operator/policy/&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;Use this page after:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/policy/"&gt;CRD and Policy Model&lt;/a&gt;&lt;/li&gt;
+&lt;li&gt;&lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/operator/"&gt;Joulie Operator&lt;/a&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2 id="classification-input"&gt;Classification Input&lt;/h2&gt;
+&lt;p&gt;Policy demand classification is derived from the &lt;code&gt;joulie.io/workload-class&lt;/code&gt; pod annotation or a matching &lt;code&gt;WorkloadProfile&lt;/code&gt;:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;performance&lt;/code&gt;: pod carries &lt;code&gt;joulie.io/workload-class: performance&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;standard&lt;/code&gt; (default): no annotation or &lt;code&gt;joulie.io/workload-class: standard&lt;/code&gt;.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="shared-reconcile-flow"&gt;Shared Reconcile Flow&lt;/h2&gt;
+&lt;p&gt;Each reconcile tick:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Select eligible nodes from &lt;code&gt;NODE_SELECTOR&lt;/code&gt;, excluding reserved and unschedulable nodes.&lt;/li&gt;
+&lt;li&gt;Build a hardware view from &lt;code&gt;NodeHardware&lt;/code&gt; when available, otherwise from node labels/inventory fallback.&lt;/li&gt;
+&lt;li&gt;Sort eligible nodes by normalized compute density (highest first).&lt;/li&gt;
+&lt;li&gt;Preserve at least one performance-capable node per discovered hardware family whenever the requested HP count allows it.&lt;/li&gt;
+&lt;li&gt;Build a desired plan with the selected policy.&lt;/li&gt;
+&lt;li&gt;Apply downgrade guard (sets &lt;code&gt;NodeTwin.status.schedulableClass&lt;/code&gt; to &lt;code&gt;draining&lt;/code&gt; while blocking pods still run).&lt;/li&gt;
+&lt;li&gt;Write &lt;code&gt;NodeTwin.spec&lt;/code&gt; and update the &lt;code&gt;joulie.io/power-profile&lt;/code&gt; node label.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;In other words, policies still decide &lt;em&gt;how many&lt;/em&gt; high-performance nodes are needed, but the density-aware ordering influences &lt;em&gt;which&lt;/em&gt; nodes get those assignments.&lt;/p&gt;</description></item><item><title>Scheduler Extender</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/scheduler/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/scheduler/</guid><description>&lt;p&gt;Joulie ships a scheduler extender that steers workloads toward appropriate nodes based on power profile, thermal stress, and hardware capabilities.&lt;/p&gt;
+&lt;h2 id="why-a-scheduler-component-is-needed"&gt;Why a scheduler component is needed&lt;/h2&gt;
+&lt;p&gt;Kubernetes scheduling decisions are made before a pod is running.
+That is the right place to enforce Joulie&amp;rsquo;s power-profile intent, because:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;placing a performance workload on an eco (capped) node defeats energy savings and violates workload SLOs,&lt;/li&gt;
+&lt;li&gt;placing any workload on a node under heavy thermal or PSU stress increases the risk of throttling and supply headroom violations,&lt;/li&gt;
+&lt;li&gt;the &lt;code&gt;joulie.io/workload-class&lt;/code&gt; annotation is the single source of truth for placement intent; the extender enforces it without requiring users to write complex scheduling rules.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="what-joulie-implements-scheduler-extender"&gt;What Joulie implements: scheduler extender&lt;/h2&gt;
+&lt;p&gt;Joulie implements an &lt;strong&gt;HTTP-based scheduler extender&lt;/strong&gt;, not an in-tree plugin.&lt;/p&gt;</description></item><item><title>Workload Classification</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/workload-classification/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/workload-classification/</guid><description>&lt;p&gt;Joulie automatically classifies running workloads by analyzing pod annotations, resource utilization, and Kepler energy counters. The output is a &lt;code&gt;WorkloadProfile&lt;/code&gt; CR per workload, consumed by the digital twin and scheduler extender.&lt;/p&gt;
+&lt;h2 id="why-classify-workloads"&gt;Why classify workloads&lt;/h2&gt;
+&lt;p&gt;Kubernetes scheduling uses resource requests and limits to bin-pack pods onto nodes. These are static declarations that tell the scheduler how much CPU and memory a pod claims, but nothing about:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;whether the workload is compute-bound or memory-bound,&lt;/li&gt;
+&lt;li&gt;how sensitive it is to power capping,&lt;/li&gt;
+&lt;li&gt;how much GPU energy it actually consumes vs. what it reserves,&lt;/li&gt;
+&lt;li&gt;whether it can tolerate being rescheduled.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Without this information, energy-aware scheduling is limited to node-level heuristics. Joulie&amp;rsquo;s classifier fills this gap by producing structured workload profiles from observed behavior.&lt;/p&gt;</description></item><item><title>Energy-Aware Scheduling</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/energy-aware-scheduling/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/energy-aware-scheduling/</guid><description>&lt;p&gt;Joulie&amp;rsquo;s scheduler extender makes placement decisions informed by real-time energy telemetry, workload characteristics, and facility-level power conditions. This page describes the full pipeline from metrics collection through scoring and optional rescheduling.&lt;/p&gt;
+&lt;h2 id="end-to-end-pipeline"&gt;End-to-end pipeline&lt;/h2&gt;
+&lt;p&gt;The energy-aware scheduling pipeline has six stages:&lt;/p&gt;
+&lt;pre tabindex="0"&gt;&lt;code&gt;Kepler/eBPF + RAPL/NVML telemetry
+ -&amp;gt; Prometheus (scrape &amp;amp; store)
+ -&amp;gt; Classifier (WorkloadProfile)
+ -&amp;gt; Digital twin (NodeTwin.status)
+ -&amp;gt; Scheduler extender (filter + score)
+ -&amp;gt; Placement decision
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;Each stage runs independently and communicates through Kubernetes CRDs or Prometheus queries. There is no monolithic scheduling engine; each component does one thing and feeds the next.&lt;/p&gt;</description></item><item><title>Input Telemetry and Actuation Interfaces</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/telemetry/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/telemetry/</guid><description>&lt;p&gt;This page describes runtime IO contracts:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;how Joulie reads telemetry inputs,&lt;/li&gt;
+&lt;li&gt;how Joulie sends control intents.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;If you want the CRD-level summary first, read &lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/policy/"&gt;CRD and Policy Model&lt;/a&gt;.
+This page is the detailed runtime reference for the telemetry and control contract.&lt;/p&gt;
+&lt;p&gt;It is not the &lt;code&gt;/metrics&lt;/code&gt; exposition contract.
+For exported metrics, see &lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/metrics/"&gt;Metrics Reference&lt;/a&gt;.&lt;/p&gt;
+&lt;h2 id="why-this-abstraction-exists"&gt;Why this abstraction exists&lt;/h2&gt;
+&lt;p&gt;Joulie must run in two worlds with the same control logic:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;real hardware clusters,&lt;/li&gt;
+&lt;li&gt;simulator/KWOK clusters.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;So agent/operator logic depends on provider interfaces, not directly on sysfs or simulator HTTP shape.&lt;/p&gt;</description></item><item><title>Metrics Reference</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/metrics/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/metrics/</guid><description>&lt;p&gt;Joulie exposes Prometheus metrics from multiple components.&lt;/p&gt;
+&lt;p&gt;This page covers &lt;strong&gt;operator + agent&lt;/strong&gt; metrics.
+Simulator metrics are documented separately in:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/simulator/metrics/"&gt;Simulator Metrics&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;For telemetry/control input interfaces (host/http routing), see:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-43/docs/architecture/telemetry/"&gt;Input Telemetry and Actuation Interfaces&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="endpoints-by-component"&gt;Endpoints by component&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;Agent:
+&lt;ul&gt;
+&lt;li&gt;path: &lt;code&gt;/metrics&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;default address: &lt;code&gt;:8080&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;env override: &lt;code&gt;METRICS_ADDR&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;Operator:
+&lt;ul&gt;
+&lt;li&gt;path: &lt;code&gt;/metrics&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;default address: &lt;code&gt;:8081&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;env override: &lt;code&gt;METRICS_ADDR&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="agent-metrics"&gt;Agent metrics&lt;/h2&gt;
+&lt;h3 id="backend-and-selected-cap"&gt;Backend and selected cap&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_backend_mode{node,mode}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;mode&lt;/code&gt;: &lt;code&gt;none|rapl|dvfs&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;active mode is &lt;code&gt;1&lt;/code&gt;, others &lt;code&gt;0&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_policy_cap_watts{node,policy}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;current selected policy cap in watts&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="rapl-powerenergy"&gt;RAPL power/energy&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_rapl_energy_uj{node,zone}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;latest raw RAPL energy counter in microjoules&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_rapl_estimated_power_watts{node,zone}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;per-zone estimated power from energy deltas&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_rapl_package_total_power_watts{node}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;sum of package-level estimated power&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="dvfs-controller"&gt;DVFS controller&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_observed_power_watts{node}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;observed package power used by DVFS controller&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_ema_power_watts{node}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;EMA-smoothed power used for decisions&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_throttle_pct{node}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;current throttle percentage&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_above_trip_count{node}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;consecutive above-threshold samples&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_below_trip_count{node}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;consecutive below-threshold samples&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_actions_total{node,action}&lt;/code&gt; (counter)
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;action&lt;/code&gt;: &lt;code&gt;throttle_up|throttle_down&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="cpu-frequency-observability"&gt;CPU frequency observability&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_cpu_cur_freq_khz{node,cpu}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;current CPU/policy frequency in kHz&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_dvfs_cpu_max_freq_khz{node,cpu}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;enforced max frequency cap in kHz&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="reliability"&gt;Reliability&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_reconcile_errors_total{node}&lt;/code&gt; (counter)
+&lt;ul&gt;
+&lt;li&gt;reconcile-loop errors&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="operator-metrics"&gt;Operator metrics&lt;/h2&gt;
+&lt;h3 id="fsm-state-and-profile-label"&gt;FSM state and profile label&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_operator_node_state{node,state}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;state&lt;/code&gt;: &lt;code&gt;ActivePerformance|DrainingPerformance|ActiveEco&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;active state is &lt;code&gt;1&lt;/code&gt;, others &lt;code&gt;0&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_operator_node_profile_label{node,profile}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;operator-applied node label view&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;profile&lt;/code&gt;: &lt;code&gt;performance|eco&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;active profile is &lt;code&gt;1&lt;/code&gt;, others &lt;code&gt;0&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="transition-accounting"&gt;Transition accounting&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_operator_state_transitions_total{node,from_state,to_state,result}&lt;/code&gt; (counter)
+&lt;ul&gt;
+&lt;li&gt;transition events emitted by operator&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;result&lt;/code&gt;:
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;applied&lt;/code&gt;: transition committed&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;deferred&lt;/code&gt;: transition blocked/deferred by safeguards&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="heterogeneous-planning"&gt;Heterogeneous planning&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_operator_node_compute_density{node,component}&lt;/code&gt; (gauge)
+&lt;ul&gt;
+&lt;li&gt;normalized per-node density signal used for heterogeneous planning&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;component&lt;/code&gt;: &lt;code&gt;cpu|gpu&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;higher values mean the operator considers that node relatively denser for that subsystem&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="active-rescheduler"&gt;Active rescheduler&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;joulie_rescheduler_evictions_total{node,namespace,reason}&lt;/code&gt; (counter)
+&lt;ul&gt;
+&lt;li&gt;Pod evictions triggered by the active rescheduler&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;reason&lt;/code&gt;: from &lt;code&gt;NodeTwin.status.rescheduleRecommendations&lt;/code&gt; (e.g., &lt;code&gt;cooling_stress&lt;/code&gt;, &lt;code&gt;psu_stress&lt;/code&gt;)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;joulie_rescheduler_skipped_total{node,reason}&lt;/code&gt; (counter)
+&lt;ul&gt;
+&lt;li&gt;Pods skipped by the rescheduler&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;reason&lt;/code&gt;: &lt;code&gt;not_reschedulable&lt;/code&gt; (missing annotation) or &lt;code&gt;rate_limited&lt;/code&gt; (per-node cap reached)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;These metrics are only populated when &lt;code&gt;ENABLE_ACTIVE_RESCHEDULING=true&lt;/code&gt;.&lt;/p&gt;</description></item></channel></rss>
