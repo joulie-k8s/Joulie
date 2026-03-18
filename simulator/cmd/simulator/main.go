@@ -2762,6 +2762,36 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			log.Printf("job completed id=%s node=%s class=%s elapsed=%.1fs", j.JobID, node, j.Class, j.CompletedAt.Sub(j.SubmittedAt).Seconds())
 		}
 	}
+
+	// Stall detection: force-complete jobs that haven't made progress for
+	// 120 wall-clock seconds. This prevents individual stuck jobs (e.g.,
+	// gang scheduling deadlocks, unschedulable pods) from blocking the
+	// entire benchmark run.
+	const stallTimeoutSec = 120.0
+	for _, j := range s.workload.jobs {
+		if j.Completed || !j.Submitted {
+			continue
+		}
+		if j.LastProgressAt.IsZero() {
+			if !j.SubmittedAt.IsZero() && now.Sub(j.SubmittedAt).Seconds() > stallTimeoutSec {
+				log.Printf("stall detected: force-completing job id=%s (no progress since submission %.0fs ago)", j.JobID, now.Sub(j.SubmittedAt).Seconds())
+				j.CPUUnitsRemaining = 0
+				j.GPUUnitsRemaining = 0
+				j.Completed = true
+				j.CompletedAt = now
+				s.ensureWorkloadPodDeleted(kube, j)
+			}
+			continue
+		}
+		if now.Sub(j.LastProgressAt).Seconds() > stallTimeoutSec {
+			log.Printf("stall detected: force-completing job id=%s (no progress for %.0fs)", j.JobID, now.Sub(j.LastProgressAt).Seconds())
+			j.CPUUnitsRemaining = 0
+			j.GPUUnitsRemaining = 0
+			j.Completed = true
+			j.CompletedAt = now
+			s.ensureWorkloadPodDeleted(kube, j)
+		}
+	}
 }
 
 func (s *simulator) ensureWorkloadPodDeleted(kube kubernetes.Interface, j *simJob) {
