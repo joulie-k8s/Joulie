@@ -81,6 +81,7 @@ def generate_canonical_seed_trace(
     emit_workload_records: bool,
     work_scale: float,
     allowed_workload_types: list[str] | None,
+    time_scale: float = 1.0,
 ) -> pathlib.Path:
     traces_dir = RESULTS / "traces"
     traces_dir.mkdir(parents=True, exist_ok=True)
@@ -131,6 +132,8 @@ def generate_canonical_seed_trace(
         str(burst_multiplier),
         "--emit-workload-records",
         str(emit_workload_records).lower(),
+        "--time-scale",
+        str(time_scale),
     ]
     run(cmd, check=True)
     if work_scale != 1.0 or allowed_workload_types:
@@ -652,6 +655,7 @@ def main():
                 emit_workload_records=emit_workload_records,
                 work_scale=work_scale,
                 allowed_workload_types=allowed_workload_types,
+                time_scale=time_scale,
             )
             canonical_trace = retarget_trace_for_cluster(canonical_trace)
             trace_file = derive_baseline_trace(

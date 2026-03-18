@@ -102,6 +102,7 @@ type generatorConfig struct {
 	BurstDayProbability float64
 	BurstMeanJobs       float64
 	BurstMultiplier     float64
+	TimeScale           float64
 }
 
 type logicalWorkload struct {
@@ -161,6 +162,7 @@ func parseFlags() generatorConfig {
 	flag.Float64Var(&cfg.BurstDayProbability, "burst-day-probability", 0.25, "probability of a daily burst window")
 	flag.Float64Var(&cfg.BurstMeanJobs, "burst-mean-jobs", 8.0, "mean extra burst intensity used to scale arrival rate during burst windows")
 	flag.Float64Var(&cfg.BurstMultiplier, "burst-multiplier", 2.0, "arrival-rate multiplier during the selected burst hour")
+	flag.Float64Var(&cfg.TimeScale, "time-scale", 1.0, "simulation time scale: offset*timeScale = simulated seconds (used for day/night hour calculation)")
 	flag.Parse()
 	if cfg.MeanInterArrival <= 0 {
 		cfg.MeanInterArrival = 1
@@ -185,6 +187,9 @@ func parseFlags() generatorConfig {
 	}
 	if cfg.ComputeBoundPerfBoost < 1 {
 		cfg.ComputeBoundPerfBoost = 1
+	}
+	if cfg.TimeScale <= 0 {
+		cfg.TimeScale = 1.0
 	}
 	_ = outPath
 	setOutputPath(outPath)
@@ -710,8 +715,10 @@ func sampleHPOTrialCount(rng *rand.Rand, totalGPUs int) int {
 }
 
 func nextArrivalOffset(rng *rand.Rand, current float64, cfg generatorConfig, st *arrivalState) float64 {
-	hour := hourOfOffset(current)
-	day := dayOfOffset(current)
+	// Convert wall-clock offset to simulated seconds for day/night calculation.
+	simSec := current * cfg.TimeScale
+	hour := hourOfOffset(simSec)
+	day := dayOfOffset(simSec)
 	mult := hourlyArrivalMultiplier(hour)
 	if isBurstHour(rng, st, day, hour, cfg) {
 		mult *= cfg.BurstMultiplier
@@ -724,21 +731,47 @@ func nextArrivalOffset(rng *rand.Rand, current float64, cfg generatorConfig, st 
 	return current + delta
 }
 
+// hourlyArrivalMultiplier returns a multiplier for the job arrival rate at each
+// hour of the day.  The pattern models a realistic datacenter load cycle:
+//   - Night (00-05): low batch/maintenance traffic (~15-25% of peak)
+//   - Morning ramp (06-08): engineers arrive, CI kicks in
+//   - Morning peak (09-11): peak utilization
+//   - Lunch dip (12-13): slight dip
+//   - Afternoon peak (14-17): second sustained peak
+//   - Evening wind-down (18-21): gradual decrease
+//   - Late night (22-23): approaching overnight lows
 func hourlyArrivalMultiplier(hour int) float64 {
-	switch {
-	case hour >= 0 && hour < 8:
-		return 0.70
-	case hour == 12 || hour == 18:
-		return 0.85
-	case hour >= 9 && hour <= 11:
-		return 1.20
-	case hour >= 13 && hour <= 17:
-		return 1.15
-	case hour >= 20 && hour <= 22:
-		return 1.00
-	default:
-		return 0.95
+	// index by hour 0-23
+	pattern := [24]float64{
+		0.15, // 00
+		0.12, // 01
+		0.10, // 02
+		0.10, // 03
+		0.12, // 04
+		0.20, // 05
+		0.40, // 06
+		0.65, // 07
+		0.85, // 08
+		1.00, // 09 — peak
+		1.00, // 10 — peak
+		0.95, // 11
+		0.80, // 12 — lunch
+		0.85, // 13
+		1.00, // 14 — afternoon peak
+		1.00, // 15
+		0.95, // 16
+		0.85, // 17
+		0.65, // 18
+		0.50, // 19
+		0.40, // 20
+		0.30, // 21
+		0.22, // 22
+		0.18, // 23
 	}
+	if hour < 0 || hour > 23 {
+		return 0.15
+	}
+	return pattern[hour]
 }
 
 func isBurstHour(rng *rand.Rand, st *arrivalState, day, hour int, cfg generatorConfig) bool {
