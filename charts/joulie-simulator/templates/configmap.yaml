@@ -1,0 +1,27 @@
+{{- if .Values.nodeClasses }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: joulie-simulator-node-classes
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "joulie-simulator.labels" . | nindent 4 }}
+data:
+  node-classes.yaml: |
+    {{- .Values.nodeClasses | toYaml | nindent 4 }}
+{{- end }}
+{{- if .Values.workloadTrace }}
+{{- if .Values.workloadTrace.content }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: joulie-simulator-workload-trace
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "joulie-simulator.labels" . | nindent 4 }}
+data:
+  {{ .Values.workloadTrace.fileName | default "trace.jsonl" }}: |
+    {{- .Values.workloadTrace.content | toString | nindent 4 }}
+{{- end }}
+{{- end }}

@@ -66,6 +66,16 @@ jobs:
             registry.cern.ch/mbunino/joulie/joulie-scheduler:${{ steps.vars.outputs.version }}
             registry.cern.ch/mbunino/joulie/joulie-scheduler:latest
 
+      - name: Build and push simulator
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: simulator/Dockerfile
+          push: true
+          tags: |
+            registry.cern.ch/mbunino/joulie/joulie-simulator:${{ steps.vars.outputs.version }}
+            registry.cern.ch/mbunino/joulie/joulie-simulator:latest
+
   publish-kubectl-plugin:
     runs-on: ubuntu-latest
     strategy:
@@ -153,12 +163,16 @@ jobs:
       - name: Login to CERN registry for Helm OCI
         run: echo "${{ secrets.CERN_REGISTRY_PASSWORD }}" | helm registry login registry.cern.ch -u "${{ secrets.CERN_REGISTRY_USER }}" --password-stdin
 
-      - name: Package chart
+      - name: Package charts
         run: |
           helm package charts/joulie \
             --version "${{ steps.vars.outputs.version }}" \
             --app-version "${{ steps.vars.outputs.version }}"
+          helm package charts/joulie-simulator \
+            --version "${{ steps.vars.outputs.version }}" \
+            --app-version "${{ steps.vars.outputs.version }}"
 
-      - name: Push chart to CERN registry (OCI)
+      - name: Push charts to CERN registry (OCI)
         run: |
           helm push "joulie-${{ steps.vars.outputs.version }}.tgz" "oci://registry.cern.ch/mbunino/joulie"
+          helm push "joulie-sim-${{ steps.vars.outputs.version }}.tgz" "oci://registry.cern.ch/mbunino/joulie"

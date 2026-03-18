@@ -6,11 +6,14 @@ HELM_CHART ?= charts/joulie
 HELM_VALUES ?= values/joulie.yaml
 SIM_NAMESPACE ?= joulie-sim-demo
 SIM_IMAGE ?= joulie-simulator
+SIM_HELM_RELEASE ?= joulie-simulator
+SIM_HELM_CHART ?= charts/joulie-simulator
+SIM_HELM_VALUES ?= values/joulie-simulator.yaml
 
 # Image names must follow joulie-<component>, where <component> matches cmd/<component>.
 IMAGES ?= joulie-agent joulie-operator joulie-scheduler
 
-.PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-experiments test-all test-examples kubectl-plugin kubectl-plugin-install kubectl-plugin-push kubectl-plugin-build-push simulator-build simulator-push simulator-build-push simulator-install simulator-build-push-deploy simulator-logs docs-serve
+.PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-experiments test-all test-examples kubectl-plugin kubectl-plugin-install kubectl-plugin-push kubectl-plugin-build-push simulator-build simulator-push simulator-build-push simulator-install simulator-uninstall simulator-build-push-deploy simulator-logs docs-serve
 
 help:
 	@echo "Targets:"
@@ -32,7 +35,8 @@ help:
 	@echo "  make simulator-build TAG=<tag>        Build simulator image"
 	@echo "  make simulator-push TAG=<tag>         Push simulator image"
 	@echo "  make simulator-build-push TAG=<tag>   Build and push simulator image"
-	@echo "  make simulator-install TAG=<tag>      Install simulator using existing image tag"
+	@echo "  make simulator-install TAG=<tag>      Helm install/upgrade simulator"
+	@echo "  make simulator-uninstall              Helm uninstall simulator"
 	@echo "  make simulator-build-push-deploy TAG=<tag> Build/push/deploy simulator"
 	@echo "  make simulator-logs                   Tail simulator logs"
 	@echo "  make docs-serve                       Start Hugo docs server (website/)"
@@ -159,14 +163,15 @@ simulator-push:
 simulator-build-push: simulator-build simulator-push
 
 simulator-install:
-	kubectl apply -f simulator/deploy/simulator.yaml || ( \
-		echo "Recreating simulator deployment due to immutable selector change"; \
-		kubectl -n "$(SIM_NAMESPACE)" delete deploy/joulie-telemetry-sim --ignore-not-found=true; \
-		kubectl apply -f simulator/deploy/simulator.yaml \
-	)
-	kubectl -n "$(SIM_NAMESPACE)" set image deploy/joulie-telemetry-sim \
-		simulator="$(REGISTRY)/$(SIM_IMAGE):$(TAG)"
+	helm upgrade --install "$(SIM_HELM_RELEASE)" "$(SIM_HELM_CHART)" \
+		-n "$(SIM_NAMESPACE)" --create-namespace \
+		$(if $(wildcard $(SIM_HELM_VALUES)),-f "$(SIM_HELM_VALUES)") \
+		--set image.repository="$(REGISTRY)/$(SIM_IMAGE)" \
+		--set image.tag="$(TAG)"
 	kubectl -n "$(SIM_NAMESPACE)" rollout status deploy/joulie-telemetry-sim
+
+simulator-uninstall:
+	helm uninstall "$(SIM_HELM_RELEASE)" -n "$(SIM_NAMESPACE)" || true
 
 simulator-build-push-deploy: simulator-build-push simulator-install
 

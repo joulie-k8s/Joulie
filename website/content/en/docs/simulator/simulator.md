@@ -240,25 +240,55 @@ Detailed metric names and labels are documented in:
 
 Use a separate simulator deployment (`joulie-telemetry-sim`) in namespace `joulie-sim-demo`.
 
-### Build and push image
+### Install from release (recommended)
 
-From repo root:
+The simulator has its own Helm chart, published to the same OCI registry as the main Joulie chart.
+
+Install directly from the OCI chart release:
+
+```bash
+helm upgrade --install joulie-simulator oci://registry.cern.ch/mbunino/joulie/joulie-sim \
+  --version <version> \
+  -n joulie-sim-demo \
+  --create-namespace \
+  --set image.tag=<version>
+```
+
+Or use the make target (uses the local chart source):
+
+```bash
+make simulator-install TAG=<version>
+```
+
+Override simulator settings via `--set` or a values file:
+
+```bash
+helm upgrade --install joulie-simulator oci://registry.cern.ch/mbunino/joulie/joulie-sim \
+  --version <version> \
+  -n joulie-sim-demo \
+  --create-namespace \
+  --set image.tag=<version> \
+  --set env.SIM_POLL_INTERVAL=10s \
+  --set serviceMonitor.enabled=true
+```
+
+To uninstall:
+
+```bash
+make simulator-uninstall
+# or: helm uninstall joulie-simulator -n joulie-sim-demo
+```
+
+### Build and push image (when developing)
+
+If you changed simulator source code, build and push from repo root:
 
 ```bash
 make simulator-build TAG=<tag>
 make simulator-push TAG=<tag>
 ```
 
-### Deploy to cluster
-
-Use the default manifest:
-
-```bash
-kubectl apply -f simulator/deploy/simulator.yaml
-kubectl -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim
-```
-
-Or install with dynamic image tag override:
+Then install using the local chart with your custom tag:
 
 ```bash
 make simulator-install TAG=<tag>
