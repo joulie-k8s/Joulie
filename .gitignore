@@ -4,6 +4,7 @@
 runs/
 results/
 _old_results/
+generated/
 tmp/
 tmp.*
 *.tgz
