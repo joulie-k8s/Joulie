@@ -17,7 +17,7 @@ It covers a homogeneous GPU cluster (33 NVIDIA H100 NVL nodes) plus 8 CPU-only n
 - Kind control-plane + worker (real Kubernetes control path).
 - 41 fake KWOK worker nodes (33 GPU + 8 CPU-only).
 - Scheduler extender provides performance/eco affinity-based filtering and scoring.
-- GPU nodes get GPU RAPL caps only (CPU caps skipped on GPU nodes).
+- GPU nodes get GPU RAPL caps; CPU-only nodes get CPU RAPL caps.
 
 ### 1.2 Node inventory
 
@@ -36,15 +36,13 @@ Joulie performs better on a homogeneous cluster because every node can accept an
 
 ### 1.4 Run configuration
 
-From [`configs/benchmark-debug.yaml`](./configs/benchmark-debug.yaml):
-
 | Parameter | Value |
 |---|---|
 | Baselines | A, B, C |
 | Seeds | 1 |
-| Jobs | 600 |
-| GPU ratio | 75% |
-| GPU request per job | 2 |
+| Jobs | 476 |
+| GPU ratio | 35% |
+| GPU request per job | 1 |
 | Time scale | 10x |
 | Timeout | 300 s |
 | Base speed per core | 2.0 |
@@ -103,7 +101,7 @@ Across all three experiments:
 
 | Experiment | B (static) vs A | C (queue-aware) vs A |
 |---|---:|---:|
-| 01 CPU-only | -20.3% | **-25.9%** |
+| 01 CPU-only | -20.1% | **-25.7%** |
 | 02 Heterogeneous GPU | +2.8% | **-12.7%** |
 | 03 Homogeneous H100 | -12.4% | **-20.6%** |
 
@@ -123,7 +121,7 @@ Three clear power levels: A ~48 kW, B ~42 kW, C ~38 kW. The separation is sustai
 
 ![GPU Power](./results/plots/timeseries_gpu_power.png)
 
-GPU power dominates (>85% of total). CPU power is flat at ~5 kW across all baselines (no CPU caps on GPU nodes). The GPU panel shows A ~44 kW, B ~38 kW, C ~34 kW.
+GPU power dominates (>85% of total). CPU power is flat at ~5 kW across all baselines. The GPU panel shows A ~44 kW, B ~38 kW, C ~34 kW.
 
 ### 4.3 Cumulative energy
 
@@ -131,11 +129,33 @@ GPU power dominates (>85% of total). CPU power is flat at ~5 kW across all basel
 
 Linear divergence from the start — all three baselines have steady power draw, so cumulative energy grows linearly with different slopes.
 
+### 4.4 Cooling and ambient conditions
+
+![Cooling](./results/plots/timeseries_cooling.png)
+
+Cooling power tracks IT power. C requires consistently lower cooling, reducing both direct energy cost and PUE overhead.
+
+### 4.5 Throughput vs energy
+
+![Throughput vs Energy](./results/plots/throughput_vs_energy.png)
+
+All baselines achieve comparable throughput (~549-553 jobs/sim-hr) while C saves 20.6% in energy.
+
 ---
 
-## 5. Reproducibility
+## 5. FMU Integration
 
-- Config: [`configs/benchmark-debug.yaml`](./configs/benchmark-debug.yaml)
+The timeseries data is exported in FMU-compatible format at [`results/fmu_input/`](./results/fmu_input/).
+
+Each CSV contains: `timestamp_utc`, `elapsed_sec`, `sim_elapsed_sec`, `sim_hour`, `it_power_w`, `cpu_power_w`, `gpu_power_w`, `pue`, `cooling_power_w`, `facility_power_w`, `ambient_temp_c`, `cluster_cpu_util`, `cluster_gpu_util`, `nodes_active`, `pods_running`, `energy_cumulative_j`.
+
+These files can be fed directly into the FMU Modelica cooling model (`examples/08-fmu-cooling-pue/`).
+
+---
+
+## 6. Reproducibility
+
+- Config: [`configs/benchmark-5k.yaml`](./configs/benchmark-5k.yaml)
 - Sweep: [`scripts/05_sweep.py`](./scripts/05_sweep.py)
 - Collection: [`scripts/06_collect.py`](./scripts/06_collect.py)
 - Plotting: [`scripts/07_plot.py`](./scripts/07_plot.py), [`scripts/08_plot_timeseries.py`](./scripts/08_plot_timeseries.py)
