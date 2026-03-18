@@ -58,6 +58,10 @@ Users normally configure:
 Both modes should use the same managed-node selector contract (`joulie.io/managed=true`).
 In practice, pool mode enforces this through `POOL_NODE_SELECTOR`, and DaemonSet mode is restricted by default with `agent.daemonset.nodeSelector.joulie.io/managed=true`.
 
+### K8s API client tuning
+
+The agent and operator use elevated Kubernetes API client rate limits (QPS=50, Burst=100) to ensure timely reconciliation in large clusters. The default Go client limits (QPS=5, Burst=10) can cause the agent pool to process only a fraction of its managed nodes per reconcile cycle, preventing eco caps from being applied on time.
+
 Detailed deployment/runtime configuration is documented in:
 
 - [Agent Runtime Modes]({{< relref "/docs/getting-started/02-agent-runtime-modes.md" >}})
