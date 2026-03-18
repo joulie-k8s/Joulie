@@ -20,6 +20,7 @@ agent:
   pool:
     replicas: 2
     nodeSelector: "joulie.io/managed=true"
+    podNodeSelector: {}
     shards: 2
   service:
     enabled: true
@@ -30,6 +31,7 @@ agent:
       prometheus.io/path: /metrics
 
 operator:
+  nodeSelector: {}
   image:
     repository: registry.cern.ch/mbunino/joulie/joulie-operator
     tag: latest
@@ -75,8 +77,10 @@ schedulerExtender:
     repository: registry.cern.ch/mbunino/joulie/joulie-scheduler
     tag: latest
   port: 9876
+  clusterIP: ""  # set a fixed ClusterIP so the scheduler config can use an IP instead of DNS
   replicas: 1
   hostNetwork: false
+  nodeName: ""  # set to bypass scheduler (needed when ignorable=false)
   nodeSelector: {}
   env: {}
 

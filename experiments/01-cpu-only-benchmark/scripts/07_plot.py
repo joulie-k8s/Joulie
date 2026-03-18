@@ -23,19 +23,6 @@ def ensure_numeric(df: pd.DataFrame, cols):
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
 
-def filter_completed_runs(df: pd.DataFrame) -> pd.DataFrame:
-    if "run_completed" not in df.columns:
-        return df.copy()
-    vals = (
-        df["run_completed"]
-        .astype(str)
-        .str.strip()
-        .str.lower()
-        .isin({"true", "1", "yes"})
-    )
-    return df[vals].copy()
-
-
 def pareto_frontier(df: pd.DataFrame, x_col: str, y_col: str):
     # Minimize x (energy), maximize y (throughput).
     pts = df.dropna(subset=[x_col, y_col]).sort_values([x_col, y_col], ascending=[True, False])
@@ -206,58 +193,6 @@ def plot_baseline_summary_bars(df: pd.DataFrame):
     plt.close(fig)
 
 
-def plot_completion_summary(df: pd.DataFrame):
-    if "baseline" not in df.columns or "run_completed" not in df.columns:
-        return
-    d = df.dropna(subset=["baseline"]).copy()
-    if d.empty:
-        return
-    completed_mask = (
-        d["run_completed"].astype(str).str.strip().str.lower().isin({"true", "1", "yes"})
-    )
-    d["completed_count"] = completed_mask.astype(int)
-    summary = d.groupby("baseline", as_index=False).agg(
-        runs_total=("baseline", "count"),
-        runs_completed=("completed_count", "sum"),
-    )
-    if summary.empty:
-        return
-    summary["runs_incomplete"] = summary["runs_total"] - summary["runs_completed"]
-    summary.sort_values("baseline", key=baseline_sort_key, inplace=True)
-
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-    xs = summary["baseline"].tolist()
-    colors = [BASELINE_COLORS.get(x, "#888888") for x in xs]
-
-    axes[0].bar(xs, summary["runs_completed"], color=colors, alpha=0.85, label="Completed")
-    axes[0].bar(
-        xs,
-        summary["runs_incomplete"],
-        bottom=summary["runs_completed"],
-        color="#d9d9d9",
-        alpha=0.9,
-        label="Incomplete",
-    )
-    axes[0].set_title("Run Completion Counts")
-    axes[0].set_xlabel("Baseline")
-    axes[0].set_ylabel("Runs")
-    axes[0].grid(axis="y", alpha=0.2)
-    axes[0].legend()
-
-    completion_rate = 100.0 * summary["runs_completed"] / summary["runs_total"]
-    axes[1].bar(xs, completion_rate, color=colors, alpha=0.85)
-    axes[1].set_title("Completion Rate")
-    axes[1].set_xlabel("Baseline")
-    axes[1].set_ylabel("Completed runs (%)")
-    axes[1].set_ylim(0, 100)
-    axes[1].grid(axis="y", alpha=0.2)
-
-    fig.suptitle("Run Robustness by Baseline")
-    fig.tight_layout()
-    fig.savefig(PLOTS / "completion_summary.png", dpi=170)
-    plt.close(fig)
-
-
 def main():
     summary = RESULTS / "summary.csv"
     if not summary.exists():
@@ -279,8 +214,7 @@ def main():
             "avg_cluster_power_w_est",
         ],
     )
-    plot_completion_summary(df_all)
-    df = filter_completed_runs(df_all)
+    df = df_all
 
     plot_runtime_distribution(df)
     plot_throughput_vs_energy(df)

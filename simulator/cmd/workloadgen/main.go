@@ -582,11 +582,11 @@ func sampleCPUPerGPU(rng *rand.Rand, wlType string, g int) float64 {
 	if g <= 0 {
 		switch wlType {
 		case "cpu_preprocess":
-			return clampRange(logNormalApprox(rng, math.Log(4), 0.35), 1, 16)
+			return clampRange(logNormalApprox(rng, math.Log(16), 0.45), 4, 64)
 		case "cpu_analytics":
-			return clampRange(logNormalApprox(rng, math.Log(8), 0.4), 2, 32)
+			return clampRange(logNormalApprox(rng, math.Log(32), 0.5), 8, 128)
 		default:
-			return clampRange(logNormalApprox(rng, math.Log(2), 0.4), 1, 8)
+			return clampRange(logNormalApprox(rng, math.Log(8), 0.4), 2, 32)
 		}
 	}
 	median := 4.0

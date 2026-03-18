@@ -439,6 +439,20 @@ def collect_artifacts(
     (host_persist_dir / "events.json").write_text(events)
     (host_persist_dir / "energy.json").write_text(energy)
     mirror_persisted_file("events.ndjson")
+    mirror_persisted_file("timeseries.csv")
+
+    # Also copy timeseries.csv to run_dir for easy access.
+    ts_src = host_persist_dir / "timeseries.csv"
+    if ts_src.exists():
+        (run_dir / "timeseries.csv").write_text(ts_src.read_text())
+    else:
+        # Fetch via HTTP debug endpoint (works on distroless containers).
+        try:
+            ts_csv = fetch_via_port_forward("/debug/timeseries", 5)
+            if ts_csv:
+                (run_dir / "timeseries.csv").write_text(ts_csv)
+        except Exception:
+            pass
 
     (run_dir / "pods.json").write_text(run(["kubectl", "get", "pods", "-A", "-o", "json"], capture=True).stdout)
     (run_dir / "nodepowerprofiles.yaml").write_text(run(["kubectl", "get", "nodepowerprofiles", "-o", "yaml"], capture=True, check=False).stdout)

@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "joulie-simulator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "joulie-simulator.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "joulie-simulator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "joulie-simulator.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: joulie-simulator
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: simulator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            {{- range $key, $val := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+            {{- range $key, $val := .Values.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 18080
+          volumeMounts:
+            - name: node-classes
+              mountPath: /etc/joulie-sim
+              readOnly: true
+            - name: workload-trace
+              mountPath: /etc/joulie-sim-trace
+              readOnly: true
+            - name: hardware-catalog
+              mountPath: /etc/joulie-sim-catalog
+              readOnly: true
+      volumes:
+        - name: node-classes
+          configMap:
+            name: {{ .Values.configMaps.nodeClasses.name }}
+        - name: workload-trace
+          configMap:
+            name: {{ .Values.configMaps.workloadTrace.name }}
+        - name: hardware-catalog
+          configMap:
+            name: {{ .Values.configMaps.hardwareCatalog.name }}

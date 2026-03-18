@@ -31,6 +31,9 @@ spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       {{- end }}
+      {{- if .Values.schedulerExtender.nodeName }}
+      nodeName: {{ .Values.schedulerExtender.nodeName }}
+      {{- end }}
       {{- with .Values.schedulerExtender.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -73,6 +76,9 @@ metadata:
     {{- include "joulie.labels" . | nindent 4 }}
     app.kubernetes.io/component: scheduler-extender
 spec:
+  {{- if .Values.schedulerExtender.clusterIP }}
+  clusterIP: {{ .Values.schedulerExtender.clusterIP }}
+  {{- end }}
   selector:
     app.kubernetes.io/component: scheduler-extender
   ports:

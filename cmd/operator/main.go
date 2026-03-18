@@ -165,8 +165,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("in-cluster config: %v", err)
 	}
-	cfg.QPS = 50
-	cfg.Burst = 100
+	cfg.QPS = float32(floatEnv("KUBE_CLIENT_QPS", 50))
+	cfg.Burst = intEnv("KUBE_CLIENT_BURST", 100)
 	kube, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Fatalf("kube client: %v", err)

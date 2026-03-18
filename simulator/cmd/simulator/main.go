@@ -169,6 +169,9 @@ type simulator struct {
 	energyLastTs  time.Time
 	persistDir    string
 	persistMu     sync.Mutex
+	tsFile        *os.File
+	tsWriter      *bufio.Writer
+	tsPath        string
 
 	requestsTotal   *prometheus.CounterVec
 	requestDuration *prometheus.HistogramVec
@@ -280,6 +283,7 @@ func main() {
 	mux.HandleFunc("/debug/jobs", s.handleDebugJobs)
 	mux.HandleFunc("/debug/events", s.handleDebugEvents)
 	mux.HandleFunc("/debug/energy", s.handleDebugEnergy)
+	mux.HandleFunc("/debug/timeseries", s.handleDebugTimeseries)
 	mux.HandleFunc("/api/v1/query", s.handleFakePrometheusQuery)
 
 	log.Printf("listening on %s", addr)
@@ -420,6 +424,18 @@ func (s *simulator) configurePersistence(dir string) {
 	}
 	s.persistDir = dir
 	s.snapshotDebugState()
+	// Open time-series CSV for append.
+	tsPath := filepath.Join(dir, "timeseries.csv")
+	f, err := os.OpenFile(tsPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		log.Printf("warning: timeseries CSV disabled path=%s err=%v", tsPath, err)
+	} else {
+		s.tsFile = f
+		s.tsWriter = bufio.NewWriter(f)
+		s.tsPath = tsPath
+		_, _ = s.tsWriter.WriteString("timestamp_utc,elapsed_sec,it_power_w,cpu_power_w,gpu_power_w,pue,cooling_power_w,facility_power_w,ambient_temp_c,cluster_cpu_util,cluster_gpu_util,nodes_active,pods_running,energy_cumulative_j\n")
+		log.Printf("timeseries CSV enabled path=%s", tsPath)
+	}
 	log.Printf("debug persistence enabled dir=%s", dir)
 }
 
@@ -1061,6 +1077,30 @@ func (s *simulator) handleDebugEnergy(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(s.debugEnergyPayload())
 }
 
+func (s *simulator) handleDebugTimeseries(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	status := http.StatusOK
+	defer s.observeRequest("debug_timeseries", r.Method, &status, start)
+	if r.Method != http.MethodGet {
+		status = http.StatusMethodNotAllowed
+		http.Error(w, "method not allowed", status)
+		return
+	}
+	if s.tsPath == "" {
+		status = http.StatusNotFound
+		http.Error(w, "timeseries CSV not enabled", status)
+		return
+	}
+	// Flush writer before reading the file.
+	s.mu.Lock()
+	if s.tsWriter != nil {
+		_ = s.tsWriter.Flush()
+	}
+	s.mu.Unlock()
+	w.Header().Set("Content-Type", "text/csv")
+	http.ServeFile(w, r, s.tsPath)
+}
+
 func (s *simulator) observeRequest(route, method string, status *int, start time.Time) {
 	s.requestsTotal.WithLabelValues(route, method, strconv.Itoa(*status)).Inc()
 	s.requestDuration.WithLabelValues(route, method).Observe(time.Since(start).Seconds())
@@ -1129,6 +1169,91 @@ func (s *simulator) updateFacilityMetrics(now time.Time) {
 	// Cooling power = total facility power - IT power = IT * (PUE - 1).
 	coolingPowerW := itPowerW * (pue - 1.0)
 	s.facilityCoolingPowerW.Set(math.Round(coolingPowerW*100) / 100)
+}
+
+// appendTimeseriesRow writes one CSV row to the time-series file with the
+// current cluster power state. Called once per workload tick from the
+// workload loop, after accumulateEnergy and updateFacilityMetrics.
+func (s *simulator) appendTimeseriesRow(now time.Time) {
+	if s.tsWriter == nil {
+		return
+	}
+	s.mu.RLock()
+	var itPowerW, cpuPowerW, gpuPowerW, cpuUtilSum, gpuUtilSum float64
+	var nodesActive, podsRunning int
+	for _, st := range s.state {
+		if st == nil {
+			continue
+		}
+		nodesActive++
+		podsRunning += st.PodsRunning
+		cpuPowerW += st.CPUInstantPowerWatts
+		gpuPowerW += st.GPUPowerWatts
+		if st.TotalAvgPowerWatts > 0 {
+			itPowerW += st.TotalAvgPowerWatts
+		} else {
+			itPowerW += st.CPUInstantPowerWatts + st.GPUPowerWatts
+		}
+		cpuUtilSum += st.CPUUtil
+		gpuUtilSum += st.GPUUtil
+	}
+	energyJ := s.energyTotalJ
+	s.mu.RUnlock()
+
+	// Use facility gauges for PUE/cooling/ambient (set by updateFacilityMetrics).
+	pue := readGaugeValue(s.facilityPUE)
+	ambientTemp := readGaugeValue(s.facilityAmbientTemp)
+	coolingPowerW := readGaugeValue(s.facilityCoolingPowerW)
+	facilityPowerW := itPowerW + coolingPowerW
+
+	var clusterCPUUtil, clusterGPUUtil float64
+	if nodesActive > 0 {
+		clusterCPUUtil = cpuUtilSum / float64(nodesActive)
+		clusterGPUUtil = gpuUtilSum / float64(nodesActive)
+	}
+
+	var elapsed float64
+	if s.workload != nil {
+		elapsed = now.Sub(s.workload.startTime).Seconds()
+	}
+
+	s.persistMu.Lock()
+	_, _ = fmt.Fprintf(s.tsWriter,
+		"%s,%.1f,%.1f,%.1f,%.1f,%.4f,%.1f,%.1f,%.2f,%.4f,%.4f,%d,%d,%.1f\n",
+		now.UTC().Format(time.RFC3339),
+		elapsed,
+		itPowerW, cpuPowerW, gpuPowerW,
+		pue, coolingPowerW, facilityPowerW,
+		ambientTemp,
+		clusterCPUUtil, clusterGPUUtil,
+		nodesActive, podsRunning,
+		energyJ,
+	)
+	s.persistMu.Unlock()
+}
+
+// flushTimeseries flushes and closes the time-series CSV file.
+func (s *simulator) flushTimeseries() {
+	if s.tsWriter != nil {
+		s.persistMu.Lock()
+		_ = s.tsWriter.Flush()
+		s.persistMu.Unlock()
+	}
+	if s.tsFile != nil {
+		_ = s.tsFile.Close()
+	}
+}
+
+// readGaugeValue extracts the current float64 from a prometheus.Gauge.
+func readGaugeValue(g prometheus.Gauge) float64 {
+	m := &dto.Metric{}
+	if err := g.Write(m); err != nil {
+		return 0
+	}
+	if m.Gauge != nil && m.Gauge.Value != nil {
+		return *m.Gauge.Value
+	}
+	return 0
 }
 
 // handleFakePrometheusQuery serves a minimal /api/v1/query endpoint that
@@ -1352,6 +1477,12 @@ func (s *simulator) snapshotDebugState() {
 	s.persistJSONAtomic("jobs.json", s.debugJobsPayload())
 	s.persistJSONAtomic("events.json", s.debugEventsPayload(0))
 	s.persistJSONAtomic("energy.json", s.debugEnergyPayload())
+	// Flush timeseries CSV so partial data is available for collection.
+	if s.tsWriter != nil {
+		s.persistMu.Lock()
+		_ = s.tsWriter.Flush()
+		s.persistMu.Unlock()
+	}
 }
 
 func (s *simulator) persistJSONAtomic(name string, payload any) {
@@ -2413,6 +2544,7 @@ func (s *simulator) startWorkloadLoop(interval time.Duration) {
 		}
 		s.accumulateEnergy(dt)
 		s.updateFacilityMetrics(now)
+		s.appendTimeseriesRow(now)
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		s.injectTraceJobs(ctx, kube, now)
 		if ctx.Err() == nil {

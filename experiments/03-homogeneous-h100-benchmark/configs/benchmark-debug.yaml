@@ -1,18 +1,18 @@
 run:
   baselines: [A, B, C]
   seeds: 1
-  jobs: 32
+  jobs: 600
   mean_inter_arrival_sec: 0.02
-  time_scale: 60
-  timeout: 240
-  settle_seconds: 2
+  time_scale: 10
+  timeout: 300
+  settle_seconds: 4
   cleanup_timeout: 120
 
 workload:
   perf_ratio: 0.35
   compute_bound_perf_boost: 3.5
   gpu_ratio: 0.75
-  gpu_request_per_job: 1
+  gpu_request_per_job: 2
   burst_day_probability: 0.30
   burst_mean_jobs: 8.0
   burst_multiplier: 2.2
@@ -26,30 +26,29 @@ workload:
     - cpu_analytics
 
 simulator:
-  base_speed_per_core: 100.0
+  base_speed_per_core: 2.0
   manifest: examples/07 - simulator-gpu-powercaps/manifests/20-simulator.yaml
 
 policy:
-  cpu_write_absolute_caps: false
-  gpu_write_absolute_caps: false
+  cpu_write_absolute_caps: true
+  gpu_write_absolute_caps: true
   caps:
     cpu_performance_pct_of_max: 100
-    cpu_eco_pct_of_max: 80
+    cpu_eco_pct_of_max: 60
     gpu_performance_pct_of_max: 100
-    gpu_eco_pct_of_max: 80
+    gpu_eco_pct_of_max: 70
+    performance_watts: 600
+    eco_watts: 280
   loop:
     operator_reconcile_interval: "10s"
     agent_reconcile_interval: "5s"
-    # Queue-aware (baseline C) uses a slower operator reconcile to avoid
-    # thrashing node profiles. Value is in simulated seconds; the sweep script
-    # divides by run.time_scale to get the wall-clock interval.
     queue_aware_operator_reconcile_sim_seconds: 300
   static:
-    hp_frac: 0.50
+    hp_frac: 0.35
   queue_aware:
-    hp_base_frac: 0.60
+    hp_base_frac: 0.45
     hp_min: 1
-    hp_max: 8
+    hp_max: 10
     perf_per_hp_node: 10
 
 images:
@@ -63,4 +62,4 @@ inventory:
   source: experiments/03-homogeneous-h100-benchmark/configs/cluster-nodes.yaml
 
 install:
-  kind_cluster_config: experiments/02-heterogeneous-benchmark/configs/kind-cluster.yaml
+  kind_cluster_config: experiments/03-homogeneous-h100-benchmark/configs/kind-cluster.yaml

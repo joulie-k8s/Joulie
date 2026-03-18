@@ -16,7 +16,6 @@ QUEUE_HP_BASE_FRAC=${QUEUE_HP_BASE_FRAC:-0.60}
 QUEUE_HP_MIN=${QUEUE_HP_MIN:-1}
 QUEUE_HP_MAX=${QUEUE_HP_MAX:-8}
 QUEUE_PERF_PER_HP_NODE=${QUEUE_PERF_PER_HP_NODE:-10}
-SIMULATOR_MANIFEST=${SIMULATOR_MANIFEST:-$EXAMPLE_DIR/manifests/20-simulator.yaml}
 SIM_BASE_SPEED_PER_CORE=${SIM_BASE_SPEED_PER_CORE:-}
 PERFORMANCE_CAP_WATTS=${PERFORMANCE_CAP_WATTS:-500}
 ECO_CAP_WATTS=${ECO_CAP_WATTS:-140}
@@ -39,12 +38,6 @@ ENABLE_FACILITY_METRICS=${ENABLE_FACILITY_METRICS:-false}
 CLASSIFY_SIM_ANNOTATION_FALLBACK=${CLASSIFY_SIM_ANNOTATION_FALLBACK:-true}
 CLASSIFY_SIM_NOISE_PCT=${CLASSIFY_SIM_NOISE_PCT:-10}
 
-actual_image_from_workload() {
-  local ns=$1
-  local kindname=$2
-  kubectl -n "$ns" get "$kindname" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true
-}
-
 create_or_update_configmap_from_file() {
   local ns=$1
   local name=$2
@@ -59,6 +52,136 @@ elif [[ "$BASELINE" == "C" ]]; then
   POLICY_TYPE=queue_aware_v1
 fi
 
+# ---------------------------------------------------------------------------
+# 1. CRDs (needed by both simulator and Joulie components)
+# ---------------------------------------------------------------------------
+kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_nodehardwares.yaml"
+kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_nodetwins.yaml"
+kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_workloadprofiles.yaml"
+
+# ---------------------------------------------------------------------------
+# 2. Joulie components (extender must be up before any pod scheduling when
+#    ignorable=false in the scheduler extender config)
+# ---------------------------------------------------------------------------
+if [[ "$BASELINE" == "A" ]]; then
+  echo "baseline A selected: simulator only (no operator/agent)"
+  helm uninstall joulie -n joulie-system >/dev/null 2>&1 || true
+else
+  # Baselines B and C both enable the scheduler extender for adaptive placement.
+  # On KinD, the extender uses nodeName to bypass the scheduler (chicken-and-egg:
+  # the extender pod itself cannot go through the extender filter when ignorable=false).
+  # On real clusters, set INFRA_NODE="" to let the scheduler place the extender normally.
+  INFRA_NODE=${INFRA_NODE:-${CLUSTER_NAME:-joulie-heterogeneous-benchmark}-worker}
+  EXTENDER_CLUSTER_IP=${EXTENDER_CLUSTER_IP:-10.96.100.76}
+  SCHED_ARGS=(
+    --set "schedulerExtender.enabled=true"
+    --set "schedulerExtender.clusterIP=${EXTENDER_CLUSTER_IP}"
+    --set "schedulerExtender.image.repository=${JOULIE_REGISTRY}/joulie-scheduler"
+    --set "schedulerExtender.image.tag=${JOULIE_TAG}"
+  )
+  if [[ -n "$INFRA_NODE" ]]; then
+    SCHED_ARGS+=(--set "schedulerExtender.nodeName=${INFRA_NODE}")
+  fi
+
+  INFRA_SELECTOR_ARGS=()
+  if [[ -n "$INFRA_NODE" ]]; then
+    INFRA_SELECTOR_ARGS=(
+      --set-string "agent.pool.podNodeSelector.joulie\\.io/infra=true"
+      --set-string "operator.nodeSelector.joulie\\.io/infra=true"
+    )
+  fi
+
+  # Telemetry env vars for baselines B/C — included in the Helm install to avoid
+  # a second rolling restart from kubectl-set-env.
+  AGENT_TELEMETRY_ARGS=()
+  if [[ "$BASELINE" != "A" ]]; then
+    AGENT_TELEMETRY_ARGS=(
+      --set "agent.env.TELEMETRY_CPU_SOURCE=http"
+      --set "agent.env.TELEMETRY_CPU_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node}"
+      --set "agent.env.TELEMETRY_CPU_CONTROL=http"
+      --set "agent.env.TELEMETRY_CPU_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}"
+      --set "agent.env.TELEMETRY_CPU_CONTROL_MODE=rapl"
+      --set "agent.env.TELEMETRY_GPU_CONTROL=http"
+      --set "agent.env.TELEMETRY_GPU_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}"
+      --set "agent.env.TELEMETRY_GPU_CONTROL_MODE=rapl"
+      --set "agent.env.JOULIE_TELEMETRY_SOURCE_TYPE=http"
+      --set "agent.env.JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node}"
+      --set "agent.env.JOULIE_CONTROL_TYPE=http"
+      --set "agent.env.JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}"
+      --set "agent.env.JOULIE_CONTROL_MODE=rapl"
+    )
+  fi
+
+  helm upgrade --install joulie "$ROOT/charts/joulie" -n joulie-system --create-namespace \
+    -f "$EXAMPLE_DIR/manifests/30-joulie-values-pool.yaml" \
+    --set "agent.image.repository=${JOULIE_REGISTRY}/joulie-agent" \
+    --set "agent.image.tag=${JOULIE_TAG}" \
+    --set "agent.image.pullPolicy=IfNotPresent" \
+    --set "operator.image.repository=${JOULIE_REGISTRY}/joulie-operator" \
+    --set "operator.image.tag=${JOULIE_TAG}" \
+    --set "operator.image.pullPolicy=IfNotPresent" \
+    --set "agent.env.RECONCILE_INTERVAL=${AGENT_RECONCILE_INTERVAL}" \
+    --set "agent.env.KUBE_CLIENT_QPS=200" \
+    --set "agent.env.KUBE_CLIENT_BURST=400" \
+    --set "operator.env.RECONCILE_INTERVAL=${OPERATOR_RECONCILE_INTERVAL}" \
+    --set "operator.env.KUBE_CLIENT_QPS=200" \
+    --set "operator.env.KUBE_CLIENT_BURST=400" \
+    --set "operator.env.POLICY_TYPE=${POLICY_TYPE}" \
+    --set "operator.env.STATIC_HP_FRAC=${STATIC_HP_FRAC}" \
+    --set "operator.env.QUEUE_HP_BASE_FRAC=${QUEUE_HP_BASE_FRAC}" \
+    --set "operator.env.QUEUE_HP_MIN=${QUEUE_HP_MIN}" \
+    --set "operator.env.QUEUE_HP_MAX=${QUEUE_HP_MAX}" \
+    --set "operator.env.QUEUE_PERF_PER_HP_NODE=${QUEUE_PERF_PER_HP_NODE}" \
+    --set "operator.env.PERFORMANCE_CAP_WATTS=${PERFORMANCE_CAP_WATTS}" \
+    --set "operator.env.ECO_CAP_WATTS=${ECO_CAP_WATTS}" \
+    --set "operator.env.CPU_PERFORMANCE_CAP_PCT_OF_MAX=${CPU_PERFORMANCE_CAP_PCT_OF_MAX}" \
+    --set "operator.env.CPU_ECO_CAP_PCT_OF_MAX=${CPU_ECO_CAP_PCT_OF_MAX}" \
+    --set "operator.env.CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS}" \
+    --set "operator.env.GPU_PERFORMANCE_CAP_PCT_OF_MAX=${GPU_PERFORMANCE_CAP_PCT_OF_MAX}" \
+    --set "operator.env.GPU_ECO_CAP_PCT_OF_MAX=${GPU_ECO_CAP_PCT_OF_MAX}" \
+    --set "operator.env.GPU_WRITE_ABSOLUTE_CAPS=${GPU_WRITE_ABSOLUTE_CAPS}" \
+    --set "operator.env.ENABLE_CLASSIFIER=${ENABLE_CLASSIFIER}" \
+    --set "operator.env.ENABLE_FACILITY_METRICS=${ENABLE_FACILITY_METRICS}" \
+    --set "operator.env.CLASSIFY_SIM_ANNOTATION_FALLBACK=${CLASSIFY_SIM_ANNOTATION_FALLBACK}" \
+    --set "operator.env.CLASSIFY_SIM_NOISE_PCT=${CLASSIFY_SIM_NOISE_PCT}" \
+    "${AGENT_TELEMETRY_ARGS[@]}" \
+    "${SCHED_ARGS[@]}" \
+    ${INFRA_SELECTOR_ARGS[@]+"${INFRA_SELECTOR_ARGS[@]}"}
+
+  # Extender must be ready first — operator/agent pods go through the extender filter.
+  kubectl -n joulie-system rollout status deploy/joulie-scheduler-extender --timeout=120s
+  kubectl -n joulie-system rollout status deploy/joulie-operator
+  kubectl -n joulie-system rollout status statefulset/joulie-agent-pool
+
+  # Verify the extender is reachable. On KinD we can check from the control-plane
+  # container (same network namespace as kube-scheduler with hostNetwork: true).
+  # On real clusters we fall back to a kubectl port-forward probe.
+  EXTENDER_URL="http://${EXTENDER_CLUSTER_IP}:9876/healthz"
+  echo "verifying scheduler extender reachable..."
+  CTRL_CONTAINER="${CLUSTER_NAME:-joulie-heterogeneous-benchmark}-control-plane"
+  if docker inspect "$CTRL_CONTAINER" >/dev/null 2>&1; then
+    if ! docker exec "$CTRL_CONTAINER" curl -sf --max-time 5 "$EXTENDER_URL" >/dev/null 2>&1; then
+      echo "FATAL: scheduler extender not reachable from control-plane at $EXTENDER_URL" >&2
+      echo "DNS or networking is misconfigured — kube-scheduler cannot reach the extender." >&2
+      exit 1
+    fi
+  else
+    kubectl -n joulie-system port-forward svc/joulie-scheduler-extender 19876:9876 &
+    PF_PID=$!
+    sleep 2
+    if ! curl -sf --max-time 5 "http://localhost:19876/healthz" >/dev/null 2>&1; then
+      kill "$PF_PID" 2>/dev/null || true
+      echo "FATAL: scheduler extender not reachable via port-forward" >&2
+      exit 1
+    fi
+    kill "$PF_PID" 2>/dev/null || true
+  fi
+  echo "scheduler extender deployed and reachable for baseline ${BASELINE}"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Simulator (deployed after the extender so pods can be scheduled)
+# ---------------------------------------------------------------------------
 kubectl create namespace joulie-sim-demo --dry-run=client -o yaml | kubectl apply -f -
 create_or_update_configmap_from_file joulie-sim-demo joulie-simulator-node-classes node-classes.yaml "$GENERATED_CLASSES"
 create_or_update_configmap_from_file joulie-sim-demo joulie-simulator-hardware-catalog hardware.generated.yaml "$GENERATED_CATALOG"
@@ -73,108 +196,30 @@ data:
     {"type":"job","schemaVersion":"v1","jobId":"bootstrap-cpu","submitTimeOffsetSec":0,"namespace":"default","podTemplate":{"requests":{"cpu":"1","memory":"64Mi"}},"work":{"cpuUnits":1,"gpuUnits":0},"sensitivity":{"cpu":0.5,"gpu":1.0}}
 YAML
 
-kubectl apply -f "$SIMULATOR_MANIFEST"
-# Pin the simulator to the real infra worker so it never lands on a KWOK fake node.
-# If a KWOK node receives the simulator pod, the kwok pod-complete stage immediately
-# marks it as Succeeded, which makes the Deployment rollout never converge.
-kubectl -n joulie-sim-demo patch deploy/joulie-telemetry-sim --type='merge' \
-  -p='{"spec":{"template":{"spec":{"nodeSelector":{"joulie.io/infra":"true"}}}}}'
-kubectl -n joulie-sim-demo patch deploy/joulie-telemetry-sim --type='json' -p='[
-  {"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}
-]'
-kubectl -n joulie-sim-demo set env deploy/joulie-telemetry-sim \
-  SIM_NODE_CLASS_CONFIG=/etc/joulie-sim/node-classes.yaml \
-  SIM_HARDWARE_CATALOG_PATH=/etc/joulie-sim-catalog/hardware.generated.yaml \
-  SIM_CLASSIFIER_MISCLASSIFY_RATE="$SIM_CLASSIFIER_MISCLASSIFY_RATE" \
-  SIM_FACILITY_AMBIENT_BASE_C="$SIM_FACILITY_AMBIENT_BASE_C" \
-  SIM_FACILITY_AMBIENT_AMPLITUDE_C="$SIM_FACILITY_AMBIENT_AMPLITUDE_C" \
-  SIM_FACILITY_AMBIENT_PERIOD_SEC="$SIM_FACILITY_AMBIENT_PERIOD_SEC"
-if [[ -n "$SIM_BASE_SPEED_PER_CORE" ]]; then
-  kubectl -n joulie-sim-demo set env deploy/joulie-telemetry-sim SIM_BASE_SPEED_PER_CORE="$SIM_BASE_SPEED_PER_CORE"
-fi
-if [[ -n "$SIM_TAG" ]]; then
-  kubectl -n joulie-sim-demo set image deploy/joulie-telemetry-sim simulator="${SIM_REGISTRY}/${SIM_IMAGE}:${SIM_TAG}"
-fi
-HAS_HW_CATALOG=$(kubectl -n joulie-sim-demo get deploy/joulie-telemetry-sim -o jsonpath='{range .spec.template.spec.volumes[*]}{.name}{"\n"}{end}' 2>/dev/null | grep -xc 'hardware-catalog' || true)
-if [[ "$HAS_HW_CATALOG" == "0" ]]; then
-  kubectl -n joulie-sim-demo patch deploy/joulie-telemetry-sim --type='json' -p='[
-    {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"hardware-catalog","mountPath":"/etc/joulie-sim-catalog","readOnly":true}},
-    {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"hardware-catalog","configMap":{"name":"joulie-simulator-hardware-catalog"}}}
-  ]'
-fi
-kubectl -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim --timeout=600s
-SIM_ACTUAL_IMAGE=$(actual_image_from_workload "joulie-sim-demo" "deploy/joulie-telemetry-sim")
-
-echo "simulator deployment image in use: ${SIM_ACTUAL_IMAGE}"
-
-kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_nodehardwares.yaml"
-kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_nodetwins.yaml"
-kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_workloadprofiles.yaml"
-
-if [[ "$BASELINE" == "A" ]]; then
-  echo "baseline A selected: simulator only (no operator/agent)"
-  helm uninstall joulie -n joulie-system >/dev/null 2>&1 || true
-  exit 0
-fi
-
-# Baselines B and C both enable the scheduler extender for adaptive placement.
-SCHED_ENABLED=true
-SCHED_ARGS=(
-  --set "schedulerExtender.enabled=true"
-  --set "schedulerExtender.image.repository=${JOULIE_REGISTRY}/joulie-scheduler"
-  --set "schedulerExtender.image.tag=${JOULIE_TAG}"
+SIM_HELM_ARGS=(
+  --set "image.repository=${SIM_REGISTRY}/${SIM_IMAGE}"
+  --set "image.tag=${SIM_TAG:-latest}"
+  --set "image.pullPolicy=Always"
+  --set "env.SIM_CLASSIFIER_MISCLASSIFY_RATE=${SIM_CLASSIFIER_MISCLASSIFY_RATE}"
+  --set "env.SIM_FACILITY_AMBIENT_BASE_C=${SIM_FACILITY_AMBIENT_BASE_C}"
+  --set "env.SIM_FACILITY_AMBIENT_AMPLITUDE_C=${SIM_FACILITY_AMBIENT_AMPLITUDE_C}"
+  --set "env.SIM_FACILITY_AMBIENT_PERIOD_SEC=${SIM_FACILITY_AMBIENT_PERIOD_SEC}"
 )
+if [[ -n "$SIM_BASE_SPEED_PER_CORE" ]]; then
+  SIM_HELM_ARGS+=(--set "extraEnv.SIM_BASE_SPEED_PER_CORE=${SIM_BASE_SPEED_PER_CORE}")
+fi
+# Delete any pre-helm simulator deployment to avoid server-side apply merge conflicts
+# (old kubectl-managed volumes vs new helm-managed volumes).
+kubectl -n joulie-sim-demo delete deploy/joulie-telemetry-sim --ignore-not-found 2>/dev/null || true
+helm upgrade --install joulie-simulator "$ROOT/charts/joulie-simulator" \
+  -n joulie-sim-demo --create-namespace \
+  "${SIM_HELM_ARGS[@]}"
+kubectl -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim --timeout=600s
+echo "simulator deployed via helm (image: ${SIM_REGISTRY}/${SIM_IMAGE}:${SIM_TAG:-latest})"
 
-helm upgrade --install joulie "$ROOT/charts/joulie" -n joulie-system --create-namespace \
-  -f "$EXAMPLE_DIR/manifests/30-joulie-values-pool.yaml" \
-  --set "agent.image.repository=${JOULIE_REGISTRY}/joulie-agent" \
-  --set "agent.image.tag=${JOULIE_TAG}" \
-  --set "agent.image.pullPolicy=IfNotPresent" \
-  --set "operator.image.repository=${JOULIE_REGISTRY}/joulie-operator" \
-  --set "operator.image.tag=${JOULIE_TAG}" \
-  --set "operator.image.pullPolicy=IfNotPresent" \
-  --set "agent.env.RECONCILE_INTERVAL=${AGENT_RECONCILE_INTERVAL}" \
-  --set "operator.env.RECONCILE_INTERVAL=${OPERATOR_RECONCILE_INTERVAL}" \
-  --set "operator.env.POLICY_TYPE=${POLICY_TYPE}" \
-  --set "operator.env.STATIC_HP_FRAC=${STATIC_HP_FRAC}" \
-  --set "operator.env.QUEUE_HP_BASE_FRAC=${QUEUE_HP_BASE_FRAC}" \
-  --set "operator.env.QUEUE_HP_MIN=${QUEUE_HP_MIN}" \
-  --set "operator.env.QUEUE_HP_MAX=${QUEUE_HP_MAX}" \
-  --set "operator.env.QUEUE_PERF_PER_HP_NODE=${QUEUE_PERF_PER_HP_NODE}" \
-  --set "operator.env.PERFORMANCE_CAP_WATTS=${PERFORMANCE_CAP_WATTS}" \
-  --set "operator.env.ECO_CAP_WATTS=${ECO_CAP_WATTS}" \
-  --set "operator.env.CPU_PERFORMANCE_CAP_PCT_OF_MAX=${CPU_PERFORMANCE_CAP_PCT_OF_MAX}" \
-  --set "operator.env.CPU_ECO_CAP_PCT_OF_MAX=${CPU_ECO_CAP_PCT_OF_MAX}" \
-  --set "operator.env.CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS}" \
-  --set "operator.env.GPU_PERFORMANCE_CAP_PCT_OF_MAX=${GPU_PERFORMANCE_CAP_PCT_OF_MAX}" \
-  --set "operator.env.GPU_ECO_CAP_PCT_OF_MAX=${GPU_ECO_CAP_PCT_OF_MAX}" \
-  --set "operator.env.GPU_WRITE_ABSOLUTE_CAPS=${GPU_WRITE_ABSOLUTE_CAPS}" \
-  --set "operator.env.ENABLE_CLASSIFIER=${ENABLE_CLASSIFIER}" \
-  --set "operator.env.ENABLE_FACILITY_METRICS=${ENABLE_FACILITY_METRICS}" \
-  --set "operator.env.CLASSIFY_SIM_ANNOTATION_FALLBACK=${CLASSIFY_SIM_ANNOTATION_FALLBACK}" \
-  --set "operator.env.CLASSIFY_SIM_NOISE_PCT=${CLASSIFY_SIM_NOISE_PCT}" \
-  "${SCHED_ARGS[@]}"
-
-kubectl -n joulie-system rollout status deploy/joulie-operator
-kubectl -n joulie-system rollout status statefulset/joulie-agent-pool
-kubectl -n joulie-system rollout status deploy/joulie-scheduler-extender --timeout=120s
-echo "scheduler extender deployed for baseline ${BASELINE}"
-
-# Configure agent telemetry/control to use the simulator HTTP endpoints.
-kubectl -n joulie-system set env statefulset/joulie-agent-pool \
-  TELEMETRY_CPU_SOURCE=http \
-  TELEMETRY_CPU_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
-  TELEMETRY_CPU_CONTROL=http \
-  TELEMETRY_CPU_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
-  TELEMETRY_CPU_CONTROL_MODE=dvfs \
-  TELEMETRY_GPU_CONTROL=http \
-  TELEMETRY_GPU_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
-  TELEMETRY_GPU_CONTROL_MODE=dvfs \
-  JOULIE_TELEMETRY_SOURCE_TYPE=http \
-  JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
-  JOULIE_CONTROL_TYPE=http \
-  JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
-  JOULIE_CONTROL_MODE=dvfs
-kubectl -n joulie-system rollout status statefulset/joulie-agent-pool
+# ---------------------------------------------------------------------------
+# 4. Agent telemetry env vars are now passed via Helm (above) to avoid a
+#    second rolling restart of the agent StatefulSet.
+# ---------------------------------------------------------------------------
 
 echo "components installed for baseline ${BASELINE}"

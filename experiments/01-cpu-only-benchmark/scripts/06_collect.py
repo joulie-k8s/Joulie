@@ -236,16 +236,12 @@ def main():
     ]
     baseline_rows = []
     for baseline, grp in df.groupby("baseline"):
-        completed = grp[grp["run_completed"] == True].copy()
         row = {
             "baseline": baseline,
             "runs_total": len(grp),
-            "runs_completed": len(completed),
-            "runs_incomplete": len(grp) - len(completed),
-            "completion_rate_pct": 100.0 * len(completed) / len(grp) if len(grp) else None,
         }
         for metric in numeric_metrics:
-            series = pd.to_numeric(completed[metric], errors="coerce").dropna()
+            series = pd.to_numeric(grp[metric], errors="coerce").dropna()
             if series.empty:
                 row[f"{metric}_mean"] = None
                 row[f"{metric}_std"] = None

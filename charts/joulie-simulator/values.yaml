@@ -1,0 +1,30 @@
+image:
+  repository: registry.cern.ch/mbunino/joulie/joulie-simulator
+  tag: latest
+  pullPolicy: IfNotPresent
+
+nodeSelector:
+  joulie.io/infra: "true"
+
+env:
+  SIM_ADDR: ":18080"
+  SIM_K8S_POD_WATCH: "true"
+  SIM_POLL_INTERVAL: "8s"
+  SIM_NODE_SELECTOR: "joulie.io/managed=true"
+  SIM_NODE_CLASS_CONFIG: "/etc/joulie-sim/node-classes.yaml"
+  SIM_WORKLOAD_TRACE_PATH: "/etc/joulie-sim-trace/trace.jsonl"
+  SIM_HARDWARE_CATALOG_PATH: "/etc/joulie-sim-catalog/hardware.generated.yaml"
+
+# Extra env vars merged on top of env (useful for optional overrides)
+extraEnv: {}
+
+configMaps:
+  nodeClasses:
+    name: joulie-simulator-node-classes
+    key: node-classes.yaml
+  hardwareCatalog:
+    name: joulie-simulator-hardware-catalog
+    key: hardware.generated.yaml
+  workloadTrace:
+    name: joulie-simulator-workload-trace
+    key: trace.jsonl

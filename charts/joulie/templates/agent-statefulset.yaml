@@ -18,6 +18,10 @@ spec:
         app.kubernetes.io/component: pool
     spec:
       serviceAccountName: joulie-agent
+      {{- with .Values.agent.pool.podNodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: agent
           image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"

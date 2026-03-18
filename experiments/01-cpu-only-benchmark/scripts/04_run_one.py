@@ -269,10 +269,16 @@ def collect_artifacts(
 
     pf = subprocess.Popen(["kubectl", "-n", "joulie-sim-demo", "port-forward", "deploy/joulie-telemetry-sim", "18080:18080"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1)
+    ts_csv = ""
     try:
         nodes = urlopen("http://127.0.0.1:18080/debug/nodes", timeout=3).read().decode()
         events = urlopen("http://127.0.0.1:18080/debug/events", timeout=3).read().decode()
         energy = urlopen("http://127.0.0.1:18080/debug/energy", timeout=3).read().decode()
+        # Collect time-series CSV via simulator HTTP debug endpoint.
+        try:
+            ts_csv = urlopen("http://127.0.0.1:18080/debug/timeseries", timeout=5).read().decode()
+        except Exception:
+            pass
     except Exception:
         nodes, events, energy = "{}", "{}", "{}"
     finally:
@@ -281,6 +287,8 @@ def collect_artifacts(
     (run_dir / "sim_debug_nodes.json").write_text(nodes)
     (run_dir / "sim_debug_events.json").write_text(events)
     (run_dir / "sim_debug_energy.json").write_text(energy)
+    if ts_csv:
+        (run_dir / "timeseries.csv").write_text(ts_csv)
 
     (run_dir / "pods.json").write_text(run(["kubectl", "get", "pods", "-A", "-o", "json"], capture=True).stdout)
     (run_dir / "nodepowerprofiles.yaml").write_text(run(["kubectl", "get", "nodepowerprofiles", "-o", "yaml"], capture=True, check=False).stdout)
