@@ -7,6 +7,9 @@ Produces multi-panel figures (like arXiv:2508.20016) with one line per baseline:
   - PUE
   - Total facility power (kW)
 
+All x-axes are in *simulated time* (hours) so that day/night cycles and
+multi-day patterns are clearly visible.
+
 Usage:
     python scripts/08_plot_timeseries.py                    # uses latest run
     RESULTS_DIR=runs/0002_.../results python scripts/08_plot_timeseries.py
@@ -20,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "results"))).resolve()
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "runs" / "latest" / "results"))).resolve()
 PLOTS = RESULTS / "plots"
 BASELINE_ORDER = ["A", "B", "C"]
 BASELINE_COLORS = {"A": "#4c78a8", "B": "#f58518", "C": "#54a24b"}
@@ -30,8 +33,8 @@ BASELINE_LABELS = {
     "C": "C  (queue-aware)",
 }
 
-# Smoothing window in seconds for the rolling average.
-SMOOTH_WINDOW_SEC = 10
+# Smoothing window in simulated hours for the rolling average.
+SMOOTH_WINDOW_SIM_HOURS = 0.5
 
 
 def discover_timeseries(results_dir: pathlib.Path) -> dict[str, list[pathlib.Path]]:
@@ -67,14 +70,14 @@ def load_timeseries(paths: list[pathlib.Path], time_scale: float = 1.0) -> pd.Da
     if not frames:
         return pd.DataFrame()
     combined = pd.concat(frames, ignore_index=True)
-    # Convert elapsed seconds to real wall-clock minutes for readability.
-    combined["elapsed_sim_min"] = combined["elapsed_sec"] / 60.0
+    # Convert wall-clock elapsed seconds to simulated hours.
+    combined["elapsed_sim_hours"] = combined["elapsed_sec"] * time_scale / 3600.0
     return combined
 
 
 def resample_and_average(df: pd.DataFrame, time_col: str, value_cols: list[str],
-                         bin_width: float = 0.5) -> pd.DataFrame:
-    """Bin by time, average across seeds, and apply rolling smoothing."""
+                         bin_width: float = 0.1) -> pd.DataFrame:
+    """Bin by time (sim-hours), average across seeds, and apply rolling smoothing."""
     if df.empty:
         return df
     df = df.copy()
@@ -82,8 +85,8 @@ def resample_and_average(df: pd.DataFrame, time_col: str, value_cols: list[str],
     agg = {c: "mean" for c in value_cols}
     grouped = df.groupby("_tbin", as_index=False).agg(agg)
     grouped.rename(columns={"_tbin": time_col}, inplace=True)
-    # Rolling smooth.
-    window = max(1, int(SMOOTH_WINDOW_SEC / max(bin_width, 0.1)))
+    # Rolling smooth in sim-hours.
+    window = max(1, int(SMOOTH_WINDOW_SIM_HOURS / max(bin_width, 0.01)))
     for c in value_cols:
         grouped[c] = grouped[c].rolling(window, min_periods=1, center=True).mean()
     return grouped
@@ -103,6 +106,35 @@ def infer_time_scale(results_dir: pathlib.Path) -> float:
     return 1.0
 
 
+def _add_night_shading(ax, max_hours: float):
+    """Add night-time shading (22:00-06:00) for each 24-hour day in the plot."""
+    labeled = False
+    day = 0
+    while day * 24 < max_hours:
+        # Night window: [day*24+22, day*24+30] (22:00 to 06:00 next day)
+        night_start = day * 24 + 22
+        night_end = day * 24 + 30  # 06:00 next day
+        if night_start < max_hours:
+            label = "Night (22-06)" if not labeled else None
+            ax.axvspan(night_start, min(night_end, max_hours),
+                       alpha=0.06, color="navy", label=label)
+            labeled = True
+        # Also shade the first night of day 0 (00:00-06:00)
+        if day == 0:
+            ax.axvspan(0, min(6, max_hours), alpha=0.06, color="navy",
+                       label="Night (22-06)" if not labeled else None)
+            labeled = True
+        day += 1
+
+
+def _add_day_boundaries(ax, max_hours: float):
+    """Add vertical dashed lines at 24-hour boundaries."""
+    day = 1
+    while day * 24 < max_hours:
+        ax.axvline(day * 24, color="gray", linestyle="--", linewidth=0.5, alpha=0.4)
+        day += 1
+
+
 def plot_timeseries_panels(by_baseline: dict[str, pd.DataFrame], out_dir: pathlib.Path):
     """Generate a 4-panel time-series figure like arXiv:2508.20016."""
     panels = [
@@ -111,8 +143,13 @@ def plot_timeseries_panels(by_baseline: dict[str, pd.DataFrame], out_dir: pathli
         ("pue", "Power Usage Effectiveness (PUE)", "", lambda x: x, ""),
         ("facility_power_w", "Total Facility Power", "", lambda x: x / 1000, "kW"),
     ]
-    fig, axes = plt.subplots(len(panels), 1, figsize=(12, 10), sharex=True)
-    time_col = "elapsed_sim_min"
+    fig, axes = plt.subplots(len(panels), 1, figsize=(14, 11), sharex=True)
+    time_col = "elapsed_sim_hours"
+
+    max_hours = max(
+        (df[time_col].max() for df in by_baseline.values() if not df.empty),
+        default=24
+    )
 
     for ax, (col, title, _ylabel, transform, unit) in zip(axes, panels):
         for baseline in BASELINE_ORDER:
@@ -128,9 +165,11 @@ def plot_timeseries_panels(by_baseline: dict[str, pd.DataFrame], out_dir: pathli
             ylabel += f" ({unit})"
         ax.set_ylabel(ylabel, fontsize=10)
         ax.grid(alpha=0.15)
+        _add_night_shading(ax, max_hours)
+        _add_day_boundaries(ax, max_hours)
         ax.legend(loc="upper right", fontsize=8, framealpha=0.7)
 
-    axes[-1].set_xlabel("Wall-clock time (minutes)", fontsize=10)
+    axes[-1].set_xlabel("Simulated Time (hours)", fontsize=10)
     fig.suptitle("Cluster Power Profile Over Time", fontsize=13, y=0.98)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(out_dir / "timeseries_power_profile.png", dpi=200)
@@ -153,8 +192,13 @@ def plot_gpu_power_panel(by_baseline: dict[str, pd.DataFrame], out_dir: pathlib.
         ("cpu_power_w", "Total CPU Power", lambda x: x / 1000, "kW"),
         ("facility_power_w", "Total Facility Power", lambda x: x / 1000, "kW"),
     ]
-    fig, axes = plt.subplots(len(panels), 1, figsize=(12, 10), sharex=True)
-    time_col = "elapsed_sim_min"
+    fig, axes = plt.subplots(len(panels), 1, figsize=(14, 11), sharex=True)
+    time_col = "elapsed_sim_hours"
+
+    max_hours = max(
+        (df[time_col].max() for df in by_baseline.values() if not df.empty),
+        default=24
+    )
 
     for ax, (col, title, transform, unit) in zip(axes, panels):
         for baseline in BASELINE_ORDER:
@@ -170,9 +214,11 @@ def plot_gpu_power_panel(by_baseline: dict[str, pd.DataFrame], out_dir: pathlib.
             ylabel += f" ({unit})"
         ax.set_ylabel(ylabel, fontsize=10)
         ax.grid(alpha=0.15)
+        _add_night_shading(ax, max_hours)
+        _add_day_boundaries(ax, max_hours)
         ax.legend(loc="upper right", fontsize=8, framealpha=0.7)
 
-    axes[-1].set_xlabel("Wall-clock time (minutes)", fontsize=10)
+    axes[-1].set_xlabel("Simulated Time (hours)", fontsize=10)
     fig.suptitle("CPU + GPU Power Breakdown Over Time", fontsize=13, y=0.98)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(out_dir / "timeseries_gpu_power.png", dpi=200)
@@ -182,8 +228,13 @@ def plot_gpu_power_panel(by_baseline: dict[str, pd.DataFrame], out_dir: pathlib.
 
 def plot_energy_cumulative(by_baseline: dict[str, pd.DataFrame], out_dir: pathlib.Path):
     """Cumulative energy consumption over time."""
-    fig, ax = plt.subplots(figsize=(12, 5))
-    time_col = "elapsed_sim_min"
+    fig, ax = plt.subplots(figsize=(14, 5))
+    time_col = "elapsed_sim_hours"
+
+    max_hours = max(
+        (df[time_col].max() for df in by_baseline.values() if not df.empty),
+        default=24
+    )
 
     for baseline in BASELINE_ORDER:
         df = by_baseline.get(baseline)
@@ -194,7 +245,9 @@ def plot_energy_cumulative(by_baseline: dict[str, pd.DataFrame], out_dir: pathli
         kwh = df["energy_cumulative_j"] / 3.6e6
         ax.plot(df[time_col], kwh, label=label, color=color, linewidth=1.5, alpha=0.9)
 
-    ax.set_xlabel("Wall-clock time (minutes)", fontsize=10)
+    _add_night_shading(ax, max_hours)
+    _add_day_boundaries(ax, max_hours)
+    ax.set_xlabel("Simulated Time (hours)", fontsize=10)
     ax.set_ylabel("Cumulative Energy (kWh)", fontsize=10)
     ax.set_title("Cumulative Energy Consumption Over Time", fontsize=13)
     ax.grid(alpha=0.15)
@@ -208,12 +261,17 @@ def plot_energy_cumulative(by_baseline: dict[str, pd.DataFrame], out_dir: pathli
 def plot_cooling_ambient(by_baseline: dict[str, pd.DataFrame], out_dir: pathlib.Path):
     """Ambient temperature and cooling power over time."""
     panels = [
-        ("ambient_temp_c", "Ambient Temperature", lambda x: x, "°C"),
+        ("ambient_temp_c", "Ambient Temperature", lambda x: x, "\u00b0C"),
         ("cooling_power_w", "Cooling Power", lambda x: x / 1000, "kW"),
         ("pue", "PUE", lambda x: x, ""),
     ]
-    fig, axes = plt.subplots(len(panels), 1, figsize=(12, 8), sharex=True)
-    time_col = "elapsed_sim_min"
+    fig, axes = plt.subplots(len(panels), 1, figsize=(14, 8), sharex=True)
+    time_col = "elapsed_sim_hours"
+
+    max_hours = max(
+        (df[time_col].max() for df in by_baseline.values() if not df.empty),
+        default=24
+    )
 
     for ax, (col, title, transform, unit) in zip(axes, panels):
         for baseline in BASELINE_ORDER:
@@ -229,14 +287,89 @@ def plot_cooling_ambient(by_baseline: dict[str, pd.DataFrame], out_dir: pathlib.
             ylabel += f" ({unit})"
         ax.set_ylabel(ylabel, fontsize=10)
         ax.grid(alpha=0.15)
+        _add_night_shading(ax, max_hours)
+        _add_day_boundaries(ax, max_hours)
         ax.legend(loc="upper right", fontsize=8, framealpha=0.7)
 
-    axes[-1].set_xlabel("Wall-clock time (minutes)", fontsize=10)
+    axes[-1].set_xlabel("Simulated Time (hours)", fontsize=10)
     fig.suptitle("Cooling and Ambient Conditions Over Time", fontsize=13, y=0.98)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(out_dir / "timeseries_cooling.png", dpi=200)
     plt.close(fig)
     print(f"  wrote {out_dir / 'timeseries_cooling.png'}")
+
+
+def plot_pue_analysis(by_baseline: dict[str, pd.DataFrame], out_dir: pathlib.Path):
+    """Dedicated PUE analysis: PUE over time, PUE vs ambient, PUE distribution."""
+    time_col = "elapsed_sim_hours"
+    has_pue = any(
+        df is not None and not df.empty and "pue" in df.columns
+        for df in by_baseline.values()
+    )
+    if not has_pue:
+        return
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 10))
+
+    max_hours = max(
+        (df[time_col].max() for df in by_baseline.values() if not df.empty),
+        default=24
+    )
+
+    # Panel 1: PUE over simulated time
+    ax = axes[0]
+    for baseline in BASELINE_ORDER:
+        df = by_baseline.get(baseline)
+        if df is None or df.empty or "pue" not in df.columns:
+            continue
+        label = BASELINE_LABELS.get(baseline, f"Baseline {baseline}")
+        color = BASELINE_COLORS.get(baseline, None)
+        ax.plot(df[time_col], df["pue"], label=label, color=color, linewidth=1.2, alpha=0.9)
+    _add_night_shading(ax, max_hours)
+    _add_day_boundaries(ax, max_hours)
+    ax.set_ylabel("PUE", fontsize=10)
+    ax.set_xlabel("Simulated Time (hours)", fontsize=10)
+    ax.set_title("PUE Over Time", fontsize=11)
+    ax.grid(alpha=0.15)
+    ax.legend(loc="upper right", fontsize=8, framealpha=0.7)
+
+    # Panel 2: PUE vs ambient temperature (scatter)
+    ax = axes[1]
+    for baseline in BASELINE_ORDER:
+        df = by_baseline.get(baseline)
+        if df is None or df.empty or "pue" not in df.columns or "ambient_temp_c" not in df.columns:
+            continue
+        label = BASELINE_LABELS.get(baseline, f"Baseline {baseline}")
+        color = BASELINE_COLORS.get(baseline, None)
+        ax.scatter(df["ambient_temp_c"], df["pue"], label=label, color=color,
+                   alpha=0.3, s=8, edgecolors="none")
+    ax.set_xlabel("Ambient Temperature (\u00b0C)", fontsize=10)
+    ax.set_ylabel("PUE", fontsize=10)
+    ax.set_title("PUE vs Ambient Temperature", fontsize=11)
+    ax.grid(alpha=0.15)
+    ax.legend(loc="upper left", fontsize=8, framealpha=0.7)
+
+    # Panel 3: PUE distribution (histogram)
+    ax = axes[2]
+    for baseline in BASELINE_ORDER:
+        df = by_baseline.get(baseline)
+        if df is None or df.empty or "pue" not in df.columns:
+            continue
+        label = BASELINE_LABELS.get(baseline, f"Baseline {baseline}")
+        color = BASELINE_COLORS.get(baseline, None)
+        pue_vals = df["pue"].dropna()
+        ax.hist(pue_vals, bins=40, alpha=0.5, color=color, label=label, edgecolor="white", linewidth=0.3)
+    ax.set_xlabel("PUE", fontsize=10)
+    ax.set_ylabel("Frequency", fontsize=10)
+    ax.set_title("PUE Distribution by Baseline", fontsize=11)
+    ax.grid(alpha=0.15, axis="y")
+    ax.legend(loc="upper right", fontsize=8, framealpha=0.7)
+
+    fig.suptitle("PUE Analysis", fontsize=13, y=0.99)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.savefig(out_dir / "pue_analysis.png", dpi=200)
+    plt.close(fig)
+    print(f"  wrote {out_dir / 'pue_analysis.png'}")
 
 
 def export_fmu_timeseries(by_baseline: dict[str, pd.DataFrame], time_scale: float, out_dir: pathlib.Path):
@@ -253,10 +386,10 @@ def export_fmu_timeseries(by_baseline: dict[str, pd.DataFrame], time_scale: floa
         if df.empty:
             continue
         out = df.copy()
-        # Reconstruct elapsed_sec from the binned minutes column.
-        out["elapsed_sec"] = out["elapsed_sim_min"] * 60.0
+        # Reconstruct elapsed_sec from the sim-hours column.
+        out["elapsed_sec"] = out["elapsed_sim_hours"] * 3600.0 / time_scale
         # Simulated elapsed seconds and hour-of-day.
-        out["sim_elapsed_sec"] = out["elapsed_sec"] * time_scale
+        out["sim_elapsed_sec"] = out["elapsed_sim_hours"] * 3600.0
         out["sim_hour"] = (out["sim_elapsed_sec"] % 86400) / 3600.0
         # Synthetic UTC timestamp starting at midnight.
         out["timestamp_utc"] = pd.to_datetime(out["sim_elapsed_sec"], unit="s", origin="2026-01-01")
@@ -273,11 +406,63 @@ def export_fmu_timeseries(by_baseline: dict[str, pd.DataFrame], time_scale: floa
         print(f"  wrote FMU input: {csv_path}  ({len(out)} rows)")
 
 
+def plot_job_arrival_rate(results_dir: pathlib.Path, time_scale: float, out_dir: pathlib.Path):
+    """Plot job arrival rate over simulated time from the trace files.
+
+    Shows the FULL multi-day timeline (not modulo-24) so day/night cycles
+    and burst events are clearly visible across multiple days.
+    """
+    import json
+    # Find trace files (one per baseline, use baseline A's targeted trace)
+    traces = sorted(results_dir.rglob("trace.jsonl"))
+    if not traces:
+        return
+    # Use the first trace (all baselines have same arrival pattern)
+    trace_path = traces[0]
+    offsets = []
+    with open(trace_path) as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+                if rec.get("type") == "job" or rec.get("kind") == "job":
+                    offsets.append(float(rec.get("submitTimeOffsetSec", 0)))
+            except Exception:
+                continue
+    if not offsets:
+        return
+    offsets.sort()
+    # Convert wall-clock offsets to simulated hours (absolute, not modulo-24)
+    sim_hours = [o * time_scale / 3600.0 for o in offsets]
+    # Bin by simulated hour (0.5-hour bins)
+    bin_width_h = 0.5
+    max_h = max(sim_hours) + bin_width_h
+    bins = np.arange(0, max_h + bin_width_h, bin_width_h)
+    counts, edges = np.histogram(sim_hours, bins=bins)
+    centers = (edges[:-1] + edges[1:]) / 2
+    # Convert to jobs per simulated hour
+    rate = counts / bin_width_h
+
+    fig, ax = plt.subplots(figsize=(14, 4))
+    ax.bar(centers, rate, width=bin_width_h * 0.9, color="#4c78a8", alpha=0.8, edgecolor="white", linewidth=0.3)
+    ax.set_xlabel("Simulated Time (hours)", fontsize=10)
+    ax.set_ylabel("Jobs / sim-hour", fontsize=10)
+    ax.set_title("Workload Arrival Rate (Day/Night Cycle)", fontsize=13)
+    ax.grid(alpha=0.15, axis="y")
+    # Add night shading for each 24-hour day
+    _add_night_shading(ax, max_h)
+    _add_day_boundaries(ax, max_h)
+    ax.legend(fontsize=8, loc="upper right")
+    fig.tight_layout()
+    fig.savefig(out_dir / "job_arrival_rate.png", dpi=200)
+    plt.close(fig)
+    print(f"  wrote {out_dir / 'job_arrival_rate.png'}")
+
+
 def main():
     print(f"results dir: {RESULTS}")
     ts_map = discover_timeseries(RESULTS)
     if not ts_map:
-        print("no timeseries.csv files found — run experiments with updated simulator first",
+        print("no timeseries.csv files found -- run experiments with updated simulator first",
               file=sys.stderr)
         sys.exit(1)
 
@@ -302,7 +487,7 @@ def main():
         if raw.empty:
             continue
         present_cols = [c for c in value_cols if c in raw.columns]
-        resampled = resample_and_average(raw, "elapsed_sim_min", present_cols, bin_width=0.25)
+        resampled = resample_and_average(raw, "elapsed_sim_hours", present_cols, bin_width=0.1)
         by_baseline[baseline] = resampled
 
     if not by_baseline:
@@ -314,6 +499,8 @@ def main():
     plot_gpu_power_panel(by_baseline, PLOTS)
     plot_energy_cumulative(by_baseline, PLOTS)
     plot_cooling_ambient(by_baseline, PLOTS)
+    plot_pue_analysis(by_baseline, PLOTS)
+    plot_job_arrival_rate(RESULTS, time_scale, PLOTS)
     export_fmu_timeseries(by_baseline, time_scale, RESULTS)
     print(f"all timeseries plots written to {PLOTS}")
 

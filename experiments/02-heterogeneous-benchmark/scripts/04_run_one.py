@@ -406,7 +406,7 @@ def collect_artifacts(
         return out.stdout.strip()
 
     def fetch_debug_artifact(endpoint: str, filename: str) -> str:
-        for timeout_sec in (3, 8, 20):
+        for timeout_sec in (5, 15, 30):
             try:
                 payload = fetch_via_port_forward(endpoint, timeout_sec)
                 if valid_debug_payload(payload):
@@ -447,12 +447,15 @@ def collect_artifacts(
         (run_dir / "timeseries.csv").write_text(ts_src.read_text())
     else:
         # Fetch via HTTP debug endpoint (works on distroless containers).
-        try:
-            ts_csv = fetch_via_port_forward("/debug/timeseries", 5)
-            if ts_csv:
-                (run_dir / "timeseries.csv").write_text(ts_csv)
-        except Exception:
-            pass
+        for ts_timeout in (10, 30, 60):
+            try:
+                ts_csv = fetch_via_port_forward("/debug/timeseries", ts_timeout)
+                if ts_csv and len(ts_csv) > 20:
+                    (run_dir / "timeseries.csv").write_text(ts_csv)
+                    break
+            except Exception:
+                pass
+            time.sleep(2)
 
     (run_dir / "pods.json").write_text(run(["kubectl", "get", "pods", "-A", "-o", "json"], capture=True).stdout)
     (run_dir / "nodepowerprofiles.yaml").write_text(run(["kubectl", "get", "nodepowerprofiles", "-o", "yaml"], capture=True, check=False).stdout)

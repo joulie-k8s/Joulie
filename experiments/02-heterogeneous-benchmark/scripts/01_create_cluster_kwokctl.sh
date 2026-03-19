@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 EXP_ROOT="$ROOT/experiments/02-heterogeneous-benchmark"
 CFG=${1:-$EXP_ROOT/configs/benchmark.yaml}
-CLUSTER_NAME=${CLUSTER_NAME:-joulie-heterogeneous-benchmark}
 REUSE_EXISTING_CLUSTER=${REUSE_EXISTING_CLUSTER:-false}
 KIND_CLUSTER_CONFIG=${KIND_CLUSTER_CONFIG:-$(python3 - <<'PY' "$CFG"
 import pathlib, sys, yaml
@@ -13,6 +12,12 @@ print(cfg.get("install", {}).get("kind_cluster_config", "examples/07 - simulator
 PY
 )}
 KIND_CLUSTER_CONFIG="$ROOT/${KIND_CLUSTER_CONFIG}"
+CLUSTER_NAME=${CLUSTER_NAME:-$(python3 - <<'PY' "$KIND_CLUSTER_CONFIG"
+import pathlib, sys, yaml
+cfg = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()) or {}
+print(cfg.get("name", "joulie-heterogeneous-benchmark"))
+PY
+)}
 
 # Use a per-experiment kubeconfig so kind never touches ~/.kube/config and parallel
 # experiments on separate clusters cannot interfere with each other.

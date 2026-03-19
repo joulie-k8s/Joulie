@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 ROOT = pathlib.Path("experiments/01-cpu-only-benchmark")
-RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "results"))).resolve()
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "runs" / "latest" / "results"))).resolve()
 PLOTS = RESULTS / "plots"
 BASELINE_ORDER = ["A", "B", "C"]
 BASELINE_COLORS = {"A": "#4c78a8", "B": "#f58518", "C": "#54a24b"}

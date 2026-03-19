@@ -11,7 +11,7 @@ from collections import deque
 import yaml
 
 DEFAULT_CONFIG = pathlib.Path("experiments/03-homogeneous-h100-benchmark/configs/benchmark.yaml")
-RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", "experiments/03-homogeneous-h100-benchmark/results"))
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", "experiments/03-homogeneous-h100-benchmark/runs/latest/results"))
 START_TS = time.time()
 
 
@@ -79,6 +79,8 @@ def generate_canonical_seed_trace(
     burst_day_probability: float,
     burst_mean_jobs: float,
     burst_multiplier: float,
+    dip_day_probability: float,
+    dip_multiplier: float,
     emit_workload_records: bool,
     work_scale: float,
     allowed_workload_types: list[str] | None,
@@ -137,6 +139,10 @@ def generate_canonical_seed_trace(
             str(burst_mean_jobs),
             "--burst-multiplier",
             str(burst_multiplier),
+            "--dip-day-probability",
+            str(dip_day_probability),
+            "--dip-multiplier",
+            str(dip_multiplier),
             "--emit-workload-records",
             str(emit_workload_records).lower(),
             "--time-scale",
@@ -555,6 +561,8 @@ def main():
         if args.burst_multiplier is not None
         else float(get_cfg(cfg, "workload", "burst_multiplier", default=2.0))
     )
+    dip_day_probability = float(get_cfg(cfg, "workload", "dip_day_probability", default=0.30))
+    dip_multiplier = float(get_cfg(cfg, "workload", "dip_multiplier", default=0.08))
     emit_workload_records_raw = (
         args.emit_workload_records
         if args.emit_workload_records.strip()
@@ -706,12 +714,14 @@ def main():
                 gpu_request_per_job=gpu_request_per_job,
                 burst_day_probability=burst_day_probability,
                 burst_mean_jobs=burst_mean_jobs,
-            burst_multiplier=burst_multiplier,
-            emit_workload_records=emit_workload_records,
-            work_scale=work_scale,
-            allowed_workload_types=allowed_workload_types,
-            time_scale=time_scale,
-        )
+                burst_multiplier=burst_multiplier,
+                dip_day_probability=dip_day_probability,
+                dip_multiplier=dip_multiplier,
+                emit_workload_records=emit_workload_records,
+                work_scale=work_scale,
+                allowed_workload_types=allowed_workload_types,
+                time_scale=time_scale,
+            )
             canonical_trace = retarget_trace_for_cluster(canonical_trace)
             trace_file = derive_baseline_trace(
                 baseline=baseline,

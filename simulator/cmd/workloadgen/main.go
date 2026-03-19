@@ -102,6 +102,8 @@ type generatorConfig struct {
 	BurstDayProbability float64
 	BurstMeanJobs       float64
 	BurstMultiplier     float64
+	DipDayProbability   float64
+	DipMultiplier       float64
 	TimeScale           float64
 }
 
@@ -134,6 +136,7 @@ type logicalPod struct {
 
 type arrivalState struct {
 	burstHourByDay map[int]int
+	dipHourByDay   map[int]int
 }
 
 func main() {
@@ -162,6 +165,8 @@ func parseFlags() generatorConfig {
 	flag.Float64Var(&cfg.BurstDayProbability, "burst-day-probability", 0.25, "probability of a daily burst window")
 	flag.Float64Var(&cfg.BurstMeanJobs, "burst-mean-jobs", 8.0, "mean extra burst intensity used to scale arrival rate during burst windows")
 	flag.Float64Var(&cfg.BurstMultiplier, "burst-multiplier", 2.0, "arrival-rate multiplier during the selected burst hour")
+	flag.Float64Var(&cfg.DipDayProbability, "dip-day-probability", 0.30, "probability of a daily dip (negative spike) window")
+	flag.Float64Var(&cfg.DipMultiplier, "dip-multiplier", 0.08, "arrival-rate multiplier during the selected dip hour (e.g., 0.08 = 92% reduction)")
 	flag.Float64Var(&cfg.TimeScale, "time-scale", 1.0, "simulation time scale: offset*timeScale = simulated seconds (used for day/night hour calculation)")
 	flag.Parse()
 	if cfg.MeanInterArrival <= 0 {
@@ -209,7 +214,7 @@ func generateTrace(cfg generatorConfig) error {
 	w := bufio.NewWriter(f)
 
 	rng := rand.New(rand.NewSource(cfg.Seed))
-	arrivals := arrivalState{burstHourByDay: map[int]int{}}
+	arrivals := arrivalState{burstHourByDay: map[int]int{}, dipHourByDay: map[int]int{}}
 	offset := 0.0
 	jobOrdinal := 0
 	for i := 0; i < cfg.Jobs; i++ {
@@ -724,6 +729,9 @@ func nextArrivalOffset(rng *rand.Rand, current float64, cfg generatorConfig, st 
 		mult *= cfg.BurstMultiplier
 		mult += cfg.BurstMeanJobs / 16.0
 	}
+	if isDipHour(rng, st, day, hour, cfg) {
+		mult *= cfg.DipMultiplier
+	}
 	if mult <= 0.05 {
 		mult = 0.05
 	}
@@ -786,6 +794,27 @@ func isBurstHour(rng *rand.Rand, st *arrivalState, day, hour int, cfg generatorC
 		st.burstHourByDay[day] = burstHour
 	}
 	return hour == burstHour
+}
+
+// isDipHour returns true if the current hour is a "negative spike" — a sudden
+// drop in arrival rate.  This models maintenance windows, planned drains, or
+// mass job completions that temporarily suppress new submissions.
+func isDipHour(rng *rand.Rand, st *arrivalState, day, hour int, cfg generatorConfig) bool {
+	if cfg.DipDayProbability <= 0 || cfg.DipMultiplier <= 0 {
+		return false
+	}
+	dipHour, ok := st.dipHourByDay[day]
+	if !ok {
+		if rng.Float64() < cfg.DipDayProbability {
+			// Dips happen in off-peak hours (early morning or evening).
+			candidates := []int{3, 4, 5, 19, 20, 21}
+			dipHour = candidates[rng.Intn(len(candidates))]
+		} else {
+			dipHour = -1
+		}
+		st.dipHourByDay[day] = dipHour
+	}
+	return hour == dipHour
 }
 
 func dayOfOffset(offset float64) int  { return int(math.Floor(offset / 86400.0)) }

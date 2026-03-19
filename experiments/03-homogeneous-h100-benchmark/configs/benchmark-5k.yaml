@@ -1,12 +1,14 @@
 run:
   baselines: [A, B, C]
   seeds: 1
-  # 5000 nodes (4000 H100 NVL + 1000 CPU).  24-hour day/night cycle.
+  # 5000 nodes (4000 H100 NVL + 1000 CPU).  3-day day/night cycle.
   # time_scale 120 → 24 sim-hours = 720 wall-sec = 12 min.
-  jobs: 120000
+  # 350k jobs over ~2200 wall-sec → 73 sim-hours (~3 days) of arrivals.
+  # timeout 2400 wall-sec → 80 sim-hours → captures 3+ day/night cycles.
+  jobs: 350000
   mean_inter_arrival_sec: 0.004
   time_scale: 120
-  timeout: 1200
+  timeout: 2400
   settle_seconds: 15
   cleanup_timeout: 600
 
@@ -15,11 +17,15 @@ workload:
   compute_bound_perf_boost: 3.5
   gpu_ratio: 0.35
   gpu_request_per_job: 1
-  burst_day_probability: 0.30
-  burst_mean_jobs: 15.0
-  burst_multiplier: 2.5
+  # Stronger bursts for visible power spikes that Joulie can smooth.
+  burst_day_probability: 0.50
+  burst_mean_jobs: 25.0
+  burst_multiplier: 3.5
+  # Negative spikes: sudden drops in arrival rate (maintenance windows, drains).
+  dip_day_probability: 0.40
+  dip_multiplier: 0.08
   emit_workload_records: true
-  work_scale: 0.50
+  work_scale: 80.0
   baseline_a_strip_affinity: true
   allowed_workload_types:
     - debug_eval
@@ -41,18 +47,21 @@ policy:
   caps:
     cpu_performance_pct_of_max: 100
     cpu_eco_pct_of_max: 60
+    # Realistic GPU eco cap: 50% of H100 NVL TDP (400W) → 200W cap.
+    # Homogeneous fleet allows more aggressive capping vs heterogeneous.
     gpu_performance_pct_of_max: 100
-    gpu_eco_pct_of_max: 70
+    gpu_eco_pct_of_max: 50
+    # Realistic CPU eco cap: triggers above ~40% CPU util.
     performance_watts: 600
-    eco_watts: 280
+    eco_watts: 220
   loop:
     operator_reconcile_interval: "20s"
     agent_reconcile_interval: "10s"
     queue_aware_operator_reconcile_sim_seconds: 300
   static:
-    hp_frac: 0.35
+    hp_frac: 0.25
   queue_aware:
-    hp_base_frac: 0.35
+    hp_base_frac: 0.25
     hp_min: 50
     hp_max: 4000
     perf_per_hp_node: 15
