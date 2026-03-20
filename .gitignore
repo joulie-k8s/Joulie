@@ -83,7 +83,6 @@ website/.hugo_build.lock
 /agent
 /scheduler
 /operator
-/simulator
 /kubectl-joulie
 /workloadgen
 /03-heterogeneous_cluster_control_loop
