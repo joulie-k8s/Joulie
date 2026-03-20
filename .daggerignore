@@ -1,0 +1,13 @@
+# Large directories not needed by CI pipelines
+experiments/
+examples/
+results/
+results*/
+_old_results*/
+tmp/
+website/
+bin/
+runs/
+.claude/
+.git/
+.vscode/

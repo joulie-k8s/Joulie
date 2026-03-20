@@ -8,15 +8,18 @@
 // The extender reads NodeTwin CRs for placement decisions. It uses a single
 // pod annotation (joulie.io/workload-class) and adaptive scoring.
 //
-// Scoring combines two complementary signals:
-//   - Twin-based score: "how healthy is this node right now?" (from NodeTwin.status)
-//   - Marginal power estimate: "how much worse would this node get if this pod
-//     landed here?" (from pod resource requests + NodeHardware power envelope)
+// Scoring formula:
 //
-// The marginal estimate is gated by ENABLE_MARGINAL_POWER_SCORING (default true).
-// When enabled, the scheduler estimates per-pod incremental CPU/GPU power draw,
-// projects cooling and PSU stress deltas, and applies score penalties that steer
-// pods toward nodes where they would cause the least additional stress.
+//	projectedPower = measuredPower + podMarginalPower
+//	headroomScore  = (cappedPower - projectedPower) / cappedPower * 100
+//	coolingStress  = clamp((measuredPower / nodeTDP) * tempMultiplier * 100, 0, 100)
+//	clusterTrend   = sum of all per-node powerTrend (W/min)
+//	trendScale     = 2.0 if |clusterTrend| > 500 else 6.0
+//	trendBonus     = -clamp(powerTrend / trendScale, -25, 25)
+//	score = headroomScore * 0.7 + (100 - coolingStress) * 0.15 + trendBonus + profileBonus + pressureRelief
+//
+// Marginal pod power is subtracted from headroom before scoring, making the
+// score pod-specific. headroomScore can go negative (pod would exceed budget).
 //
 // Resilience: twin data older than TWIN_STALENESS_THRESHOLD (default 5m) is
 // treated as stale and the node receives a neutral score instead of potentially
@@ -36,9 +39,11 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/scheduler/powerest"
@@ -47,7 +52,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
 
@@ -70,17 +74,62 @@ var (
 	// Default 5 minutes. Override via TWIN_STALENESS_THRESHOLD env var.
 	twinStalenessThreshold = durationEnvOrDefault("TWIN_STALENESS_THRESHOLD", 5*time.Minute)
 
-	// marginalScoringEnabled gates the pod-specific marginal power estimation.
-	// When false, the scheduler uses only the twin-based score (legacy behavior).
-	marginalScoringEnabled = boolEnvOrDefault("ENABLE_MARGINAL_POWER_SCORING", true)
-
 	// marginalCoeff holds the tunable coefficients for power estimation.
 	marginalCoeff = loadCoefficients()
 
-	// evictionHistoryTTL controls how long eviction context influences
-	// scheduling. After this duration, the scheduler "forgets" the eviction
-	// and schedules normally. Default 30 minutes.
-	evictionHistoryTTL = durationEnvOrDefault("EVICTION_HISTORY_TTL", 30*time.Minute)
+	// --- Prometheus metrics ---
+
+	schedulerFilterRequests = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "joulie_scheduler_filter_requests_total",
+			Help: "Total filter requests processed by workload class.",
+		},
+		[]string{"workload_class"},
+	)
+	schedulerPrioritizeRequests = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "joulie_scheduler_prioritize_requests_total",
+			Help: "Total prioritize requests processed by workload class.",
+		},
+		[]string{"workload_class"},
+	)
+	schedulerFilterDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "joulie_scheduler_filter_duration_seconds",
+			Help:    "Time to process a filter request.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"workload_class"},
+	)
+	schedulerPrioritizeDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "joulie_scheduler_prioritize_duration_seconds",
+			Help:    "Time to process a prioritize request.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"workload_class"},
+	)
+	schedulerFinalNodeScore = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "joulie_scheduler_final_node_score",
+			Help: "Final scheduling score per node and workload class (0-100).",
+		},
+		[]string{"node", "workload_class"},
+	)
+	schedulerNodeHeadroomScore = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "joulie_scheduler_node_headroom_score",
+			Help: "Power headroom score per node (0-100, can be negative if pod exceeds budget).",
+		},
+		[]string{"node"},
+	)
+	schedulerStaleTwinNodes = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "joulie_scheduler_stale_twin_data",
+			Help: "Set to 1 if twin data is stale for a node, 0 otherwise.",
+		},
+		[]string{"node"},
+	)
 )
 
 // nodeHWInfo holds hardware facts needed for scoring and marginal estimation.
@@ -155,8 +204,7 @@ type PodMeta struct {
 	OwnerReferences []OwnerRef        `json:"ownerReferences,omitempty"`
 }
 
-// OwnerRef captures the minimal owner reference fields needed for eviction
-// history lookup.
+// OwnerRef captures the minimal owner reference fields.
 type OwnerRef struct {
 	APIVersion string `json:"apiVersion,omitempty"`
 	Kind       string `json:"kind"`
@@ -202,7 +250,6 @@ type ResourceSpec struct {
 }
 
 var dynClient dynamic.Interface
-var k8sClient *kubernetes.Clientset
 
 func envDurationOrDefault(key string, def time.Duration) time.Duration {
 	v := os.Getenv(key)
@@ -231,19 +278,34 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to create dynamic client: %v", err)
 		}
-		k8sClient, err = kubernetes.NewForConfig(cfg)
-		if err != nil {
-			log.Fatalf("failed to create k8s client: %v", err)
-		}
 	}
 
-	log.Printf("marginal power scoring enabled=%v", marginalScoringEnabled)
-	if marginalScoringEnabled {
-		log.Printf("coefficients: cpuUtil=%.2f gpuUtilStd=%.2f gpuUtilPerf=%.2f idleGPU=%.0fW refNode=%.0fW refRack=%.0fW",
-			marginalCoeff.CPUUtilCoeff, marginalCoeff.GPUUtilCoeffStandard,
-			marginalCoeff.GPUUtilCoeffPerformance, marginalCoeff.IdleGPUWattsPerDevice,
-			marginalCoeff.ReferenceNodePowerW, marginalCoeff.ReferenceRackCapacityW)
+	log.Printf("coefficients: cpuUtil=%.2f gpuUtilStd=%.2f gpuUtilPerf=%.2f",
+		marginalCoeff.CPUUtilCoeff, marginalCoeff.GPUUtilCoeffStandard,
+		marginalCoeff.GPUUtilCoeffPerformance)
+
+	prometheus.MustRegister(
+		schedulerFilterRequests,
+		schedulerPrioritizeRequests,
+		schedulerFilterDuration,
+		schedulerPrioritizeDuration,
+		schedulerFinalNodeScore,
+		schedulerNodeHeadroomScore,
+		schedulerStaleTwinNodes,
+	)
+
+	metricsAddr := os.Getenv("METRICS_ADDR")
+	if metricsAddr == "" {
+		metricsAddr = ":9877"
 	}
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	go func() {
+		log.Printf("metrics server listening on %s", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, metricsMux); err != nil {
+			log.Printf("metrics server failed: %v", err)
+		}
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/filter", handleFilter)
@@ -263,13 +325,20 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleFilter(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	var args ExtenderArgs
 	if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
 		http.Error(w, fmt.Sprintf("decode error: %v", err), http.StatusBadRequest)
 		return
 	}
 
+	// Parse pod to extract workload class for metrics.
+	wpClass := extractWorkloadClass(args)
+
 	result := filterNodes(r.Context(), args)
+	schedulerFilterRequests.WithLabelValues(wpClass).Inc()
+	schedulerFilterDuration.WithLabelValues(wpClass).Observe(time.Since(start).Seconds())
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(result); err != nil {
 		log.Printf("warning: failed to encode filter response: %v", err)
@@ -277,13 +346,19 @@ func handleFilter(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlePrioritize(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	var args ExtenderArgs
 	if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
 		http.Error(w, fmt.Sprintf("decode error: %v", err), http.StatusBadRequest)
 		return
 	}
 
+	wpClass := extractWorkloadClass(args)
+
 	result := prioritizeNodes(r.Context(), args)
+	schedulerPrioritizeRequests.WithLabelValues(wpClass).Inc()
+	schedulerPrioritizeDuration.WithLabelValues(wpClass).Observe(time.Since(start).Seconds())
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(result); err != nil {
 		log.Printf("warning: failed to encode prioritize response: %v", err)
@@ -311,17 +386,7 @@ func filterNodes(ctx context.Context, args ExtenderArgs) ExtenderFilterResult {
 	}
 
 	isPerformance := podWorkloadClass(pod) == "performance"
-	eviction := getEvictionHistory(ctx, pod)
 	states := getNodeTwinStates(ctx)
-
-	// If the pod's owner was previously evicted from an eco node, treat it
-	// as a performance pod for filtering purposes to prevent re-placement
-	// on eco/draining nodes.
-	if eviction != nil && eviction.fromClass == "eco" {
-		isPerformance = true
-		log.Printf("eviction-history: pod %s/%s owner was evicted from eco; filtering as performance",
-			pod.Metadata.Namespace, pod.Metadata.Name)
-	}
 
 	var passedNodes []NodeItem
 	var passedNames []string
@@ -370,6 +435,19 @@ func shouldFilterNode(nodeName string, states map[string]*joulie.NodeTwinStatus,
 	return ""
 }
 
+// extractWorkloadClass parses the pod from ExtenderArgs and returns the workload class.
+func extractWorkloadClass(args ExtenderArgs) string {
+	podBytes, err := json.Marshal(args.Pod)
+	if err != nil {
+		return "standard"
+	}
+	var pod PodSpec
+	if err := json.Unmarshal(podBytes, &pod); err != nil {
+		return "standard"
+	}
+	return podWorkloadClass(pod)
+}
+
 // podWorkloadClass returns the workload class from pod annotations,
 // defaulting to "standard".
 func podWorkloadClass(pod PodSpec) string {
@@ -381,105 +459,23 @@ func podWorkloadClass(pod PodSpec) string {
 	return "standard"
 }
 
-// podRequestsGPU returns true if the pod requests any GPU resources.
-func podRequestsGPU(pod PodSpec) bool {
-	for _, c := range pod.Spec.Containers {
-		for k := range c.Resources.Requests {
-			if k == "nvidia.com/gpu" || k == "amd.com/gpu" || k == "gpu.intel.com/i915" {
-				return true
-			}
-		}
-		for k := range c.Resources.Limits {
-			if k == "nvidia.com/gpu" || k == "amd.com/gpu" || k == "gpu.intel.com/i915" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// evictionInfo captures the eviction context from a pod's owner annotations.
-// When the rescheduler evicts a pod, it annotates the owner (ReplicaSet, etc.)
-// so the scheduler can avoid re-placing the replacement pod in the same
-// situation.
-type evictionInfo struct {
-	fromClass string    // schedulableClass of the node the pod was evicted from
-	reason    string    // eviction reason (e.g., cooling_stress, psu_stress)
-	evictedAt time.Time // when the eviction happened
-}
-
-// getEvictionHistory looks up the pod's owner (via ownerReferences) and reads
-// eviction context annotations set by the rescheduler. Returns nil if no
-// recent eviction history exists.
-func getEvictionHistory(ctx context.Context, pod PodSpec) *evictionInfo {
-	if len(pod.Metadata.OwnerReferences) == 0 || k8sClient == nil {
-		return nil
-	}
-
-	owner := pod.Metadata.OwnerReferences[0]
-	ns := pod.Metadata.Namespace
-
-	var annotations map[string]string
-	switch owner.Kind {
-	case "ReplicaSet":
-		rs, err := k8sClient.AppsV1().ReplicaSets(ns).Get(ctx, owner.Name, metav1.GetOptions{})
-		if err != nil {
-			return nil
-		}
-		annotations = rs.Annotations
-	case "StatefulSet":
-		ss, err := k8sClient.AppsV1().StatefulSets(ns).Get(ctx, owner.Name, metav1.GetOptions{})
-		if err != nil {
-			return nil
-		}
-		annotations = ss.Annotations
-	case "Job":
-		j, err := k8sClient.BatchV1().Jobs(ns).Get(ctx, owner.Name, metav1.GetOptions{})
-		if err != nil {
-			return nil
-		}
-		annotations = j.Annotations
-	default:
-		return nil
-	}
-
-	fromClass := annotations["joulie.io/last-eviction-from-class"]
-	reason := annotations["joulie.io/last-eviction-reason"]
-	timeStr := annotations["joulie.io/last-eviction-time"]
-	if fromClass == "" || timeStr == "" {
-		return nil
-	}
-
-	t, err := time.Parse(time.RFC3339, timeStr)
-	if err != nil {
-		return nil
-	}
-	if time.Since(t) > evictionHistoryTTL {
-		return nil // eviction too old; schedule normally
-	}
-
-	return &evictionInfo{fromClass: fromClass, reason: reason, evictedAt: t}
-}
-
-// prioritizeNodes scores candidate nodes using NodeTwin status and (when
-// enabled) marginal power estimation from pod resource requests.
+// prioritizeNodes scores candidate nodes using NodeTwin status and marginal
+// power estimation from pod resource requests.
 //
-// Base scoring formula (twin-based):
+// Scoring formula:
 //
-//	base = powerHeadroom * 0.4 + (100 - coolingStress) * 0.3 + (100 - psuStress) * 0.3
+//	score = headroomScore * 0.7 + (100 - coolingStress) * 0.15 + trendBonus + profileBonus + pressureRelief
 //
-// Adjustments:
-//   - Adaptive pressure relief: when performance nodes are congested, standard pods
-//     get a penalty on performance nodes (up to -30), steering them toward eco nodes.
-//   - Marginal power estimate (when ENABLE_MARGINAL_POWER_SCORING=true):
-//     per-pod incremental CPU/GPU power draw estimate, projected cooling/PSU stress
-//     deltas, and idle GPU waste penalty. This makes scoring pod-specific rather
-//     than purely node-centric.
+// where headroomScore = (cappedPower - projectedPower) / cappedPower * 100
+// and projectedPower = measuredPower + podMarginalPower.
+//
+// Trend uses adaptive scaling: trendScale = 2.0 during cluster-wide bursts
+// (|clusterTrend| > 500 W/min), 6.0 at steady state. Capped at ±25 points.
 func prioritizeNodes(ctx context.Context, args ExtenderArgs) ExtenderPriorityList {
 	states := getNodeTwinStates(ctx)
 	hwInfo := getNodeHardwareInfo(ctx)
 
-	// Parse pod for workload class and (if marginal scoring enabled) resource demand.
+	// Parse pod for workload class and resource demand.
 	podBytes, err := json.Marshal(args.Pod)
 	if err != nil {
 		log.Printf("warning: cannot marshal pod for scoring: %v", err)
@@ -489,34 +485,51 @@ func prioritizeNodes(ctx context.Context, args ExtenderArgs) ExtenderPriorityLis
 		log.Printf("warning: cannot unmarshal pod for scoring: %v", err)
 	}
 	wpClass := podWorkloadClass(pod)
-	gpuRequested := podRequestsGPU(pod)
 
 	// Build pod demand for marginal estimation.
 	var podDemand *powerest.PodDemand
-	if marginalScoringEnabled {
-		podRaw, _ := args.Pod.(map[string]interface{})
-		if podRaw != nil {
-			d := powerest.ExtractPodDemand(podRaw, wpClass)
-			podDemand = &d
-		}
+	podRaw, _ := args.Pod.(map[string]interface{})
+	if podRaw != nil {
+		d := powerest.ExtractPodDemand(podRaw, wpClass)
+		podDemand = &d
 	}
 
 	perfPressure := computePerfPressure(states)
-	eviction := getEvictionHistory(ctx, pod)
+	clusterTrend := computeClusterTrend(states)
 
 	var result ExtenderPriorityList
 	if args.Nodes != nil {
 		for _, node := range args.Nodes.Items {
-			score := scoreNode(node.Metadata.Name, states, hwInfo, wpClass, perfPressure, gpuRequested, podDemand, eviction)
+			score := scoreNode(node.Metadata.Name, states, hwInfo, wpClass, perfPressure, clusterTrend, podDemand)
 			result = append(result, HostPriority{Host: node.Metadata.Name, Score: score})
 		}
 	} else if args.NodeNames != nil {
 		for _, nodeName := range *args.NodeNames {
-			score := scoreNode(nodeName, states, hwInfo, wpClass, perfPressure, gpuRequested, podDemand, eviction)
+			score := scoreNode(nodeName, states, hwInfo, wpClass, perfPressure, clusterTrend, podDemand)
 			result = append(result, HostPriority{Host: nodeName, Score: score})
 		}
 	}
 	return result
+}
+
+// computeClusterTrend returns the average power trend (W/min) across all
+// non-stale nodes. Used to detect cluster-wide power bursts for adaptive
+// trend scaling.
+func computeClusterTrend(states map[string]*joulie.NodeTwinStatus) float64 {
+	var total, count float64
+	for _, s := range states {
+		if isTwinStale(s) {
+			continue
+		}
+		if pm := s.PowerMeasurement; pm != nil {
+			total += pm.PowerTrendWPerMin
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	return total // sum of per-node trends ≈ cluster-wide power ramp rate
 }
 
 // computePerfPressure returns the average congestion (0-100) across performance nodes.
@@ -535,30 +548,69 @@ func computePerfPressure(states map[string]*joulie.NodeTwinStatus) float64 {
 	return total / count
 }
 
-func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo map[string]nodeHWInfo, wpClass string, perfPressure float64, gpuRequested bool, podDemand *powerest.PodDemand, eviction *evictionInfo) int64 {
+func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo map[string]nodeHWInfo, wpClass string, perfPressure float64, clusterTrend float64, podDemand *powerest.PodDemand) int64 {
 	state, ok := states[nodeName]
 	if !ok {
+		schedulerFinalNodeScore.WithLabelValues(nodeName, wpClass).Set(50)
+		schedulerStaleTwinNodes.WithLabelValues(nodeName).Set(1)
 		return 50 // neutral score if no twin state
 	}
 	if isTwinStale(state) {
 		log.Printf("warning: stale twin data for node %s (lastUpdated=%s); using neutral score", nodeName, state.LastUpdated.Format(time.RFC3339))
+		schedulerFinalNodeScore.WithLabelValues(nodeName, wpClass).Set(50)
+		schedulerStaleTwinNodes.WithLabelValues(nodeName).Set(1)
 		return 50
 	}
+	schedulerStaleTwinNodes.WithLabelValues(nodeName).Set(0)
 
-	headroom := state.PredictedPowerHeadroomScore
-	coolStress := state.PredictedCoolingStressScore
-	psuStress := state.PredictedPsuStressScore
-
-	baseScore := headroom*0.4 + (100-coolStress)*0.3 + (100-psuStress)*0.3
-	score := baseScore
-
-	// Profile-aware scoring: steer pods toward their matching profile.
-	// Performance pods get a bonus on performance nodes to ensure they run
-	// at full power. Standard pods get a bonus on eco nodes so that
-	// performance node capacity is preserved for performance workloads.
-	if wpClass == "performance" && state.SchedulableClass == "performance" {
-		score += 15
+	// Extract power measurement data from twin.
+	var measuredPowerW, cappedPowerW, powerTrendWPerMin float64
+	if pm := state.PowerMeasurement; pm != nil {
+		measuredPowerW = pm.MeasuredNodePowerW
+		cappedPowerW = pm.NodeCappedPowerW
+		powerTrendWPerMin = pm.PowerTrendWPerMin
 	}
+
+	// Estimate pod marginal power and subtract from headroom.
+	var podMarginalW float64
+	hw, hasHW := hwInfo[nodeName]
+	if podDemand != nil && hasHW {
+		nodeProfile := hwInfoToProfile(nodeName, hw)
+		est := powerest.EstimateMarginalImpact(*podDemand, &nodeProfile, marginalCoeff)
+		podMarginalW = est.DeltaTotalWatts
+		log.Printf("marginal: node=%s pod_cpu=%.2f pod_gpu=%d delta=%.1fW [%s]",
+			nodeName, podDemand.CPUCores, podDemand.GPUCount, est.DeltaTotalWatts, est.Explanation)
+	}
+
+	// 1. Projected headroom score: how much capped budget remains after this pod.
+	//    headroomScore = (cappedPower - projectedPower) / cappedPower * 100
+	//    Can go negative (pod would exceed budget), clamped at 100 max.
+	headroomScore := state.PredictedPowerHeadroomScore // fallback: twin-computed headroom
+	if cappedPowerW > 0 {
+		projectedPower := measuredPowerW + podMarginalW
+		headroomScore = (cappedPowerW - projectedPower) / cappedPowerW * 100.0
+		headroomScore = math.Min(100, headroomScore) // no upper clamp; can go negative
+	}
+
+	// 2. Cooling stress (already computed by twin, 0-100).
+	coolingStress := state.PredictedCoolingStressScore
+
+	// 3. Trend bonus: reward nodes with falling power, penalize rising power.
+	//    Uses adaptive scaling: trendScale = 2.0 during cluster-wide bursts
+	//    (|clusterTrend| > 500 W/min), 6.0 at steady state. Capped at ±25 points.
+	var trendBonus float64
+	if powerTrendWPerMin != 0 {
+		trendScale := 6.0
+		if math.Abs(clusterTrend) > 500.0 {
+			trendScale = 2.0
+		}
+		trendBonus = -math.Max(-25, math.Min(25, powerTrendWPerMin/trendScale))
+	}
+
+	// Combined score.
+	score := headroomScore*0.7 + (100-coolingStress)*0.15 + trendBonus
+
+	// Profile-aware bonus: steer standard pods toward eco nodes.
 	if wpClass == "standard" && state.SchedulableClass == "eco" {
 		score += 10
 	}
@@ -568,50 +620,16 @@ func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo
 		score -= perfPressure * 0.3 // up to -30 at full saturation
 	}
 
-	hw, hasHW := hwInfo[nodeName]
-
-	// Marginal power estimation: pod-specific score adjustment.
-	// When the twin provides an estimated PUE, the marginal power delta is
-	// multiplied by PUE to reflect the true facility-level energy cost.
-	// A pod on a node with PUE 1.8 costs more than one with PUE 1.2.
-	if marginalScoringEnabled && podDemand != nil && hasHW {
-		nodeProfile := hwInfoToProfile(nodeName, hw)
-		est := powerest.EstimateMarginalImpact(*podDemand, &nodeProfile, coolStress, psuStress, marginalCoeff)
-
-		// Apply PUE multiplier: facility-level energy cost.
-		pue := state.EstimatedPUE
-		if pue > 1.0 {
-			est.DeltaCPUWatts *= pue
-			est.DeltaGPUWatts *= pue
-			est.DeltaTotalWatts *= pue
-		}
-
-		adj := powerest.ComputeScoreAdjustment(est)
-		score -= adj.TotalPenalty
-
-		log.Printf("marginal: node=%s pod_cpu=%.2f pod_gpu=%d delta=%.1fW pue=%.3f penalty=%.1f [%s]",
-			nodeName, podDemand.CPUCores, podDemand.GPUCount,
-			est.DeltaTotalWatts, pue, adj.TotalPenalty, adj.Explanation)
-	} else if hasHW && hw.GPUPresent && !gpuRequested {
-		// Legacy fallback: flat penalty for CPU-only pod on GPU node
-		// (used when marginal scoring is disabled).
-		score -= 30
-	}
-
-	// Eviction history penalty: if the pod's owner was previously evicted
-	// from a node of this class, penalize to steer placement elsewhere.
-	if eviction != nil && state.SchedulableClass == eviction.fromClass {
-		score -= 25
-		log.Printf("eviction-history: node=%s penalized -25 (pod was evicted from %s class, reason=%s)",
-			nodeName, eviction.fromClass, eviction.reason)
-	}
-
 	if score < 0 {
 		score = 0
 	}
 	if score > 100 {
 		score = 100
 	}
+
+	schedulerNodeHeadroomScore.WithLabelValues(nodeName).Set(headroomScore)
+	schedulerFinalNodeScore.WithLabelValues(nodeName, wpClass).Set(score)
+
 	return int64(score)
 }
 
@@ -712,6 +730,36 @@ func parseTwinState(u unstructured.Unstructured) (string, *joulie.NodeTwinStatus
 		}
 		if v, ok := status["estimatedPUE"].(float64); ok {
 			ts.EstimatedPUE = v
+		}
+		if pm, ok := status["powerMeasurement"].(map[string]interface{}); ok {
+			ts.PowerMeasurement = &joulie.PowerMeasurement{}
+			if v, ok := pm["source"].(string); ok {
+				ts.PowerMeasurement.Source = v
+			}
+			if v, ok := pm["measuredNodePowerW"].(float64); ok {
+				ts.PowerMeasurement.MeasuredNodePowerW = v
+			}
+			if v, ok := pm["cpuCappedPowerW"].(float64); ok {
+				ts.PowerMeasurement.CpuCappedPowerW = v
+			}
+			if v, ok := pm["gpuCappedPowerW"].(float64); ok {
+				ts.PowerMeasurement.GpuCappedPowerW = v
+			}
+			if v, ok := pm["nodeCappedPowerW"].(float64); ok {
+				ts.PowerMeasurement.NodeCappedPowerW = v
+			}
+			if v, ok := pm["cpuTdpW"].(float64); ok {
+				ts.PowerMeasurement.CpuTdpW = v
+			}
+			if v, ok := pm["gpuTdpW"].(float64); ok {
+				ts.PowerMeasurement.GpuTdpW = v
+			}
+			if v, ok := pm["nodeTdpW"].(float64); ok {
+				ts.PowerMeasurement.NodeTdpW = v
+			}
+			if v, ok := pm["powerTrendWPerMin"].(float64); ok {
+				ts.PowerMeasurement.PowerTrendWPerMin = v
+			}
 		}
 		if v, ok := status["lastUpdated"].(string); ok {
 			if t, err := time.Parse(time.RFC3339, v); err == nil {
@@ -871,19 +919,6 @@ func durationEnvOrDefault(key string, fallback time.Duration) time.Duration {
 	return d
 }
 
-func boolEnvOrDefault(key string, fallback bool) bool {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	b, err := strconv.ParseBool(v)
-	if err != nil {
-		log.Printf("warning: invalid %s=%q, using default %v", key, v, fallback)
-		return fallback
-	}
-	return b
-}
-
 func floatEnvOrDefault(key string, fallback float64) float64 {
 	v := os.Getenv(key)
 	if v == "" {
@@ -904,9 +939,6 @@ func loadCoefficients() powerest.Coefficients {
 	c.CPUUtilCoeff = floatEnvOrDefault("MARGINAL_CPU_UTIL_COEFF", c.CPUUtilCoeff)
 	c.GPUUtilCoeffStandard = floatEnvOrDefault("MARGINAL_GPU_UTIL_COEFF_STANDARD", c.GPUUtilCoeffStandard)
 	c.GPUUtilCoeffPerformance = floatEnvOrDefault("MARGINAL_GPU_UTIL_COEFF_PERFORMANCE", c.GPUUtilCoeffPerformance)
-	c.IdleGPUWattsPerDevice = floatEnvOrDefault("MARGINAL_IDLE_GPU_WASTE_WATTS", c.IdleGPUWattsPerDevice)
-	c.ReferenceNodePowerW = floatEnvOrDefault("MARGINAL_REF_NODE_POWER_W", c.ReferenceNodePowerW)
-	c.ReferenceRackCapacityW = floatEnvOrDefault("MARGINAL_REF_RACK_CAPACITY_W", c.ReferenceRackCapacityW)
 	return c
 }
 
@@ -914,24 +946,26 @@ func loadCoefficients() powerest.Coefficients {
 
 // debugScoringResponse is the JSON output of /debug/scoring.
 type debugScoringResponse struct {
-	MarginalScoringEnabled bool                    `json:"marginalScoringEnabled"`
-	Coefficients           powerest.Coefficients   `json:"coefficients"`
-	Nodes                  []debugNodeScoringEntry  `json:"nodes"`
+	Coefficients powerest.Coefficients  `json:"coefficients"`
+	Nodes        []debugNodeScoringEntry `json:"nodes"`
 }
 
 type debugNodeScoringEntry struct {
-	NodeName              string  `json:"nodeName"`
-	SchedulableClass      string  `json:"schedulableClass"`
-	Headroom              float64 `json:"headroom"`
-	CoolingStress         float64 `json:"coolingStress"`
-	PsuStress             float64 `json:"psuStress"`
-	BaseScore             float64 `json:"baseScore"`
-	CPUTotalCores         int     `json:"cpuTotalCores"`
-	CPUMaxWattsTotal      float64 `json:"cpuMaxWattsTotal"`
-	GPUCount              int     `json:"gpuCount"`
-	GPUMaxWattsPerGPU     float64 `json:"gpuMaxWattsPerGPU"`
-	HasGPU                bool    `json:"hasGpu"`
-	Stale                 bool    `json:"stale"`
+	NodeName          string  `json:"nodeName"`
+	SchedulableClass  string  `json:"schedulableClass"`
+	Headroom          float64 `json:"headroom"`
+	CoolingStress     float64 `json:"coolingStress"`
+	MeasuredPowerW    float64 `json:"measuredPowerW"`
+	CappedPowerW      float64 `json:"cappedPowerW"`
+	NodeTDPW          float64 `json:"nodeTdpW"`
+	PowerTrendWPerMin float64 `json:"powerTrendWPerMin"`
+	BaseScore         float64 `json:"baseScore"`
+	CPUTotalCores     int     `json:"cpuTotalCores"`
+	CPUMaxWattsTotal  float64 `json:"cpuMaxWattsTotal"`
+	GPUCount          int     `json:"gpuCount"`
+	GPUMaxWattsPerGPU float64 `json:"gpuMaxWattsPerGPU"`
+	HasGPU            bool    `json:"hasGpu"`
+	Stale             bool    `json:"stale"`
 }
 
 func handleDebugScoring(w http.ResponseWriter, r *http.Request) {
@@ -940,8 +974,7 @@ func handleDebugScoring(w http.ResponseWriter, r *http.Request) {
 	hwInfo := getNodeHardwareInfo(ctx)
 
 	resp := debugScoringResponse{
-		MarginalScoringEnabled: marginalScoringEnabled,
-		Coefficients:           marginalCoeff,
+		Coefficients: marginalCoeff,
 	}
 
 	for nodeName, state := range states {
@@ -950,10 +983,16 @@ func handleDebugScoring(w http.ResponseWriter, r *http.Request) {
 			SchedulableClass: state.SchedulableClass,
 			Headroom:         state.PredictedPowerHeadroomScore,
 			CoolingStress:    state.PredictedCoolingStressScore,
-			PsuStress:        state.PredictedPsuStressScore,
-			BaseScore:        state.PredictedPowerHeadroomScore*0.4 + (100-state.PredictedCoolingStressScore)*0.3 + (100-state.PredictedPsuStressScore)*0.3,
 			Stale:            isTwinStale(state),
 		}
+		if pm := state.PowerMeasurement; pm != nil {
+			entry.MeasuredPowerW = pm.MeasuredNodePowerW
+			entry.CappedPowerW = pm.NodeCappedPowerW
+			entry.NodeTDPW = pm.NodeTdpW
+			entry.PowerTrendWPerMin = pm.PowerTrendWPerMin
+		}
+		// Compute base score (without pod marginal or bonuses).
+		entry.BaseScore = state.PredictedPowerHeadroomScore*0.7 + (100-state.PredictedCoolingStressScore)*0.15
 		if hw, ok := hwInfo[nodeName]; ok {
 			entry.CPUTotalCores = hw.CPUTotalCores
 			entry.CPUMaxWattsTotal = hw.CPUMaxWattsTotal
@@ -970,7 +1009,3 @@ func handleDebugScoring(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// unused import guard
-var _ = math.Max
-var _ = strings.TrimSpace
-var _ = strconv.ParseBool

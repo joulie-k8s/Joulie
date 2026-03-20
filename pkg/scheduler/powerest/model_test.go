@@ -256,7 +256,7 @@ func smallGPUNode() *NodePowerProfile {
 
 func TestEstimateMarginalImpact_NilNode(t *testing.T) {
 	demand := PodDemand{CPUCores: 4}
-	est := EstimateMarginalImpact(demand, nil, 30, 20, DefaultCoefficients())
+	est := EstimateMarginalImpact(demand, nil, DefaultCoefficients())
 	if est.DeltaTotalWatts != 0 {
 		t.Errorf("nil node should return zero delta, got %.2f", est.DeltaTotalWatts)
 	}
@@ -266,7 +266,7 @@ func TestEstimateMarginalImpact_CPUOnly(t *testing.T) {
 	demand := PodDemand{CPUCores: 8, WorkloadClass: "standard"}
 	node := cpuOnlyNode()
 	coeff := DefaultCoefficients()
-	est := EstimateMarginalImpact(demand, node, 30, 20, coeff)
+	est := EstimateMarginalImpact(demand, node, coeff)
 
 	// utilShare = 8/96 = 0.0833
 	// deltaCPU = 720 * 0.7 * 0.0833 = ~41.98
@@ -277,36 +277,18 @@ func TestEstimateMarginalImpact_CPUOnly(t *testing.T) {
 	if est.DeltaGPUWatts != 0 {
 		t.Errorf("CPU-only pod on CPU-only node should have 0 GPU delta, got %.1f", est.DeltaGPUWatts)
 	}
-	if est.IdleGPUWastePenalty != 0 {
-		t.Errorf("no idle GPU waste on CPU-only node, got %.1f", est.IdleGPUWastePenalty)
-	}
-}
-
-func TestEstimateMarginalImpact_CPUOnlyOnGPUNode(t *testing.T) {
-	demand := PodDemand{CPUCores: 8, WorkloadClass: "standard"}
-	node := gpuNode()
-	coeff := DefaultCoefficients()
-	est := EstimateMarginalImpact(demand, node, 30, 20, coeff)
-
-	// idle GPU waste = min(8 * 60, 300) = 300
-	if est.IdleGPUWastePenalty != 300 {
-		t.Errorf("expected 300W idle GPU waste, got %.1f", est.IdleGPUWastePenalty)
-	}
 }
 
 func TestEstimateMarginalImpact_GPUPod(t *testing.T) {
 	demand := PodDemand{CPUCores: 4, GPUCount: 2, GPUVendor: "nvidia", WorkloadClass: "standard"}
 	node := gpuNode()
 	coeff := DefaultCoefficients()
-	est := EstimateMarginalImpact(demand, node, 30, 20, coeff)
+	est := EstimateMarginalImpact(demand, node, coeff)
 
 	// deltaGPU = 2 * 700 * 0.65 = 910
 	expectedGPU := 2.0 * 700 * 0.65
 	if math.Abs(est.DeltaGPUWatts-expectedGPU) > 1 {
 		t.Errorf("expected ~%.1fW GPU delta, got %.1f", expectedGPU, est.DeltaGPUWatts)
-	}
-	if est.IdleGPUWastePenalty != 0 {
-		t.Errorf("GPU pod should not incur idle GPU waste, got %.1f", est.IdleGPUWastePenalty)
 	}
 }
 
@@ -316,8 +298,8 @@ func TestEstimateMarginalImpact_PerformanceGPUHigherUtil(t *testing.T) {
 	node := gpuNode()
 	coeff := DefaultCoefficients()
 
-	estStd := EstimateMarginalImpact(demandStd, node, 30, 20, coeff)
-	estPerf := EstimateMarginalImpact(demandPerf, node, 30, 20, coeff)
+	estStd := EstimateMarginalImpact(demandStd, node, coeff)
+	estPerf := EstimateMarginalImpact(demandPerf, node, coeff)
 
 	if estPerf.DeltaGPUWatts <= estStd.DeltaGPUWatts {
 		t.Errorf("performance pod should have higher GPU delta: perf=%.1f std=%.1f",
@@ -328,8 +310,8 @@ func TestEstimateMarginalImpact_PerformanceGPUHigherUtil(t *testing.T) {
 func TestEstimateMarginalImpact_SamePodPrefersSmallerNode(t *testing.T) {
 	demand := PodDemand{CPUCores: 4, GPUCount: 1, GPUVendor: "nvidia", WorkloadClass: "standard"}
 	coeff := DefaultCoefficients()
-	estLarge := EstimateMarginalImpact(demand, gpuNode(), 30, 20, coeff)
-	estSmall := EstimateMarginalImpact(demand, smallGPUNode(), 30, 20, coeff)
+	estLarge := EstimateMarginalImpact(demand, gpuNode(), coeff)
+	estSmall := EstimateMarginalImpact(demand, smallGPUNode(), coeff)
 
 	// On a small GPU node with lower GPU max watts, delta should be lower.
 	if estSmall.DeltaGPUWatts >= estLarge.DeltaGPUWatts {
@@ -346,7 +328,7 @@ func TestEstimateMarginalImpact_MissingCPUWattsFallback(t *testing.T) {
 		// CPUMaxWattsTotal = 0 (unknown)
 	}
 	coeff := DefaultCoefficients()
-	est := EstimateMarginalImpact(demand, node, 0, 0, coeff)
+	est := EstimateMarginalImpact(demand, node, coeff)
 
 	// Fallback: max(150, 32*3.5) = max(150, 112) = 150
 	expectedMax := math.Max(150, 32*3.5)
@@ -366,7 +348,7 @@ func TestEstimateMarginalImpact_MissingGPUWattsFallback(t *testing.T) {
 		// GPUMaxWattsPerGPU = 0 (unknown)
 	}
 	coeff := DefaultCoefficients()
-	est := EstimateMarginalImpact(demand, node, 0, 0, coeff)
+	est := EstimateMarginalImpact(demand, node, coeff)
 
 	// Fallback for nvidia = 350W
 	expectedGPU := 1 * 350.0 * 0.65
@@ -384,25 +366,24 @@ func TestEstimateMarginalImpact_AMDGPUFallback(t *testing.T) {
 		HasGPU:        true,
 	}
 	coeff := DefaultCoefficients()
-	est := EstimateMarginalImpact(demand, node, 0, 0, coeff)
+	est := EstimateMarginalImpact(demand, node, coeff)
 	expectedGPU := 1 * 400.0 * 0.65
 	if math.Abs(est.DeltaGPUWatts-expectedGPU) > 1 {
 		t.Errorf("expected AMD fallback GPU delta ~%.1f, got %.1f", expectedGPU, est.DeltaGPUWatts)
 	}
 }
 
-func TestEstimateMarginalImpact_StressMonotonic(t *testing.T) {
+func TestEstimateMarginalImpact_DeltaMonotonic(t *testing.T) {
 	coeff := DefaultCoefficients()
 	node := cpuOnlyNode()
+	var prevDelta float64
 	for _, watts := range []float64{10, 50, 100, 200} {
 		demand := PodDemand{CPUCores: watts / (720 * 0.7) * 96, WorkloadClass: "standard"}
-		est := EstimateMarginalImpact(demand, node, 30, 20, coeff)
-		if est.CoolingStressDelta < 0 {
-			t.Errorf("cooling delta should be non-negative at %.0fW", watts)
+		est := EstimateMarginalImpact(demand, node, coeff)
+		if est.DeltaTotalWatts < prevDelta {
+			t.Errorf("delta should be monotonically increasing, got %.1f after %.1f", est.DeltaTotalWatts, prevDelta)
 		}
-		if est.PsuStressDelta < 0 {
-			t.Errorf("psu delta should be non-negative at %.0fW", watts)
-		}
+		prevDelta = est.DeltaTotalWatts
 	}
 }
 
@@ -413,70 +394,12 @@ func TestEstimateMarginalImpact_MemoryModifier(t *testing.T) {
 	demandLow := PodDemand{CPUCores: 8, MemoryBytes: 1 * 1024 * 1024 * 1024, WorkloadClass: "standard"}
 	demandHigh := PodDemand{CPUCores: 8, MemoryBytes: 128 * 1024 * 1024 * 1024, WorkloadClass: "standard"}
 
-	estLow := EstimateMarginalImpact(demandLow, node, 0, 0, coeff)
-	estHigh := EstimateMarginalImpact(demandHigh, node, 0, 0, coeff)
+	estLow := EstimateMarginalImpact(demandLow, node, coeff)
+	estHigh := EstimateMarginalImpact(demandHigh, node, coeff)
 
 	if estHigh.DeltaCPUWatts <= estLow.DeltaCPUWatts {
 		t.Errorf("memory-heavy pod should have higher CPU delta: high=%.1f low=%.1f",
 			estHigh.DeltaCPUWatts, estLow.DeltaCPUWatts)
-	}
-}
-
-// --- Score adjustment ---
-
-func TestComputeScoreAdjustment_ZeroDelta(t *testing.T) {
-	est := MarginalEstimate{}
-	adj := ComputeScoreAdjustment(est)
-	if adj.TotalPenalty != 0 {
-		t.Errorf("zero delta should yield zero penalty, got %.2f", adj.TotalPenalty)
-	}
-}
-
-func TestComputeScoreAdjustment_ModerateLoad(t *testing.T) {
-	est := MarginalEstimate{
-		DeltaTotalWatts:     100,
-		CoolingStressDelta:  5,
-		PsuStressDelta:      2,
-		IdleGPUWastePenalty: 0,
-	}
-	adj := ComputeScoreAdjustment(est)
-	// power = 100/20 = 5, cool = 5*0.6 = 3, psu = 2*0.4 = 0.8, total = 8.8
-	if adj.TotalPenalty < 8 || adj.TotalPenalty > 10 {
-		t.Errorf("expected moderate penalty ~8.8, got %.2f", adj.TotalPenalty)
-	}
-}
-
-func TestComputeScoreAdjustment_IdleGPU(t *testing.T) {
-	est := MarginalEstimate{
-		DeltaTotalWatts:     50,
-		IdleGPUWastePenalty: 300,
-	}
-	adj := ComputeScoreAdjustment(est)
-	// idle_gpu = 300/10 = 30 -> clamped to 20
-	if adj.IdleGPUWastePenalty != 20 {
-		t.Errorf("expected idle GPU penalty clamped to 20, got %.2f", adj.IdleGPUWastePenalty)
-	}
-}
-
-func TestComputeScoreAdjustment_MaxPenaltyCapped(t *testing.T) {
-	est := MarginalEstimate{
-		DeltaTotalWatts:     1000,
-		CoolingStressDelta:  100,
-		PsuStressDelta:      100,
-		IdleGPUWastePenalty: 300,
-	}
-	adj := ComputeScoreAdjustment(est)
-	// power=20, cool=20, psu=15, idle=20 = 75 max
-	if adj.TotalPenalty > 75 {
-		t.Errorf("total penalty should be capped at 75, got %.2f", adj.TotalPenalty)
-	}
-}
-
-func TestComputeScoreAdjustment_Explanation(t *testing.T) {
-	est := MarginalEstimate{DeltaTotalWatts: 50}
-	adj := ComputeScoreAdjustment(est)
-	if adj.Explanation == "" {
-		t.Error("expected non-empty explanation")
 	}
 }
 
@@ -486,7 +409,7 @@ func TestEstimateMarginalImpact_ZeroCores(t *testing.T) {
 	demand := PodDemand{CPUCores: 0.1, WorkloadClass: "standard"}
 	node := &NodePowerProfile{CPUTotalCores: 0} // degenerate
 	coeff := DefaultCoefficients()
-	est := EstimateMarginalImpact(demand, node, 0, 0, coeff)
+	est := EstimateMarginalImpact(demand, node, coeff)
 	// Should not panic, should produce some estimate
 	if est.DeltaCPUWatts < 0 {
 		t.Errorf("CPU delta should be non-negative, got %.2f", est.DeltaCPUWatts)
@@ -497,13 +420,10 @@ func TestEstimateMarginalImpact_GPUPodOnCPUNode(t *testing.T) {
 	demand := PodDemand{CPUCores: 4, GPUCount: 2, GPUVendor: "nvidia", WorkloadClass: "standard"}
 	node := cpuOnlyNode()
 	coeff := DefaultCoefficients()
-	est := EstimateMarginalImpact(demand, node, 0, 0, coeff)
-	// GPU pod on CPU-only node: no GPU delta, no idle penalty
+	est := EstimateMarginalImpact(demand, node, coeff)
+	// GPU pod on CPU-only node: no GPU delta
 	if est.DeltaGPUWatts != 0 {
 		t.Errorf("GPU pod on CPU node should have 0 GPU delta, got %.1f", est.DeltaGPUWatts)
-	}
-	if est.IdleGPUWastePenalty != 0 {
-		t.Errorf("no idle penalty when node has no GPU, got %.1f", est.IdleGPUWastePenalty)
 	}
 }
 

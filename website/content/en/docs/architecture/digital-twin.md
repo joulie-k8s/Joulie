@@ -19,8 +19,25 @@ The twin also computes:
 
 - **SchedulableClass**: `performance`, `eco`, or `draining` (transition state). The scheduler extender uses this to filter and score nodes.
 - **HardwareDensityScore**: normalized compute density proxy used for heterogeneous planning.
-- **RescheduleRecommendations**: list of workloads recommended for migration when stress thresholds are exceeded.
-- **GPUSlicingRecommendation**: advisory suggestion for optimal GPU slicing configuration (MIG or time-slicing) based on historical workload patterns. See [GPU Slicing Recommendations]({{< relref "/docs/architecture/dra.md" >}}).
+- **PowerMeasurement**: a block of measured and derived power values consumed directly by the scheduler for projected headroom scoring.
+
+### PowerMeasurement output
+
+The `powerMeasurement` block in `NodeTwin.status` provides the scheduler with the real-time power data it needs for projected headroom scoring:
+
+| Field | Unit | Description |
+|-------|------|-------------|
+| `source` | string | Measurement source: `kepler` (direct), `utilization` (model-based), or `static` (estimate from caps) |
+| `measuredNodePowerW` | watts | Current total node power draw |
+| `cpuCappedPowerW` | watts | CPU power budget (cap percentage × max CPU watts) |
+| `gpuCappedPowerW` | watts | GPU power budget (cap percentage × max GPU watts) |
+| `nodeCappedPowerW` | watts | Total node power budget (CPU + GPU capped power) |
+| `cpuTdpW` | watts | CPU thermal design power (max possible) |
+| `gpuTdpW` | watts | GPU thermal design power (max possible) |
+| `nodeTdpW` | watts | Total node TDP (CPU + GPU) |
+| `powerTrendWPerMin` | watts/min | Rolling derivative of node power draw. Positive = rising, negative = falling. |
+
+The scheduler uses `measuredNodePowerW` + pod marginal power to compute projected headroom relative to `nodeCappedPowerW`. The `powerTrendWPerMin` feeds the ±10 point trend bonus. See [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}}) for details.
 
 ## CoolingStress formula
 
@@ -96,7 +113,7 @@ coolingFactor = 1 - coolingStress / 100          // 0 = cooling at capacity, 1 =
 headroom = capFactor * coolingFactor * 100
 ```
 
-The scheduler uses headroom as the primary scoring signal (40% weight). A node with high caps and low cooling stress gets the highest headroom and attracts new workloads.
+The scheduler uses headroom as the primary scoring signal (70% weight). A node with high caps and low cooling stress gets the highest headroom and attracts new workloads.
 
 ## CoolingModel interface
 
@@ -119,7 +136,7 @@ twin controller (operator)
   → writes NodeTwin.status
     → scheduler extender cache (30s TTL)
       → filter: rejects eco nodes for performance pods
-      → score: headroom*0.4 + (100-coolingStress)*0.3 + (100-psuStress)*0.3
+      → score: headroomScore*0.7 + (100-coolingStress)*0.15 + trendBonus + profileBonus + pressureRelief
 ```
 
 This keeps scheduling decisions lightweight (one cache lookup per node per scheduling attempt) while reflecting the latest thermal and power state of the cluster.
@@ -128,9 +145,7 @@ This keeps scheduling decisions lightweight (one cache lookup per node per sched
 
 The twin also drives operator decisions:
 
-- **Migration triggers**: when CoolingStress or PSUStress exceeds 70 on a node, the twin generates reschedule recommendations for reschedulable standard workloads. The operator can then trigger migration away from stressed nodes.
-- **Transition guard**: when a node is transitioning from performance to eco, the twin sets `schedulableClass` to `draining` until all performance pods have completed or been rescheduled.
-- **GPU slicing suggestions**: for GPU nodes with slicing support, the twin recommends the best MIG or time-slicing configuration based on the dominant GPU workload intensity pattern. These are advisory: the admin applies them during planned maintenance. See [GPU Slicing Recommendations]({{< relref "/docs/architecture/dra.md" >}}).
+- **Transition guard**: when a node is transitioning from performance to eco, the twin sets `schedulableClass` to `draining` until all performance pods have completed or been drained.
 
 ## Implementation
 
@@ -145,6 +160,6 @@ The twin is implemented in `pkg/operator/twin/twin.go`. Key types:
 ## What to read next
 
 1. [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}})
-2. [GPU Slicing Recommendations]({{< relref "/docs/architecture/dra.md" >}})
-3. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}})
-4. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
+2. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}})
+3. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
+4. [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) — reference power profiles used by `NodeHardware` and the twin's power estimation

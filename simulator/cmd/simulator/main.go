@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -117,8 +116,9 @@ type simJob struct {
 	Class             string
 	Namespace         string
 	SubmitOffsetSec   float64
-	RequestedCPUCores float64
-	CPUUnitsTotal     float64
+	RequestedCPUCores  float64
+	RequestedMemoryMiB float64 // 0 means use default (64Mi)
+	CPUUnitsTotal      float64
 	CPUUnitsRemaining float64
 	SensitivityCPU    float64
 	CPUWorkClass      string
@@ -169,6 +169,9 @@ type simulator struct {
 	energyLastTs  time.Time
 	persistDir    string
 	persistMu     sync.Mutex
+	tsFile        *os.File
+	tsWriter      *bufio.Writer
+	tsPath        string
 
 	requestsTotal   *prometheus.CounterVec
 	requestDuration *prometheus.HistogramVec
@@ -188,13 +191,11 @@ type simulator struct {
 
 	workload *workloadEngine
 
-	// Classifier uncertainty: fraction of jobs whose class is flipped.
-	classifierMisclassifyRate float64
-
 	// Facility ambient temperature parameters.
 	facilityBaseAmbientTempC float64
 	facilityTempAmplitudeC   float64
 	facilityTempPeriodH      float64
+	facilityPeakITPowerW     float64
 
 	// Facility Prometheus gauges.
 	facilityAmbientTemp  prometheus.Gauge
@@ -248,18 +249,18 @@ func main() {
 		}
 	}
 
-	// Classifier uncertainty configuration.
-	s.classifierMisclassifyRate = floatEnv("SIM_CLASSIFIER_MISCLASSIFY_RATE", 0.0)
-	if s.classifierMisclassifyRate > 0 {
-		log.Printf("classifier uncertainty enabled misclassify_rate=%.4f", s.classifierMisclassifyRate)
-	}
-
 	// Facility ambient temperature configuration.
 	s.facilityBaseAmbientTempC = floatEnv("SIM_FACILITY_AMBIENT_TEMP_C", 20.0)
 	s.facilityTempAmplitudeC = floatEnv("SIM_FACILITY_TEMP_AMPLITUDE_C", 5.0)
 	s.facilityTempPeriodH = floatEnv("SIM_FACILITY_TEMP_PERIOD_H", 24.0)
 	log.Printf("facility model base_temp=%.1fC amplitude=%.1fC period=%.1fh",
 		s.facilityBaseAmbientTempC, s.facilityTempAmplitudeC, s.facilityTempPeriodH)
+
+	// Standalone mode: bypass K8s entirely, run simulation at CPU speed.
+	if boolEnv("SIM_STANDALONE", false) {
+		runStandalone(s)
+		return
+	}
 
 	if boolEnv("SIM_K8S_POD_WATCH", true) {
 		go s.startPodPolling(durationEnv("SIM_POLL_INTERVAL", 15*time.Second))
@@ -280,6 +281,7 @@ func main() {
 	mux.HandleFunc("/debug/jobs", s.handleDebugJobs)
 	mux.HandleFunc("/debug/events", s.handleDebugEvents)
 	mux.HandleFunc("/debug/energy", s.handleDebugEnergy)
+	mux.HandleFunc("/debug/timeseries", s.handleDebugTimeseries)
 	mux.HandleFunc("/api/v1/query", s.handleFakePrometheusQuery)
 
 	log.Printf("listening on %s", addr)
@@ -420,6 +422,18 @@ func (s *simulator) configurePersistence(dir string) {
 	}
 	s.persistDir = dir
 	s.snapshotDebugState()
+	// Open time-series CSV for append.
+	tsPath := filepath.Join(dir, "timeseries.csv")
+	f, err := os.OpenFile(tsPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		log.Printf("warning: timeseries CSV disabled path=%s err=%v", tsPath, err)
+	} else {
+		s.tsFile = f
+		s.tsWriter = bufio.NewWriter(f)
+		s.tsPath = tsPath
+		_, _ = s.tsWriter.WriteString("timestamp_utc,elapsed_sec,it_power_w,cpu_power_w,gpu_power_w,pue,cooling_power_w,facility_power_w,ambient_temp_c,cluster_cpu_util,cluster_gpu_util,nodes_active,pods_running,energy_cumulative_j\n")
+		log.Printf("timeseries CSV enabled path=%s", tsPath)
+	}
 	log.Printf("debug persistence enabled dir=%s", dir)
 }
 
@@ -1061,6 +1075,30 @@ func (s *simulator) handleDebugEnergy(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(s.debugEnergyPayload())
 }
 
+func (s *simulator) handleDebugTimeseries(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	status := http.StatusOK
+	defer s.observeRequest("debug_timeseries", r.Method, &status, start)
+	if r.Method != http.MethodGet {
+		status = http.StatusMethodNotAllowed
+		http.Error(w, "method not allowed", status)
+		return
+	}
+	if s.tsPath == "" {
+		status = http.StatusNotFound
+		http.Error(w, "timeseries CSV not enabled", status)
+		return
+	}
+	// Flush writer before reading the file.
+	s.mu.Lock()
+	if s.tsWriter != nil {
+		_ = s.tsWriter.Flush()
+	}
+	s.mu.Unlock()
+	w.Header().Set("Content-Type", "text/csv")
+	http.ServeFile(w, r, s.tsPath)
+}
+
 func (s *simulator) observeRequest(route, method string, status *int, start time.Time) {
 	s.requestsTotal.WithLabelValues(route, method, strconv.Itoa(*status)).Inc()
 	s.requestDuration.WithLabelValues(route, method).Observe(time.Since(start).Seconds())
@@ -1116,9 +1154,26 @@ func (s *simulator) updateFacilityMetrics(now time.Time) {
 	s.mu.RUnlock()
 	s.facilityITPowerW.Set(math.Round(itPowerW*100) / 100)
 
-	// Simple PUE model: baseline 1.1 at 15C, increasing linearly with temperature.
-	// PUE = 1.1 + 0.008 * (ambientTemp - 15). Clamped to [1.0, 3.0].
-	pue := 1.1 + 0.008*(ambientTemp-15.0)
+	// PUE model: depends on both ambient temperature and IT load.
+	// Base PUE at 15C is 1.08, increases with temperature and IT load fraction.
+	// Higher IT load → cooling systems work harder → higher PUE, especially at high temps.
+	//
+	// Estimate IT load fraction from total IT power vs design capacity.
+	// Design capacity approximated as max observed IT power (tracked via peak).
+	if itPowerW > s.facilityPeakITPowerW {
+		s.facilityPeakITPowerW = itPowerW
+	}
+	loadFrac := 0.0
+	if s.facilityPeakITPowerW > 0 {
+		loadFrac = itPowerW / s.facilityPeakITPowerW
+	}
+
+	// PUE = basePUE + tempEffect + loadEffect + interaction(temp×load)
+	basePUE := 1.08
+	tempEffect := 0.006 * (ambientTemp - 15.0)        // +0.006 per degree above 15C
+	loadEffect := 0.04 * loadFrac                      // +0.04 at full load
+	interaction := 0.015 * loadFrac * (ambientTemp - 15.0) / 15.0 // temp×load interaction
+	pue := basePUE + tempEffect + loadEffect + interaction
 	if pue < 1.0 {
 		pue = 1.0
 	} else if pue > 3.0 {
@@ -1129,6 +1184,91 @@ func (s *simulator) updateFacilityMetrics(now time.Time) {
 	// Cooling power = total facility power - IT power = IT * (PUE - 1).
 	coolingPowerW := itPowerW * (pue - 1.0)
 	s.facilityCoolingPowerW.Set(math.Round(coolingPowerW*100) / 100)
+}
+
+// appendTimeseriesRow writes one CSV row to the time-series file with the
+// current cluster power state. Called once per workload tick from the
+// workload loop, after accumulateEnergy and updateFacilityMetrics.
+func (s *simulator) appendTimeseriesRow(now time.Time) {
+	if s.tsWriter == nil {
+		return
+	}
+	s.mu.RLock()
+	var itPowerW, cpuPowerW, gpuPowerW, cpuUtilSum, gpuUtilSum float64
+	var nodesActive, podsRunning int
+	for _, st := range s.state {
+		if st == nil {
+			continue
+		}
+		nodesActive++
+		podsRunning += st.PodsRunning
+		cpuPowerW += st.CPUInstantPowerWatts
+		gpuPowerW += st.GPUPowerWatts
+		if st.TotalAvgPowerWatts > 0 {
+			itPowerW += st.TotalAvgPowerWatts
+		} else {
+			itPowerW += st.CPUInstantPowerWatts + st.GPUPowerWatts
+		}
+		cpuUtilSum += st.CPUUtil
+		gpuUtilSum += st.GPUUtil
+	}
+	energyJ := s.energyTotalJ
+	s.mu.RUnlock()
+
+	// Use facility gauges for PUE/cooling/ambient (set by updateFacilityMetrics).
+	pue := readGaugeValue(s.facilityPUE)
+	ambientTemp := readGaugeValue(s.facilityAmbientTemp)
+	coolingPowerW := readGaugeValue(s.facilityCoolingPowerW)
+	facilityPowerW := itPowerW + coolingPowerW
+
+	var clusterCPUUtil, clusterGPUUtil float64
+	if nodesActive > 0 {
+		clusterCPUUtil = cpuUtilSum / float64(nodesActive)
+		clusterGPUUtil = gpuUtilSum / float64(nodesActive)
+	}
+
+	var elapsed float64
+	if s.workload != nil {
+		elapsed = now.Sub(s.workload.startTime).Seconds()
+	}
+
+	s.persistMu.Lock()
+	_, _ = fmt.Fprintf(s.tsWriter,
+		"%s,%.1f,%.1f,%.1f,%.1f,%.4f,%.1f,%.1f,%.2f,%.4f,%.4f,%d,%d,%.1f\n",
+		now.UTC().Format(time.RFC3339),
+		elapsed,
+		itPowerW, cpuPowerW, gpuPowerW,
+		pue, coolingPowerW, facilityPowerW,
+		ambientTemp,
+		clusterCPUUtil, clusterGPUUtil,
+		nodesActive, podsRunning,
+		energyJ,
+	)
+	s.persistMu.Unlock()
+}
+
+// flushTimeseries flushes and closes the time-series CSV file.
+func (s *simulator) flushTimeseries() {
+	if s.tsWriter != nil {
+		s.persistMu.Lock()
+		_ = s.tsWriter.Flush()
+		s.persistMu.Unlock()
+	}
+	if s.tsFile != nil {
+		_ = s.tsFile.Close()
+	}
+}
+
+// readGaugeValue extracts the current float64 from a prometheus.Gauge.
+func readGaugeValue(g prometheus.Gauge) float64 {
+	m := &dto.Metric{}
+	if err := g.Write(m); err != nil {
+		return 0
+	}
+	if m.Gauge != nil && m.Gauge.Value != nil {
+		return *m.Gauge.Value
+	}
+	return 0
 }
 
 // handleFakePrometheusQuery serves a minimal /api/v1/query endpoint that
@@ -1352,6 +1492,12 @@ func (s *simulator) snapshotDebugState() {
 	s.persistJSONAtomic("jobs.json", s.debugJobsPayload())
 	s.persistJSONAtomic("events.json", s.debugEventsPayload(0))
 	s.persistJSONAtomic("energy.json", s.debugEnergyPayload())
+	// Flush timeseries CSV so partial data is available for collection.
+	if s.tsWriter != nil {
+		s.persistMu.Lock()
+		_ = s.tsWriter.Flush()
+		s.persistMu.Unlock()
+	}
 }
 
 func (s *simulator) persistJSONAtomic(name string, payload any) {
@@ -2149,26 +2295,6 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 	}
 	sort.Slice(engine.jobs, func(i, j int) bool { return engine.jobs[i].SubmitOffsetSec < engine.jobs[j].SubmitOffsetSec })
 
-	// Apply classifier misclassification: randomly flip a fraction of job classes
-	// between "performance" and "standard" to simulate classifier errors.
-	if s.classifierMisclassifyRate > 0 {
-		flipped := 0
-		for _, j := range engine.jobs {
-			if rand.Float64() < s.classifierMisclassifyRate {
-				switch j.Class {
-				case "performance":
-					j.Class = "standard"
-					flipped++
-				case "standard":
-					j.Class = "performance"
-					flipped++
-				}
-			}
-		}
-		log.Printf("classifier misclassification applied rate=%.4f flipped=%d/%d",
-			s.classifierMisclassifyRate, flipped, len(engine.jobs))
-	}
-
 	s.workload = engine
 	log.Printf("workload trace loaded jobs=%d parts=%d path=%s", len(engine.jobs), len(tracePaths), path)
 	return nil
@@ -2241,12 +2367,16 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 			}
 		}
 		requestedCPU := 1.0
+		requestedMemoryMiB := 0.0
 		requestedGPUs := 0.0
 		gpuResourceName := ""
 		if podTpl, ok := rec["podTemplate"].(map[string]any); ok {
 			if reqRaw, ok := podTpl["requests"].(map[string]any); ok {
 				if cpuRaw, ok := reqRaw["cpu"].(string); ok {
 					requestedCPU = parseCPURequestOrDefault(cpuRaw, 1.0)
+				}
+				if memRaw, ok := reqRaw["memory"].(string); ok {
+					requestedMemoryMiB = parseMemoryRequestMiB(memRaw)
 				}
 				gpuReqOrder := []struct {
 					key         string
@@ -2351,8 +2481,9 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 			Class:             class,
 			Namespace:         namespace,
 			SubmitOffsetSec:   submitOffset,
-			RequestedCPUCores: requestedCPU,
-			CPUUnitsTotal:     cpuUnits,
+			RequestedCPUCores:  requestedCPU,
+			RequestedMemoryMiB: requestedMemoryMiB,
+			CPUUnitsTotal:      cpuUnits,
 			CPUUnitsRemaining: cpuUnits,
 			SensitivityCPU:    sensCPU,
 			CPUWorkClass:      cpuWorkClass,
@@ -2413,6 +2544,7 @@ func (s *simulator) startWorkloadLoop(interval time.Duration) {
 		}
 		s.accumulateEnergy(dt)
 		s.updateFacilityMetrics(now)
+		s.appendTimeseriesRow(now)
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		s.injectTraceJobs(ctx, kube, now)
 		if ctx.Err() == nil {
@@ -2469,7 +2601,7 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
 								corev1.ResourceCPU:    resource.MustParse(strconv.FormatFloat(j.RequestedCPUCores, 'f', -1, 64)),
-								corev1.ResourceMemory: resource.MustParse("64Mi"),
+								corev1.ResourceMemory: resource.MustParse(formatMemoryMiB(j.RequestedMemoryMiB)),
 							},
 						},
 					},
@@ -2944,6 +3076,33 @@ func parseCPURequestOrDefault(v string, def float64) float64 {
 		return def
 	}
 	return f
+}
+
+// parseMemoryRequestMiB parses a Kubernetes memory quantity string (e.g. "4Gi", "512Mi")
+// and returns the value in MiB. Returns 0 on failure (caller should use default).
+func parseMemoryRequestMiB(v string) float64 {
+	q, err := resource.ParseQuantity(v)
+	if err != nil {
+		return 0
+	}
+	// Value() returns bytes
+	bytes := q.Value()
+	if bytes <= 0 {
+		return 0
+	}
+	return float64(bytes) / (1024 * 1024)
+}
+
+// formatMemoryMiB returns a Kubernetes memory quantity string.
+// Uses the parsed MiB value, falling back to 64Mi if unset.
+func formatMemoryMiB(mib float64) string {
+	if mib <= 0 {
+		return "64Mi"
+	}
+	if mib >= 1024 && int(mib)%1024 == 0 {
+		return fmt.Sprintf("%dGi", int(mib)/1024)
+	}
+	return fmt.Sprintf("%dMi", int(mib))
 }
 
 func parseIntegerResourceRequest(v string) (float64, bool) {

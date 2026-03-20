@@ -218,30 +218,21 @@ def apply_trace_chunks(trace_path: pathlib.Path) -> list[str]:
     chunk_names: list[str] = []
     with tempfile.TemporaryDirectory(prefix="joulie-trace-parts-") as tmpdir:
         tmpdir_path = pathlib.Path(tmpdir)
+        manifests_dir = tmpdir_path / "manifests"
+        manifests_dir.mkdir()
         for idx, payload in enumerate(parts):
             key = f"part-{idx:03d}.jsonl"
             name = f"{TRACE_CONFIGMAP_PREFIX}-{idx:03d}"
-            part_path = tmpdir_path / key
-            part_path.write_bytes(payload)
-            rendered = run(
-                [
-                    "kubectl",
-                    "-n",
-                    "joulie-sim-demo",
-                    "create",
-                    "configmap",
-                    name,
-                    f"--from-file={key}={part_path}",
-                    "--dry-run=client",
-                    "-o",
-                    "yaml",
-                ],
-                capture=True,
-            ).stdout
-            replace = run(["kubectl", "replace", "-f", "-"], check=False, capture=True, input_text=rendered)
-            if replace.returncode != 0:
-                run(["kubectl", "create", "-f", "-"], input_text=rendered)
+            cm = {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {"name": name, "namespace": "joulie-sim-demo"},
+                "data": {key: payload.decode("utf-8", errors="replace")},
+            }
+            (manifests_dir / f"{name}.json").write_text(json.dumps(cm))
             chunk_names.append(name)
+        log(f"creating {len(chunk_names)} configmap manifests in single batch")
+        run(["kubectl", "create", "-f", str(manifests_dir)])
     log(f"trace split into configmap parts count={len(chunk_names)}")
     return chunk_names
 
@@ -406,7 +397,7 @@ def collect_artifacts(
         return out.stdout.strip()
 
     def fetch_debug_artifact(endpoint: str, filename: str) -> str:
-        for timeout_sec in (3, 8, 20):
+        for timeout_sec in (5, 15, 30):
             try:
                 payload = fetch_via_port_forward(endpoint, timeout_sec)
                 if valid_debug_payload(payload):
@@ -439,6 +430,23 @@ def collect_artifacts(
     (host_persist_dir / "events.json").write_text(events)
     (host_persist_dir / "energy.json").write_text(energy)
     mirror_persisted_file("events.ndjson")
+    mirror_persisted_file("timeseries.csv")
+
+    # Also copy timeseries.csv to run_dir for easy access.
+    ts_src = host_persist_dir / "timeseries.csv"
+    if ts_src.exists():
+        (run_dir / "timeseries.csv").write_text(ts_src.read_text())
+    else:
+        # Fetch via HTTP debug endpoint (works on distroless containers).
+        for ts_timeout in (10, 30, 60):
+            try:
+                ts_csv = fetch_via_port_forward("/debug/timeseries", ts_timeout)
+                if ts_csv and len(ts_csv) > 20:
+                    (run_dir / "timeseries.csv").write_text(ts_csv)
+                    break
+            except Exception:
+                pass
+            time.sleep(2)
 
     (run_dir / "pods.json").write_text(run(["kubectl", "get", "pods", "-A", "-o", "json"], capture=True).stdout)
     (run_dir / "nodepowerprofiles.yaml").write_text(run(["kubectl", "get", "nodepowerprofiles", "-o", "yaml"], capture=True, check=False).stdout)

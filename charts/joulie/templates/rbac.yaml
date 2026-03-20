@@ -43,9 +43,6 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["pods/eviction"]
-    verbs: ["create"]
   - apiGroups: ["joulie.io"]
     resources: ["nodetwins"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
@@ -55,12 +52,6 @@ rules:
   - apiGroups: ["joulie.io"]
     resources: ["nodehardwares"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: ["joulie.io"]
-    resources: ["workloadprofiles"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["joulie.io"]
-    resources: ["workloadprofiles/status"]
-    verbs: ["update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -82,10 +73,7 @@ metadata:
   name: joulie-scheduler-extender
 rules:
   - apiGroups: ["joulie.io"]
-    resources: ["nodetwins", "nodehardwares", "workloadprofiles"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["nodes", "pods"]
+    resources: ["nodetwins", "nodehardwares"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

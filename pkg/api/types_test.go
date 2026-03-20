@@ -64,26 +64,3 @@ func TestNodeTwinMarshal(t *testing.T) {
 	}
 }
 
-func TestWorkloadProfileStatus(t *testing.T) {
-	wp := WorkloadProfileStatus{
-		Criticality:   WorkloadCriticality{Class: "standard"},
-		Migratability: WorkloadMigratability{Reschedulable: true},
-		CPU:           WorkloadCPUProfile{Intensity: "high", Bound: "compute", CapSensitivity: "high"},
-		GPU:           WorkloadGPUProfile{Intensity: "high", Bound: "compute", CapSensitivity: "high"},
-		Confidence:    0.9,
-	}
-	data, err := json.Marshal(wp)
-	if err != nil {
-		t.Fatalf("marshal failed: %v", err)
-	}
-	var out WorkloadProfileStatus
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("unmarshal failed: %v", err)
-	}
-	if out.Criticality.Class != wp.Criticality.Class {
-		t.Errorf("criticality mismatch")
-	}
-	if !out.Migratability.Reschedulable {
-		t.Errorf("expected reschedulable=true")
-	}
-}

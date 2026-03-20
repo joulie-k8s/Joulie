@@ -1,17 +1,8 @@
 {
-  "__inputs": [
-    {
-      "name": "DS_PROMETHEUS",
-      "label": "Prometheus",
-      "description": "",
-      "type": "datasource",
-      "pluginId": "prometheus"
-    }
-  ],
   "annotations": {
     "list": []
   },
-  "description": "Joulie cluster energy state overview",
+  "description": "Joulie cluster energy state overview — operator FSM, agent control signals, simulator telemetry",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -22,94 +13,44 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "id": 100,
-      "title": "Cluster Overview",
+      "title": "Operator — FSM & Profile",
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 50 },
-              { "color": "red", "value": 80 }
-            ]
-          },
-          "unit": "percent"
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 20 },
+          "unit": "short"
         }
       },
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
       "id": 1,
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "title": "Avg Cooling Stress",
-      "type": "gauge",
+      "title": "FSM State by Node",
+      "type": "timeseries",
       "targets": [
         {
-          "expr": "avg(joulie_operator_node_cooling_stress)",
-          "legendFormat": "Avg Cooling Stress"
+          "expr": "joulie_operator_node_state{node=~\"$node\",state=\"ActivePerformance\"}",
+          "legendFormat": "{{node}} ActivePerformance"
+        },
+        {
+          "expr": "joulie_operator_node_state{node=~\"$node\",state=\"DrainingPerformance\"}",
+          "legendFormat": "{{node}} DrainingPerformance"
+        },
+        {
+          "expr": "joulie_operator_node_state{node=~\"$node\",state=\"ActiveEco\"}",
+          "legendFormat": "{{node}} ActiveEco"
         }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 50 },
-              { "color": "red", "value": 80 }
-            ]
-          },
-          "unit": "percent"
-        }
-      },
-      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 1 },
-      "id": 2,
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "title": "Avg PSU Stress",
-      "type": "gauge",
-      "targets": [
-        {
-          "expr": "avg(joulie_operator_node_psu_stress)",
-          "legendFormat": "Avg PSU Stress"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 30 },
-              { "color": "green", "value": 60 }
-            ]
-          },
-          "unit": "percent"
-        }
-      },
-      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 1 },
-      "id": 3,
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "title": "Avg Power Headroom",
-      "type": "gauge",
-      "targets": [
-        {
-          "expr": "avg(joulie_operator_node_power_headroom)",
-          "legendFormat": "Avg Headroom"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": { "unit": "short" }
       },
-      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 1 },
-      "id": 4,
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 1 },
+      "id": 2,
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"] },
         "orientation": "horizontal"
@@ -132,155 +73,179 @@
       ]
     },
     {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 20 },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 1 },
+      "id": 3,
+      "title": "Node Profile Label",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_operator_node_profile_label{node=~\"$node\",profile=\"performance\"}",
+          "legendFormat": "{{node}} performance"
+        },
+        {
+          "expr": "joulie_operator_node_profile_label{node=~\"$node\",profile=\"eco\"}",
+          "legendFormat": "{{node}} eco"
+        }
+      ]
+    },
+    {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
       "id": 101,
-      "title": "Per-Node Stress",
+      "title": "Operator — Transitions & Density",
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "continuous-GrYlRd" },
-          "custom": { "fillOpacity": 80 },
-          "max": 100,
-          "min": 0,
-          "unit": "percent"
-        }
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-      "id": 5,
-      "title": "Cooling Stress by Node",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "joulie_operator_node_cooling_stress",
-          "legendFormat": "{{node}}"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "continuous-GrYlRd" },
-          "custom": { "fillOpacity": 80 },
-          "max": 100,
-          "min": 0,
-          "unit": "percent"
-        }
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-      "id": 6,
-      "title": "PSU Stress by Node",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "joulie_operator_node_psu_stress",
-          "legendFormat": "{{node}}"
-        }
-      ]
-    },
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
-      "id": 102,
-      "title": "Agent Power Metrics",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "watt",
-          "custom": { "fillOpacity": 20 }
-        }
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
-      "id": 7,
-      "title": "RAPL Package Power (per node)",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "joulie_agent_rapl_package_total_watts",
-          "legendFormat": "{{node}}"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "watt",
-          "custom": { "fillOpacity": 20 }
-        }
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
-      "id": 8,
-      "title": "Policy Cap (per node)",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "joulie_agent_policy_cap_watts",
-          "legendFormat": "{{node}}"
-        }
-      ]
-    },
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
-      "id": 103,
-      "title": "State Transitions",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "custom": { "fillOpacity": 50, "stacking": { "mode": "normal" } }
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
-      "id": 9,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "id": 4,
       "title": "State Transitions (rate/5m)",
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by (from_state, to_state) (rate(joulie_operator_state_transitions_total[5m]))",
-          "legendFormat": "{{from_state}} -> {{to_state}}"
+          "expr": "sum by (from_state, to_state, result) (rate(joulie_operator_state_transitions_total{node=~\"$node\"}[5m]))",
+          "legendFormat": "{{from_state}} → {{to_state}} ({{result}})"
         }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "custom": { "fillOpacity": 50 }
+          "custom": { "fillOpacity": 20 }
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
-      "id": 10,
-      "title": "Agent Reconcile Errors (rate/5m)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "id": 5,
+      "title": "Compute Density Score",
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by (node) (rate(joulie_agent_reconcile_errors_total[5m]))",
-          "legendFormat": "{{node}}"
+          "expr": "joulie_operator_node_compute_density{node=~\"$node\"}",
+          "legendFormat": "{{node}} ({{component}})"
         }
       ]
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
-      "id": 104,
-      "title": "DVFS & Throttling",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 102,
+      "title": "Agent — Backend & Power",
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 20 },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
+      "id": 6,
+      "title": "Backend Mode",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_backend_mode{mode=\"rapl\",node=~\"$node\"}",
+          "legendFormat": "{{node}} rapl"
+        },
+        {
+          "expr": "joulie_backend_mode{mode=\"dvfs\",node=~\"$node\"}",
+          "legendFormat": "{{node}} dvfs"
+        },
+        {
+          "expr": "joulie_backend_mode{mode=\"none\",node=~\"$node\"}",
+          "legendFormat": "{{node}} none"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
+      "id": 7,
+      "title": "RAPL Package Power (per node)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_rapl_package_total_power_watts{node=~\"$node\"}",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
+      "id": 8,
+      "title": "Policy Cap (per node)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_policy_cap_watts{node=~\"$node\"}",
+          "legendFormat": "{{node}} ({{policy}})"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "id": 103,
+      "title": "Agent — DVFS Control",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 28 },
+      "id": 9,
+      "title": "Observed vs EMA Power",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_dvfs_observed_power_watts{node=~\"$node\"}",
+          "legendFormat": "{{node}} observed"
+        },
+        {
+          "expr": "joulie_dvfs_ema_power_watts{node=~\"$node\"}",
+          "legendFormat": "{{node}} EMA"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
@@ -289,44 +254,502 @@
           "custom": { "fillOpacity": 30 }
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
-      "id": 11,
-      "title": "DVFS Throttle Percentage",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 28 },
+      "id": 10,
+      "title": "DVFS Throttle %",
       "type": "timeseries",
       "targets": [
         {
-          "expr": "joulie_agent_dvfs_throttle_pct",
+          "expr": "joulie_dvfs_throttle_pct{node=~\"$node\"}",
           "legendFormat": "{{node}}"
         }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
-          "unit": "pressurehpa",
-          "custom": { "fillOpacity": 20 }
+          "unit": "short",
+          "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } }
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
-      "id": 12,
-      "title": "Compute Density Score",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 28 },
+      "id": 11,
+      "title": "DVFS Action Rates (5m)",
       "type": "timeseries",
       "targets": [
         {
-          "expr": "joulie_operator_node_compute_density",
-          "legendFormat": "{{node}} ({{component}})"
+          "expr": "rate(joulie_dvfs_actions_total{action=\"throttle_up\",node=~\"$node\"}[5m])",
+          "legendFormat": "{{node}} throttle_up/s"
+        },
+        {
+          "expr": "rate(joulie_dvfs_actions_total{action=\"throttle_down\",node=~\"$node\"}[5m])",
+          "legendFormat": "{{node}} throttle_down/s"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 },
+      "id": 104,
+      "title": "Agent — Reliability",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "fillOpacity": 50 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "id": 12,
+      "title": "Reconcile Errors (rate/5m)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (node) (rate(joulie_reconcile_errors_total{node=~\"$node\"}[5m]))",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "hertz",
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "id": 13,
+      "title": "Avg CPU Max Freq (MHz)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "avg by (node) (joulie_dvfs_cpu_max_freq_khz{node=~\"$node\"}) / 1000",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 },
+      "id": 107,
+      "title": "Scheduler Extender",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } }
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 46 },
+      "id": 25,
+      "title": "Filter & Prioritize Requests (rate/5m)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (workload_class) (rate(joulie_scheduler_filter_requests_total[5m]))",
+          "legendFormat": "filter {{workload_class}}"
+        },
+        {
+          "expr": "sum by (workload_class) (rate(joulie_scheduler_prioritize_requests_total[5m]))",
+          "legendFormat": "prioritize {{workload_class}}"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 46 },
+      "id": 26,
+      "title": "Filter & Prioritize Latency (p99)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(joulie_scheduler_filter_duration_seconds_bucket[5m])))",
+          "legendFormat": "filter p99"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(joulie_scheduler_prioritize_duration_seconds_bucket[5m])))",
+          "legendFormat": "prioritize p99"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 46 },
+      "id": 27,
+      "title": "Stale Twin Data",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_scheduler_stale_twin_data{node=~\"$node\"}",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 100,
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 54 },
+      "id": 28,
+      "title": "Final Node Score",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_scheduler_final_node_score{node=~\"$node\"}",
+          "legendFormat": "{{node}} ({{workload_class}})"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 54 },
+      "id": 29,
+      "title": "Node Headroom Score",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_scheduler_node_headroom_score{node=~\"$node\"}",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "collapsed": true,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 62 },
+      "id": 105,
+      "title": "Simulator — Power & Utilization",
+      "type": "row",
+      "panels": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "unit": "watt",
+              "custom": { "fillOpacity": 20 }
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+          "id": 14,
+          "title": "Simulated Power vs Cap (W)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "joulie_sim_node_power_watts{node=~\"$node\"}",
+              "legendFormat": "{{node}} power"
+            },
+            {
+              "expr": "joulie_sim_node_cap_watts{node=~\"$node\"}",
+              "legendFormat": "{{node}} cap"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "fillOpacity": 20 },
+              "unit": "percentunit",
+              "max": 1,
+              "min": 0
+            }
+          },
+          "gridPos": { "h": 8, "w": 6, "x": 12, "y": 46 },
+          "id": 15,
+          "title": "CPU Utilization (sim)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "joulie_sim_node_cpu_util{node=~\"$node\"}",
+              "legendFormat": "{{node}}"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "fillOpacity": 20 },
+              "unit": "percentunit",
+              "max": 1,
+              "min": 0
+            }
+          },
+          "gridPos": { "h": 8, "w": 6, "x": 18, "y": 46 },
+          "id": 16,
+          "title": "Freq Scale (sim)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "joulie_sim_node_freq_scale{node=~\"$node\"}",
+              "legendFormat": "{{node}}"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "fillOpacity": 20 },
+              "unit": "percent",
+              "max": 100,
+              "min": 0
+            }
+          },
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 54 },
+          "id": 17,
+          "title": "Simulated Throttle %",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "joulie_sim_node_throttle_pct{node=~\"$node\"}",
+              "legendFormat": "{{node}}"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "fillOpacity": 20 },
+              "unit": "short"
+            }
+          },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 54 },
+          "id": 18,
+          "title": "Running Pods (sim)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "joulie_sim_node_running_pods{node=~\"$node\"}",
+              "legendFormat": "{{node}}"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "fillOpacity": 20 },
+              "unit": "short"
+            }
+          },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 54 },
+          "id": 19,
+          "title": "Node Class Assignment (sim)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "joulie_sim_node_class_info{node=~\"$node\"}",
+              "legendFormat": "{{node}} class={{class}}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "collapsed": true,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 46 },
+      "id": 106,
+      "title": "Simulator — Facility & Jobs",
+      "type": "row",
+      "panels": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "watt",
+              "custom": { "fillOpacity": 20 }
+            }
+          },
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 47 },
+          "id": 20,
+          "title": "Facility Power (IT + Cooling)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "joulie_sim_facility_it_power_watts",
+              "legendFormat": "IT power"
+            },
+            {
+              "expr": "joulie_sim_facility_cooling_power_watts",
+              "legendFormat": "Cooling power"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 2,
+              "custom": { "fillOpacity": 20 }
+            }
+          },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 47 },
+          "id": 21,
+          "title": "Facility PUE & Ambient Temp",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "joulie_sim_facility_pue",
+              "legendFormat": "PUE"
+            },
+            {
+              "expr": "joulie_sim_facility_ambient_temp_celsius",
+              "legendFormat": "Ambient °C"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } }
+            }
+          },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 47 },
+          "id": 22,
+          "title": "Job Throughput (rate/5m)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "sum by (class) (rate(joulie_sim_job_submitted_total[5m]))",
+              "legendFormat": "submitted {{class}}"
+            },
+            {
+              "expr": "sum by (class) (rate(joulie_sim_job_completed_total[5m]))",
+              "legendFormat": "completed {{class}}"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } }
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 55 },
+          "id": 23,
+          "title": "Control Actions by Result (rate/5m)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "sum by (action, result) (rate(joulie_sim_control_actions_total{node=~\"$node\"}[5m]))",
+              "legendFormat": "{{action}} ({{result}})"
+            }
+          ]
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps"
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 55 },
+          "id": 24,
+          "title": "Simulator HTTP Request Rate (5m)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "sum by (route, status) (rate(joulie_sim_requests_total[5m]))",
+              "legendFormat": "{{route}} {{status}}"
+            }
+          ]
         }
       ]
     }
   ],
   "schemaVersion": 39,
   "tags": ["joulie", "energy", "kubernetes"],
-  "templating": { "list": [] },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "Prometheus",
+          "value": "Prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "type": "datasource"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(joulie_operator_node_state, node)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Node",
+        "multi": true,
+        "name": "node",
+        "options": [],
+        "query": {
+          "query": "label_values(joulie_operator_node_state, node)",
+          "refId": "NodeVariableQuery"
+        },
+        "refresh": 1,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
   "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
   "title": "Joulie - Cluster Energy Overview",
   "uid": "joulie-overview",
-  "version": 1
+  "version": 2
 }

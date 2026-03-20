@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 EXP_ROOT="$ROOT/experiments/03-homogeneous-h100-benchmark"
 CFG=${1:-$EXP_ROOT/configs/benchmark.yaml}
-CLUSTER_NAME=${CLUSTER_NAME:-joulie-homogeneous-h100-benchmark}
 REUSE_EXISTING_CLUSTER=${REUSE_EXISTING_CLUSTER:-false}
 KIND_CLUSTER_CONFIG=${KIND_CLUSTER_CONFIG:-$(python3 - <<'PY' "$CFG"
 import pathlib, sys, yaml
@@ -13,6 +12,12 @@ print(cfg.get("install", {}).get("kind_cluster_config", "examples/07 - simulator
 PY
 )}
 KIND_CLUSTER_CONFIG="$ROOT/${KIND_CLUSTER_CONFIG}"
+CLUSTER_NAME=${CLUSTER_NAME:-$(python3 - <<'PY' "$KIND_CLUSTER_CONFIG"
+import pathlib, sys, yaml
+cfg = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()) or {}
+print(cfg.get("name", "joulie-homogeneous-h100-benchmark"))
+PY
+)}
 
 # Use a per-experiment kubeconfig so kind never touches ~/.kube/config and parallel
 # experiments on separate clusters cannot interfere with each other.
@@ -38,12 +43,25 @@ kubectl apply -f "https://github.com/kubernetes-sigs/kwok/releases/download/${KW
 
 # ---------------------------------------------------------------------------
 # Configure kube-scheduler to call the Joulie scheduler extender.
-# ignorable=true means baseline A (no extender deployed) proceeds without
-# delay: DNS lookup for the missing Service returns NXDOMAIN immediately.
+# kube-scheduler runs with hostNetwork: true, so it resolves DNS via the node's
+# /etc/resolv.conf (not CoreDNS).  On KinD this means Docker's embedded DNS,
+# which cannot resolve .cluster.local names.  Using a fixed ClusterIP bypasses
+# DNS entirely — kube-proxy iptables rules route ClusterIP traffic correctly
+# even from hostNetwork.  On real clusters where node DNS can resolve
+# .cluster.local, set EXTENDER_CLUSTER_IP="" to use the DNS name instead.
+# When using a fixed IP, the same value must be set via
+# schedulerExtender.clusterIP in the Helm values.
 # ---------------------------------------------------------------------------
+EXTENDER_CLUSTER_IP=${EXTENDER_CLUSTER_IP:-10.96.100.76}
 CTRL_CONTAINER="${CLUSTER_NAME}-control-plane"
 
-cat >/tmp/joulie-scheduler-config.yaml <<'SCHED_CFG'
+if [[ -n "$EXTENDER_CLUSTER_IP" ]]; then
+  EXTENDER_URL_PREFIX="http://${EXTENDER_CLUSTER_IP}:9876"
+else
+  EXTENDER_URL_PREFIX="http://joulie-scheduler-extender.joulie-system.svc.cluster.local:9876"
+fi
+
+cat >/tmp/joulie-scheduler-config.yaml <<SCHED_CFG
 apiVersion: kubescheduler.config.k8s.io/v1
 kind: KubeSchedulerConfiguration
 clientConnection:
@@ -51,7 +69,7 @@ clientConnection:
 profiles:
 - schedulerName: default-scheduler
 extenders:
-- urlPrefix: "http://joulie-scheduler-extender.joulie-system.svc.cluster.local:9876"
+- urlPrefix: "${EXTENDER_URL_PREFIX}"
   filterVerb: "filter"
   prioritizeVerb: "prioritize"
   weight: 5

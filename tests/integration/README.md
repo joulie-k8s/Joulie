@@ -8,7 +8,6 @@ Integration tests run against a single-node k3s cluster in Dagger CI.
 |----|------|-------------|
 | IT-ARCH-01 | Smoke install | Install full stack, assert CRDs registered |
 | IT-HW-01 | NodeHardware publish | Agent publishes NodeHardware |
-| IT-PROF-01 | WorkloadProfile consumption | Operator/scheduler consumes WorkloadProfile |
 | IT-TWIN-01 | NodeTwinState writing | Operator writes NodeTwinState |
 | IT-SCHED-01 | Scheduler filter | Eco node filter for performance pods |
 | IT-SCHED-02 | Scheduler scoring | NodeTwinState influences score |

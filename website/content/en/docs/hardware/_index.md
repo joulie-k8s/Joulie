@@ -4,7 +4,9 @@ linkTitle: "Hardware"
 weight: 25
 ---
 
-Hardware-specific guidance and caveats for running Joulie on real nodes and in simulation.
+Joulie supports heterogeneous clusters with mixed CPU and GPU hardware. On real nodes, the agent discovers hardware capabilities and enforces power caps through RAPL (CPU) and NVML (GPU). In simulation, the same hardware characteristics are modeled parametrically so that benchmarks reflect realistic power behavior.
+
+This section covers supported hardware, known caveats, and the physical power models used for both real enforcement and simulation.
 
 Recommended reading order:
 

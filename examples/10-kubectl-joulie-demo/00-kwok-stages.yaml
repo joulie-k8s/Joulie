@@ -1,0 +1,114 @@
+## Node heartbeat stage — marks fake nodes as Ready
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: node-heartbeat
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Node
+  selector:
+    matchAnnotations:
+      kwok.x-k8s.io/node: fake
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+      conditions:
+        - type: Ready
+          status: "True"
+          lastHeartbeatTime: {{ $now | Quote }}
+          lastTransitionTime: {{ $now | Quote }}
+          reason: KubeletReady
+          message: "kwok fake node is ready"
+        - type: MemoryPressure
+          status: "False"
+          lastHeartbeatTime: {{ $now | Quote }}
+          lastTransitionTime: {{ $now | Quote }}
+          reason: KubeletHasSufficientMemory
+          message: "kwok has sufficient memory"
+        - type: DiskPressure
+          status: "False"
+          lastHeartbeatTime: {{ $now | Quote }}
+          lastTransitionTime: {{ $now | Quote }}
+          reason: KubeletHasNoDiskPressure
+          message: "kwok has no disk pressure"
+        - type: PIDPressure
+          status: "False"
+          lastHeartbeatTime: {{ $now | Quote }}
+          lastTransitionTime: {{ $now | Quote }}
+          reason: KubeletHasSufficientPID
+          message: "kwok has sufficient PID"
+      addresses:
+        - type: InternalIP
+          address: 10.0.0.1
+  delay:
+    durationMilliseconds: 2000
+    jitterDurationMilliseconds: 1000
+---
+## Pod lifecycle — move pods scheduled on fake nodes to Running
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: pod-ready
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+      - key: .metadata.deletionTimestamp
+        operator: DoesNotExist
+      - key: .status.podIP
+        operator: DoesNotExist
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+      hostIP: "10.0.0.1"
+      podIP: "10.0.0.1"
+      startTime: {{ $now | Quote }}
+      conditions:
+        - type: Initialized
+          status: "True"
+          lastTransitionTime: {{ $now | Quote }}
+        - type: Ready
+          status: "True"
+          lastTransitionTime: {{ $now | Quote }}
+        - type: ContainersReady
+          status: "True"
+          lastTransitionTime: {{ $now | Quote }}
+      containerStatuses:
+        {{ range .spec.containers }}
+        - name: {{ .name | Quote }}
+          image: {{ .image | Quote }}
+          ready: true
+          restartCount: 0
+          started: true
+          state:
+            running:
+              startedAt: {{ $now | Quote }}
+        {{ end }}
+      phase: Running
+  delay:
+    durationMilliseconds: 3000
+    jitterDurationMilliseconds: 2000
+---
+## Pod delete — handle pod deletion on fake nodes
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: pod-delete
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+      - key: .metadata.deletionTimestamp
+        operator: Exists
+  next:
+    delete: true
+    finalizers:
+      empty: true
+  delay:
+    durationMilliseconds: 1000
+    jitterDurationMilliseconds: 500

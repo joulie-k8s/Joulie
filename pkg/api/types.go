@@ -100,50 +100,6 @@ type CatalogExactness struct {
 	GPU string `json:"gpu,omitempty"`
 }
 
-// WorkloadProfileStatus mirrors the joulie.io/v1alpha1 WorkloadProfile CRD status.
-type WorkloadProfileStatus struct {
-	Criticality           WorkloadCriticality   `json:"criticality,omitempty"`
-	Migratability         WorkloadMigratability `json:"migratability,omitempty"`
-	CPU                   WorkloadCPUProfile    `json:"cpu,omitempty"`
-	GPU                   WorkloadGPUProfile    `json:"gpu,omitempty"`
-	RescheduleRecommended bool                  `json:"rescheduleRecommended,omitempty"`
-	RescheduleReason      string                `json:"rescheduleReason,omitempty"`
-	ClassificationReason  string                `json:"classificationReason,omitempty"`
-	Confidence            float64               `json:"confidence,omitempty"`
-	LastUpdated           time.Time             `json:"lastUpdated,omitempty"`
-}
-
-type WorkloadCriticality struct {
-	// Class is the QoS class for power-aware scheduling.
-	//
-	// performance: must run on uncapped (performance) nodes.
-	//   The scheduler extender rejects eco and draining nodes for these pods.
-	// standard: can run on any node; adaptive scoring steers toward eco
-	//   when performance nodes are congested.
-	Class string `json:"class,omitempty"`
-}
-
-type WorkloadMigratability struct {
-	// Reschedulable: pod can be safely restarted on another node.
-	// Set via joulie.io/reschedulable=true pod annotation.
-	// Used by the operator's migration controller under thermal/PSU pressure.
-	Reschedulable bool `json:"reschedulable,omitempty"`
-}
-
-type WorkloadCPUProfile struct {
-	Intensity         string  `json:"intensity,omitempty"`      // "high", "medium", "low"
-	Bound             string  `json:"bound,omitempty"`          // "compute", "memory", "io", "mixed"
-	AvgUtilizationPct float64 `json:"avgUtilizationPct,omitempty"`
-	CapSensitivity    string  `json:"capSensitivity,omitempty"` // "high", "medium", "low"
-}
-
-type WorkloadGPUProfile struct {
-	Intensity         string  `json:"intensity,omitempty"`
-	Bound             string  `json:"bound,omitempty"`          // "compute", "memory", "mixed", "none"
-	AvgUtilizationPct float64 `json:"avgUtilizationPct,omitempty"`
-	CapSensitivity    string  `json:"capSensitivity,omitempty"`
-}
-
 // NodeTwinSpec is the desired power state for a node, written by the operator.
 // This is the spec portion of the NodeTwin CRD.
 type NodeTwinSpec struct {
@@ -166,27 +122,42 @@ type NodeTwinGPU struct {
 	CapPctOfMax    *float64 `json:"capPctOfMax,omitempty"`
 }
 
+// PowerMeasurement holds the measured power data and TDP/cap breakdowns.
+type PowerMeasurement struct {
+	Source             string  `json:"source,omitempty"`             // "kepler", "utilization", "static"
+	MeasuredNodePowerW float64 `json:"measuredNodePowerW,omitempty"`
+	CpuCappedPowerW    float64 `json:"cpuCappedPowerW,omitempty"`
+	GpuCappedPowerW    float64 `json:"gpuCappedPowerW,omitempty"`
+	NodeCappedPowerW   float64 `json:"nodeCappedPowerW,omitempty"`
+	CpuTdpW            float64 `json:"cpuTdpW,omitempty"`
+	GpuTdpW            float64 `json:"gpuTdpW,omitempty"`
+	NodeTdpW           float64 `json:"nodeTdpW,omitempty"`
+	PowerTrendWPerMin  float64 `json:"powerTrendWPerMin,omitempty"`
+}
+
 // NodeTwinStatus is the digital-twin output for one node.
-// Computed by the operator from NodeHardware + NodeTwinSpec + WorkloadProfiles.
+// Computed by the operator from NodeHardware + NodeTwinSpec.
 // Read by the scheduler extender to make placement decisions.
 type NodeTwinStatus struct {
 	// SchedulableClass: "eco", "performance", "draining", "unknown".
 	SchedulableClass string `json:"schedulableClass,omitempty"`
+	// PowerMeasurement holds measured power data, TDP/cap breakdowns, and power trend.
+	PowerMeasurement *PowerMeasurement `json:"powerMeasurement,omitempty"`
 	// PredictedPowerHeadroomScore: 0-100. Available power budget on this node.
 	PredictedPowerHeadroomScore float64 `json:"predictedPowerHeadroomScore,omitempty"`
 	// PredictedCoolingStressScore: 0-100. Fraction of cooling capacity predicted to be used.
 	PredictedCoolingStressScore float64 `json:"predictedCoolingStressScore,omitempty"`
 	// PredictedPsuStressScore: 0-100. Fraction of PDU/PSU capacity predicted to be used.
-	PredictedPsuStressScore     float64                    `json:"predictedPsuStressScore,omitempty"`
-	EffectiveCapState           CapState                   `json:"effectiveCapState,omitempty"`
-	HardwareDensityScore        float64                    `json:"hardwareDensityScore,omitempty"`
+	// Reserved for future rack-topology-aware extensions. Not used in scoring.
+	PredictedPsuStressScore float64  `json:"predictedPsuStressScore,omitempty"`
+	EffectiveCapState       CapState `json:"effectiveCapState,omitempty"`
+	HardwareDensityScore    float64  `json:"hardwareDensityScore,omitempty"`
 	// EstimatedPUE is the estimated Power Usage Effectiveness for this node.
 	// PUE = 1.0 + overhead. Ranges from ~1.05 (idle, cool) to ~1.40 (stressed cooling).
-	EstimatedPUE                float64                    `json:"estimatedPUE,omitempty"`
-	RescheduleRecommendations   []RescheduleRecommendation `json:"rescheduleRecommendations,omitempty"`
-	GPUSlicingRecommendation    *GPUSlicingRecommendation  `json:"gpuSlicingRecommendation,omitempty"`
-	ControlStatus               *ControlStatus             `json:"controlStatus,omitempty"`
-	LastUpdated                 time.Time                  `json:"lastUpdated,omitempty"`
+	// Reserved for future rack-topology-aware extensions. Not used in scoring.
+	EstimatedPUE    float64        `json:"estimatedPUE,omitempty"`
+	ControlStatus   *ControlStatus `json:"controlStatus,omitempty"`
+	LastUpdated     time.Time      `json:"lastUpdated,omitempty"`
 }
 
 // ControlStatus holds agent feedback on applied controls.
@@ -209,46 +180,8 @@ type NodeTwin struct {
 	Status NodeTwinStatus `json:"status,omitempty"`
 }
 
-// GPUSlicingRecommendation is a suggestion from the digital twin to the
-// cluster admin about how to configure GPU slicing (MIG or time-slicing)
-// on a node for optimal power efficiency and resource utilization.
-//
-// The twin analyzes historical WorkloadProfile data to determine the
-// dominant GPU usage pattern and recommends a slicing configuration that
-// best matches that pattern. The admin reviews the recommendation and
-// applies it manually (MIG reconfiguration requires GPU reset / pod eviction).
-//
-// This is advisory only. The operator never changes GPU slicing at runtime.
-type GPUSlicingRecommendation struct {
-	// Mode: "mig", "time-slicing", or "none" (whole GPU).
-	Mode string `json:"mode,omitempty"`
-	// SliceType: for MIG, the recommended profile (e.g. "3g.40gb", "1g.10gb").
-	// For time-slicing, empty (k8s handles partitioning).
-	SliceType string `json:"sliceType,omitempty"`
-	// SlicesPerGPU: how many slices per physical GPU.
-	SlicesPerGPU int `json:"slicesPerGPU,omitempty"`
-	// TotalSlices: slicesPerGPU * GPU count on this node.
-	TotalSlices int `json:"totalSlices,omitempty"`
-	// Reason: human-readable explanation of why this config was chosen.
-	Reason string `json:"reason,omitempty"`
-	// EstimatedUtilizationGain: predicted improvement in GPU utilization (0-100 pct points).
-	EstimatedUtilizationGain float64 `json:"estimatedUtilizationGain,omitempty"`
-	// Confidence: 0-1 confidence in the recommendation based on data quality.
-	Confidence float64 `json:"confidence,omitempty"`
-}
-
 type CapState struct {
 	CPUPct float64 `json:"cpuPct,omitempty"`
 	GPUPct float64 `json:"gpuPct,omitempty"`
 }
 
-type RescheduleRecommendation struct {
-	WorkloadRef WorkloadRef `json:"workloadRef,omitempty"`
-	Reason      string      `json:"reason,omitempty"`
-}
-
-type WorkloadRef struct {
-	Kind      string `json:"kind,omitempty"`
-	Namespace string `json:"namespace,omitempty"`
-	Name      string `json:"name,omitempty"`
-}

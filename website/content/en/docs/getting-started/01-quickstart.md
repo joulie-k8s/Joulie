@@ -67,7 +67,7 @@ You can also do build+push+install in one command:
 make build-push-install TAG=<tag>
 ```
 
-Use `make help` to see all targets.
+Run `make help` to see all available targets (including `rollout`, `uninstall`, `simulator-install`, and more).
 
 ### Install CRDs + components (source workflow)
 
@@ -199,7 +199,7 @@ For fake-node workload + power simulation (real scheduler, fake [KWOK](https://k
 
 ## kubectl plugin
 
-The `kubectl-joulie` plugin adds `kubectl joulie status` and `kubectl joulie recommend` commands for inspecting Joulie cluster energy state.
+The `kubectl-joulie` plugin adds `kubectl joulie status` for inspecting Joulie cluster energy state.
 
 ### Install from release (Harbor/OCI)
 
@@ -212,6 +212,10 @@ VERSION="<version>"
 
 oras pull "registry.cern.ch/mbunino/joulie/kubectl-joulie:${VERSION}-${PLATFORM}"
 chmod +x "kubectl-joulie-${PLATFORM}"
+# User-local install (no sudo required, ensure ~/.local/bin is in your PATH)
+install "kubectl-joulie-${PLATFORM}" ~/.local/bin/kubectl-joulie
+
+# Or system-wide install (requires sudo)
 sudo install "kubectl-joulie-${PLATFORM}" /usr/local/bin/kubectl-joulie
 ```
 
@@ -223,6 +227,11 @@ VERSION="<version>"
 
 curl -sLO "https://github.com/joulie-k8s/Joulie/releases/download/v${VERSION}/kubectl-joulie-${PLATFORM}"
 chmod +x "kubectl-joulie-${PLATFORM}"
+
+# User-local install (no sudo required, ensure ~/.local/bin is in your PATH)
+install "kubectl-joulie-${PLATFORM}" ~/.local/bin/kubectl-joulie
+
+# Or system-wide install (requires sudo)
 sudo install "kubectl-joulie-${PLATFORM}" /usr/local/bin/kubectl-joulie
 ```
 
@@ -236,7 +245,6 @@ make kubectl-plugin-install
 
 ```bash
 kubectl joulie status      # Show energy state of all Joulie-managed nodes
-kubectl joulie recommend   # Show power optimization recommendations
 ```
 
 ## Next step

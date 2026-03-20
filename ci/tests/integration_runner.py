@@ -551,7 +551,6 @@ def dump_debug() -> None:
         ["kubectl", "get", "events", "-A", "--sort-by=.lastTimestamp"],
         ["kubectl", "get", "nodetwins", "-o", "yaml"],
         ["kubectl", "get", "nodehardwares", "-o", "yaml"],
-        ["kubectl", "get", "workloadprofiles", "-o", "yaml"],
         ["kubectl", "-n", "joulie-system", "logs", "deploy/joulie-operator", "--tail=200"],
         ["kubectl", "-n", "joulie-system", "logs", "statefulset/joulie-agent-pool", "--tail=200"],
     ]
@@ -606,7 +605,6 @@ def test_boot_and_install() -> Ctx:
     install_joulie()
     kubectl(["get", "crd", "nodehardwares.joulie.io"])
     kubectl(["get", "crd", "nodetwins.joulie.io"])
-    kubectl(["get", "crd", "workloadprofiles.joulie.io"])
     kubectl(["create", "ns", "joulie-it"], check=False)
     set_static_hp_frac("0")
     perf_node, eco_node = discover_perf_and_eco_nodes(list(EXPECTED_NODES))
@@ -1356,120 +1354,6 @@ def test_standard_pod_schedules_anywhere(ctx: Ctx) -> None:
     delete_pod("joulie-it", "std-on-perf")
 
 
-def test_classifier_creates_workload_profiles(ctx: Ctx) -> None:
-    """IT-CLS-WP-01: verify the classifier creates WorkloadProfile CRs for running pods.
-
-    The classifier (enabled by default via ENABLE_CLASSIFIER=true) watches pods
-    on managed nodes and writes a WorkloadProfile CR for each one. This test
-    deploys a pod on eco_node and waits for the corresponding WorkloadProfile to
-    appear with the expected status fields.
-    """
-    log("IT-CLS-WP-01")
-    pod_name = "cls-wp-probe"
-    ns = "joulie-it"
-
-    delete_pod(ns, pod_name)
-    apply_yaml(mk_pod_yaml(pod_name, node_name=ctx.eco_node))
-    wait_pod_phase(ns, pod_name, "Running")
-
-    # Wait for the classifier to create a WorkloadProfile referencing eco_node.
-    matched_wp: dict[str, Any] = {}
-
-    def _wp_exists() -> bool:
-        out = kubectl(
-            ["get", "workloadprofiles", "-A", "-o", "json"],
-            check=False, capture=True,
-        )
-        if out.returncode != 0 or not out.stdout.strip():
-            return False
-        items = json.loads(out.stdout).get("items", [])
-        for item in items:
-            spec = item.get("spec", {})
-            if spec.get("nodeName") == ctx.eco_node:
-                matched_wp.update(item)
-                return True
-        return False
-
-    wait_until(_wp_exists, timeout_sec=60, desc=f"WorkloadProfile for node {ctx.eco_node}")
-
-    # Verify the WorkloadProfile has expected status fields.
-    status = matched_wp.get("status", {})
-    for field in ("criticality", "cpu", "gpu"):
-        if field not in status:
-            raise AssertionError(
-                f"WorkloadProfile for node {ctx.eco_node} missing status field {field!r}; "
-                f"got status keys: {list(status.keys())}"
-            )
-    log(
-        f"WorkloadProfile found: node={ctx.eco_node} "
-        f"criticality={status.get('criticality')} "
-        f"cpu={status.get('cpu')} gpu={status.get('gpu')}"
-    )
-
-    # Cleanup.
-    delete_pod(ns, pod_name)
-
-
-def test_rescheduler_disabled_by_default(ctx: Ctx) -> None:
-    """IT-RESCHED-01: verify active rescheduling is disabled by default.
-
-    ENABLE_ACTIVE_RESCHEDULING defaults to false. A pod with the
-    joulie.io/reschedulable=true annotation should not be evicted when the
-    rescheduler is off.
-    """
-    log("IT-RESCHED-01")
-    pod_name = "resched-probe"
-    ns = "joulie-it"
-
-    delete_pod(ns, pod_name)
-
-    # Build a pod with the reschedulable annotation. mk_pod_yaml does not
-    # support arbitrary annotations, so we construct the YAML manually using
-    # the same structure.
-    yaml_doc = "\n".join([
-        "apiVersion: v1",
-        "kind: Pod",
-        "metadata:",
-        f"  name: {pod_name}",
-        f"  namespace: {ns}",
-        "  labels:",
-        "    app.kubernetes.io/part-of: joulie-it",
-        "  annotations:",
-        '    joulie.io/reschedulable: "true"',
-        '    joulie.io/workload-class: "standard"',
-        "spec:",
-        f"  nodeName: {ctx.eco_node}",
-        "  restartPolicy: Never",
-        "  containers:",
-        "  - name: c",
-        '    image: busybox:1.36',
-        '    command: ["sh","-c","sleep 1200"]',
-    ]) + "\n"
-
-    apply_yaml(yaml_doc)
-    wait_pod_phase(ns, pod_name, "Running")
-
-    # Wait 20s and verify the pod is still Running (not evicted).
-    log("waiting 20s to confirm rescheduler does not evict the pod")
-    time.sleep(20)
-
-    out = kubectl(["-n", ns, "get", "pod", pod_name, "-o", "json"], check=False, capture=True)
-    if out.returncode != 0:
-        raise AssertionError(
-            f"pod {ns}/{pod_name} disappeared unexpectedly (rescheduler should be disabled)"
-        )
-    phase = json.loads(out.stdout).get("status", {}).get("phase", "")
-    if phase != "Running":
-        raise AssertionError(
-            f"pod {ns}/{pod_name} phase={phase!r}, expected Running "
-            f"(rescheduler should be disabled by default)"
-        )
-    log("reschedulable pod still Running after 20s (rescheduler correctly disabled)")
-
-    # Cleanup.
-    delete_pod(ns, pod_name)
-
-
 def test_facility_metrics_disabled_by_default(ctx: Ctx) -> None:
     """IT-FACILITY-01: verify facility metrics collection is disabled by default.
 
@@ -1523,8 +1407,6 @@ def main() -> int:
             test_rapid_policy_switch(ctx)
             test_twin_scores_change_with_profile(ctx)
             test_twin_status_survives_agent_writes(ctx)
-            test_classifier_creates_workload_profiles(ctx)
-            test_rescheduler_disabled_by_default(ctx)
             test_facility_metrics_disabled_by_default(ctx)
         elif scope in ("gpu", "gpu-only", "gpu_only"):
             log("non-GPU suites temporarily disabled (IT_SCOPE=gpu-only)")

@@ -102,6 +102,18 @@ type generatorConfig struct {
 	BurstDayProbability float64
 	BurstMeanJobs       float64
 	BurstMultiplier     float64
+	DipDayProbability   float64
+	DipMultiplier       float64
+	TimeScale           float64
+	Mode                string  // "default" or "diurnal"
+	SimHours            float64 // total sim-hours for diurnal mode
+	WorkScale           float64 // work unit multiplier
+	BaseSpeedPerCore    float64 // base speed per core for work unit calc
+	DiurnalBurstMin     int     // min burst size in diurnal mode
+	DiurnalBurstMax     int     // max burst size in diurnal mode
+	DiurnalPeakRate     float64 // peak arrival rate (jobs/min in sim-time)
+	MinGPURequest       int     // minimum GPUs per GPU job
+	AMDGPURatio         float64 // fraction of GPU workloads using amd.com/gpu (rest use nvidia.com/gpu)
 }
 
 type logicalWorkload struct {
@@ -133,11 +145,18 @@ type logicalPod struct {
 
 type arrivalState struct {
 	burstHourByDay map[int]int
+	dipHourByDay   map[int]int
 }
 
 func main() {
 	cfg := parseFlags()
-	if err := generateTrace(cfg); err != nil {
+	var err error
+	if cfg.Mode == "diurnal" {
+		err = generateDiurnalTrace(cfg)
+	} else {
+		err = generateTrace(cfg)
+	}
+	if err != nil {
 		panic(err)
 	}
 }
@@ -161,6 +180,18 @@ func parseFlags() generatorConfig {
 	flag.Float64Var(&cfg.BurstDayProbability, "burst-day-probability", 0.25, "probability of a daily burst window")
 	flag.Float64Var(&cfg.BurstMeanJobs, "burst-mean-jobs", 8.0, "mean extra burst intensity used to scale arrival rate during burst windows")
 	flag.Float64Var(&cfg.BurstMultiplier, "burst-multiplier", 2.0, "arrival-rate multiplier during the selected burst hour")
+	flag.Float64Var(&cfg.DipDayProbability, "dip-day-probability", 0.30, "probability of a daily dip (negative spike) window")
+	flag.Float64Var(&cfg.DipMultiplier, "dip-multiplier", 0.08, "arrival-rate multiplier during the selected dip hour (e.g., 0.08 = 92% reduction)")
+	flag.Float64Var(&cfg.TimeScale, "time-scale", 1.0, "simulation time scale: offset*timeScale = simulated seconds (used for day/night hour calculation)")
+	flag.StringVar(&cfg.Mode, "mode", "default", "trace generation mode: 'default' (original) or 'diurnal' (exp04-style NHPP cosine day/night)")
+	flag.Float64Var(&cfg.SimHours, "sim-hours", 48, "total simulation hours (diurnal mode only)")
+	flag.Float64Var(&cfg.WorkScale, "work-scale", 1.0, "work unit multiplier (diurnal mode only)")
+	flag.Float64Var(&cfg.BaseSpeedPerCore, "base-speed-per-core", 2.0, "base speed per core for work unit calculation (diurnal mode only)")
+	flag.IntVar(&cfg.DiurnalBurstMin, "diurnal-burst-min", 20, "min burst size in diurnal mode")
+	flag.IntVar(&cfg.DiurnalBurstMax, "diurnal-burst-max", 80, "max burst size in diurnal mode")
+	flag.Float64Var(&cfg.DiurnalPeakRate, "diurnal-peak-rate", 80.0, "peak arrival rate in jobs/min sim-time (diurnal mode)")
+	flag.IntVar(&cfg.MinGPURequest, "min-gpu-request", 0, "minimum GPUs per GPU job (0 = use default sampling)")
+	flag.Float64Var(&cfg.AMDGPURatio, "amd-gpu-ratio", 0.0, "fraction of GPU workloads using amd.com/gpu (0.0 = all nvidia, 1.0 = all amd)")
 	flag.Parse()
 	if cfg.MeanInterArrival <= 0 {
 		cfg.MeanInterArrival = 1
@@ -186,6 +217,9 @@ func parseFlags() generatorConfig {
 	if cfg.ComputeBoundPerfBoost < 1 {
 		cfg.ComputeBoundPerfBoost = 1
 	}
+	if cfg.TimeScale <= 0 {
+		cfg.TimeScale = 1.0
+	}
 	_ = outPath
 	setOutputPath(outPath)
 	return cfg
@@ -204,7 +238,7 @@ func generateTrace(cfg generatorConfig) error {
 	w := bufio.NewWriter(f)
 
 	rng := rand.New(rand.NewSource(cfg.Seed))
-	arrivals := arrivalState{burstHourByDay: map[int]int{}}
+	arrivals := arrivalState{burstHourByDay: map[int]int{}, dipHourByDay: map[int]int{}}
 	offset := 0.0
 	jobOrdinal := 0
 	for i := 0; i < cfg.Jobs; i++ {
@@ -223,6 +257,252 @@ func generateTrace(cfg generatorConfig) error {
 			}
 		}
 	}
+	return w.Flush()
+}
+
+// generateDiurnalTrace produces workloads using an NHPP cosine diurnal
+// arrival pattern matching experiment-04's sim_24h_pue.py:
+//   - Cosine day/night cycle (trough at 4 AM, peak at 4 PM)
+//   - 10% burst probability (50-200 simultaneous jobs)
+//   - 5 job categories: small CPU, medium CPU, GPU training (1-8 GPUs),
+//     GPU inference (1-2 GPUs), large CPU
+func generateDiurnalTrace(cfg generatorConfig) error {
+	f, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+
+	rng := rand.New(rand.NewSource(cfg.Seed))
+	wallSec := cfg.SimHours * 3600.0 / cfg.TimeScale
+	if cfg.WorkScale <= 0 {
+		cfg.WorkScale = 1.0
+	}
+	if cfg.BaseSpeedPerCore <= 0 {
+		cfg.BaseSpeedPerCore = 2.0
+	}
+
+	cpuClasses := []string{"cpu.compute_bound", "cpu.memory_bound", "cpu.mixed"}
+	gpuClasses := []string{"gpu.compute", "gpu.mixed", "gpu.memory_bound"}
+
+	jobID := 0
+	t := 0.0
+	for t < wallSec {
+		// Current sim-hour for diurnal pattern.
+		simH := (t * cfg.TimeScale) / 3600.0
+		hourOfDay := math.Mod(simH, 24.0)
+		phase := 2 * math.Pi * (hourOfDay - 4.0) / 24.0
+		rate := 0.25 + 0.70*(1-math.Cos(phase))/2.0
+		// Peak rate in jobs/min sim-time, convert to wall-time.
+		baseRateWallSec := rate * cfg.DiurnalPeakRate / 60.0 * cfg.TimeScale
+		interArrival := rng.ExpFloat64() / math.Max(baseRateWallSec, 0.001)
+		t += interArrival
+		if t >= wallSec {
+			break
+		}
+
+		// 10% burst chance.
+		burstSize := 1
+		burstRange := cfg.DiurnalBurstMax - cfg.DiurnalBurstMin + 1
+		if burstRange < 1 {
+			burstRange = 1
+		}
+		if rng.Float64() < 0.10 {
+			burstSize = cfg.DiurnalBurstMin + rng.Intn(burstRange)
+		}
+
+		for b := 0; b < burstSize; b++ {
+			jobID++
+			wlID := fmt.Sprintf("workload-%06d", jobID)
+			r := rng.Float64()
+
+			var cpuReq float64
+			var gpuReq int
+			var isPerf bool
+			var cpuUtil, gpuUtil, duration float64
+			var wlType, cpuClass, gpuClass string
+
+			gpuThreshold := 1.0 - cfg.GPURatio*0.70
+
+			switch {
+			case r < 0.35*(1.0-cfg.GPURatio):
+				// Small CPU job.
+				cpuReq = float64([]int{1, 2, 4, 8}[rng.Intn(4)])
+				gpuReq = 0
+				isPerf = false
+				cpuUtil = 0.3 + rng.Float64()*0.5
+				duration = 60 + rng.Float64()*540
+				wlType = "cpu_preprocess"
+				cpuClass = cpuClasses[rng.Intn(len(cpuClasses))]
+			case r < 0.55*(1.0-cfg.GPURatio*0.3):
+				// Medium CPU job.
+				cpuReq = float64([]int{16, 32, 48, 64}[rng.Intn(4)])
+				gpuReq = 0
+				isPerf = rng.Float64() < 0.3
+				cpuUtil = 0.4 + rng.Float64()*0.5
+				duration = 300 + rng.Float64()*3300
+				wlType = "cpu_analytics"
+				cpuClass = cpuClasses[rng.Intn(len(cpuClasses))]
+			case r < 0.80:
+				// GPU training (1-8 GPUs).
+				cpuReq = float64([]int{16, 32, 64}[rng.Intn(3)])
+				gpuReq = maxInt(cfg.MinGPURequest, []int{1, 2, 4, 8}[rng.Intn(4)])
+				isPerf = true
+				cpuUtil = 0.3 + rng.Float64()*0.3
+				gpuUtil = 0.6 + rng.Float64()*0.35
+				duration = 3600 + rng.Float64()*25200
+				if gpuReq >= 2 {
+					wlType = "distributed_training"
+				} else {
+					wlType = "single_gpu_training"
+				}
+				cpuClass = "cpu.mixed"
+				gpuClass = gpuClasses[rng.Intn(len(gpuClasses))]
+			case r < 0.92:
+				// GPU inference (1-2 GPUs).
+				cpuReq = float64([]int{4, 8, 16}[rng.Intn(3)])
+				gpuReq = maxInt(cfg.MinGPURequest, []int{1, 2}[rng.Intn(2)])
+				isPerf = false
+				cpuUtil = 0.3 + rng.Float64()*0.3
+				gpuUtil = 0.3 + rng.Float64()*0.4
+				duration = 60 + rng.Float64()*840
+				wlType = "debug_eval"
+				cpuClass = "cpu.mixed"
+				gpuClass = gpuClasses[rng.Intn(len(gpuClasses))]
+			default:
+				// Large CPU job.
+				cpuReq = float64([]int{64, 96}[rng.Intn(2)])
+				gpuReq = 0
+				isPerf = true
+				cpuUtil = 0.5 + rng.Float64()*0.45
+				duration = 1800 + rng.Float64()*5400
+				wlType = "cpu_analytics"
+				cpuClass = cpuClasses[rng.Intn(len(cpuClasses))]
+			}
+
+			// Override GPU to 0 for CPU-only experiments.
+			if cfg.GPURatio == 0 || r < gpuThreshold && gpuReq > 0 {
+				if cfg.GPURatio == 0 {
+					gpuReq = 0
+					gpuUtil = 0
+					gpuClass = ""
+					isPerf = rng.Float64() < 0.20
+					if rng.Float64() < 0.5 {
+						wlType = "cpu_preprocess"
+					} else {
+						wlType = "cpu_analytics"
+					}
+				}
+			}
+
+			intent := "standard"
+			if isPerf {
+				intent = "performance"
+			}
+			memIntensity := 0.3 + rng.Float64()*0.6
+			ioIntensity := 0.05 + rng.Float64()*0.25
+
+			// Compute work units.
+			cpuUnits := duration * cpuReq * math.Max(0.10, cpuUtil) * cfg.BaseSpeedPerCore * cfg.WorkScale
+			gpuUnits := 0.0
+			if gpuReq > 0 {
+				gpuUnits = duration * float64(gpuReq) * math.Max(0.10, gpuUtil) * cfg.BaseSpeedPerCore * cfg.WorkScale
+			}
+
+			memGiB := math.Max(1, math.Floor(cpuReq*(0.5+rng.Float64()*1.5)))
+
+			requests := map[string]string{
+				"cpu":    formatCPU(cpuReq),
+				"memory": formatMemoryGi(memGiB),
+			}
+			if gpuReq > 0 {
+				requests["nvidia.com/gpu"] = strconv.Itoa(gpuReq)
+			}
+
+			// Build affinity for performance jobs.
+			var affinity map[string]any
+			if isPerf && !cfg.NoAffinityOnly {
+				affinity = map[string]any{
+					"nodeAffinity": map[string]any{
+						"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
+							"nodeSelectorTerms": []map[string]any{
+								{
+									"matchExpressions": []map[string]any{
+										{
+											"key":      "joulie.io/power-profile",
+											"operator": "NotIn",
+											"values":   []string{"eco"},
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+			}
+
+			profile := workloadProfileRec{
+				CPUUtilization:  cpuUtil,
+				GPUUtilization:  gpuUtil,
+				MemoryIntensity: memIntensity,
+				IOIntensity:     ioIntensity,
+			}
+			wlCls := workloadClass{CPU: cpuClass, GPU: gpuClass}
+
+			sensCPU := 0.0
+			sensGPU := 0.0
+			if isPerf {
+				sensCPU = 0.5
+				if gpuReq > 0 {
+					sensGPU = 0.5
+				}
+			}
+
+			// Emit workload record.
+			if cfg.EmitWorkloadRecords {
+				wlRec := workloadRecord{
+					Type:                "workload",
+					SchemaVersion:       "v2",
+					WorkloadID:          wlID,
+					SubmitTimeOffsetSec: t,
+					Namespace:           cfg.Namespace,
+					WorkloadType:        wlType,
+					DurationSec:         duration,
+					IntentClass:         intent,
+					WorkloadClass:       wlCls,
+					SharedIntensity:     profile,
+					Pods:                []workloadPodRec{{Role: "worker", Replicas: 1, Requests: requests}},
+				}
+				if err := writeJSONL(w, wlRec); err != nil {
+					return err
+				}
+			}
+
+			// Emit job record.
+			jobRec := jobRecord{
+				Type:                "job",
+				SchemaVersion:       "v2",
+				JobID:               fmt.Sprintf("%s-worker-01", wlID),
+				WorkloadID:          wlID,
+				WorkloadType:        wlType,
+				PodRole:             "worker",
+				SubmitTimeOffsetSec: t,
+				Namespace:           cfg.Namespace,
+				IntentClass:         intent,
+				PodTemplate:         podTemplateRec{Affinity: affinity, Requests: requests},
+				Work:                workRec{CPUUnits: cpuUnits, GPUUnits: gpuUnits},
+				Sensitivity:         sensitivityRec{CPU: sensCPU, GPU: sensGPU},
+				WorkloadClass:       wlCls,
+				WorkloadProfile:     profile,
+			}
+			if err := writeJSONL(w, jobRec); err != nil {
+				return err
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "diurnal trace: %d jobs, %.0f wall-sec, %.0f sim-hours\n", jobID, wallSec, cfg.SimHours)
 	return w.Flush()
 }
 
@@ -322,7 +602,7 @@ func sampleLogicalWorkload(rng *rand.Rand, idx int, submitSec float64, cfg gener
 	wlType := sampleWorkloadType(rng, hasGPU)
 	totalGPUs := 0
 	if hasGPU {
-		totalGPUs = sampleTotalGPUs(rng)
+		totalGPUs = sampleTotalGPUs(rng, cfg.MinGPURequest)
 	}
 	cpuClass, gpuClass := classesForType(wlType)
 	intent := sampleIntentClass(rng, cfg, cpuClass, gpuClass)
@@ -386,18 +666,23 @@ func sampleWorkloadType(rng *rand.Rand, hasGPU bool) string {
 	}
 }
 
-func sampleTotalGPUs(rng *rand.Rand) int {
+func sampleTotalGPUs(rng *rand.Rand, minGPU int) int {
 	p := rng.Float64()
+	var v int
 	switch {
 	case p < 0.80:
-		return 1
+		v = 1
 	case p < 0.90:
-		return 2
+		v = 2
 	case p < 0.97:
-		return 4
+		v = 4
 	default:
-		return 8
+		v = 8
 	}
+	if minGPU > 0 && v < minGPU {
+		v = minGPU
+	}
+	return v
 }
 
 func classesForType(wlType string) (string, string) {
@@ -507,7 +792,7 @@ func sampleDurationSec(rng *rand.Rand, wlType string, totalGPUs int) float64 {
 func buildPodsForWorkload(rng *rand.Rand, wl logicalWorkload, totalGPUs int, intent string, cfg generatorConfig) []logicalPod {
 	duration := wl.DurationSec
 	profile := wl.Profile
-	gpuResource := defaultGPUResourceName(totalGPUs)
+	gpuResource := pickGPUResourceName(rng, totalGPUs, cfg.AMDGPURatio)
 	pods := []logicalPod{}
 	appendWorker := func(role string, replicas int, gpuEach int, cpuEach float64, memEach float64, cpuFrac float64, gpuFrac float64) {
 		cpuUnits := duration * cpuEach * math.Max(0.10, profile.CPUUtilization) * cfg.CPURatePerCore * cpuFrac
@@ -582,11 +867,11 @@ func sampleCPUPerGPU(rng *rand.Rand, wlType string, g int) float64 {
 	if g <= 0 {
 		switch wlType {
 		case "cpu_preprocess":
-			return clampRange(logNormalApprox(rng, math.Log(4), 0.35), 1, 16)
+			return clampRange(logNormalApprox(rng, math.Log(16), 0.45), 4, 64)
 		case "cpu_analytics":
-			return clampRange(logNormalApprox(rng, math.Log(8), 0.4), 2, 32)
+			return clampRange(logNormalApprox(rng, math.Log(32), 0.5), 8, 128)
 		default:
-			return clampRange(logNormalApprox(rng, math.Log(2), 0.4), 1, 8)
+			return clampRange(logNormalApprox(rng, math.Log(8), 0.4), 2, 32)
 		}
 	}
 	median := 4.0
@@ -710,12 +995,17 @@ func sampleHPOTrialCount(rng *rand.Rand, totalGPUs int) int {
 }
 
 func nextArrivalOffset(rng *rand.Rand, current float64, cfg generatorConfig, st *arrivalState) float64 {
-	hour := hourOfOffset(current)
-	day := dayOfOffset(current)
+	// Convert wall-clock offset to simulated seconds for day/night calculation.
+	simSec := current * cfg.TimeScale
+	hour := hourOfOffset(simSec)
+	day := dayOfOffset(simSec)
 	mult := hourlyArrivalMultiplier(hour)
 	if isBurstHour(rng, st, day, hour, cfg) {
 		mult *= cfg.BurstMultiplier
 		mult += cfg.BurstMeanJobs / 16.0
+	}
+	if isDipHour(rng, st, day, hour, cfg) {
+		mult *= cfg.DipMultiplier
 	}
 	if mult <= 0.05 {
 		mult = 0.05
@@ -724,21 +1014,47 @@ func nextArrivalOffset(rng *rand.Rand, current float64, cfg generatorConfig, st 
 	return current + delta
 }
 
+// hourlyArrivalMultiplier returns a multiplier for the job arrival rate at each
+// hour of the day.  The pattern models a realistic datacenter load cycle:
+//   - Night (00-05): low batch/maintenance traffic (~15-25% of peak)
+//   - Morning ramp (06-08): engineers arrive, CI kicks in
+//   - Morning peak (09-11): peak utilization
+//   - Lunch dip (12-13): slight dip
+//   - Afternoon peak (14-17): second sustained peak
+//   - Evening wind-down (18-21): gradual decrease
+//   - Late night (22-23): approaching overnight lows
 func hourlyArrivalMultiplier(hour int) float64 {
-	switch {
-	case hour >= 0 && hour < 8:
-		return 0.70
-	case hour == 12 || hour == 18:
-		return 0.85
-	case hour >= 9 && hour <= 11:
-		return 1.20
-	case hour >= 13 && hour <= 17:
-		return 1.15
-	case hour >= 20 && hour <= 22:
-		return 1.00
-	default:
-		return 0.95
+	// index by hour 0-23
+	pattern := [24]float64{
+		0.15, // 00
+		0.12, // 01
+		0.10, // 02
+		0.10, // 03
+		0.12, // 04
+		0.20, // 05
+		0.40, // 06
+		0.65, // 07
+		0.85, // 08
+		1.00, // 09 — peak
+		1.00, // 10 — peak
+		0.95, // 11
+		0.80, // 12 — lunch
+		0.85, // 13
+		1.00, // 14 — afternoon peak
+		1.00, // 15
+		0.95, // 16
+		0.85, // 17
+		0.65, // 18
+		0.50, // 19
+		0.40, // 20
+		0.30, // 21
+		0.22, // 22
+		0.18, // 23
 	}
+	if hour < 0 || hour > 23 {
+		return 0.15
+	}
+	return pattern[hour]
 }
 
 func isBurstHour(rng *rand.Rand, st *arrivalState, day, hour int, cfg generatorConfig) bool {
@@ -755,12 +1071,36 @@ func isBurstHour(rng *rand.Rand, st *arrivalState, day, hour int, cfg generatorC
 	return hour == burstHour
 }
 
+// isDipHour returns true if the current hour is a "negative spike" — a sudden
+// drop in arrival rate.  This models maintenance windows, planned drains, or
+// mass job completions that temporarily suppress new submissions.
+func isDipHour(rng *rand.Rand, st *arrivalState, day, hour int, cfg generatorConfig) bool {
+	if cfg.DipDayProbability <= 0 || cfg.DipMultiplier <= 0 {
+		return false
+	}
+	dipHour, ok := st.dipHourByDay[day]
+	if !ok {
+		if rng.Float64() < cfg.DipDayProbability {
+			// Dips happen in off-peak hours (early morning or evening).
+			candidates := []int{3, 4, 5, 19, 20, 21}
+			dipHour = candidates[rng.Intn(len(candidates))]
+		} else {
+			dipHour = -1
+		}
+		st.dipHourByDay[day] = dipHour
+	}
+	return hour == dipHour
+}
+
 func dayOfOffset(offset float64) int  { return int(math.Floor(offset / 86400.0)) }
 func hourOfOffset(offset float64) int { return int(math.Floor(math.Mod(offset, 86400.0) / 3600.0)) }
 
-func defaultGPUResourceName(totalGPUs int) string {
+func pickGPUResourceName(rng *rand.Rand, totalGPUs int, amdRatio float64) string {
 	if totalGPUs <= 0 {
 		return ""
+	}
+	if amdRatio > 0 && rng.Float64() < amdRatio {
+		return "amd.com/gpu"
 	}
 	return "nvidia.com/gpu"
 }

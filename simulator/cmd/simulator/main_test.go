@@ -1579,8 +1579,9 @@ func TestUpdateFacilityMetricsComputesITAndCoolingPower(t *testing.T) {
 	}
 
 	coolingPower := gaugeValue(s.facilityCoolingPowerW)
-	// PUE at 25C = 1.1 + 0.008*(25-15) = 1.18. Cooling = 800 * 0.18 = 144W.
-	expectedCooling := 800.0 * (1.18 - 1.0)
+	// PUE model: basePUE=1.08, tempEffect=0.006*(25-15)=0.06, loadEffect=0.04*1.0=0.04,
+	// interaction=0.015*1.0*(25-15)/15=0.01 → PUE=1.19. Cooling = 800 * 0.19 = 152W.
+	expectedCooling := 800.0 * (1.19 - 1.0)
 	if math.Abs(coolingPower-expectedCooling) > 1.0 {
 		t.Errorf("expected cooling ~%.0fW, got %.2f", expectedCooling, coolingPower)
 	}

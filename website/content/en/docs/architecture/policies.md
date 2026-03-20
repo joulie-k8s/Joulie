@@ -13,7 +13,7 @@ Use this page after:
 
 ## Classification Input
 
-Policy demand classification is derived from the `joulie.io/workload-class` pod annotation or a matching `WorkloadProfile`:
+Policy demand classification is derived from the `joulie.io/workload-class` pod annotation:
 
 - `performance`: pod carries `joulie.io/workload-class: performance`.
 - `standard` (default): no annotation or `joulie.io/workload-class: standard`.
@@ -56,6 +56,8 @@ Properties:
 - stable over time unless node set changes.
 - keeps at least some performance supply across heterogeneous hardware families.
 
+This policy is exercised in the [CPU-Only Benchmark]({{< relref "/docs/experiments/cpu-only-benchmark.md" >}}) and [Heterogeneous GPU Cluster Benchmark]({{< relref "/docs/experiments/heterogeneous-benchmark.md" >}}).
+
 ## `queue_aware_v1`
 
 Goal: adapt HP count to current performance-only pressure.
@@ -86,6 +88,8 @@ Properties:
 - monotonic in pressure `P`,
 - bounded by min/max limits,
 - heterogeneous-aware because denser nodes are preferred first while each family keeps some performance capacity.
+
+This policy is exercised in the [CPU-Only Benchmark]({{< relref "/docs/experiments/cpu-only-benchmark.md" >}}) and [Heterogeneous GPU Cluster Benchmark]({{< relref "/docs/experiments/heterogeneous-benchmark.md" >}}).
 
 ## `rule_swap_v1` (debug policy)
 

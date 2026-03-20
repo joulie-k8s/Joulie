@@ -75,6 +75,21 @@ fi
 export PYTHONUNBUFFERED=1
 export REUSE_EXISTING_CLUSTER=${REUSE_EXISTING_CLUSTER:-true}
 export CLEAN_RESULTS=${CLEAN_RESULTS:-true}
+# Extract cluster name from kind config so install scripts use the correct worker node.
+if [[ -z "${CLUSTER_NAME:-}" ]]; then
+  export CLUSTER_NAME=$(python3 - "$CFG" <<'PY'
+import pathlib, sys, yaml
+cfg = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()) or {}
+kind_cfg = cfg.get("install", {}).get("kind_cluster_config", "")
+if kind_cfg:
+    kcfg = yaml.safe_load(pathlib.Path(kind_cfg).read_text()) or {}
+    print(kcfg.get("name", "joulie-homogeneous-h100-benchmark"))
+else:
+    print("joulie-homogeneous-h100-benchmark")
+PY
+)
+fi
+export CLUSTER_NAME
 export BENCHMARK_RUN_ROOT=${BENCHMARK_RUN_ROOT:-$ARTIFACT_DIR}
 export RESULTS_DIR=${RESULTS_DIR:-$BENCHMARK_RUN_ROOT/results}
 export GENERATED_CLASSES=${GENERATED_CLASSES:-"$ROOT/experiments/03-homogeneous-h100-benchmark/generated/10-node-classes.yaml"}

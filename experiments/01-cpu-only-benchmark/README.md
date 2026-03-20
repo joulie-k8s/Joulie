@@ -184,6 +184,55 @@ KIND_CLUSTER_CONFIG=/path/to/kind-config.yaml ./scripts/01_create_cluster_kwokct
   - `baseline_means.png`
 - Seed-shared traces reused across baselines: `results/traces/*.jsonl`
 
+## Verifying no DNS leaks from KinD
+
+KinD clusters with kube-scheduler extenders can leak internal `.cluster.local` DNS queries to the host's upstream DNS (since kube-scheduler runs with `hostNetwork: true`). The cluster setup script (`01_create_cluster_kwokctl.sh`) applies iptables rules to redirect all DNS from the control-plane node to CoreDNS, but you should verify this after cluster creation:
+
+```bash
+# On the host VM, capture DNS traffic leaving the machine:
+sudo tcpdump -i eth0 port 53 -nn
+
+# You should see NO queries for *.cluster.local or *.svc.cluster.local.
+# If you see queries like:
+#   joulie-scheduler-extender.joulie-system.svc.cluster.local
+#   joulie-scheduler-extender.joulie-system.svc.cluster.local.cern.ch
+# then the iptables DNS redirect is not working — recreate the cluster.
+```
+
+If DNS leaks are observed, delete and recreate the cluster:
+
+```bash
+kind delete cluster --name joulie-cpu-benchmark
+REUSE_EXISTING_CLUSTER=false bash scripts/10_setup_cluster.sh
+```
+
+## Steady-State Measurement Approach
+
+This experiment uses a **timeout-based truncation** strategy to measure cluster behavior
+during quasi-steady state. Instead of waiting for all jobs to complete (which produces a
+long cooldown tail as the last few pods drain), the benchmark enforces a fixed timeout
+(`run.timeout` in the config, typically 300s wall-clock).
+
+**Rationale:**
+
+- The cooldown tail (where a nearly-empty cluster finishes the last few jobs) is not
+  representative of production workloads, where new work continuously arrives.
+- Energy metrics during the tail are dominated by idle-cluster power, which dilutes the
+  effect of energy-aware scheduling.
+- By truncating at timeout, we capture the steady-state window where the cluster is under
+  sustained load — exactly the regime where Joulie's power-capping policies matter most.
+
+**Consequences for analysis:**
+
+- The analysis pipeline (`06_collect.py`) does **not** filter out timed-out runs. All runs
+  are included in summary statistics regardless of whether all jobs completed.
+- The plotting pipeline (`07_plot.py`) does **not** generate completion-rate or
+  timed-out-run plots, since timeout is a deliberate measurement strategy, not a failure.
+- Energy, throughput, and makespan metrics reflect the truncated measurement window.
+
+This approach is inspired by HPC benchmarking practices where steady-state measurements
+are preferred over transient startup/shutdown phases.
+
 ## Notes
 
 - This is the first benchmark harness implementation.

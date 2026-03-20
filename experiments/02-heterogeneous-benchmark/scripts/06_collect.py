@@ -9,7 +9,7 @@ import re
 import pandas as pd
 
 ROOT = pathlib.Path("experiments/02-heterogeneous-benchmark")
-RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "results")))
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "runs" / "latest" / "results"))).resolve()
 RUN_ID_RE = re.compile(r"_b([ABC])_s(\d+)$")
 JOB_COMPLETED_RE = re.compile(r"job completed id=(?P<job>\S+) node=(?P<node>\S+) class=(?P<class>\S+) elapsed=(?P<elapsed>[0-9.]+)s")
 MIN_WORKLOAD_TYPE_JOBS = 10
@@ -420,10 +420,7 @@ def main():
     df.to_csv(out, index=False)
     print(f"wrote {out}")
 
-    completed_run_ids = set(df[df["run_completed"] == True]["run_id"].tolist())
-    completed_df = df[df["run_completed"] == True].copy()
-    job_rows = [row for row in job_rows if row["run_id"] in completed_run_ids]
-    hw_energy_rows = [row for row in hw_energy_rows if row["run_id"] in completed_run_ids]
+    all_run_ids = set(df["run_id"].tolist())
 
     if job_rows:
         jobs_out = RESULTS / "job_details.csv"
@@ -564,16 +561,12 @@ def main():
     ]
     baseline_rows = []
     for baseline, grp in df.groupby("baseline"):
-        completed = grp[grp["run_completed"] == True].copy()
         row = {
             "baseline": baseline,
             "runs_total": len(grp),
-            "runs_completed": len(completed),
-            "runs_incomplete": len(grp) - len(completed),
-            "completion_rate_pct": 100.0 * len(completed) / len(grp) if len(grp) else None,
         }
         for metric in numeric_metrics:
-            series = pd.to_numeric(completed[metric], errors="coerce").dropna()
+            series = pd.to_numeric(grp[metric], errors="coerce").dropna()
             if series.empty:
                 row[f"{metric}_mean"] = None
                 row[f"{metric}_std"] = None

@@ -1,0 +1,79 @@
+run:
+  baselines: [A, B, C]
+  seeds: 1
+  # 5000 nodes (4000 GPU + 1000 CPU).  48-hour (2-day) day/night cycle.
+  # time_scale 120 → 24 sim-hours = 720 wall-sec = 12 min.
+  # 80k jobs over ~1440 wall-sec → 48 sim-hours (2 days) of arrivals.
+  # timeout 1680 wall-sec → 56 sim-hours → captures full 48h + drain buffer.
+  jobs: 80000
+  mean_inter_arrival_sec: 0.004
+  time_scale: 120
+  timeout: 1680
+  settle_seconds: 15
+  cleanup_timeout: 600
+
+workload:
+  perf_ratio: 0.25
+  compute_bound_perf_boost: 3.5
+  gpu_ratio: 0.75
+  gpu_request_per_job: 1
+  # Stronger bursts for visible power spikes that Joulie can smooth.
+  burst_day_probability: 0.50
+  burst_mean_jobs: 25.0
+  burst_multiplier: 3.5
+  # Negative spikes: sudden drops in arrival rate (maintenance windows, drains).
+  dip_day_probability: 0.40
+  dip_multiplier: 0.08
+  emit_workload_records: true
+  work_scale: 80.0
+  baseline_a_strip_affinity: true
+  allowed_workload_types:
+    - debug_eval
+    - single_gpu_training
+    - cpu_preprocess
+    - cpu_analytics
+
+simulator:
+  base_speed_per_core: 2.0
+  manifest: examples/07 - simulator-gpu-powercaps/manifests/20-simulator.yaml
+  facility_ambient_base_c: 22.0
+  facility_ambient_amplitude_c: 8.0
+  facility_ambient_period_sec: 720
+
+policy:
+  cpu_write_absolute_caps: true
+  gpu_write_absolute_caps: true
+  caps:
+    cpu_performance_pct_of_max: 100
+    cpu_eco_pct_of_max: 60
+    # Realistic GPU eco cap: 60% of GPU TDP.
+    # H100 NVL (400W TDP) → 240W cap, triggers above ~45% GPU util.
+    gpu_performance_pct_of_max: 100
+    gpu_eco_pct_of_max: 60
+    # Realistic CPU eco cap: triggers above ~40% CPU util.
+    performance_watts: 600
+    eco_watts: 220
+  loop:
+    operator_reconcile_interval: "20s"
+    agent_reconcile_interval: "10s"
+    queue_aware_operator_reconcile_sim_seconds: 300
+  static:
+    hp_frac: 0.35
+  queue_aware:
+    hp_base_frac: 0.05
+    hp_min: 50
+    hp_max: 4000
+    perf_per_hp_node: 3
+
+images:
+  joulie_registry: registry.cern.ch/mbunino/joulie
+  joulie_tag: dev0.1.1
+  sim_registry: registry.cern.ch/mbunino/joulie
+  sim_image: joulie-simulator
+  sim_tag: dev0.1.1
+
+inventory:
+  source: experiments/02-heterogeneous-benchmark/configs/cluster-nodes-5k.yaml
+
+install:
+  kind_cluster_config: experiments/02-heterogeneous-benchmark/configs/kind-cluster-5k.yaml

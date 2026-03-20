@@ -92,4 +92,5 @@ run_step "sanity tests (contracts)" go test -count=1 ./tests/contracts/...
 run_step "benchmark sweep" python3 experiments/03-homogeneous-h100-benchmark/scripts/05_sweep.py --config "$CFG"
 run_step "result collection" python3 experiments/03-homogeneous-h100-benchmark/scripts/06_collect.py
 run_step "plot generation" python3 experiments/03-homogeneous-h100-benchmark/scripts/07_plot.py
+run_step "timeseries plots" python3 experiments/03-homogeneous-h100-benchmark/scripts/08_plot_timeseries.py
 log "homogeneous-h100 benchmark run+collect+plot completed (config=$CFG total_elapsed=$(( $(date +%s) - START_EPOCH ))s)"

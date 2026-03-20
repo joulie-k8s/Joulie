@@ -6,20 +6,20 @@ agent:
   image:
     repository: registry.cern.ch/mbunino/joulie/joulie-agent
     tag: latest
-    pullPolicy: Always
+    pullPolicy: IfNotPresent
   hostNetwork: true
   privileged: true
   env:
     RECONCILE_INTERVAL: "20s"
     METRICS_ADDR: ":8080"
     SIMULATE_ONLY: "false"
-    HARDWARE_CATALOG_PATH: "simulator/catalog/hardware.yaml"
   daemonset:
     nodeSelector:
       joulie.io/managed: "true"
   pool:
     replicas: 2
     nodeSelector: "joulie.io/managed=true"
+    podNodeSelector: {}
     shards: 2
   service:
     enabled: true
@@ -30,10 +30,11 @@ agent:
       prometheus.io/path: /metrics
 
 operator:
+  nodeSelector: {}
   image:
     repository: registry.cern.ch/mbunino/joulie/joulie-operator
     tag: latest
-    pullPolicy: Always
+    pullPolicy: IfNotPresent
   env:
     RECONCILE_INTERVAL: "1m"
     METRICS_ADDR: ":8081"
@@ -48,16 +49,10 @@ operator:
     GPU_PERFORMANCE_CAP_PCT_OF_MAX: "100"
     GPU_ECO_CAP_PCT_OF_MAX: "60"
     GPU_WRITE_ABSOLUTE_CAPS: "false"
-    HARDWARE_CATALOG_PATH: "simulator/catalog/hardware.yaml"
     GPU_MODEL_CAPS_JSON: "{}"
     GPU_PRODUCT_LABEL_KEYS: "joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product,amd.com/gpu.family"
-    ENABLE_CLASSIFIER: "true"
-    CLASSIFY_INTERVAL: "30s"
     PROMETHEUS_ADDRESS: "http://prometheus-operated.monitoring:9090"
     KEPLER_AVAILABLE: "true"
-    ENABLE_ACTIVE_RESCHEDULING: "false"
-    RESCHEDULE_INTERVAL: "60s"
-    RESCHEDULE_MAX_EVICTIONS_PER_NODE: "1"
     ENABLE_FACILITY_METRICS: "false"
     FACILITY_PROMETHEUS_ADDRESS: "http://prometheus-operated.monitoring:9090"
     FACILITY_POLL_INTERVAL: "30s"
@@ -75,10 +70,18 @@ schedulerExtender:
     repository: registry.cern.ch/mbunino/joulie/joulie-scheduler
     tag: latest
   port: 9876
+  clusterIP: ""  # set a fixed ClusterIP so the scheduler config can use an IP instead of DNS
   replicas: 1
   hostNetwork: false
+  nodeName: ""  # set to bypass scheduler (needed when ignorable=false)
   nodeSelector: {}
   env: {}
+
+hardwareCatalog:
+  enabled: false  # mount hardware catalog ConfigMap into operator and agent
+  configMapName: joulie-hardware-catalog
+  key: hardware.yaml
+  mountPath: /etc/joulie-catalog
 
 grafanaDashboard:
   enabled: false  # enable if Grafana sidecar is configured to auto-provision dashboards

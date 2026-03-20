@@ -5,7 +5,7 @@ weight: 60
 
 Joulie exposes Prometheus metrics from multiple components.
 
-This page covers **operator + agent** metrics.
+This page covers **operator + agent + scheduler extender** metrics.
 Simulator metrics are documented separately in:
 
 - [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})
@@ -23,6 +23,10 @@ For telemetry/control input interfaces (host/http routing), see:
 - Operator:
   - path: `/metrics`
   - default address: `:8081`
+  - env override: `METRICS_ADDR`
+- Scheduler extender:
+  - path: `/metrics`
+  - default address: `:9877`
   - env override: `METRICS_ADDR`
 
 ## Agent metrics
@@ -98,16 +102,38 @@ For telemetry/control input interfaces (host/http routing), see:
   - `component`: `cpu|gpu`
   - higher values mean the operator considers that node relatively denser for that subsystem
 
-### Active rescheduler
+## Scheduler extender metrics
 
-- `joulie_rescheduler_evictions_total{node,namespace,reason}` (counter)
-  - Pod evictions triggered by the active rescheduler
-  - `reason`: from `NodeTwin.status.rescheduleRecommendations` (e.g., `cooling_stress`, `psu_stress`)
-- `joulie_rescheduler_skipped_total{node,reason}` (counter)
-  - Pods skipped by the rescheduler
-  - `reason`: `not_reschedulable` (missing annotation) or `rate_limited` (per-node cap reached)
+### Request counters
 
-These metrics are only populated when `ENABLE_ACTIVE_RESCHEDULING=true`.
+- `joulie_scheduler_filter_requests_total{workload_class}` (counter)
+  - total filter requests by workload class
+  - `workload_class`: `standard|performance`
+- `joulie_scheduler_prioritize_requests_total{workload_class}` (counter)
+  - total prioritize (scoring) requests by workload class
+
+### Request latency
+
+- `joulie_scheduler_filter_duration_seconds{workload_class}` (histogram)
+  - time to process a filter request
+- `joulie_scheduler_prioritize_duration_seconds{workload_class}` (histogram)
+  - time to process a prioritize request
+
+### Scoring signals
+
+- `joulie_scheduler_final_node_score{node,workload_class}` (gauge)
+  - final scheduling score (0-100) for each node and workload class
+  - updated on every prioritize call; reflects the combined headroom + cooling + trend + bonus formula
+- `joulie_scheduler_node_headroom_score{node}` (gauge)
+  - power headroom score per node
+  - can go negative when projected power (measured + pod marginal) exceeds the capped budget
+
+### Data freshness
+
+- `joulie_scheduler_stale_twin_data{node}` (gauge)
+  - `1` if the NodeTwin status is older than the staleness threshold (default 5m), `0` otherwise
+  - a node with stale data receives a neutral score (50) instead of its computed value
+  - useful for alerting when the operator has stopped updating twin status
 
 ## Notes
 

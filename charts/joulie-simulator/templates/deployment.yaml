@@ -25,9 +25,9 @@ spec:
             - name: {{ $key }}
               value: {{ $val | quote }}
             {{- end }}
-            {{- if and .Values.workloadTrace .Values.workloadTrace.content }}
-            - name: SIM_WORKLOAD_TRACE_PATH
-              value: "/etc/joulie-sim/trace/{{ .Values.workloadTrace.fileName | default "trace.jsonl" }}"
+            {{- range $key, $val := .Values.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
             {{- end }}
           ports:
             - name: http
@@ -37,16 +37,15 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
-            {{- if .Values.nodeClasses }}
             - name: node-classes
               mountPath: /etc/joulie-sim
               readOnly: true
-            {{- end }}
-            {{- if and .Values.workloadTrace .Values.workloadTrace.content }}
             - name: workload-trace
-              mountPath: /etc/joulie-sim/trace
+              mountPath: /etc/joulie-sim-trace
               readOnly: true
-            {{- end }}
+            - name: hardware-catalog
+              mountPath: /etc/joulie-sim-catalog
+              readOnly: true
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -56,13 +55,12 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
-        {{- if .Values.nodeClasses }}
         - name: node-classes
           configMap:
-            name: joulie-simulator-node-classes
-        {{- end }}
-        {{- if and .Values.workloadTrace .Values.workloadTrace.content }}
+            name: {{ .Values.configMaps.nodeClasses.name }}
         - name: workload-trace
           configMap:
-            name: joulie-simulator-workload-trace
-        {{- end }}
+            name: {{ .Values.configMaps.workloadTrace.name }}
+        - name: hardware-catalog
+          configMap:
+            name: {{ .Values.configMaps.hardwareCatalog.name }}

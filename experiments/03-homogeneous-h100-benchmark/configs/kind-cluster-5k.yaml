@@ -1,0 +1,33 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: joulie-h100-5k
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.34.3
+  - role: worker
+    image: kindest/node:v1.34.3
+    labels:
+      joulie.io/infra: "true"
+
+kubeadmConfigPatches:
+- |
+  kind: ClusterConfiguration
+  etcd:
+    local:
+      extraArgs:
+        quota-backend-bytes: "8589934592"
+- |
+  kind: InitConfiguration
+  nodeRegistration:
+    kubeletExtraArgs:
+      cgroup-driver: "cgroupfs"
+- |
+  kind: JoinConfiguration
+  nodeRegistration:
+    kubeletExtraArgs:
+      cgroup-driver: "cgroupfs"
+
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+    SystemdCgroup = false

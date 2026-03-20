@@ -1,0 +1,33 @@
+nodes:
+  # High core-count general-purpose nodes (batch, analytics)
+  - node_name_prefix: kwok-cpu-highcore
+    replicas: 1250
+    vendor: none
+    product: ""
+    cpu: AMD EPYC 9965 192-Core Processor
+    cpu_sockets: 2
+    cpu_cores: 384
+    memory_gib: 1536
+    gpu_count: 0
+
+  # High-frequency nodes (latency-sensitive, perf-affinity workloads)
+  - node_name_prefix: kwok-cpu-highfreq
+    replicas: 1250
+    vendor: none
+    product: ""
+    cpu: AMD EPYC 9375F 32-Core Processor
+    cpu_sockets: 2
+    cpu_cores: 64
+    memory_gib: 770
+    gpu_count: 0
+
+  # Compute-intensive mid-range nodes (bulk preprocessing)
+  - node_name_prefix: kwok-cpu-intensive
+    replicas: 2500
+    vendor: none
+    product: ""
+    cpu: AMD EPYC 9655 96-Core Processor
+    cpu_sockets: 2
+    cpu_cores: 192
+    memory_gib: 1536
+    gpu_count: 0

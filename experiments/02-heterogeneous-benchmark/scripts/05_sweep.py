@@ -5,13 +5,18 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import time
 from collections import deque
 
 import yaml
 
+# Allow importing the shared trace generator from scripts/.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
+from scripts.trace_generator import generate_trace_python
+
 DEFAULT_CONFIG = pathlib.Path("experiments/02-heterogeneous-benchmark/configs/benchmark.yaml")
-RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", "experiments/02-heterogeneous-benchmark/results"))
+RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", "experiments/02-heterogeneous-benchmark/runs/latest/results"))
 START_TS = time.time()
 
 
@@ -79,9 +84,12 @@ def generate_canonical_seed_trace(
     burst_day_probability: float,
     burst_mean_jobs: float,
     burst_multiplier: float,
+    dip_day_probability: float,
+    dip_multiplier: float,
     emit_workload_records: bool,
     work_scale: float,
     allowed_workload_types: list[str] | None,
+    time_scale: float = 1.0,
 ) -> pathlib.Path:
     traces_dir = RESULTS / "traces"
     traces_dir.mkdir(parents=True, exist_ok=True)
@@ -136,8 +144,14 @@ def generate_canonical_seed_trace(
             str(burst_mean_jobs),
             "--burst-multiplier",
             str(burst_multiplier),
+            "--dip-day-probability",
+            str(dip_day_probability),
+            "--dip-multiplier",
+            str(dip_multiplier),
             "--emit-workload-records",
             str(emit_workload_records).lower(),
+            "--time-scale",
+            str(time_scale),
         ]
     )
     run(cmd, check=True)
@@ -501,6 +515,8 @@ def main():
     ap.add_argument("--burst-multiplier", type=float, default=None)
     ap.add_argument("--emit-workload-records", type=str, default="")
     ap.add_argument("--baselines", type=str, default="")
+    ap.add_argument("--trace-mode", choices=["go", "python"], default="go",
+                    help="Trace generation mode: 'go' (workloadgen) or 'python' (noisy NHPP)")
     args = ap.parse_args()
 
     cfg_path = pathlib.Path(args.config)
@@ -552,6 +568,8 @@ def main():
         if args.burst_multiplier is not None
         else float(get_cfg(cfg, "workload", "burst_multiplier", default=2.0))
     )
+    dip_day_probability = float(get_cfg(cfg, "workload", "dip_day_probability", default=0.30))
+    dip_multiplier = float(get_cfg(cfg, "workload", "dip_multiplier", default=0.08))
     emit_workload_records_raw = (
         args.emit_workload_records
         if args.emit_workload_records.strip()
@@ -559,6 +577,8 @@ def main():
     )
     emit_workload_records = str(emit_workload_records_raw).strip().lower() not in {"false", "0", "no"}
     work_scale = float(get_cfg(cfg, "workload", "work_scale", default=1.0))
+    diurnal_peak_rate = float(get_cfg(cfg, "workload", "diurnal_peak_rate", default=2.0))
+    trace_mode = args.trace_mode
     baseline_a_strip_affinity = bool(get_cfg(cfg, "workload", "baseline_a_strip_affinity", default=True))
     allowed_workload_types = get_cfg(cfg, "workload", "allowed_workload_types", default=None)
     if allowed_workload_types is not None and not isinstance(allowed_workload_types, list):
@@ -595,6 +615,12 @@ def main():
     inventory_source = str(get_cfg(cfg, "inventory", "source", default="experiments/02-heterogeneous-benchmark/configs/cluster-nodes.yaml"))
     run(["bash", "experiments/02-heterogeneous-benchmark/scripts/00_generate_assets.sh", inventory_source], check=True)
 
+    # Extract cluster name from Kind config so install scripts use the correct worker node name.
+    kind_cfg_path = pathlib.Path(get_cfg(cfg, "install", "kind_cluster_config", default="experiments/02-heterogeneous-benchmark/configs/kind-cluster.yaml"))
+    if kind_cfg_path.exists():
+        kind_cfg = yaml.safe_load(kind_cfg_path.read_text()) or {}
+        install_env_base["CLUSTER_NAME"] = kind_cfg.get("name", "joulie-heterogeneous")
+
     # Image and manifest config
     install_env_base["JOULIE_REGISTRY"] = str(get_cfg(cfg, "images", "joulie_registry", default="registry.cern.ch/mbunino/joulie"))
     install_env_base["JOULIE_TAG"] = str(get_cfg(cfg, "images", "joulie_tag", default="latest"))
@@ -627,11 +653,9 @@ def main():
     install_env_base["OPERATOR_RECONCILE_INTERVAL"] = str(get_cfg(cfg, "policy", "loop", "operator_reconcile_interval", default="20s"))
     install_env_base["AGENT_RECONCILE_INTERVAL"] = str(get_cfg(cfg, "policy", "loop", "agent_reconcile_interval", default="10s"))
     install_env_base["SIM_BASE_SPEED_PER_CORE"] = str(get_cfg(cfg, "simulator", "base_speed_per_core", default=1.0))
-    install_env_base["SIM_CLASSIFIER_MISCLASSIFY_RATE"] = str(get_cfg(cfg, "simulator", "classifier_misclassify_rate", default=0.10))
     install_env_base["SIM_FACILITY_AMBIENT_BASE_C"] = str(get_cfg(cfg, "simulator", "facility_ambient_base_c", default=22.0))
     install_env_base["SIM_FACILITY_AMBIENT_AMPLITUDE_C"] = str(get_cfg(cfg, "simulator", "facility_ambient_amplitude_c", default=8.0))
     install_env_base["SIM_FACILITY_AMBIENT_PERIOD_SEC"] = str(get_cfg(cfg, "simulator", "facility_ambient_period_sec", default=600))
-    install_env_base["ENABLE_CLASSIFIER"] = str(get_cfg(cfg, "operator", "enable_classifier", default=True)).lower()
     install_env_base["ENABLE_FACILITY_METRICS"] = str(get_cfg(cfg, "operator", "enable_facility_metrics", default=False)).lower()
     log(
         "configured images "
@@ -693,21 +717,47 @@ def main():
         for seed in range(1, seeds + 1):
             done += 1
             log(f"run {done}/{total_runs}: baseline={baseline} seed={seed}")
-            canonical_trace = generate_canonical_seed_trace(
-                seed=seed,
-                jobs=jobs,
-                mean_inter_arrival_sec=mean_inter_arrival_sec,
-                perf_ratio=perf_ratio,
-                compute_bound_perf_boost=compute_bound_perf_boost,
-                gpu_ratio=gpu_ratio,
-                gpu_request_per_job=gpu_request_per_job,
-                burst_day_probability=burst_day_probability,
-                burst_mean_jobs=burst_mean_jobs,
-            burst_multiplier=burst_multiplier,
-            emit_workload_records=emit_workload_records,
-            work_scale=work_scale,
-            allowed_workload_types=allowed_workload_types,
-        )
+            if trace_mode == "python":
+                sim_hours = timeout * time_scale / 3600.0
+                base_speed = float(get_cfg(cfg, "simulator", "base_speed_per_core", default=2.0))
+                inv_path = pathlib.Path(get_cfg(cfg, "inventory", "source", default=""))
+                n_nodes = 41
+                if inv_path.exists():
+                    inv = yaml.safe_load(inv_path.read_text()) or {}
+                    n_nodes = sum(n.get("replicas", 1) for n in inv.get("nodes", []))
+                burst_scale = max(0.001, n_nodes / 5000.0)
+                canonical_trace = generate_trace_python(
+                    traces_dir=RESULTS / "traces",
+                    seed=seed,
+                    sim_hours=sim_hours,
+                    gpu_ratio=gpu_ratio,
+                    work_scale=work_scale,
+                    time_scale=time_scale,
+                    base_speed_per_core=base_speed,
+                    diurnal_peak_rate=diurnal_peak_rate,
+                    perf_ratio=perf_ratio,
+                    burst_scale=burst_scale,
+                    log_fn=log,
+                )
+            else:
+                canonical_trace = generate_canonical_seed_trace(
+                    seed=seed,
+                    jobs=jobs,
+                    mean_inter_arrival_sec=mean_inter_arrival_sec,
+                    perf_ratio=perf_ratio,
+                    compute_bound_perf_boost=compute_bound_perf_boost,
+                    gpu_ratio=gpu_ratio,
+                    gpu_request_per_job=gpu_request_per_job,
+                    burst_day_probability=burst_day_probability,
+                    burst_mean_jobs=burst_mean_jobs,
+                    burst_multiplier=burst_multiplier,
+                    dip_day_probability=dip_day_probability,
+                    dip_multiplier=dip_multiplier,
+                    emit_workload_records=emit_workload_records,
+                    work_scale=work_scale,
+                    allowed_workload_types=allowed_workload_types,
+                    time_scale=time_scale,
+                )
             canonical_trace = retarget_trace_for_cluster(canonical_trace)
             trace_file = derive_baseline_trace(
                 baseline=baseline,

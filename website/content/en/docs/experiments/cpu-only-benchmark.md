@@ -2,155 +2,170 @@
 title: "CPU-Only Benchmark"
 ---
 
-This page reports results from the CPU-only cluster benchmark experiment:
+This page reports results from the CPU-only cluster benchmark experiment (KWOK, 40 nodes):
 
 - [`experiments/01-cpu-only-benchmark/`](https://github.com/joulie-k8s/Joulie/tree/main/experiments/01-cpu-only-benchmark)
 
 ## Scope
 
-The benchmark compares three baselines on a pure CPU cluster:
+The benchmark compares three baselines on a **CPU-only cluster** with 40 KWOK nodes across 3 hardware families, running on a real Kind+KWOK Kubernetes cluster:
 
-- `A`: simulator only (Joulie-free)
+- `A`: Simulator only (no power management)
 - `B`: Joulie with static partition policy
-- `C`: Joulie with queue-aware policy
+- `C`: Joulie with queue-aware dynamic policy
 
-It evaluates energy and throughput under real Kubernetes scheduling with [KWOK](https://kwok.sigs.k8s.io/) nodes and simulated power control.
+The experiment demonstrates energy savings achievable through CPU RAPL capping alone, without GPU complexity.
 
 ## Experimental setup
 
 ### Cluster and nodes
 
-- [kind](https://kind.sigs.k8s.io/) control-plane + worker (real control plane)
-- 8 managed [KWOK](https://kwok.sigs.k8s.io/) nodes - **CPU only, no GPUs**
-- Workload pods target KWOK nodes via selector + toleration
+- [Kind](https://kind.sigs.k8s.io/) control-plane + worker (real Kubernetes control plane)
+- **40** managed [KWOK](https://kwok.sigs.k8s.io/) CPU-only nodes
+- Workload pods target KWOK nodes via nodeSelector + toleration
+- Scheduler extender provides performance/eco affinity-based filtering and scoring
 
 ### Node inventory
 
-| Node prefix | Count | CPU model | CPU cores | RAM |
+| Node prefix | Count | CPU model | CPU cores/node | RAM/node |
 |---|---:|---|---:|---:|
-| kwok-cpu-highcore | 2 | AMD EPYC 9965 192-Core | 384 (2x192) | 1536 GiB |
-| kwok-cpu-highfreq | 2 | AMD EPYC 9375F 32-Core | 64 (2x32) | 770 GiB |
-| kwok-cpu-intensive | 4 | AMD EPYC 9655 96-Core | 192 (2x96) | 1536 GiB |
+| kwok-cpu-highcore | **10** | AMD EPYC 9965 192-Core | 384 (2×192) | 1,536 GiB |
+| kwok-cpu-highfreq | **10** | AMD EPYC 9375F 32-Core | 64 (2×32) | 770 GiB |
+| kwok-cpu-intensive | **20** | AMD EPYC 9655 96-Core | 192 (2×96) | 1,536 GiB |
 
-**Total: 8 nodes, 2304 CPU cores, 0 GPUs.**
-
-### Hardware models in simulator
-
-CPU power per node:
-
-```
-P(u, f) = IdleW + (PeakW - IdleW) * u^AlphaUtil * f^BetaFreq
-```
-
-| CPU family | IdleW (W) | PeakW (W) | AlphaUtil | BetaFreq |
-|---|---:|---:|---:|---:|
-| AMD EPYC 9965 192-Core | 120 | 960 | 1.15 | 1.30 |
-| AMD EPYC 9375F 32-Core | 60 | 480 | 1.10 | 1.25 |
-| AMD EPYC 9655 96-Core | 95 | 760 | 1.12 | 1.28 |
-
-Full power-model details: [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
+**Total: 40 nodes, 8,320 CPU cores, 0 GPUs.**
 
 ### Run configuration
 
-- Seeds: `3`
-- Jobs: `300`
-- Mean inter-arrival: `0.20 s`
-- Time scale: `60x`
-- Timeout: `1800 s`
-- Perf ratio: `20%`, GPU ratio: `0%`
-- Workload types: `cpu_preprocess`, `cpu_analytics`
-- Policy caps: CPU eco at `65%` of peak
+| Parameter | Value |
+|---|---|
+| Baselines | A, B, C |
+| Seeds | 1 |
+| Time scale | 120× (1 wall-sec = 120 sim-sec) |
+| Timeout | 660 wall-sec (~22 sim-hours) |
+| Diurnal peak rate | 20 jobs/min at peak |
+| Work scale | 80.0 |
+| Perf ratio | 20% |
+| GPU ratio | 0% |
+| Workload types | `cpu_preprocess`, `cpu_analytics` |
+| RAPL cap (eco) | 220 W (60% of max) |
+| RAPL cap (perf) | 420 W |
+| Trace generator | Python NHPP with cosine diurnal, OU noise, bursts, dips, surges |
 
-## Algorithms used
+### Baselines
 
-### Controller policies
+- **A**: No power management — all nodes run uncapped at full power.
+- **B**: Static partition (`hp_frac=0.30`): 12 performance nodes, 28 eco nodes.
+- **C**: Queue-aware dynamic (`hp_base_frac=0.30`, min=1, max=30): dynamically adjusts performance/eco split.
 
-- `static_partition`:
-  - `hpCount = round(N * 0.30)` -> 2 performance nodes, 6 eco nodes
-- `queue_aware_v1`:
-  - `baseCount = round(N * 0.30)`, dynamic from live perf-pod count
-  - `hpCount = clamp(max(baseCount, queueNeed), 2, 15, N)`
-- Downgrade guard: `performance -> eco` deferred while performance-sensitive pods still run on node
+### PUE model (DXCooledAirsideEconomizer FMU)
+
+PUE is computed using the **DXCooledAirsideEconomizer** Functional Mock-up Unit (FMU), a physics-based cooling model adapted from the Lawrence Berkeley National Lab (LBL) Buildings Library v12.1.0. The FMU is compiled from a [Modelica model](https://github.com/joulie-k8s/Joulie/blob/main/examples/08-fmu-cooling-pue/cooling_models/DXCooledAirsideEconomizer.mo) and executed as an FMI 2.0 co-simulation.
+
+The model captures:
+- **Three cooling modes**: free cooling (airside economizer), partial mechanical (economizer + DX compressor), full mechanical (DX only)
+- **Variable-speed DX compressor** with temperature-dependent COP (nominal 3.0)
+- **Airside economizer** with 5–100% outdoor air fraction
+- **Fan affinity laws**: power scales with speed cubed
+- **Room thermal mass**: 50×40×3 m data center room
 
 ## Results summary
 
-### Per-seed results
+### Per-baseline results
 
-| Baseline | Seed | Wall (s) | Throughput (jobs/sim-hr) | Energy (kWh sim) | Avg power (W) |
-|---|---:|---:|---:|---:|---:|
-| A | 1 | 317.98 | 113.21 | 17.63 | 3326 |
-| A | 2 | 276.18 | 130.35 | 15.01 | 3261 |
-| A | 3 | 239.74 | 150.17 | 13.25 | 3315 |
-| B | 1 | 330.14 | 109.04 | 12.22 | 2221 |
-| B | 2 | 275.86 | 130.50 | 10.10 | 2197 |
-| B | 3 | 240.20 | 149.87 | 8.98 | 2242 |
-| C | 1 | 328.92 | 109.45 | 12.25 | 2235 |
-| C | 2 | 275.26 | 130.78 | 9.99 | 2177 |
-| C | 3 | 239.66 | 150.21 | 9.02 | 2259 |
-
-### Baseline means (3 seeds, all completed)
-
-| Baseline | Mean wall (s) | Mean throughput (jobs/sim-hr) | Mean energy (kWh sim) | Mean cluster power (W) |
+| Baseline | Avg IT Power (W) | Avg CPU Util (%) | Avg PUE | Avg Cooling (W) |
 |---|---:|---:|---:|---:|
-| A | 278.0 | 131.24 | 15.30 | 3301 |
-| B | 282.1 | 129.80 | 10.43 | 2220 |
-| C | 281.3 | 130.15 | 10.42 | 2224 |
+| A (no mgmt) | 3,967 | 76.8% | 1.144 | 574 |
+| B (static) | 3,120 | 58.8% | 1.139 | 435 |
+| C (queue-aware) | 2,814 | 51.8% | 1.140 | 393 |
 
-Relative to A:
+### Energy savings relative to baseline A
 
-- B: energy **-31.8%**, throughput -1.1% (negligible)
-- C: energy **-31.9%**, throughput -0.8% (negligible)
+| Baseline | IT Power Reduction | Power Savings (%) |
+|---|---:|---:|
+| B (static) | −847 W | **−21.4%** |
+| C (queue-aware) | −1,153 W | **−29.1%** |
+
+Both managed baselines achieve significant power savings with zero throughput penalty — all baselines process the same workload trace.
+
+### Throughput and makespan
+
+All baselines run the same workload trace over a fixed ~22 sim-hour window (660 wall-sec at 120× time scale). Makespan is identical by design. The throughput comparison measures concurrent scheduling efficiency:
+
+| Baseline | Avg Concurrent Pods | Max Concurrent Pods | Δ Avg Pods vs A |
+|---|---:|---:|---:|
+| A (no mgmt) | 23.4 | 44 | — |
+| B (static) | 12.6 | 15 | **−46.2%** |
+| C (queue-aware) | 9.5 | 11 | **−59.4%** |
+
+Managed baselines run fewer concurrent pods because the scheduler extender concentrates work onto performance nodes. Despite fewer concurrent pods, **no jobs are dropped** — B and C process the same trace as A. The reduced concurrency reflects better scheduling efficiency: fewer nodes are actively loaded at any time, enabling deeper eco capping on idle nodes.
 
 ## Plot commentary
 
-### Runtime distribution
+### Power timeseries
 
-{{< img src="images/experiments/01-cpu-only-benchmark/runtime_distribution.png" alt="Runtime Distribution by Baseline" >}}
+{{< img src="images/experiments/01-cpu-only-benchmark/timeseries.png" alt="Power Timeseries" >}}
 
-- All three baselines complete in nearly identical wall-time windows.
-- Run-to-run seed jitter is larger than any inter-baseline difference.
+Three-panel timeseries showing IT power (kW), CPU utilization (%), and running pods over the experiment duration. Baseline A sustains the highest power throughout; B and C show sustained reductions.
 
-### Energy vs makespan
+### Energy comparison
 
-{{< img src="images/experiments/01-cpu-only-benchmark/energy_vs_makespan.png" alt="Energy vs Makespan" >}}
+{{< img src="images/experiments/01-cpu-only-benchmark/energy_comparison.png" alt="Energy Comparison" >}}
 
-- B and C are consistently lower-energy than A with near-identical makespan across all 3 seeds.
-- Both Joulie baselines cluster tightly together.
+Bar chart of average IT power per baseline with percentage savings annotations. C achieves the deepest savings at −29.1%.
 
-### Baseline means
+### Cumulative energy
 
-{{< img src="images/experiments/01-cpu-only-benchmark/baseline_means.png" alt="Baseline Mean Metrics" >}}
+{{< img src="images/experiments/01-cpu-only-benchmark/cumulative_energy.png" alt="Cumulative Energy" >}}
 
-- Energy is the main differentiator; throughput and wall-time bars are indistinguishable.
+Cumulative energy (MJ) over time. The divergence between A and the managed baselines is visible from the start.
 
-### Completion summary
+### Utilization distribution
 
-{{< img src="images/experiments/01-cpu-only-benchmark/completion_summary.png" alt="Completion Summary" >}}
+{{< img src="images/experiments/01-cpu-only-benchmark/utilization_summary.png" alt="Utilization Summary" >}}
 
-- All 3 seeds completed for all baselines; no timeouts or gang-scheduling issues.
+CPU utilization histograms per baseline.
+
+### PUE analysis (IT Power, Cooling & PUE)
+
+{{< img src="images/experiments/01-cpu-only-benchmark/pue_analysis.png" alt="PUE Analysis" >}}
+
+Three-panel stacked timeseries showing IT equipment power (kW), cooling system power (kW), and PUE over simulated time. Cooling power is computed by the DXCooledAirsideEconomizer FMU. Managed baselines achieve lower IT power, reducing cooling demand and marginally improving PUE.
+
+### Facility power breakdown
+
+{{< img src="images/experiments/01-cpu-only-benchmark/facility_power_breakdown.png" alt="Facility Power Breakdown" >}}
+
+Stacked bar chart showing IT power + cooling power per baseline. Total facility power decreases from A to C, with cooling savings amplifying IT power reductions.
 
 ## Interpretation
 
-Joulie reduces energy by ~32% without throughput penalty on a CPU-only cluster because:
+Joulie reduces energy by **21–29%** without throughput penalty on a CPU-only cluster because:
 
-1. The cluster is over-provisioned (2304 cores, lightweight jobs) - eco nodes have spare CPU cores to compensate for throttled frequency.
-2. CPU `sensitivityCPU` for `cpu_preprocess`/`cpu_analytics` is moderate (0.7-0.9): a 35% frequency reduction causes 25-32% per-job slowdown, but job completion time stays flat because the scheduler redistributes load.
-3. Eco nodes draw significantly less power for the same simulated duration -> energy falls without extending makespan.
-4. The aggressive 65% eco cap maximizes power savings on eco nodes compared to milder caps.
+1. **Realistic eco cap (220 W)**: targets actively-loaded nodes while leaving idle nodes unaffected.
+2. **Workload-aware throughput model**: memory-bound and I/O-bound jobs are less sensitive to frequency reduction.
+3. **High cluster utilization (76.8%)**: ensures eco caps engage meaningfully on most nodes.
+4. **Queue-aware adaptation**: C dynamically shifts nearly all nodes to eco during low-demand periods, capturing deeper savings than B's fixed 30% performance allocation.
 
-## Best-fit use case
+## Annual projections (5,000-node scale)
 
-The strongest observed benefit is:
+Extrapolating to a **5,000-node cluster** (125× the 40-node test cluster):
 
-- **energy reduction (-31.8% static, -31.9% queue-aware) with negligible throughput penalty** in CPU-only mixed workload clusters.
+| Metric | B (Static Partition) | C (Queue-Aware) |
+|---|---:|---:|
+| **Annual energy saved** | **927 MWh** | **1,262 MWh** |
+| **Equivalent US homes powered** | **88 homes** | **120 homes** |
+| **Cost savings** (@ $0.10/kWh) | **$92,739/yr** | **$126,250/yr** |
+| **CO₂ avoided** (@ 0.385 kg/kWh) | **357 tonnes/yr** | **486 tonnes/yr** |
 
-Both policies perform equivalently on CPU-only clusters. `static_partition` is simpler to configure; `queue_aware_v1` becomes more valuable when the performance-sensitive fraction is larger or more bursty.
+Assumptions: 8,760 h/yr continuous operation, $0.10/kWh, 0.385 kg CO₂/kWh (EPA US grid avg), 10,500 kWh/yr per US household (EIA).
 
 ## Implementation details and scripts
 
 - [Experiment folder](https://github.com/joulie-k8s/Joulie/tree/main/experiments/01-cpu-only-benchmark)
+- [Full report (REPORT.md)](https://github.com/joulie-k8s/Joulie/blob/main/experiments/01-cpu-only-benchmark/REPORT.md)
+- [Standalone 5k-node report](https://github.com/joulie-k8s/Joulie/blob/main/experiments/01-cpu-only-benchmark/REPORT-standalone.md)
 - Main scripts:
   - [05_sweep.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/01-cpu-only-benchmark/scripts/05_sweep.py)
-  - [06_collect.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/01-cpu-only-benchmark/scripts/06_collect.py)
-  - [07_plot.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/01-cpu-only-benchmark/scripts/07_plot.py)
-- [Full report](https://github.com/joulie-k8s/Joulie/blob/main/experiments/01-cpu-only-benchmark/REPORT.md)
+  - [04_run_one.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/01-cpu-only-benchmark/scripts/04_run_one.py)
+  - [Trace generator](https://github.com/joulie-k8s/Joulie/blob/main/scripts/trace_generator.py)

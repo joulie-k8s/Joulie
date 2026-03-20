@@ -155,6 +155,7 @@ func main() {
 		"joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product,amd.com/gpu.family",
 	))
 	hardwareCatalog := loadHardwareCatalog()
+	twinHardwareCatalog = hardwareCatalog // share with fetchNodeHardware in twinstate.go
 
 	parsedSelector, err := labels.Parse(selector)
 	if err != nil {
@@ -165,8 +166,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("in-cluster config: %v", err)
 	}
-	cfg.QPS = 50
-	cfg.Burst = 100
+	cfg.QPS = float32(floatEnv("KUBE_CLIENT_QPS", 50))
+	cfg.Burst = intEnv("KUBE_CLIENT_BURST", 100)
 	kube, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Fatalf("kube client: %v", err)
@@ -176,6 +177,20 @@ func main() {
 		log.Fatalf("dynamic client: %v", err)
 	}
 	startMetricsServer(metricsAddr)
+
+	// --- Node power source (per-node telemetry) ---
+	nodePowerSource = strings.ToLower(envOrDefault("OPERATOR_NODE_POWER_SOURCE", "static"))
+	nodePowerHTTPEndpoint = envOrDefault("OPERATOR_NODE_POWER_HTTP_ENDPOINT", "")
+	nodePowerPromAddress = envOrDefault("OPERATOR_NODE_POWER_PROMETHEUS_ADDRESS", "")
+	nodePowerPromQuery = envOrDefault("OPERATOR_NODE_POWER_PROMETHEUS_QUERY", "")
+	switch nodePowerSource {
+	case "http":
+		log.Printf("node power source: http endpoint=%s", nodePowerHTTPEndpoint)
+	case "prometheus":
+		log.Printf("node power source: prometheus address=%s query=%s", nodePowerPromAddress, nodePowerPromQuery)
+	default:
+		log.Printf("node power source: static (no measured power)")
+	}
 
 	// --- Facility metrics (data-center level) ---
 	fm := &facilityMetrics{}
@@ -190,49 +205,6 @@ func main() {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
 	go facilityMetricsLoop(bgCtx, fm, facCfg)
-
-	// --- Workload classifier ---
-	if boolEnv("ENABLE_CLASSIFIER", true) {
-		clsCfg := classifierConfig{
-			classifyInterval:      durationEnv("CLASSIFY_INTERVAL", 30*time.Second),
-			reclassifyInterval:    durationEnv("RECLASSIFY_INTERVAL", 15*time.Minute),
-			metricsWindow:         durationEnv("CLASSIFY_METRICS_WINDOW", 10*time.Minute),
-			prometheusAddress:     envOrDefault("PROMETHEUS_ADDRESS", "http://prometheus-operated.monitoring:9090"),
-			keplerAvailable:       boolEnv("KEPLER_AVAILABLE", true),
-			minConfidence:         floatEnv("CLASSIFY_MIN_CONFIDENCE", 0.5),
-			nodeSelector:          selector,
-			simAnnotationFallback: boolEnv("CLASSIFY_SIM_ANNOTATION_FALLBACK", false),
-			simNoisePct:           floatEnv("CLASSIFY_SIM_NOISE_PCT", 10),
-		}
-		go classifierLoop(bgCtx, kube, dyn, clsCfg)
-	}
-
-	// --- Active rescheduler ---
-	reschCfg := reschedulerConfig{
-		enabled:             boolEnv("ENABLE_ACTIVE_RESCHEDULING", false),
-		interval:            durationEnv("RESCHEDULE_INTERVAL", 60*time.Second),
-		maxEvictionsPerNode: intEnv("RESCHEDULE_MAX_EVICTIONS_PER_NODE", 1),
-		dryRun:              boolEnv("RESCHEDULE_DRY_RUN", false),
-	}
-	go reschedulerLoop(bgCtx, kube, dyn, reschCfg)
-
-	// --- Periodic WorkloadProfile cleanup ---
-	go func() {
-		cleanupTicker := time.NewTicker(5 * time.Minute)
-		defer cleanupTicker.Stop()
-		for {
-			select {
-			case <-bgCtx.Done():
-				return
-			case <-cleanupTicker.C:
-				ctx, cancel := context.WithTimeout(bgCtx, 10*time.Second)
-				if err := cleanupOrphanedWorkloadProfiles(ctx, kube, dyn); err != nil {
-					log.Printf("[cleanup] WorkloadProfile cleanup: %v", err)
-				}
-				cancel()
-			}
-		}
-	}()
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

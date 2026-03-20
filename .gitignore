@@ -3,6 +3,9 @@
 #
 runs/
 results/
+results*/
+_old_results*/
+generated/
 tmp/
 tmp.*
 *.tgz
@@ -76,11 +79,14 @@ website/public/
 website/resources/
 website/.hugo_build.lock
 
-# Compiled Go binaries (root-level)
+# Compiled Go binaries
 /agent
 /scheduler
 /operator
-/simulator
 /kubectl-joulie
 /workloadgen
+/simulator/simulator
+/simulator/cmd/workloadgen/workloadgen
 /03-heterogeneous_cluster_control_loop
+.claude/
+bin/kubectl-joulie
