@@ -117,30 +117,21 @@ def apply_trace_chunks(trace_path: pathlib.Path) -> list[str]:
     chunk_names: list[str] = []
     with tempfile.TemporaryDirectory(prefix="joulie-trace-parts-") as tmpdir:
         tmpdir_path = pathlib.Path(tmpdir)
+        manifests_dir = tmpdir_path / "manifests"
+        manifests_dir.mkdir()
         for idx, payload in enumerate(parts):
             key = f"part-{idx:03d}.jsonl"
             name = f"{TRACE_CONFIGMAP_PREFIX}-{idx:03d}"
-            part_path = tmpdir_path / key
-            part_path.write_bytes(payload)
-            rendered = run(
-                [
-                    "kubectl",
-                    "-n",
-                    "joulie-sim-demo",
-                    "create",
-                    "configmap",
-                    name,
-                    f"--from-file={key}={part_path}",
-                    "--dry-run=client",
-                    "-o",
-                    "yaml",
-                ],
-                capture=True,
-            ).stdout
-            replace = run(["kubectl", "replace", "-f", "-"], check=False, capture=True, input_text=rendered)
-            if replace.returncode != 0:
-                run(["kubectl", "create", "-f", "-"], input_text=rendered)
+            cm = {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {"name": name, "namespace": "joulie-sim-demo"},
+                "data": {key: payload.decode("utf-8", errors="replace")},
+            }
+            (manifests_dir / f"{name}.json").write_text(json.dumps(cm))
             chunk_names.append(name)
+        log(f"creating {len(chunk_names)} configmap manifests in single batch")
+        run(["kubectl", "create", "-f", str(manifests_dir)])
     log(f"trace split into configmap parts count={len(chunk_names)}")
     return chunk_names
 

@@ -116,8 +116,9 @@ type simJob struct {
 	Class             string
 	Namespace         string
 	SubmitOffsetSec   float64
-	RequestedCPUCores float64
-	CPUUnitsTotal     float64
+	RequestedCPUCores  float64
+	RequestedMemoryMiB float64 // 0 means use default (64Mi)
+	CPUUnitsTotal      float64
 	CPUUnitsRemaining float64
 	SensitivityCPU    float64
 	CPUWorkClass      string
@@ -2366,12 +2367,16 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 			}
 		}
 		requestedCPU := 1.0
+		requestedMemoryMiB := 0.0
 		requestedGPUs := 0.0
 		gpuResourceName := ""
 		if podTpl, ok := rec["podTemplate"].(map[string]any); ok {
 			if reqRaw, ok := podTpl["requests"].(map[string]any); ok {
 				if cpuRaw, ok := reqRaw["cpu"].(string); ok {
 					requestedCPU = parseCPURequestOrDefault(cpuRaw, 1.0)
+				}
+				if memRaw, ok := reqRaw["memory"].(string); ok {
+					requestedMemoryMiB = parseMemoryRequestMiB(memRaw)
 				}
 				gpuReqOrder := []struct {
 					key         string
@@ -2476,8 +2481,9 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 			Class:             class,
 			Namespace:         namespace,
 			SubmitOffsetSec:   submitOffset,
-			RequestedCPUCores: requestedCPU,
-			CPUUnitsTotal:     cpuUnits,
+			RequestedCPUCores:  requestedCPU,
+			RequestedMemoryMiB: requestedMemoryMiB,
+			CPUUnitsTotal:      cpuUnits,
 			CPUUnitsRemaining: cpuUnits,
 			SensitivityCPU:    sensCPU,
 			CPUWorkClass:      cpuWorkClass,
@@ -2595,7 +2601,7 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
 								corev1.ResourceCPU:    resource.MustParse(strconv.FormatFloat(j.RequestedCPUCores, 'f', -1, 64)),
-								corev1.ResourceMemory: resource.MustParse("64Mi"),
+								corev1.ResourceMemory: resource.MustParse(formatMemoryMiB(j.RequestedMemoryMiB)),
 							},
 						},
 					},
@@ -3070,6 +3076,33 @@ func parseCPURequestOrDefault(v string, def float64) float64 {
 		return def
 	}
 	return f
+}
+
+// parseMemoryRequestMiB parses a Kubernetes memory quantity string (e.g. "4Gi", "512Mi")
+// and returns the value in MiB. Returns 0 on failure (caller should use default).
+func parseMemoryRequestMiB(v string) float64 {
+	q, err := resource.ParseQuantity(v)
+	if err != nil {
+		return 0
+	}
+	// Value() returns bytes
+	bytes := q.Value()
+	if bytes <= 0 {
+		return 0
+	}
+	return float64(bytes) / (1024 * 1024)
+}
+
+// formatMemoryMiB returns a Kubernetes memory quantity string.
+// Uses the parsed MiB value, falling back to 64Mi if unset.
+func formatMemoryMiB(mib float64) string {
+	if mib <= 0 {
+		return "64Mi"
+	}
+	if mib >= 1024 && int(mib)%1024 == 0 {
+		return fmt.Sprintf("%dGi", int(mib)/1024)
+	}
+	return fmt.Sprintf("%dMi", int(mib))
 }
 
 func parseIntegerResourceRequest(v string) (float64, bool) {

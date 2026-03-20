@@ -23,6 +23,7 @@ workload:
   dip_multiplier: 0.08
   emit_workload_records: true
   work_scale: 80.0
+  diurnal_peak_rate: 20
   baseline_a_strip_affinity: true
   allowed_workload_types:
     - cpu_preprocess

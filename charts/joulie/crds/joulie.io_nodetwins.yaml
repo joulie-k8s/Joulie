@@ -83,7 +83,7 @@ spec:
                     source:
                       type: string
                       description: "Measurement source: kepler, utilization, or static"
-                      enum: ["kepler", "utilization", "static"]
+                      enum: ["kepler", "utilization", "static", "http", "http-error", "http-no-endpoint", "prometheus", "prometheus-no-data"]
                     measuredNodePowerW:
                       type: number
                       description: "Measured total node power draw in watts"

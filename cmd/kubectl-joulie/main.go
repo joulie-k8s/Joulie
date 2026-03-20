@@ -8,16 +8,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -61,7 +65,12 @@ Commands:
   help                Show this help`)
 }
 
-func newClient() dynamic.Interface {
+type clients struct {
+	dyn  dynamic.Interface
+	kube kubernetes.Interface
+}
+
+func newClients() clients {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	overrides := &clientcmd.ConfigOverrides{}
 	config := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides)
@@ -70,12 +79,17 @@ func newClient() dynamic.Interface {
 		fmt.Fprintf(os.Stderr, "Error: cannot connect to cluster: %v\n", err)
 		os.Exit(1)
 	}
-	client, err := dynamic.NewForConfig(restConfig)
+	dynClient, err := dynamic.NewForConfig(restConfig)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot create client: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: cannot create dynamic client: %v\n", err)
 		os.Exit(1)
 	}
-	return client
+	kubeClient, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot create kube client: %v\n", err)
+		os.Exit(1)
+	}
+	return clients{dyn: dynClient, kube: kubeClient}
 }
 
 type nodeState struct {
@@ -88,6 +102,12 @@ type nodeState struct {
 	gpuCapPct     float64
 	density       float64
 	lastUpdated   string
+	// Resource allocation
+	cpuAllocPct float64
+	memAllocPct float64
+	gpuAllocPct float64
+	hasGPU      bool
+	pods        int
 }
 
 func fetchTwinStates(client dynamic.Interface) []nodeState {
@@ -106,6 +126,81 @@ func fetchTwinStates(client dynamic.Interface) []nodeState {
 	}
 	sort.Slice(states, func(i, j int) bool { return states[i].name < states[j].name })
 	return states
+}
+
+// nodeResources holds allocatable and requested resources for a node.
+type nodeResources struct {
+	cpuAllocatable int64 // millicores
+	memAllocatable int64 // bytes
+	gpuAllocatable int64 // count
+	cpuRequested   int64
+	memRequested   int64
+	gpuRequested   int64
+	pods           int
+}
+
+func fetchNodeResources(kube kubernetes.Interface) map[string]*nodeResources {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	res := map[string]*nodeResources{}
+
+	// Get node allocatable resources
+	nodes, err := kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return res
+	}
+	for _, n := range nodes.Items {
+		nr := &nodeResources{}
+		if cpu, ok := n.Status.Allocatable[corev1.ResourceCPU]; ok {
+			nr.cpuAllocatable = cpu.MilliValue()
+		}
+		if mem, ok := n.Status.Allocatable[corev1.ResourceMemory]; ok {
+			nr.memAllocatable = mem.Value()
+		}
+		if gpu, ok := n.Status.Allocatable["nvidia.com/gpu"]; ok {
+			nr.gpuAllocatable = gpu.Value()
+		}
+		if gpu, ok := n.Status.Allocatable["amd.com/gpu"]; ok {
+			nr.gpuAllocatable += gpu.Value()
+		}
+		res[n.Name] = nr
+	}
+
+	// Sum pod requests per node
+	pods, err := kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: "status.phase!=Succeeded,status.phase!=Failed",
+	})
+	if err != nil {
+		return res
+	}
+	for _, p := range pods.Items {
+		nodeName := p.Spec.NodeName
+		if nodeName == "" {
+			continue
+		}
+		nr, ok := res[nodeName]
+		if !ok {
+			continue
+		}
+		nr.pods++
+		for _, c := range p.Spec.Containers {
+			if cpu, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
+				nr.cpuRequested += cpu.MilliValue()
+			}
+			if mem, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
+				nr.memRequested += mem.Value()
+			}
+			if gpu, ok := c.Resources.Requests["nvidia.com/gpu"]; ok {
+				nr.gpuRequested += gpu.Value()
+			}
+			if gpu, ok := c.Resources.Requests["amd.com/gpu"]; ok {
+				nr.gpuRequested += gpu.Value()
+			}
+		}
+	}
+
+	return res
 }
 
 // nestedNumber extracts a numeric value from an unstructured object,
@@ -134,7 +229,7 @@ func parseNodeState(u unstructured.Unstructured) nodeState {
 
 	ns := nodeState{name: u.GetName()}
 	ns.class, _, _ = unstructured.NestedString(u.Object, "status", "schedulableClass")
-	ns.headroom = nestedNumber(u.Object, "status", "predictedPowerHeadroomScore")
+	ns.headroom = math.Max(0, nestedNumber(u.Object, "status", "predictedPowerHeadroomScore"))
 	ns.coolingStress = nestedNumber(u.Object, "status", "predictedCoolingStressScore")
 	ns.psuStress = nestedNumber(u.Object, "status", "predictedPsuStressScore")
 	ns.density = nestedNumber(u.Object, "status", "hardwareDensityScore")
@@ -148,6 +243,27 @@ func parseNodeState(u unstructured.Unstructured) nodeState {
 	return ns
 }
 
+func pct(used, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return float64(used) / float64(total) * 100.0
+}
+
+func enrichWithResources(states []nodeState, resources map[string]*nodeResources) {
+	for i := range states {
+		nr, ok := resources[states[i].name]
+		if !ok {
+			continue
+		}
+		states[i].cpuAllocPct = pct(nr.cpuRequested, nr.cpuAllocatable)
+		states[i].memAllocPct = pct(nr.memRequested, nr.memAllocatable)
+		states[i].gpuAllocPct = pct(nr.gpuRequested, nr.gpuAllocatable)
+		states[i].hasGPU = nr.gpuAllocatable > 0
+		states[i].pods = nr.pods
+	}
+}
+
 func renderStatus(out *os.File, states []nodeState) {
 	if len(states) == 0 {
 		fmt.Fprintln(out, "No NodeTwin resources found. Is Joulie installed?")
@@ -159,6 +275,7 @@ func renderStatus(out *os.File, states []nodeState) {
 	var totalCooling, totalPSU, totalHeadroom float64
 	var peakCooling float64
 	var peakCoolingNode string
+	var totalPods int
 
 	for _, s := range states {
 		switch s.class {
@@ -178,6 +295,7 @@ func renderStatus(out *os.File, states []nodeState) {
 			peakCooling = s.coolingStress
 			peakCoolingNode = s.name
 		}
+		totalPods += s.pods
 	}
 
 	n := float64(len(states))
@@ -208,45 +326,58 @@ func renderStatus(out *os.File, states []nodeState) {
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "  Avg PSU stress: %.0f%%\n", totalPSU/n)
 	fmt.Fprintf(out, "  Avg power headroom: %.0f%%\n", totalHeadroom/n)
+	fmt.Fprintf(out, "  Running pods: %d\n", totalPods)
 
 	// Per-node table
 	fmt.Fprintln(out)
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NODE\tCLASS\tHEADROOM\tCOOLING\tPSU\tCPU CAP\tGPU CAP\tDENSITY")
+	fmt.Fprintln(w, "NODE\tCLASS\tHEADROOM\tCOOLING\tCPU%\tMEM%\tGPU%\tPODS\tCPU CAP\tGPU CAP")
 	for _, s := range states {
-		fmt.Fprintf(w, "%s\t%s\t%.0f%%\t%.0f%%\t%.0f%%\t%.0f%%\t%.0f%%\t%.0f\n",
+		gpuAlloc := "-"
+		gpuCap := "-"
+		if s.hasGPU {
+			gpuAlloc = fmt.Sprintf("%.0f%%", s.gpuAllocPct)
+			gpuCap = fmt.Sprintf("%.0f%%", s.gpuCapPct)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%.0f%%\t%.0f%%\t%.0f%%\t%.0f%%\t%s\t%d\t%.0f%%\t%s\n",
 			s.name, s.class,
-			s.headroom, s.coolingStress, s.psuStress,
-			s.cpuCapPct, s.gpuCapPct, s.density)
+			s.headroom, s.coolingStress,
+			s.cpuAllocPct, s.memAllocPct, gpuAlloc, s.pods,
+			s.cpuCapPct, gpuCap)
 	}
 	w.Flush()
 }
 
 func runStatus() {
-	client := newClient()
-	states := fetchTwinStates(client)
+	c := newClients()
+	states := fetchTwinStates(c.dyn)
+	resources := fetchNodeResources(c.kube)
+	enrichWithResources(states, resources)
 	renderStatus(os.Stdout, states)
 }
 
 func runStatusWatch() {
-	client := newClient()
+	c := newClients()
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	// First render immediately
 	fmt.Print("\033[2J\033[H") // clear screen + cursor home
-	states := fetchTwinStates(client)
+	states := fetchTwinStates(c.dyn)
+	resources := fetchNodeResources(c.kube)
+	enrichWithResources(states, resources)
 	renderStatus(os.Stdout, states)
 	fmt.Printf("\n  (watching — refresh every 2s, Ctrl-C to stop)")
 
 	for range ticker.C {
 		fmt.Print("\033[2J\033[H")
-		states = fetchTwinStates(client)
+		states = fetchTwinStates(c.dyn)
+		resources = fetchNodeResources(c.kube)
+		enrichWithResources(states, resources)
 		renderStatus(os.Stdout, states)
 		fmt.Printf("\n  (watching — refresh every 2s, Ctrl-C to stop)")
 	}
 }
-
 
 // jsonPrint is a debug helper (unused in normal operation, kept for development).
 func jsonPrint(v interface{}) {
@@ -254,5 +385,6 @@ func jsonPrint(v interface{}) {
 	fmt.Println(string(b))
 }
 
-// Ensure json import is used.
+// Ensure imports are used.
 var _ = json.Marshal
+var _ resource.Quantity

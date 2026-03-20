@@ -5,10 +5,15 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import time
 from collections import deque
 
 import yaml
+
+# Allow importing the shared trace generator from scripts/.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
+from scripts.trace_generator import generate_trace_python
 
 DEFAULT_CONFIG = pathlib.Path("experiments/01-cpu-only-benchmark/configs/benchmark.yaml")
 RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", "experiments/01-cpu-only-benchmark/runs/latest/results"))
@@ -461,6 +466,8 @@ def main():
     ap.add_argument("--burst-multiplier", type=float, default=None)
     ap.add_argument("--emit-workload-records", type=str, default="")
     ap.add_argument("--baselines", type=str, default="")
+    ap.add_argument("--trace-mode", choices=["go", "python"], default="go",
+                    help="Trace generation mode: 'go' (workloadgen) or 'python' (noisy NHPP)")
     args = ap.parse_args()
 
     cfg_path = pathlib.Path(args.config)
@@ -516,6 +523,8 @@ def main():
     )
     emit_workload_records = str(emit_workload_records_raw).strip().lower() not in {"false", "0", "no"}
     work_scale = float(get_cfg(cfg, "workload", "work_scale", default=1.0))
+    diurnal_peak_rate = float(get_cfg(cfg, "workload", "diurnal_peak_rate", default=10.0))
+    trace_mode = args.trace_mode
     baseline_a_strip_affinity = bool(get_cfg(cfg, "workload", "baseline_a_strip_affinity", default=True))
     allowed_workload_types = get_cfg(cfg, "workload", "allowed_workload_types", default=None)
     if allowed_workload_types is not None and not isinstance(allowed_workload_types, list):
@@ -648,23 +657,47 @@ def main():
         for seed in range(1, seeds + 1):
             done += 1
             log(f"run {done}/{total_runs}: baseline={baseline} seed={seed}")
-            canonical_trace = generate_canonical_seed_trace(
-                seed=seed,
-                jobs=jobs,
-                mean_inter_arrival_sec=mean_inter_arrival_sec,
-                perf_ratio=perf_ratio,
-                compute_bound_perf_boost=compute_bound_perf_boost,
-                gpu_ratio=gpu_ratio,
-                burst_day_probability=burst_day_probability,
-                burst_mean_jobs=burst_mean_jobs,
-                burst_multiplier=burst_multiplier,
-                dip_day_probability=dip_day_probability,
-                dip_multiplier=dip_multiplier,
-                emit_workload_records=emit_workload_records,
-                work_scale=work_scale,
-                allowed_workload_types=allowed_workload_types,
-                time_scale=time_scale,
-            )
+            if trace_mode == "python":
+                sim_hours = timeout * time_scale / 3600.0
+                base_speed = float(get_cfg(cfg, "simulator", "base_speed_per_core", default=2.0))
+                # Compute burst_scale: ratio of this cluster to 5k-node reference.
+                inv_path = pathlib.Path(get_cfg(cfg, "inventory", "source", default=""))
+                n_nodes = 40  # default
+                if inv_path.exists():
+                    inv = yaml.safe_load(inv_path.read_text()) or {}
+                    n_nodes = sum(n.get("replicas", 1) for n in inv.get("nodes", []))
+                burst_scale = max(0.001, n_nodes / 5000.0)
+                canonical_trace = generate_trace_python(
+                    traces_dir=RESULTS / "traces",
+                    seed=seed,
+                    sim_hours=sim_hours,
+                    gpu_ratio=gpu_ratio,
+                    work_scale=work_scale,
+                    time_scale=time_scale,
+                    base_speed_per_core=base_speed,
+                    diurnal_peak_rate=diurnal_peak_rate,
+                    perf_ratio=perf_ratio,
+                    burst_scale=burst_scale,
+                    log_fn=log,
+                )
+            else:
+                canonical_trace = generate_canonical_seed_trace(
+                    seed=seed,
+                    jobs=jobs,
+                    mean_inter_arrival_sec=mean_inter_arrival_sec,
+                    perf_ratio=perf_ratio,
+                    compute_bound_perf_boost=compute_bound_perf_boost,
+                    gpu_ratio=gpu_ratio,
+                    burst_day_probability=burst_day_probability,
+                    burst_mean_jobs=burst_mean_jobs,
+                    burst_multiplier=burst_multiplier,
+                    dip_day_probability=dip_day_probability,
+                    dip_multiplier=dip_multiplier,
+                    emit_workload_records=emit_workload_records,
+                    work_scale=work_scale,
+                    allowed_workload_types=allowed_workload_types,
+                    time_scale=time_scale,
+                )
             canonical_trace = retarget_trace_for_cluster(canonical_trace)
             trace_file = derive_baseline_trace(
                 baseline=baseline,

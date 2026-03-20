@@ -112,6 +112,7 @@ type generatorConfig struct {
 	DiurnalBurstMin     int     // min burst size in diurnal mode
 	DiurnalBurstMax     int     // max burst size in diurnal mode
 	DiurnalPeakRate     float64 // peak arrival rate (jobs/min in sim-time)
+	MinGPURequest       int     // minimum GPUs per GPU job
 }
 
 type logicalWorkload struct {
@@ -188,6 +189,7 @@ func parseFlags() generatorConfig {
 	flag.IntVar(&cfg.DiurnalBurstMin, "diurnal-burst-min", 20, "min burst size in diurnal mode")
 	flag.IntVar(&cfg.DiurnalBurstMax, "diurnal-burst-max", 80, "max burst size in diurnal mode")
 	flag.Float64Var(&cfg.DiurnalPeakRate, "diurnal-peak-rate", 80.0, "peak arrival rate in jobs/min sim-time (diurnal mode)")
+	flag.IntVar(&cfg.MinGPURequest, "min-gpu-request", 0, "minimum GPUs per GPU job (0 = use default sampling)")
 	flag.Parse()
 	if cfg.MeanInterArrival <= 0 {
 		cfg.MeanInterArrival = 1
@@ -343,7 +345,7 @@ func generateDiurnalTrace(cfg generatorConfig) error {
 			case r < 0.80:
 				// GPU training (1-8 GPUs).
 				cpuReq = float64([]int{16, 32, 64}[rng.Intn(3)])
-				gpuReq = []int{1, 2, 4, 8}[rng.Intn(4)]
+				gpuReq = maxInt(cfg.MinGPURequest, []int{1, 2, 4, 8}[rng.Intn(4)])
 				isPerf = true
 				cpuUtil = 0.3 + rng.Float64()*0.3
 				gpuUtil = 0.6 + rng.Float64()*0.35
@@ -358,7 +360,7 @@ func generateDiurnalTrace(cfg generatorConfig) error {
 			case r < 0.92:
 				// GPU inference (1-2 GPUs).
 				cpuReq = float64([]int{4, 8, 16}[rng.Intn(3)])
-				gpuReq = []int{1, 2}[rng.Intn(2)]
+				gpuReq = maxInt(cfg.MinGPURequest, []int{1, 2}[rng.Intn(2)])
 				isPerf = false
 				cpuUtil = 0.3 + rng.Float64()*0.3
 				gpuUtil = 0.3 + rng.Float64()*0.4
@@ -598,7 +600,7 @@ func sampleLogicalWorkload(rng *rand.Rand, idx int, submitSec float64, cfg gener
 	wlType := sampleWorkloadType(rng, hasGPU)
 	totalGPUs := 0
 	if hasGPU {
-		totalGPUs = sampleTotalGPUs(rng)
+		totalGPUs = sampleTotalGPUs(rng, cfg.MinGPURequest)
 	}
 	cpuClass, gpuClass := classesForType(wlType)
 	intent := sampleIntentClass(rng, cfg, cpuClass, gpuClass)
@@ -662,18 +664,23 @@ func sampleWorkloadType(rng *rand.Rand, hasGPU bool) string {
 	}
 }
 
-func sampleTotalGPUs(rng *rand.Rand) int {
+func sampleTotalGPUs(rng *rand.Rand, minGPU int) int {
 	p := rng.Float64()
+	var v int
 	switch {
 	case p < 0.80:
-		return 1
+		v = 1
 	case p < 0.90:
-		return 2
+		v = 2
 	case p < 0.97:
-		return 4
+		v = 4
 	default:
-		return 8
+		v = 8
 	}
+	if minGPU > 0 && v < minGPU {
+		v = minGPU
+	}
+	return v
 }
 
 func classesForType(wlType string) (string, string) {

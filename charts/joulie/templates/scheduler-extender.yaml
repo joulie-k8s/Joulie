@@ -48,9 +48,13 @@ spec:
       containers:
         - name: extender
           image: "{{ .Values.schedulerExtender.image.repository }}:{{ .Values.schedulerExtender.image.tag }}"
+          imagePullPolicy: {{ .Values.schedulerExtender.image.pullPolicy | default "IfNotPresent" }}
           ports:
             - name: http
               containerPort: {{ .Values.schedulerExtender.port }}
+              protocol: TCP
+            - name: metrics
+              containerPort: 9877
               protocol: TCP
           env:
             - name: EXTENDER_ADDR
@@ -85,5 +89,9 @@ spec:
     - name: http
       port: {{ .Values.schedulerExtender.port }}
       targetPort: http
+      protocol: TCP
+    - name: metrics
+      port: 9877
+      targetPort: metrics
       protocol: TCP
 {{- end }}

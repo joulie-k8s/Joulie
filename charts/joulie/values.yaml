@@ -13,7 +13,6 @@ agent:
     RECONCILE_INTERVAL: "20s"
     METRICS_ADDR: ":8080"
     SIMULATE_ONLY: "false"
-    HARDWARE_CATALOG_PATH: "simulator/catalog/hardware.yaml"
   daemonset:
     nodeSelector:
       joulie.io/managed: "true"
@@ -50,7 +49,6 @@ operator:
     GPU_PERFORMANCE_CAP_PCT_OF_MAX: "100"
     GPU_ECO_CAP_PCT_OF_MAX: "60"
     GPU_WRITE_ABSOLUTE_CAPS: "false"
-    HARDWARE_CATALOG_PATH: "simulator/catalog/hardware.yaml"
     GPU_MODEL_CAPS_JSON: "{}"
     GPU_PRODUCT_LABEL_KEYS: "joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product,amd.com/gpu.family"
     PROMETHEUS_ADDRESS: "http://prometheus-operated.monitoring:9090"
