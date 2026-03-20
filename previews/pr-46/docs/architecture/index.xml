@@ -141,7 +141,7 @@ the agent is the component that turns that intent into concrete control actions.
 &lt;/code&gt;&lt;/pre&gt;&lt;p&gt;The extender participates in steps 4 and 5 only. It does not replace the Kubernetes scheduler — it extends it with energy-aware filter and scoring logic.&lt;/p&gt;</description></item><item><title>Energy-Aware Scheduling</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-46/docs/architecture/energy-aware-scheduling/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-46/docs/architecture/energy-aware-scheduling/</guid><description>&lt;p&gt;Joulie&amp;rsquo;s scheduler extender makes placement decisions informed by real-time energy telemetry, workload characteristics, and facility-level power conditions. This page describes the full pipeline from metrics collection through scoring and optional rescheduling.&lt;/p&gt;
 &lt;h2 id="end-to-end-pipeline"&gt;End-to-end pipeline&lt;/h2&gt;
 &lt;p&gt;The energy-aware scheduling pipeline has five stages:&lt;/p&gt;
-&lt;pre tabindex="0"&gt;&lt;code&gt;Kepler/eBPF + RAPL/NVML telemetry
+&lt;pre tabindex="0"&gt;&lt;code&gt;Kepler + RAPL/NVML telemetry
  -&amp;gt; Prometheus (scrape &amp;amp; store)
  -&amp;gt; Digital twin (NodeTwin.status)
  -&amp;gt; Scheduler extender (filter + score)
