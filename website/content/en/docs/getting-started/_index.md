@@ -6,6 +6,8 @@ weight: 10
 
 Start here if you are new to Joulie.
 
+**Prerequisites**: Kubernetes 1.26+, Helm 3+, and cluster-admin access. For GPU support, nodes must have NVIDIA drivers with NVML available.
+
 This section is ordered intentionally:
 
 1. [Core Concepts]({{< relref "/docs/getting-started/00-core-concepts.md" >}}) - what Joulie is, how the control loop works
@@ -19,3 +21,5 @@ By the end, you should understand:
 - what operator, agent, and scheduler extender each do,
 - how workload placement intent is expressed via pod annotations,
 - how to configure and run Joulie in real-node and simulator workflows.
+
+Once installed, use `kubectl joulie status` (the kubectl plugin) for a quick per-node overview of power profiles, cap settings, and twin stress scores.

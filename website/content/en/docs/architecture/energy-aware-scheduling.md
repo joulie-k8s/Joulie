@@ -11,7 +11,7 @@ Joulie's scheduler extender makes placement decisions informed by real-time ener
 The energy-aware scheduling pipeline has five stages:
 
 ```
-Kepler/eBPF + RAPL/NVML telemetry
+Kepler + RAPL/NVML telemetry
   -> Prometheus (scrape & store)
     -> Digital twin (NodeTwin.status)
       -> Scheduler extender (filter + score)
@@ -30,7 +30,7 @@ Together, these produce three categories of signal:
 
 | Source | Granularity | Metrics |
 |--------|-------------|---------|
-| Kepler/eBPF | Per-container | `kepler_container_package_joules_total`, `kepler_container_dram_joules_total`, `kepler_container_gpu_joules_total` |
+| Kepler | Per-container | `kepler_container_package_joules_total`, `kepler_container_dram_joules_total`, `kepler_container_gpu_joules_total` |
 | RAPL | Per-socket | CPU package power, DRAM power |
 | NVML/DCGM | Per-GPU | GPU power draw, temperature, utilization |
 
@@ -153,6 +153,8 @@ Prior work has addressed energy measurement, power-aware scheduling, and data ce
 3. **PUE-weighted scoring** makes the scheduler aware of marginal facility energy cost, not just compute availability.
 
 No existing Kubernetes scheduler plugin combines real-time eBPF energy telemetry, a digital twin with facility-stress modeling, and workload classification into a single scheduling pipeline.
+
+For production-scale validation of this pipeline, see [Scoring Formula Validation]({{< relref "/docs/experiments/scoring-formula-validation.md" >}}).
 
 ## What to read next
 

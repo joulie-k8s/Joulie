@@ -3,8 +3,9 @@ title: "Workload and Power Simulator"
 weight: 10
 ---
 
+The Joulie simulator lets you run full control-loop experiments on virtual clusters without real hardware. It keeps Kubernetes scheduling real while simulating hardware telemetry, power dynamics, and thermal behavior per node.
 
-This document defines the Joulie simulator design and how it integrates with Joulie.
+This page covers the simulator's architecture, HTTP API, and integration points. Detailed subsystems are documented on dedicated pages linked throughout.
 
 ## Architecture at a glance
 
@@ -35,40 +36,51 @@ This separation lets you validate control policies with realistic scheduler beha
 - Simulate hardware telemetry and control interfaces (CPU and GPU).
 - Provide reproducible, comparable experiments across Joulie and WAO.
 
-The workload side of the simulator is now split into two docs:
-
-- [Workload Generation]({{< relref "/docs/simulator/workload-generation.md" >}}): how realistic AI traces are built
-- [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}}): how those traces are consumed and progressed at runtime
-
 ## Full architecture mirroring
 
-The simulator now mirrors the complete Joulie control architecture.
-All three control layers are exercisable in simulation:
+The simulator mirrors the complete Joulie control architecture. All three control layers run in simulation:
 
-- **Operator policy controller**: runs the full policy algorithm (static partition, queue-aware) with simulated `NodeHardware` and `NodeTwin.status`.
-- **Scheduler extender**: participates in scheduling decisions for simulated KWOK pods; filter and score logic is identical to the production path.
+- **Operator policy controller** — runs the full policy algorithm (static partition, queue-aware) with simulated `NodeHardware` and `NodeTwin.status`.
+- **Scheduler extender** — participates in scheduling decisions for simulated KWOK pods; filter and score logic is identical to the production path.
 
-This means the heterogeneous benchmark experiment can exercise scenarios A through C entirely in simulation before any bare-metal deployment.
+This means experiments can exercise all scenarios (baseline, caps-only, caps + scheduler) entirely in simulation before any bare-metal deployment. For validation of the scheduler scoring formula specifically, see:
+
+- [Scoring Formula Validation]({{< relref "/docs/experiments/scoring-formula-validation.md" >}})
+
+## Design choice: hybrid simulation
+
+The simulator is not a fake scheduler.
+
+- Pod placement and pod lifetime stay real in Kubernetes.
+- Simulator reads cluster state (pods/nodes) and derives synthetic hardware state per node.
+- Joulie reads telemetry and sends control intents through HTTP endpoints.
+
+This gives one source of truth for workload location: the Kubernetes API.
+
+In [KWOK](https://kwok.sigs.k8s.io/) mode:
+
+- API server and scheduler are real.
+- Fake nodes and fake workload pods are API objects.
+- Simulator drives telemetry and batch completion.
+- Agent runs in `pool` mode with one logical loop per simulated node.
 
 ## Facility model
 
 The simulator models three facility-level signals that feed `NodeTwin.status` and the scheduler extender scoring formula:
 
-- **PSU stress** (`psuStress`): fraction of node PSU capacity in use, derived from current node power draw relative to configured PSU headroom.
-  Computed as `psuStress = nodeP / psuCapacityW * 100`.
-- **Cooling stress** (`coolingStress`): thermal load proxy derived from CPU and GPU junction temperatures relative to throttle thresholds.
-  Computed as a weighted average of CPU and GPU thermal margins.
-- **PUE proxy**: the simulator tracks a per-tick PUE estimate as `(total IT load + cooling overhead) / total IT load`.
-  Cooling overhead scales with cooling stress.
+| Signal | Description |
+|---|---|
+| **PSU stress** | Fraction of node PSU capacity in use: `nodeP / psuCapacityW * 100` |
+| **Cooling stress** | Thermal load proxy from CPU/GPU junction temperatures relative to throttle thresholds |
+| **PUE proxy** | Per-tick estimate: `(IT load + cooling overhead) / IT load` |
 
-These signals are exported in Prometheus metrics and through the `/state/{node}` HTTP endpoint.
-The scheduler extender reads them from `NodeTwin.status` (populated by the operator twin controller from simulator-sourced telemetry).
+These signals are exported as Prometheus metrics and through the `/state/{node}` HTTP endpoint. The scheduler extender reads them from `NodeTwin.status`, populated by the operator twin controller from simulator-sourced telemetry.
+
+For the hardware model parameters behind these signals, see [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}).
 
 ### Fake Prometheus query endpoint
 
-The simulator serves a `/api/v1/query` endpoint that returns facility metrics in the standard Prometheus instant-query response format. This allows the operator's facility metrics poller to query the simulator directly without needing a real Prometheus instance.
-
-Supported metrics:
+The simulator serves a `/api/v1/query` endpoint that returns facility metrics in standard Prometheus instant-query format. This lets the operator's facility metrics poller query the simulator directly without a real Prometheus instance.
 
 | Query | Gauge |
 |---|---|
@@ -79,127 +91,27 @@ Supported metrics:
 
 To use it, set `FACILITY_PROMETHEUS_ADDRESS` on the operator to point at the simulator (e.g., `http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local:18080`).
 
-## Validation disclaimer
-
-GPU support has been validated in simulator mode only (no bare-metal GPU access yet).
-Host GPU code paths are designed for NVIDIA/AMD nodes and become fully testable once real GPU nodes are available.
-
-## Design choice: hybrid simulation
-
-The simulator is not a fake scheduler.
-
-- Pod placement and pod lifetime stay real in Kubernetes.
-- Simulator reads cluster state (pods/nodes) and derives synthetic hardware state per node.
-- Joulie reads telemetry and sends control intents through HTTP endpoints.
-
-This gives one source of truth for workload location: Kubernetes API.
-
-In [KWOK](https://kwok.sigs.k8s.io/) mode:
-
-- API server and scheduler are real.
-- fake nodes and fake workload pods are API objects.
-- simulator drives telemetry and batch completion.
-- agent runs in `pool` mode with one logical loop per simulated node.
-
-## Large virtual clusters with [kind](https://kind.sigs.k8s.io/) + [KWOK](https://kwok.sigs.k8s.io/)
-
-You are not constrained to a large real hardware cluster to evaluate Joulie policies.
-
-With [kind](https://kind.sigs.k8s.io/) + [KWOK](https://kwok.sigs.k8s.io/) you can:
-
-- keep a real Kubernetes control plane and scheduler,
-- attach many fake worker nodes,
-- run real operator/agent/simulator control loops,
-- scale experiments to many nodes and pods with low hardware cost.
-
-This is the model used in the benchmark experiment:
-
-- [CPU-Only Benchmark]({{< relref "/docs/experiments/cpu-only-benchmark.md" >}})
-
-Typical flow:
-
-1. Create [kind](https://kind.sigs.k8s.io/) cluster (real control-plane + worker runtime nodes).
-2. Add many [KWOK](https://kwok.sigs.k8s.io/) fake nodes labeled `joulie.io/managed=true`.
-3. Deploy simulator + agent pool + operator.
-4. Run workload traces and observe throughput/energy behavior.
-
-Practical scripts are in:
-
-- `experiments/01-cpu-only-benchmark/scripts/10_setup_cluster.sh`
-- `experiments/01-cpu-only-benchmark/scripts/20_run_benchmark.sh`
-
-Example run:
-
-```bash
-source experiments/01-cpu-only-benchmark/.venv/bin/activate
-experiments/01-cpu-only-benchmark/scripts/10_setup_cluster.sh
-experiments/01-cpu-only-benchmark/scripts/20_run_benchmark.sh
-```
-
-## Integration with Joulie
-
-### `NodeTwin.spec` (what)
-
-- Set by Joulie operator.
-- Defines desired per-node target (profile/cap).
-
-### Telemetry backend selection (how)
-
-- Configured via environment variables on the agent.
-- Routes input signals and control sinks:
-  - telemetry source (`host`, `http`, ...)
-  - control backend (`host`, `http`, ...)
-
-In simulator mode, set these env vars on the agent:
-
-- `TELEMETRY_CPU_SOURCE=http` + `TELEMETRY_CPU_HTTP_ENDPOINT=<sim-url>/telemetry/{node}` -> agent reads `/telemetry/{node}`.
-- `TELEMETRY_CPU_CONTROL=http` + `TELEMETRY_CPU_CONTROL_HTTP_ENDPOINT=<sim-url>/control/{node}` -> agent writes `/control/{node}`.
-- `TELEMETRY_GPU_CONTROL=http` + `TELEMETRY_GPU_CONTROL_HTTP_ENDPOINT=<sim-url>/control/{node}` -> agent writes GPU power-cap intents to `/control/{node}`.
-
-### `NodeHardware` (what the node is)
-
-- Published automatically by the agent when available.
-- Describes discovered CPU/GPU identity and control capability.
-- Not normally authored by hand in simulator examples.
-
-For simulator bootstrap, node labels remain the lightweight source of hardware identity.
-`NodeHardware` is the normalized, observable view of that identity once the agent is running.
-
-The most useful bootstrap labels are:
-
-- `joulie.io/hw.cpu-model`
-- `joulie.io/hw.cpu-sockets`
-- `joulie.io/hw.gpu-model`
-- `joulie.io/hw.gpu-count`
-- vendor presence labels such as `feature.node.kubernetes.io/pci-10de.present=true` or `feature.node.kubernetes.io/pci-1002.present=true`
-
-The operator can also infer GPU presence from allocatable extended resources like `nvidia.com/gpu` or `amd.com/gpu`.
-
 ## Simulator HTTP API
 
-- `GET /telemetry/{node}`
-  - returns simulated per-node telemetry (`cpu.*`, `gpu.*`, pod counters).
-- `POST /control/{node}`
-  - accepts actions like `rapl.set_power_cap_watts`, `dvfs.set_throttle_pct`, `gpu.set_power_cap_watts`.
-  - returns `result=applied|blocked|error`.
-- `GET /state/{node}`
-  - returns current internal node state.
-- `GET /metrics`
-  - Prometheus metrics.
-- `GET /healthz`
-  - health check.
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/telemetry/{node}` | GET | Per-node telemetry (`cpu.*`, `gpu.*`, pod counters) |
+| `/control/{node}` | POST | Control actions (`rapl.set_power_cap_watts`, `dvfs.set_throttle_pct`, `gpu.set_power_cap_watts`). Returns `result=applied\|blocked\|error` |
+| `/state/{node}` | GET | Current internal node state |
+| `/metrics` | GET | Prometheus metrics |
+| `/healthz` | GET | Health check |
 
 ## Simulator observability
 
-The simulator exposes Prometheus metrics and debug endpoints:
+The simulator exposes debug endpoints alongside Prometheus metrics:
 
-- `GET /debug/nodes`: node selection, matched override profile, resolved model hints, and current node state.
-- `GET /debug/events`: recent telemetry/control events (ring buffer).
-- `GET /debug/energy`: integrated simulated energy totals.
+| Endpoint | Content |
+|---|---|
+| `/debug/nodes` | Node selection, matched override profile, resolved model hints, current state |
+| `/debug/events` | Recent telemetry/control events (ring buffer) |
+| `/debug/energy` | Integrated simulated energy totals |
 
-Detailed metric names and labels are documented in:
-
-- [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})
+Detailed metric names and labels: [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})
 
 ## Installation
 
@@ -207,94 +119,36 @@ See the dedicated [Installation]({{< relref "/docs/simulator/installation.md" >}
 
 ### Node scope and class mapping
 
-Current simulator supports:
+- **`SIM_NODE_SELECTOR`** — Only nodes matching this label selector are simulated. Default: `joulie.io/managed=true`.
+- **`SIM_NODE_CLASS_CONFIG`** — YAML file with label-matched model overrides, applied on top of inventory/label-based hardware identity.
 
-- `SIM_NODE_SELECTOR`:
-  - only nodes matching this label selector are simulated.
-  - default in deploy manifest: `joulie.io/managed=true`.
-- `SIM_NODE_CLASS_CONFIG`:
-  - YAML file with label-matched model overrides.
-  - used as an optional override layer on top of inventory/label-based hardware identity.
+The preferred hardware bootstrap flow:
 
-The preferred hardware bootstrap flow is now:
+1. Put CPU/GPU identity on node labels.
+2. Let the simulator/operator resolve that identity against the shared inventory.
+3. Use `SIM_NODE_CLASS_CONFIG` only for scenario-specific overrides or calibration tweaks.
 
-1. put CPU/GPU identity on node labels,
-2. let the simulator/operator resolve that identity against the shared inventory,
-3. use `SIM_NODE_CLASS_CONFIG` only when you want scenario-specific overrides or calibration tweaks.
+For full details on hardware profile parameters and the power model, see [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}).
 
-### Hardware profile parameters
+## Workload trace and execution
 
-Class model overrides now support:
+Enable workload trace replay with:
 
-- `baseIdleW`, `pMaxW`
-- `alphaUtil`, `betaFreq`
-- `fMinMHz`, `fMaxMHz`
-- `raplCapMinW`, `raplCapMaxW`
-- `dvfsRampMs`
-- `cpuCapApplyTauMs`, `cpuTelemetryWindowMs`
-- `cpuAmbientTempC`, `cpuThermalTauMs`, `cpuWattsPerDeltaC`
-- `cpuThermalThrottleStartC`, `cpuThermalThrottleFullC`
-- `gpu.telemetryWindowMs`, `gpu.thermalTauMs`
-- `gpu.ambientTempC`, `gpu.wattsPerDeltaC`
-- `gpu.thermalThrottleStartC`, `gpu.thermalThrottleFullC`
+```
+SIM_WORKLOAD_TRACE_PATH=/path/to/trace.jsonl
+```
 
-Hardware profile parsing and validation are implemented in:
+The simulator loads `type=job` records, injects pods, and advances per-job CPU work units every tick. Completion time increases when DVFS/RAPL reduce node effective speed. Pod lifecycle uses delete-on-complete.
 
-- `simulator/pkg/hw/profile.go`
+For the full trace format, workload profile fields, and physical effects of CPU/GPU intensity and sensitivity settings, see:
 
-Invalid class/base profiles fail fast at simulator startup.
-
-### Power model
-
-The runtime loop now combines:
-
-- workload-derived utilization and bottleneck signals,
-- hardware inventory or override parameters,
-- control settling dynamics,
-- telemetry averaging windows,
-- thermal state.
-
-The detailed formulas live in:
-
-- [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})
-
-At runtime the important behaviors are:
-
-- DVFS ramp dynamics (`dvfsRampMs`) from target throttle to effective `freqScale`
-- CPU cap settling (`cpuCapApplyTauMs`)
-- GPU cap settling (`gpu.capApplyTauMs`)
-- averaged exported telemetry (`cpuTelemetryWindowMs`, `gpu.telemetryWindowMs`)
-- thermal-throttle behavior for sustained high-power operation
-
-### Workload trace and execution
-
-Enable with:
-
-- `SIM_WORKLOAD_TRACE_PATH=/path/to/trace.jsonl`
-
-The simulator loads `type=job` records, injects pods, and advances per-job CPU work units every tick.
-Completion time increases when DVFS/RAPL reduce node effective speed.
-
-Pod lifecycle currently uses delete-on-complete.
+- [Workload Generation]({{< relref "/docs/simulator/workload-generation.md" >}}) — how realistic AI traces are built
+- [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}}) — how traces are consumed and progressed at runtime
 
 Helper tools:
 
-- `simulator/cmd/workloadgen`: generate synthetic JSONL traces from distributions.
-- `simulator/cmd/traceextract`: normalize/extract input JSONL into simulator trace schema.
-
-### Workload profile fields and physical effects
-
-Each job record in the trace can reference a workload profile by name.
-The profile fields influence the simulator's physical model:
-
-- `cpuIntensity: high` drives CPU utilization signal toward the upper range of the power model, producing higher `P` values and increasing cooling stress.
-- `gpuIntensity: high` drives GPU utilization signal toward max TDP, increasing GPU power draw and PSU stress.
-- `cpuSensitivity: high` amplifies the slowdown effect when CPU frequency is reduced.
-  The simulator applies: `effectiveSpeed = nominalSpeed * (1 - (1 - freqScale) * cpuSensitivityFactor)`.
-  With `cpuSensitivity: high`, a 20% frequency reduction causes approximately 20% slowdown; with `low`, the same reduction causes roughly 5% slowdown.
-- `gpuSensitivity: high` amplifies throughput reduction when the GPU is operating below its configured power cap.
-
-This means the heterogeneous benchmark produces meaningfully different per-class completion-time results across scenarios, not just aggregate energy differences.
+- `simulator/cmd/workloadgen` — generate synthetic JSONL traces from distributions
+- `simulator/cmd/traceextract` — normalize/extract input JSONL into simulator trace schema
 
 ## KWOK flow summary
 
@@ -305,20 +159,73 @@ This means the heterogeneous benchmark produces meaningfully different per-class
 5. Inject trace workload (pods tolerate kwok taint + select `type=kwok`).
 6. Observe power/control/job-completion metrics.
 
-Algorithm details are split in:
+Detailed algorithm docs:
 
 - [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
 - [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
 - [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})
 
-Related example:
+Related example: `examples/07 - simulator-gpu-powercaps/`
 
-- `examples/07 - simulator-gpu-powercaps/`
+## Large virtual clusters with kind + KWOK
 
-## Heterogeneous benchmark experiment
+You do not need a large real hardware cluster to evaluate Joulie policies. With [kind](https://kind.sigs.k8s.io/) + [KWOK](https://kwok.sigs.k8s.io/) you can:
 
-The simulator is the execution environment for the heterogeneous cluster benchmark, which exercises all three Joulie control scenarios (A: baseline, B: caps only, C: caps + scheduler) on a mixed GPU + CPU cluster.
+- Keep a real Kubernetes control plane and scheduler.
+- Attach many fake worker nodes.
+- Run real operator/agent/simulator control loops.
+- Scale experiments to many nodes and pods with low hardware cost.
 
-See:
+Typical flow:
 
-- [Heterogeneous Cluster Benchmark]({{< relref "/docs/experiments/heterogeneous-benchmark.md" >}})
+1. Create a kind cluster (real control-plane + worker runtime nodes).
+2. Add many KWOK fake nodes labeled `joulie.io/managed=true`.
+3. Deploy simulator + agent pool + operator.
+4. Run workload traces and observe throughput/energy behavior.
+
+Practical scripts are in:
+
+- `experiments/01-cpu-only-benchmark/scripts/10_setup_cluster.sh`
+- `experiments/01-cpu-only-benchmark/scripts/20_run_benchmark.sh`
+
+This is the model used in the benchmark experiments:
+
+- [CPU-Only Benchmark]({{< relref "/docs/experiments/cpu-only-benchmark.md" >}})
+- [Homogeneous H100 Benchmark]({{< relref "/docs/experiments/homogeneous-h100-benchmark.md" >}})
+
+## Integration with Joulie
+
+### `NodeTwin.spec` (desired state)
+
+Set by the Joulie operator. Defines the desired per-node target (profile/cap).
+
+### Telemetry backend selection
+
+Configured via environment variables on the agent. Routes input signals and control sinks to the simulator:
+
+| Env var | Value | Effect |
+|---|---|---|
+| `TELEMETRY_CPU_SOURCE` | `http` | Agent reads telemetry from simulator |
+| `TELEMETRY_CPU_HTTP_ENDPOINT` | `<sim-url>/telemetry/{node}` | Telemetry read URL |
+| `TELEMETRY_CPU_CONTROL` | `http` | Agent sends CPU control via simulator |
+| `TELEMETRY_CPU_CONTROL_HTTP_ENDPOINT` | `<sim-url>/control/{node}` | CPU control write URL |
+| `TELEMETRY_GPU_CONTROL` | `http` | Agent sends GPU control via simulator |
+| `TELEMETRY_GPU_CONTROL_HTTP_ENDPOINT` | `<sim-url>/control/{node}` | GPU power-cap write URL |
+
+### `NodeHardware` (node identity)
+
+Published automatically by the agent. Describes discovered CPU/GPU identity and control capability — not normally authored by hand in simulator examples.
+
+For simulator bootstrap, node labels remain the lightweight source of hardware identity. The most useful bootstrap labels:
+
+- `joulie.io/hw.cpu-model`
+- `joulie.io/hw.cpu-sockets`
+- `joulie.io/hw.gpu-model`
+- `joulie.io/hw.gpu-count`
+- Vendor presence: `feature.node.kubernetes.io/pci-10de.present=true` (NVIDIA) or `feature.node.kubernetes.io/pci-1002.present=true` (AMD)
+
+The operator can also infer GPU presence from allocatable extended resources like `nvidia.com/gpu` or `amd.com/gpu`.
+
+## Validation disclaimer
+
+GPU support has been validated in simulator mode only (no bare-metal GPU access yet). Host GPU code paths are designed for NVIDIA/AMD nodes and become fully testable once real GPU nodes are available.

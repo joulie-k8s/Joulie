@@ -67,7 +67,7 @@ You can also do build+push+install in one command:
 make build-push-install TAG=<tag>
 ```
 
-Use `make help` to see all targets.
+Run `make help` to see all available targets (including `rollout`, `uninstall`, `simulator-install`, and more).
 
 ### Install CRDs + components (source workflow)
 

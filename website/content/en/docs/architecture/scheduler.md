@@ -206,6 +206,10 @@ At full saturation (`perfPressure = 100`), this subtracts up to 30 points from t
 
 When performance nodes are idle (`perfPressure = 0`), there is no penalty and standard pods spread normally.
 
+### Experimental validation
+
+The scoring formula was validated in [Experiment 04: Scoring Formula Validation]({{< relref "/docs/experiments/scoring-formula-validation.md" >}}) across 2,500 nodes and 8 random seeds, confirming 6.4% IT energy reduction and 13% fewer dropped jobs versus standard Kubernetes bin-packing.
+
 ### Score clamping
 
 All scores are clamped to `[0, 100]` before being returned to kube-scheduler.

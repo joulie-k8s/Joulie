@@ -162,3 +162,4 @@ The twin is implemented in `pkg/operator/twin/twin.go`. Key types:
 1. [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}})
 2. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}})
 3. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
+4. [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) — reference power profiles used by `NodeHardware` and the twin's power estimation

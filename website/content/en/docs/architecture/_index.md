@@ -4,7 +4,7 @@ linkTitle: "Architecture"
 weight: 20
 ---
 
-Architecture explains how Joulie's per-node digital twins turn telemetry into enforcement decisions.
+This section explains how Joulie's per-node digital twins turn telemetry into enforcement decisions, covering every component from the node agent through the scheduler extender.
 
 If you are new, first read:
 
@@ -77,13 +77,13 @@ The `CoolingModel` interface is pluggable. Default: `LinearCoolingModel` (algebr
 
 ## Read in this order
 
-1. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
-2. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}})
-3. [Joulie Agent]({{< relref "/docs/architecture/agent.md" >}})
-4. [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}})
-5. [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}})
-6. [Energy-Aware Scheduling]({{< relref "/docs/architecture/energy-aware-scheduling.md" >}})
-7. [Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}})
-10. [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
-11. [Hardware Modeling and Physical Power Model]({{< relref "/docs/hardware/hardware-modeling.md" >}})
-12. [Metrics Reference]({{< relref "/docs/architecture/metrics.md" >}})
+1. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}}) -- NodeHardware and NodeTwin CRDs, policy state machine
+2. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}}) -- twin controller, policy controller, facility metrics poller
+3. [Joulie Agent]({{< relref "/docs/architecture/agent.md" >}}) -- hardware discovery, cap enforcement via RAPL/NVML
+4. [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}) -- O(1) parametric model: headroom, cooling stress, PSU stress
+5. [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}}) -- filter and prioritize endpoints, scoring formula
+6. [Energy-Aware Scheduling]({{< relref "/docs/architecture/energy-aware-scheduling.md" >}}) -- workload-class-aware pod placement
+7. [Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}}) -- available policy implementations and tuning
+8. [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}}) -- Prometheus queries, RAPL/NVML control paths
+9. [Hardware Modeling and Physical Power Model]({{< relref "/docs/hardware/hardware-modeling.md" >}}) -- CPU/GPU power curves for simulation
+10. [Metrics Reference]({{< relref "/docs/architecture/metrics.md" >}}) -- all exported Prometheus metrics

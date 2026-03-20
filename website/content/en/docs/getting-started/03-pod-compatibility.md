@@ -26,7 +26,7 @@ If no annotation is present, the extender treats it as `standard`.
 
 Add the `joulie.io/workload-class: performance` annotation. The scheduler extender will reject eco nodes for this pod.
 
-{{< highlight yaml "linenos=table,hl_lines=6-7" >}}
+{{< highlight yaml "linenos=table,hl_lines=6" >}}
 apiVersion: v1
 kind: Pod
 metadata:
@@ -56,7 +56,7 @@ spec:
 
 You can also be explicit:
 
-{{< highlight yaml "linenos=table,hl_lines=6-7" >}}
+{{< highlight yaml "linenos=table,hl_lines=6" >}}
 apiVersion: v1
 kind: Pod
 metadata:
@@ -69,23 +69,6 @@ spec:
     image: ghcr.io/example/app:latest
 {{< /highlight >}}
 
-## Standard pod (batch / non-critical)
-
-Standard pods can run on any node. The scheduler uses adaptive scoring to steer them toward eco nodes when performance nodes are congested.
-
-{{< highlight yaml "linenos=table,hl_lines=6-7" >}}
-apiVersion: v1
-kind: Pod
-metadata:
-  name: my-batch-job
-  annotations:
-    joulie.io/workload-class: standard
-spec:
-  containers:
-  - name: app
-    image: ghcr.io/example/batch:latest
-{{< /highlight >}}
-
 ## GPU resource requests
 
 GPU scheduling resources (`nvidia.com/gpu`, `amd.com/gpu`) are independent from Joulie workload classes.
@@ -96,7 +79,7 @@ GPU scheduling resources (`nvidia.com/gpu`, `amd.com/gpu`) are independent from 
 
 Example: a performance GPU inference pod:
 
-{{< highlight yaml "linenos=table,hl_lines=6-8" >}}
+{{< highlight yaml "linenos=table,hl_lines=6" >}}
 apiVersion: v1
 kind: Pod
 metadata:
