@@ -203,33 +203,7 @@ Detailed metric names and labels are documented in:
 
 ## Installation
 
-Use a separate simulator deployment (`joulie-telemetry-sim`) in namespace `joulie-sim-demo`.
-
-### Build and push image
-
-From repo root:
-
-```bash
-make simulator-build TAG=<tag>
-make simulator-push TAG=<tag>
-```
-
-### Deploy to cluster
-
-Use the default manifest:
-
-```bash
-kubectl apply -f simulator/deploy/simulator.yaml
-kubectl -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim
-```
-
-Or install with dynamic image tag override:
-
-```bash
-make simulator-install TAG=<tag>
-```
-
-This keeps simulator lifecycle independent from operator/agent lifecycle.
+See the dedicated [Installation]({{< relref "/docs/simulator/installation.md" >}}) page for Helm and from-source installation instructions.
 
 ### Node scope and class mapping
 

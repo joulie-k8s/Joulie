@@ -96,6 +96,24 @@ func fetchTwinStates(client dynamic.Interface) []nodeState {
 	return states
 }
 
+// nestedNumber extracts a numeric value from an unstructured object,
+// handling both float64 and int64 representations (Kubernetes stores
+// whole numbers as int64 in unstructured objects).
+func nestedNumber(obj map[string]interface{}, fields ...string) float64 {
+	val, found, err := unstructured.NestedFieldNoCopy(obj, fields...)
+	if !found || err != nil {
+		return 0
+	}
+	switch v := val.(type) {
+	case float64:
+		return v
+	case int64:
+		return float64(v)
+	default:
+		return 0
+	}
+}
+
 func parseNodeState(u unstructured.Unstructured) nodeState {
 	status, _, _ := unstructured.NestedMap(u.Object, "status")
 	if status == nil {
@@ -104,19 +122,15 @@ func parseNodeState(u unstructured.Unstructured) nodeState {
 
 	ns := nodeState{name: u.GetName()}
 	ns.class, _, _ = unstructured.NestedString(u.Object, "status", "schedulableClass")
-	ns.headroom, _, _ = unstructured.NestedFloat64(u.Object, "status", "predictedPowerHeadroomScore")
-	ns.coolingStress, _, _ = unstructured.NestedFloat64(u.Object, "status", "predictedCoolingStressScore")
-	ns.psuStress, _, _ = unstructured.NestedFloat64(u.Object, "status", "predictedPsuStressScore")
-	ns.density, _, _ = unstructured.NestedFloat64(u.Object, "status", "hardwareDensityScore")
+	ns.headroom = nestedNumber(u.Object, "status", "predictedPowerHeadroomScore")
+	ns.coolingStress = nestedNumber(u.Object, "status", "predictedCoolingStressScore")
+	ns.psuStress = nestedNumber(u.Object, "status", "predictedPsuStressScore")
+	ns.density = nestedNumber(u.Object, "status", "hardwareDensityScore")
 	ns.lastUpdated, _, _ = unstructured.NestedString(u.Object, "status", "lastUpdated")
 
 	if cap, ok := status["effectiveCapState"].(map[string]interface{}); ok {
-		if v, ok := cap["cpuPct"].(float64); ok {
-			ns.cpuCapPct = v
-		}
-		if v, ok := cap["gpuPct"].(float64); ok {
-			ns.gpuCapPct = v
-		}
+		ns.cpuCapPct = nestedNumber(cap, "cpuPct")
+		ns.gpuCapPct = nestedNumber(cap, "gpuPct")
 	}
 
 	return ns

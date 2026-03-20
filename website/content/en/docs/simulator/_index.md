@@ -21,14 +21,15 @@ Use simulator docs after you are familiar with the core operator/agent control l
 
 ## Read in this order
 
-1. [Workload and Power Simulator]({{< relref "/docs/simulator/simulator.md" >}})
-2. [Workload Generation]({{< relref "/docs/simulator/workload-generation.md" >}})
-3. [Workload Distributions]({{< relref "/docs/simulator/workload-distributions.md" >}})
-4. [Kubernetes AI Workloads]({{< relref "/docs/simulator/kubernetes-ai-workloads.md" >}})
-5. [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
-6. [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
-7. [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})
-8. [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})
+1. [Installation]({{< relref "/docs/simulator/installation.md" >}})
+2. [Workload and Power Simulator]({{< relref "/docs/simulator/simulator.md" >}})
+3. [Workload Generation]({{< relref "/docs/simulator/workload-generation.md" >}})
+4. [Workload Distributions]({{< relref "/docs/simulator/workload-distributions.md" >}})
+5. [Kubernetes AI Workloads]({{< relref "/docs/simulator/kubernetes-ai-workloads.md" >}})
+6. [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
+7. [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
+8. [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})
+9. [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})
 
 ## Simulator architecture diagram
 

@@ -10,6 +10,7 @@ producing a timeseries.csv in the results directory.
 """
 
 import argparse
+import concurrent.futures
 import csv as csv_mod
 import datetime as dt
 import json
@@ -67,6 +68,262 @@ def to_baselines(raw) -> list[str]:
     if invalid:
         raise SystemExit(f"invalid baseline(s): {','.join(invalid)}")
     return vals or ["A", "B", "C"]
+
+
+def generate_trace_diurnal(
+    results_dir: pathlib.Path,
+    seed: int,
+    sim_hours: float,
+    gpu_ratio: float,
+    work_scale: float,
+    time_scale: float,
+    base_speed_per_core: float,
+    diurnal_peak_rate: float = 80.0,
+) -> pathlib.Path:
+    """Generate traces using Go workloadgen --mode diurnal (exp04-style NHPP cosine)."""
+    traces_dir = results_dir / "traces"
+    traces_dir.mkdir(parents=True, exist_ok=True)
+    trace_path = traces_dir / f"seed_{seed}_canonical.jsonl"
+    if trace_path.exists():
+        log(f"reusing trace seed={seed} file={trace_path}")
+        return trace_path
+
+    log(f"generating diurnal trace seed={seed} sim_hours={sim_hours} gpu_ratio={gpu_ratio} work_scale={work_scale}")
+    cmd = [
+        "go", "run", "./simulator/cmd/workloadgen",
+        "--mode", "diurnal",
+        "--seed", str(seed),
+        "--out", str(trace_path),
+        "--sim-hours", str(sim_hours),
+        "--gpu-ratio", str(gpu_ratio),
+        "--work-scale", str(work_scale),
+        "--time-scale", str(time_scale),
+        "--base-speed-per-core", str(base_speed_per_core),
+        "--emit-workload-records=true",
+        "--diurnal-burst-min", "20",
+        "--diurnal-burst-max", "80",
+        "--diurnal-peak-rate", str(int(diurnal_peak_rate)),
+    ]
+    run(cmd, check=True)
+    count = sum(1 for l in trace_path.read_text().splitlines() if l.strip())
+    log(f"diurnal trace generated records={count}")
+    return trace_path
+
+
+def generate_trace_python(
+    results_dir: pathlib.Path,
+    seed: int,
+    sim_hours: float,
+    gpu_ratio: float,
+    work_scale: float,
+    time_scale: float,
+    base_speed_per_core: float,
+) -> pathlib.Path:
+    """Generate traces using exp04-style NHPP arrivals with cosine diurnal pattern.
+
+    Produces realistic datacenter workload with:
+    - Cosine day/night cycle (trough at 4 AM, peak at 4 PM)
+    - 10% burst probability (50-200 simultaneous jobs)
+    - Mixed job sizes: small/medium CPU, GPU training (1-8 GPUs), GPU inference, large CPU
+    - Direct wall-second offsets (simulator applies time_scale internally)
+    """
+    import math
+
+    traces_dir = results_dir / "traces"
+    traces_dir.mkdir(parents=True, exist_ok=True)
+    trace_path = traces_dir / f"seed_{seed}_canonical.jsonl"
+    if trace_path.exists():
+        log(f"reusing trace seed={seed} file={trace_path}")
+        return trace_path
+
+    rng = np.random.default_rng(seed)
+    # Sim duration in wall-seconds (the trace uses wall-second offsets).
+    wall_sec = sim_hours * 3600.0 / time_scale
+
+    # CPU workload classes.
+    cpu_classes = ["cpu.compute_bound", "cpu.memory_bound", "cpu.mixed"]
+    gpu_classes = ["gpu.compute", "gpu.mixed", "gpu.memory_bound"]
+
+    # GPU resource name.
+    gpu_resource = "nvidia.com/gpu"
+
+    lines = []
+    job_id = 0
+    t = 0.0
+    while t < wall_sec:
+        # Current sim-hour for diurnal pattern.
+        sim_h = (t * time_scale) / 3600.0
+        hour_of_day = sim_h % 24.0
+        phase = 2 * math.pi * (hour_of_day - 4.0) / 24.0
+        rate = 0.25 + 0.70 * (1 - math.cos(phase)) / 2.0
+        # Base rate: ~80 jobs/min at peak in sim-time, convert to wall-time.
+        base_rate_sim_sec = rate * 80.0 / 60.0
+        base_rate_wall_sec = base_rate_sim_sec * time_scale
+        inter_arrival = rng.exponential(1.0 / max(base_rate_wall_sec, 0.001))
+        t += inter_arrival
+        if t >= wall_sec:
+            break
+
+        # Burst: 10% chance of 50-200 simultaneous jobs.
+        burst_size = 1
+        if rng.random() < 0.10:
+            burst_size = int(rng.integers(50, 201))
+
+        for _ in range(burst_size):
+            job_id += 1
+            wl_id = f"workload-{job_id:06d}"
+            r = rng.random()
+            has_gpu = r >= (1.0 - gpu_ratio * 0.70)  # Scale GPU fraction by gpu_ratio
+
+            if r < 0.35 * (1.0 - gpu_ratio):
+                # Small CPU job.
+                cpu_req = float(rng.choice([4, 8, 16, 32]))
+                gpu_req = 0
+                is_perf = False
+                cpu_util = float(rng.uniform(0.3, 0.8))
+                gpu_util = 0.0
+                duration = float(rng.uniform(60, 600))
+                wl_type = "cpu_preprocess"
+                cpu_class = rng.choice(cpu_classes)
+                gpu_class = ""
+            elif r < 0.55 * (1.0 - gpu_ratio * 0.3):
+                # Medium CPU job.
+                cpu_req = float(rng.choice([32, 64, 96, 128]))
+                gpu_req = 0
+                is_perf = rng.random() < 0.3
+                cpu_util = float(rng.uniform(0.4, 0.9))
+                gpu_util = 0.0
+                duration = float(rng.uniform(300, 3600))
+                wl_type = "cpu_analytics"
+                cpu_class = rng.choice(cpu_classes)
+                gpu_class = ""
+            elif r < 0.80:
+                # GPU training (2-8 GPUs).
+                cpu_req = float(rng.choice([16, 32, 64]))
+                gpu_req = int(rng.choice([2, 4, 4, 8]))
+                is_perf = True
+                cpu_util = float(rng.uniform(0.3, 0.6))
+                gpu_util = float(rng.uniform(0.6, 0.95))
+                duration = float(rng.uniform(3600, 28800))
+                wl_type = "distributed_training" if gpu_req >= 2 else "single_gpu_training"
+                cpu_class = "cpu.mixed"
+                gpu_class = rng.choice(gpu_classes)
+            elif r < 0.92:
+                # GPU inference (1-4 GPUs).
+                cpu_req = float(rng.choice([4, 8, 16]))
+                gpu_req = int(rng.choice([1, 2, 4]))
+                is_perf = False
+                cpu_util = float(rng.uniform(0.3, 0.6))
+                gpu_util = float(rng.uniform(0.3, 0.7))
+                duration = float(rng.uniform(60, 900))
+                wl_type = "debug_eval"
+                cpu_class = "cpu.mixed"
+                gpu_class = rng.choice(gpu_classes)
+            else:
+                # Large CPU job.
+                cpu_req = float(rng.choice([128, 192]))
+                gpu_req = 0
+                is_perf = True
+                cpu_util = float(rng.uniform(0.5, 0.95))
+                gpu_util = 0.0
+                duration = float(rng.uniform(1800, 7200))
+                wl_type = "cpu_analytics"
+                cpu_class = rng.choice(cpu_classes)
+                gpu_class = ""
+
+            # Override GPU to 0 for CPU-only experiments.
+            if gpu_ratio == 0:
+                gpu_req = 0
+                gpu_util = 0.0
+                gpu_class = ""
+                is_perf = rng.random() < 0.20
+                wl_type = rng.choice(["cpu_preprocess", "cpu_analytics"])
+
+            intent = "performance" if is_perf else "standard"
+            mem_intensity = float(rng.uniform(0.3, 0.9))
+            io_intensity = float(rng.uniform(0.05, 0.3))
+
+            # Compute work units (how long the job takes to complete).
+            cpu_units = duration * cpu_req * max(0.10, cpu_util) * base_speed_per_core * work_scale
+            gpu_units = duration * max(gpu_req, 0) * max(0.10, gpu_util) * base_speed_per_core * work_scale if gpu_req > 0 else 0.0
+
+            # Memory request (GiB).
+            mem_gib = max(1, int(cpu_req * rng.uniform(0.5, 2.0)))
+
+            # Build requests dict.
+            requests = {"cpu": f"{cpu_req:.2f}", "memory": f"{mem_gib}Gi"}
+            if gpu_req > 0:
+                requests[gpu_resource] = str(gpu_req)
+
+            # Pod template with optional affinity for performance jobs.
+            pod_template = {"requests": requests}
+            if is_perf:
+                pod_template["affinity"] = {
+                    "nodeAffinity": {
+                        "requiredDuringSchedulingIgnoredDuringExecution": {
+                            "nodeSelectorTerms": [{
+                                "matchExpressions": [{
+                                    "key": "joulie.io/power-profile",
+                                    "operator": "NotIn",
+                                    "values": ["eco"],
+                                }],
+                            }],
+                        },
+                    },
+                }
+
+            wl_class = {}
+            if cpu_class:
+                wl_class["cpu"] = cpu_class
+            if gpu_class:
+                wl_class["gpu"] = gpu_class
+
+            profile = {
+                "cpuUtilization": cpu_util,
+                "gpuUtilization": gpu_util,
+                "memoryIntensity": mem_intensity,
+                "ioIntensity": io_intensity,
+            }
+
+            # Workload record.
+            wl_rec = {
+                "type": "workload",
+                "schemaVersion": "v2",
+                "workloadId": wl_id,
+                "submitTimeOffsetSec": t,
+                "namespace": "default",
+                "workloadType": wl_type,
+                "durationSec": duration,
+                "intentClass": intent,
+                "workloadClass": wl_class,
+                "sharedIntensityProfile": profile,
+                "pods": [{"role": "worker", "replicas": 1, "requests": requests}],
+            }
+            lines.append(json.dumps(wl_rec, separators=(",", ":")))
+
+            # Job record.
+            job_rec = {
+                "type": "job",
+                "schemaVersion": "v2",
+                "jobId": f"{wl_id}-worker-01",
+                "workloadId": wl_id,
+                "workloadType": wl_type,
+                "podRole": "worker",
+                "submitTimeOffsetSec": t,
+                "namespace": "default",
+                "intentClass": intent,
+                "podTemplate": pod_template,
+                "work": {"cpuUnits": cpu_units, "gpuUnits": gpu_units},
+                "sensitivity": {"cpu": 0.5 if is_perf else 0, "gpu": 0.5 if (is_perf and gpu_req > 0) else 0},
+                "workloadClass": wl_class,
+                "workloadProfile": profile,
+            }
+            lines.append(json.dumps(job_rec, separators=(",", ":")))
+
+    trace_path.write_text("\n".join(lines) + "\n")
+    job_count = sum(1 for l in lines if '"type":"job"' in l)
+    log(f"trace generated (python) seed={seed} jobs={job_count} wall_sec={wall_sec:.0f} sim_hours={sim_hours:.0f}")
+    return trace_path
 
 
 def generate_trace(
@@ -359,6 +616,8 @@ def main():
     ap.add_argument("--results-dir", default="", type=str, help="Override results directory")
     ap.add_argument("--baselines", default="", type=str, help="Override baselines (comma-separated)")
     ap.add_argument("--fmu", default="", type=str, help="Path to FMU file for PUE co-simulation post-processing")
+    ap.add_argument("--trace-mode", default="go", choices=["go", "python"],
+                    help="Trace generator: 'go' (workloadgen binary) or 'python' (exp04-style NHPP cosine diurnal)")
     args = ap.parse_args()
 
     cfg_path = pathlib.Path(args.config).resolve()
@@ -411,6 +670,7 @@ def main():
     dip_multiplier = float(get_cfg(cfg, "workload", "dip_multiplier", default=0.08))
     emit_workload_records = str(get_cfg(cfg, "workload", "emit_workload_records", default=True)).lower() not in {"false", "0", "no"}
     work_scale = float(get_cfg(cfg, "workload", "work_scale", default=1.0))
+    diurnal_peak_rate = float(get_cfg(cfg, "workload", "diurnal_peak_rate", default=80.0))
     baseline_a_strip_affinity = bool(get_cfg(cfg, "workload", "baseline_a_strip_affinity", default=True))
     allowed_workload_types = get_cfg(cfg, "workload", "allowed_workload_types", default=None)
 
@@ -420,51 +680,78 @@ def main():
     total_runs = len(baselines) * seeds
     log(f"standalone sweep config={cfg_path} baselines={','.join(baselines)} seeds={seeds} jobs={jobs} total_runs={total_runs}")
 
-    done = 0
-    for seed in range(1, seeds + 1):
-        canonical_trace = generate_trace(
-            results_dir=results_dir,
-            seed=seed,
-            jobs=jobs,
-            mean_inter_arrival_sec=mean_inter_arrival_sec,
-            perf_ratio=perf_ratio,
-            compute_bound_perf_boost=compute_bound_perf_boost,
-            gpu_ratio=gpu_ratio,
-            burst_day_probability=burst_day_probability,
-            burst_mean_jobs=burst_mean_jobs,
-            burst_multiplier=burst_multiplier,
-            dip_day_probability=dip_day_probability,
-            dip_multiplier=dip_multiplier,
-            emit_workload_records=emit_workload_records,
-            work_scale=work_scale,
-            allowed_workload_types=allowed_workload_types,
+    def run_one(baseline: str, seed: int, canonical_trace: pathlib.Path):
+        """Run a single (baseline, seed) pair: simulate + optional FMU post-processing."""
+        trace_file = derive_baseline_trace(baseline, canonical_trace, baseline_a_strip_affinity)
+        run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"_b{baseline}_s{seed}"
+        output_dir = results_dir / run_id
+
+        ok = run_standalone(
+            simulator_bin=simulator_bin,
+            baseline=baseline,
+            trace_path=trace_file,
+            output_dir=output_dir,
+            inventory_path=inventory_source,
+            cfg=cfg,
             time_scale=time_scale,
+            catalog_path=catalog_path,
         )
 
-        for baseline in baselines:
+        # Apply FMU post-processing for PUE if requested.
+        if ok and args.fmu:
+            fmu_path = pathlib.Path(args.fmu).resolve()
+            ts_file = output_dir / "timeseries.csv"
+            if ts_file.exists():
+                apply_fmu_to_timeseries(ts_file, fmu_path, time_scale)
+
+        return baseline, seed, ok
+
+    base_speed_per_core = float(get_cfg(cfg, "simulator", "base_speed_per_core", default=2.0))
+    timeout = int(get_cfg(cfg, "run", "timeout", default=1800))
+    sim_hours = timeout * time_scale / 3600.0  # total sim-hours from timeout
+
+    # Generate traces first (sequential), then run baselines in parallel.
+    futures = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(baselines)) as pool:
+        for seed in range(1, seeds + 1):
+            if args.trace_mode == "python":
+                canonical_trace = generate_trace_diurnal(
+                    results_dir=results_dir,
+                    seed=seed,
+                    sim_hours=sim_hours,
+                    gpu_ratio=gpu_ratio,
+                    work_scale=work_scale,
+                    time_scale=time_scale,
+                    base_speed_per_core=base_speed_per_core,
+                    diurnal_peak_rate=diurnal_peak_rate,
+                )
+            else:
+                canonical_trace = generate_trace(
+                    results_dir=results_dir,
+                    seed=seed,
+                    jobs=jobs,
+                    mean_inter_arrival_sec=mean_inter_arrival_sec,
+                    perf_ratio=perf_ratio,
+                    compute_bound_perf_boost=compute_bound_perf_boost,
+                    gpu_ratio=gpu_ratio,
+                    burst_day_probability=burst_day_probability,
+                    burst_mean_jobs=burst_mean_jobs,
+                    burst_multiplier=burst_multiplier,
+                    dip_day_probability=dip_day_probability,
+                    dip_multiplier=dip_multiplier,
+                    emit_workload_records=emit_workload_records,
+                    work_scale=work_scale,
+                    allowed_workload_types=allowed_workload_types,
+                    time_scale=time_scale,
+                )
+
+            for baseline in baselines:
+                futures.append(pool.submit(run_one, baseline, seed, canonical_trace))
+
+        done = 0
+        for future in concurrent.futures.as_completed(futures):
             done += 1
-            trace_file = derive_baseline_trace(baseline, canonical_trace, baseline_a_strip_affinity)
-            run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"_b{baseline}_s{seed}"
-            output_dir = results_dir / run_id
-
-            ok = run_standalone(
-                simulator_bin=simulator_bin,
-                baseline=baseline,
-                trace_path=trace_file,
-                output_dir=output_dir,
-                inventory_path=inventory_source,
-                cfg=cfg,
-                time_scale=time_scale,
-                catalog_path=catalog_path,
-            )
-
-            # Apply FMU post-processing for PUE if requested.
-            if ok and args.fmu:
-                fmu_path = pathlib.Path(args.fmu).resolve()
-                ts_file = output_dir / "timeseries.csv"
-                if ts_file.exists():
-                    apply_fmu_to_timeseries(ts_file, fmu_path, time_scale)
-
+            baseline, seed, ok = future.result()
             status = "OK" if ok else "FAILED"
             log(f"[{done}/{total_runs}] baseline={baseline} seed={seed} {status}")
 

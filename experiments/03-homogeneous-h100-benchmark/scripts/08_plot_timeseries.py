@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Generate paper-style time-series power plots from simulator timeseries.csv files.
 
-Produces multi-panel figures (like arXiv:2508.20016) with one line per baseline:
-  - Cluster CPU utilization over time
+Produces multi-panel figures (inspired by exp-04 sim_24h_pue.py) with one line
+per baseline:
+  - Job arrival rate over time
+  - Active jobs (pods_running) over time
   - Total IT power (kW)
-  - PUE
-  - Total facility power (kW)
+  - PUE (if FMU post-processing was applied)
+  - Facility power (if available)
 
 All x-axes are in *simulated time* (hours) so that day/night cycles and
 multi-day patterns are clearly visible.
@@ -14,19 +16,24 @@ Usage:
     python scripts/08_plot_timeseries.py                    # uses latest run
     RESULTS_DIR=runs/0002_.../results python scripts/08_plot_timeseries.py
 """
+import json
 import os
 import pathlib
 import sys
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import numpy as np
 import pandas as pd
+from datetime import datetime, timedelta
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RESULTS = pathlib.Path(os.environ.get("RESULTS_DIR", str(ROOT / "runs" / "latest" / "results"))).resolve()
 PLOTS = RESULTS / "plots"
 BASELINE_ORDER = ["A", "B", "C"]
-BASELINE_COLORS = {"A": "#4c78a8", "B": "#f58518", "C": "#54a24b"}
+BASELINE_COLORS = {"A": "#d62728", "B": "#f58518", "C": "#54a24b"}
 BASELINE_LABELS = {
     "A": "A  (no Joulie)",
     "B": "B  (static partition)",
@@ -94,7 +101,6 @@ def resample_and_average(df: pd.DataFrame, time_col: str, value_cols: list[str],
 
 def infer_time_scale(results_dir: pathlib.Path) -> float:
     """Try to read timeScale from a metadata.json in the results tree."""
-    import json
     for meta in results_dir.rglob("metadata.json"):
         try:
             obj = json.loads(meta.read_text())
@@ -135,8 +141,142 @@ def _add_day_boundaries(ax, max_hours: float):
         day += 1
 
 
+# ---------------------------------------------------------------------------
+# Job arrival rate from trace files
+# ---------------------------------------------------------------------------
+
+def compute_arrival_rate(results_dir: pathlib.Path, time_scale: float,
+                         bin_width_h: float = 0.5) -> tuple[np.ndarray, np.ndarray] | None:
+    """Compute job arrival rate (jobs/sim-hour) from trace JSONL files.
+
+    Returns (bin_centers_sim_hours, rate_jobs_per_sim_hour) or None.
+    """
+    # Find trace files
+    traces = sorted(results_dir.rglob("*.jsonl"))
+    if not traces:
+        # Also check parent directories
+        traces = sorted(results_dir.parent.rglob("traces/*.jsonl"))
+    if not traces:
+        return None
+
+    # Use canonical trace (not baseline-A stripped version)
+    trace_path = None
+    for t in traces:
+        if "canonical" in t.name:
+            trace_path = t
+            break
+    if trace_path is None:
+        trace_path = traces[0]
+
+    offsets = []
+    with open(trace_path) as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+                if rec.get("type") == "job" or rec.get("kind") == "job":
+                    offsets.append(float(rec.get("submitTimeOffsetSec", 0)))
+            except Exception:
+                continue
+    if not offsets:
+        return None
+
+    offsets.sort()
+    # Convert wall-clock offsets to simulated hours
+    sim_hours = np.array([o * time_scale / 3600.0 for o in offsets])
+    max_h = sim_hours.max() + bin_width_h
+    bins = np.arange(0, max_h + bin_width_h, bin_width_h)
+    counts, edges = np.histogram(sim_hours, bins=bins)
+    centers = (edges[:-1] + edges[1:]) / 2
+    rate = counts / bin_width_h
+    return centers, rate
+
+
+# ---------------------------------------------------------------------------
+# Main 3-panel plot: Job Arrivals + Active Jobs + IT Power (exp-04 style)
+# ---------------------------------------------------------------------------
+
+def plot_main_panels(by_baseline: dict[str, pd.DataFrame],
+                     arrival_data: tuple[np.ndarray, np.ndarray] | None,
+                     out_dir: pathlib.Path, sim_hours: float = 48.0):
+    """Generate the primary 3-panel figure: arrivals, active jobs, IT power."""
+    n_panels = 3
+    fig, axes = plt.subplots(n_panels, 1, figsize=(16, 12), sharex=True)
+    time_col = "elapsed_sim_hours"
+
+    max_hours = max(
+        (df[time_col].max() for df in by_baseline.values() if not df.empty),
+        default=sim_hours
+    )
+
+    # --- Panel 0: Job Arrival Rate ---
+    ax = axes[0]
+    if arrival_data is not None:
+        centers, rate = arrival_data
+        # Clip to max_hours
+        mask = centers <= max_hours
+        ax.bar(centers[mask], rate[mask], width=0.45, color="#4c78a8",
+               alpha=0.7, edgecolor="white", linewidth=0.3, label="Job arrivals")
+    ax.set_ylabel("Jobs / sim-hour", fontsize=11)
+    ax.set_title("Job Arrival Rate", fontsize=12, fontweight="bold")
+    ax.grid(alpha=0.15, axis="y")
+    _add_night_shading(ax, max_hours)
+    _add_day_boundaries(ax, max_hours)
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.7)
+
+    # --- Panel 1: Active Jobs ---
+    ax = axes[1]
+    for baseline in BASELINE_ORDER:
+        df = by_baseline.get(baseline)
+        if df is None or df.empty or "pods_running" not in df.columns:
+            continue
+        label = BASELINE_LABELS.get(baseline, f"Baseline {baseline}")
+        color = BASELINE_COLORS.get(baseline, None)
+        ax.plot(df[time_col], df["pods_running"], label=label,
+                color=color, linewidth=1.0, alpha=0.85)
+    ax.set_ylabel("Active Jobs", fontsize=11)
+    ax.set_title("Active Jobs Over Time", fontsize=12, fontweight="bold")
+    ax.grid(alpha=0.15)
+    _add_night_shading(ax, max_hours)
+    _add_day_boundaries(ax, max_hours)
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.7)
+
+    # --- Panel 2: IT Power ---
+    ax = axes[2]
+    for baseline in BASELINE_ORDER:
+        df = by_baseline.get(baseline)
+        if df is None or df.empty or "it_power_w" not in df.columns:
+            continue
+        label = BASELINE_LABELS.get(baseline, f"Baseline {baseline}")
+        color = BASELINE_COLORS.get(baseline, None)
+        it_kw = df["it_power_w"] / 1000.0
+        ax.plot(df[time_col], it_kw, label=label,
+                color=color, linewidth=1.0, alpha=0.85)
+    ax.set_ylabel("IT Power (kW)", fontsize=11)
+    ax.set_title("Total IT Power", fontsize=12, fontweight="bold")
+    ax.set_xlabel("Simulated Time (hours)", fontsize=11)
+    ax.grid(alpha=0.15)
+    _add_night_shading(ax, max_hours)
+    _add_day_boundaries(ax, max_hours)
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.7)
+
+    fig.suptitle(
+        f"Datacenter Simulation: {max_hours:.0f}h — Job Arrivals, Active Jobs & IT Power\n"
+        f"Baselines: A (no Joulie), B (static partition), C (queue-aware)",
+        fontsize=13, fontweight="bold", y=0.98,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    path = out_dir / "timeseries_arrivals_jobs_power.png"
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+    print(f"  wrote {path}")
+
+
+# ---------------------------------------------------------------------------
+# Full power profile panels (original 4-panel + FMU metrics)
+# ---------------------------------------------------------------------------
+
 def plot_timeseries_panels(by_baseline: dict[str, pd.DataFrame], out_dir: pathlib.Path):
-    """Generate a 4-panel time-series figure like arXiv:2508.20016."""
+    """Generate a multi-panel time-series figure: CPU util, IT power, PUE, facility power."""
     panels = [
         ("cluster_cpu_util", "Cluster CPU Utilization", "", lambda x: x * 100, "%"),
         ("it_power_w", "Total IT Power", "", lambda x: x / 1000, "kW"),
@@ -406,56 +546,57 @@ def export_fmu_timeseries(by_baseline: dict[str, pd.DataFrame], time_scale: floa
         print(f"  wrote FMU input: {csv_path}  ({len(out)} rows)")
 
 
-def plot_job_arrival_rate(results_dir: pathlib.Path, time_scale: float, out_dir: pathlib.Path):
-    """Plot job arrival rate over simulated time from the trace files.
+def print_summary(by_baseline: dict[str, pd.DataFrame], time_scale: float):
+    """Print a comparison summary table like exp-04."""
+    print(f"\n{'='*80}")
+    print(f"TIMESERIES SUMMARY (per-baseline)")
+    print(f"{'='*80}")
+    print(f"  {'Metric':30s}", end="")
+    for b in BASELINE_ORDER:
+        if b in by_baseline:
+            lbl = BASELINE_LABELS.get(b, b)
+            print(f" {lbl:>16s}", end="")
+    print()
+    print(f"  {'-'*30}", end="")
+    for b in BASELINE_ORDER:
+        if b in by_baseline:
+            print(f" {'-'*16}", end="")
+    print()
 
-    Shows the FULL multi-day timeline (not modulo-24) so day/night cycles
-    and burst events are clearly visible across multiple days.
-    """
-    import json
-    # Find trace files (one per baseline, use baseline A's targeted trace)
-    traces = sorted(results_dir.rglob("trace.jsonl"))
-    if not traces:
-        return
-    # Use the first trace (all baselines have same arrival pattern)
-    trace_path = traces[0]
-    offsets = []
-    with open(trace_path) as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-                if rec.get("type") == "job" or rec.get("kind") == "job":
-                    offsets.append(float(rec.get("submitTimeOffsetSec", 0)))
-            except Exception:
+    metrics = [
+        ("Avg IT power (kW)", "it_power_w", "mean", lambda x: x / 1000),
+        ("Peak IT power (kW)", "it_power_w", "max", lambda x: x / 1000),
+        ("IT power std (kW)", "it_power_w", "std", lambda x: x / 1000),
+        ("Avg active jobs", "pods_running", "mean", lambda x: x),
+        ("Peak active jobs", "pods_running", "max", lambda x: x),
+        ("Avg PUE", "pue", "mean", lambda x: x),
+        ("Peak PUE", "pue", "max", lambda x: x),
+        ("Avg facility power (kW)", "facility_power_w", "mean", lambda x: x / 1000),
+    ]
+    for label, col, agg, transform in metrics:
+        print(f"  {label:30s}", end="")
+        for b in BASELINE_ORDER:
+            df = by_baseline.get(b)
+            if df is None or df.empty or col not in df.columns:
                 continue
-    if not offsets:
-        return
-    offsets.sort()
-    # Convert wall-clock offsets to simulated hours (absolute, not modulo-24)
-    sim_hours = [o * time_scale / 3600.0 for o in offsets]
-    # Bin by simulated hour (0.5-hour bins)
-    bin_width_h = 0.5
-    max_h = max(sim_hours) + bin_width_h
-    bins = np.arange(0, max_h + bin_width_h, bin_width_h)
-    counts, edges = np.histogram(sim_hours, bins=bins)
-    centers = (edges[:-1] + edges[1:]) / 2
-    # Convert to jobs per simulated hour
-    rate = counts / bin_width_h
+            val = transform(getattr(df[col], agg)())
+            print(f" {val:16.2f}", end="")
+        print()
 
-    fig, ax = plt.subplots(figsize=(14, 4))
-    ax.bar(centers, rate, width=bin_width_h * 0.9, color="#4c78a8", alpha=0.8, edgecolor="white", linewidth=0.3)
-    ax.set_xlabel("Simulated Time (hours)", fontsize=10)
-    ax.set_ylabel("Jobs / sim-hour", fontsize=10)
-    ax.set_title("Workload Arrival Rate (Day/Night Cycle)", fontsize=13)
-    ax.grid(alpha=0.15, axis="y")
-    # Add night shading for each 24-hour day
-    _add_night_shading(ax, max_h)
-    _add_day_boundaries(ax, max_h)
-    ax.legend(fontsize=8, loc="upper right")
-    fig.tight_layout()
-    fig.savefig(out_dir / "job_arrival_rate.png", dpi=200)
-    plt.close(fig)
-    print(f"  wrote {out_dir / 'job_arrival_rate.png'}")
+    # Energy totals (integrate IT power over sim-time)
+    print()
+    for b in BASELINE_ORDER:
+        df = by_baseline.get(b)
+        if df is None or df.empty or "it_power_w" not in df.columns:
+            continue
+        # Each row covers bin_width sim-hours; approximate with dt
+        dt_sim_hours = df["elapsed_sim_hours"].diff().median()
+        if pd.isna(dt_sim_hours) or dt_sim_hours <= 0:
+            dt_sim_hours = 0.1
+        it_energy_kwh = (df["it_power_w"] / 1000.0 * dt_sim_hours).sum()
+        lbl = BASELINE_LABELS.get(b, b)
+        print(f"  Total IT energy ({lbl}): {it_energy_kwh:.1f} kWh")
+    print()
 
 
 def main():
@@ -495,13 +636,29 @@ def main():
         sys.exit(1)
 
     PLOTS.mkdir(parents=True, exist_ok=True)
+
+    # Compute arrival rate from trace files
+    arrival_data = compute_arrival_rate(RESULTS, time_scale)
+    if arrival_data is None:
+        # Try parent directory (traces may be alongside results)
+        arrival_data = compute_arrival_rate(RESULTS.parent, time_scale)
+
+    # Primary plot: arrivals + active jobs + IT power (exp-04 style)
+    plot_main_panels(by_baseline, arrival_data, PLOTS)
+
+    # Additional detail plots
     plot_timeseries_panels(by_baseline, PLOTS)
     plot_gpu_power_panel(by_baseline, PLOTS)
     plot_energy_cumulative(by_baseline, PLOTS)
     plot_cooling_ambient(by_baseline, PLOTS)
     plot_pue_analysis(by_baseline, PLOTS)
-    plot_job_arrival_rate(RESULTS, time_scale, PLOTS)
+
+    # Export FMU-compatible timeseries for PUE co-simulation
     export_fmu_timeseries(by_baseline, time_scale, RESULTS)
+
+    # Print summary table
+    print_summary(by_baseline, time_scale)
+
     print(f"all timeseries plots written to {PLOTS}")
 
 

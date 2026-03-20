@@ -200,6 +200,10 @@ VERSION="<version>"
 
 oras pull "registry.cern.ch/mbunino/joulie/kubectl-joulie:${VERSION}-${PLATFORM}"
 chmod +x "kubectl-joulie-${PLATFORM}"
+# User-local install (no sudo required, ensure ~/.local/bin is in your PATH)
+install "kubectl-joulie-${PLATFORM}" ~/.local/bin/kubectl-joulie
+
+# Or system-wide install (requires sudo)
 sudo install "kubectl-joulie-${PLATFORM}" /usr/local/bin/kubectl-joulie
 ```
 
@@ -211,6 +215,11 @@ VERSION="<version>"
 
 curl -sLO "https://github.com/joulie-k8s/Joulie/releases/download/v${VERSION}/kubectl-joulie-${PLATFORM}"
 chmod +x "kubectl-joulie-${PLATFORM}"
+
+# User-local install (no sudo required, ensure ~/.local/bin is in your PATH)
+install "kubectl-joulie-${PLATFORM}" ~/.local/bin/kubectl-joulie
+
+# Or system-wide install (requires sudo)
 sudo install "kubectl-joulie-${PLATFORM}" /usr/local/bin/kubectl-joulie
 ```
 

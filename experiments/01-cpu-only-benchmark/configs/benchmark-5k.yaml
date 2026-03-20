@@ -1,14 +1,14 @@
 run:
   baselines: [A, B, C]
   seeds: 1
-  # 5000 CPU-only nodes.  3-day day/night cycle with realistic workload.
+  # 5000 CPU-only nodes.  48-hour (2-day) day/night cycle with realistic workload.
   # time_scale 120 → 1 wall-sec = 120 sim-sec → 24 sim-hours = 720 wall-sec.
-  # 400k jobs over ~2160 wall-sec → 72 sim-hours (3 sim-days) of arrivals.
-  # timeout 2400 wall-sec → 80 sim-hours → captures ~3.3 full day/night cycles.
-  jobs: 400000
+  # 270k jobs over ~1440 wall-sec → 48 sim-hours (2 sim-days) of arrivals.
+  # timeout 1680 wall-sec → 56 sim-hours → captures full 48h + drain buffer.
+  jobs: 270000
   mean_inter_arrival_sec: 0.003
   time_scale: 120
-  timeout: 2400
+  timeout: 1680
   settle_seconds: 15
   cleanup_timeout: 600
 

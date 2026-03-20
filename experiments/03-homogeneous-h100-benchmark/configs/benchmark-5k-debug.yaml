@@ -1,11 +1,11 @@
 run:
   baselines: [A, B, C]
-  seeds: 1
+  seeds: 2
   # DEBUG: fast run to validate pipeline.
   # 5000 nodes (4000 H100 NVL + 1000 CPU, 976k CPU cores, 32k GPUs).
   # 80k jobs, NHPP avg mult ~0.55 → ~1440 wall-sec → 48 sim-hours (2 days).
   # timeout 1800 wall-sec → 60 sim-hours → captures 2+ full day/night cycles.
-  jobs: 80000
+  jobs: 120000
   mean_inter_arrival_sec: 0.01
   time_scale: 120
   timeout: 1800
@@ -15,19 +15,23 @@ run:
 workload:
   perf_ratio: 0.25
   compute_bound_perf_boost: 3.5
-  gpu_ratio: 0.75
-  gpu_request_per_job: 1
+  gpu_ratio: 0.85
+  gpu_request_per_job: 4
   burst_day_probability: 0.50
   burst_mean_jobs: 25.0
   burst_multiplier: 3.5
   dip_day_probability: 0.40
   dip_multiplier: 0.08
   emit_workload_records: true
-  work_scale: 1.5
+  work_scale: 20
+  diurnal_peak_rate: 160
   baseline_a_strip_affinity: true
   allowed_workload_types:
     - debug_eval
     - single_gpu_training
+    - distributed_training
+    - parameter_server_training
+    - hpo_experiment
     - cpu_preprocess
     - cpu_analytics
 

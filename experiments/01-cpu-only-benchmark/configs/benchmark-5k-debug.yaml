@@ -6,7 +6,7 @@ run:
   # 80k jobs × ~12 cores avg = 960k cores demand.
   # MIA=0.01 → 80k jobs, NHPP avg mult ~0.55 → ~1440 wall-sec → 48 sim-hours (2 days).
   # timeout 1800 wall-sec → 60 sim-hours → captures 2+ full day/night cycles.
-  jobs: 80000
+  jobs: 200000
   mean_inter_arrival_sec: 0.01
   time_scale: 120
   timeout: 1800
@@ -23,7 +23,8 @@ workload:
   dip_day_probability: 0.40
   dip_multiplier: 0.08
   emit_workload_records: true
-  work_scale: 1.5
+  work_scale: 20
+  diurnal_peak_rate: 600
   baseline_a_strip_affinity: true
   allowed_workload_types:
     - cpu_preprocess

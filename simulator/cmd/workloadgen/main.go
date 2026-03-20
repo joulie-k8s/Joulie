@@ -105,6 +105,13 @@ type generatorConfig struct {
 	DipDayProbability   float64
 	DipMultiplier       float64
 	TimeScale           float64
+	Mode                string  // "default" or "diurnal"
+	SimHours            float64 // total sim-hours for diurnal mode
+	WorkScale           float64 // work unit multiplier
+	BaseSpeedPerCore    float64 // base speed per core for work unit calc
+	DiurnalBurstMin     int     // min burst size in diurnal mode
+	DiurnalBurstMax     int     // max burst size in diurnal mode
+	DiurnalPeakRate     float64 // peak arrival rate (jobs/min in sim-time)
 }
 
 type logicalWorkload struct {
@@ -141,7 +148,13 @@ type arrivalState struct {
 
 func main() {
 	cfg := parseFlags()
-	if err := generateTrace(cfg); err != nil {
+	var err error
+	if cfg.Mode == "diurnal" {
+		err = generateDiurnalTrace(cfg)
+	} else {
+		err = generateTrace(cfg)
+	}
+	if err != nil {
 		panic(err)
 	}
 }
@@ -168,6 +181,13 @@ func parseFlags() generatorConfig {
 	flag.Float64Var(&cfg.DipDayProbability, "dip-day-probability", 0.30, "probability of a daily dip (negative spike) window")
 	flag.Float64Var(&cfg.DipMultiplier, "dip-multiplier", 0.08, "arrival-rate multiplier during the selected dip hour (e.g., 0.08 = 92% reduction)")
 	flag.Float64Var(&cfg.TimeScale, "time-scale", 1.0, "simulation time scale: offset*timeScale = simulated seconds (used for day/night hour calculation)")
+	flag.StringVar(&cfg.Mode, "mode", "default", "trace generation mode: 'default' (original) or 'diurnal' (exp04-style NHPP cosine day/night)")
+	flag.Float64Var(&cfg.SimHours, "sim-hours", 48, "total simulation hours (diurnal mode only)")
+	flag.Float64Var(&cfg.WorkScale, "work-scale", 1.0, "work unit multiplier (diurnal mode only)")
+	flag.Float64Var(&cfg.BaseSpeedPerCore, "base-speed-per-core", 2.0, "base speed per core for work unit calculation (diurnal mode only)")
+	flag.IntVar(&cfg.DiurnalBurstMin, "diurnal-burst-min", 20, "min burst size in diurnal mode")
+	flag.IntVar(&cfg.DiurnalBurstMax, "diurnal-burst-max", 80, "max burst size in diurnal mode")
+	flag.Float64Var(&cfg.DiurnalPeakRate, "diurnal-peak-rate", 80.0, "peak arrival rate in jobs/min sim-time (diurnal mode)")
 	flag.Parse()
 	if cfg.MeanInterArrival <= 0 {
 		cfg.MeanInterArrival = 1
@@ -233,6 +253,252 @@ func generateTrace(cfg generatorConfig) error {
 			}
 		}
 	}
+	return w.Flush()
+}
+
+// generateDiurnalTrace produces workloads using an NHPP cosine diurnal
+// arrival pattern matching experiment-04's sim_24h_pue.py:
+//   - Cosine day/night cycle (trough at 4 AM, peak at 4 PM)
+//   - 10% burst probability (50-200 simultaneous jobs)
+//   - 5 job categories: small CPU, medium CPU, GPU training (1-8 GPUs),
+//     GPU inference (1-2 GPUs), large CPU
+func generateDiurnalTrace(cfg generatorConfig) error {
+	f, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+
+	rng := rand.New(rand.NewSource(cfg.Seed))
+	wallSec := cfg.SimHours * 3600.0 / cfg.TimeScale
+	if cfg.WorkScale <= 0 {
+		cfg.WorkScale = 1.0
+	}
+	if cfg.BaseSpeedPerCore <= 0 {
+		cfg.BaseSpeedPerCore = 2.0
+	}
+
+	cpuClasses := []string{"cpu.compute_bound", "cpu.memory_bound", "cpu.mixed"}
+	gpuClasses := []string{"gpu.compute", "gpu.mixed", "gpu.memory_bound"}
+
+	jobID := 0
+	t := 0.0
+	for t < wallSec {
+		// Current sim-hour for diurnal pattern.
+		simH := (t * cfg.TimeScale) / 3600.0
+		hourOfDay := math.Mod(simH, 24.0)
+		phase := 2 * math.Pi * (hourOfDay - 4.0) / 24.0
+		rate := 0.25 + 0.70*(1-math.Cos(phase))/2.0
+		// Peak rate in jobs/min sim-time, convert to wall-time.
+		baseRateWallSec := rate * cfg.DiurnalPeakRate / 60.0 * cfg.TimeScale
+		interArrival := rng.ExpFloat64() / math.Max(baseRateWallSec, 0.001)
+		t += interArrival
+		if t >= wallSec {
+			break
+		}
+
+		// 10% burst chance.
+		burstSize := 1
+		burstRange := cfg.DiurnalBurstMax - cfg.DiurnalBurstMin + 1
+		if burstRange < 1 {
+			burstRange = 1
+		}
+		if rng.Float64() < 0.10 {
+			burstSize = cfg.DiurnalBurstMin + rng.Intn(burstRange)
+		}
+
+		for b := 0; b < burstSize; b++ {
+			jobID++
+			wlID := fmt.Sprintf("workload-%06d", jobID)
+			r := rng.Float64()
+
+			var cpuReq float64
+			var gpuReq int
+			var isPerf bool
+			var cpuUtil, gpuUtil, duration float64
+			var wlType, cpuClass, gpuClass string
+
+			gpuThreshold := 1.0 - cfg.GPURatio*0.70
+
+			switch {
+			case r < 0.35*(1.0-cfg.GPURatio):
+				// Small CPU job.
+				cpuReq = float64([]int{1, 2, 4, 8}[rng.Intn(4)])
+				gpuReq = 0
+				isPerf = false
+				cpuUtil = 0.3 + rng.Float64()*0.5
+				duration = 60 + rng.Float64()*540
+				wlType = "cpu_preprocess"
+				cpuClass = cpuClasses[rng.Intn(len(cpuClasses))]
+			case r < 0.55*(1.0-cfg.GPURatio*0.3):
+				// Medium CPU job.
+				cpuReq = float64([]int{16, 32, 48, 64}[rng.Intn(4)])
+				gpuReq = 0
+				isPerf = rng.Float64() < 0.3
+				cpuUtil = 0.4 + rng.Float64()*0.5
+				duration = 300 + rng.Float64()*3300
+				wlType = "cpu_analytics"
+				cpuClass = cpuClasses[rng.Intn(len(cpuClasses))]
+			case r < 0.80:
+				// GPU training (1-8 GPUs).
+				cpuReq = float64([]int{16, 32, 64}[rng.Intn(3)])
+				gpuReq = []int{1, 2, 4, 8}[rng.Intn(4)]
+				isPerf = true
+				cpuUtil = 0.3 + rng.Float64()*0.3
+				gpuUtil = 0.6 + rng.Float64()*0.35
+				duration = 3600 + rng.Float64()*25200
+				if gpuReq >= 2 {
+					wlType = "distributed_training"
+				} else {
+					wlType = "single_gpu_training"
+				}
+				cpuClass = "cpu.mixed"
+				gpuClass = gpuClasses[rng.Intn(len(gpuClasses))]
+			case r < 0.92:
+				// GPU inference (1-2 GPUs).
+				cpuReq = float64([]int{4, 8, 16}[rng.Intn(3)])
+				gpuReq = []int{1, 2}[rng.Intn(2)]
+				isPerf = false
+				cpuUtil = 0.3 + rng.Float64()*0.3
+				gpuUtil = 0.3 + rng.Float64()*0.4
+				duration = 60 + rng.Float64()*840
+				wlType = "debug_eval"
+				cpuClass = "cpu.mixed"
+				gpuClass = gpuClasses[rng.Intn(len(gpuClasses))]
+			default:
+				// Large CPU job.
+				cpuReq = float64([]int{64, 96}[rng.Intn(2)])
+				gpuReq = 0
+				isPerf = true
+				cpuUtil = 0.5 + rng.Float64()*0.45
+				duration = 1800 + rng.Float64()*5400
+				wlType = "cpu_analytics"
+				cpuClass = cpuClasses[rng.Intn(len(cpuClasses))]
+			}
+
+			// Override GPU to 0 for CPU-only experiments.
+			if cfg.GPURatio == 0 || r < gpuThreshold && gpuReq > 0 {
+				if cfg.GPURatio == 0 {
+					gpuReq = 0
+					gpuUtil = 0
+					gpuClass = ""
+					isPerf = rng.Float64() < 0.20
+					if rng.Float64() < 0.5 {
+						wlType = "cpu_preprocess"
+					} else {
+						wlType = "cpu_analytics"
+					}
+				}
+			}
+
+			intent := "standard"
+			if isPerf {
+				intent = "performance"
+			}
+			memIntensity := 0.3 + rng.Float64()*0.6
+			ioIntensity := 0.05 + rng.Float64()*0.25
+
+			// Compute work units.
+			cpuUnits := duration * cpuReq * math.Max(0.10, cpuUtil) * cfg.BaseSpeedPerCore * cfg.WorkScale
+			gpuUnits := 0.0
+			if gpuReq > 0 {
+				gpuUnits = duration * float64(gpuReq) * math.Max(0.10, gpuUtil) * cfg.BaseSpeedPerCore * cfg.WorkScale
+			}
+
+			memGiB := math.Max(1, math.Floor(cpuReq*(0.5+rng.Float64()*1.5)))
+
+			requests := map[string]string{
+				"cpu":    formatCPU(cpuReq),
+				"memory": formatMemoryGi(memGiB),
+			}
+			if gpuReq > 0 {
+				requests["nvidia.com/gpu"] = strconv.Itoa(gpuReq)
+			}
+
+			// Build affinity for performance jobs.
+			var affinity map[string]any
+			if isPerf && !cfg.NoAffinityOnly {
+				affinity = map[string]any{
+					"nodeAffinity": map[string]any{
+						"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
+							"nodeSelectorTerms": []map[string]any{
+								{
+									"matchExpressions": []map[string]any{
+										{
+											"key":      "joulie.io/power-profile",
+											"operator": "NotIn",
+											"values":   []string{"eco"},
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+			}
+
+			profile := workloadProfileRec{
+				CPUUtilization:  cpuUtil,
+				GPUUtilization:  gpuUtil,
+				MemoryIntensity: memIntensity,
+				IOIntensity:     ioIntensity,
+			}
+			wlCls := workloadClass{CPU: cpuClass, GPU: gpuClass}
+
+			sensCPU := 0.0
+			sensGPU := 0.0
+			if isPerf {
+				sensCPU = 0.5
+				if gpuReq > 0 {
+					sensGPU = 0.5
+				}
+			}
+
+			// Emit workload record.
+			if cfg.EmitWorkloadRecords {
+				wlRec := workloadRecord{
+					Type:                "workload",
+					SchemaVersion:       "v2",
+					WorkloadID:          wlID,
+					SubmitTimeOffsetSec: t,
+					Namespace:           cfg.Namespace,
+					WorkloadType:        wlType,
+					DurationSec:         duration,
+					IntentClass:         intent,
+					WorkloadClass:       wlCls,
+					SharedIntensity:     profile,
+					Pods:                []workloadPodRec{{Role: "worker", Replicas: 1, Requests: requests}},
+				}
+				if err := writeJSONL(w, wlRec); err != nil {
+					return err
+				}
+			}
+
+			// Emit job record.
+			jobRec := jobRecord{
+				Type:                "job",
+				SchemaVersion:       "v2",
+				JobID:               fmt.Sprintf("%s-worker-01", wlID),
+				WorkloadID:          wlID,
+				WorkloadType:        wlType,
+				PodRole:             "worker",
+				SubmitTimeOffsetSec: t,
+				Namespace:           cfg.Namespace,
+				IntentClass:         intent,
+				PodTemplate:         podTemplateRec{Affinity: affinity, Requests: requests},
+				Work:                workRec{CPUUnits: cpuUnits, GPUUnits: gpuUnits},
+				Sensitivity:         sensitivityRec{CPU: sensCPU, GPU: sensGPU},
+				WorkloadClass:       wlCls,
+				WorkloadProfile:     profile,
+			}
+			if err := writeJSONL(w, jobRec); err != nil {
+				return err
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "diurnal trace: %d jobs, %.0f wall-sec, %.0f sim-hours\n", jobID, wallSec, cfg.SimHours)
 	return w.Flush()
 }
 
