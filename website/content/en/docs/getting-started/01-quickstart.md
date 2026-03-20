@@ -177,6 +177,18 @@ kubectl get nodes --show-labels | grep 'joulie.io/managed=true'
 
 ## Workload and Power Simulator
 
+The simulator has its own Helm chart, published alongside the main Joulie chart:
+
+```bash
+helm upgrade --install joulie-simulator oci://registry.cern.ch/mbunino/joulie/joulie-sim \
+  --version <version> \
+  -n joulie-sim-demo \
+  --create-namespace \
+  --set image.tag=<version>
+```
+
+Or from source: `make simulator-install TAG=<version>`
+
 For fake-node workload + power simulation (real scheduler, fake [KWOK](https://kwok.sigs.k8s.io/) nodes, real operator, agent pool mode), see:
 
 - [Simulator Overview]({{< relref "/docs/simulator/simulator.md" >}})

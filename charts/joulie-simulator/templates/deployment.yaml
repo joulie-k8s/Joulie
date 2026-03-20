@@ -1,12 +1,12 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "joulie-simulator.fullname" . }}
+  name: {{ include "joulie-simulator.name" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "joulie-simulator.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicas }}
   selector:
     matchLabels:
       {{- include "joulie-simulator.selectorLabels" . | nindent 6 }}
@@ -16,10 +16,6 @@ spec:
         {{- include "joulie-simulator.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: joulie-simulator
-      {{- with .Values.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       containers:
         - name: simulator
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -36,6 +32,10 @@ spec:
           ports:
             - name: http
               containerPort: 18080
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: node-classes
               mountPath: /etc/joulie-sim
@@ -46,6 +46,14 @@ spec:
             - name: hardware-catalog
               mountPath: /etc/joulie-sim-catalog
               readOnly: true
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       volumes:
         - name: node-classes
           configMap:

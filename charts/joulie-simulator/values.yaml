@@ -3,8 +3,7 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
-nodeSelector:
-  joulie.io/infra: "true"
+replicas: 1
 
 env:
   SIM_ADDR: ":18080"
@@ -28,3 +27,17 @@ configMaps:
   workloadTrace:
     name: joulie-simulator-workload-trace
     key: trace.jsonl
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels:
+    release: telemetry
+
+service:
+  port: 80
+  annotations: {}
+
+resources: {}
+nodeSelector: {}
+tolerations: []
