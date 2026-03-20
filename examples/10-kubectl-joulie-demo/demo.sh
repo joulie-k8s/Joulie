@@ -4,7 +4,6 @@
 #
 # Assumes:
 #   - kubectl-joulie plugin is already installed (run: make kubectl-plugin && install bin/kubectl-joulie ~/.local/bin/)
-#   - A trace file exists at examples/10-kubectl-joulie-demo/trace.jsonl (generate with: make -C examples/10-kubectl-joulie-demo trace)
 set -euo pipefail
 
 CLUSTER="${1:?Usage: $0 <kind-cluster-name>}"
@@ -13,6 +12,16 @@ REPO_DIR="$(cd "$DEMO_DIR/../.." && pwd)"
 cd "$REPO_DIR"
 
 DEMO_NS="demo"
+
+# Generate trace if missing (gitignored)
+if [ ! -f "$DEMO_DIR/trace.jsonl" ]; then
+  echo "=== Generating workload trace ==="
+  go run ./simulator/cmd/workloadgen \
+    --jobs 60 --gpu-ratio 0.85 --amd-gpu-ratio 0.35 \
+    --mean-inter-arrival-sec 0.08 --min-gpu-request 2 \
+    --namespace demo --seed 42 --emit-workload-records=false \
+    --out "$DEMO_DIR/trace.jsonl"
+fi
 
 pause() {
   echo ""
@@ -98,9 +107,19 @@ helm upgrade --install joulie charts/joulie \
   --wait --timeout 2m
 
 echo "=== Open Grafana ==="
-kubectl port-forward -n monitoring svc/telemetry-grafana 3300:80 1>/dev/null &
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=grafana -n monitoring --timeout=60s
+lsof -ti:3300 2>/dev/null | xargs -r kill 2>/dev/null || true
+sleep 1
+kubectl port-forward -n monitoring svc/telemetry-grafana 3300:80 1>/dev/null 2>&1 &
 GRAFANA_PID=$!
-echo "Grafana running at http://localhost:3300 (admin / joulie)"
+sleep 2
+if kill -0 $GRAFANA_PID 2>/dev/null; then
+  echo "Grafana running at http://localhost:3300 (admin / joulie)"
+else
+  echo "WARNING: Grafana port-forward failed. Run manually:"
+  echo "  export KUBECONFIG=$DEMO_DIR/kubeconfig.yaml"
+  echo "  kubectl port-forward -n monitoring svc/telemetry-grafana 3300:80 &"
+fi
 
 echo ""
 echo "============================================"
@@ -143,7 +162,6 @@ sleep 3
 echo ""
 echo ">>> Step 3: Watch energy state update live (Ctrl-C to stop)"
 echo ""
-kubectl joulie status -W
 
 pause
 
