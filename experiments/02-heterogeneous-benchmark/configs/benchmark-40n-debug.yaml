@@ -3,12 +3,12 @@ run:
   seeds: 1
   # 40-NODE DEBUG: validate workload patterns on small cluster.
   # 41 nodes (33 GPU + 8 CPU).  time_scale 120.
-  # 2000 jobs over ~20 wall-sec → ~0.7 sim-hours of arrivals.
-  # timeout 600 wall-sec → 20 sim-hours → nearly one full day/night cycle.
-  jobs: 2000
-  mean_inter_arrival_sec: 0.01
+  # 6000 jobs over 600 wall-sec → 20 sim-hours of arrivals (full day/night).
+  # timeout 660 wall-sec → 22 sim-hours (arrival + drain).
+  jobs: 6000
+  mean_inter_arrival_sec: 0.1
   time_scale: 120
-  timeout: 600
+  timeout: 660
   settle_seconds: 10
   cleanup_timeout: 120
 
@@ -34,7 +34,6 @@ workload:
 simulator:
   base_speed_per_core: 2.0
   manifest: examples/07 - simulator-gpu-powercaps/manifests/20-simulator.yaml
-  classifier_misclassify_rate: 0.0
   facility_ambient_base_c: 22.0
   facility_ambient_amplitude_c: 8.0
   facility_ambient_period_sec: 720

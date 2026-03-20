@@ -5,7 +5,7 @@
 // generator emits a class name that no other component recognizes.
 //
 // Components covered: simulator, workload generator, scheduler extender,
-// operator FSM, agent control client, and workload classifier.
+// operator FSM, and agent control client.
 package contracts_test
 
 import (
@@ -177,8 +177,7 @@ func intToStr(n int) string {
 
 const (
 	// Annotation key used by all components.
-	// Source: cmd/scheduler/main.go:302, simulator/cmd/simulator/main.go:2134,
-	//         pkg/workloadprofile/classifier/classifier.go:110
+	// Source: cmd/scheduler/main.go, simulator/cmd/simulator/main.go
 	workloadClassAnnotationKey = "joulie.io/workload-class"
 
 	// Power profile label key.
@@ -203,16 +202,13 @@ var staleIntentClasses = []string{"general", "eco", "batch", "unknown"}
 // --------------------------------------------------------------------------
 
 func TestWorkloadClassAnnotationKeyConsistentAcrossComponents(t *testing.T) {
-	// The FSM package does not export the workload class annotation key directly,
-	// but the classifier uses "joulie.io/workload-class" (hardcoded string).
 	// Verify our hardcoded constant matches what the FSM's PowerProfileLabelKey
 	// is NOT (they are different keys for different purposes).
 	if workloadClassAnnotationKey == fsm.PowerProfileLabelKey {
 		t.Fatal("workload-class annotation key should differ from power-profile label key")
 	}
 	// Verify the hardcoded annotation key is correct.
-	// This string appears verbatim in: scheduler podWorkloadClass(), simulator
-	// injectTraceJobs(), and classifier ParsePodHints().
+	// This string appears verbatim in: scheduler podWorkloadClass() and simulator injectTraceJobs().
 	if workloadClassAnnotationKey != "joulie.io/workload-class" {
 		t.Fatalf("expected joulie.io/workload-class, got %s", workloadClassAnnotationKey)
 	}
@@ -773,8 +769,8 @@ func TestGPUResourceNamesConsistent(t *testing.T) {
 	// The workloadgen defaults to "nvidia.com/gpu" (simulator/cmd/workloadgen/main.go:761-766).
 	// The simulator's loadTraceFileIntoEngine recognizes: "nvidia.com/gpu", "amd.com/gpu", "gpu"
 	// (simulator/cmd/simulator/main.go:1947-1953).
-	// The scheduler's podRequestsGPU checks: "nvidia.com/gpu", "amd.com/gpu", "gpu.intel.com/i915"
-	// (cmd/scheduler/main.go:313-319).
+	// The scheduler's powerest.ExtractPodDemand checks: "nvidia.com/gpu", "amd.com/gpu", "gpu.intel.com/i915"
+	// (pkg/scheduler/powerest/extract.go).
 	jobs, _ := generateTrace(t, 50)
 	simulatorKnown := map[string]bool{
 		"nvidia.com/gpu": true,
@@ -797,7 +793,7 @@ func TestGPUResourceNamesConsistent(t *testing.T) {
 					"(simulator knows: nvidia.com/gpu, amd.com/gpu, gpu)", j.JobID, key)
 			}
 			if !schedulerKnown[key] {
-				t.Errorf("job %s requests GPU resource %q which scheduler podRequestsGPU "+
+				t.Errorf("job %s requests GPU resource %q which scheduler ExtractPodDemand "+
 					"does not recognize", j.JobID, key)
 			}
 		}

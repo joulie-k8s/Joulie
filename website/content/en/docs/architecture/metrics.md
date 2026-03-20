@@ -98,17 +98,6 @@ For telemetry/control input interfaces (host/http routing), see:
   - `component`: `cpu|gpu`
   - higher values mean the operator considers that node relatively denser for that subsystem
 
-### Active rescheduler
-
-- `joulie_rescheduler_evictions_total{node,namespace,reason}` (counter)
-  - Pod evictions triggered by the active rescheduler
-  - `reason`: from `NodeTwin.status.rescheduleRecommendations` (e.g., `cooling_stress`, `psu_stress`)
-- `joulie_rescheduler_skipped_total{node,reason}` (counter)
-  - Pods skipped by the rescheduler
-  - `reason`: `not_reschedulable` (missing annotation) or `rate_limited` (per-node cap reached)
-
-These metrics are only populated when `ENABLE_ACTIVE_RESCHEDULING=true`.
-
 ## Notes
 
 - Metrics are pull-based; values depend on scrape interval.

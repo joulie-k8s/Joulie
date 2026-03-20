@@ -72,29 +72,6 @@ Complete reference for all Joulie environment variables. These are set via Helm 
 | `QUEUE_HP_MAX` | `1000000` | Maximum performance nodes in `queue_aware_v1` |
 | `QUEUE_PERF_PER_HP_NODE` | `10` | Performance pods per performance node ratio in `queue_aware_v1` |
 
-### Workload classifier
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ENABLE_CLASSIFIER` | `true` | Enable the workload classifier loop |
-| `CLASSIFY_INTERVAL` | `30s` | How often the classifier scans running pods |
-| `RECLASSIFY_INTERVAL` | `15m` | Minimum time before re-classifying an already-classified pod |
-| `CLASSIFY_METRICS_WINDOW` | `10m` | Prometheus query lookback window for dynamic metrics |
-| `PROMETHEUS_ADDRESS` | `http://prometheus-operated.monitoring:9090` | Prometheus endpoint for classifier queries |
-| `KEPLER_AVAILABLE` | `true` | Whether Kepler energy metrics are available in Prometheus |
-| `CLASSIFY_MIN_CONFIDENCE` | `0.5` | Minimum confidence score for a profile to influence scheduling |
-| `CLASSIFY_SIM_ANNOTATION_FALLBACK` | `false` | When `true`, classifier reads `sim.joulie.io/*` pod annotations as fallback when Prometheus metrics are unavailable (simulator mode) |
-| `CLASSIFY_SIM_NOISE_PCT` | `10` | Gaussian noise percentage added to sim-annotation utilization values before classification (simulates measurement error) |
-
-### Active rescheduler
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ENABLE_ACTIVE_RESCHEDULING` | `false` | Enable active pod eviction for misplaced workloads |
-| `RESCHEDULE_INTERVAL` | `60s` | How often the rescheduler evaluates recommendations |
-| `RESCHEDULE_MAX_EVICTIONS_PER_NODE` | `1` | Maximum pod evictions per node per rescheduler cycle |
-| `RESCHEDULE_DRY_RUN` | `false` | If `true`, log eviction decisions without executing them |
-
 ### Facility metrics
 
 | Variable | Default | Description |
@@ -125,7 +102,6 @@ Nodes without topology labels fall back to cluster-wide stress computation.
 |----------|---------|-------------|
 | `PORT` | `9876` | HTTP port for the scheduler extender |
 | `CACHE_TTL` | `30s` | TTL for the NodeTwin status cache |
-| `EVICTION_HISTORY_TTL` | `30m` | How long eviction context influences scheduling decisions |
 
 ## kubectl plugin
 
@@ -138,5 +114,4 @@ mv kubectl-joulie /usr/local/bin/
 
 # Usage
 kubectl joulie status      # cluster energy overview
-kubectl joulie recommend   # GPU slicing and reschedule suggestions
 ```

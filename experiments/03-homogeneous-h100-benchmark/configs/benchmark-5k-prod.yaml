@@ -35,7 +35,6 @@ workload:
 simulator:
   base_speed_per_core: 2.0
   manifest: examples/07 - simulator-gpu-powercaps/manifests/20-simulator.yaml
-  classifier_misclassify_rate: 0.0
   facility_ambient_base_c: 22.0
   facility_ambient_amplitude_c: 8.0
   facility_ambient_period_sec: 720
@@ -57,10 +56,10 @@ policy:
   static:
     hp_frac: 0.25
   queue_aware:
-    hp_base_frac: 0.25
+    hp_base_frac: 0.05
     hp_min: 50
     hp_max: 4000
-    perf_per_hp_node: 15
+    perf_per_hp_node: 3
 
 images:
   joulie_registry: registry.cern.ch/mbunino/joulie

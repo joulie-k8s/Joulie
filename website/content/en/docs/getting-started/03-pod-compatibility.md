@@ -20,7 +20,7 @@ The scheduler extender reads this annotation and steers pods accordingly. No nod
 | `performance` | Must run on full-power nodes. The extender hard-rejects eco nodes. |
 | `standard` | Default. Can run on any node. Adaptive scoring steers toward eco when performance nodes are congested. |
 
-If no annotation is present and no `WorkloadProfile` matches the pod, the extender treats it as `standard`.
+If no annotation is present, the extender treats it as `standard`.
 
 ## Performance pod
 
@@ -103,7 +103,6 @@ metadata:
   name: gpu-inference
   annotations:
     joulie.io/workload-class: performance
-    joulie.io/gpu-sensitivity: high
 spec:
   containers:
   - name: inference
@@ -113,20 +112,3 @@ spec:
         nvidia.com/gpu: "1"
 {{< /highlight >}}
 
-## Sensitivity annotations
-
-For finer control, add sensitivity annotations so the extender can prefer nodes with more headroom:
-
-| Annotation | Values | Effect |
-|---|---|---|
-| `joulie.io/workload-class` | `performance`, `standard` | Controls eco/performance placement |
-| `joulie.io/cpu-sensitivity` | `high`, `medium`, `low` | Scales penalty on capped CPU nodes |
-| `joulie.io/gpu-sensitivity` | `high`, `medium`, `low` | Scales penalty on capped GPU nodes |
-
-All annotations are optional. If omitted and no `WorkloadProfile` matches the pod, the extender scores neutrally.
-
-## WorkloadProfile-based scheduling
-
-For teams that prefer not to annotate individual pods, create a `WorkloadProfile` with a `podSelector` matching your workload's labels. The extender will use the profile's fields to drive filter and score logic automatically.
-
-See [WorkloadProfile Guide]({{< relref "/docs/getting-started/04-workload-profiles.md" >}}) for details.

@@ -66,9 +66,6 @@ spec:
                   type: object
                   properties:
                     draining: { type: boolean }
-                    reschedulablePressure:
-                      type: string
-                      enum: ["low", "medium", "high"]
               required:
                 - nodeName
                 - profile
@@ -79,6 +76,38 @@ spec:
                 schedulableClass:
                   type: string
                   enum: ["eco", "performance", "draining", "unknown"]
+                powerMeasurement:
+                  type: object
+                  description: "Measured power data, TDP/cap breakdowns, and power trend."
+                  properties:
+                    source:
+                      type: string
+                      description: "Measurement source: kepler, utilization, or static"
+                      enum: ["kepler", "utilization", "static"]
+                    measuredNodePowerW:
+                      type: number
+                      description: "Measured total node power draw in watts"
+                    cpuCappedPowerW:
+                      type: number
+                      description: "CPU power budget based on TDP and cap percentage"
+                    gpuCappedPowerW:
+                      type: number
+                      description: "GPU power budget based on TDP and cap percentage"
+                    nodeCappedPowerW:
+                      type: number
+                      description: "Total node power budget (cpuCappedPowerW + gpuCappedPowerW)"
+                    cpuTdpW:
+                      type: number
+                      description: "CPU thermal design power (uncapped hardware maximum)"
+                    gpuTdpW:
+                      type: number
+                      description: "GPU thermal design power (uncapped hardware maximum)"
+                    nodeTdpW:
+                      type: number
+                      description: "Total node TDP (cpuTdpW + gpuTdpW)"
+                    powerTrendWPerMin:
+                      type: number
+                      description: "Rate of change of measured power in watts per minute"
                 predictedPowerHeadroomScore:
                   type: number
                   description: "0=no headroom, 100=full headroom"
@@ -87,7 +116,7 @@ spec:
                   description: "0=no stress, 100=max stress"
                 predictedPsuStressScore:
                   type: number
-                  description: "0=no stress, 100=max stress"
+                  description: "Reserved for future rack-topology-aware extensions. Not used in scoring. 0=no stress, 100=max stress"
                 effectiveCapState:
                   type: object
                   properties:
@@ -98,38 +127,7 @@ spec:
                   description: "Relative compute density score"
                 estimatedPUE:
                   type: number
-                  description: "Estimated Power Usage Effectiveness (1.05-1.40)"
-                rescheduleRecommendations:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      workloadRef:
-                        type: object
-                        properties:
-                          kind: { type: string }
-                          namespace: { type: string }
-                          name: { type: string }
-                      reason: { type: string }
-                gpuSlicingRecommendation:
-                  type: object
-                  description: "Advisory GPU slicing suggestion based on historical workload patterns"
-                  properties:
-                    mode:
-                      type: string
-                      enum: ["mig", "time-slicing", "none"]
-                    sliceType:
-                      type: string
-                    slicesPerGPU:
-                      type: integer
-                    totalSlices:
-                      type: integer
-                    reason:
-                      type: string
-                    estimatedUtilizationGain:
-                      type: number
-                    confidence:
-                      type: number
+                  description: "Reserved for future rack-topology-aware extensions. Not used in scoring. Estimated Power Usage Effectiveness (1.05-1.40)"
                 controlStatus:
                   type: object
                   description: "Control feedback from the agent"

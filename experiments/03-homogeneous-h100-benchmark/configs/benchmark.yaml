@@ -28,9 +28,6 @@ workload:
 simulator:
   base_speed_per_core: 8.0
   manifest: examples/07 - simulator-gpu-powercaps/manifests/20-simulator.yaml
-  # Classifier uncertainty: fraction of jobs whose workload class is randomly
-  # flipped during trace loading to simulate misclassification.
-  classifier_misclassify_rate: 0.0
   # Facility metric simulation: sinusoidal ambient temperature variation.
   facility_ambient_base_c: 22.0
   facility_ambient_amplitude_c: 8.0

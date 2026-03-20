@@ -21,14 +21,14 @@ If you are completely new, the smoothest path is:
 Core mental model:
 
 - telemetry feeds the digital twin,
-- the twin drives operator decisions (power caps, migration triggers),
+- the twin drives operator decisions (power caps, node profiles),
 - the scheduler extender reads twin state to steer new pod placement,
 - feedback from new placements updates telemetry, closing the loop.
 
 ## Section guide
 
 - [Getting Started]({{< relref "/docs/getting-started/_index.md" >}})
-  - concepts, install, workload compatibility, WorkloadProfile classification, configuration reference
+  - concepts, install, workload compatibility, configuration reference
 - [Architecture]({{< relref "/docs/architecture/_index.md" >}})
   - operator/agent/twin/scheduler roles, CRDs, policy algorithms, telemetry/control interfaces, kubectl plugin
 - [Hardware]({{< relref "/docs/hardware/_index.md" >}})
@@ -42,6 +42,5 @@ Core mental model:
 
 - **Per-node digital twins**: telemetry → twin state → cap decisions and scheduling.
 - **Kubernetes-native contracts**: 2 user-facing CRDs (`NodeHardware`, `NodeTwin`) + scheduling constraints as intent/supply language.
-- **Workload classification**: automatic profiling via Kepler/cAdvisor metrics with transparent classification reasons.
 - **Observability tooling**: `kubectl joulie` plugin, Grafana dashboard, Prometheus metrics.
 - **Practical path to adoption**: quickstart first, then progressive deep dives.

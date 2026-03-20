@@ -4,7 +4,6 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -16,7 +15,6 @@ import (
 
 var nodeTwinGVR = helpers.JoulieGVRs["nodetwins"]
 var nodeHardwareGVR = helpers.JoulieGVRs["nodehardwares"]
-var workloadProfileGVR = helpers.JoulieGVRs["workloadprofiles"]
 
 // IT-TWIN-01: Operator writes NodeTwin when NodeHardware and profile are present.
 func TestIT_TWIN_01_OperatorWritesNodeTwin(t *testing.T) {
@@ -87,59 +85,3 @@ func TestIT_TWIN_01_OperatorWritesNodeTwin(t *testing.T) {
 	t.Logf("NodeTwin for %s: schedulableClass=%s", nodeName, class)
 }
 
-// IT-PROF-01: WorkloadProfile consumption by operator/scheduler.
-func TestIT_PROF_01_WorkloadProfileConsumed(t *testing.T) {
-	kubeconfig := os.Getenv("KUBECONFIG")
-	clients, err := helpers.NewClients(kubeconfig)
-	if err != nil {
-		t.Skipf("no kubeconfig available: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	// Create a WorkloadProfile
-	wpObj := map[string]interface{}{
-		"apiVersion": "joulie.io/v1alpha1",
-		"kind":       "WorkloadProfile",
-		"metadata": map[string]interface{}{
-			"name":      "it-test-wp",
-			"namespace": "default",
-		},
-		"spec": map[string]interface{}{
-			"workloadRef": map[string]interface{}{
-				"kind": "Pod",
-				"name": "it-test-pod",
-			},
-		},
-		"status": map[string]interface{}{
-			"criticality":   map[string]interface{}{"class": "standard"},
-			"migratability": map[string]interface{}{"reschedulable": true},
-			"cpu":           map[string]interface{}{"intensity": "high", "bound": "compute", "capSensitivity": "medium"},
-			"gpu":           map[string]interface{}{"intensity": "high", "capSensitivity": "high"},
-			"confidence":    float64(0.9),
-		},
-	}
-	wpBytes, _ := json.Marshal(wpObj)
-	wp := helpers.MustParseCR(t, string(wpBytes))
-	if err := helpers.ApplyUnstructured(ctx, clients.Dynamic, workloadProfileGVR, "default", wp); err != nil {
-		t.Fatalf("create WorkloadProfile: %v", err)
-	}
-	defer clients.Dynamic.Resource(workloadProfileGVR).Namespace("default").Delete(ctx, "it-test-wp", metav1.DeleteOptions{})
-
-	// Verify the WorkloadProfile is listable
-	list, err := clients.Dynamic.Resource(workloadProfileGVR).Namespace("default").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		t.Fatalf("list WorkloadProfiles: %v", err)
-	}
-	found := false
-	for _, item := range list.Items {
-		if item.GetName() == "it-test-wp" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("created WorkloadProfile not found in list")
-	}
-}

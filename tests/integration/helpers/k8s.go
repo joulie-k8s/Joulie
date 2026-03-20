@@ -21,9 +21,8 @@ import (
 
 // JoulieGVRs contains the GVRs for all Joulie CRDs.
 var JoulieGVRs = map[string]schema.GroupVersionResource{
-	"nodetwins":        {Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"},
-	"nodehardwares":    {Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"},
-	"workloadprofiles": {Group: "joulie.io", Version: "v1alpha1", Resource: "workloadprofiles"},
+	"nodetwins":     {Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"},
+	"nodehardwares": {Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"},
 }
 
 // Clients holds k8s client instances for integration tests.

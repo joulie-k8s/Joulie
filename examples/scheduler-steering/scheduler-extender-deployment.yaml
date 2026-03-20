@@ -58,10 +58,7 @@ metadata:
   name: joulie-scheduler-extender
 rules:
   - apiGroups: ["joulie.io"]
-    resources: ["nodetwins", "workloadprofiles"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["nodes", "pods"]
+    resources: ["nodetwins", "nodehardwares"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

@@ -2,13 +2,13 @@ run:
   baselines: [A, B, C]
   seeds: 1
   # DEBUG: fast run to validate pipeline.
-  # 5000 nodes (4000 GPU + 1000 CPU). time_scale 120.
-  # 5000 jobs over ~20 wall-sec → ~0.7 sim-hours of arrivals.
-  # timeout 600 wall-sec → 20 sim-hours.
-  jobs: 5000
-  mean_inter_arrival_sec: 0.004
+  # 5000 nodes (4000 GPU + 1000 CPU, 766k CPU cores, 22k GPUs).
+  # 80k jobs, NHPP avg mult ~0.55 → ~1440 wall-sec → 48 sim-hours (2 days).
+  # timeout 1800 wall-sec → 60 sim-hours → captures 2+ full day/night cycles.
+  jobs: 80000
+  mean_inter_arrival_sec: 0.01
   time_scale: 120
-  timeout: 600
+  timeout: 1800
   settle_seconds: 10
   cleanup_timeout: 120
 
@@ -23,7 +23,7 @@ workload:
   dip_day_probability: 0.40
   dip_multiplier: 0.08
   emit_workload_records: true
-  work_scale: 80.0
+  work_scale: 1.5
   baseline_a_strip_affinity: true
   allowed_workload_types:
     - debug_eval
@@ -34,7 +34,6 @@ workload:
 simulator:
   base_speed_per_core: 2.0
   manifest: examples/07 - simulator-gpu-powercaps/manifests/20-simulator.yaml
-  classifier_misclassify_rate: 0.0
   facility_ambient_base_c: 22.0
   facility_ambient_amplitude_c: 8.0
   facility_ambient_period_sec: 720
@@ -56,10 +55,10 @@ policy:
   static:
     hp_frac: 0.35
   queue_aware:
-    hp_base_frac: 0.35
+    hp_base_frac: 0.05
     hp_min: 50
     hp_max: 4000
-    perf_per_hp_node: 15
+    perf_per_hp_node: 3
 
 images:
   joulie_registry: registry.cern.ch/mbunino/joulie

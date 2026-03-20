@@ -183,7 +183,7 @@ Prevent a node from dropping to eco while it still runs workloads that require p
 
 1. Policy plans `performance -> eco` for node `N`.
 2. Operator evaluates safeguard on `N`:
-   - classify active pods from workload-class annotations and `WorkloadProfile` matching,
+   - classify active pods from workload-class annotations,
    - detect whether performance pods are still running on `N`.
 3. If performance pods are present:
    - operator keeps desired profile as `eco`,

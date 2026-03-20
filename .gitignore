@@ -3,6 +3,7 @@
 #
 runs/
 results/
+results*/
 _old_results*/
 generated/
 tmp/

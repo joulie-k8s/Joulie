@@ -191,49 +191,6 @@ func main() {
 	defer bgCancel()
 	go facilityMetricsLoop(bgCtx, fm, facCfg)
 
-	// --- Workload classifier ---
-	if boolEnv("ENABLE_CLASSIFIER", true) {
-		clsCfg := classifierConfig{
-			classifyInterval:      durationEnv("CLASSIFY_INTERVAL", 30*time.Second),
-			reclassifyInterval:    durationEnv("RECLASSIFY_INTERVAL", 15*time.Minute),
-			metricsWindow:         durationEnv("CLASSIFY_METRICS_WINDOW", 10*time.Minute),
-			prometheusAddress:     envOrDefault("PROMETHEUS_ADDRESS", "http://prometheus-operated.monitoring:9090"),
-			keplerAvailable:       boolEnv("KEPLER_AVAILABLE", true),
-			minConfidence:         floatEnv("CLASSIFY_MIN_CONFIDENCE", 0.5),
-			nodeSelector:          selector,
-			simAnnotationFallback: boolEnv("CLASSIFY_SIM_ANNOTATION_FALLBACK", false),
-			simNoisePct:           floatEnv("CLASSIFY_SIM_NOISE_PCT", 10),
-		}
-		go classifierLoop(bgCtx, kube, dyn, clsCfg)
-	}
-
-	// --- Active rescheduler ---
-	reschCfg := reschedulerConfig{
-		enabled:             boolEnv("ENABLE_ACTIVE_RESCHEDULING", false),
-		interval:            durationEnv("RESCHEDULE_INTERVAL", 60*time.Second),
-		maxEvictionsPerNode: intEnv("RESCHEDULE_MAX_EVICTIONS_PER_NODE", 1),
-		dryRun:              boolEnv("RESCHEDULE_DRY_RUN", false),
-	}
-	go reschedulerLoop(bgCtx, kube, dyn, reschCfg)
-
-	// --- Periodic WorkloadProfile cleanup ---
-	go func() {
-		cleanupTicker := time.NewTicker(5 * time.Minute)
-		defer cleanupTicker.Stop()
-		for {
-			select {
-			case <-bgCtx.Done():
-				return
-			case <-cleanupTicker.C:
-				ctx, cancel := context.WithTimeout(bgCtx, 10*time.Second)
-				if err := cleanupOrphanedWorkloadProfiles(ctx, kube, dyn); err != nil {
-					log.Printf("[cleanup] WorkloadProfile cleanup: %v", err)
-				}
-				cancel()
-			}
-		}
-	}()
-
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		if err := reconcileWithCatalogAndFacility(

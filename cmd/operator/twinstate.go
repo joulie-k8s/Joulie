@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	joulie "github.com/matbun/joulie/pkg/api"
-	"github.com/matbun/joulie/pkg/operator/migration"
 	"github.com/matbun/joulie/pkg/operator/twin"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,7 +21,6 @@ import (
 var (
 	nodeTwinGVR         = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
 	twinNodeHardwareGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
-	workloadProfileGVR  = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "workloadprofiles"}
 )
 
 // nodeTopology holds the physical topology context for a node.
@@ -35,7 +34,6 @@ type nodeTopology struct {
 // reconcileNodeTwin computes and publishes NodeTwin status for one node.
 func reconcileNodeTwin(ctx context.Context, dynClient dynamic.Interface, nodeName, profile string, cpuCapPct, gpuCapPct float64, draining bool, topo *nodeTopology) error {
 	hw := fetchNodeHardware(ctx, dynClient, nodeName)
-	workloads := fetchWorkloadProfilesForNode(ctx, dynClient, nodeName)
 
 	outsideTempC := facilityAmbientTempC
 	var rack, coolingZone string
@@ -49,21 +47,41 @@ func reconcileNodeTwin(ctx context.Context, dynClient dynamic.Interface, nodeNam
 		}
 	}
 
+	// Resolve measured node power. For now, use static estimation (tier 3).
+	// Future: add Kepler (tier 1) and utilization-based (tier 2) sources.
+	measuredPower, source := resolveNodePower(ctx, dynClient, nodeName, hw)
+
+	// Compute power trend from rolling window.
+	trend := nodePowerTrend(nodeName, measuredPower)
+
 	in := twin.Input{
-		NodeName:           nodeName,
-		Hardware:           hw,
-		Profile:            profile,
-		CPUCapPct:          cpuCapPct,
-		GPUCapPct:          gpuCapPct,
-		Draining:           draining,
-		Workloads:          workloads,
-		ClusterTotalPowerW: facilityClusterPowerW,
-		OutsideTempC:       outsideTempC,
-		Rack:               rack,
-		CoolingZone:        coolingZone,
-		RackTotalPowerW:    rackPowerW,
+		NodeName:            nodeName,
+		Hardware:            hw,
+		Profile:             profile,
+		CPUCapPct:           cpuCapPct,
+		GPUCapPct:           gpuCapPct,
+		Draining:            draining,
+		ClusterTotalPowerW:  facilityClusterPowerW,
+		OutsideTempC:        outsideTempC,
+		Rack:                rack,
+		CoolingZone:         coolingZone,
+		RackTotalPowerW:     rackPowerW,
+		MeasuredNodePowerW:  measuredPower,
+		PowerTrendWPerMin:   trend,
 	}
 	out := twin.Compute(in)
+
+	pm := &joulie.PowerMeasurement{
+		Source:             source,
+		MeasuredNodePowerW: measuredPower,
+		CpuCappedPowerW:   out.PowerMeasurement.CpuCappedPowerW,
+		GpuCappedPowerW:   out.PowerMeasurement.GpuCappedPowerW,
+		NodeCappedPowerW:  out.PowerMeasurement.NodeCappedPowerW,
+		CpuTdpW:           out.PowerMeasurement.CpuTdpW,
+		GpuTdpW:           out.PowerMeasurement.GpuTdpW,
+		NodeTdpW:          out.PowerMeasurement.NodeTdpW,
+		PowerTrendWPerMin: trend,
+	}
 
 	twinStatus := joulie.NodeTwinStatus{
 		SchedulableClass:            out.SchedulableClass,
@@ -73,20 +91,9 @@ func reconcileNodeTwin(ctx context.Context, dynClient dynamic.Interface, nodeNam
 		EffectiveCapState:           out.EffectiveCapState,
 		HardwareDensityScore:        out.HardwareDensityScore,
 		EstimatedPUE:                out.EstimatedPUE,
-		GPUSlicingRecommendation:    out.GPUSlicingRecommendation,
+		PowerMeasurement:            pm,
 		LastUpdated:                 out.LastUpdated,
 	}
-
-	// Build migration recommendations
-	var workloadsOnNode []migration.WorkloadOnNode
-	for _, w := range workloads {
-		workloadsOnNode = append(workloadsOnNode, migration.WorkloadOnNode{
-			Ref:     joulie.WorkloadRef{Kind: "Pod", Namespace: "default", Name: "unknown"},
-			Profile: w,
-		})
-	}
-	recs := migration.EvaluateNode(twinStatus, workloadsOnNode, migration.DefaultPolicy())
-	twinStatus.RescheduleRecommendations = append(out.RescheduleRecommendations, recs...)
 
 	return upsertNodeTwinStatus(ctx, dynClient, nodeName, twinStatus)
 }
@@ -166,69 +173,6 @@ func fetchNodeHardware(ctx context.Context, dynClient dynamic.Interface, nodeNam
 	}
 
 	return hw
-}
-
-// fetchWorkloadProfilesForNode returns WorkloadProfile statuses for pods running on this node.
-// Only profiles whose spec.nodeName matches are returned.
-func fetchWorkloadProfilesForNode(ctx context.Context, dynClient dynamic.Interface, nodeName string) []joulie.WorkloadProfileStatus {
-	var profiles []joulie.WorkloadProfileStatus
-
-	list, err := dynClient.Resource(workloadProfileGVR).Namespace("").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			log.Printf("fetchWorkloadProfiles: %v", err)
-		}
-		return profiles
-	}
-
-	for _, item := range list.Items {
-		specNode, _, _ := unstructured.NestedString(item.Object, "spec", "nodeName")
-		if specNode != nodeName {
-			continue
-		}
-		status, _, _ := unstructured.NestedMap(item.Object, "status")
-		if status == nil {
-			continue
-		}
-		wp := parseWorkloadProfileStatus(status)
-		profiles = append(profiles, wp)
-	}
-	return profiles
-}
-
-func parseWorkloadProfileStatus(status map[string]interface{}) joulie.WorkloadProfileStatus {
-	wp := joulie.WorkloadProfileStatus{}
-
-	if crit, ok := status["criticality"].(map[string]interface{}); ok {
-		if v, ok := crit["class"].(string); ok {
-			wp.Criticality.Class = v
-		}
-	}
-	if mig, ok := status["migratability"].(map[string]interface{}); ok {
-		if v, ok := mig["reschedulable"].(bool); ok {
-			wp.Migratability.Reschedulable = v
-		}
-	}
-	if cpu, ok := status["cpu"].(map[string]interface{}); ok {
-		if v, ok := cpu["intensity"].(string); ok {
-			wp.CPU.Intensity = v
-		}
-		if v, ok := cpu["bound"].(string); ok {
-			wp.CPU.Bound = v
-		}
-		if v, ok := cpu["capSensitivity"].(string); ok {
-			wp.CPU.CapSensitivity = v
-		}
-	}
-	if gpu, ok := status["gpu"].(map[string]interface{}); ok {
-		if v, ok := gpu["intensity"].(string); ok {
-			wp.GPU.Intensity = v
-		}
-		if v, ok := gpu["capSensitivity"].(string); ok {
-			wp.GPU.CapSensitivity = v
-		}
-	}
-	return wp
 }
 
 // upsertNodeTwinStatus patches the status subresource of a NodeTwin CR.
@@ -373,34 +317,77 @@ func nodeTwinStatusToMap(status joulie.NodeTwinStatus) map[string]interface{} {
 			"gpuPct": status.EffectiveCapState.GPUPct,
 		},
 	}
-
-	if len(status.RescheduleRecommendations) > 0 {
-		recs := make([]interface{}, len(status.RescheduleRecommendations))
-		for i, r := range status.RescheduleRecommendations {
-			recs[i] = map[string]interface{}{
-				"workloadRef": map[string]interface{}{
-					"kind":      r.WorkloadRef.Kind,
-					"namespace": r.WorkloadRef.Namespace,
-					"name":      r.WorkloadRef.Name,
-				},
-				"reason": r.Reason,
-			}
-		}
-		m["rescheduleRecommendations"] = recs
-	}
-
-	if status.GPUSlicingRecommendation != nil {
-		r := status.GPUSlicingRecommendation
-		m["gpuSlicingRecommendation"] = map[string]interface{}{
-			"mode":                     r.Mode,
-			"sliceType":                r.SliceType,
-			"slicesPerGPU":             r.SlicesPerGPU,
-			"totalSlices":              r.TotalSlices,
-			"reason":                   r.Reason,
-			"estimatedUtilizationGain": r.EstimatedUtilizationGain,
-			"confidence":               r.Confidence,
+	if status.PowerMeasurement != nil {
+		m["powerMeasurement"] = map[string]interface{}{
+			"source":             status.PowerMeasurement.Source,
+			"measuredNodePowerW": status.PowerMeasurement.MeasuredNodePowerW,
+			"cpuCappedPowerW":    status.PowerMeasurement.CpuCappedPowerW,
+			"gpuCappedPowerW":    status.PowerMeasurement.GpuCappedPowerW,
+			"nodeCappedPowerW":   status.PowerMeasurement.NodeCappedPowerW,
+			"cpuTdpW":            status.PowerMeasurement.CpuTdpW,
+			"gpuTdpW":            status.PowerMeasurement.GpuTdpW,
+			"nodeTdpW":           status.PowerMeasurement.NodeTdpW,
+			"powerTrendWPerMin":  status.PowerMeasurement.PowerTrendWPerMin,
 		}
 	}
-
 	return m
+}
+
+// --- Measured power resolution ---
+
+// nodePowerSamples stores recent power measurements for trend computation.
+var (
+	nodePowerSamplesMu sync.Mutex
+	nodePowerSamples   = map[string][]powerSample{}
+)
+
+type powerSample struct {
+	watts float64
+	at    time.Time
+}
+
+const powerTrendWindow = 5 * time.Minute
+
+// resolveNodePower returns the best available measured power for a node.
+// Currently implements tier 3 (static estimation from pod specs).
+// Future: tier 1 (Kepler) and tier 2 (utilization-based) will be added.
+func resolveNodePower(_ context.Context, _ dynamic.Interface, _ string, _ joulie.NodeHardware) (float64, string) {
+	// Tier 3: static estimation. For now, return 0 (no pods known at this level).
+	// The operator will populate this from pod listings in a future iteration.
+	return 0, "static"
+}
+
+// nodePowerTrend computes the power trend (watts/min) for a node from a
+// rolling window of power samples.
+func nodePowerTrend(nodeName string, currentPower float64) float64 {
+	now := time.Now()
+	nodePowerSamplesMu.Lock()
+	defer nodePowerSamplesMu.Unlock()
+
+	samples := nodePowerSamples[nodeName]
+	samples = append(samples, powerSample{watts: currentPower, at: now})
+
+	// Trim old samples outside the window.
+	cutoff := now.Add(-powerTrendWindow)
+	firstValid := 0
+	for i, s := range samples {
+		if s.at.After(cutoff) {
+			firstValid = i
+			break
+		}
+	}
+	samples = samples[firstValid:]
+	nodePowerSamples[nodeName] = samples
+
+	if len(samples) < 2 {
+		return 0
+	}
+
+	oldest := samples[0]
+	newest := samples[len(samples)-1]
+	elapsed := newest.at.Sub(oldest.at).Minutes()
+	if elapsed < 0.1 {
+		return 0
+	}
+	return (newest.watts - oldest.watts) / elapsed
 }

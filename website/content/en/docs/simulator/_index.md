@@ -12,7 +12,7 @@ The simulator mirrors the real Joulie architecture. The operator, agent, and sch
 - the real operator computes desired state (`NodeTwin.spec`, `NodeTwin.status`),
 - the real agent (pool mode) realizes caps via HTTP against the simulator,
 - the real scheduler extender reads `NodeTwin.status` and applies workload-class-aware scoring,
-- workloads carry `WorkloadProfile`-compatible fields (criticality, migratability, cap sensitivity),
+- workloads carry trace-defined fields (criticality, cap sensitivity),
 - facility stress model (`simulator/pkg/facility`) provides PSU and cooling stress signals.
 
 The heterogeneous benchmark (`experiments/02-heterogeneous-benchmark/`) demonstrates the full architecture across three baselines: no Joulie, static partition, and queue-aware policy with scheduler extender steering.

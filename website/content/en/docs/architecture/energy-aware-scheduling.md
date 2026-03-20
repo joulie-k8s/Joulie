@@ -8,15 +8,14 @@ Joulie's scheduler extender makes placement decisions informed by real-time ener
 
 ## End-to-end pipeline
 
-The energy-aware scheduling pipeline has six stages:
+The energy-aware scheduling pipeline has five stages:
 
 ```
 Kepler/eBPF + RAPL/NVML telemetry
   -> Prometheus (scrape & store)
-    -> Classifier (WorkloadProfile)
-      -> Digital twin (NodeTwin.status)
-        -> Scheduler extender (filter + score)
-          -> Placement decision
+    -> Digital twin (NodeTwin.status)
+      -> Scheduler extender (filter + score)
+        -> Placement decision
 ```
 
 Each stage runs independently and communicates through Kubernetes CRDs or Prometheus queries. There is no monolithic scheduling engine; each component does one thing and feeds the next.
@@ -39,40 +38,47 @@ Together, these produce three categories of signal:
 
 All telemetry is scraped into Prometheus. The operator and classifier query Prometheus over configurable windows (default 10 minutes for classification, 30 seconds for twin updates). This decouples data collection from decision-making and lets each consumer query at its own cadence.
 
-### Stage 3: Workload classification
-
-The classifier (see [Workload Classification]({{< relref "/docs/architecture/workload-classification.md" >}})) reads Prometheus metrics and pod annotations to produce a `WorkloadProfile` CR for each observed workload. The profile captures:
-
-- **Criticality class** (`performance` / `standard`): drives hard scheduling constraints.
-- **CPU and GPU intensity** (`high` / `medium` / `low`): used by the twin for demand weighting.
-- **Cap sensitivity**: how much the workload would suffer under power caps.
-- **Confidence score**: how much data backs the classification.
-
-Profiles are reclassified every 15 minutes as workload behavior evolves.
-
-### Stage 4: Digital twin computation
+### Stage 3: Digital twin computation
 
 The operator's twin controller ingests `NodeHardware` (static capabilities) and Prometheus telemetry to compute three scores per node, written to `NodeTwin.status`:
 
 - **Power headroom** (0-100): remaining power budget before hitting thermal or PSU limits.
 - **CoolingStress** (0-100): predicted fraction of cooling capacity in use.
-- **PSUStress** (0-100): predicted fraction of rack power capacity in use.
+- **PSUStress** (0-100): predicted fraction of rack power capacity in use (tracked but reserved for future use in scoring).
 
-The twin also incorporates `WorkloadProfile` data to weight demand from high-intensity workloads more strongly. A node running several GPU-intensive training jobs counts more heavily toward performance demand than one running idle monitoring containers.
+### Stage 4: Scheduler filter and scoring
 
-### Stage 5: Scheduler scoring
+When kube-scheduler has a pending pod, it calls the Joulie extender at two endpoints:
 
-The scheduler extender reads `NodeTwin.status` (cached with a 30-second TTL) and scores nodes using a formula that weights power headroom and facility stress:
+**Filter** (`POST /filter`): The extender reads the pod's `joulie.io/workload-class` annotation. Performance pods are rejected from nodes whose `NodeTwin.status.schedulableClass` is `eco` or `draining`. Standard pods pass all nodes. This is a hard constraint — rejected nodes are excluded from scoring.
+
+**Prioritize** (`POST /prioritize`): The extender scores each surviving node 0-100. The score is **pod-specific** — it accounts for the power this particular pod would add to the node:
 
 ```
-score = headroom * 0.4 + (100 - coolingStress) * 0.3 + (100 - psuStress) * 0.3
+projectedPower = measuredPower + podMarginalPower
+headroomScore  = (cappedPower - projectedPower) / cappedPower * 100
+clusterTrend   = sum of all per-node powerTrend (W/min)
+trendScale     = 2.0 if |clusterTrend| > 500 else 6.0
+trendBonus     = -clamp(powerTrend / trendScale, -25, 25)
+
+score = headroomScore * 0.7
+      + (100 - coolingStress) * 0.15
+      + trendBonus
+      + profileBonus       (+10 for standard pods on eco nodes)
+      + pressureRelief     (up to -30 for standard pods on congested perf nodes)
 ```
 
-Additional adjustments apply based on workload class, performance-node pressure, and GPU presence. See [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}}) for the full scoring logic.
+Key properties:
+- **Headroom is relative to capped power**, not TDP. Eco nodes (capped lower) run out of headroom sooner.
+- **Pod marginal power** is estimated from the pod's CPU/GPU requests and the node's hardware profile. A GPU-heavy pod reduces headroom more than a CPU-only pod.
+- **headroomScore can go negative** if the pod would exceed the node's cap — such nodes get score 0.
+- **Trend bonus** uses adaptive scaling (±25 pts): trendScale=6.0 at steady state, trendScale=2.0 during cluster-wide bursts (|clusterTrend| > 500 W/min). This provides strong smoothing during normal operation while avoiding over-reaction during coordinated ramps.
 
-### Stage 6: Placement
+See [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}}) for the full scoring logic, worked examples, and environment variable reference.
 
-The Kubernetes scheduler combines the extender's scores with its own resource-fit checks and places the pod. The extender never overrides Kubernetes resource accounting; it only participates in the filter and prioritize hooks.
+### Stage 5: Placement
+
+The Kubernetes scheduler combines the extender's scores with its own resource-fit checks (CPU/memory requests, taints, affinity) and places the pod on the highest-scoring node. The extender never overrides Kubernetes resource accounting; it only participates in the filter and prioritize hooks.
 
 ## PUE-weighted marginal scoring
 
@@ -87,46 +93,12 @@ Two nodes drawing identical IT power can have different total energy costs if on
 The CoolingStress score in `NodeTwin.status` serves as a proxy for marginal PUE impact. When cooling stress is high on a node, placing additional workloads there increases the cooling system's marginal power draw disproportionately. The scoring formula penalizes high cooling stress:
 
 ```
-coolingPenalty = (100 - coolingStress) * 0.3
+coolingPenalty = (100 - coolingStress) * 0.15
 ```
 
-At coolingStress = 80, this contributes only 6 points (vs. 30 at coolingStress = 0). The effect is that nodes near their cooling capacity become less attractive even if they have spare compute headroom. This steers workloads toward nodes where the marginal PUE impact is lower.
+At coolingStress = 80, this contributes only 3 points (vs. 15 at coolingStress = 0). The effect is that nodes near their cooling capacity become less attractive even if they have spare compute headroom. This steers workloads toward nodes where the marginal PUE impact is lower.
 
-The PSUStress score captures a similar dynamic at the rack power-distribution level: placing work on a rack near its PDU capacity risks triggering power management responses that degrade all workloads on that rack.
-
-Together, the two facility-stress terms (0.3 weight each) give facility-level energy efficiency 60% of the scoring influence, while raw power headroom contributes 40%. This balance reflects the insight from energy-proportional computing research that facility overhead often dominates total cost at high utilization.
-
-## Active rescheduling (opt-in)
-
-Scheduling decisions are made once at pod creation. As cluster conditions change, an initially good placement can become suboptimal. Joulie supports opt-in rescheduling for workloads that tolerate restarts.
-
-### How it works
-
-1. The operator's migration controller monitors `NodeTwin.status` for nodes where CoolingStress or PSUStress exceeds a threshold (default 70).
-2. For pods on stressed nodes, it checks whether the associated `WorkloadProfile` has `migratability.reschedulable: true`.
-3. If so, it writes a reschedule recommendation to `NodeTwin.status.migrationRecommendations`.
-4. The recommendation identifies which pods should move and why.
-
-### Opting in
-
-Pods opt into rescheduling with an annotation:
-
-```yaml
-metadata:
-  annotations:
-    joulie.io/reschedulable: "true"
-```
-
-Without this annotation, pods are never recommended for rescheduling regardless of node stress. Performance-class pods are never rescheduled.
-
-### Active eviction (opt-in)
-
-When `ENABLE_ACTIVE_RESCHEDULING=true` is set on the operator, the rescheduler acts on recommendations by evicting misplaced pods via the Kubernetes Eviction API (policy/v1). Before eviction, it annotates the pod's owner with eviction context so the scheduler avoids re-placing the replacement pod in the same situation. See [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}}) for configuration details.
-
-### What rescheduling does not do
-
-- It does not reschedule performance-class workloads.
-- It does not trigger during normal operation; only when facility stress exceeds the configured threshold.
+The cooling stress term (0.15 weight) provides a facility-level energy efficiency signal, while headroom relative to the capped power budget dominates scoring at 70% weight. PSU stress is tracked but reserved for future use in scoring. A trend bonus (up to ±10 points) rewards nodes whose power draw is falling and penalizes nodes whose power is rising, improving responsiveness to dynamic workloads.
 
 ## State of the art
 
@@ -160,12 +132,6 @@ Fan, Weber, and Barroso (2007) demonstrated that aggregate power consumption in 
 
 > X. Fan, W.-D. Weber, and L.A. Barroso. "Power Provisioning for a Warehouse-Sized Computer." Proceedings of the International Symposium on Computer Architecture (ISCA), 2007.
 
-### Workload-aware cluster management
-
-Tirmazi et al. (2020) describe Google's next-generation Borg scheduler, which uses workload characterization to improve bin-packing and reduce resource stranding. Joulie's WorkloadProfile classification serves an analogous role: by understanding whether a workload is CPU-bound, memory-bound, or GPU-intensive, the scheduler can make better placement decisions than resource-request-based scheduling alone.
-
-> M. Tirmazi, A. Barker, N. Deng, M.E. Haque, Z.G. Qin, S. Hand, M. Harchol-Balter, and J. Wilkes. "Borg: the Next Generation." Proceedings of the European Conference on Computer Systems (EuroSys), 2020.
-
 ### Digital twin for data centers
 
 The concept of a digital twin for thermal-aware provisioning was introduced by Patel, Bash, and Sharma (2003), who proposed using thermal models to guide server placement in data centers. Joulie extends this idea to Kubernetes: the digital twin is a lightweight parametric model embedded in the operator, continuously updated from telemetry, and consumed by the scheduler in real time.
@@ -183,16 +149,12 @@ Burns et al. (2016) trace the evolution from Borg through Omega to Kubernetes, d
 Prior work has addressed energy measurement, power-aware scheduling, and data center thermal modeling independently. Joulie's contribution is integrating these into a single Kubernetes-native feedback loop:
 
 1. **Kepler + RAPL + NVML telemetry** provides both per-container attribution and node-level power measurement.
-2. **Automated workload classification** turns raw metrics into actionable profiles without manual labeling.
-3. **A digital twin** predicts the facility-level impact (cooling, PSU) of placement decisions, not just IT power.
-4. **PUE-weighted scoring** makes the scheduler aware of marginal facility energy cost, not just compute availability.
-5. **DRA advisory integration** extends the twin's recommendations to GPU slicing without runtime disruption.
+2. **A digital twin** predicts the facility-level impact (cooling, PSU) of placement decisions, not just IT power.
+3. **PUE-weighted scoring** makes the scheduler aware of marginal facility energy cost, not just compute availability.
 
 No existing Kubernetes scheduler plugin combines real-time eBPF energy telemetry, a digital twin with facility-stress modeling, and workload classification into a single scheduling pipeline.
 
 ## What to read next
 
-1. [Workload Classification]({{< relref "/docs/architecture/workload-classification.md" >}})
-2. [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}})
-3. [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}})
-4. [GPU Slicing Recommendations]({{< relref "/docs/architecture/dra.md" >}})
+1. [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}})
+2. [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}})

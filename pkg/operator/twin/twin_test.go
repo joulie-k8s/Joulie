@@ -49,157 +49,6 @@ func TestComputeDraining(t *testing.T) {
 	}
 }
 
-func TestRescheduleRecommendations(t *testing.T) {
-	in := Input{
-		NodeName: "node1",
-		Hardware: joulie.NodeHardware{
-			CPU: joulie.NodeHardwareCPU{
-				Sockets:  2,
-				CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 360},
-			},
-			GPU: joulie.NodeHardwareGPU{
-				Present:  true,
-				Count:    8,
-				CapRange: joulie.GPUCapRange{MaxWatts: 400},
-			},
-		},
-		Profile:            "eco",
-		CPUCapPct:          100, // max power = high cooling stress
-		GPUCapPct:          100,
-		ClusterTotalPowerW: 45000, // high PSU stress
-		Workloads: []joulie.WorkloadProfileStatus{
-			{
-				Criticality:   joulie.WorkloadCriticality{Class: "standard"},
-				Migratability: joulie.WorkloadMigratability{Reschedulable: true},
-			},
-		},
-	}
-	out := Compute(in)
-	if len(out.RescheduleRecommendations) == 0 {
-		t.Errorf("expected reschedule recommendations under high stress with reschedulable standard workloads")
-	}
-}
-
-func TestGPUSlicingRecommendationNoGPU(t *testing.T) {
-	in := Input{
-		NodeName: "cpu-only",
-		Hardware: joulie.NodeHardware{
-			CPU: joulie.NodeHardwareCPU{TotalCores: 64},
-			GPU: joulie.NodeHardwareGPU{Present: false},
-		},
-		Profile:   "eco",
-		CPUCapPct: 60,
-		GPUCapPct: 100,
-	}
-	out := Compute(in)
-	if out.GPUSlicingRecommendation != nil {
-		t.Error("expected nil GPU slicing recommendation for CPU-only node")
-	}
-}
-
-func TestGPUSlicingRecommendationSlicingNotSupported(t *testing.T) {
-	in := Input{
-		NodeName: "gpu-no-mig",
-		Hardware: joulie.NodeHardware{
-			GPU: joulie.NodeHardwareGPU{
-				Present: true, Count: 4,
-				Slicing: joulie.GPUSlicing{Supported: false},
-			},
-		},
-		Profile:   "performance",
-		CPUCapPct: 100,
-		GPUCapPct: 100,
-	}
-	out := Compute(in)
-	if out.GPUSlicingRecommendation != nil {
-		t.Error("expected nil GPU slicing recommendation when slicing not supported")
-	}
-}
-
-func TestGPUSlicingRecommendationNoWorkloads(t *testing.T) {
-	in := Input{
-		NodeName: "gpu-idle",
-		Hardware: joulie.NodeHardware{
-			GPU: joulie.NodeHardwareGPU{
-				Present: true, Count: 4,
-				Slicing: joulie.GPUSlicing{Supported: true, Modes: []string{"mig", "time-slicing"}},
-			},
-		},
-		Profile:   "eco",
-		CPUCapPct: 60,
-		GPUCapPct: 60,
-	}
-	out := Compute(in)
-	if out.GPUSlicingRecommendation == nil {
-		t.Fatal("expected GPU slicing recommendation for idle GPU node with slicing support")
-	}
-	if out.GPUSlicingRecommendation.Mode != "time-slicing" {
-		t.Errorf("expected time-slicing default, got %s", out.GPUSlicingRecommendation.Mode)
-	}
-}
-
-func TestGPUSlicingRecommendationLowIntensity(t *testing.T) {
-	in := Input{
-		NodeName: "gpu-node",
-		Hardware: joulie.NodeHardware{
-			GPU: joulie.NodeHardwareGPU{
-				Present: true, Count: 8,
-				Slicing: joulie.GPUSlicing{Supported: true, Modes: []string{"mig"}},
-			},
-		},
-		Profile:   "eco",
-		CPUCapPct: 60,
-		GPUCapPct: 60,
-		Workloads: []joulie.WorkloadProfileStatus{
-			{GPU: joulie.WorkloadGPUProfile{Intensity: "low"}},
-			{GPU: joulie.WorkloadGPUProfile{Intensity: "low"}},
-			{GPU: joulie.WorkloadGPUProfile{Intensity: "medium"}},
-		},
-	}
-	out := Compute(in)
-	rec := out.GPUSlicingRecommendation
-	if rec == nil {
-		t.Fatal("expected GPU slicing recommendation")
-	}
-	if rec.Mode != "mig" || rec.SliceType != "1g.10gb" {
-		t.Errorf("expected mig/1g.10gb for low-intensity workloads, got %s/%s", rec.Mode, rec.SliceType)
-	}
-	if rec.TotalSlices != 7*8 {
-		t.Errorf("expected 56 total slices (7×8 GPUs), got %d", rec.TotalSlices)
-	}
-}
-
-func TestGPUSlicingRecommendationHighIntensity(t *testing.T) {
-	in := Input{
-		NodeName: "gpu-node",
-		Hardware: joulie.NodeHardware{
-			GPU: joulie.NodeHardwareGPU{
-				Present: true, Count: 4,
-				Slicing: joulie.GPUSlicing{Supported: true, Modes: []string{"mig"}},
-			},
-		},
-		Profile:   "performance",
-		CPUCapPct: 100,
-		GPUCapPct: 100,
-		Workloads: []joulie.WorkloadProfileStatus{
-			{GPU: joulie.WorkloadGPUProfile{Intensity: "high"}},
-			{GPU: joulie.WorkloadGPUProfile{Intensity: "high"}},
-			{GPU: joulie.WorkloadGPUProfile{Intensity: "medium"}},
-		},
-	}
-	out := Compute(in)
-	rec := out.GPUSlicingRecommendation
-	if rec == nil {
-		t.Fatal("expected GPU slicing recommendation")
-	}
-	if rec.Mode != "none" {
-		t.Errorf("expected whole-GPU (none) for high-intensity workloads, got %s", rec.Mode)
-	}
-	if rec.TotalSlices != 4 {
-		t.Errorf("expected 4 total slices (1×4 GPUs), got %d", rec.TotalSlices)
-	}
-}
-
 func TestComputeHardwareDensityScore(t *testing.T) {
 	hw := joulie.NodeHardware{
 		CPU: joulie.NodeHardwareCPU{TotalCores: 192},
@@ -242,6 +91,12 @@ func TestComputeZeroCapsDefaultToFull(t *testing.T) {
 		Profile:   "performance",
 		CPUCapPct: 0,
 		GPUCapPct: 0,
+		Hardware: joulie.NodeHardware{
+			CPU: joulie.NodeHardwareCPU{
+				Sockets:  2,
+				CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 350},
+			},
+		},
 	})
 	if out.EffectiveCapState.CPUPct != 100 {
 		t.Errorf("expected CPU cap default to 100, got %f", out.EffectiveCapState.CPUPct)
@@ -249,9 +104,9 @@ func TestComputeZeroCapsDefaultToFull(t *testing.T) {
 	if out.EffectiveCapState.GPUPct != 100 {
 		t.Errorf("expected GPU cap default to 100, got %f", out.EffectiveCapState.GPUPct)
 	}
-	// Regression: computePowerHeadroom must use the defaulted cap values, not 0.
-	if out.PredictedPowerHeadroomScore == 0 {
-		t.Error("headroom must be non-zero when caps default to 100% (uncapped)")
+	// With nodeCappedPower > 0 and measuredPower = 0, headroom should be 100.
+	if out.PredictedPowerHeadroomScore != 100 {
+		t.Errorf("headroom should be 100 when measured power is 0, got %f", out.PredictedPowerHeadroomScore)
 	}
 }
 
@@ -278,8 +133,13 @@ func TestComputeZeroHardwareNoPanic(t *testing.T) {
 	if out.HardwareDensityScore != 0 {
 		t.Errorf("expected 0 density for zero hardware, got %f", out.HardwareDensityScore)
 	}
-	if out.PredictedCoolingStressScore < 0 || out.PredictedCoolingStressScore > 100 {
-		t.Errorf("cooling stress out of range: %f", out.PredictedCoolingStressScore)
+	// nodeCappedPower = 0 → headroom = 100 (neutral for unknown hardware)
+	if out.PredictedPowerHeadroomScore != 100 {
+		t.Errorf("expected headroom 100 for zero hardware, got %f", out.PredictedPowerHeadroomScore)
+	}
+	// nodeTDP = 0 → cooling stress = 0
+	if out.PredictedCoolingStressScore != 0 {
+		t.Errorf("expected 0 cooling stress for zero hardware, got %f", out.PredictedCoolingStressScore)
 	}
 }
 
@@ -296,83 +156,208 @@ func TestComputeExtremeClusterPower(t *testing.T) {
 	}
 }
 
-func TestRescheduleNoRecsWhenDraining(t *testing.T) {
-	out := Compute(Input{
-		NodeName:           "n",
-		Profile:            "eco",
-		Draining:           true,
-		CPUCapPct:          100,
-		GPUCapPct:          100,
-		ClusterTotalPowerW: 45000,
+// --- Power headroom tests ---
+
+func TestPowerHeadroomBasic(t *testing.T) {
+	// 2×350W CPU + 8×700W GPU = nodeTDP 6300W
+	// cpuCapPct=60 → cpuCapped=420, gpuCapPct=40 → gpuCapped=2240
+	// nodeCappedPower = 2660W, measured = 1500W
+	// headroom = (2660-1500)/2660*100 = 43.6%
+	in := Input{
+		NodeName: "n",
 		Hardware: joulie.NodeHardware{
-			CPU: joulie.NodeHardwareCPU{Sockets: 2, CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 360}},
-			GPU: joulie.NodeHardwareGPU{Present: true, Count: 8, CapRange: joulie.GPUCapRange{MaxWatts: 400}},
+			CPU: joulie.NodeHardwareCPU{
+				Sockets:  2,
+				CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 350},
+			},
+			GPU: joulie.NodeHardwareGPU{Present: true, Count: 8,
+				CapRange: joulie.GPUCapRange{MaxWatts: 700}},
 		},
-		Workloads: []joulie.WorkloadProfileStatus{
-			{Criticality: joulie.WorkloadCriticality{Class: "standard"}, Migratability: joulie.WorkloadMigratability{Reschedulable: true}},
-		},
-	})
-	if len(out.RescheduleRecommendations) != 0 {
-		t.Error("expected no reschedule recommendations when draining")
-	}
-}
-
-func TestRescheduleNoRecsForPerformanceWorkloads(t *testing.T) {
-	out := Compute(Input{
-		NodeName:           "n",
 		Profile:            "eco",
-		CPUCapPct:          100,
-		GPUCapPct:          100,
-		ClusterTotalPowerW: 45000,
+		CPUCapPct:          60,
+		GPUCapPct:          40,
+		MeasuredNodePowerW: 1500,
+	}
+	out := Compute(in)
+	// Expected: (2660 - 1500) / 2660 * 100 ≈ 43.6
+	if out.PredictedPowerHeadroomScore < 43 || out.PredictedPowerHeadroomScore > 44 {
+		t.Errorf("expected headroom ~43.6, got %f", out.PredictedPowerHeadroomScore)
+	}
+}
+
+func TestPowerHeadroomNegative(t *testing.T) {
+	// Measured power exceeds capped budget → headroom goes negative (not clamped to 0)
+	in := Input{
+		NodeName: "n",
 		Hardware: joulie.NodeHardware{
-			CPU: joulie.NodeHardwareCPU{Sockets: 2, CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 360}},
-			GPU: joulie.NodeHardwareGPU{Present: true, Count: 8, CapRange: joulie.GPUCapRange{MaxWatts: 400}},
+			CPU: joulie.NodeHardwareCPU{
+				Sockets:  1,
+				CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 200},
+			},
 		},
-		Workloads: []joulie.WorkloadProfileStatus{
-			{Criticality: joulie.WorkloadCriticality{Class: "performance"}, Migratability: joulie.WorkloadMigratability{Reschedulable: true}},
-		},
-	})
-	if len(out.RescheduleRecommendations) != 0 {
-		t.Error("expected no reschedule for performance workloads even under stress")
+		Profile:            "eco",
+		CPUCapPct:          50,
+		MeasuredNodePowerW: 150, // exceeds 100W capped budget
+	}
+	out := Compute(in)
+	if out.PredictedPowerHeadroomScore >= 0 {
+		t.Errorf("expected negative headroom when over budget, got %f", out.PredictedPowerHeadroomScore)
 	}
 }
 
-func TestLinearCoolingModelZeroReference(t *testing.T) {
-	m := LinearCoolingModel{ReferenceNodePowerW: 0}
-	stress := m.CoolingStress(1000, 25)
-	// Zero reference should default to 4000W
-	if stress < 0 || stress > 100 {
-		t.Errorf("stress out of range: %f", stress)
+func TestPowerHeadroomCappedAt100(t *testing.T) {
+	in := Input{
+		NodeName: "n",
+		Hardware: joulie.NodeHardware{
+			CPU: joulie.NodeHardwareCPU{
+				Sockets:  2,
+				CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 350},
+			},
+		},
+		Profile:            "performance",
+		CPUCapPct:          100,
+		MeasuredNodePowerW: 0,
+	}
+	out := Compute(in)
+	if out.PredictedPowerHeadroomScore != 100 {
+		t.Errorf("expected headroom 100 when no power drawn, got %f", out.PredictedPowerHeadroomScore)
 	}
 }
 
-func TestLinearCoolingModelHighTemp(t *testing.T) {
-	m := LinearCoolingModel{ReferenceNodePowerW: 4000}
-	stress := m.CoolingStress(0, 100) // high temp, no load
-	if stress <= 0 {
-		t.Errorf("expected non-zero stress at high temp, got %f", stress)
+// --- Cooling stress tests ---
+
+func TestCoolingStressBasic(t *testing.T) {
+	// nodeTDP = 2*350 = 700W, measured = 350W, temp = 20 (multiplier = 1.0)
+	// stress = (350/700) * 1.0 * 100 = 50
+	in := Input{
+		NodeName: "n",
+		Hardware: joulie.NodeHardware{
+			CPU: joulie.NodeHardwareCPU{
+				Sockets:  2,
+				CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 350},
+			},
+		},
+		Profile:            "eco",
+		CPUCapPct:          60,
+		MeasuredNodePowerW: 350,
+		OutsideTempC:       20,
+	}
+	out := Compute(in)
+	if out.PredictedCoolingStressScore < 49.5 || out.PredictedCoolingStressScore > 50.5 {
+		t.Errorf("expected cooling stress ~50, got %f", out.PredictedCoolingStressScore)
+	}
+}
+
+func TestCoolingStressHighTemp(t *testing.T) {
+	// nodeTDP = 700W, measured = 350W, temp = 45 → multiplier = 1/max(0.5, 1-25*0.02) = 1/0.5 = 2.0
+	// stress = (350/700) * 2.0 * 100 = 100
+	in := Input{
+		NodeName: "n",
+		Hardware: joulie.NodeHardware{
+			CPU: joulie.NodeHardwareCPU{
+				Sockets:  2,
+				CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 350},
+			},
+		},
+		Profile:            "eco",
+		CPUCapPct:          60,
+		MeasuredNodePowerW: 350,
+		OutsideTempC:       45,
+	}
+	out := Compute(in)
+	if out.PredictedCoolingStressScore != 100 {
+		t.Errorf("expected cooling stress 100 at extreme temp, got %f", out.PredictedCoolingStressScore)
+	}
+}
+
+func TestCoolingStressUnknownTemp(t *testing.T) {
+	// temp = 0 (unknown) → multiplier = 1.0
+	in := Input{
+		NodeName: "n",
+		Hardware: joulie.NodeHardware{
+			CPU: joulie.NodeHardwareCPU{
+				Sockets:  2,
+				CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 350},
+			},
+		},
+		Profile:            "eco",
+		CPUCapPct:          60,
+		MeasuredNodePowerW: 350,
+		OutsideTempC:       0,
+	}
+	out := Compute(in)
+	// Same as 20C: (350/700)*1.0*100 = 50
+	if out.PredictedCoolingStressScore < 49.5 || out.PredictedCoolingStressScore > 50.5 {
+		t.Errorf("expected cooling stress ~50 for unknown temp, got %f", out.PredictedCoolingStressScore)
+	}
+}
+
+// --- Power measurement output tests ---
+
+func TestPowerMeasurementOutput(t *testing.T) {
+	in := Input{
+		NodeName: "n",
+		Hardware: joulie.NodeHardware{
+			CPU: joulie.NodeHardwareCPU{
+				Sockets:  2,
+				CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 350},
+			},
+			GPU: joulie.NodeHardwareGPU{Present: true, Count: 8,
+				CapRange: joulie.GPUCapRange{MaxWatts: 700}},
+		},
+		Profile:            "eco",
+		CPUCapPct:          60,
+		GPUCapPct:          40,
+		MeasuredNodePowerW: 1500,
+		PowerTrendWPerMin:  -120,
+	}
+	out := Compute(in)
+	pm := out.PowerMeasurement
+
+	if pm.CpuTdpW != 700 {
+		t.Errorf("expected cpuTDP 700, got %f", pm.CpuTdpW)
+	}
+	if pm.GpuTdpW != 5600 {
+		t.Errorf("expected gpuTDP 5600, got %f", pm.GpuTdpW)
+	}
+	if pm.NodeTdpW != 6300 {
+		t.Errorf("expected nodeTDP 6300, got %f", pm.NodeTdpW)
+	}
+	if pm.CpuCappedPowerW != 420 {
+		t.Errorf("expected cpuCapped 420, got %f", pm.CpuCappedPowerW)
+	}
+	if pm.GpuCappedPowerW != 2240 {
+		t.Errorf("expected gpuCapped 2240, got %f", pm.GpuCappedPowerW)
+	}
+	if pm.NodeCappedPowerW != 2660 {
+		t.Errorf("expected nodeCapped 2660, got %f", pm.NodeCappedPowerW)
+	}
+	if pm.MeasuredNodePowerW != 1500 {
+		t.Errorf("expected measuredPower 1500, got %f", pm.MeasuredNodePowerW)
+	}
+	if pm.PowerTrendWPerMin != -120 {
+		t.Errorf("expected trend -120, got %f", pm.PowerTrendWPerMin)
 	}
 }
 
 // --- Topology-aware tests ---
 
 func TestPSUStressUsesPerRackPower(t *testing.T) {
-	// When RackTotalPowerW is set, PSU stress should use it instead of ClusterTotalPowerW
 	inCluster := Input{
 		NodeName:           "n",
 		Profile:            "performance",
 		CPUCapPct:          100,
 		GPUCapPct:          100,
-		ClusterTotalPowerW: 40000, // high cluster power
+		ClusterTotalPowerW: 40000,
 	}
 	inRack := Input{
 		NodeName:           "n",
 		Profile:            "performance",
 		CPUCapPct:          100,
 		GPUCapPct:          100,
-		ClusterTotalPowerW: 40000, // high cluster power
+		ClusterTotalPowerW: 40000,
 		Rack:               "rack-1",
-		RackTotalPowerW:    10000, // low per-rack power
+		RackTotalPowerW:    10000,
 	}
 
 	outCluster := Compute(inCluster)
@@ -385,7 +370,6 @@ func TestPSUStressUsesPerRackPower(t *testing.T) {
 }
 
 func TestPSUStressFallsBackToClusterWide(t *testing.T) {
-	// When RackTotalPowerW is 0, should use ClusterTotalPowerW
 	in := Input{
 		NodeName:           "n",
 		Profile:            "performance",
@@ -393,10 +377,9 @@ func TestPSUStressFallsBackToClusterWide(t *testing.T) {
 		GPUCapPct:          100,
 		ClusterTotalPowerW: 30000,
 		Rack:               "rack-1",
-		RackTotalPowerW:    0, // no per-rack data
+		RackTotalPowerW:    0,
 	}
 	out := Compute(in)
-	// Should compute based on cluster power (30000/50000 * 100 = 60)
 	if out.PredictedPsuStressScore < 50 || out.PredictedPsuStressScore > 70 {
 		t.Errorf("expected PSU stress around 60 from cluster power, got %.1f", out.PredictedPsuStressScore)
 	}
@@ -409,25 +392,25 @@ func TestCoolingStressUsesPerZoneAmbient(t *testing.T) {
 			CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 360},
 		},
 	}
-	// Cool zone
 	inCool := Input{
-		NodeName:    "n",
-		Hardware:    hw,
-		Profile:     "eco",
-		CPUCapPct:   60,
-		GPUCapPct:   60,
-		OutsideTempC: 18,
-		CoolingZone: "zone-cool",
+		NodeName:           "n",
+		Hardware:           hw,
+		Profile:            "eco",
+		CPUCapPct:          60,
+		GPUCapPct:          60,
+		OutsideTempC:       18,
+		CoolingZone:        "zone-cool",
+		MeasuredNodePowerW: 300,
 	}
-	// Hot zone
 	inHot := Input{
-		NodeName:    "n",
-		Hardware:    hw,
-		Profile:     "eco",
-		CPUCapPct:   60,
-		GPUCapPct:   60,
-		OutsideTempC: 35,
-		CoolingZone: "zone-hot",
+		NodeName:           "n",
+		Hardware:           hw,
+		Profile:            "eco",
+		CPUCapPct:          60,
+		GPUCapPct:          60,
+		OutsideTempC:       35,
+		CoolingZone:        "zone-hot",
+		MeasuredNodePowerW: 300,
 	}
 
 	outCool := Compute(inCool)
@@ -436,33 +419,5 @@ func TestCoolingStressUsesPerZoneAmbient(t *testing.T) {
 	if outCool.PredictedCoolingStressScore >= outHot.PredictedCoolingStressScore {
 		t.Errorf("hot zone should have higher cooling stress: cool=%.1f hot=%.1f",
 			outCool.PredictedCoolingStressScore, outHot.PredictedCoolingStressScore)
-	}
-}
-
-func TestGPUSlicingMediumIntensityRecommendation(t *testing.T) {
-	in := Input{
-		NodeName: "gpu-med",
-		Hardware: joulie.NodeHardware{
-			GPU: joulie.NodeHardwareGPU{
-				Present: true, Count: 4,
-				Slicing: joulie.GPUSlicing{Supported: true},
-			},
-		},
-		Profile:   "eco",
-		CPUCapPct: 60,
-		GPUCapPct: 60,
-		Workloads: []joulie.WorkloadProfileStatus{
-			{GPU: joulie.WorkloadGPUProfile{Intensity: "medium"}},
-			{GPU: joulie.WorkloadGPUProfile{Intensity: "medium"}},
-			{GPU: joulie.WorkloadGPUProfile{Intensity: "low"}},
-		},
-	}
-	out := Compute(in)
-	rec := out.GPUSlicingRecommendation
-	if rec == nil {
-		t.Fatal("expected GPU slicing recommendation")
-	}
-	if rec.Mode != "mig" || rec.SliceType != "3g.40gb" {
-		t.Errorf("expected mig/3g.40gb for medium-intensity, got %s/%s", rec.Mode, rec.SliceType)
 	}
 }

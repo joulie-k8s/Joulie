@@ -35,7 +35,6 @@ Joulie addresses these by making the scheduler and operator aware of the physica
   - runs the digital twin model, computes `NodeTwin.status`
   - decides desired node power profile/cap assignments
   - writes desired state into `NodeTwin.spec`
-  - triggers pod migration under thermal/PSU pressure
 - **Agent** (`cmd/agent`): node-level actuator
   - discovers local CPU/GPU hardware and capability
   - publishes discovered hardware as `NodeHardware`
@@ -47,7 +46,6 @@ Joulie addresses these by making the scheduler and operator aware of the physica
   - scores nodes by power headroom and facility stress
 - **kubectl plugin** (`cmd/kubectl-joulie`): cluster observability
   - `kubectl joulie status` shows per-node energy state, power profiles, and cap settings
-  - `kubectl joulie recommend` surfaces GPU slicing and reschedule recommendations
 - **Simulator** (`simulator/`): digital-twin execution environment
   - enables repeatable experiments without requiring real hardware
 
@@ -55,10 +53,8 @@ Joulie addresses these by making the scheduler and operator aware of the physica
 
 | CRD | Owner | Purpose |
 |-----|-------|---------|
-| `NodeHardware` | Agent | Hardware facts: CPU/GPU model, cap ranges, frequency landmarks, GPU slicing modes |
-| `NodeTwin` | Operator | Desired state (spec: power cap %) + twin output (status: headroom, cooling stress, PSU stress, schedulable class, migration recommendations, GPU slicing recommendations, control feedback) |
-
-The operator also creates `WorkloadProfile` CRs internally to classify workloads. These are managed automatically. You only interact with them indirectly via the `joulie.io/workload-class` pod annotation.
+| `NodeHardware` | Agent | Hardware facts: CPU/GPU model, cap ranges, frequency landmarks |
+| `NodeTwin` | Operator | Desired state (spec: power cap %) + twin output (status: headroom, cooling stress, PSU stress, schedulable class, control feedback) |
 
 ## Node supply labels
 
@@ -87,9 +83,9 @@ For each managed node, the twin produces three scores written to `NodeTwin.statu
 - **CoolingStress** (0-100): predicted percentage of cooling capacity in use. High values mean the node is near its thermal limit.
 - **PSUStress** (0-100): predicted percentage of PDU/rack power capacity in use. High values mean the rack is near its power supply limit.
 
-The scheduler extender caches these scores (30-second TTL) and uses them for filter and score decisions. The operator uses them to trigger migration recommendations when stress exceeds thresholds.
+The scheduler extender caches these scores (30-second TTL) and uses them for filter and score decisions.
 
-For formula details, the pluggable `CoolingModel` interface, and GPU slicing recommendations, see [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}).
+For formula details and the pluggable `CoolingModel` interface, see [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}).
 
 ## Digital twin feedback loop
 

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -191,13 +190,11 @@ type simulator struct {
 
 	workload *workloadEngine
 
-	// Classifier uncertainty: fraction of jobs whose class is flipped.
-	classifierMisclassifyRate float64
-
 	// Facility ambient temperature parameters.
 	facilityBaseAmbientTempC float64
 	facilityTempAmplitudeC   float64
 	facilityTempPeriodH      float64
+	facilityPeakITPowerW     float64
 
 	// Facility Prometheus gauges.
 	facilityAmbientTemp  prometheus.Gauge
@@ -251,18 +248,18 @@ func main() {
 		}
 	}
 
-	// Classifier uncertainty configuration.
-	s.classifierMisclassifyRate = floatEnv("SIM_CLASSIFIER_MISCLASSIFY_RATE", 0.0)
-	if s.classifierMisclassifyRate > 0 {
-		log.Printf("classifier uncertainty enabled misclassify_rate=%.4f", s.classifierMisclassifyRate)
-	}
-
 	// Facility ambient temperature configuration.
 	s.facilityBaseAmbientTempC = floatEnv("SIM_FACILITY_AMBIENT_TEMP_C", 20.0)
 	s.facilityTempAmplitudeC = floatEnv("SIM_FACILITY_TEMP_AMPLITUDE_C", 5.0)
 	s.facilityTempPeriodH = floatEnv("SIM_FACILITY_TEMP_PERIOD_H", 24.0)
 	log.Printf("facility model base_temp=%.1fC amplitude=%.1fC period=%.1fh",
 		s.facilityBaseAmbientTempC, s.facilityTempAmplitudeC, s.facilityTempPeriodH)
+
+	// Standalone mode: bypass K8s entirely, run simulation at CPU speed.
+	if boolEnv("SIM_STANDALONE", false) {
+		runStandalone(s)
+		return
+	}
 
 	if boolEnv("SIM_K8S_POD_WATCH", true) {
 		go s.startPodPolling(durationEnv("SIM_POLL_INTERVAL", 15*time.Second))
@@ -1156,9 +1153,26 @@ func (s *simulator) updateFacilityMetrics(now time.Time) {
 	s.mu.RUnlock()
 	s.facilityITPowerW.Set(math.Round(itPowerW*100) / 100)
 
-	// Simple PUE model: baseline 1.1 at 15C, increasing linearly with temperature.
-	// PUE = 1.1 + 0.008 * (ambientTemp - 15). Clamped to [1.0, 3.0].
-	pue := 1.1 + 0.008*(ambientTemp-15.0)
+	// PUE model: depends on both ambient temperature and IT load.
+	// Base PUE at 15C is 1.08, increases with temperature and IT load fraction.
+	// Higher IT load → cooling systems work harder → higher PUE, especially at high temps.
+	//
+	// Estimate IT load fraction from total IT power vs design capacity.
+	// Design capacity approximated as max observed IT power (tracked via peak).
+	if itPowerW > s.facilityPeakITPowerW {
+		s.facilityPeakITPowerW = itPowerW
+	}
+	loadFrac := 0.0
+	if s.facilityPeakITPowerW > 0 {
+		loadFrac = itPowerW / s.facilityPeakITPowerW
+	}
+
+	// PUE = basePUE + tempEffect + loadEffect + interaction(temp×load)
+	basePUE := 1.08
+	tempEffect := 0.006 * (ambientTemp - 15.0)        // +0.006 per degree above 15C
+	loadEffect := 0.04 * loadFrac                      // +0.04 at full load
+	interaction := 0.015 * loadFrac * (ambientTemp - 15.0) / 15.0 // temp×load interaction
+	pue := basePUE + tempEffect + loadEffect + interaction
 	if pue < 1.0 {
 		pue = 1.0
 	} else if pue > 3.0 {
@@ -2279,26 +2293,6 @@ func (s *simulator) initWorkloadEngineFromTrace(path string) error {
 		}
 	}
 	sort.Slice(engine.jobs, func(i, j int) bool { return engine.jobs[i].SubmitOffsetSec < engine.jobs[j].SubmitOffsetSec })
-
-	// Apply classifier misclassification: randomly flip a fraction of job classes
-	// between "performance" and "standard" to simulate classifier errors.
-	if s.classifierMisclassifyRate > 0 {
-		flipped := 0
-		for _, j := range engine.jobs {
-			if rand.Float64() < s.classifierMisclassifyRate {
-				switch j.Class {
-				case "performance":
-					j.Class = "standard"
-					flipped++
-				case "standard":
-					j.Class = "performance"
-					flipped++
-				}
-			}
-		}
-		log.Printf("classifier misclassification applied rate=%.4f flipped=%d/%d",
-			s.classifierMisclassifyRate, flipped, len(engine.jobs))
-	}
 
 	s.workload = engine
 	log.Printf("workload trace loaded jobs=%d parts=%d path=%s", len(engine.jobs), len(tracePaths), path)

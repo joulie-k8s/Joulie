@@ -13,7 +13,7 @@ Use this page after:
 
 ## Classification Input
 
-Policy demand classification is derived from the `joulie.io/workload-class` pod annotation or a matching `WorkloadProfile`:
+Policy demand classification is derived from the `joulie.io/workload-class` pod annotation:
 
 - `performance`: pod carries `joulie.io/workload-class: performance`.
 - `standard` (default): no annotation or `joulie.io/workload-class: standard`.

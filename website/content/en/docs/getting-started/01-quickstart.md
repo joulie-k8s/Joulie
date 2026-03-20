@@ -187,7 +187,7 @@ For fake-node workload + power simulation (real scheduler, fake [KWOK](https://k
 
 ## kubectl plugin
 
-The `kubectl-joulie` plugin adds `kubectl joulie status` and `kubectl joulie recommend` commands for inspecting Joulie cluster energy state.
+The `kubectl-joulie` plugin adds `kubectl joulie status` for inspecting Joulie cluster energy state.
 
 ### Install from release (Harbor/OCI)
 
@@ -224,7 +224,6 @@ make kubectl-plugin-install
 
 ```bash
 kubectl joulie status      # Show energy state of all Joulie-managed nodes
-kubectl joulie recommend   # Show power optimization recommendations
 ```
 
 ## Next step

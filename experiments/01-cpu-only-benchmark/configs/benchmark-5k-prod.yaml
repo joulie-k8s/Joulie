@@ -52,10 +52,10 @@ policy:
   static:
     hp_frac: 0.30
   queue_aware:
-    hp_base_frac: 0.30
+    hp_base_frac: 0.05
     hp_min: 50
     hp_max: 3750
-    perf_per_hp_node: 20
+    perf_per_hp_node: 3
 
 images:
   joulie_registry: registry.cern.ch/mbunino/joulie

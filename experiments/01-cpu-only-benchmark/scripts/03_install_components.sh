@@ -26,14 +26,10 @@ OPERATOR_RECONCILE_INTERVAL=${OPERATOR_RECONCILE_INTERVAL:-20s}
 AGENT_RECONCILE_INTERVAL=${AGENT_RECONCILE_INTERVAL:-10s}
 GENERATED_CLASSES=${GENERATED_CLASSES:-$EXP_ROOT/generated/10-node-classes.yaml}
 GENERATED_CATALOG=${GENERATED_CATALOG:-$EXP_ROOT/generated/hardware.generated.yaml}
-SIM_CLASSIFIER_MISCLASSIFY_RATE=${SIM_CLASSIFIER_MISCLASSIFY_RATE:-0.0}
 SIM_FACILITY_AMBIENT_BASE_C=${SIM_FACILITY_AMBIENT_BASE_C:-22.0}
 SIM_FACILITY_AMBIENT_AMPLITUDE_C=${SIM_FACILITY_AMBIENT_AMPLITUDE_C:-8.0}
 SIM_FACILITY_AMBIENT_PERIOD_SEC=${SIM_FACILITY_AMBIENT_PERIOD_SEC:-600}
-ENABLE_CLASSIFIER=${ENABLE_CLASSIFIER:-true}
 ENABLE_FACILITY_METRICS=${ENABLE_FACILITY_METRICS:-false}
-CLASSIFY_SIM_ANNOTATION_FALLBACK=${CLASSIFY_SIM_ANNOTATION_FALLBACK:-true}
-CLASSIFY_SIM_NOISE_PCT=${CLASSIFY_SIM_NOISE_PCT:-10}
 
 create_or_update_configmap_from_file() {
   local ns=$1
@@ -54,7 +50,6 @@ fi
 # ---------------------------------------------------------------------------
 kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_nodehardwares.yaml"
 kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_nodetwins.yaml"
-kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_workloadprofiles.yaml"
 
 # ---------------------------------------------------------------------------
 # 2. Joulie components (extender must be up before any pod scheduling when
@@ -134,10 +129,7 @@ else
     --set "operator.env.CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS}" \
     --set "operator.env.PERFORMANCE_CAP_WATTS=${PERFORMANCE_CAP_WATTS}" \
     --set "operator.env.ECO_CAP_WATTS=${ECO_CAP_WATTS}" \
-    --set "operator.env.ENABLE_CLASSIFIER=${ENABLE_CLASSIFIER}" \
     --set "operator.env.ENABLE_FACILITY_METRICS=${ENABLE_FACILITY_METRICS}" \
-    --set "operator.env.CLASSIFY_SIM_ANNOTATION_FALLBACK=${CLASSIFY_SIM_ANNOTATION_FALLBACK}" \
-    --set "operator.env.CLASSIFY_SIM_NOISE_PCT=${CLASSIFY_SIM_NOISE_PCT}" \
     "${AGENT_TELEMETRY_ARGS[@]}" \
     "${SCHED_ARGS[@]}" \
     ${INFRA_SELECTOR_ARGS[@]+"${INFRA_SELECTOR_ARGS[@]}"}
@@ -196,7 +188,6 @@ SIM_HELM_ARGS=(
   --set "image.repository=${SIM_REGISTRY}/${SIM_IMAGE}"
   --set "image.tag=${SIM_TAG:-latest}"
   --set "image.pullPolicy=Always"
-  --set "env.SIM_CLASSIFIER_MISCLASSIFY_RATE=${SIM_CLASSIFIER_MISCLASSIFY_RATE}"
   --set "env.SIM_FACILITY_AMBIENT_BASE_C=${SIM_FACILITY_AMBIENT_BASE_C}"
   --set "env.SIM_FACILITY_AMBIENT_AMPLITUDE_C=${SIM_FACILITY_AMBIENT_AMPLITUDE_C}"
   --set "env.SIM_FACILITY_AMBIENT_PERIOD_SEC=${SIM_FACILITY_AMBIENT_PERIOD_SEC}"

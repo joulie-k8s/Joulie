@@ -18,23 +18,14 @@ At each reconcile tick, the operator:
 1. selects eligible managed nodes,
 2. reads `NodeHardware` when available and falls back to node labels when it is not,
 3. resolves hardware identity against the shared inventory,
-4. classifies workload demand from pod scheduling constraints and `WorkloadProfile` data,
+4. classifies workload demand from pod scheduling constraints,
 5. runs a policy algorithm (`pkg/operator/policy/`) to compute a plan,
 6. applies transition guards for safe downgrades,
-7. evaluates node stress for migration recommendations (`pkg/operator/migration/`),
-8. writes desired node targets (`NodeTwin.spec`) and the `joulie.io/power-profile` node label.
+7. writes desired node targets (`NodeTwin.spec`) and the `joulie.io/power-profile` node label.
 
 The agent then enforces those targets node-by-node.
 
-In addition to the reconcile loop, the operator runs three background controllers:
-
-## Workload classifier
-
-The classifier (`cmd/operator/classifier.go`) watches running pods on managed nodes and produces `WorkloadProfile` CRs using two-phase classification: static hints from pod annotations, then dynamic metrics from Prometheus and Kepler.
-
-Enabled by default (`ENABLE_CLASSIFIER=true`). The classifier scans pods every `CLASSIFY_INTERVAL` (default 30s) and re-classifies each pod at most once per `RECLASSIFY_INTERVAL` (default 15m). Orphaned `WorkloadProfile` CRs (pods deleted) are cleaned up every 5 minutes.
-
-See [Workload Classification]({{< relref "/docs/architecture/workload-classification.md" >}}) for the full classification pipeline and rules.
+In addition to the reconcile loop, the operator runs a background controller:
 
 ## Facility metrics
 
@@ -43,18 +34,6 @@ The facility metrics poller (`cmd/operator/facility.go`) queries Prometheus for 
 Disabled by default (`ENABLE_FACILITY_METRICS=false`). When enabled, the poller runs every `FACILITY_POLL_INTERVAL` (default 30s) and computes PUE as `(IT power + cooling power) / IT power`. The ambient temperature is passed to the twin's `LinearCoolingModel` for temperature-aware stress scoring. The scheduler extender then weights marginal power costs by PUE.
 
 See [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md" >}}) for the full list of facility env vars.
-
-## Migration recommendations and active rescheduling
-
-When node stress (CoolingStress or PSUStress) exceeds configured thresholds, the migration controller (`pkg/operator/migration/`) evaluates which workloads can be safely rescheduled. It generates reschedule recommendations written to `NodeTwin.status.rescheduleRecommendations` for reschedulable standard workloads. These recommendations are surfaced via `kubectl joulie recommend`.
-
-The active rescheduler (`cmd/operator/rescheduler.go`) optionally acts on these recommendations by evicting misplaced pods via the Kubernetes Eviction API (policy/v1). Disabled by default (`ENABLE_ACTIVE_RESCHEDULING=false`). When enabled:
-
-- It reads `NodeTwin.status.rescheduleRecommendations` every `RESCHEDULE_INTERVAL` (default 60s).
-- It verifies each recommended pod has the `joulie.io/reschedulable=true` annotation.
-- It evicts at most `RESCHEDULE_MAX_EVICTIONS_PER_NODE` pods per node per cycle (default 1).
-- `kube-scheduler` re-places evicted pods using the extender, which steers them to better nodes.
-- `RESCHEDULE_DRY_RUN=true` logs decisions without executing evictions.
 
 ## Control boundary with the agent
 
@@ -161,7 +140,6 @@ That state means:
 
 1. [Joulie Agent]({{< relref "/docs/architecture/agent.md" >}})
 2. [Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}})
-3. [Workload Classification]({{< relref "/docs/architecture/workload-classification.md" >}})
-4. [Energy-Aware Scheduling]({{< relref "/docs/architecture/energy-aware-scheduling.md" >}})
+3. [Energy-Aware Scheduling]({{< relref "/docs/architecture/energy-aware-scheduling.md" >}})
 5. [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
 6. [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md" >}})
