@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/hwinv"
 	"github.com/matbun/joulie/pkg/operator/twin"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,6 +25,10 @@ import (
 var (
 	nodeTwinGVR         = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
 	twinNodeHardwareGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
+
+	// twinHardwareCatalog is used by fetchNodeHardware to fill in TDP/capRange
+	// when the NodeHardware CRD lacks this data (e.g. KWOK fake nodes).
+	twinHardwareCatalog *hwinv.Catalog
 )
 
 // nodeTopology holds the physical topology context for a node.
@@ -155,6 +163,9 @@ func fetchNodeHardware(ctx context.Context, dynClient dynamic.Interface, nodeNam
 		if v, ok := gpu["model"].(string); ok {
 			hw.GPU.Model = v
 		}
+		if v, ok := gpu["rawModel"].(string); ok {
+			hw.GPU.RawModel = v
+		}
 		if v, ok := gpu["count"].(float64); ok {
 			hw.GPU.Count = int(v)
 		} else if v, ok := gpu["count"].(int64); ok {
@@ -172,7 +183,69 @@ func fetchNodeHardware(ctx context.Context, dynClient dynamic.Interface, nodeNam
 		}
 	}
 
+	// Also read rawModel for CPU (needed for catalog matching).
+	if cpu, ok := status["cpu"].(map[string]interface{}); ok {
+		if v, ok := cpu["rawModel"].(string); ok {
+			hw.CPU.RawModel = v
+		}
+	}
+
+	// Enrich from hardware catalog when the CRD lacks TDP/capRange data.
+	enrichHardwareFromCatalog(&hw)
+
 	return hw
+}
+
+// enrichHardwareFromCatalog fills in missing TDP/capRange data from the
+// hardware catalog. This is critical for KWOK fake nodes where the agent
+// can't discover real hardware capabilities.
+func enrichHardwareFromCatalog(hw *joulie.NodeHardware) {
+	if twinHardwareCatalog == nil {
+		return
+	}
+
+	// Try to match GPU model and fill in capRange if missing.
+	if hw.GPU.Count > 0 && hw.GPU.CapRange.MaxWatts <= 0 {
+		// Try model first, then rawModel.
+		gpuQuery := hw.GPU.Model
+		if gpuQuery == "" {
+			gpuQuery = hw.GPU.RawModel
+		}
+		if _, spec, ok := twinHardwareCatalog.MatchGPU(gpuQuery); ok {
+			hw.GPU.CapRange.MaxWatts = spec.Official.MaxBoardPowerW
+			if spec.Official.MinBoardPowerW > 0 {
+				hw.GPU.CapRange.MinWatts = spec.Official.MinBoardPowerW
+			}
+			hw.GPU.Present = true
+		}
+	}
+
+	// Try to match CPU model and fill in capRange if missing.
+	if hw.CPU.CapRange.MaxWattsPerSocket <= 0 {
+		cpuQuery := hw.CPU.Model
+		if cpuQuery == "" {
+			cpuQuery = hw.CPU.RawModel
+		}
+		if cpuQuery != "" {
+			if _, spec, ok := twinHardwareCatalog.MatchCPU(cpuQuery); ok {
+				hw.CPU.CapRange.MaxWattsPerSocket = spec.Official.TDPW
+				if len(spec.Official.CTdpRangeW) >= 2 {
+					hw.CPU.CapRange.MinWattsPerSocket = spec.Official.CTdpRangeW[0]
+				}
+			}
+		}
+		// Fallback: if CPU model unknown but we have core count, estimate
+		// TDP from a conservative 10W/core heuristic (typical server range).
+		if hw.CPU.CapRange.MaxWattsPerSocket <= 0 && hw.CPU.TotalCores > 0 {
+			sockets := hw.CPU.Sockets
+			if sockets <= 0 {
+				sockets = 1
+				hw.CPU.Sockets = 1
+			}
+			coresPerSocket := hw.CPU.TotalCores / sockets
+			hw.CPU.CapRange.MaxWattsPerSocket = float64(coresPerSocket) * 5.0 // ~5W/core TDP
+		}
+	}
 }
 
 // upsertNodeTwinStatus patches the status subresource of a NodeTwin CR.
@@ -335,6 +408,25 @@ func nodeTwinStatusToMap(status joulie.NodeTwinStatus) map[string]interface{} {
 
 // --- Measured power resolution ---
 
+// nodePowerConfig holds the operator's per-node power source configuration.
+// Configured via OPERATOR_NODE_POWER_SOURCE env var.
+//
+// Sources (tried in priority order based on config):
+//   - "prometheus": PromQL query for direct node power (e.g. Kepler RAPL/DCMI).
+//     Uses {node} substitution in the query template.
+//     Falls back to utilization-based estimation if the direct query returns 0.
+//   - "http": queries an HTTP telemetry endpoint (e.g. simulator /telemetry/{node}).
+//   - "static" (default): returns 0.
+var (
+	nodePowerSource       string // "prometheus", "http", or "static"
+	nodePowerHTTPEndpoint string // e.g. "http://sim:18080/telemetry/{node}"
+	nodePowerHTTPClient   = &http.Client{Timeout: 5 * time.Second}
+
+	// Prometheus node power config
+	nodePowerPromAddress string // e.g. "http://prometheus:9090"
+	nodePowerPromQuery   string // e.g. "kepler_node_platform_joules_total{node=\"{node}\"}" — {node} is substituted
+)
+
 // nodePowerSamples stores recent power measurements for trend computation.
 var (
 	nodePowerSamplesMu sync.Mutex
@@ -349,12 +441,83 @@ type powerSample struct {
 const powerTrendWindow = 5 * time.Minute
 
 // resolveNodePower returns the best available measured power for a node.
-// Currently implements tier 3 (static estimation from pod specs).
-// Future: tier 1 (Kepler) and tier 2 (utilization-based) will be added.
-func resolveNodePower(_ context.Context, _ dynamic.Interface, _ string, _ joulie.NodeHardware) (float64, string) {
-	// Tier 3: static estimation. For now, return 0 (no pods known at this level).
-	// The operator will populate this from pod listings in a future iteration.
-	return 0, "static"
+//
+// The source is selected via OPERATOR_NODE_POWER_SOURCE:
+//   - "prometheus": queries Prometheus for direct node power (e.g. Kepler).
+//   - "http": queries an HTTP telemetry endpoint (e.g. simulator).
+//   - "static" (default): returns 0.
+func resolveNodePower(ctx context.Context, _ dynamic.Interface, nodeName string, hw joulie.NodeHardware) (float64, string) {
+	switch nodePowerSource {
+	case "prometheus":
+		if nodePowerPromAddress != "" && nodePowerPromQuery != "" {
+			query := strings.ReplaceAll(nodePowerPromQuery, "{node}", nodeName)
+			power, err := queryPrometheusScalar(ctx, nodePowerHTTPClient, nodePowerPromAddress, query)
+			if err != nil {
+				log.Printf("[twin] prometheus node power for %s: %v", nodeName, err)
+			} else if power > 0 {
+				return power, "prometheus"
+			}
+		}
+		// Fallback: utilization-based estimation is not yet implemented.
+		// When available, it will query CPU/GPU utilization metrics from
+		// Prometheus and estimate power using the hardware TDP curve.
+		return 0, "prometheus-no-data"
+
+	case "http":
+		if nodePowerHTTPEndpoint != "" {
+			power, err := queryNodePowerHTTP(ctx, nodeName)
+			if err != nil {
+				log.Printf("[twin] http node power for %s: %v", nodeName, err)
+				return 0, "http-error"
+			}
+			return power, "http"
+		}
+		return 0, "http-no-endpoint"
+
+	default:
+		return 0, "static"
+	}
+}
+
+// queryNodePowerHTTP fetches per-node power from an HTTP telemetry endpoint.
+// Supports the same JSON format as the simulator: top-level "packagePowerWatts"
+// or nested "cpu.packagePowerWatts".
+func queryNodePowerHTTP(ctx context.Context, nodeName string) (float64, error) {
+	url := strings.ReplaceAll(nodePowerHTTPEndpoint, "{node}", nodeName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := nodePowerHTTPClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, err
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return 0, err
+	}
+
+	// Try top-level packagePowerWatts first, then nested cpu.packagePowerWatts.
+	if v, ok := data["packagePowerWatts"].(float64); ok && v > 0 {
+		return v, nil
+	}
+	if cpu, ok := data["cpu"].(map[string]interface{}); ok {
+		if v, ok := cpu["packagePowerWatts"].(float64); ok && v > 0 {
+			return v, nil
+		}
+	}
+	return 0, nil
 }
 
 // nodePowerTrend computes the power trend (watts/min) for a node from a

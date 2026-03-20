@@ -6,7 +6,7 @@ agent:
   image:
     repository: registry.cern.ch/mbunino/joulie/joulie-agent
     tag: latest
-    pullPolicy: Always
+    pullPolicy: IfNotPresent
   hostNetwork: true
   privileged: true
   env:
@@ -35,7 +35,7 @@ operator:
   image:
     repository: registry.cern.ch/mbunino/joulie/joulie-operator
     tag: latest
-    pullPolicy: Always
+    pullPolicy: IfNotPresent
   env:
     RECONCILE_INTERVAL: "1m"
     METRICS_ADDR: ":8081"
@@ -78,6 +78,12 @@ schedulerExtender:
   nodeName: ""  # set to bypass scheduler (needed when ignorable=false)
   nodeSelector: {}
   env: {}
+
+hardwareCatalog:
+  enabled: false  # mount hardware catalog ConfigMap into operator and agent
+  configMapName: joulie-hardware-catalog
+  key: hardware.yaml
+  mountPath: /etc/joulie-catalog
 
 grafanaDashboard:
   enabled: false  # enable if Grafana sidecar is configured to auto-provision dashboards

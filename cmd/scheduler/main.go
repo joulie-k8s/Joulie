@@ -42,6 +42,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/scheduler/powerest"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -73,6 +76,60 @@ var (
 
 	// marginalCoeff holds the tunable coefficients for power estimation.
 	marginalCoeff = loadCoefficients()
+
+	// --- Prometheus metrics ---
+
+	schedulerFilterRequests = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "joulie_scheduler_filter_requests_total",
+			Help: "Total filter requests processed by workload class.",
+		},
+		[]string{"workload_class"},
+	)
+	schedulerPrioritizeRequests = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "joulie_scheduler_prioritize_requests_total",
+			Help: "Total prioritize requests processed by workload class.",
+		},
+		[]string{"workload_class"},
+	)
+	schedulerFilterDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "joulie_scheduler_filter_duration_seconds",
+			Help:    "Time to process a filter request.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"workload_class"},
+	)
+	schedulerPrioritizeDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "joulie_scheduler_prioritize_duration_seconds",
+			Help:    "Time to process a prioritize request.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"workload_class"},
+	)
+	schedulerFinalNodeScore = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "joulie_scheduler_final_node_score",
+			Help: "Final scheduling score per node and workload class (0-100).",
+		},
+		[]string{"node", "workload_class"},
+	)
+	schedulerNodeHeadroomScore = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "joulie_scheduler_node_headroom_score",
+			Help: "Power headroom score per node (0-100, can be negative if pod exceeds budget).",
+		},
+		[]string{"node"},
+	)
+	schedulerStaleTwinNodes = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "joulie_scheduler_stale_twin_data",
+			Help: "Set to 1 if twin data is stale for a node, 0 otherwise.",
+		},
+		[]string{"node"},
+	)
 )
 
 // nodeHWInfo holds hardware facts needed for scoring and marginal estimation.
@@ -227,6 +284,29 @@ func main() {
 		marginalCoeff.CPUUtilCoeff, marginalCoeff.GPUUtilCoeffStandard,
 		marginalCoeff.GPUUtilCoeffPerformance)
 
+	prometheus.MustRegister(
+		schedulerFilterRequests,
+		schedulerPrioritizeRequests,
+		schedulerFilterDuration,
+		schedulerPrioritizeDuration,
+		schedulerFinalNodeScore,
+		schedulerNodeHeadroomScore,
+		schedulerStaleTwinNodes,
+	)
+
+	metricsAddr := os.Getenv("METRICS_ADDR")
+	if metricsAddr == "" {
+		metricsAddr = ":9877"
+	}
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	go func() {
+		log.Printf("metrics server listening on %s", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, metricsMux); err != nil {
+			log.Printf("metrics server failed: %v", err)
+		}
+	}()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/filter", handleFilter)
 	mux.HandleFunc("/prioritize", handlePrioritize)
@@ -245,13 +325,20 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleFilter(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	var args ExtenderArgs
 	if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
 		http.Error(w, fmt.Sprintf("decode error: %v", err), http.StatusBadRequest)
 		return
 	}
 
+	// Parse pod to extract workload class for metrics.
+	wpClass := extractWorkloadClass(args)
+
 	result := filterNodes(r.Context(), args)
+	schedulerFilterRequests.WithLabelValues(wpClass).Inc()
+	schedulerFilterDuration.WithLabelValues(wpClass).Observe(time.Since(start).Seconds())
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(result); err != nil {
 		log.Printf("warning: failed to encode filter response: %v", err)
@@ -259,13 +346,19 @@ func handleFilter(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlePrioritize(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	var args ExtenderArgs
 	if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
 		http.Error(w, fmt.Sprintf("decode error: %v", err), http.StatusBadRequest)
 		return
 	}
 
+	wpClass := extractWorkloadClass(args)
+
 	result := prioritizeNodes(r.Context(), args)
+	schedulerPrioritizeRequests.WithLabelValues(wpClass).Inc()
+	schedulerPrioritizeDuration.WithLabelValues(wpClass).Observe(time.Since(start).Seconds())
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(result); err != nil {
 		log.Printf("warning: failed to encode prioritize response: %v", err)
@@ -340,6 +433,19 @@ func shouldFilterNode(nodeName string, states map[string]*joulie.NodeTwinStatus,
 		return "joulie: performance pod rejected from eco node (label fallback)"
 	}
 	return ""
+}
+
+// extractWorkloadClass parses the pod from ExtenderArgs and returns the workload class.
+func extractWorkloadClass(args ExtenderArgs) string {
+	podBytes, err := json.Marshal(args.Pod)
+	if err != nil {
+		return "standard"
+	}
+	var pod PodSpec
+	if err := json.Unmarshal(podBytes, &pod); err != nil {
+		return "standard"
+	}
+	return podWorkloadClass(pod)
 }
 
 // podWorkloadClass returns the workload class from pod annotations,
@@ -445,12 +551,17 @@ func computePerfPressure(states map[string]*joulie.NodeTwinStatus) float64 {
 func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo map[string]nodeHWInfo, wpClass string, perfPressure float64, clusterTrend float64, podDemand *powerest.PodDemand) int64 {
 	state, ok := states[nodeName]
 	if !ok {
+		schedulerFinalNodeScore.WithLabelValues(nodeName, wpClass).Set(50)
+		schedulerStaleTwinNodes.WithLabelValues(nodeName).Set(1)
 		return 50 // neutral score if no twin state
 	}
 	if isTwinStale(state) {
 		log.Printf("warning: stale twin data for node %s (lastUpdated=%s); using neutral score", nodeName, state.LastUpdated.Format(time.RFC3339))
+		schedulerFinalNodeScore.WithLabelValues(nodeName, wpClass).Set(50)
+		schedulerStaleTwinNodes.WithLabelValues(nodeName).Set(1)
 		return 50
 	}
+	schedulerStaleTwinNodes.WithLabelValues(nodeName).Set(0)
 
 	// Extract power measurement data from twin.
 	var measuredPowerW, cappedPowerW, powerTrendWPerMin float64
@@ -515,6 +626,10 @@ func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo
 	if score > 100 {
 		score = 100
 	}
+
+	schedulerNodeHeadroomScore.WithLabelValues(nodeName).Set(headroomScore)
+	schedulerFinalNodeScore.WithLabelValues(nodeName, wpClass).Set(score)
+
 	return int64(score)
 }
 

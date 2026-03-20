@@ -31,7 +31,18 @@ func main() {
 
 	switch os.Args[1] {
 	case "status":
-		runStatus()
+		// Check for -W / --watch flag
+		watch := false
+		for _, arg := range os.Args[2:] {
+			if arg == "-W" || arg == "--watch" {
+				watch = true
+			}
+		}
+		if watch {
+			runStatusWatch()
+		} else {
+			runStatus()
+		}
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -46,6 +57,7 @@ func printUsage() {
 
 Commands:
   status              Show cluster energy state overview
+  status -W           Watch mode — refresh every 2 seconds
   help                Show this help`)
 }
 
@@ -136,12 +148,9 @@ func parseNodeState(u unstructured.Unstructured) nodeState {
 	return ns
 }
 
-func runStatus() {
-	client := newClient()
-	states := fetchTwinStates(client)
-
+func renderStatus(out *os.File, states []nodeState) {
 	if len(states) == 0 {
-		fmt.Println("No NodeTwin resources found. Is Joulie installed?")
+		fmt.Fprintln(out, "No NodeTwin resources found. Is Joulie installed?")
 		return
 	}
 
@@ -172,8 +181,8 @@ func runStatus() {
 	}
 
 	n := float64(len(states))
-	fmt.Println("CLUSTER ENERGY STATE")
-	fmt.Printf("  Nodes: %d total", len(states))
+	fmt.Fprintln(out, "CLUSTER ENERGY STATE")
+	fmt.Fprintf(out, "  Nodes: %d total", len(states))
 	parts := []string{}
 	if eco > 0 {
 		parts = append(parts, fmt.Sprintf("%d eco", eco))
@@ -188,21 +197,21 @@ func runStatus() {
 		parts = append(parts, fmt.Sprintf("%d unknown", unknown))
 	}
 	if len(parts) > 0 {
-		fmt.Printf(" (%s)", strings.Join(parts, ", "))
+		fmt.Fprintf(out, " (%s)", strings.Join(parts, ", "))
 	}
-	fmt.Println()
+	fmt.Fprintln(out)
 
-	fmt.Printf("  Avg cooling stress: %.0f%%", totalCooling/n)
+	fmt.Fprintf(out, "  Avg cooling stress: %.0f%%", totalCooling/n)
 	if peakCoolingNode != "" {
-		fmt.Printf("  |  Peak: %.0f%% (%s)", peakCooling, peakCoolingNode)
+		fmt.Fprintf(out, "  |  Peak: %.0f%% (%s)", peakCooling, peakCoolingNode)
 	}
-	fmt.Println()
-	fmt.Printf("  Avg PSU stress: %.0f%%\n", totalPSU/n)
-	fmt.Printf("  Avg power headroom: %.0f%%\n", totalHeadroom/n)
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "  Avg PSU stress: %.0f%%\n", totalPSU/n)
+	fmt.Fprintf(out, "  Avg power headroom: %.0f%%\n", totalHeadroom/n)
 
 	// Per-node table
-	fmt.Println()
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(out)
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NODE\tCLASS\tHEADROOM\tCOOLING\tPSU\tCPU CAP\tGPU CAP\tDENSITY")
 	for _, s := range states {
 		fmt.Fprintf(w, "%s\t%s\t%.0f%%\t%.0f%%\t%.0f%%\t%.0f%%\t%.0f%%\t%.0f\n",
@@ -211,6 +220,31 @@ func runStatus() {
 			s.cpuCapPct, s.gpuCapPct, s.density)
 	}
 	w.Flush()
+}
+
+func runStatus() {
+	client := newClient()
+	states := fetchTwinStates(client)
+	renderStatus(os.Stdout, states)
+}
+
+func runStatusWatch() {
+	client := newClient()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	// First render immediately
+	fmt.Print("\033[2J\033[H") // clear screen + cursor home
+	states := fetchTwinStates(client)
+	renderStatus(os.Stdout, states)
+	fmt.Printf("\n  (watching — refresh every 2s, Ctrl-C to stop)")
+
+	for range ticker.C {
+		fmt.Print("\033[2J\033[H")
+		states = fetchTwinStates(client)
+		renderStatus(os.Stdout, states)
+		fmt.Printf("\n  (watching — refresh every 2s, Ctrl-C to stop)")
+	}
 }
 
 

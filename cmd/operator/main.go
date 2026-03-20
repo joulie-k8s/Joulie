@@ -155,6 +155,7 @@ func main() {
 		"joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product,amd.com/gpu.family",
 	))
 	hardwareCatalog := loadHardwareCatalog()
+	twinHardwareCatalog = hardwareCatalog // share with fetchNodeHardware in twinstate.go
 
 	parsedSelector, err := labels.Parse(selector)
 	if err != nil {
@@ -176,6 +177,20 @@ func main() {
 		log.Fatalf("dynamic client: %v", err)
 	}
 	startMetricsServer(metricsAddr)
+
+	// --- Node power source (per-node telemetry) ---
+	nodePowerSource = strings.ToLower(envOrDefault("OPERATOR_NODE_POWER_SOURCE", "static"))
+	nodePowerHTTPEndpoint = envOrDefault("OPERATOR_NODE_POWER_HTTP_ENDPOINT", "")
+	nodePowerPromAddress = envOrDefault("OPERATOR_NODE_POWER_PROMETHEUS_ADDRESS", "")
+	nodePowerPromQuery = envOrDefault("OPERATOR_NODE_POWER_PROMETHEUS_QUERY", "")
+	switch nodePowerSource {
+	case "http":
+		log.Printf("node power source: http endpoint=%s", nodePowerHTTPEndpoint)
+	case "prometheus":
+		log.Printf("node power source: prometheus address=%s query=%s", nodePowerPromAddress, nodePowerPromQuery)
+	default:
+		log.Printf("node power source: static (no measured power)")
+	}
 
 	// --- Facility metrics (data-center level) ---
 	fm := &facilityMetrics{}

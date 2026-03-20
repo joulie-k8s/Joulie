@@ -118,12 +118,17 @@ def generate_trace_python(
     work_scale: float,
     time_scale: float,
     base_speed_per_core: float,
+    diurnal_peak_rate: float = 80.0,
+    perf_ratio: float = 0.20,
 ) -> pathlib.Path:
-    """Generate traces using exp04-style NHPP arrivals with cosine diurnal pattern.
+    """Generate traces using NHPP arrivals with realistic noisy diurnal pattern.
 
     Produces realistic datacenter workload with:
     - Cosine day/night cycle (trough at 4 AM, peak at 4 PM)
-    - 10% burst probability (50-200 simultaneous jobs)
+    - Ornstein-Uhlenbeck rate noise (slow-varying rate fluctuations, ±30%)
+    - Scheduled mega-bursts: 3-6 per simulated day, 80-400 simultaneous jobs
+    - Maintenance dip windows: 0-2 per day, 20-90 min of near-zero arrivals
+    - Per-arrival Poisson jitter (inherent in exponential inter-arrival times)
     - Mixed job sizes: small/medium CPU, GPU training (1-8 GPUs), GPU inference, large CPU
     - Direct wall-second offsets (simulator applies time_scale internally)
     """
@@ -147,6 +152,72 @@ def generate_trace_python(
     # GPU resource name.
     gpu_resource = "nvidia.com/gpu"
 
+    # ── Pre-generate burst events and maintenance dips per simulated day ──
+    n_days = max(1, int(math.ceil(sim_hours / 24.0)))
+
+    # Scheduled mega-bursts: 4-8 per day, size 2000-8000 jobs.
+    # At cluster scale (5k nodes, 10k+ concurrent jobs), bursts need to be
+    # thousands of jobs to produce visible spikes in the timeseries.
+    burst_events = []  # list of (wall_sec_start, n_jobs)
+    for day in range(n_days):
+        n_bursts = int(rng.integers(4, 9))
+        for _ in range(n_bursts):
+            burst_hour = rng.uniform(0, 24)  # hour within the day
+            burst_sim_sec = (day * 24 + burst_hour) * 3600.0
+            burst_wall_sec = burst_sim_sec / time_scale
+            if burst_wall_sec < wall_sec:
+                burst_size = int(rng.integers(2000, 8001))
+                burst_events.append((burst_wall_sec, burst_size))
+    burst_events.sort()
+    burst_idx = 0
+
+    # Maintenance dip windows. For CPU-only clusters (gpu_ratio==0), use fewer
+    # and shorter dips to avoid pulling avg utilization below the eco cap threshold.
+    dip_windows = []  # list of (wall_sec_start, wall_sec_end)
+    for day in range(n_days):
+        if gpu_ratio == 0:
+            # CPU-only: 0-1 dip per day, 20-60 min, so avg util stays high.
+            n_dips = int(rng.integers(0, 2))
+            for _ in range(n_dips):
+                dip_start_hour = rng.uniform(0, 21)
+                dip_duration_min = rng.uniform(20, 60)
+                dip_start_sim = (day * 24 + dip_start_hour) * 3600.0
+                dip_end_sim = dip_start_sim + dip_duration_min * 60.0
+                dip_windows.append((dip_start_sim / time_scale, dip_end_sim / time_scale))
+        else:
+            # GPU clusters: 1-3 dips per day, 60-180 min.
+            n_dips = int(rng.integers(1, 4))
+            for _ in range(n_dips):
+                dip_start_hour = rng.uniform(0, 21)
+                dip_duration_min = rng.uniform(60, 180)
+                dip_start_sim = (day * 24 + dip_start_hour) * 3600.0
+                dip_end_sim = dip_start_sim + dip_duration_min * 60.0
+                dip_windows.append((dip_start_sim / time_scale, dip_end_sim / time_scale))
+    dip_windows.sort()
+
+    # Surge windows: 1-2 per day, 1-3 sim-hours at 2-3x normal rate.
+    # Creates visible sustained rate increases.
+    surge_windows = []  # list of (wall_sec_start, wall_sec_end, multiplier)
+    for day in range(n_days):
+        n_surges = int(rng.integers(1, 3))
+        for _ in range(n_surges):
+            surge_hour = rng.uniform(8, 20)  # surges during business hours
+            surge_duration_h = rng.uniform(1, 3)
+            surge_start_sim = (day * 24 + surge_hour) * 3600.0
+            surge_end_sim = surge_start_sim + surge_duration_h * 3600.0
+            surge_mult = rng.uniform(2.0, 3.0)
+            surge_windows.append((surge_start_sim / time_scale, surge_end_sim / time_scale, surge_mult))
+    surge_windows.sort()
+
+    # ── Ornstein-Uhlenbeck rate noise state ──
+    ou_noise = 0.0
+    ou_theta = 0.08   # slower mean-reversion → longer-lived fluctuations
+    ou_sigma = 0.25   # much stronger volatility (±50-80% swings)
+    last_t = 0.0
+
+    log(f"generating noisy trace seed={seed} sim_hours={sim_hours} peak_rate={diurnal_peak_rate} "
+        f"bursts={len(burst_events)} dips={len(dip_windows)} surges={len(surge_windows)}")
+
     lines = []
     job_id = 0
     t = 0.0
@@ -155,19 +226,45 @@ def generate_trace_python(
         sim_h = (t * time_scale) / 3600.0
         hour_of_day = sim_h % 24.0
         phase = 2 * math.pi * (hour_of_day - 4.0) / 24.0
-        rate = 0.25 + 0.70 * (1 - math.cos(phase)) / 2.0
-        # Base rate: ~80 jobs/min at peak in sim-time, convert to wall-time.
-        base_rate_sim_sec = rate * 80.0 / 60.0
+        # Deeper trough (0.08) for more visible day/night contrast (12:1 ratio).
+        rate = 0.08 + 0.88 * (1 - math.cos(phase)) / 2.0
+
+        # Apply OU noise (log-normal multiplicative jitter, ±50-80% typical).
+        dt = t - last_t
+        if dt > 0:
+            ou_noise += ou_theta * (0.0 - ou_noise) * dt + ou_sigma * math.sqrt(dt) * rng.standard_normal()
+            ou_noise = max(-1.5, min(1.5, ou_noise))  # wider clamp for bigger swings
+        last_t = t
+        rate *= math.exp(ou_noise)
+
+        # Check if we're inside a maintenance dip window.
+        in_dip = any(ws <= t <= we for ws, we in dip_windows)
+        if in_dip:
+            rate *= 0.02  # 98% reduction during maintenance — near blackout
+
+        # Check if we're inside a surge window.
+        for sw_start, sw_end, sw_mult in surge_windows:
+            if sw_start <= t <= sw_end:
+                rate *= sw_mult
+                break
+
+        # Base rate: diurnal_peak_rate jobs/min at peak in sim-time, convert to wall-time.
+        base_rate_sim_sec = rate * diurnal_peak_rate / 60.0
         base_rate_wall_sec = base_rate_sim_sec * time_scale
         inter_arrival = rng.exponential(1.0 / max(base_rate_wall_sec, 0.001))
         t += inter_arrival
         if t >= wall_sec:
             break
 
-        # Burst: 10% chance of 50-200 simultaneous jobs.
+        # Check for scheduled mega-burst at this time.
         burst_size = 1
-        if rng.random() < 0.10:
-            burst_size = int(rng.integers(50, 201))
+        while burst_idx < len(burst_events) and burst_events[burst_idx][0] <= t:
+            burst_size += burst_events[burst_idx][1]
+            burst_idx += 1
+
+        # Additional small random bursts (3% chance, 10-50 jobs) for micro-spikes.
+        if burst_size == 1 and rng.random() < 0.03:
+            burst_size = int(rng.integers(10, 51))
 
         for _ in range(burst_size):
             job_id += 1
@@ -190,7 +287,7 @@ def generate_trace_python(
                 # Medium CPU job.
                 cpu_req = float(rng.choice([32, 64, 96, 128]))
                 gpu_req = 0
-                is_perf = rng.random() < 0.3
+                is_perf = rng.random() < perf_ratio
                 cpu_util = float(rng.uniform(0.4, 0.9))
                 gpu_util = 0.0
                 duration = float(rng.uniform(300, 3600))
@@ -201,7 +298,7 @@ def generate_trace_python(
                 # GPU training (2-8 GPUs).
                 cpu_req = float(rng.choice([16, 32, 64]))
                 gpu_req = int(rng.choice([2, 4, 4, 8]))
-                is_perf = True
+                is_perf = rng.random() < 0.8  # most GPU training is perf-sensitive
                 cpu_util = float(rng.uniform(0.3, 0.6))
                 gpu_util = float(rng.uniform(0.6, 0.95))
                 duration = float(rng.uniform(3600, 28800))
@@ -236,7 +333,7 @@ def generate_trace_python(
                 gpu_req = 0
                 gpu_util = 0.0
                 gpu_class = ""
-                is_perf = rng.random() < 0.20
+                is_perf = rng.random() < perf_ratio
                 wl_type = rng.choice(["cpu_preprocess", "cpu_analytics"])
 
             intent = "performance" if is_perf else "standard"
@@ -715,7 +812,7 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(baselines)) as pool:
         for seed in range(1, seeds + 1):
             if args.trace_mode == "python":
-                canonical_trace = generate_trace_diurnal(
+                canonical_trace = generate_trace_python(
                     results_dir=results_dir,
                     seed=seed,
                     sim_hours=sim_hours,
@@ -724,6 +821,7 @@ def main():
                     time_scale=time_scale,
                     base_speed_per_core=base_speed_per_core,
                     diurnal_peak_rate=diurnal_peak_rate,
+                    perf_ratio=perf_ratio,
                 )
             else:
                 canonical_trace = generate_trace(

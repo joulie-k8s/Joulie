@@ -31,4 +31,20 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            {{- if .Values.hardwareCatalog.enabled }}
+            - name: HARDWARE_CATALOG_PATH
+              value: "{{ .Values.hardwareCatalog.mountPath }}/{{ .Values.hardwareCatalog.key }}"
+            {{- end }}
+          {{- if .Values.hardwareCatalog.enabled }}
+          volumeMounts:
+            - name: hardware-catalog
+              mountPath: {{ .Values.hardwareCatalog.mountPath }}
+              readOnly: true
+          {{- end }}
+      {{- if .Values.hardwareCatalog.enabled }}
+      volumes:
+        - name: hardware-catalog
+          configMap:
+            name: {{ .Values.hardwareCatalog.configMapName }}
+      {{- end }}
 

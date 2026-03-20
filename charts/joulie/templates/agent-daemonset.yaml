@@ -37,6 +37,10 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            {{- if .Values.hardwareCatalog.enabled }}
+            - name: HARDWARE_CATALOG_PATH
+              value: "{{ .Values.hardwareCatalog.mountPath }}/{{ .Values.hardwareCatalog.key }}"
+            {{- end }}
           securityContext:
             privileged: {{ .Values.agent.privileged }}
             runAsUser: 0
@@ -45,9 +49,19 @@ spec:
           volumeMounts:
             - name: host-sys
               mountPath: /host-sys
+            {{- if .Values.hardwareCatalog.enabled }}
+            - name: hardware-catalog
+              mountPath: {{ .Values.hardwareCatalog.mountPath }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: host-sys
           hostPath:
             path: /sys
             type: Directory
+        {{- if .Values.hardwareCatalog.enabled }}
+        - name: hardware-catalog
+          configMap:
+            name: {{ .Values.hardwareCatalog.configMapName }}
+        {{- end }}
 {{- end }}
