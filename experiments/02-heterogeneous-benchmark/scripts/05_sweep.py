@@ -615,6 +615,12 @@ def main():
     inventory_source = str(get_cfg(cfg, "inventory", "source", default="experiments/02-heterogeneous-benchmark/configs/cluster-nodes.yaml"))
     run(["bash", "experiments/02-heterogeneous-benchmark/scripts/00_generate_assets.sh", inventory_source], check=True)
 
+    # Extract cluster name from Kind config so install scripts use the correct worker node name.
+    kind_cfg_path = pathlib.Path(get_cfg(cfg, "install", "kind_cluster_config", default="experiments/02-heterogeneous-benchmark/configs/kind-cluster.yaml"))
+    if kind_cfg_path.exists():
+        kind_cfg = yaml.safe_load(kind_cfg_path.read_text()) or {}
+        install_env_base["CLUSTER_NAME"] = kind_cfg.get("name", "joulie-heterogeneous")
+
     # Image and manifest config
     install_env_base["JOULIE_REGISTRY"] = str(get_cfg(cfg, "images", "joulie_registry", default="registry.cern.ch/mbunino/joulie"))
     install_env_base["JOULIE_TAG"] = str(get_cfg(cfg, "images", "joulie_tag", default="latest"))

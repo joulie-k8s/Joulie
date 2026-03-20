@@ -113,6 +113,7 @@ type generatorConfig struct {
 	DiurnalBurstMax     int     // max burst size in diurnal mode
 	DiurnalPeakRate     float64 // peak arrival rate (jobs/min in sim-time)
 	MinGPURequest       int     // minimum GPUs per GPU job
+	AMDGPURatio         float64 // fraction of GPU workloads using amd.com/gpu (rest use nvidia.com/gpu)
 }
 
 type logicalWorkload struct {
@@ -190,6 +191,7 @@ func parseFlags() generatorConfig {
 	flag.IntVar(&cfg.DiurnalBurstMax, "diurnal-burst-max", 80, "max burst size in diurnal mode")
 	flag.Float64Var(&cfg.DiurnalPeakRate, "diurnal-peak-rate", 80.0, "peak arrival rate in jobs/min sim-time (diurnal mode)")
 	flag.IntVar(&cfg.MinGPURequest, "min-gpu-request", 0, "minimum GPUs per GPU job (0 = use default sampling)")
+	flag.Float64Var(&cfg.AMDGPURatio, "amd-gpu-ratio", 0.0, "fraction of GPU workloads using amd.com/gpu (0.0 = all nvidia, 1.0 = all amd)")
 	flag.Parse()
 	if cfg.MeanInterArrival <= 0 {
 		cfg.MeanInterArrival = 1
@@ -790,7 +792,7 @@ func sampleDurationSec(rng *rand.Rand, wlType string, totalGPUs int) float64 {
 func buildPodsForWorkload(rng *rand.Rand, wl logicalWorkload, totalGPUs int, intent string, cfg generatorConfig) []logicalPod {
 	duration := wl.DurationSec
 	profile := wl.Profile
-	gpuResource := defaultGPUResourceName(totalGPUs)
+	gpuResource := pickGPUResourceName(rng, totalGPUs, cfg.AMDGPURatio)
 	pods := []logicalPod{}
 	appendWorker := func(role string, replicas int, gpuEach int, cpuEach float64, memEach float64, cpuFrac float64, gpuFrac float64) {
 		cpuUnits := duration * cpuEach * math.Max(0.10, profile.CPUUtilization) * cfg.CPURatePerCore * cpuFrac
@@ -1093,9 +1095,12 @@ func isDipHour(rng *rand.Rand, st *arrivalState, day, hour int, cfg generatorCon
 func dayOfOffset(offset float64) int  { return int(math.Floor(offset / 86400.0)) }
 func hourOfOffset(offset float64) int { return int(math.Floor(math.Mod(offset, 86400.0) / 3600.0)) }
 
-func defaultGPUResourceName(totalGPUs int) string {
+func pickGPUResourceName(rng *rand.Rand, totalGPUs int, amdRatio float64) string {
 	if totalGPUs <= 0 {
 		return ""
+	}
+	if amdRatio > 0 && rng.Float64() < amdRatio {
+		return "amd.com/gpu"
 	}
 	return "nvidia.com/gpu"
 }

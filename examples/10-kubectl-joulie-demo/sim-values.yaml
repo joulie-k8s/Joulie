@@ -1,0 +1,14 @@
+image:
+  tag: demo
+  pullPolicy: IfNotPresent
+
+nodeSelector: {}
+
+env:
+  SIM_ADDR: ":18080"
+  SIM_K8S_POD_WATCH: "true"
+  SIM_POLL_INTERVAL: "2s"
+  SIM_NODE_SELECTOR: "joulie.io/managed=true"
+  SIM_NODE_CLASS_CONFIG: "/etc/joulie-sim/node-classes.yaml"
+  SIM_WORKLOAD_TRACE_PATH: "/etc/joulie-sim-trace/trace.jsonl"
+  SIM_HARDWARE_CATALOG_PATH: "/etc/joulie-sim-catalog/hardware.generated.yaml"

@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: joulie-simulator
+  namespace: joulie-system
+  labels:
+    app.kubernetes.io/name: joulie-telemetry-sim
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: joulie-telemetry-sim
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 5s

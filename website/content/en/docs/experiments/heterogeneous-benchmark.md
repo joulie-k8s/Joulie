@@ -2,207 +2,188 @@
 title: "Heterogeneous GPU Cluster Benchmark"
 ---
 
-This page reports results from the heterogeneous GPU cluster benchmark experiment:
+This page reports results from the heterogeneous GPU cluster benchmark experiment (KWOK, 41 nodes):
 
 - [`experiments/02-heterogeneous-benchmark/`](https://github.com/joulie-k8s/Joulie/tree/main/experiments/02-heterogeneous-benchmark)
 
 ## Scope
 
-The benchmark compares three baselines on a heterogeneous cluster mixing 5 distinct GPU hardware families plus CPU-only nodes:
+The benchmark compares three baselines on a **heterogeneous GPU cluster** mixing 5 distinct GPU hardware families plus CPU-only nodes, running on a real Kind+KWOK Kubernetes cluster:
 
-- `A`: simulator only (Joulie-free)
+- `A`: Simulator only (no power management)
 - `B`: Joulie with static partition policy
-- `C`: Joulie with queue-aware policy
+- `C`: Joulie with queue-aware dynamic policy
+
+The experiment demonstrates energy savings achievable through combined CPU and GPU RAPL capping on a mixed-vendor GPU fleet.
 
 ## Experimental setup
 
 ### Cluster and nodes
 
-- [kind](https://kind.sigs.k8s.io/) control-plane + worker (real control plane)
-- **41** managed [KWOK](https://kwok.sigs.k8s.io/) nodes: 33 GPU nodes + 8 CPU-only nodes
-- Workload pods target KWOK nodes via selector + toleration
+- [Kind](https://kind.sigs.k8s.io/) control-plane + worker (real Kubernetes control plane)
+- **41** managed [KWOK](https://kwok.sigs.k8s.io/) nodes: 33 GPU + 8 CPU-only
+- Scheduler extender provides performance/eco affinity-based filtering and scoring
+- GPU nodes get GPU RAPL caps; CPU-only nodes get CPU RAPL caps
 
-### Node inventory - detailed cluster composition
+### Node inventory
 
-This is a **heterogeneous GPU cluster** mixing 5 distinct GPU hardware families across 33 GPU nodes, plus 8 CPU-only nodes.
-
-#### GPU nodes (33 total, 188 GPUs)
+#### GPU nodes (33 total, 188 GPUs across 5 families)
 
 | Node prefix | Count | GPU model | GPUs/node | GPU cap range | Host CPU | CPU cores/node |
 |---|---:|---|---:|---|---|---:|
-| kwok-h100-nvl | **12** | NVIDIA H100 NVL | 8 | 200-400 W | AMD EPYC 9654 96-Core | 192 |
-| kwok-h100-sxm | **6** | NVIDIA H100 80GB HBM3 | 4 | 350-700 W | Intel Xeon Gold 6530 | 64 |
-| kwok-l40s | **7** | NVIDIA L40S | 4 | 200-350 W | AMD EPYC 9534 64-Core | 128 |
-| kwok-mi300x | **2** | AMD Instinct MI300X | 8 | 350-750 W | AMD EPYC 9534 64-Core | 128 |
-| kwok-w7900 | **6** | AMD Radeon PRO W7900 | 4 | 200-295 W | AMD EPYC 9534 64-Core | 128 |
-
-GPU count summary: 96 + 24 + 28 + 16 + 24 = **188 GPUs total** across NVIDIA and AMD families.
+| kwok-h100-nvl | **12** | NVIDIA H100 NVL | 8 | 200–400 W | AMD EPYC 9654 | 192 |
+| kwok-h100-sxm | **6** | NVIDIA H100 80GB HBM3 | 4 | 350–700 W | Intel Xeon Gold 6530 | 64 |
+| kwok-l40s | **7** | NVIDIA L40S | 4 | 200–350 W | AMD EPYC 9534 | 128 |
+| kwok-mi300x | **2** | AMD Instinct MI300X | 8 | 350–750 W | AMD EPYC 9534 | 128 |
+| kwok-w7900 | **6** | AMD Radeon PRO W7900 | 4 | 200–295 W | AMD EPYC 9534 | 128 |
 
 #### CPU-only nodes (8 total)
 
 | Node prefix | Count | CPU model | CPU cores/node | RAM/node |
 |---|---:|---|---:|---:|
-| kwok-cpu-highcore | **2** | AMD EPYC 9965 192-Core | 384 (2x192) | 1536 GiB |
-| kwok-cpu-highfreq | **2** | AMD EPYC 9375F 32-Core | 64 (2x32) | 770 GiB |
-| kwok-cpu-intensive | **4** | AMD EPYC 9655 96-Core | 192 (2x96) | 1536 GiB |
+| kwok-cpu-highcore | **2** | AMD EPYC 9965 192-Core | 384 (2×192) | 1,536 GiB |
+| kwok-cpu-highfreq | **2** | AMD EPYC 9375F 32-Core | 64 (2×32) | 770 GiB |
+| kwok-cpu-intensive | **4** | AMD EPYC 9655 96-Core | 192 (2×96) | 1,536 GiB |
 
-**Total: 41 nodes, 188 GPUs (5 families), ~5800 CPU cores.**
-
-### Hardware models in simulator
-
-GPU power per device at load fraction `g`:
-
-```
-P_gpu(g) = IdleW + (PeakW - IdleW) * g^computeGamma
-```
-
-Per-GPU-family physics parameters:
-
-| GPU family | IdleW (W) | PeakW (W) | computeGamma | GPU cap range |
-|---|---:|---:|---:|---|
-| NVIDIA H100 NVL | 80 | 400 | 1.50 | 200-400 W |
-| NVIDIA H100 80GB HBM3 | 120 | 700 | 1.50 | 350-700 W |
-| NVIDIA L40S | 60 | 350 | 1.40 | 200-350 W |
-| AMD Instinct MI300X | 100 | 750 | 0.85 | 350-750 W |
-| AMD Radeon PRO W7900 | 40 | 295 | 1.20 | 200-295 W |
-
-`computeGamma` controls cap sensitivity: higher gamma = more throughput retained under capping.
-At 65% GPU cap: H100 NVL loses ~24.7%, MI300X loses ~38.2% throughput.
-
-Full power-model details: [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
+**Total: 41 nodes, 188 GPUs (5 families), ~5,792 CPU cores.**
 
 ### Run configuration
 
-- Seeds: `3`
-- Jobs: `200`
-- Mean inter-arrival: `0.30 s`
-- Time scale: `60x`
-- Timeout: `3600 s`
-- Perf ratio: `25%`, GPU ratio: `35%`
-- Workload types: `debug_eval`, `single_gpu_training`, `cpu_preprocess`, `cpu_analytics`
-- Policy caps: CPU eco at `65%`, GPU eco at `65%` of peak
+| Parameter | Value |
+|---|---|
+| Baselines | A, B, C |
+| Seeds | 1 |
+| Time scale | 120× (1 wall-sec = 120 sim-sec) |
+| Timeout | 660 wall-sec (~22 sim-hours) |
+| Diurnal peak rate | 5 jobs/min at peak |
+| Work scale | 80.0 |
+| Perf ratio | 25%, GPU ratio | 75% |
+| Workload types | `debug_eval`, `single_gpu_training`, `cpu_preprocess`, `cpu_analytics` |
+| CPU eco cap | 60% of max |
+| GPU eco cap | 70% of max |
+| Trace generator | Python NHPP with cosine diurnal, OU noise, bursts, dips, surges |
 
-## Algorithms used
+### PUE model (DXCooledAirsideEconomizer FMU)
 
-### Controller policies
+PUE is computed using the **DXCooledAirsideEconomizer** Functional Mock-up Unit (FMU), a physics-based cooling model adapted from the Lawrence Berkeley National Lab (LBL) Buildings Library v12.1.0. The FMU is compiled from a [Modelica model](https://github.com/joulie-k8s/Joulie/blob/main/examples/08-fmu-cooling-pue/cooling_models/DXCooledAirsideEconomizer.mo) and executed as an FMI 2.0 co-simulation.
 
-- `static_partition`:
-  - `hpCount = round(N * 0.40)` -> ~16 performance nodes, ~25 eco nodes
-- `queue_aware_v1`:
-  - `baseCount = round(N * 0.40)`, dynamic adjustment from live perf-pod count
-  - `hpCount = clamp(max(baseCount, queueNeed), 2, 20, N)`
-- Downgrade guard: `performance -> eco` deferred while performance-sensitive pods run on node
+The model captures:
+- **Three cooling modes**: free cooling (airside economizer), partial mechanical (economizer + DX compressor), full mechanical (DX only)
+- **Variable-speed DX compressor** with temperature-dependent COP (nominal 3.0)
+- **Airside economizer** with 5–100% outdoor air fraction
+- **Fan affinity laws**: power scales with speed cubed
+- **Room thermal mass**: 50×40×3 m data center room
 
 ## Results summary
 
-### Per-seed results
+### Per-baseline results
 
-| Baseline | Seed | Wall (s) | Throughput (jobs/sim-hr) | Energy (kWh sim) | Avg power (W) |
+| Baseline | Avg IT Power (W) | Avg CPU Util (%) | Avg GPU Util (%) | Avg PUE | Avg Cooling (W) |
 |---|---:|---:|---:|---:|---:|
-| A | 1 | 392.78 | 27.04 | 65.55 | 10013 |
-| A | 2 | 218.80 | 49.36 | 35.52 | 9741 |
-| A | 3 | 437.64 | 24.27 | 70.60 | 9679 |
-| B | 1 | 393.65 | 26.98 | 60.78 | 9265 |
-| B | 2 | 216.65 | 49.85 | 33.86 | 9377 |
-| B | 3 | 438.61 | 24.21 | 66.41 | 9085 |
-| C | 1 | 391.76 | 27.11 | 60.15 | 9213 |
-| C | 2 | 217.53 | 49.65 | 34.41 | 9493 |
-| C | 3 | 438.16 | 24.24 | 66.34 | 9084 |
+| A (no mgmt) | 3,976 | 76.9% | 11.5% | 1.144 | 575 |
+| B (static) | 3,176 | 62.4% | 5.9% | 1.139 | 442 |
+| C (queue-aware) | 2,961 | 52.7% | 5.1% | 1.140 | 414 |
 
-### Baseline means (3 seeds, all completed)
+### Energy savings relative to baseline A
 
-| Baseline | Mean wall (s) | Mean throughput (jobs/sim-hr) | Mean energy (kWh sim) | Mean cluster power (W) |
+| Baseline | IT Power Reduction | Power Savings (%) |
+|---|---:|---:|
+| B (static) | −800 W | **−20.1%** |
+| C (queue-aware) | −1,015 W | **−25.5%** |
+
+Both managed baselines achieve significant power savings with zero throughput penalty.
+
+### Throughput and makespan
+
+All baselines run the same workload trace (8,272 jobs) over a fixed ~22 sim-hour window (660 wall-sec at 120× time scale). Makespan is identical by design. The simulator tracks 103 active jobs with work-unit completion:
+
+| Baseline | Jobs Completed | Δ vs A | Total Work Done | Δ vs A |
 |---|---:|---:|---:|---:|
-| A | 349.7 | 33.56 | 57.22 | 9811 |
-| B | 349.6 | 33.68 | 53.68 | 9242 |
-| C | 349.1 | 33.67 | 53.63 | 9263 |
+| A (no mgmt) | 88/103 (85%) | — | 71.2% | — |
+| B (static) | 91/103 (88%) | **+3.4%** | 77.6% | **+9.0%** |
+| C (queue-aware) | 94/103 (91%) | **+6.8%** | 83.2% | **+16.9%** |
 
-Relative to A:
+| Baseline | Avg Concurrent Pods | Max Concurrent Pods | Δ Avg Pods vs A |
+|---|---:|---:|---:|
+| A (no mgmt) | 23.5 | 44 | — |
+| B (static) | 13.5 | 15 | **−42.6%** |
+| C (queue-aware) | 10.8 | 12 | **−54.0%** |
 
-- B: energy **-6.2%**, throughput +0.4% (negligible)
-- C: energy **-6.3%**, throughput +0.3% (negligible)
+Managed baselines actually **complete more jobs** than A despite eco capping. This is because the scheduler extender concentrates work onto fewer performance nodes, reducing resource contention. Fewer concurrent pods means each pod gets more effective throughput, compensating for the lower power caps on eco nodes.
 
 ## Plot commentary
 
-### Runtime distribution
+### Power timeseries
 
-{{< img src="images/experiments/02-heterogeneous-benchmark/runtime_distribution.png" alt="Runtime Distribution by Baseline" >}}
+{{< img src="images/experiments/02-heterogeneous-benchmark/timeseries.png" alt="Power Timeseries" >}}
 
-- All three baselines complete within similar wall-time windows across all seeds.
-- No incomplete runs - all 9 seeds completed successfully.
+Three-panel timeseries showing IT power (kW), CPU utilization (%), and running pods. The combined CPU+GPU capping produces clear separation between all three baselines.
 
-### Energy vs makespan
+### Energy comparison
 
-{{< img src="images/experiments/02-heterogeneous-benchmark/energy_vs_makespan.png" alt="Energy vs Makespan" >}}
+{{< img src="images/experiments/02-heterogeneous-benchmark/energy_comparison.png" alt="Energy Comparison" >}}
 
-- B and C are consistently shifted to lower energy vs A, with near-identical makespan.
+Bar chart of average IT power per baseline with percentage savings annotations. C achieves −25.5% reduction from combined CPU and GPU eco capping.
 
-### Baseline means
+### Cumulative energy
 
-{{< img src="images/experiments/02-heterogeneous-benchmark/baseline_means.png" alt="Baseline Means" >}}
+{{< img src="images/experiments/02-heterogeneous-benchmark/cumulative_energy.png" alt="Cumulative Energy" >}}
 
-- Throughput and wall-time bars are indistinguishable across baselines.
-- Energy bars clearly show B and C both below A by ~6%.
+Cumulative energy (MJ) over time showing linear divergence from the start.
 
-### Relative tradeoff vs A
+### Utilization distribution
 
-{{< img src="images/experiments/02-heterogeneous-benchmark/relative_tradeoff_vs_a.png" alt="Relative Tradeoff vs A" >}}
+{{< img src="images/experiments/02-heterogeneous-benchmark/utilization_summary.png" alt="Utilization Summary" >}}
 
-- Per-seed scatter of energy delta vs throughput delta relative to A.
-- B and C clusters in the lower-energy region with minimal throughput change.
+CPU and GPU utilization histograms per baseline.
 
-### Relative tradeoff bars vs A
+### PUE analysis (IT Power, Cooling & PUE)
 
-{{< img src="images/experiments/02-heterogeneous-benchmark/relative_tradeoff_bars_vs_a.png" alt="Relative Tradeoff Bars vs A" >}}
+{{< img src="images/experiments/02-heterogeneous-benchmark/pue_analysis.png" alt="PUE Analysis" >}}
 
-- Mean energy and throughput deltas: B at -6.2% energy / +0.4% throughput, C at -6.3% / +0.3%.
+Three-panel stacked timeseries showing IT equipment power (kW), cooling system power (kW), and PUE over simulated time. Cooling power is computed by the DXCooledAirsideEconomizer FMU.
 
-### Hardware family tradeoff vs A
+### Facility power breakdown
 
-{{< img src="images/experiments/02-heterogeneous-benchmark/hardware_family_tradeoff_vs_a.png" alt="Hardware Family Tradeoff vs A" >}}
+{{< img src="images/experiments/02-heterogeneous-benchmark/facility_power_breakdown.png" alt="Facility Power Breakdown" >}}
 
-- Per-hardware-family energy and throughput tradeoff under Joulie policies.
-
-### Hardware family rankings - baseline B
-
-{{< img src="images/experiments/02-heterogeneous-benchmark/hardware_family_rankings_baseline_B.png" alt="Hardware Family Rankings Baseline B" >}}
-
-- Per-family energy and throughput under B policy relative to A.
-
-### Hardware family rankings - baseline C
-
-{{< img src="images/experiments/02-heterogeneous-benchmark/hardware_family_rankings_baseline_C.png" alt="Hardware Family Rankings Baseline C" >}}
-
-- C shows similar outcomes to B across hardware families.
-
-### Completion summary
-
-{{< img src="images/experiments/02-heterogeneous-benchmark/completion_summary.png" alt="Completion Summary" >}}
-
-- All baselines achieve 100% completion across all 3 seeds.
+Stacked bar chart showing IT power + cooling power per baseline.
 
 ## Interpretation
 
-### Why does Joulie save 6% energy on GPU clusters?
+### Why does Joulie save energy on heterogeneous GPU clusters?
 
-The combination of CPU and GPU eco caps at 65% achieves meaningful energy reduction:
+1. **Combined CPU + GPU capping**: Both CPU and GPU eco caps contribute to power savings.
+2. **High cluster utilization (76.9% CPU)**: ensures eco caps engage on most nodes.
+3. **Scheduler extender routing**: performance-sensitive jobs (25%) routed to uncapped nodes, preserving throughput.
 
-1. **GPU power caps directly reduce GPU power draw**: at 65% cap, each GPU on an eco node draws significantly less power. With 188 GPUs across 33 nodes, even a modest per-GPU savings compounds at scale.
-2. **CPU caps further reduce host power**: eco nodes draw less CPU power in addition to GPU savings.
-3. **Throughput preserved**: the scheduler distributes performance-sensitive jobs to uncapped performance nodes. The net throughput impact is negligible.
+### Heterogeneous challenge
 
-Both policies achieve nearly identical results (~6.2-6.3%) because the workload mix does not create sufficient demand spikes to differentiate queue-aware from static partition.
+The heterogeneous GPU fleet creates placement constraints: GPU jobs require specific vendor/product node selectors. This limits the operator's flexibility to consolidate work onto performance nodes. The queue-aware policy partially mitigates this through dynamic adjustment.
 
-## Best-fit use case
+### Why queue-aware (C) outperforms static (B)
 
-- Joulie achieves **-6.2% energy (static) / -6.3% energy (queue-aware)** on heterogeneous GPU clusters with negligible throughput impact.
-- The key enabler is applying GPU power caps in addition to CPU caps on eco nodes.
+On a 41-node cluster, C can shift nearly all nodes to eco during low-demand periods, capturing deeper savings than B's fixed 35% performance allocation.
+
+## Annual projections (5,000-node scale)
+
+Extrapolating to a **5,000-node cluster** (~122× the 41-node test cluster):
+
+| Metric | B (Static Partition) | C (Queue-Aware) |
+|---|---:|---:|
+| **Annual energy saved** | **855 MWh** | **1,085 MWh** |
+| **Equivalent US homes powered** | **81 homes** | **103 homes** |
+| **Cost savings** (@ $0.10/kWh) | **$85,450/yr** | **$108,450/yr** |
+| **CO₂ avoided** (@ 0.385 kg/kWh) | **329 tonnes/yr** | **418 tonnes/yr** |
+
+Assumptions: 8,760 h/yr continuous operation, $0.10/kWh, 0.385 kg CO₂/kWh (EPA US grid avg), 10,500 kWh/yr per US household (EIA).
 
 ## Implementation details and scripts
 
 - [Experiment folder](https://github.com/joulie-k8s/Joulie/tree/main/experiments/02-heterogeneous-benchmark)
+- [Full report (REPORT.md)](https://github.com/joulie-k8s/Joulie/blob/main/experiments/02-heterogeneous-benchmark/REPORT.md)
+- [Standalone 5k-node report](https://github.com/joulie-k8s/Joulie/blob/main/experiments/02-heterogeneous-benchmark/REPORT-standalone.md)
 - Main scripts:
   - [05_sweep.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/02-heterogeneous-benchmark/scripts/05_sweep.py)
-  - [06_collect.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/02-heterogeneous-benchmark/scripts/06_collect.py)
-  - [07_plot.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/02-heterogeneous-benchmark/scripts/07_plot.py)
-- [Full report](https://github.com/joulie-k8s/Joulie/blob/main/experiments/02-heterogeneous-benchmark/REPORT.md)
+  - [04_run_one.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/02-heterogeneous-benchmark/scripts/04_run_one.py)
+  - [Trace generator](https://github.com/joulie-k8s/Joulie/blob/main/scripts/trace_generator.py)

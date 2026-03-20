@@ -1,0 +1,83 @@
+classes:
+  - name: intel-h100
+    matchLabels:
+      joulie.io/gpu.product: NVIDIA-H100-SXM
+    model:
+      baseIdleW: 120
+      podW: 80
+      pMaxW: 500
+      alphaUtil: 1.1
+      betaFreq: 1.3
+      fMinMHz: 800
+      fMaxMHz: 3500
+      raplCapMinW: 150
+      raplCapMaxW: 500
+      dvfsRampMs: 300
+      defaultCapW: 450
+      gpu:
+        vendor: nvidia
+        product: NVIDIA-H100-SXM
+        count: 8
+        idleWattsPerGpu: 40
+        maxWattsPerGpu: 300
+        minCapWattsPerGpu: 100
+        powerModel:
+          alphaUtil: 1.0
+          betaCap: 1.0
+  - name: amd-mi300x
+    matchLabels:
+      joulie.io/gpu.product: AMD-Instinct-MI300X
+    model:
+      baseIdleW: 130
+      podW: 85
+      pMaxW: 520
+      alphaUtil: 1.2
+      betaFreq: 1.35
+      fMinMHz: 800
+      fMaxMHz: 3700
+      raplCapMinW: 150
+      raplCapMaxW: 520
+      dvfsRampMs: 400
+      defaultCapW: 470
+      gpu:
+        vendor: amd
+        product: AMD-Instinct-MI300X
+        count: 8
+        idleWattsPerGpu: 45
+        maxWattsPerGpu: 320
+        minCapWattsPerGpu: 100
+        powerModel:
+          alphaUtil: 1.0
+          betaCap: 1.0
+  - name: cpu-only-intel
+    matchLabels:
+      feature.node.kubernetes.io/cpu-model.vendor_id: Intel
+      joulie.io/gpu.product: none
+    model:
+      baseIdleW: 80
+      podW: 90
+      pMaxW: 400
+      alphaUtil: 1.0
+      betaFreq: 1.2
+      fMinMHz: 800
+      fMaxMHz: 3800
+      raplCapMinW: 100
+      raplCapMaxW: 400
+      dvfsRampMs: 300
+      defaultCapW: 350
+  - name: cpu-only-amd
+    matchLabels:
+      feature.node.kubernetes.io/cpu-model.vendor_id: AMD
+      joulie.io/gpu.product: none
+    model:
+      baseIdleW: 85
+      podW: 90
+      pMaxW: 380
+      alphaUtil: 1.1
+      betaFreq: 1.25
+      fMinMHz: 800
+      fMaxMHz: 3700
+      raplCapMinW: 100
+      raplCapMaxW: 380
+      dvfsRampMs: 350
+      defaultCapW: 340

@@ -1,0 +1,41 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: joulie-operator
+  namespace: joulie-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: joulie-operator
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 5s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: joulie-agent
+  namespace: joulie-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: joulie-agent
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 5s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: joulie-scheduler-extender
+  namespace: joulie-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: scheduler-extender
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 5s
