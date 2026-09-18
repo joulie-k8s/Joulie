@@ -71,8 +71,8 @@ jobs:
       - name: Resolve Hugo modules
         working-directory: website
         run: |
-          hugo mod get github.com/google/docsy@latest
-          hugo mod get github.com/google/docsy/dependencies@latest
+          hugo mod get github.com/google/docsy@v0.14.3
+          hugo mod get github.com/google/docsy/dependencies@v0.7.2
 
       - name: Generate Docsy versions config
         env:
