@@ -1089,6 +1089,7 @@ func TestReadRAPLPackageCapRangeIgnoresDRAMSubZones(t *testing.T) {
 
 func TestDiscoverCPUSocketsFallsBackToPackageZoneCount(t *testing.T) {
 	fourSocketFixture(t)
+	withoutProcCPUInfo(t) // isolate from the host: exercise the RAPL fallback
 
 	// n2-atos has NFD installed but exposes no cpu-sockets label.
 	got := discoverCPUSockets(map[string]string{
@@ -1135,5 +1136,110 @@ func TestApplyRAPLPackageCapWritesEverySocketDespiteOneFailure(t *testing.T) {
 		if strings.TrimSpace(string(b)) != "120000000" {
 			t.Fatalf("%s limit=%s want=120000000", zone, strings.TrimSpace(string(b)))
 		}
+	}
+}
+
+// procCPUInfo4Socket is a trimmed /proc/cpuinfo from a 4-socket Xeon: two
+// logical processors per socket is enough to exercise the parser.
+const procCPUInfo4Socket = `processor	: 0
+vendor_id	: GenuineIntel
+cpu family	: 6
+model		: 85
+model name	: Intel(R) Xeon(R) Gold 6530 CPU @ 2.10GHz
+physical id	: 0
+siblings	: 48
+core id		: 0
+cpu cores	: 24
+
+processor	: 1
+model name	: Intel(R) Xeon(R) Gold 6530 CPU @ 2.10GHz
+physical id	: 0
+core id		: 1
+
+processor	: 2
+model name	: Intel(R) Xeon(R) Gold 6530 CPU @ 2.10GHz
+physical id	: 1
+core id		: 0
+
+processor	: 3
+model name	: Intel(R) Xeon(R) Gold 6530 CPU @ 2.10GHz
+physical id	: 2
+core id		: 0
+
+processor	: 4
+model name	: Intel(R) Xeon(R) Gold 6530 CPU @ 2.10GHz
+physical id	: 3
+core id		: 0
+`
+
+func withProcCPUInfo(t *testing.T, content string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cpuinfo")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := procCPUInfoPath
+	procCPUInfoPath = path
+	t.Cleanup(func() { procCPUInfoPath = old })
+}
+
+// withoutProcCPUInfo points the parser at a file that does not exist, so a
+// test exercises the fallbacks instead of the CPU of the machine running it.
+func withoutProcCPUInfo(t *testing.T) {
+	t.Helper()
+	old := procCPUInfoPath
+	procCPUInfoPath = filepath.Join(t.TempDir(), "absent")
+	t.Cleanup(func() { procCPUInfoPath = old })
+}
+
+func TestProcCPUInfoModelAndSockets(t *testing.T) {
+	withProcCPUInfo(t, procCPUInfo4Socket)
+
+	model, sockets := readProcCPUInfo()
+	if model != "Intel(R) Xeon(R) Gold 6530 CPU @ 2.10GHz" {
+		t.Fatalf("model=%q want the /proc/cpuinfo model name", model)
+	}
+	if sockets != 4 {
+		t.Fatalf("sockets=%d want=4 (distinct physical id values)", sockets)
+	}
+}
+
+func TestProcCPUInfoMissingFileIsHarmless(t *testing.T) {
+	withoutProcCPUInfo(t)
+
+	model, sockets := readProcCPUInfo()
+	if model != "" || sockets != 0 {
+		t.Fatalf("model=%q sockets=%d want empty/0", model, sockets)
+	}
+}
+
+func TestDiscoverCPUSocketsUsesCPUInfoWithoutRAPL(t *testing.T) {
+	withProcCPUInfo(t, procCPUInfo4Socket)
+	// No powercap zones at all: the socket count must not depend on RAPL.
+	old := dvfs.PowercapRoot
+	dvfs.PowercapRoot = filepath.Join(t.TempDir(), "powercap")
+	t.Cleanup(func() { dvfs.PowercapRoot = old })
+
+	if got := discoverCPUSockets(nil); got != 4 {
+		t.Fatalf("sockets=%d want=4", got)
+	}
+}
+
+func TestDiscoverCPURawModelFallsBackToCPUInfo(t *testing.T) {
+	withProcCPUInfo(t, procCPUInfo4Socket)
+
+	// n2-atos runs NFD but NFD publishes no cpu-model.name label.
+	got := discoverCPURawModel(map[string]string{
+		"feature.node.kubernetes.io/cpu-model.vendor_id": "Intel",
+	})
+	if got != "Intel(R) Xeon(R) Gold 6530 CPU @ 2.10GHz" {
+		t.Fatalf("rawModel=%q want the /proc/cpuinfo model name", got)
+	}
+
+	labelled := discoverCPURawModel(map[string]string{
+		"feature.node.kubernetes.io/cpu-model.name": "AMD EPYC 9654 96-Core Processor",
+	})
+	if labelled != "AMD EPYC 9654 96-Core Processor" {
+		t.Fatalf("rawModel=%q want the label to win", labelled)
 	}
 }
