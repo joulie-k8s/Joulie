@@ -14,4 +14,4 @@ printf 'running heterogeneous smoke validation with config %s\n' "$CLUSTER_CFG"
 printf 'generated inventory input: %s\n' "$INPUT_CFG"
 printf 'artifacts dir: %s\n' "$ARTIFACT_DIR"
 
-exec "$ROOT/examples/07 - simulator-gpu-powercaps/run-e2e.sh"
+exec "$ROOT/examples/07-simulator-gpu-powercaps/run-e2e.sh"

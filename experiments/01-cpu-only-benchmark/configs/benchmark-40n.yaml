@@ -31,7 +31,7 @@ workload:
 
 simulator:
   base_speed_per_core: 2.0
-  manifest: examples/07 - simulator-gpu-powercaps/manifests/20-simulator.yaml
+  manifest: examples/07-simulator-gpu-powercaps/manifests/20-simulator.yaml
   facility_ambient_base_c: 22.0
   facility_ambient_amplitude_c: 8.0
   facility_ambient_period_sec: 720

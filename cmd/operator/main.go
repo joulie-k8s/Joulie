@@ -929,6 +929,24 @@ func listNodeHardware(ctx context.Context, dyn dynamic.Interface, catalog *hwinv
 	return out, nil
 }
 
+// nestedNumber reads a numeric field that the API server may hand back as
+// either int64 (whole numbers) or float64 (fractional ones).
+func nestedNumber(obj map[string]any, fields ...string) (float64, bool) {
+	v, found, err := unstructured.NestedFieldNoCopy(obj, fields...)
+	if !found || err != nil {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int64:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	}
+	return 0, false
+}
+
 func parseNodeHardware(u unstructured.Unstructured) NodeHardware {
 	nh := NodeHardware{Name: u.GetName()}
 	nh.NodeName, _, _ = unstructured.NestedString(u.Object, "spec", "nodeName")
@@ -940,11 +958,19 @@ func parseNodeHardware(u unstructured.Unstructured) NodeHardware {
 	if v, ok, _ := unstructured.NestedInt64(u.Object, "status", "cpu", "totalCores"); ok {
 		nh.CPUTotalCores = int(v)
 	}
-	if v, ok, _ := unstructured.NestedFloat64(u.Object, "status", "cpu", "capMinWatts"); ok {
+	// The agent publishes the range under capRange (cmd/agent/main.go), so read
+	// that shape; capMinWatts/capMaxWatts are accepted for older agents.
+	if v, ok := nestedNumber(u.Object, "status", "cpu", "capRange", "minWattsPerSocket"); ok {
+		nh.CPUCapMinWatts = v
+		nh.CPUCapKnown = true
+	} else if v, ok := nestedNumber(u.Object, "status", "cpu", "capMinWatts"); ok {
 		nh.CPUCapMinWatts = v
 		nh.CPUCapKnown = true
 	}
-	if v, ok, _ := unstructured.NestedFloat64(u.Object, "status", "cpu", "capMaxWatts"); ok {
+	if v, ok := nestedNumber(u.Object, "status", "cpu", "capRange", "maxWattsPerSocket"); ok {
+		nh.CPUCapMaxWatts = v
+		nh.CPUCapKnown = true
+	} else if v, ok := nestedNumber(u.Object, "status", "cpu", "capMaxWatts"); ok {
 		nh.CPUCapMaxWatts = v
 		nh.CPUCapKnown = true
 	}
@@ -956,11 +982,17 @@ func parseNodeHardware(u unstructured.Unstructured) NodeHardware {
 	if v, ok, _ := unstructured.NestedInt64(u.Object, "status", "gpu", "count"); ok {
 		nh.GPUCount = int(v)
 	}
-	if v, ok, _ := unstructured.NestedFloat64(u.Object, "status", "gpu", "capMinWatts"); ok {
+	if v, ok := nestedNumber(u.Object, "status", "gpu", "capRangePerGpu", "minWatts"); ok {
+		nh.GPUCapMinWatts = v
+		nh.GPUCapKnown = true
+	} else if v, ok := nestedNumber(u.Object, "status", "gpu", "capMinWatts"); ok {
 		nh.GPUCapMinWatts = v
 		nh.GPUCapKnown = true
 	}
-	if v, ok, _ := unstructured.NestedFloat64(u.Object, "status", "gpu", "capMaxWatts"); ok {
+	if v, ok := nestedNumber(u.Object, "status", "gpu", "capRangePerGpu", "maxWatts"); ok {
+		nh.GPUCapMaxWatts = v
+		nh.GPUCapKnown = true
+	} else if v, ok := nestedNumber(u.Object, "status", "gpu", "capMaxWatts"); ok {
 		nh.GPUCapMaxWatts = v
 		nh.GPUCapKnown = true
 	}

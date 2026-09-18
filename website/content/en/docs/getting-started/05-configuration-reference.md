@@ -64,7 +64,19 @@ Defaults listed below are the **code defaults**. The Helm chart (`charts/joulie/
 | `OPERATOR_NODE_POWER_SOURCE` | `static` | Node power data source: `static`, `http`, `prometheus` |
 | `OPERATOR_NODE_POWER_HTTP_ENDPOINT` | (empty) | HTTP endpoint for per-node power readings |
 | `OPERATOR_NODE_POWER_PROMETHEUS_ADDRESS` | (empty) | Prometheus address for per-node power queries |
-| `OPERATOR_NODE_POWER_PROMETHEUS_QUERY` | (empty) | PromQL query for per-node power readings |
+| `OPERATOR_NODE_POWER_PROMETHEUS_QUERY` | (empty) | PromQL query for per-node power readings, in **watts**. `{node}` is replaced with the node name. |
+
+The query must return instantaneous power in watts. Kepler and most energy
+exporters publish cumulative joules counters, which grow without bound, so they
+have to be converted with `rate()`:
+
+```promql
+rate(kepler_node_platform_joules_total{exported_instance="{node}"}[5m])
+```
+
+Passing the counter directly makes `measuredNodePowerW` climb forever, which
+drives power headroom negative and cooling stress to 100% on every node. The
+operator logs a warning when a reading exceeds twice the node's TDP.
 
 ### Power cap configuration
 

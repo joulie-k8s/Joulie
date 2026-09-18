@@ -21,7 +21,7 @@ workload:
 
 simulator:
   base_speed_per_core: 2.0
-  manifest: examples/07 - simulator-gpu-powercaps/manifests/20-simulator.yaml
+  manifest: examples/07-simulator-gpu-powercaps/manifests/20-simulator.yaml
 
 policy:
   cpu_write_absolute_caps: true
