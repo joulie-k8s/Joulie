@@ -1199,10 +1199,7 @@ func discoverHardware(ctx context.Context, node *corev1.Node) HardwareInfo {
 	nodeLabels := node.Labels
 	hw := HardwareInfo{
 		CPUVendor: discoverCPUVendor(nodeLabels),
-		CPURawModel: firstNonEmpty(
-			nodeLabels["feature.node.kubernetes.io/cpu-model.name"],
-			nodeLabels["beta.kubernetes.io/instance-type"],
-		),
+		CPURawModel:     discoverCPURawModel(nodeLabels),
 		CPUSockets:      discoverCPUSockets(nodeLabels),
 		CPUTotalCores:   cpuCoresFromNode(node),
 		CPUDriverFamily: detectCPUDriverFamily(),
@@ -1293,6 +1290,54 @@ func cpuCoresFromNode(node *corev1.Node) int {
 	return 0
 }
 
+// procCPUInfoPath is the procfs CPU inventory. cpuinfo is not namespaced, so
+// a container sees the host CPUs. Variable so tests can point at a fixture.
+var procCPUInfoPath = "/proc/cpuinfo"
+
+// readProcCPUInfo returns the CPU model name and the number of populated
+// sockets (distinct "physical id" values). Missing or unreadable file yields
+// zero values, never an error: every caller has a fallback.
+func readProcCPUInfo() (model string, sockets int) {
+	data, err := os.ReadFile(procCPUInfoPath)
+	if err != nil {
+		return "", 0
+	}
+	socketIDs := map[string]struct{}{}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		switch key {
+		case "model name":
+			if model == "" {
+				model = value
+			}
+		case "physical id":
+			socketIDs[value] = struct{}{}
+		}
+	}
+	return model, len(socketIDs)
+}
+
+// discoverCPURawModel resolves the CPU model string. NFD publishes
+// cpu-model.vendor_id, family and id, but no model name, so on bare metal
+// /proc/cpuinfo is the only source; without it the hardware catalog can never
+// match and the node has no TDP or compute-density data.
+func discoverCPURawModel(nodeLabels map[string]string) string {
+	if v := firstNonEmpty(
+		nodeLabels["feature.node.kubernetes.io/cpu-model.name"],
+		nodeLabels["joulie.io/hw.cpu-model"],
+		nodeLabels["beta.kubernetes.io/instance-type"],
+	); v != "" {
+		return v
+	}
+	model, _ := readProcCPUInfo()
+	return model
+}
+
 func discoverCPUSockets(nodeLabels map[string]string) int {
 	for _, key := range []string{
 		"feature.node.kubernetes.io/cpu-sockets",
@@ -1301,6 +1346,9 @@ func discoverCPUSockets(nodeLabels map[string]string) int {
 		if v := hwinv.ParseIntString(nodeLabels[key]); v > 0 {
 			return v
 		}
+	}
+	if _, sockets := readProcCPUInfo(); sockets > 0 {
+		return sockets
 	}
 	// No label: count RAPL package zones, one per socket. NFD does not
 	// publish a socket count, so without this the twin computes a node TDP

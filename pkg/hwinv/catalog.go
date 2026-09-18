@@ -225,6 +225,11 @@ func normalizeName(raw string) string {
 	if s == "" {
 		return ""
 	}
+	// /proc/cpuinfo reports Intel parts as "Intel(R) Xeon(R) Gold 6530 CPU @
+	// 2.10GHz". The clock speed is a property of the part, not a way to tell
+	// two parts apart, so drop it before matching; catalog aliases carry the
+	// model alone. AMD reports no such suffix.
+	s = cpuClockSuffixRE.ReplaceAllString(s, "")
 	s = strings.NewReplacer(
 		"(r)", "",
 		"®", "",
@@ -241,6 +246,10 @@ func normalizeName(raw string) string {
 }
 
 var whitespaceRE = regexp.MustCompile(`\s+`)
+
+// cpuClockSuffixRE matches a trailing " cpu @ 2.10ghz", with or without the
+// "cpu" word.
+var cpuClockSuffixRE = regexp.MustCompile(`(?:\s+cpu)?\s+@\s*[0-9.]+\s*[gm]hz\s*$`)
 
 func ParseIntString(raw string) int {
 	n, _ := strconv.Atoi(strings.TrimSpace(raw))

@@ -35,3 +35,31 @@ func TestMatchNodeAllowsPartialRecognition(t *testing.T) {
 		t.Fatalf("expected warnings for unrecognized gpu")
 	}
 }
+
+func TestMatchCPUAcceptsProcCPUInfoStrings(t *testing.T) {
+	cat, err := LoadCatalog("")
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+	tests := []struct {
+		raw     string
+		wantKey string
+		wantOK  bool
+	}{
+		// Exactly what /proc/cpuinfo reports on Intel: a frequency suffix the
+		// catalog aliases do not carry.
+		{"Intel(R) Xeon(R) Gold 6530 CPU @ 2.10GHz", "INTEL_XEON_GOLD_6530", true},
+		{"Intel(R) Xeon(R) Gold 6530 CPU @ 2.10GHz\t", "INTEL_XEON_GOLD_6530", true},
+		// AMD reports no frequency suffix and already matched.
+		{"AMD EPYC 9654 96-Core Processor", "AMD_EPYC_9654", true},
+		{"INTEL XEON GOLD 6530", "INTEL_XEON_GOLD_6530", true},
+		// A model that is genuinely absent must stay unmatched.
+		{"Intel(R) Xeon(R) Gold 6252 CPU @ 2.10GHz", "", false},
+	}
+	for _, tc := range tests {
+		key, _, ok := cat.MatchCPU(tc.raw)
+		if ok != tc.wantOK || key != tc.wantKey {
+			t.Fatalf("MatchCPU(%q)=(%q,%v) want=(%q,%v)", tc.raw, key, ok, tc.wantKey, tc.wantOK)
+		}
+	}
+}
