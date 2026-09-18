@@ -1017,3 +1017,123 @@ func (f fakeCommandRunner) Run(_ context.Context, name string, args ...string) (
 	}
 	return nil, fmt.Errorf("unexpected command: %s", key)
 }
+
+// raplFixture builds a powercap tree with one named zone per entry and the
+// given constraint values in microwatts. A value of -1 omits the file.
+func raplFixture(t *testing.T, zones []struct {
+	Dir, Name    string
+	MaxUW, MinUW int64
+}) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, z := range zones {
+		dir := filepath.Join(root, z.Dir)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "name"), []byte(z.Name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "constraint_0_power_limit_uw"), []byte("0"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if z.MaxUW >= 0 {
+			if err := os.WriteFile(filepath.Join(dir, "constraint_0_max_power_uw"), []byte(fmt.Sprintf("%d", z.MaxUW)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if z.MinUW >= 0 {
+			if err := os.WriteFile(filepath.Join(dir, "constraint_0_min_power_uw"), []byte(fmt.Sprintf("%d", z.MinUW)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	old := dvfs.PowercapRoot
+	dvfs.PowercapRoot = root
+	t.Cleanup(func() { dvfs.PowercapRoot = old })
+	return root
+}
+
+// n2-atos: 4 package zones at 165 W each, DRAM sub-zones at 47.25 W.
+func fourSocketFixture(t *testing.T) string {
+	t.Helper()
+	return raplFixture(t, []struct {
+		Dir, Name    string
+		MaxUW, MinUW int64
+	}{
+		{"intel-rapl:0", "package-0", 165_000_000, 90_000_000},
+		{"intel-rapl:0:0", "dram", 47_250_000, -1},
+		{"intel-rapl:1", "package-1", 165_000_000, 90_000_000},
+		{"intel-rapl:1:0", "dram", 47_250_000, -1},
+		{"intel-rapl:2", "package-2", 165_000_000, 90_000_000},
+		{"intel-rapl:2:0", "dram", 47_250_000, -1},
+		{"intel-rapl:3", "package-3", 165_000_000, 90_000_000},
+		{"intel-rapl:3:0", "dram", 47_250_000, -1},
+	})
+}
+
+func TestReadRAPLPackageCapRangeIgnoresDRAMSubZones(t *testing.T) {
+	fourSocketFixture(t)
+
+	maxW, minW, ok := readRAPLPackageCapRangeWatts()
+	if !ok {
+		t.Fatal("expected a cap range")
+	}
+	if maxW != 165 {
+		t.Fatalf("maxW=%v want=165 (DRAM sub-zone 47.25 W must be ignored)", maxW)
+	}
+	if minW != 90 {
+		t.Fatalf("minW=%v want=90", minW)
+	}
+}
+
+func TestDiscoverCPUSocketsFallsBackToPackageZoneCount(t *testing.T) {
+	fourSocketFixture(t)
+
+	// n2-atos has NFD installed but exposes no cpu-sockets label.
+	got := discoverCPUSockets(map[string]string{
+		"feature.node.kubernetes.io/cpu-model.vendor_id": "Intel",
+	})
+	if got != 4 {
+		t.Fatalf("sockets=%d want=4 (one per package-* zone)", got)
+	}
+}
+
+func TestDiscoverCPUSocketsPrefersLabel(t *testing.T) {
+	fourSocketFixture(t)
+
+	got := discoverCPUSockets(map[string]string{"feature.node.kubernetes.io/cpu-sockets": "2"})
+	if got != 2 {
+		t.Fatalf("sockets=%d want=2 (label wins over zone count)", got)
+	}
+}
+
+func TestApplyRAPLPackageCapWritesEverySocketDespiteOneFailure(t *testing.T) {
+	root := fourSocketFixture(t)
+	// Make socket 2's limit file unwritable by replacing it with a directory,
+	// the way a disabled zone rejects writes with ENODATA on real hardware.
+	bad := filepath.Join(root, "intel-rapl:2", "constraint_0_power_limit_uw")
+	if err := os.Remove(bad); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	applied, count, err := applyRAPLPackageCap(HardwareInfo{CPUVendor: "GenuineIntel"}, 120)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !applied || count != 3 {
+		t.Fatalf("applied=%v count=%d want applied=true count=3", applied, count)
+	}
+	for _, zone := range []string{"intel-rapl:0", "intel-rapl:1", "intel-rapl:3"} {
+		b, err := os.ReadFile(filepath.Join(root, zone, "constraint_0_power_limit_uw"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(string(b)) != "120000000" {
+			t.Fatalf("%s limit=%s want=120000000", zone, strings.TrimSpace(string(b)))
+		}
+	}
+}

@@ -417,12 +417,16 @@ func CPUIndexFromPath(cpufreqDir string) (int, bool) {
 	return v, true
 }
 
+// PowercapRoot is the sysfs powercap directory as seen by the agent.
+// It is a variable so tests can point it at a fixture tree.
+var PowercapRoot = "/host-sys/class/powercap"
+
 // EnergyFiles returns RAPL energy counter file paths.
 func EnergyFiles() ([]string, error) {
 	patterns := []string{
-		"/host-sys/class/powercap/*/energy_uj",
-		"/host-sys/class/powercap/*:*/energy_uj",
-		"/host-sys/class/powercap/*:*:*/energy_uj",
+		PowercapRoot + "/*/energy_uj",
+		PowercapRoot + "/*:*/energy_uj",
+		PowercapRoot + "/*:*:*/energy_uj",
 		"/host-sys/devices/virtual/powercap/intel-rapl/*/energy_uj",
 		"/host-sys/devices/virtual/powercap/intel-rapl/*/*/energy_uj",
 	}
@@ -457,27 +461,61 @@ func IsPackageEnergyFile(path string) bool {
 	return strings.Count(zone, ":") == 1
 }
 
-// RAPLCapFiles returns RAPL power cap file paths.
-func RAPLCapFiles() ([]string, error) {
-	patterns := []string{
-		"/host-sys/class/powercap/*/constraint_0_power_limit_uw",
-		"/host-sys/class/powercap/*:*/constraint_0_power_limit_uw",
-		"/host-sys/class/powercap/*:*:*/constraint_0_power_limit_uw",
+// RAPLPackageZones returns one powercap zone directory per CPU socket.
+//
+// Only zones whose `name` file reads "package-*" qualify. Sub-zones such as
+// dram must be excluded: they are often disabled (writes fail with ENODATA)
+// and their constraint values describe the memory controller, not the CPU
+// package, so mixing them in yields both failed writes and a far too low
+// power ceiling. Platform zones ("psys") are excluded for the same reason.
+//
+// When no zone exposes a readable name (an unusual container mount), zones
+// with exactly one colon are used instead, which is the same package-level
+// heuristic as IsPackageEnergyFile.
+func RAPLPackageZones() ([]string, error) {
+	entries, err := filepath.Glob(PowercapRoot + "/*")
+	if err != nil {
+		return nil, err
 	}
-	seen := map[string]struct{}{}
-	out := make([]string, 0)
-	for _, p := range patterns {
-		matches, err := filepath.Glob(p)
+	sort.Strings(entries)
+
+	named := make([]string, 0, len(entries))
+	fallback := make([]string, 0, len(entries))
+	sawName := false
+	for _, dir := range entries {
+		base := filepath.Base(dir)
+		if strings.Count(base, ":") == 1 {
+			fallback = append(fallback, dir)
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, "name"))
 		if err != nil {
-			return nil, err
+			continue
 		}
-		for _, m := range matches {
-			if _, ok := seen[m]; ok {
-				continue
-			}
-			seen[m] = struct{}{}
-			out = append(out, m)
+		sawName = true
+		if strings.HasPrefix(strings.TrimSpace(string(raw)), "package-") {
+			named = append(named, dir)
 		}
+	}
+	if sawName {
+		return named, nil
+	}
+	return fallback, nil
+}
+
+// RAPLCapFiles returns the package-level RAPL power cap file paths, one per
+// socket. See RAPLPackageZones for why sub-zones are skipped.
+func RAPLCapFiles() ([]string, error) {
+	zones, err := RAPLPackageZones()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(zones))
+	for _, z := range zones {
+		f := filepath.Join(z, "constraint_0_power_limit_uw")
+		if _, err := os.Stat(f); err != nil {
+			continue
+		}
+		out = append(out, f)
 	}
 	sort.Strings(out)
 	return out, nil

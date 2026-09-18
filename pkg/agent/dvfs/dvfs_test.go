@@ -1,6 +1,9 @@
 package dvfs
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -144,5 +147,102 @@ func TestReadPowerWattsReaderNotOK(t *testing.T) {
 	}
 	if ok {
 		t.Error("expected ok=false")
+	}
+}
+
+// writeRAPLFixture builds a powercap tree: zones maps a zone directory name to
+// the contents of its `name` file ("" means the zone has no name file), and
+// every zone gets the usual constraint files.
+func writeRAPLFixture(t *testing.T, zones map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for zone, name := range zones {
+		dir := filepath.Join(root, zone)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if name != "" {
+			if err := os.WriteFile(filepath.Join(dir, "name"), []byte(name+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, f := range []string{"constraint_0_power_limit_uw", "constraint_0_max_power_uw", "constraint_0_min_power_uw"} {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte("1000000"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return root
+}
+
+func withPowercapRoot(t *testing.T, root string) {
+	t.Helper()
+	old := PowercapRoot
+	PowercapRoot = root
+	t.Cleanup(func() { PowercapRoot = old })
+}
+
+func TestRAPLPackageZonesSkipsSubZonesAndPsys(t *testing.T) {
+	root := writeRAPLFixture(t, map[string]string{
+		"intel-rapl:0":   "package-0",
+		"intel-rapl:0:0": "dram",
+		"intel-rapl:1":   "package-1",
+		"intel-rapl:1:0": "dram",
+		"intel-rapl:2":   "psys",
+	})
+	withPowercapRoot(t, root)
+
+	zones, err := RAPLPackageZones()
+	if err != nil {
+		t.Fatalf("RAPLPackageZones: %v", err)
+	}
+	want := []string{filepath.Join(root, "intel-rapl:0"), filepath.Join(root, "intel-rapl:1")}
+	if len(zones) != len(want) {
+		t.Fatalf("zones=%v want=%v", zones, want)
+	}
+	for i := range want {
+		if zones[i] != want[i] {
+			t.Fatalf("zones=%v want=%v", zones, want)
+		}
+	}
+}
+
+func TestRAPLPackageZonesFallsBackToColonCountWithoutNameFiles(t *testing.T) {
+	root := writeRAPLFixture(t, map[string]string{
+		"intel-rapl:0":   "",
+		"intel-rapl:0:0": "",
+		"intel-rapl:1":   "",
+	})
+	withPowercapRoot(t, root)
+
+	zones, err := RAPLPackageZones()
+	if err != nil {
+		t.Fatalf("RAPLPackageZones: %v", err)
+	}
+	if len(zones) != 2 {
+		t.Fatalf("zones=%v want 2 package zones", zones)
+	}
+}
+
+func TestRAPLCapFilesTargetsPackageZonesOnly(t *testing.T) {
+	root := writeRAPLFixture(t, map[string]string{
+		"intel-rapl:0":   "package-0",
+		"intel-rapl:0:0": "dram",
+		"intel-rapl:1":   "package-1",
+		"intel-rapl:1:0": "dram",
+	})
+	withPowercapRoot(t, root)
+
+	files, err := RAPLCapFiles()
+	if err != nil {
+		t.Fatalf("RAPLCapFiles: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("files=%v want only the two package limit files", files)
+	}
+	for _, f := range files {
+		if strings.Contains(filepath.Base(filepath.Dir(f)), ":0:") {
+			t.Fatalf("cap file targets a sub-zone: %s", f)
+		}
 	}
 }

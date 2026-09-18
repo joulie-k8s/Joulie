@@ -78,6 +78,7 @@ func reconcileNodeTwin(ctx context.Context, dynClient dynamic.Interface, nodeNam
 		PowerTrendWPerMin:   trend,
 	}
 	out := twin.Compute(in)
+	warnImplausibleNodePower(nodeName, source, measuredPower, out.PowerMeasurement.NodeTdpW)
 
 	pm := &joulie.PowerMeasurement{
 		Source:             source,
@@ -106,11 +107,59 @@ func reconcileNodeTwin(ctx context.Context, dynClient dynamic.Interface, nodeNam
 	return upsertNodeTwinStatus(ctx, dynClient, nodeName, twinStatus)
 }
 
+// numberFromMap reads a numeric field written by the agent.
+//
+// The API server hands back whole numbers as int64 and fractional ones as
+// float64, so a float64-only type assertion silently drops values such as a
+// 165 W package limit and leaves the twin to fall back to a core-count
+// estimate. Both shapes must be accepted.
+func numberFromMap(m map[string]interface{}, key string) (float64, bool) {
+	switch v := m[key].(type) {
+	case float64:
+		return v, true
+	case int64:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	}
+	return 0, false
+}
+
+var (
+	implausiblePowerWarnedMu sync.Mutex
+	implausiblePowerWarned   = map[string]struct{}{}
+)
+
+// implausibleNodePower reports whether a measured power reading cannot be a
+// real instantaneous reading for this node. The usual cause is a query that
+// returns a cumulative energy counter (joules since boot) instead of watts.
+func implausibleNodePower(measuredW, nodeTdpW float64) bool {
+	if nodeTdpW <= 0 || measuredW <= 0 {
+		return false
+	}
+	return measuredW > 2*nodeTdpW
+}
+
+func warnImplausibleNodePower(nodeName, source string, measuredW, nodeTdpW float64) {
+	if !implausibleNodePower(measuredW, nodeTdpW) {
+		return
+	}
+	implausiblePowerWarnedMu.Lock()
+	_, seen := implausiblePowerWarned[nodeName]
+	implausiblePowerWarned[nodeName] = struct{}{}
+	implausiblePowerWarnedMu.Unlock()
+	if seen {
+		return
+	}
+	log.Printf("warning: node=%s measured power %.0fW exceeds twice its TDP %.0fW (source=%s); if the query returns a joules counter, wrap it in rate() to get watts",
+		nodeName, measuredW, nodeTdpW, source)
+}
+
 // fetchNodeHardware reads NodeHardware for the node from the API.
 func fetchNodeHardware(ctx context.Context, dynClient dynamic.Interface, nodeName string) joulie.NodeHardware {
 	hw := joulie.NodeHardware{NodeName: nodeName}
 
-	obj, err := dynClient.Resource(twinNodeHardwareGVR).Get(ctx, nodeName, metav1.GetOptions{})
+	obj, err := dynClient.Resource(twinNodeHardwareGVR).Get(ctx, sanitizeName(nodeName), metav1.GetOptions{})
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			log.Printf("fetchNodeHardware: %v", err)
@@ -130,24 +179,20 @@ func fetchNodeHardware(ctx context.Context, dynClient dynamic.Interface, nodeNam
 		if v, ok := cpu["model"].(string); ok {
 			hw.CPU.Model = v
 		}
-		if v, ok := cpu["sockets"].(float64); ok {
-			hw.CPU.Sockets = int(v)
-		} else if v, ok := cpu["sockets"].(int64); ok {
+		if v, ok := numberFromMap(cpu, "sockets"); ok {
 			hw.CPU.Sockets = int(v)
 		}
-		if v, ok := cpu["totalCores"].(float64); ok {
-			hw.CPU.TotalCores = int(v)
-		} else if v, ok := cpu["totalCores"].(int64); ok {
+		if v, ok := numberFromMap(cpu, "totalCores"); ok {
 			hw.CPU.TotalCores = int(v)
 		}
 		if v, ok := cpu["driverFamily"].(string); ok {
 			hw.CPU.DriverFamily = v
 		}
 		if cr, ok := cpu["capRange"].(map[string]interface{}); ok {
-			if v, ok := cr["maxWattsPerSocket"].(float64); ok {
+			if v, ok := numberFromMap(cr, "maxWattsPerSocket"); ok {
 				hw.CPU.CapRange.MaxWattsPerSocket = v
 			}
-			if v, ok := cr["minWattsPerSocket"].(float64); ok {
+			if v, ok := numberFromMap(cr, "minWattsPerSocket"); ok {
 				hw.CPU.CapRange.MinWattsPerSocket = v
 			}
 		}
@@ -166,14 +211,15 @@ func fetchNodeHardware(ctx context.Context, dynClient dynamic.Interface, nodeNam
 		if v, ok := gpu["rawModel"].(string); ok {
 			hw.GPU.RawModel = v
 		}
-		if v, ok := gpu["count"].(float64); ok {
-			hw.GPU.Count = int(v)
-		} else if v, ok := gpu["count"].(int64); ok {
+		if v, ok := numberFromMap(gpu, "count"); ok {
 			hw.GPU.Count = int(v)
 		}
 		if cr, ok := gpu["capRangePerGpu"].(map[string]interface{}); ok {
-			if v, ok := cr["maxWatts"].(float64); ok {
+			if v, ok := numberFromMap(cr, "maxWatts"); ok {
 				hw.GPU.CapRange.MaxWatts = v
+			}
+			if v, ok := numberFromMap(cr, "minWatts"); ok {
+				hw.GPU.CapRange.MinWatts = v
 			}
 		}
 		if slicing, ok := gpu["slicing"].(map[string]interface{}); ok {
@@ -250,6 +296,10 @@ func enrichHardwareFromCatalog(hw *joulie.NodeHardware) {
 
 // upsertNodeTwinStatus patches the status subresource of a NodeTwin CR.
 func upsertNodeTwinStatus(ctx context.Context, dynClient dynamic.Interface, nodeName string, status joulie.NodeTwinStatus) error {
+	// Same object name as upsertNodeTwinSpec, otherwise a node whose name is
+	// not a valid object name (for example one with dots) gets two NodeTwins:
+	// one holding the spec and one holding the status.
+	name := sanitizeName(nodeName)
 	statusMap := nodeTwinStatusToMap(status)
 
 	patch := map[string]interface{}{
@@ -261,7 +311,7 @@ func upsertNodeTwinStatus(ctx context.Context, dynClient dynamic.Interface, node
 	}
 
 	// Ensure the object exists first (it may have been created by upsertNodeTwinSpec)
-	_, err = dynClient.Resource(nodeTwinGVR).Get(ctx, nodeName, metav1.GetOptions{})
+	_, err = dynClient.Resource(nodeTwinGVR).Get(ctx, name, metav1.GetOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("get NodeTwin %s: %w", nodeName, err)
 	}
@@ -272,7 +322,7 @@ func upsertNodeTwinStatus(ctx context.Context, dynClient dynamic.Interface, node
 				"apiVersion": "joulie.io/v1alpha1",
 				"kind":       "NodeTwin",
 				"metadata": map[string]interface{}{
-					"name": nodeName,
+					"name": name,
 				},
 				"spec": map[string]interface{}{
 					"nodeName": nodeName,
@@ -287,21 +337,21 @@ func upsertNodeTwinStatus(ctx context.Context, dynClient dynamic.Interface, node
 
 	// Patch status subresource
 	_, err = dynClient.Resource(nodeTwinGVR).Patch(
-		ctx, nodeName, types.MergePatchType, patchBytes, metav1.PatchOptions{}, "status",
+		ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{}, "status",
 	)
 	if err != nil {
 		// Fallback: full patch if status subresource not available
 		fullPatch := map[string]interface{}{
 			"apiVersion": "joulie.io/v1alpha1",
 			"kind":       "NodeTwin",
-			"metadata":   map[string]interface{}{"name": nodeName},
+			"metadata":   map[string]interface{}{"name": name},
 			"status":     statusMap,
 		}
 		fp, err := json.Marshal(fullPatch)
 		if err != nil {
 			return fmt.Errorf("marshal NodeTwin %s status patch: %w", nodeName, err)
 		}
-		_, err = dynClient.Resource(nodeTwinGVR).Patch(ctx, nodeName, types.MergePatchType, fp, metav1.PatchOptions{})
+		_, err = dynClient.Resource(nodeTwinGVR).Patch(ctx, name, types.MergePatchType, fp, metav1.PatchOptions{})
 		if err != nil {
 			return fmt.Errorf("patch NodeTwin %s status: %w", nodeName, err)
 		}
@@ -424,7 +474,10 @@ var (
 
 	// Prometheus node power config
 	nodePowerPromAddress string // e.g. "http://prometheus:9090"
-	nodePowerPromQuery   string // e.g. "kepler_node_platform_joules_total{node=\"{node}\"}" — {node} is substituted
+	// nodePowerPromQuery must return watts, not a joules counter, e.g.
+	// "rate(kepler_node_platform_joules_total{node=\"{node}\"}[5m])".
+	// {node} is substituted with the node name.
+	nodePowerPromQuery string
 )
 
 // nodePowerSamples stores recent power measurements for trend computation.

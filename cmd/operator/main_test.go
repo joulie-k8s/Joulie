@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/hwinv"
 	"github.com/matbun/joulie/pkg/operator/policy"
+	"github.com/matbun/joulie/pkg/operator/twin"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -807,4 +810,152 @@ func TestDiscoverGPUCountCustomSuffix(t *testing.T) {
 
 func resourceMustParse(v string) resource.Quantity {
 	return resource.MustParse(v)
+}
+
+// nodeHardwareFromJSON decodes a NodeHardware exactly as the API server sends
+// it, so whole numbers arrive as int64 the way they do in a real cluster.
+func nodeHardwareFromJSON(t *testing.T, raw string) *unstructured.Unstructured {
+	t.Helper()
+	u := &unstructured.Unstructured{}
+	if err := u.UnmarshalJSON([]byte(raw)); err != nil {
+		t.Fatalf("decode NodeHardware: %v", err)
+	}
+	return u
+}
+
+func nodeHardwareClient(t *testing.T, objs ...*unstructured.Unstructured) *dynamicfake.FakeDynamicClient {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{
+		nodeHardwareGVR: "NodeHardwareList",
+		nodeTwinGVR:     "NodeTwinList",
+	})
+	for _, o := range objs {
+		if _, err := dyn.Resource(nodeHardwareGVR).Create(context.Background(), o, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed NodeHardware: %v", err)
+		}
+	}
+	return dyn
+}
+
+// n2-atos: the agent reports 165 W per socket as a whole number.
+const nodeHardware165W = `{
+  "apiVersion": "joulie.io/v1alpha1",
+  "kind": "NodeHardware",
+  "metadata": {"name": "n2-atos"},
+  "spec": {"nodeName": "n2-atos"},
+  "status": {
+    "cpu": {"vendor": "GenuineIntel", "sockets": 4, "totalCores": 192,
+            "capRange": {"type": "package", "maxWattsPerSocket": 165, "minWattsPerSocket": 90}},
+    "gpu": {"present": true, "count": 8, "capRangePerGpu": {"maxWatts": 700}}
+  }
+}`
+
+func TestFetchNodeHardwareKeepsWholeNumberWatts(t *testing.T) {
+	t.Parallel()
+	dyn := nodeHardwareClient(t, nodeHardwareFromJSON(t, nodeHardware165W))
+
+	hw := fetchNodeHardware(context.Background(), dyn, "n2-atos")
+	if hw.CPU.CapRange.MaxWattsPerSocket != 165 {
+		t.Fatalf("maxWattsPerSocket=%v want=165 (int64 from the API must be accepted)", hw.CPU.CapRange.MaxWattsPerSocket)
+	}
+	if hw.CPU.CapRange.MinWattsPerSocket != 90 {
+		t.Fatalf("minWattsPerSocket=%v want=90", hw.CPU.CapRange.MinWattsPerSocket)
+	}
+	if hw.GPU.CapRange.MaxWatts != 700 {
+		t.Fatalf("gpu maxWatts=%v want=700", hw.GPU.CapRange.MaxWatts)
+	}
+}
+
+func TestFetchNodeHardwareGivesTwinRealTDP(t *testing.T) {
+	t.Parallel()
+	dyn := nodeHardwareClient(t, nodeHardwareFromJSON(t, nodeHardware165W))
+
+	hw := fetchNodeHardware(context.Background(), dyn, "n2-atos")
+	out := twin.Compute(twin.Input{
+		NodeName:           "n2-atos",
+		Hardware:           hw,
+		Profile:            "performance",
+		MeasuredNodePowerW: 330,
+	})
+	if out.PowerMeasurement.CpuTdpW != 660 {
+		t.Fatalf("cpuTdpW=%v want=660 (4 sockets x 165 W)", out.PowerMeasurement.CpuTdpW)
+	}
+}
+
+func TestFetchNodeHardwareUsesSanitizedObjectName(t *testing.T) {
+	t.Parallel()
+	raw := strings.ReplaceAll(nodeHardware165W, `"nodeName": "n2-atos"`, `"nodeName": "n2.atos"`)
+	dyn := nodeHardwareClient(t, nodeHardwareFromJSON(t, raw))
+
+	hw := fetchNodeHardware(context.Background(), dyn, "n2.atos")
+	if hw.CPU.CapRange.MaxWattsPerSocket != 165 {
+		t.Fatalf("maxWattsPerSocket=%v want=165 (object is stored under the sanitized name)", hw.CPU.CapRange.MaxWattsPerSocket)
+	}
+}
+
+func TestUpsertNodeTwinStatusUsesSanitizedObjectName(t *testing.T) {
+	t.Parallel()
+	dyn := nodeHardwareClient(t)
+
+	if err := upsertNodeTwinSpec(context.Background(), dyn, NodeAssignment{NodeName: "n2.atos", Profile: "performance"}); err != nil {
+		t.Fatalf("upsert spec: %v", err)
+	}
+	if err := upsertNodeTwinStatus(context.Background(), dyn, "n2.atos", joulieNodeTwinStatusForTest()); err != nil {
+		t.Fatalf("upsert status: %v", err)
+	}
+
+	got, err := dyn.Resource(nodeTwinGVR).Get(context.Background(), "n2-atos", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("spec and status must land on the same object: %v", err)
+	}
+	class, _, _ := unstructured.NestedString(got.Object, "status", "schedulableClass")
+	if class != "performance" {
+		t.Fatalf("schedulableClass=%q want=performance", class)
+	}
+	if list, err := dyn.Resource(nodeTwinGVR).List(context.Background(), metav1.ListOptions{}); err != nil {
+		t.Fatalf("list: %v", err)
+	} else if len(list.Items) != 1 {
+		t.Fatalf("got %d NodeTwins, want 1 (no duplicate under the raw node name)", len(list.Items))
+	}
+}
+
+func TestParseNodeHardwareReadsCapRange(t *testing.T) {
+	t.Parallel()
+	nh := parseNodeHardware(*nodeHardwareFromJSON(t, nodeHardware165W))
+
+	if !nh.CPUCapKnown || nh.CPUCapMaxWatts != 165 || nh.CPUCapMinWatts != 90 {
+		t.Fatalf("cpu cap known=%v max=%v min=%v want true/165/90", nh.CPUCapKnown, nh.CPUCapMaxWatts, nh.CPUCapMinWatts)
+	}
+	if !nh.GPUCapKnown || nh.GPUCapMaxWatts != 700 {
+		t.Fatalf("gpu cap known=%v max=%v want true/700", nh.GPUCapKnown, nh.GPUCapMaxWatts)
+	}
+}
+
+func joulieNodeTwinStatusForTest() joulie.NodeTwinStatus {
+	return joulie.NodeTwinStatus{
+		SchedulableClass:            "performance",
+		PredictedPowerHeadroomScore: 50,
+		LastUpdated:                 time.Now().UTC(),
+	}
+}
+
+func TestImplausibleNodePowerCatchesJoulesCounter(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name            string
+		measuredW, tdpW float64
+		want            bool
+	}{
+		{"joules counter read as watts", 6_540_020, 660, true},
+		{"normal load", 330, 660, false},
+		{"brief overshoot above TDP", 700, 660, false},
+		{"unknown TDP", 6_540_020, 0, false},
+		{"no reading", 0, 660, false},
+	}
+	for _, tc := range tests {
+		if got := implausibleNodePower(tc.measuredW, tc.tdpW); got != tc.want {
+			t.Fatalf("%s: implausibleNodePower(%v, %v)=%v want=%v", tc.name, tc.measuredW, tc.tdpW, got, tc.want)
+		}
+	}
 }

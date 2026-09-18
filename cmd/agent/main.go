@@ -696,11 +696,21 @@ func applyRAPLPackageCap(hw HardwareInfo, watts float64) (bool, int, error) {
 	uw := int64(watts * 1_000_000)
 	payload := []byte(strconv.FormatInt(uw, 10))
 	count := 0
+	var failures []string
 	for _, f := range files {
+		// Keep going after a failure: one unwritable socket must not leave the
+		// remaining sockets uncapped, which is what an early return did.
 		if err := os.WriteFile(f, payload, 0); err != nil {
-			return false, count, fmt.Errorf("write %s: %w", f, err)
+			failures = append(failures, fmt.Sprintf("%s: %v", f, err))
+			continue
 		}
 		count++
+	}
+	if count == 0 {
+		return false, 0, fmt.Errorf("write rapl cap: %s", strings.Join(failures, "; "))
+	}
+	if len(failures) > 0 {
+		log.Printf("warning: applied cap to %d/%d package zones: %s", count, len(files), strings.Join(failures, "; "))
 	}
 	return true, count, nil
 }
@@ -787,8 +797,16 @@ func applyCPUPercentIntent(
 }
 
 func readRAPLPackageCapRangeWatts() (maxW float64, minW float64, ok bool) {
-	maxPaths, _ := filepath.Glob("/host-sys/class/powercap/intel-rapl:*/constraint_0_max_power_uw")
-	minPaths, _ := filepath.Glob("/host-sys/class/powercap/intel-rapl:*/constraint_0_min_power_uw")
+	zones, err := dvfs.RAPLPackageZones()
+	if err != nil {
+		return 0, 0, false
+	}
+	maxPaths := make([]string, 0, len(zones))
+	minPaths := make([]string, 0, len(zones))
+	for _, z := range zones {
+		maxPaths = append(maxPaths, filepath.Join(z, "constraint_0_max_power_uw"))
+		minPaths = append(minPaths, filepath.Join(z, "constraint_0_min_power_uw"))
+	}
 	maxVals := []float64{}
 	minVals := []float64{}
 	for _, p := range maxPaths {
@@ -1283,6 +1301,12 @@ func discoverCPUSockets(nodeLabels map[string]string) int {
 		if v := hwinv.ParseIntString(nodeLabels[key]); v > 0 {
 			return v
 		}
+	}
+	// No label: count RAPL package zones, one per socket. NFD does not
+	// publish a socket count, so without this the twin computes a node TDP
+	// of maxWattsPerSocket x 0 and treats the node as having no power budget.
+	if zones, err := dvfs.RAPLPackageZones(); err == nil && len(zones) > 0 {
+		return len(zones)
 	}
 	return 0
 }
