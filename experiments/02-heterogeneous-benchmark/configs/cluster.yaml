@@ -1,7 +1,7 @@
 inventory:
   source: experiments/02-heterogeneous-benchmark/configs/cluster-nodes.yaml
-  generated_nodes: examples/07 - simulator-gpu-powercaps/manifests/00-kwok-nodes.yaml
-  generated_classes: examples/07 - simulator-gpu-powercaps/manifests/10-node-classes.yaml
+  generated_nodes: examples/07-simulator-gpu-powercaps/manifests/00-kwok-nodes.yaml
+  generated_classes: examples/07-simulator-gpu-powercaps/manifests/10-node-classes.yaml
   generated_catalog: simulator/catalog/hardware.generated.yaml
 policy:
   density_inputs: [cpu, gpu]
@@ -10,4 +10,4 @@ policy:
   gpu_write_absolute_caps: false
 smoke:
   cluster_name: joulie-heterogeneous-smoke
-  runner: examples/07 - simulator-gpu-powercaps/run-e2e.sh
+  runner: examples/07-simulator-gpu-powercaps/run-e2e.sh

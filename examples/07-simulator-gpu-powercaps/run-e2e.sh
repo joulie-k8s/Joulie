@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-EXAMPLE_DIR="$ROOT_DIR/examples/07 - simulator-gpu-powercaps"
-KIND_CLUSTER_CONFIG="${KIND_CLUSTER_CONFIG:-$ROOT_DIR/examples/07 - simulator-gpu-powercaps/manifests/01-kind-cluster.yaml}"
+EXAMPLE_DIR="$ROOT_DIR/examples/07-simulator-gpu-powercaps"
+KIND_CLUSTER_CONFIG="${KIND_CLUSTER_CONFIG:-$ROOT_DIR/examples/07-simulator-gpu-powercaps/manifests/01-kind-cluster.yaml}"
 
 CLUSTER_NAME="${CLUSTER_NAME:-joulie-gpu-e2e}"
 KCTX="kind-${CLUSTER_NAME}"

@@ -67,8 +67,8 @@ By default, this reads:
 
 and refreshes:
 
-- `examples/07 - simulator-gpu-powercaps/manifests/00-kwok-nodes.yaml`
-- `examples/07 - simulator-gpu-powercaps/manifests/10-node-classes.yaml`
+- `examples/07-simulator-gpu-powercaps/manifests/00-kwok-nodes.yaml`
+- `examples/07-simulator-gpu-powercaps/manifests/10-node-classes.yaml`
 - `simulator/catalog/hardware.generated.yaml`
 
 You can also pass a different YAML/CSV/XLSX inventory file as the first argument.

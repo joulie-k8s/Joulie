@@ -165,7 +165,7 @@ Detailed algorithm docs:
 - [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
 - [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})
 
-Related example: `examples/07 - simulator-gpu-powercaps/`
+Related example: `examples/07-simulator-gpu-powercaps/`
 
 ## Large virtual clusters with kind + KWOK
 

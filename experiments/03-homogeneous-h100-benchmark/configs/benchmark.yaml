@@ -27,7 +27,7 @@ workload:
 
 simulator:
   base_speed_per_core: 8.0
-  manifest: examples/07 - simulator-gpu-powercaps/manifests/20-simulator.yaml
+  manifest: examples/07-simulator-gpu-powercaps/manifests/20-simulator.yaml
   # Facility metric simulation: sinusoidal ambient temperature variation.
   facility_ambient_base_c: 22.0
   facility_ambient_amplitude_c: 8.0
