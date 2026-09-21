@@ -708,58 +708,30 @@ func parseTwinState(u unstructured.Unstructured) (string, *joulie.NodeTwinStatus
 		if v, ok := status["schedulableClass"].(string); ok {
 			ts.SchedulableClass = v
 		}
-		if v, ok := status["predictedPowerHeadroomScore"].(float64); ok {
-			ts.PredictedPowerHeadroomScore = v
+		// Numbers arrive as int64 when whole (a headroom of exactly 100, a
+		// 660 W budget) and float64 otherwise, so both shapes must be read.
+		ts.PredictedPowerHeadroomScore = floatFromMap(status, "predictedPowerHeadroomScore")
+		ts.PredictedCoolingStressScore = floatFromMap(status, "predictedCoolingStressScore")
+		ts.PredictedPsuStressScore = floatFromMap(status, "predictedPsuStressScore")
+		if capState, ok := status["effectiveCapState"].(map[string]interface{}); ok {
+			ts.EffectiveCapState.CPUPct = floatFromMap(capState, "cpuPct")
+			ts.EffectiveCapState.GPUPct = floatFromMap(capState, "gpuPct")
 		}
-		if v, ok := status["predictedCoolingStressScore"].(float64); ok {
-			ts.PredictedCoolingStressScore = v
-		}
-		if v, ok := status["predictedPsuStressScore"].(float64); ok {
-			ts.PredictedPsuStressScore = v
-		}
-		if cap, ok := status["effectiveCapState"].(map[string]interface{}); ok {
-			if v, ok := cap["cpuPct"].(float64); ok {
-				ts.EffectiveCapState.CPUPct = v
-			}
-			if v, ok := cap["gpuPct"].(float64); ok {
-				ts.EffectiveCapState.GPUPct = v
-			}
-		}
-		if v, ok := status["hardwareDensityScore"].(float64); ok {
-			ts.HardwareDensityScore = v
-		}
-		if v, ok := status["estimatedPUE"].(float64); ok {
-			ts.EstimatedPUE = v
-		}
+		ts.HardwareDensityScore = floatFromMap(status, "hardwareDensityScore")
+		ts.EstimatedPUE = floatFromMap(status, "estimatedPUE")
 		if pm, ok := status["powerMeasurement"].(map[string]interface{}); ok {
 			ts.PowerMeasurement = &joulie.PowerMeasurement{}
 			if v, ok := pm["source"].(string); ok {
 				ts.PowerMeasurement.Source = v
 			}
-			if v, ok := pm["measuredNodePowerW"].(float64); ok {
-				ts.PowerMeasurement.MeasuredNodePowerW = v
-			}
-			if v, ok := pm["cpuCappedPowerW"].(float64); ok {
-				ts.PowerMeasurement.CpuCappedPowerW = v
-			}
-			if v, ok := pm["gpuCappedPowerW"].(float64); ok {
-				ts.PowerMeasurement.GpuCappedPowerW = v
-			}
-			if v, ok := pm["nodeCappedPowerW"].(float64); ok {
-				ts.PowerMeasurement.NodeCappedPowerW = v
-			}
-			if v, ok := pm["cpuTdpW"].(float64); ok {
-				ts.PowerMeasurement.CpuTdpW = v
-			}
-			if v, ok := pm["gpuTdpW"].(float64); ok {
-				ts.PowerMeasurement.GpuTdpW = v
-			}
-			if v, ok := pm["nodeTdpW"].(float64); ok {
-				ts.PowerMeasurement.NodeTdpW = v
-			}
-			if v, ok := pm["powerTrendWPerMin"].(float64); ok {
-				ts.PowerMeasurement.PowerTrendWPerMin = v
-			}
+			ts.PowerMeasurement.MeasuredNodePowerW = floatFromMap(pm, "measuredNodePowerW")
+			ts.PowerMeasurement.CpuCappedPowerW = floatFromMap(pm, "cpuCappedPowerW")
+			ts.PowerMeasurement.GpuCappedPowerW = floatFromMap(pm, "gpuCappedPowerW")
+			ts.PowerMeasurement.NodeCappedPowerW = floatFromMap(pm, "nodeCappedPowerW")
+			ts.PowerMeasurement.CpuTdpW = floatFromMap(pm, "cpuTdpW")
+			ts.PowerMeasurement.GpuTdpW = floatFromMap(pm, "gpuTdpW")
+			ts.PowerMeasurement.NodeTdpW = floatFromMap(pm, "nodeTdpW")
+			ts.PowerMeasurement.PowerTrendWPerMin = floatFromMap(pm, "powerTrendWPerMin")
 		}
 		if v, ok := status["lastUpdated"].(string); ok {
 			if t, err := time.Parse(time.RFC3339, v); err == nil {
