@@ -38,7 +38,7 @@ Useful targets:
 - `make install TAG=<tag>`
 - `make build-push TAG=<tag>`
 - `make rollout TAG=<tag>`
-- `make build-push-all TAG=<tag>` (agent + operator + simulator)
+- `make build-push-all TAG=<tag>` (agent + controller manager + simulator)
 - `make test-examples` (YAML dry-run validation)
 
 ## Documentation changes

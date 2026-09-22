@@ -23,7 +23,7 @@
 //
 // Resilience: twin data older than TWIN_STALENESS_THRESHOLD (default 5m) is
 // treated as stale and the node receives a neutral score instead of potentially
-// misleading values from an operator that may have crashed.
+// misleading values from a controller manager that may have crashed.
 //
 // Scheduler extender protocol reference:
 //
@@ -891,7 +891,7 @@ func hwInfoFromObject(nh *v1alpha1.NodeHardware) (string, nodeHWInfo) {
 // isTwinStale returns true if the twin data is too old to trust for scheduling.
 func isTwinStale(ts *joulie.NodeTwinStatus) bool {
 	if ts.LastUpdated.IsZero() {
-		return true // no timestamp = operator hasn't populated status yet; treat as stale
+		return true // no timestamp = controller manager hasn't populated status yet; treat as stale
 	}
 	return time.Since(ts.LastUpdated) > twinStalenessThreshold
 }

@@ -2,19 +2,19 @@
 //
 // The digital twin is a lightweight O(1) parametric model that predicts the
 // impact of scheduling and power-cap decisions on:
-//   - Power headroom (available budget before the operator's power cap)
+//   - Power headroom (available budget before the controller manager's power cap)
 //   - Cooling stress (fraction of physical cooling capacity in use)
 //   - PSU stress (fraction of rack PDU capacity in use) [reserved for future use]
 //
-// Headroom is computed from measured node power (provided by the operator via
+// Headroom is computed from measured node power (provided by the controller manager via
 // a 3-tier fallback: Kepler direct measurement, utilization-based estimation,
 // or static marginal estimation) against the per-node capped power budget.
 //
-// Cooling stress is normalized against uncapped TDP (not the operator's cap)
+// Cooling stress is normalized against uncapped TDP (not the controller manager's cap)
 // because the cooling system is sized for the hardware, not the cap. An
 // ambient temperature multiplier penalizes hot environments.
 //
-// Runs every ~1 minute in the operator, writes NodeTwin CRs,
+// Runs every ~1 minute in the controller manager, writes NodeTwin CRs,
 // read by the scheduler extender for placement decisions.
 package twin
 
@@ -30,11 +30,11 @@ type Input struct {
 	NodeName  string
 	Hardware  joulie.NodeHardware
 	Profile   string  // "eco" or "performance"
-	CPUCapPct float64 // operator cap percentage for CPU (0 means 100)
-	GPUCapPct float64 // operator cap percentage for GPU (0 means 100)
+	CPUCapPct float64 // controller manager cap percentage for CPU (0 means 100)
+	GPUCapPct float64 // controller manager cap percentage for GPU (0 means 100)
 	Draining  bool
 
-	// Measured power from the operator (3-tier fallback: kepler, utilization, static).
+	// Measured power from the controller manager (3-tier fallback: kepler, utilization, static).
 	MeasuredNodePowerW float64
 	// Power trend in watts per minute (positive = rising, negative = falling).
 	PowerTrendWPerMin float64
@@ -229,7 +229,7 @@ func computePSUStress(in Input) float64 {
 	return math.Min(100, math.Max(0, stress))
 }
 
-// ComputeHardwareDensityScore is exported for use in tests and operator.
+// ComputeHardwareDensityScore is exported for use in tests and the controller manager.
 func ComputeHardwareDensityScore(hw joulie.NodeHardware) float64 {
 	cpuScore := float64(hw.CPU.TotalCores) / 192.0 * 100.0
 	gpuScore := float64(hw.GPU.Count) / 8.0 * 100.0

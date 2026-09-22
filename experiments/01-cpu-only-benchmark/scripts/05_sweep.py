@@ -633,13 +633,13 @@ def main():
             install_env["POLICY_TYPE"] = baseline_policy[baseline]
         else:
             install_env.pop("POLICY_TYPE", None)
-        # For queue-aware (baseline C), compute the operator reconcile interval
+        # For queue-aware (baseline C), compute the controller manager reconcile interval
         # from simulated seconds divided by time_scale.
         if baseline == "C":
             qa_sim_sec = float(get_cfg(cfg, "policy", "loop", "queue_aware_operator_reconcile_sim_seconds", default=300))
             qa_wall_sec = max(1, int(qa_sim_sec / time_scale))
             install_env["OPERATOR_RECONCILE_INTERVAL"] = f"{qa_wall_sec}s"
-            log(f"baseline C: queue-aware operator reconcile = {qa_sim_sec}s simulated / {time_scale} = {qa_wall_sec}s wall")
+            log(f"baseline C: queue-aware controller manager reconcile = {qa_sim_sec}s simulated / {time_scale} = {qa_wall_sec}s wall")
         run_with_env(
             [
                 "bash",

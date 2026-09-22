@@ -18,7 +18,7 @@ agent:
     TELEMETRY_GPU_CONTROL: http
     TELEMETRY_GPU_CONTROL_HTTP_ENDPOINT: "http://joulie-telemetry-sim.joulie-system.svc/control/{node}"
 
-operator:
+controllerManager:
   env:
     RECONCILE_INTERVAL: "3s"
     NODE_SELECTOR: "joulie.io/managed=true"

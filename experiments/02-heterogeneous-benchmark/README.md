@@ -13,7 +13,7 @@ The workflow:
 
 - agent publishes `NodeHardware`,
 - controller manager resolves discovered hardware against the shared inventory,
-- operator plans with CPU/GPU density awareness,
+- the controller manager plans with CPU/GPU density awareness,
 - simulator uses the same CPU/GPU inventory for node composition and fallback modeling.
 
 ## Files

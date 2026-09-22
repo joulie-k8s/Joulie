@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "Joulie cluster energy state overview — operator FSM, agent control signals, simulator telemetry",
+  "description": "Joulie cluster energy state overview: policy controller FSM, agent control signals, simulator telemetry",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -13,7 +13,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "id": 100,
-      "title": "Operator — FSM & Profile",
+      "title": "Policy controller: FSM and profile",
       "type": "row"
     },
     {
@@ -100,7 +100,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
       "id": 101,
-      "title": "Operator — Transitions & Density",
+      "title": "Policy controller: transitions and density",
       "type": "row"
     },
     {

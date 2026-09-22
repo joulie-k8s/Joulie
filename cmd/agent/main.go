@@ -1655,7 +1655,7 @@ func updateNodeTwinControlStatus(ctx context.Context, dyn dynamic.Interface, nod
 	}
 
 	// Use MergePatch on the status subresource to avoid overwriting fields
-	// written by the operator (e.g. schedulableClass, predicted scores).
+	// written by the controller manager (e.g. schedulableClass, predicted scores).
 	patch := map[string]interface{}{
 		"status": map[string]interface{}{
 			"controlStatus": map[string]interface{}{
@@ -1675,7 +1675,7 @@ func updateNodeTwinControlStatus(ctx context.Context, dyn dynamic.Interface, nod
 	_, err = res.Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{FieldManager: joulie.FieldManagerAgent}, "status")
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil // NodeTwin not yet created by operator
+			return nil // NodeTwin not yet created by the controller manager
 		}
 		// Fallback: patch without status subresource
 		_, err = res.Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{FieldManager: joulie.FieldManagerAgent})
@@ -1821,7 +1821,7 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 }
 
 // sanitizeNodeObjectName maps a node name to its NodeTwin/NodeHardware
-// object name. Shared with the operator through pkg/api so both sides agree.
+// object name. Shared with the controller manager through pkg/api so both sides agree.
 func sanitizeNodeObjectName(nodeName string) string {
 	return joulie.ObjectNameForNode(nodeName)
 }

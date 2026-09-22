@@ -115,7 +115,7 @@
           "refId": "C"
         }
       ],
-      "title": "FSM State by Node (Operator Metric)",
+      "title": "FSM State by Node (controller manager metric)",
       "type": "timeseries"
     },
     {

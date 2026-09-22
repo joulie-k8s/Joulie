@@ -9,7 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// The agent and operator write these objects as unstructured maps, so the
+// The agent and the controller manager write these objects as unstructured maps, so the
 // JSON names of the Go types are the contract with them. The round trip
 // through the unstructured converter checks that every field survives, and
 // the path checks pin the names the writers in cmd/ emit today.

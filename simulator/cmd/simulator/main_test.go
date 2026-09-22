@@ -1588,7 +1588,7 @@ func TestUpdateFacilityMetricsComputesITAndCoolingPower(t *testing.T) {
 }
 
 // parsePrometheusScalarResponse parses a Prometheus instant query JSON response
-// and returns the scalar value. Mirrors the format expected by the operator's
+// and returns the scalar value. Mirrors the format expected by the controller manager's
 // queryPrometheusScalar function.
 func parsePrometheusScalarResponse(t *testing.T, body []byte) float64 {
 	t.Helper()

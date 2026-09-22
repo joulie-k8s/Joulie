@@ -90,7 +90,7 @@ Current execution order in `integration_runner.py` is:
 
 ## Runtime notes
 
-- Profile transitions in tests are driven via operator env (`STATIC_HP_FRAC`) updates.
+- Profile transitions in tests are driven via controller manager env (`STATIC_HP_FRAC`) updates.
 - A rollout is triggered only when the requested value actually changes; no-op updates are skipped.
 - Classification matrix cases that rely on perf intent under eco use `spec.nodeName` when needed so classification can still be validated.
 - Non-GPU CI nodes are expected; GPU telemetry/control checks are validated in graceful-degradation mode when allocatable GPU resources are absent.

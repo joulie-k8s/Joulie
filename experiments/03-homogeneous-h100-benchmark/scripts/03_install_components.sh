@@ -59,7 +59,7 @@ kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_nodetwins.yaml"
 #    ignorable=false in the scheduler extender config)
 # ---------------------------------------------------------------------------
 if [[ "$BASELINE" == "A" ]]; then
-  echo "baseline A selected: simulator only (no operator/agent)"
+  echo "baseline A selected: simulator only (no controller manager/agent)"
   helm uninstall joulie -n joulie-system >/dev/null 2>&1 || true
 else
   # Baselines B and C both enable the scheduler extender for adaptive placement.
@@ -140,7 +140,7 @@ else
     "${SCHED_ARGS[@]}" \
     ${INFRA_SELECTOR_ARGS[@]+"${INFRA_SELECTOR_ARGS[@]}"}
 
-  # Extender must be ready first — operator/agent pods go through the extender filter.
+  # Extender must be ready first — controller manager/agent pods go through the extender filter.
   kubectl -n joulie-system rollout status deploy/joulie-scheduler-extender --timeout=120s
   kubectl -n joulie-system rollout status deploy/joulie-controller-manager
   kubectl -n joulie-system rollout status statefulset/joulie-agent-pool
