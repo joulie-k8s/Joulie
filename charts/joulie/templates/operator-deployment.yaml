@@ -27,6 +27,12 @@ spec:
               containerPort: {{ .Values.operator.service.port }}
               protocol: TCP
           env:
+            - name: LEADER_ELECT
+              value: {{ .Values.operator.leaderElection.enabled | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             {{- range $k, $v := .Values.operator.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}

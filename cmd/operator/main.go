@@ -7,33 +7,44 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/matbun/joulie/api/v1alpha1"
+	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/hwinv"
+	"github.com/matbun/joulie/pkg/kube"
 	"github.com/matbun/joulie/pkg/operator/fsm"
 	"github.com/matbun/joulie/pkg/operator/policy"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
 
-var nodeHardwareGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
-
 const (
-	powerProfileLabelKey  = "joulie.io/power-profile"
+	powerProfileLabelKey = "joulie.io/power-profile"
+
+	// leaderElectionID names the Lease the replicas compete for when
+	// LEADER_ELECT is set. It lives in the POD_NAMESPACE namespace.
+	leaderElectionID = "joulie-operator"
+
+	// reconcileTimeout bounds one cluster-wide reconcile.
+	reconcileTimeout = 20 * time.Second
 
 	profilePerformance    = "performance"
 	profileEco            = "eco"
@@ -47,16 +58,15 @@ const (
 type NodeAssignment = policy.NodeAssignment
 type GPUCapIntent = policy.GPUCapIntent
 
-// kubeNodeOps adapts kubernetes.Interface to the fsm.NodeOps interface.
-type kubeNodeOps struct {
-	kube kubernetes.Interface
+// cacheNodeOps adapts a kube.Reader to the fsm.NodeOps interface. The per-node
+// Pod list is answered by the spec.nodeName index instead of an API call.
+type cacheNodeOps struct {
+	reader kube.Reader
 }
 
-func (k *kubeNodeOps) RunningPerformanceSensitivePodCount(ctx context.Context, nodeName string) (int, error) {
-	pods, err := k.kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{
-		FieldSelector: "spec.nodeName=" + nodeName,
-	})
-	if err != nil {
+func (c *cacheNodeOps) RunningPerformanceSensitivePodCount(ctx context.Context, nodeName string) (int, error) {
+	var pods corev1.PodList
+	if err := c.reader.List(ctx, &pods, client.MatchingFields{podNodeNameField: nodeName}); err != nil {
 		return 0, err
 	}
 	return fsm.CountPerformanceSensitivePods(pods.Items), nil
@@ -168,7 +178,8 @@ func main() {
 	}
 	cfg.QPS = float32(floatEnv("KUBE_CLIENT_QPS", 50))
 	cfg.Burst = intEnv("KUBE_CLIENT_BURST", 100)
-	kube, err := kubernetes.NewForConfig(cfg)
+	// Writes keep the direct clients; reads go through the manager's cache.
+	kubeClient, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		log.Fatalf("kube client: %v", err)
 	}
@@ -177,6 +188,29 @@ func main() {
 		log.Fatalf("dynamic client: %v", err)
 	}
 	startMetricsServer(metricsAddr)
+
+	kube.UseStdLogger()
+	scheme, err := kube.NewScheme(v1alpha1.AddToScheme)
+	if err != nil {
+		log.Fatalf("scheme: %v", err)
+	}
+	mgr, err := kube.NewManager(cfg, kube.ManagerOptions{
+		Scheme:           scheme,
+		LeaderElect:      boolEnv("LEADER_ELECT", false),
+		LeaderElectionID: leaderElectionID,
+		LeaderElectionNS: envOrDefault("POD_NAMESPACE", "joulie-system"),
+		Cache:            operatorCacheOptions(),
+	})
+	if err != nil {
+		log.Fatalf("manager: %v", err)
+	}
+	reader := mgr.GetCache()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := mgr.GetCache().IndexField(ctx, &corev1.Pod{}, podNodeNameField, podNodeNameIndex); err != nil {
+		log.Fatalf("index pods by node: %v", err)
+	}
 
 	// --- Node power source (per-node telemetry) ---
 	nodePowerSource = strings.ToLower(envOrDefault("OPERATOR_NODE_POWER_SOURCE", "static"))
@@ -202,23 +236,49 @@ func main() {
 		itPowerMetric:      envOrDefault("FACILITY_IT_POWER_METRIC", "datacenter_total_it_power_watts"),
 		coolingPowerMetric: envOrDefault("FACILITY_COOLING_POWER_METRIC", "datacenter_cooling_power_watts"),
 	}
-	bgCtx, bgCancel := context.WithCancel(context.Background())
-	defer bgCancel()
-	go facilityMetricsLoop(bgCtx, fm, facCfg)
+	// Both loops are manager runnables: they start once the cache has synced
+	// and, with LEADER_ELECT, only on the leader.
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		facilityMetricsLoop(ctx, fm, facCfg)
+		return nil
+	})); err != nil {
+		log.Fatalf("add facility loop: %v", err)
+	}
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		reconcileLoop(ctx, reconcileEvery, func(ctx context.Context) error {
+			return reconcileWithCatalogAndFacility(
+				ctx, reader, kubeClient, dyn, parsedSelector, reservedLabel, profileLabel, reconcileEvery,
+				perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
+				cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
+				gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, hardwareCatalog,
+				fm,
+			)
+		})
+		return nil
+	})); err != nil {
+		log.Fatalf("add reconcile loop: %v", err)
+	}
+	if err := mgr.Start(ctx); err != nil {
+		log.Fatalf("manager: %v", err)
+	}
+}
 
+// reconcileLoop runs one reconcile, waits interval, and repeats until ctx is
+// done (shutdown or lost leadership). Each run gets its own timeout.
+func reconcileLoop(ctx context.Context, interval time.Duration, run func(context.Context) error) {
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		if err := reconcileWithCatalogAndFacility(
-			ctx, kube, dyn, parsedSelector, reservedLabel, profileLabel, reconcileEvery,
-			perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
-			cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
-			gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, hardwareCatalog,
-			fm,
-		); err != nil {
+		rctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
+		if err := run(rctx); err != nil {
 			log.Printf("reconcile failed: %v", err)
 		}
 		cancel()
-		time.Sleep(reconcileEvery)
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 	}
 }
 
@@ -236,7 +296,8 @@ func startMetricsServer(addr string) {
 
 func reconcile(
 	ctx context.Context,
-	kube kubernetes.Interface,
+	reader kube.Reader,
+	kubeClient kubernetes.Interface,
 	dyn dynamic.Interface,
 	selector labels.Selector,
 	reservedLabel string,
@@ -260,16 +321,19 @@ func reconcile(
 	gpuProductLabelKeys []string,
 ) error {
 	return reconcileWithCatalog(
-		ctx, kube, dyn, selector, reservedLabel, profileLabel, interval,
+		ctx, reader, kubeClient, dyn, selector, reservedLabel, profileLabel, interval,
 		perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
 		cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
 		gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, loadHardwareCatalog(),
 	)
 }
 
+// reconcileWithCatalog plans the whole cluster once. Every read (nodes, pods,
+// NodeHardware) comes from reader; kubeClient and dyn are only written to.
 func reconcileWithCatalog(
 	ctx context.Context,
-	kube kubernetes.Interface,
+	reader kube.Reader,
+	kubeClient kubernetes.Interface,
 	dyn dynamic.Interface,
 	selector labels.Selector,
 	reservedLabel string,
@@ -293,8 +357,8 @@ func reconcileWithCatalog(
 	gpuProductLabelKeys []string,
 	hardwareCatalog *hwinv.Catalog,
 ) error {
-	nodes, err := kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
+	var nodes corev1.NodeList
+	if err := reader.List(ctx, &nodes); err != nil {
 		return fmt.Errorf("list nodes: %w", err)
 	}
 
@@ -322,7 +386,7 @@ func reconcileWithCatalog(
 		return nil
 	}
 
-	nodeHardwareByName, err := listNodeHardware(ctx, dyn, hardwareCatalog)
+	nodeHardwareByName, err := listNodeHardware(ctx, reader, hardwareCatalog)
 	if err != nil {
 		return fmt.Errorf("list node hardware: %w", err)
 	}
@@ -346,7 +410,7 @@ func reconcileWithCatalog(
 		operatorNodeDensity.WithLabelValues(nodeName, "gpu").Set(nh.GPUComputeDensity)
 	}
 
-	plan := buildPlanByPolicy(ctx, kube, policyType, eligible, nodeHardwareByName, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
+	plan := buildPlanByPolicy(ctx, reader, policyType, eligible, nodeHardwareByName, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
 	for i := range plan {
 		plan[i].SourceProfile = currentProfileOrDefault(nodesByName[plan[i].NodeName])
 		plan[i].Draining = false
@@ -387,7 +451,7 @@ func reconcileWithCatalog(
 			}
 		}
 	}
-	applyDowngradeGuards(ctx, kube, plan, nodesByName)
+	applyDowngradeGuards(ctx, reader, plan, nodesByName)
 
 	// Build per-rack estimated power for topology-aware PSU stress.
 	// Sum each node's estimated power (CPU + GPU at current cap %) per rack.
@@ -419,7 +483,7 @@ func reconcileWithCatalog(
 		if err := upsertNodeTwinSpec(ctx, dyn, a); err != nil {
 			return err
 		}
-		if err := upsertNodeLabels(ctx, kube, profileLabel, a); err != nil {
+		if err := upsertNodeLabels(ctx, kubeClient, profileLabel, a); err != nil {
 			return err
 		}
 		cpuPct := 100.0
@@ -440,7 +504,7 @@ func reconcileWithCatalog(
 				rackTotalPowerW: rackPowerEstimates[rack],
 			}
 		}
-		if err := reconcileNodeTwin(ctx, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo); err != nil {
+		if err := reconcileNodeTwin(ctx, reader, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo); err != nil {
 			log.Printf("warning: reconcileNodeTwin %s: %v", a.NodeName, err)
 		}
 		recordNodeStateMetrics(a.NodeName, a.State)
@@ -457,7 +521,8 @@ func reconcileWithCatalog(
 // real data-center metrics (ambient temperature, IT power, cooling power).
 func reconcileWithCatalogAndFacility(
 	ctx context.Context,
-	kube kubernetes.Interface,
+	reader kube.Reader,
+	kubeClient kubernetes.Interface,
 	dyn dynamic.Interface,
 	selector labels.Selector,
 	reservedLabel string,
@@ -489,7 +554,7 @@ func reconcileWithCatalogAndFacility(
 		facilityClusterPowerW = itPowerW
 	}
 	return reconcileWithCatalog(
-		ctx, kube, dyn, selector, reservedLabel, profileLabel, interval,
+		ctx, reader, kubeClient, dyn, selector, reservedLabel, profileLabel, interval,
 		perfCap, ecoCap, policyType, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode,
 		cpuPerfCapPct, cpuEcoCapPct, cpuWriteAbsolute,
 		gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, hardwareCatalog,
@@ -554,11 +619,11 @@ func recordTransitionMetrics(a NodeAssignment) {
 
 func applyDowngradeGuards(
 	ctx context.Context,
-	kube kubernetes.Interface,
+	reader kube.Reader,
 	plan []NodeAssignment,
 	currentProfiles map[string]string,
 ) {
-	ops := &kubeNodeOps{kube: kube}
+	ops := &cacheNodeOps{reader: reader}
 	fsm.ApplyDowngradeGuards(ctx, ops, plan, currentProfiles)
 	// Record metrics for guarded transitions.
 	for _, a := range plan {
@@ -589,7 +654,7 @@ func toHardwareInfoMap(hw map[string]NodeHardware) map[string]policy.NodeHardwar
 
 func buildPlanByPolicy(
 	ctx context.Context,
-	kube kubernetes.Interface,
+	reader kube.Reader,
 	policyType string,
 	nodes []string,
 	nodeHardwareByName map[string]NodeHardware,
@@ -602,7 +667,7 @@ func buildPlanByPolicy(
 	case "static_partition", "":
 		return policy.BuildStaticPlan(nodes, hw, perfCap, ecoCap, staticHPFrac)
 	case "queue_aware_v1":
-		perfIntentPods, err := runningPerformanceSensitivePodCountAllNodes(ctx, kube)
+		perfIntentPods, err := runningPerformanceSensitivePodCountAllNodes(ctx, reader)
 		if err != nil {
 			log.Printf("warning: cannot classify running pods for queue_aware_v1: %v; falling back to static fraction", err)
 			return policy.BuildStaticPlan(nodes, hw, perfCap, ecoCap, queueHPBaseFrac)
@@ -618,10 +683,10 @@ func buildPlanByPolicy(
 
 func runningPerformanceSensitivePodCountAllNodes(
 	ctx context.Context,
-	kube kubernetes.Interface,
+	reader kube.Reader,
 ) (int, error) {
-	pods, err := kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
-	if err != nil {
+	var pods corev1.PodList
+	if err := reader.List(ctx, &pods); err != nil {
 		return 0, err
 	}
 	return fsm.CountPerformanceSensitivePods(pods.Items), nil
@@ -637,10 +702,10 @@ var (
 
 func runningPerformanceSensitivePodCountOnNode(
 	ctx context.Context,
-	kube kubernetes.Interface,
+	reader kube.Reader,
 	nodeName string,
 ) (int, error) {
-	ops := &kubeNodeOps{kube: kube}
+	ops := &cacheNodeOps{reader: reader}
 	return ops.RunningPerformanceSensitivePodCount(ctx, nodeName)
 }
 
@@ -888,24 +953,18 @@ func loadHardwareCatalog() *hwinv.Catalog {
 	return cat
 }
 
-func listNodeHardware(ctx context.Context, dyn dynamic.Interface, catalog *hwinv.Catalog) (out map[string]NodeHardware, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("warning: nodehardware resource unavailable in dynamic client: %v", r)
-			out = map[string]NodeHardware{}
-			err = nil
-		}
-	}()
-	ul, err := dyn.Resource(nodeHardwareGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
+func listNodeHardware(ctx context.Context, reader kube.Reader, catalog *hwinv.Catalog) (map[string]NodeHardware, error) {
+	var list v1alpha1.NodeHardwareList
+	if err := reader.List(ctx, &list); err != nil {
+		// Without the CRD the plan falls back to node labels.
+		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
 			return map[string]NodeHardware{}, nil
 		}
 		return nil, err
 	}
-	out = make(map[string]NodeHardware, len(ul.Items))
-	for _, item := range ul.Items {
-		nh := parseNodeHardware(item)
+	out := make(map[string]NodeHardware, len(list.Items))
+	for i := range list.Items {
+		nh := parseNodeHardware(&list.Items[i])
 		if catalog != nil {
 			match := catalog.MatchNode(hwinv.NodeDescriptor{
 				CPUModelRaw: nh.CPURawModel,
@@ -929,78 +988,37 @@ func listNodeHardware(ctx context.Context, dyn dynamic.Interface, catalog *hwinv
 	return out, nil
 }
 
-// nestedNumber reads a numeric field that the API server may hand back as
-// either int64 (whole numbers) or float64 (fractional ones).
-func nestedNumber(obj map[string]any, fields ...string) (float64, bool) {
-	v, found, err := unstructured.NestedFieldNoCopy(obj, fields...)
-	if !found || err != nil {
-		return 0, false
+// parseNodeHardware copies the policy inputs out of a NodeHardware object.
+// The agent publishes the cap ranges under capRange and capRangePerGpu
+// (cmd/agent/main.go); a range that is present counts as known even when the
+// callers still guard on max > 0.
+func parseNodeHardware(obj *v1alpha1.NodeHardware) NodeHardware {
+	nh := NodeHardware{Name: obj.Name, NodeName: obj.Spec.NodeName}
+	if cpu := obj.Status.CPU; cpu != nil {
+		nh.CPUModel = cpu.Model
+		nh.CPURawModel = cpu.RawModel
+		nh.CPUSockets = cpu.Sockets
+		nh.CPUTotalCores = cpu.TotalCores
+		if cr := cpu.CapRange; cr != nil {
+			nh.CPUCapMinWatts = cr.MinWattsPerSocket
+			nh.CPUCapMaxWatts = cr.MaxWattsPerSocket
+			nh.CPUCapKnown = true
+		}
+		nh.CPUControlAvailable = cpu.ControlAvailable
 	}
-	switch n := v.(type) {
-	case float64:
-		return n, true
-	case int64:
-		return float64(n), true
-	case int:
-		return float64(n), true
+	if gpu := obj.Status.GPU; gpu != nil {
+		nh.GPUModel = gpu.Model
+		nh.GPURawModel = gpu.RawModel
+		nh.GPUCount = gpu.Count
+		if cr := gpu.CapRangePerGPU; cr != nil {
+			nh.GPUCapMinWatts = cr.MinWatts
+			nh.GPUCapMaxWatts = cr.MaxWatts
+			nh.GPUCapKnown = true
+		}
+		nh.GPUControlAvailable = gpu.ControlAvailable
 	}
-	return 0, false
-}
-
-func parseNodeHardware(u unstructured.Unstructured) NodeHardware {
-	nh := NodeHardware{Name: u.GetName()}
-	nh.NodeName, _, _ = unstructured.NestedString(u.Object, "spec", "nodeName")
-	nh.CPUModel, _, _ = unstructured.NestedString(u.Object, "status", "cpu", "model")
-	nh.CPURawModel, _, _ = unstructured.NestedString(u.Object, "status", "cpu", "rawModel")
-	if v, ok, _ := unstructured.NestedInt64(u.Object, "status", "cpu", "sockets"); ok {
-		nh.CPUSockets = int(v)
-	}
-	if v, ok, _ := unstructured.NestedInt64(u.Object, "status", "cpu", "totalCores"); ok {
-		nh.CPUTotalCores = int(v)
-	}
-	// The agent publishes the range under capRange (cmd/agent/main.go), so read
-	// that shape; capMinWatts/capMaxWatts are accepted for older agents.
-	if v, ok := nestedNumber(u.Object, "status", "cpu", "capRange", "minWattsPerSocket"); ok {
-		nh.CPUCapMinWatts = v
-		nh.CPUCapKnown = true
-	} else if v, ok := nestedNumber(u.Object, "status", "cpu", "capMinWatts"); ok {
-		nh.CPUCapMinWatts = v
-		nh.CPUCapKnown = true
-	}
-	if v, ok := nestedNumber(u.Object, "status", "cpu", "capRange", "maxWattsPerSocket"); ok {
-		nh.CPUCapMaxWatts = v
-		nh.CPUCapKnown = true
-	} else if v, ok := nestedNumber(u.Object, "status", "cpu", "capMaxWatts"); ok {
-		nh.CPUCapMaxWatts = v
-		nh.CPUCapKnown = true
-	}
-	if v, ok, _ := unstructured.NestedBool(u.Object, "status", "cpu", "controlAvailable"); ok {
-		nh.CPUControlAvailable = v
-	}
-	nh.GPUModel, _, _ = unstructured.NestedString(u.Object, "status", "gpu", "model")
-	nh.GPURawModel, _, _ = unstructured.NestedString(u.Object, "status", "gpu", "rawModel")
-	if v, ok, _ := unstructured.NestedInt64(u.Object, "status", "gpu", "count"); ok {
-		nh.GPUCount = int(v)
-	}
-	if v, ok := nestedNumber(u.Object, "status", "gpu", "capRangePerGpu", "minWatts"); ok {
-		nh.GPUCapMinWatts = v
-		nh.GPUCapKnown = true
-	} else if v, ok := nestedNumber(u.Object, "status", "gpu", "capMinWatts"); ok {
-		nh.GPUCapMinWatts = v
-		nh.GPUCapKnown = true
-	}
-	if v, ok := nestedNumber(u.Object, "status", "gpu", "capRangePerGpu", "maxWatts"); ok {
-		nh.GPUCapMaxWatts = v
-		nh.GPUCapKnown = true
-	} else if v, ok := nestedNumber(u.Object, "status", "gpu", "capMaxWatts"); ok {
-		nh.GPUCapMaxWatts = v
-		nh.GPUCapKnown = true
-	}
-	if v, ok, _ := unstructured.NestedBool(u.Object, "status", "gpu", "controlAvailable"); ok {
-		nh.GPUControlAvailable = v
-	}
-	if warnings, ok, _ := unstructured.NestedStringSlice(u.Object, "status", "quality", "warnings"); ok {
-		nh.Warnings = append(nh.Warnings, warnings...)
+	if q := obj.Status.Quality; q != nil {
+		nh.Warnings = append(nh.Warnings, q.Warnings...)
 	}
 	return nh
 }
@@ -1119,9 +1137,11 @@ func warnNoGPUIntentOnce(nodeName, profile, reason string) {
 
 // upsertNodeProfile is replaced by upsertNodeTwinSpec in twinstate.go
 
-func upsertNodeLabels(ctx context.Context, kube kubernetes.Interface, profileLabel string, a NodeAssignment) error {
+// upsertNodeLabels reads the node from the API, not the cache: the patch must
+// follow a fresh resourceVersion.
+func upsertNodeLabels(ctx context.Context, kubeClient kubernetes.Interface, profileLabel string, a NodeAssignment) error {
 	labelValue := a.Profile
-	node, err := kube.CoreV1().Nodes().Get(ctx, a.NodeName, metav1.GetOptions{})
+	node, err := kubeClient.CoreV1().Nodes().Get(ctx, a.NodeName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("get node %s before patch: %w", a.NodeName, err)
 	}
@@ -1140,23 +1160,16 @@ func upsertNodeLabels(ctx context.Context, kube kubernetes.Interface, profileLab
 	if err != nil {
 		return fmt.Errorf("marshal node label patch for %s: %w", a.NodeName, err)
 	}
-	if _, err := kube.CoreV1().Nodes().Patch(ctx, a.NodeName, types.MergePatchType, rawPatch, metav1.PatchOptions{}); err != nil {
+	if _, err := kubeClient.CoreV1().Nodes().Patch(ctx, a.NodeName, types.MergePatchType, rawPatch, metav1.PatchOptions{FieldManager: joulie.FieldManagerOperator}); err != nil {
 		return fmt.Errorf("patch node %s label %s=%s: %w", a.NodeName, profileLabel, labelValue, err)
 	}
 	return nil
 }
 
+// sanitizeName maps a node name to its NodeTwin/NodeHardware object name.
+// Shared with the agent through pkg/api so both sides agree.
 func sanitizeName(in string) string {
-	in = strings.ToLower(in)
-	var b strings.Builder
-	for _, r := range in {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
-			b.WriteRune(r)
-			continue
-		}
-		b.WriteRune('-')
-	}
-	return strings.Trim(b.String(), "-")
+	return joulie.ObjectNameForNode(in)
 }
 
 func durationEnv(key string, def time.Duration) time.Duration {

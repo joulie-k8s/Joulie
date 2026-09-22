@@ -45,20 +45,21 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/kube"
 	"github.com/matbun/joulie/pkg/scheduler/powerest"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 )
 
 var (
-	nodeTwinGVR     = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
-	nodeHardwareGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
-
+	// The scoring code reads NodeTwin and NodeHardware through the maps below,
+	// which are rebuilt from the informer cache (reader) at most once per
+	// CACHE_TTL. Reads never reach the API server: the informer keeps the
+	// objects current, and CACHE_TTL only bounds how often the derived maps
+	// are recomputed from it.
 	twinStateCache    map[string]*joulie.NodeTwinStatus
 	twinStateMu       sync.RWMutex
 	twinStateCacheTTL = envDurationOrDefault("CACHE_TTL", 30*time.Second)
@@ -212,9 +213,9 @@ type OwnerRef struct {
 }
 
 type PodBody struct {
-	NodeSelector map[string]string  `json:"nodeSelector,omitempty"`
-	Affinity     *AffinitySpec      `json:"affinity,omitempty"`
-	Containers   []ContainerSpec    `json:"containers,omitempty"`
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	Affinity     *AffinitySpec     `json:"affinity,omitempty"`
+	Containers   []ContainerSpec   `json:"containers,omitempty"`
 }
 
 type AffinitySpec struct {
@@ -249,7 +250,53 @@ type ResourceSpec struct {
 	Limits   map[string]interface{} `json:"limits,omitempty"`
 }
 
-var dynClient dynamic.Interface
+// reader serves NodeTwin and NodeHardware lists from the informer cache. It
+// is nil until the cache has synced, or for good when the process runs
+// without Kubernetes; in both cases the twin and hardware maps stay empty and
+// every node gets a neutral score. Guarded by readerMu because the cache is
+// started in the background so the extender can serve requests immediately.
+var (
+	reader   kube.Reader
+	readerMu sync.RWMutex
+)
+
+func currentReader() kube.Reader {
+	readerMu.RLock()
+	defer readerMu.RUnlock()
+	return reader
+}
+
+func setReader(r kube.Reader) {
+	readerMu.Lock()
+	defer readerMu.Unlock()
+	reader = r
+}
+
+// informerRetryInterval is how long to wait between attempts to build the
+// cache, for example while the CRDs are not installed yet.
+const informerRetryInterval = 10 * time.Second
+
+// startReaderInBackground keeps trying to build the informer cache and
+// installs it once it has synced. Until then requests see no twin data,
+// which is the same as the old per-request list failing.
+func startReaderInBackground(ctx context.Context, cfg *rest.Config) {
+	go func() {
+		for {
+			c, err := newInformerCache(ctx, cfg)
+			if err == nil {
+				setReader(c)
+				log.Printf("informer cache synced; serving NodeTwin and NodeHardware from cache")
+				return
+			}
+			log.Printf("warning: informer cache not available yet: %v (retrying in %s)", err, informerRetryInterval)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(informerRetryInterval):
+			}
+		}
+	}()
+}
 
 func envDurationOrDefault(key string, def time.Duration) time.Duration {
 	v := os.Getenv(key)
@@ -270,14 +317,12 @@ func main() {
 		addr = ":9876"
 	}
 
+	kube.UseStdLogger()
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		log.Printf("Warning: in-cluster config failed: %v. Running without Kubernetes.", err)
 	} else {
-		dynClient, err = dynamic.NewForConfig(cfg)
-		if err != nil {
-			log.Fatalf("failed to create dynamic client: %v", err)
-		}
+		startReaderInBackground(context.Background(), cfg)
 	}
 
 	log.Printf("coefficients: cpuUtil=%.2f gpuUtilStd=%.2f gpuUtilPerf=%.2f",
@@ -317,6 +362,30 @@ func main() {
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("extender server failed: %v", err)
 	}
+}
+
+// newInformerCache starts an informer-backed cache watching NodeTwin and
+// NodeHardware and returns once both informers have synced. The informers are
+// registered before Start so that the first request never waits on a sync.
+func newInformerCache(ctx context.Context, cfg *rest.Config) (cache.Cache, error) {
+	s, err := kube.NewScheme(v1alpha1.AddToScheme)
+	if err != nil {
+		return nil, fmt.Errorf("scheme: %w", err)
+	}
+	c, err := kube.NewCache(cfg, cache.Options{Scheme: s})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := c.GetInformer(ctx, &v1alpha1.NodeTwin{}); err != nil {
+		return nil, fmt.Errorf("NodeTwin informer: %w", err)
+	}
+	if _, err := c.GetInformer(ctx, &v1alpha1.NodeHardware{}); err != nil {
+		return nil, fmt.Errorf("NodeHardware informer: %w", err)
+	}
+	if err := kube.Start(ctx, c); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -651,7 +720,8 @@ func hwInfoToProfile(nodeName string, hw nodeHWInfo) powerest.NodePowerProfile {
 
 // --- NodeTwin cache ---
 
-// getNodeTwinStates retrieves NodeTwin status objects, using a short-lived cache.
+// getNodeTwinStates returns the twin status per node, rebuilt from the
+// informer cache at most once per CACHE_TTL.
 func getNodeTwinStates(ctx context.Context) map[string]*joulie.NodeTwinStatus {
 	twinStateMu.RLock()
 	if time.Since(lastCacheRefresh) < twinStateCacheTTL && twinStateCache != nil {
@@ -668,12 +738,13 @@ func getNodeTwinStates(ctx context.Context) map[string]*joulie.NodeTwinStatus {
 		return twinStateCache
 	}
 
-	if dynClient == nil {
+	r := currentReader()
+	if r == nil {
 		return make(map[string]*joulie.NodeTwinStatus)
 	}
 
-	list, err := dynClient.Resource(nodeTwinGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
+	var list v1alpha1.NodeTwinList
+	if err := r.List(ctx, &list); err != nil {
 		if !apierrors.IsNotFound(err) {
 			log.Printf("failed to list NodeTwin: %v", err)
 		}
@@ -681,8 +752,8 @@ func getNodeTwinStates(ctx context.Context) map[string]*joulie.NodeTwinStatus {
 	}
 
 	states := make(map[string]*joulie.NodeTwinStatus, len(list.Items))
-	for _, item := range list.Items {
-		nodeName, ts := parseTwinState(item)
+	for i := range list.Items {
+		nodeName, ts := twinStatusFromObject(&list.Items[i])
 		if nodeName != "" {
 			states[nodeName] = ts
 		}
@@ -692,59 +763,50 @@ func getNodeTwinStates(ctx context.Context) map[string]*joulie.NodeTwinStatus {
 	return states
 }
 
-// parseTwinState returns (nodeName, status) from a NodeTwin unstructured object.
-func parseTwinState(u unstructured.Unstructured) (string, *joulie.NodeTwinStatus) {
-	spec, _, _ := unstructured.NestedMap(u.Object, "spec")
-	status, _, _ := unstructured.NestedMap(u.Object, "status")
-
-	var nodeName string
-	if spec != nil {
-		if v, ok := spec["nodeName"].(string); ok {
-			nodeName = v
+// twinStatusFromObject copies the fields the scoring code reads from a typed
+// NodeTwin into the in-memory status, keyed by spec.nodeName. The typed
+// decode already turned every JSON number into float64, so whole and
+// fractional values are handled alike.
+func twinStatusFromObject(nt *v1alpha1.NodeTwin) (string, *joulie.NodeTwinStatus) {
+	st := nt.Status
+	ts := &joulie.NodeTwinStatus{
+		SchedulableClass:            st.SchedulableClass,
+		PredictedPowerHeadroomScore: st.PredictedPowerHeadroomScore,
+		PredictedCoolingStressScore: st.PredictedCoolingStressScore,
+		PredictedPsuStressScore:     st.PredictedPsuStressScore,
+		HardwareDensityScore:        st.HardwareDensityScore,
+		EstimatedPUE:                st.EstimatedPUE,
+	}
+	if cs := st.EffectiveCapState; cs != nil {
+		ts.EffectiveCapState = joulie.CapState{CPUPct: cs.CPUPct, GPUPct: cs.GPUPct}
+	}
+	if pm := st.PowerMeasurement; pm != nil {
+		ts.PowerMeasurement = &joulie.PowerMeasurement{
+			Source:             pm.Source,
+			MeasuredNodePowerW: pm.MeasuredNodePowerW,
+			CpuCappedPowerW:    pm.CPUCappedPowerW,
+			GpuCappedPowerW:    pm.GPUCappedPowerW,
+			NodeCappedPowerW:   pm.NodeCappedPowerW,
+			CpuTdpW:            pm.CPUTdpW,
+			GpuTdpW:            pm.GPUTdpW,
+			NodeTdpW:           pm.NodeTdpW,
+			PowerTrendWPerMin:  pm.PowerTrendWPerMin,
 		}
 	}
-	ts := &joulie.NodeTwinStatus{}
-	if status != nil {
-		if v, ok := status["schedulableClass"].(string); ok {
-			ts.SchedulableClass = v
-		}
-		// Numbers arrive as int64 when whole (a headroom of exactly 100, a
-		// 660 W budget) and float64 otherwise, so both shapes must be read.
-		ts.PredictedPowerHeadroomScore = floatFromMap(status, "predictedPowerHeadroomScore")
-		ts.PredictedCoolingStressScore = floatFromMap(status, "predictedCoolingStressScore")
-		ts.PredictedPsuStressScore = floatFromMap(status, "predictedPsuStressScore")
-		if capState, ok := status["effectiveCapState"].(map[string]interface{}); ok {
-			ts.EffectiveCapState.CPUPct = floatFromMap(capState, "cpuPct")
-			ts.EffectiveCapState.GPUPct = floatFromMap(capState, "gpuPct")
-		}
-		ts.HardwareDensityScore = floatFromMap(status, "hardwareDensityScore")
-		ts.EstimatedPUE = floatFromMap(status, "estimatedPUE")
-		if pm, ok := status["powerMeasurement"].(map[string]interface{}); ok {
-			ts.PowerMeasurement = &joulie.PowerMeasurement{}
-			if v, ok := pm["source"].(string); ok {
-				ts.PowerMeasurement.Source = v
-			}
-			ts.PowerMeasurement.MeasuredNodePowerW = floatFromMap(pm, "measuredNodePowerW")
-			ts.PowerMeasurement.CpuCappedPowerW = floatFromMap(pm, "cpuCappedPowerW")
-			ts.PowerMeasurement.GpuCappedPowerW = floatFromMap(pm, "gpuCappedPowerW")
-			ts.PowerMeasurement.NodeCappedPowerW = floatFromMap(pm, "nodeCappedPowerW")
-			ts.PowerMeasurement.CpuTdpW = floatFromMap(pm, "cpuTdpW")
-			ts.PowerMeasurement.GpuTdpW = floatFromMap(pm, "gpuTdpW")
-			ts.PowerMeasurement.NodeTdpW = floatFromMap(pm, "nodeTdpW")
-			ts.PowerMeasurement.PowerTrendWPerMin = floatFromMap(pm, "powerTrendWPerMin")
-		}
-		if v, ok := status["lastUpdated"].(string); ok {
-			if t, err := time.Parse(time.RFC3339, v); err == nil {
-				ts.LastUpdated = t
-			}
+	// lastUpdated is an RFC3339 string on the CRD; an unparsable value leaves
+	// the zero time, which isTwinStale treats as stale.
+	if st.LastUpdated != "" {
+		if t, err := time.Parse(time.RFC3339, st.LastUpdated); err == nil {
+			ts.LastUpdated = t
 		}
 	}
-	return nodeName, ts
+	return nt.Spec.NodeName, ts
 }
 
 // --- NodeHardware cache ---
 
-// getNodeHardwareInfo retrieves NodeHardware objects, using a short-lived cache.
+// getNodeHardwareInfo returns the hardware facts per node, rebuilt from the
+// informer cache at most once per CACHE_TTL.
 func getNodeHardwareInfo(ctx context.Context) map[string]nodeHWInfo {
 	nodeHWMu.RLock()
 	if time.Since(lastNodeHWRefresh) < twinStateCacheTTL && nodeHWCache != nil {
@@ -760,12 +822,13 @@ func getNodeHardwareInfo(ctx context.Context) map[string]nodeHWInfo {
 		return nodeHWCache
 	}
 
-	if dynClient == nil {
+	r := currentReader()
+	if r == nil {
 		return make(map[string]nodeHWInfo)
 	}
 
-	list, err := dynClient.Resource(nodeHardwareGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
+	var list v1alpha1.NodeHardwareList
+	if err := r.List(ctx, &list); err != nil {
 		if !apierrors.IsNotFound(err) {
 			log.Printf("failed to list NodeHardware: %v", err)
 		}
@@ -773,8 +836,8 @@ func getNodeHardwareInfo(ctx context.Context) map[string]nodeHWInfo {
 	}
 
 	hw := make(map[string]nodeHWInfo, len(list.Items))
-	for _, item := range list.Items {
-		nodeName, info := parseNodeHardware(item)
+	for i := range list.Items {
+		nodeName, info := hwInfoFromObject(&list.Items[i])
 		if nodeName != "" {
 			hw[nodeName] = info
 		}
@@ -784,90 +847,45 @@ func getNodeHardwareInfo(ctx context.Context) map[string]nodeHWInfo {
 	return hw
 }
 
-// parseNodeHardware extracts hardware info from a NodeHardware unstructured object.
-// The CRD stores hardware data in status (written by the agent as a subresource),
-// while spec only contains nodeName.
-func parseNodeHardware(u unstructured.Unstructured) (string, nodeHWInfo) {
-	spec, _, _ := unstructured.NestedMap(u.Object, "spec")
-	status, _, _ := unstructured.NestedMap(u.Object, "status")
+// hwInfoFromObject extracts the hardware facts used for marginal power
+// estimation from a typed NodeHardware, keyed by spec.nodeName. The CRD
+// stores the inventory in status (written by the agent as a subresource);
+// spec only names the node.
+func hwInfoFromObject(nh *v1alpha1.NodeHardware) (string, nodeHWInfo) {
 	var info nodeHWInfo
+	st := nh.Status
 
-	var nodeName string
-	if spec != nil {
-		if v, ok := spec["nodeName"].(string); ok {
-			nodeName = v
-		}
-	}
-
-	if status == nil {
-		return nodeName, info
-	}
-
-	// CPU info from status.cpu
-	if cpu, ok := status["cpu"].(map[string]interface{}); ok {
-		info.CPUTotalCores = intFromMap(cpu, "totalCores")
-		info.CPUSockets = intFromMap(cpu, "sockets")
-		if v, ok := cpu["model"].(string); ok {
-			info.CPUModel = v
-		}
-		if capRange, ok := cpu["capRange"].(map[string]interface{}); ok {
-			maxPerSocket := floatFromMap(capRange, "maxWattsPerSocket")
+	if cpu := st.CPU; cpu != nil {
+		info.CPUTotalCores = cpu.TotalCores
+		info.CPUSockets = cpu.Sockets
+		info.CPUModel = cpu.Model
+		if cr := cpu.CapRange; cr != nil {
 			sockets := info.CPUSockets
 			if sockets <= 0 {
 				sockets = 1
 			}
-			info.CPUMaxWattsTotal = maxPerSocket * float64(sockets)
+			info.CPUMaxWattsTotal = cr.MaxWattsPerSocket * float64(sockets)
 		}
 	}
 
-	// GPU info from status.gpu
-	if gpu, ok := status["gpu"].(map[string]interface{}); ok {
-		if v, ok := gpu["present"].(bool); ok {
-			info.GPUPresent = v
-		}
-		info.GPUCount = intFromMap(gpu, "count")
+	if gpu := st.GPU; gpu != nil {
+		info.GPUPresent = gpu.Present
+		info.GPUCount = gpu.Count
 		if info.GPUCount > 0 {
 			info.GPUPresent = true
 		}
-		if v, ok := gpu["model"].(string); ok {
-			info.GPUModel = v
-		}
-		if v, ok := gpu["vendor"].(string); ok {
-			info.GPUVendor = v
-		}
-		if capRange, ok := gpu["capRangePerGpu"].(map[string]interface{}); ok {
-			info.GPUMaxWattsPerGPU = floatFromMap(capRange, "maxWatts")
+		info.GPUModel = gpu.Model
+		info.GPUVendor = gpu.Vendor
+		if cr := gpu.CapRangePerGPU; cr != nil {
+			info.GPUMaxWattsPerGPU = cr.MaxWatts
 		}
 	}
 
-	// Memory from status.memory
-	if mem, ok := status["memory"].(map[string]interface{}); ok {
-		info.MemoryBytes = int64(floatFromMap(mem, "totalBytes"))
+	if mem := st.Memory; mem != nil {
+		info.MemoryBytes = mem.TotalBytes
 	}
 
-	return nodeName, info
-}
-
-// intFromMap extracts an integer from a map, handling both int64 and float64.
-func intFromMap(m map[string]interface{}, key string) int {
-	if v, ok := m[key].(int64); ok {
-		return int(v)
-	}
-	if v, ok := m[key].(float64); ok {
-		return int(v)
-	}
-	return 0
-}
-
-// floatFromMap extracts a float64 from a map.
-func floatFromMap(m map[string]interface{}, key string) float64 {
-	if v, ok := m[key].(float64); ok {
-		return v
-	}
-	if v, ok := m[key].(int64); ok {
-		return float64(v)
-	}
-	return 0
+	return nh.Spec.NodeName, info
 }
 
 // isTwinStale returns true if the twin data is too old to trust for scheduling.
@@ -918,7 +936,7 @@ func loadCoefficients() powerest.Coefficients {
 
 // debugScoringResponse is the JSON output of /debug/scoring.
 type debugScoringResponse struct {
-	Coefficients powerest.Coefficients  `json:"coefficients"`
+	Coefficients powerest.Coefficients   `json:"coefficients"`
 	Nodes        []debugNodeScoringEntry `json:"nodes"`
 }
 
@@ -980,4 +998,3 @@ func handleDebugScoring(w http.ResponseWriter, r *http.Request) {
 		log.Printf("warning: failed to encode debug response: %v", err)
 	}
 }
-

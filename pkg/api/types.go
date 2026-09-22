@@ -1,6 +1,56 @@
 package api
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+// Field manager names recorded in managedFields on every write, so
+// `kubectl get -o yaml --show-managed-fields` shows which component owns
+// which field. See docs/architecture "Who writes what".
+const (
+	FieldManagerOperator = "joulie-operator"
+	FieldManagerAgent    = "joulie-agent"
+)
+
+// Values of NodeTwin.status.powerMeasurement.source. The CRD enum must
+// accept every value here; tests/contracts enforces it.
+const (
+	PowerSourceStatic           = "static"
+	PowerSourcePrometheus       = "prometheus"
+	PowerSourcePrometheusNoData = "prometheus-no-data"
+	PowerSourceHTTP             = "http"
+	PowerSourceHTTPError        = "http-error"
+	PowerSourceHTTPNoEndpoint   = "http-no-endpoint"
+	// Reserved for measurement tiers not implemented yet.
+	PowerSourceKepler      = "kepler"
+	PowerSourceUtilization = "utilization"
+)
+
+// PowerSourceValues lists every value a component may write to
+// powerMeasurement.source.
+var PowerSourceValues = []string{
+	PowerSourceStatic, PowerSourcePrometheus, PowerSourcePrometheusNoData,
+	PowerSourceHTTP, PowerSourceHTTPError, PowerSourceHTTPNoEndpoint,
+	PowerSourceKepler, PowerSourceUtilization,
+}
+
+// ObjectNameForNode maps a Kubernetes node name to the name of its
+// NodeHardware and NodeTwin objects. Both the agent and the operator must use
+// this, otherwise a node whose name is not a valid object name (dots,
+// uppercase) ends up with two objects.
+func ObjectNameForNode(nodeName string) string {
+	in := strings.ToLower(strings.TrimSpace(nodeName))
+	var b strings.Builder
+	for _, r := range in {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteRune('-')
+	}
+	return strings.Trim(b.String(), "-")
+}
 
 // NodeHardware holds hardware capabilities of a node, as published by the agent.
 // It is the single source of truth for static node hardware facts:

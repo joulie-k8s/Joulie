@@ -29,6 +29,25 @@ If you are new, first read:
 | `NodeHardware` | Agent | Hardware facts: CPU/GPU model, cap ranges, frequency landmarks |
 | `NodeTwin` | Operator | Desired state (spec: power cap %) + twin output (status: headroom, cooling stress, PSU stress, control feedback) |
 
+### Who writes what
+
+`NodeTwin` is written by two components, so ownership is defined per field. Every write carries a field manager name (`joulie-operator`, `joulie-agent`), so `kubectl get nodetwin <node> -o yaml --show-managed-fields` shows the owner of each field, and contract tests assert that no writer touches another owner's fields.
+
+| Object | Field | Owner | Meaning |
+|--------|-------|-------|---------|
+| `NodeHardware` | `spec.nodeName` | Agent | which node this describes |
+| `NodeHardware` | `status.*` | Agent | discovered hardware facts |
+| `NodeTwin` | `spec.*` | Operator (policy) | desired profile, caps, policy name, draining |
+| `NodeTwin` | `status.controlStatus.*` | Agent | what was applied on the node, per component |
+| `NodeTwin` | every other `status` field | Operator (twin) | the twin's computed state: measured power, headroom, stress scores, PUE |
+
+Rules that follow from the table:
+
+- The operator never writes `status.controlStatus`, and the agent never writes anything outside it. Both are patch-shaped so a violation is visible in the payload, not only in the result.
+- Both components derive the object name from the node name with the same function (`pkg/api.ObjectNameForNode`), so a node whose name is not a valid object name still maps to one object.
+- Writers skip a write when nothing changed. A write bumps `resourceVersion` and wakes every watcher, so idle nodes must not generate traffic. Unchanged state is rewritten at most every five minutes, which bounds how long a lost object stays unrepaired.
+- `status` holds the twin's current computed state, forecasts included. That is what a twin is; the CRD field descriptions say so.
+
 ## Component roles
 
 ### Operator

@@ -249,7 +249,7 @@ Without facility metrics, PUE defaults to 1.0 and the multiplier has no effect.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `EXTENDER_ADDR` | `:9876` | HTTP listen address |
-| `CACHE_TTL` | `30s` | TTL for NodeTwin and NodeHardware caches |
+| `CACHE_TTL` | `30s` | Minimum interval between rebuilding the scoring maps from the informer cache |
 | `TWIN_STALENESS_THRESHOLD` | `5m` | Max age of NodeTwin data before treating as stale |
 | `MARGINAL_CPU_UTIL_COEFF` | (from `powerest.DefaultCoefficients`) | CPU marginal power coefficient |
 | `MARGINAL_GPU_UTIL_COEFF_STANDARD` | (from `powerest.DefaultCoefficients`) | GPU marginal power coefficient for standard pods |

@@ -35,6 +35,8 @@ operator:
     repository: registry.cern.ch/mbunino/joulie/joulie-operator
     tag: latest
     pullPolicy: IfNotPresent
+  leaderElection:
+    enabled: false  # only the leader reconciles; needed before running more than one replica
   env:
     RECONCILE_INTERVAL: "1m"
     METRICS_ADDR: ":8081"

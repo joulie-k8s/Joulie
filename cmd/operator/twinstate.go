@@ -11,20 +11,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/hwinv"
+	"github.com/matbun/joulie/pkg/kube"
 	"github.com/matbun/joulie/pkg/operator/twin"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var (
-	nodeTwinGVR         = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
-	twinNodeHardwareGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
+	nodeTwinGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
 
 	// twinHardwareCatalog is used by fetchNodeHardware to fill in TDP/capRange
 	// when the NodeHardware CRD lacks this data (e.g. KWOK fake nodes).
@@ -40,8 +43,9 @@ type nodeTopology struct {
 }
 
 // reconcileNodeTwin computes and publishes NodeTwin status for one node.
-func reconcileNodeTwin(ctx context.Context, dynClient dynamic.Interface, nodeName, profile string, cpuCapPct, gpuCapPct float64, draining bool, topo *nodeTopology) error {
-	hw := fetchNodeHardware(ctx, dynClient, nodeName)
+// Reads go through the cache; the status write goes through dynClient.
+func reconcileNodeTwin(ctx context.Context, reader kube.Reader, dynClient dynamic.Interface, nodeName, profile string, cpuCapPct, gpuCapPct float64, draining bool, topo *nodeTopology) error {
+	hw := fetchNodeHardware(ctx, reader, nodeName)
 
 	outsideTempC := facilityAmbientTempC
 	var rack, coolingZone string
@@ -63,19 +67,19 @@ func reconcileNodeTwin(ctx context.Context, dynClient dynamic.Interface, nodeNam
 	trend := nodePowerTrend(nodeName, measuredPower)
 
 	in := twin.Input{
-		NodeName:            nodeName,
-		Hardware:            hw,
-		Profile:             profile,
-		CPUCapPct:           cpuCapPct,
-		GPUCapPct:           gpuCapPct,
-		Draining:            draining,
-		ClusterTotalPowerW:  facilityClusterPowerW,
-		OutsideTempC:        outsideTempC,
-		Rack:                rack,
-		CoolingZone:         coolingZone,
-		RackTotalPowerW:     rackPowerW,
-		MeasuredNodePowerW:  measuredPower,
-		PowerTrendWPerMin:   trend,
+		NodeName:           nodeName,
+		Hardware:           hw,
+		Profile:            profile,
+		CPUCapPct:          cpuCapPct,
+		GPUCapPct:          gpuCapPct,
+		Draining:           draining,
+		ClusterTotalPowerW: facilityClusterPowerW,
+		OutsideTempC:       outsideTempC,
+		Rack:               rack,
+		CoolingZone:        coolingZone,
+		RackTotalPowerW:    rackPowerW,
+		MeasuredNodePowerW: measuredPower,
+		PowerTrendWPerMin:  trend,
 	}
 	out := twin.Compute(in)
 	warnImplausibleNodePower(nodeName, source, measuredPower, out.PowerMeasurement.NodeTdpW)
@@ -83,13 +87,13 @@ func reconcileNodeTwin(ctx context.Context, dynClient dynamic.Interface, nodeNam
 	pm := &joulie.PowerMeasurement{
 		Source:             source,
 		MeasuredNodePowerW: measuredPower,
-		CpuCappedPowerW:   out.PowerMeasurement.CpuCappedPowerW,
-		GpuCappedPowerW:   out.PowerMeasurement.GpuCappedPowerW,
-		NodeCappedPowerW:  out.PowerMeasurement.NodeCappedPowerW,
-		CpuTdpW:           out.PowerMeasurement.CpuTdpW,
-		GpuTdpW:           out.PowerMeasurement.GpuTdpW,
-		NodeTdpW:          out.PowerMeasurement.NodeTdpW,
-		PowerTrendWPerMin: trend,
+		CpuCappedPowerW:    out.PowerMeasurement.CpuCappedPowerW,
+		GpuCappedPowerW:    out.PowerMeasurement.GpuCappedPowerW,
+		NodeCappedPowerW:   out.PowerMeasurement.NodeCappedPowerW,
+		CpuTdpW:            out.PowerMeasurement.CpuTdpW,
+		GpuTdpW:            out.PowerMeasurement.GpuTdpW,
+		NodeTdpW:           out.PowerMeasurement.NodeTdpW,
+		PowerTrendWPerMin:  trend,
 	}
 
 	twinStatus := joulie.NodeTwinStatus{
@@ -105,24 +109,6 @@ func reconcileNodeTwin(ctx context.Context, dynClient dynamic.Interface, nodeNam
 	}
 
 	return upsertNodeTwinStatus(ctx, dynClient, nodeName, twinStatus)
-}
-
-// numberFromMap reads a numeric field written by the agent.
-//
-// The API server hands back whole numbers as int64 and fractional ones as
-// float64, so a float64-only type assertion silently drops values such as a
-// 165 W package limit and leaves the twin to fall back to a core-count
-// estimate. Both shapes must be accepted.
-func numberFromMap(m map[string]interface{}, key string) (float64, bool) {
-	switch v := m[key].(type) {
-	case float64:
-		return v, true
-	case int64:
-		return float64(v), true
-	case int:
-		return float64(v), true
-	}
-	return 0, false
 }
 
 var (
@@ -155,86 +141,18 @@ func warnImplausibleNodePower(nodeName, source string, measuredW, nodeTdpW float
 		nodeName, measuredW, nodeTdpW, source)
 }
 
-// fetchNodeHardware reads NodeHardware for the node from the API.
-func fetchNodeHardware(ctx context.Context, dynClient dynamic.Interface, nodeName string) joulie.NodeHardware {
-	hw := joulie.NodeHardware{NodeName: nodeName}
-
-	obj, err := dynClient.Resource(twinNodeHardwareGVR).Get(ctx, sanitizeName(nodeName), metav1.GetOptions{})
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
+// fetchNodeHardware reads the node's NodeHardware from the cache. A missing
+// object, or a cluster without the CRD, yields an empty inventory that the
+// catalog fills in as far as it can.
+func fetchNodeHardware(ctx context.Context, reader kube.Reader, nodeName string) joulie.NodeHardware {
+	var obj v1alpha1.NodeHardware
+	if err := reader.Get(ctx, client.ObjectKey{Name: sanitizeName(nodeName)}, &obj); err != nil {
+		if !apierrors.IsNotFound(err) && !meta.IsNoMatchError(err) {
 			log.Printf("fetchNodeHardware: %v", err)
 		}
-		return hw
+		return joulie.NodeHardware{NodeName: nodeName}
 	}
-
-	status, _, _ := unstructured.NestedMap(obj.Object, "status")
-	if status == nil {
-		return hw
-	}
-
-	if cpu, ok := status["cpu"].(map[string]interface{}); ok {
-		if v, ok := cpu["vendor"].(string); ok {
-			hw.CPU.Vendor = v
-		}
-		if v, ok := cpu["model"].(string); ok {
-			hw.CPU.Model = v
-		}
-		if v, ok := numberFromMap(cpu, "sockets"); ok {
-			hw.CPU.Sockets = int(v)
-		}
-		if v, ok := numberFromMap(cpu, "totalCores"); ok {
-			hw.CPU.TotalCores = int(v)
-		}
-		if v, ok := cpu["driverFamily"].(string); ok {
-			hw.CPU.DriverFamily = v
-		}
-		if cr, ok := cpu["capRange"].(map[string]interface{}); ok {
-			if v, ok := numberFromMap(cr, "maxWattsPerSocket"); ok {
-				hw.CPU.CapRange.MaxWattsPerSocket = v
-			}
-			if v, ok := numberFromMap(cr, "minWattsPerSocket"); ok {
-				hw.CPU.CapRange.MinWattsPerSocket = v
-			}
-		}
-	}
-
-	if gpu, ok := status["gpu"].(map[string]interface{}); ok {
-		if v, ok := gpu["present"].(bool); ok {
-			hw.GPU.Present = v
-		}
-		if v, ok := gpu["vendor"].(string); ok {
-			hw.GPU.Vendor = v
-		}
-		if v, ok := gpu["model"].(string); ok {
-			hw.GPU.Model = v
-		}
-		if v, ok := gpu["rawModel"].(string); ok {
-			hw.GPU.RawModel = v
-		}
-		if v, ok := numberFromMap(gpu, "count"); ok {
-			hw.GPU.Count = int(v)
-		}
-		if cr, ok := gpu["capRangePerGpu"].(map[string]interface{}); ok {
-			if v, ok := numberFromMap(cr, "maxWatts"); ok {
-				hw.GPU.CapRange.MaxWatts = v
-			}
-			if v, ok := numberFromMap(cr, "minWatts"); ok {
-				hw.GPU.CapRange.MinWatts = v
-			}
-		}
-		if slicing, ok := gpu["slicing"].(map[string]interface{}); ok {
-			if v, ok := slicing["supported"].(bool); ok {
-				hw.GPU.Slicing.Supported = v
-			}
-		}
-	}
-
-	// Also read rawModel for CPU (needed for catalog matching).
-	if cpu, ok := status["cpu"].(map[string]interface{}); ok {
-		if v, ok := cpu["rawModel"].(string); ok {
-			hw.CPU.RawModel = v
-		}
-	}
+	hw := twinHardwareFromNodeHardware(nodeName, &obj)
 
 	// Enrich from hardware catalog when the CRD lacks TDP/capRange data.
 	enrichHardwareFromCatalog(&hw)
@@ -330,14 +248,14 @@ func upsertNodeTwinStatus(ctx context.Context, dynClient dynamic.Interface, node
 				},
 			},
 		}
-		if _, err := dynClient.Resource(nodeTwinGVR).Create(ctx, obj, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		if _, err := dynClient.Resource(nodeTwinGVR).Create(ctx, obj, metav1.CreateOptions{FieldManager: joulie.FieldManagerOperator}); err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create NodeTwin %s: %w", nodeName, err)
 		}
 	}
 
 	// Patch status subresource
 	_, err = dynClient.Resource(nodeTwinGVR).Patch(
-		ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{}, "status",
+		ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{FieldManager: joulie.FieldManagerOperator}, "status",
 	)
 	if err != nil {
 		// Fallback: full patch if status subresource not available
@@ -351,7 +269,7 @@ func upsertNodeTwinStatus(ctx context.Context, dynClient dynamic.Interface, node
 		if err != nil {
 			return fmt.Errorf("marshal NodeTwin %s status patch: %w", nodeName, err)
 		}
-		_, err = dynClient.Resource(nodeTwinGVR).Patch(ctx, name, types.MergePatchType, fp, metav1.PatchOptions{})
+		_, err = dynClient.Resource(nodeTwinGVR).Patch(ctx, name, types.MergePatchType, fp, metav1.PatchOptions{FieldManager: joulie.FieldManagerOperator})
 		if err != nil {
 			return fmt.Errorf("patch NodeTwin %s status: %w", nodeName, err)
 		}
@@ -412,18 +330,35 @@ func upsertNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, a NodeAssign
 		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("get NodeTwin %s: %w", name, err)
 		}
-		_, err := res.Create(ctx, obj, metav1.CreateOptions{})
+		_, err := res.Create(ctx, obj, metav1.CreateOptions{FieldManager: joulie.FieldManagerOperator})
 		if err != nil {
 			return fmt.Errorf("create NodeTwin %s: %w", name, err)
 		}
 		return nil
 	}
 
+	// A write bumps resourceVersion and wakes every watcher of the object,
+	// so only write when the desired state actually changed.
+	if jsonEqual(existing.Object["spec"], obj.Object["spec"]) {
+		return nil
+	}
 	existing.Object["spec"] = obj.Object["spec"]
-	if _, err := res.Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+	if _, err := res.Update(ctx, existing, metav1.UpdateOptions{FieldManager: joulie.FieldManagerOperator}); err != nil {
 		return fmt.Errorf("update NodeTwin %s: %w", name, err)
 	}
 	return nil
+}
+
+// jsonEqual compares two values by their JSON encoding, which erases the
+// int64/float64 difference between objects read from the API server and
+// objects built in Go.
+func jsonEqual(a, b any) bool {
+	ab, errA := json.Marshal(a)
+	bb, errB := json.Marshal(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return string(ab) == string(bb)
 }
 
 func nodeTwinStatusToMap(status joulie.NodeTwinStatus) map[string]interface{} {
@@ -514,21 +449,21 @@ func resolveNodePower(ctx context.Context, _ dynamic.Interface, nodeName string,
 		// Fallback: utilization-based estimation is not yet implemented.
 		// When available, it will query CPU/GPU utilization metrics from
 		// Prometheus and estimate power using the hardware TDP curve.
-		return 0, "prometheus-no-data"
+		return 0, joulie.PowerSourcePrometheusNoData
 
 	case "http":
 		if nodePowerHTTPEndpoint != "" {
 			power, err := queryNodePowerHTTP(ctx, nodeName)
 			if err != nil {
 				log.Printf("[twin] http node power for %s: %v", nodeName, err)
-				return 0, "http-error"
+				return 0, joulie.PowerSourceHTTPError
 			}
-			return power, "http"
+			return power, joulie.PowerSourceHTTP
 		}
-		return 0, "http-no-endpoint"
+		return 0, joulie.PowerSourceHTTPNoEndpoint
 
 	default:
-		return 0, "static"
+		return 0, joulie.PowerSourceStatic
 	}
 }
 
