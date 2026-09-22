@@ -43,22 +43,6 @@ which nodes should currently supply &lt;code&gt;performance&lt;/code&gt; capacit
 &lt;li&gt;applies transition guards for safe downgrades,&lt;/li&gt;
 &lt;li&gt;writes desired node targets (&lt;code&gt;NodeTwin.spec&lt;/code&gt;) and the &lt;code&gt;joulie.io/power-profile&lt;/code&gt; node label.&lt;/li&gt;
 &lt;/ol&gt;
-&lt;p&gt;The agent then enforces those targets node-by-node.&lt;/p&gt;</description></item><item><title>Joulie Operator</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-52/docs/architecture/operator/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-52/docs/architecture/operator/</guid><description>&lt;p&gt;The operator is Joulie&amp;rsquo;s cluster-level decision engine.&lt;/p&gt;
-&lt;p&gt;It does not write host power interfaces directly.
-Instead, it decides desired node states and publishes them through Kubernetes objects and labels.&lt;/p&gt;
-&lt;p&gt;In practice, the operator answers one question over and over:
-which nodes should currently supply &lt;code&gt;performance&lt;/code&gt; capacity, and which can safely supply &lt;code&gt;eco&lt;/code&gt; capacity?&lt;/p&gt;
-&lt;h2 id="responsibilities"&gt;Responsibilities&lt;/h2&gt;
-&lt;p&gt;At each reconcile tick, the operator:&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;selects eligible managed nodes,&lt;/li&gt;
-&lt;li&gt;reads &lt;code&gt;NodeHardware&lt;/code&gt; when available and falls back to node labels when it is not,&lt;/li&gt;
-&lt;li&gt;resolves hardware identity against the shared inventory,&lt;/li&gt;
-&lt;li&gt;classifies workload demand from pod scheduling constraints,&lt;/li&gt;
-&lt;li&gt;runs a policy algorithm (&lt;code&gt;pkg/operator/policy/&lt;/code&gt;) to compute a plan,&lt;/li&gt;
-&lt;li&gt;applies transition guards for safe downgrades,&lt;/li&gt;
-&lt;li&gt;writes desired node targets (&lt;code&gt;NodeTwin.spec&lt;/code&gt;) and the &lt;code&gt;joulie.io/power-profile&lt;/code&gt; node label.&lt;/li&gt;
-&lt;/ol&gt;
 &lt;p&gt;The agent then enforces those targets node-by-node.&lt;/p&gt;</description></item><item><title>Joulie Agent</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-52/docs/architecture/agent/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-52/docs/architecture/agent/</guid><description>&lt;p&gt;The agent is Joulie&amp;rsquo;s node-side enforcement component.&lt;/p&gt;
 &lt;p&gt;It consumes desired state and applies node-local controls through configured backends.&lt;/p&gt;
 &lt;p&gt;If the controller manager decides &amp;ldquo;this node should now behave like eco&amp;rdquo; or &amp;ldquo;this node should stay performance&amp;rdquo;,
