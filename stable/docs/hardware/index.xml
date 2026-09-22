@@ -11,7 +11,7 @@
 &lt;li&gt;otherwise &lt;code&gt;packagePowerCapPctOfMax&lt;/code&gt;&lt;/li&gt;
 &lt;/ol&gt;
 &lt;h2 id="policy-behavior"&gt;Policy behavior&lt;/h2&gt;
-&lt;p&gt;Operator profile assignment remains &lt;code&gt;performance&lt;/code&gt; vs &lt;code&gt;eco&lt;/code&gt;.
+&lt;p&gt;Controller manager profile assignment remains &lt;code&gt;performance&lt;/code&gt; vs &lt;code&gt;eco&lt;/code&gt;.
 CPU cap values are generated per profile and written into &lt;code&gt;NodeTwin.spec&lt;/code&gt;:&lt;/p&gt;
 &lt;ul&gt;
 &lt;li&gt;performance profile typically maps to a higher cap (often 100%)&lt;/li&gt;
