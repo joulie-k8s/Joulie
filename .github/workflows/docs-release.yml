@@ -13,8 +13,10 @@ on:
 permissions:
   contents: write
 
+# Own group: a release deploy must never be evicted from the queue by a preview
+# or a main deploy. See docs-main.yml.
 concurrency:
-  group: gh-pages-publish
+  group: gh-pages-release
   cancel-in-progress: false
 
 jobs:

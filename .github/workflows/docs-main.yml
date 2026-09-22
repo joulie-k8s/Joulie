@@ -14,8 +14,13 @@ on:
 permissions:
   contents: write
 
+# One group per docs workflow. GitHub keeps at most one pending run per group and
+# cancels the previously pending one when another arrives, so sharing a group with
+# the PR previews let a preview evict a pending main deploy (2026-09-22). Runs of
+# this workflow still serialize with each other; a newer main push superseding a
+# pending one is fine, it deploys newer content.
 concurrency:
-  group: gh-pages-publish
+  group: gh-pages-main
   cancel-in-progress: false
 
 jobs:
