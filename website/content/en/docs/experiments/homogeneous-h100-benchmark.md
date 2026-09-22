@@ -162,7 +162,7 @@ Stacked bar chart showing IT power + cooling power per baseline. Total facility 
 
 ### Homogeneous advantage
 
-The homogeneous fleet eliminates GPU placement constraints entirely. Every H100 NVL node can serve any GPU job, giving the operator maximum flexibility. At 41 nodes this advantage is not yet visible vs Experiment 02, but at datacenter scale (5,000+ nodes) it becomes significant.
+The homogeneous fleet eliminates GPU placement constraints entirely. Every H100 NVL node can serve any GPU job, giving the controller manager maximum flexibility. At 41 nodes this advantage is not yet visible vs Experiment 02, but at datacenter scale (5,000+ nodes) it becomes significant.
 
 ### Why queue-aware (C) outperforms static (B)
 

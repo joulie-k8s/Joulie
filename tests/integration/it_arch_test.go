@@ -11,7 +11,7 @@ import (
 	"github.com/matbun/joulie/tests/integration/helpers"
 )
 
-// IT-ARCH-01: Operator, agent, and scheduler plugin install smoke test.
+// IT-ARCH-01: Controller manager, agent, and scheduler plugin install smoke test.
 // Asserts: CRDs registered, critical objects listable.
 func TestIT_ARCH_01_CRDsRegistered(t *testing.T) {
 	kubeconfig := os.Getenv("KUBECONFIG")

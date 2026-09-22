@@ -604,7 +604,7 @@ def main():
         "configured images "
         f"sim={install_env_base['SIM_REGISTRY']}/{install_env_base['SIM_IMAGE']}"
         + (f":{install_env_base['SIM_TAG']}" if install_env_base["SIM_TAG"] else " (manifest-tag)")
-        + f" operator={install_env_base['JOULIE_REGISTRY']}/joulie-operator:{install_env_base['JOULIE_TAG']}"
+        + f" controller-manager={install_env_base['JOULIE_REGISTRY']}/joulie-controller-manager:{install_env_base['JOULIE_TAG']}"
         + f" agent={install_env_base['JOULIE_REGISTRY']}/joulie-agent:{install_env_base['JOULIE_TAG']}"
     )
     log(

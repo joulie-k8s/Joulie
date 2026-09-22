@@ -6,7 +6,7 @@ The Dagger CI setup registers two stable node names:
   - k3s-worker-0
 
 The tests no longer assume which one will be the performance-floor node when
-STATIC_HP_FRAC=0. Instead, they discover the actual split from the operator's
+STATIC_HP_FRAC=0. Instead, they discover the actual split from the controller manager's
 labels after install and use that as the runtime perf/eco mapping.
 """
 from __future__ import annotations
@@ -171,7 +171,7 @@ def wait_node_eco_ready(node: str, timeout_sec: int = 120) -> None:
 
 
 def discover_perf_and_eco_nodes(nodes: list[str], timeout_sec: int = 120) -> tuple[str, str]:
-    """Return (perf_node, eco_node) once operator labels settle under frac=0."""
+    """Return (perf_node, eco_node) once controller manager labels settle under frac=0."""
 
     def _split() -> tuple[str, str] | None:
         perf: list[str] = []
@@ -301,14 +301,14 @@ def install_joulie() -> None:
     log("installing joulie chart")
     agent_repo = os.getenv("JOULIE_AGENT_IMAGE_REPOSITORY", "").strip()
     agent_tag = os.getenv("JOULIE_AGENT_IMAGE_TAG", "").strip()
-    operator_repo = os.getenv("JOULIE_OPERATOR_IMAGE_REPOSITORY", "").strip()
-    operator_tag = os.getenv("JOULIE_OPERATOR_IMAGE_TAG", "").strip()
+    controller_manager_repo = os.getenv("JOULIE_CONTROLLER_MANAGER_IMAGE_REPOSITORY", "").strip()
+    controller_manager_tag = os.getenv("JOULIE_CONTROLLER_MANAGER_IMAGE_TAG", "").strip()
     scheduler_repo = os.getenv("JOULIE_SCHEDULER_IMAGE_REPOSITORY", "").strip()
     scheduler_tag = os.getenv("JOULIE_SCHEDULER_IMAGE_TAG", "").strip()
-    if not (agent_repo and agent_tag and operator_repo and operator_tag):
+    if not (agent_repo and agent_tag and controller_manager_repo and controller_manager_tag):
         raise RuntimeError(
             "missing required image overrides: JOULIE_AGENT_IMAGE_REPOSITORY/JOULIE_AGENT_IMAGE_TAG/"
-            "JOULIE_OPERATOR_IMAGE_REPOSITORY/JOULIE_OPERATOR_IMAGE_TAG"
+            "JOULIE_CONTROLLER_MANAGER_IMAGE_REPOSITORY/JOULIE_CONTROLLER_MANAGER_IMAGE_TAG"
         )
     helm(
         [
@@ -328,11 +328,11 @@ def install_joulie() -> None:
             "--set",
             "agent.env.RECONCILE_INTERVAL=5s",
             "--set",
-            "operator.env.RECONCILE_INTERVAL=5s",
+            "controllerManager.env.RECONCILE_INTERVAL=5s",
             "--set",
-            "operator.env.POLICY_TYPE=static_partition",
+            "controllerManager.env.POLICY_TYPE=static_partition",
             "--set",
-            "operator.env.STATIC_HP_FRAC=1",
+            "controllerManager.env.STATIC_HP_FRAC=1",
             "--set",
             f"agent.image.repository={agent_repo}",
             "--set",
@@ -340,11 +340,11 @@ def install_joulie() -> None:
             "--set",
             "agent.image.pullPolicy=Always",
             "--set",
-            f"operator.image.repository={operator_repo}",
+            f"controllerManager.image.repository={controller_manager_repo}",
             "--set",
-            f"operator.image.tag={operator_tag}",
+            f"controllerManager.image.tag={controller_manager_tag}",
             "--set",
-            "operator.image.pullPolicy=Always",
+            "controllerManager.image.pullPolicy=Always",
         ]
         + (
             [
@@ -360,14 +360,14 @@ def install_joulie() -> None:
             else []
         )
     )
-    wait_rollout("joulie-system", "deploy/joulie-operator")
+    wait_rollout("joulie-system", "deploy/joulie-controller-manager")
     wait_rollout("joulie-system", "statefulset/joulie-agent-pool")
     if scheduler_repo and scheduler_tag:
         wait_rollout("joulie-system", "deploy/joulie-scheduler-extender")
 
 
 def set_static_hp_frac(frac: str) -> None:
-    out = kubectl(["-n", "joulie-system", "get", "deploy/joulie-operator", "-o", "json"], capture=True)
+    out = kubectl(["-n", "joulie-system", "get", "deploy/joulie-controller-manager", "-o", "json"], capture=True)
     deploy = json.loads(out.stdout)
     env = (
         deploy.get("spec", {})
@@ -381,8 +381,8 @@ def set_static_hp_frac(frac: str) -> None:
         log(f"STATIC_HP_FRAC already {frac}; skipping rollout")
         return
 
-    kubectl(["-n", "joulie-system", "set", "env", "deploy/joulie-operator", f"STATIC_HP_FRAC={frac}"])
-    wait_rollout("joulie-system", "deploy/joulie-operator")
+    kubectl(["-n", "joulie-system", "set", "env", "deploy/joulie-controller-manager", f"STATIC_HP_FRAC={frac}"])
+    wait_rollout("joulie-system", "deploy/joulie-controller-manager")
 
 
 def install_http_mock() -> None:
@@ -551,7 +551,7 @@ def dump_debug() -> None:
         ["kubectl", "get", "events", "-A", "--sort-by=.lastTimestamp"],
         ["kubectl", "get", "nodetwins", "-o", "yaml"],
         ["kubectl", "get", "nodehardwares", "-o", "yaml"],
-        ["kubectl", "-n", "joulie-system", "logs", "deploy/joulie-operator", "--tail=200"],
+        ["kubectl", "-n", "joulie-system", "logs", "deploy/joulie-controller-manager", "--tail=200"],
         ["kubectl", "-n", "joulie-system", "logs", "statefulset/joulie-agent-pool", "--tail=200"],
     ]
     for c in cmds:
@@ -569,7 +569,7 @@ def dump_debug() -> None:
 class Ctx:
     """Test context holding the two cluster node names.
 
-    perf_node  - always stays in performance (operator family floor).
+    perf_node  - always stays in performance (controller manager family floor).
     eco_node   - transitions to eco when STATIC_HP_FRAC=0.
     node       - alias for eco_node kept for clarity in test code.
     """
@@ -713,7 +713,7 @@ def test_telemetry_http(ctx: Ctx) -> None:
 def test_fsm_and_labels(ctx: Ctx) -> None:
     """IT-FSM-*: verify guarded transition and draining lifecycle on eco_node.
 
-    With two nodes, the operator can actually move eco_node to eco (frac=0)
+    With two nodes, the controller manager can actually move eco_node to eco (frac=0)
     while keeping perf_node in performance (family floor).  We force the test
     pod onto eco_node via nodeName so the guarded-transition signal is visible
     there.
@@ -730,7 +730,7 @@ def test_fsm_and_labels(ctx: Ctx) -> None:
     apply_yaml(mk_pod_yaml("perf-a", workload_class="performance", node_name=ctx.eco_node))
     wait_pod_phase("joulie-it", "perf-a", "Running")
 
-    # Trigger eco transition: operator wants eco_node→eco but sees perf pod → draining=true.
+    # Trigger eco transition: controller manager wants eco_node→eco but sees perf pod → draining=true.
     set_static_hp_frac("0")
     wait_node_guarded_transition(ctx.eco_node)
 
@@ -834,10 +834,10 @@ def test_scheduling(ctx: Ctx) -> None:
 
 
 def test_classification_matrix(ctx: Ctx) -> None:
-    """IT-CLS-*: verify the operator correctly classifies pods by workload class.
+    """IT-CLS-*: verify the controller manager correctly classifies pods by workload class.
 
     The ``joulie.io/workload-class`` annotation is the single source of truth
-    for placement intent.  Classification determines whether the operator
+    for placement intent.  Classification determines whether the controller manager
     triggers a guarded transition (draining) when moving a node to eco.
 
     Strategy with two nodes:
@@ -845,7 +845,7 @@ def test_classification_matrix(ctx: Ctx) -> None:
     - Force the test pod onto eco_node via nodeName (bypasses scheduler, kubelet
       runs it regardless of workload class; this lets us observe classification on
       a node that WILL transition to eco).
-    - Then trigger frac=0: operator tries to move eco_node to eco.
+    - Then trigger frac=0: controller manager tries to move eco_node to eco.
       · If pod is performance → draining=true  (guarded transition)
       · If pod is standard/unset → eco_node goes to eco directly
     - Clean up and wait for eco_node to settle in eco before next case.
@@ -920,9 +920,9 @@ def get_nodehardware_status(node: str) -> dict[str, Any]:
 
 
 def test_twin_status_populated(ctx: Ctx) -> None:
-    """IT-TWIN-STATUS-01: verify the operator writes twin status fields.
+    """IT-TWIN-STATUS-01: verify the controller manager writes twin status fields.
 
-    The operator must populate schedulableClass, predicted scores, and
+    The controller manager must populate schedulableClass, predicted scores, and
     lastUpdated in the NodeTwin status. The agent writes controlStatus
     separately. Both must coexist.
     """
@@ -930,7 +930,7 @@ def test_twin_status_populated(ctx: Ctx) -> None:
     set_static_hp_frac("1")
     wait_node_label(ctx.perf_node, "joulie.io/power-profile", "performance")
 
-    # Wait for the operator to populate twin status (needs 1-2 reconcile cycles).
+    # Wait for the controller manager to populate twin status (needs 1-2 reconcile cycles).
     def _twin_status_present() -> bool:
         status = get_nodetwin_status(ctx.perf_node)
         return status.get("schedulableClass", "") != ""
@@ -953,7 +953,7 @@ def test_twin_status_populated(ctx: Ctx) -> None:
         if not last:
             raise AssertionError(f"node={node}: lastUpdated is empty")
 
-    # Verify agent's controlStatus coexists with operator's twin status.
+    # Verify agent's controlStatus coexists with the controller manager's twin status.
     def _control_status_present() -> bool:
         status = get_nodetwin_status(ctx.eco_node)
         cs = status.get("controlStatus", {})
@@ -1083,10 +1083,10 @@ def test_scheduler_extender_scoring(ctx: Ctx) -> None:
 
 
 def test_twin_status_survives_agent_writes(ctx: Ctx) -> None:
-    """IT-TWIN-STATUS-02: verify operator twin status persists across agent reconcile cycles.
+    """IT-TWIN-STATUS-02: verify controller manager twin status persists across agent reconcile cycles.
 
     The agent writes controlStatus every reconcile interval (5s in tests).
-    The operator's schedulableClass must not be overwritten.
+    The controller manager's schedulableClass must not be overwritten.
     """
     log("IT-TWIN-STATUS-02")
     set_static_hp_frac("1")
@@ -1230,7 +1230,7 @@ def test_scheduling_draining_rejection(ctx: Ctx) -> None:
     apply_yaml(mk_pod_yaml("drain-blocker", workload_class="performance", node_name=ctx.eco_node))
     wait_pod_phase("joulie-it", "drain-blocker", "Running")
 
-    # Trigger eco transition: operator sees perf pod -> draining.
+    # Trigger eco transition: controller manager sees perf pod -> draining.
     set_static_hp_frac("0")
     wait_node_guarded_transition(ctx.eco_node)
     # Wait for cache to pick up draining state.
@@ -1285,7 +1285,7 @@ def test_twin_scores_change_with_profile(ctx: Ctx) -> None:
     """IT-TWIN-SCORES-01: twin status scores update when profile changes.
 
     When a node transitions between performance and eco, the twin predicted
-    scores should reflect the new profile. This validates the operator's twin
+    scores should reflect the new profile. This validates the controller manager's twin
     computation is re-run on profile changes.
     """
     log("IT-TWIN-SCORES-01")
@@ -1357,18 +1357,18 @@ def test_standard_pod_schedules_anywhere(ctx: Ctx) -> None:
 def test_facility_metrics_disabled_by_default(ctx: Ctx) -> None:
     """IT-FACILITY-01: verify facility metrics collection is disabled by default.
 
-    ENABLE_FACILITY_METRICS defaults to false. The operator logs should not
+    ENABLE_FACILITY_METRICS defaults to false. The controller manager logs should not
     contain any "[facility]" log lines about fetching metrics.
     """
     log("IT-FACILITY-01")
 
     out = kubectl(
-        ["-n", "joulie-system", "logs", "deploy/joulie-operator", "--tail=500"],
+        ["-n", "joulie-system", "logs", "deploy/joulie-controller-manager", "--tail=500"],
         capture=True, check=False,
     )
     if out.returncode != 0:
         raise AssertionError(
-            f"failed to read operator logs: {(out.stderr or '').strip()}"
+            f"failed to read controller manager logs: {(out.stderr or '').strip()}"
         )
 
     logs = out.stdout or ""

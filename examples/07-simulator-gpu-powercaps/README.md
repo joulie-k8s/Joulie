@@ -14,7 +14,7 @@ The example uses two contracts with separate roles:
 - `NodeTwin`: desired caps/profile
 - agent env vars: simulator HTTP telemetry/control routing
 
-`NodeHardware` is published automatically by the agent for observability and operator planning.
+`NodeHardware` is published automatically by the agent for observability and controller manager planning.
 You do not need to create it by hand for this example.
 
 ## Important validation note
@@ -40,7 +40,7 @@ Single command (recommended for debug-heavy runs):
 ./run-e2e.sh
 ```
 
-The script creates/reuses a kind+KWOK cluster, builds and loads local `agent`/`operator`/`simulator` images, deploys the full example, validates GPU control behavior, and writes a full artifact bundle under `tmp/gpu-e2e-*` (logs, events, pod/node descriptions, CRs, simulator debug endpoints, metrics).
+The script creates/reuses a kind+KWOK cluster, builds and loads local `agent`/`controller-manager`/`simulator` images, deploys the full example, validates GPU control behavior, and writes a full artifact bundle under `tmp/gpu-e2e-*` (logs, events, pod/node descriptions, CRs, simulator debug endpoints, metrics).
 
 By default, the script first uses `manifests/01-kind-cluster.yaml`; if cluster creation fails on the host runtime, it retries with kind defaults, and if that still fails it reuses an already-running healthy kind cluster context when available.
 Set `KIND_FALLBACK_NO_CONFIG=false` to disable the default-config retry.

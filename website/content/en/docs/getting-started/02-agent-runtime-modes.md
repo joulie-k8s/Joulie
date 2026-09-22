@@ -58,13 +58,13 @@ agent:
 
 Use `daemonset` mode for real `/host-sys` enforcement and `pool` mode for KWOK-scale simulation.
 
-Pool mode is the standard runtime for the [Workload and Power Simulator]({{< relref "/docs/simulator/simulator.md" >}}), which uses KWOK fake nodes with a real operator and scheduler to run repeatable experiments without physical hardware.
+Pool mode is the standard runtime for the [Workload and Power Simulator]({{< relref "/docs/simulator/simulator.md" >}}), which uses KWOK fake nodes with a real controller manager and scheduler to run repeatable experiments without physical hardware.
 
 ## Managed node selector
 
 - `joulie.io/managed=true`
 
-This label defines managed scope for both operator and agent by default.
+This label defines managed scope for both controller manager and agent by default.
 
 - Pool mode:
   - uses `POOL_NODE_SELECTOR` (chart default: `joulie.io/managed=true`).
@@ -73,7 +73,7 @@ This label defines managed scope for both operator and agent by default.
 
 Default behavior:
 
-- nodes without `joulie.io/managed=true` are outside operator policy scope;
+- nodes without `joulie.io/managed=true` are outside controller manager policy scope;
 - no DaemonSet agent pod is scheduled on unlabeled nodes.
 
 Override example (if you need a different scope):

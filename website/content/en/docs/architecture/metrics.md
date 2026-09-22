@@ -5,7 +5,7 @@ weight: 60
 
 Joulie exposes Prometheus metrics from multiple components.
 
-This page covers **operator + agent + scheduler extender** metrics.
+This page covers **controller manager + agent + scheduler extender** metrics.
 Simulator metrics are documented separately in:
 
 - [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})
@@ -20,7 +20,7 @@ For telemetry/control input interfaces (host/http routing), see:
   - path: `/metrics`
   - default address: `:8080`
   - env override: `METRICS_ADDR`
-- Operator:
+- Controller manager:
   - path: `/metrics`
   - default address: `:8081`
   - env override: `METRICS_ADDR`
@@ -75,32 +75,34 @@ For telemetry/control input interfaces (host/http routing), see:
 - `joulie_reconcile_errors_total{node}` (counter)
   - reconcile-loop errors
 
-## Operator metrics
+## Policy controller metrics
+
+Exported by the controller manager. Until the next minor release each metric is also exported under its old `joulie_operator_*` name (same labels, same values, help text `Deprecated, use joulie_policy_...`); update dashboards and alerts to the `joulie_policy_*` names before that release.
 
 ### FSM state and profile label
 
-- `joulie_operator_node_state{node,state}` (gauge)
+- `joulie_policy_node_state{node,state}` (gauge)
   - `state`: `ActivePerformance|DrainingPerformance|ActiveEco`
   - active state is `1`, others `0`
-- `joulie_operator_node_profile_label{node,profile}` (gauge)
-  - operator-applied node label view
+- `joulie_policy_node_profile_label{node,profile}` (gauge)
+  - controller-manager-applied node label view
   - `profile`: `performance|eco`
   - active profile is `1`, others `0`
 
 ### Transition accounting
 
-- `joulie_operator_state_transitions_total{node,from_state,to_state,result}` (counter)
-  - transition events emitted by operator
+- `joulie_policy_state_transitions_total{node,from_state,to_state,result}` (counter)
+  - transition events emitted by the controller manager
   - `result`:
     - `applied`: transition committed
     - `deferred`: transition blocked/deferred by safeguards
 
 ### Heterogeneous planning
 
-- `joulie_operator_node_compute_density{node,component}` (gauge)
+- `joulie_policy_node_compute_density{node,component}` (gauge)
   - normalized per-node density signal used for heterogeneous planning
   - `component`: `cpu|gpu`
-  - higher values mean the operator considers that node relatively denser for that subsystem
+  - higher values mean the controller manager considers that node relatively denser for that subsystem
 
 ## Scheduler extender metrics
 
@@ -133,7 +135,7 @@ For telemetry/control input interfaces (host/http routing), see:
 - `joulie_scheduler_stale_twin_data{node}` (gauge)
   - `1` if the NodeTwin status is older than the staleness threshold (default 5m), `0` otherwise
   - a node with stale data receives a neutral score (50) instead of its computed value
-  - useful for alerting when the operator has stopped updating twin status
+  - useful for alerting when the controller manager has stopped updating twin status
 
 ## Notes
 

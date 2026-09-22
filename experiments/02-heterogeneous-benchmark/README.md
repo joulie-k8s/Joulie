@@ -12,7 +12,7 @@ It is centered on four things:
 The workflow:
 
 - agent publishes `NodeHardware`,
-- operator resolves discovered hardware against the shared inventory,
+- controller manager resolves discovered hardware against the shared inventory,
 - operator plans with CPU/GPU density awareness,
 - simulator uses the same CPU/GPU inventory for node composition and fallback modeling.
 
@@ -107,7 +107,7 @@ The smoke run is intentionally meant as a short validation path for:
 
 - inventory matching,
 - `NodeHardware` publication,
-- operator planning against heterogeneous hardware,
+- controller manager planning against heterogeneous hardware,
 - simulator GPU/CPU mixed-node behavior,
 - GPU-cap application on supported fake nodes.
 
@@ -275,7 +275,7 @@ It also records a basic reproducibility bundle for each run:
 - trace SHA256 + workload mix summary,
 - cluster node snapshot,
 - `kubectl` version,
-- simulator/operator/agent logs.
+- simulator/controller manager/agent logs.
 
 What it still does not provide yet is a polished report layer equivalent to:
 
@@ -343,7 +343,7 @@ The benchmark policy path now uses percentage-based CPU and GPU intents:
 - `cpu.packagePowerCapPctOfMax`
 - `gpu.powerCap.capPctOfMax`
 
-The operator writes those percentages into `NodePowerProfile`, and the agent resolves them on each node against discovered or inventory-derived hardware limits. That keeps the control contract consistent across CPU and GPU:
+The controller manager writes those percentages into `NodePowerProfile`, and the agent resolves them on each node against discovered or inventory-derived hardware limits. That keeps the control contract consistent across CPU and GPU:
 
 - policy expresses relative intent,
 - agent resolves node-local enforcement from those percentages,
@@ -488,4 +488,4 @@ REUSE_EXISTING_CLUSTER=false bash scripts/10_setup_cluster.sh
 - Simulator power telemetry intentionally distinguishes averaged vs instantaneous power. When comparing results to real GPU runs, remember that NVML power telemetry on many modern NVIDIA GPUs is itself averaged over a 1-second window.
 - Real CPU package power is often reconstructed from energy-counter deltas, so sampling cadence and averaging windows matter there as well.
 - This harness is a reproducible simulation/benchmark path, not yet an external-meter calibration harness. External-meter validation remains the next step for bare-metal model calibration.
-- In the heterogeneous cluster, Joulie applies a uniform power-cap percentage across GPU families with very different throttling characteristics. A per-family `hp_min` policy extension would let the operator reserve more performance nodes for MI300X workloads (which tolerate throttling well) while keeping H100 NVL nodes uncapped for compute-bound jobs.
+- In the heterogeneous cluster, Joulie applies a uniform power-cap percentage across GPU families with very different throttling characteristics. A per-family `hp_min` policy extension would let the controller manager reserve more performance nodes for MI300X workloads (which tolerate throttling well) while keeping H100 NVL nodes uncapped for compute-bound jobs.

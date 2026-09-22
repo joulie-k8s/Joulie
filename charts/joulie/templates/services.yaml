@@ -18,22 +18,23 @@ spec:
       targetPort: metrics
 {{- end }}
 ---
-{{- if .Values.operator.service.enabled }}
+{{- $cm := include "joulie.controllerManager" . | fromYaml }}
+{{- if $cm.service.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: joulie-operator-metrics
+  name: joulie-controller-manager-metrics
   namespace: {{ .Release.Namespace }}
   labels:
-    app.kubernetes.io/name: joulie-operator
+    app.kubernetes.io/name: joulie-controller-manager
   annotations:
-    {{- toYaml .Values.operator.service.annotations | nindent 4 }}
+    {{- toYaml $cm.service.annotations | nindent 4 }}
 spec:
   selector:
-    app.kubernetes.io/name: joulie-operator
+    app.kubernetes.io/name: joulie-controller-manager
   ports:
     - name: metrics
-      port: {{ .Values.operator.service.port }}
+      port: {{ $cm.service.port }}
       targetPort: metrics
 {{- end }}
 

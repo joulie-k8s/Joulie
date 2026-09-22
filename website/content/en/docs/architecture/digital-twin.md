@@ -93,7 +93,7 @@ psuStress = clusterTotalPower / referenceRackCapacity * 100
 
 | Term | Default | Rationale |
 |------|---------|-----------|
-| `clusterTotalPower` | (sum of all node power) | Total cluster power draw in watts, passed in by the operator from aggregated telemetry. |
+| `clusterTotalPower` | (sum of all node power) | Total cluster power draw in watts, passed in by the controller manager from aggregated telemetry. |
 | `referenceRackCapacity` | 50,000 W (50 kW) | A typical single-rack PDU capacity. This is a placeholder; in production, actual PDU readings would replace it. |
 
 The result is clamped to [0, 100].
@@ -129,10 +129,10 @@ The default implementation is `LinearCoolingModel`, an algebraic proxy suitable 
 
 ## How it feeds the scheduler
 
-The twin controller runs in the operator on each reconcile tick (~1 minute) and writes `NodeTwin.status` per managed node. The scheduler extender caches these `NodeTwin` CRs with a 30-second TTL and uses them in its filter and score logic:
+The twin controller runs in the controller manager on each reconcile tick (~1 minute) and writes `NodeTwin.status` per managed node. The scheduler extender caches these `NodeTwin` CRs with a 30-second TTL and uses them in its filter and score logic:
 
 ```
-twin controller (operator)
+twin controller (controller manager)
   → writes NodeTwin.status
     → scheduler extender cache (30s TTL)
       → filter: rejects eco nodes for performance pods
@@ -141,15 +141,15 @@ twin controller (operator)
 
 This keeps scheduling decisions lightweight (one cache lookup per node per scheduling attempt) while reflecting the latest thermal and power state of the cluster.
 
-## How it feeds the operator
+## How it feeds the controller manager
 
-The twin also drives operator decisions:
+The twin also drives controller manager decisions:
 
 - **Transition guard**: when a node is transitioning from performance to eco, the twin sets `schedulableClass` to `draining` until all performance pods have completed or been drained.
 
 ## Implementation
 
-The twin is implemented in `pkg/operator/twin/twin.go`. Key types:
+The twin is implemented in `pkg/controller/twin/twin.go`. Key types:
 
 - `Input`: all inputs needed to compute twin state for one node (hardware, profile, cap percentages, workloads, facility signals).
 - `Output`: the computed `NodeTwin.status` fields.
@@ -160,6 +160,6 @@ The twin is implemented in `pkg/operator/twin/twin.go`. Key types:
 ## What to read next
 
 1. [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}})
-2. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}})
+2. [Joulie Controller Manager]({{< relref "/docs/architecture/controller-manager.md" >}})
 3. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
 4. [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) — reference power profiles used by `NodeHardware` and the twin's power estimation

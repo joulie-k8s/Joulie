@@ -9,8 +9,8 @@ import (
 // `kubectl get -o yaml --show-managed-fields` shows which component owns
 // which field. See docs/architecture "Who writes what".
 const (
-	FieldManagerOperator = "joulie-operator"
-	FieldManagerAgent    = "joulie-agent"
+	FieldManagerControllerManager = "joulie-controller-manager"
+	FieldManagerAgent             = "joulie-agent"
 )
 
 // Values of NodeTwin.status.powerMeasurement.source. The CRD enum must
@@ -36,7 +36,7 @@ var PowerSourceValues = []string{
 }
 
 // ObjectNameForNode maps a Kubernetes node name to the name of its
-// NodeHardware and NodeTwin objects. Both the agent and the operator must use
+// NodeHardware and NodeTwin objects. Both the agent and the controller manager must use
 // this, otherwise a node whose name is not a valid object name (dots,
 // uppercase) ends up with two objects.
 func ObjectNameForNode(nodeName string) string {
@@ -150,7 +150,7 @@ type CatalogExactness struct {
 	GPU string `json:"gpu,omitempty"`
 }
 
-// NodeTwinSpec is the desired power state for a node, written by the operator.
+// NodeTwinSpec is the desired power state for a node, written by the controller manager.
 // This is the spec portion of the NodeTwin CRD.
 type NodeTwinSpec struct {
 	NodeName    string       `json:"nodeName"`
@@ -186,7 +186,7 @@ type PowerMeasurement struct {
 }
 
 // NodeTwinStatus is the digital-twin output for one node.
-// Computed by the operator from NodeHardware + NodeTwinSpec.
+// Computed by the controller manager from NodeHardware + NodeTwinSpec.
 // Read by the scheduler extender to make placement decisions.
 type NodeTwinStatus struct {
 	// SchedulableClass: "eco", "performance", "draining", "unknown".
@@ -224,7 +224,7 @@ type ControlResult struct {
 }
 
 // NodeTwin is the combined CRD for a node's desired power state and computed twin output.
-// spec = desired state (operator writes), status = twin output + control feedback.
+// spec = desired state (controller manager writes), status = twin output + control feedback.
 type NodeTwin struct {
 	Spec   NodeTwinSpec   `json:"spec"`
 	Status NodeTwinStatus `json:"status,omitempty"`

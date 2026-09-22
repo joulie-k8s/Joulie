@@ -16,8 +16,8 @@ import (
 var nodeTwinGVR = helpers.JoulieGVRs["nodetwins"]
 var nodeHardwareGVR = helpers.JoulieGVRs["nodehardwares"]
 
-// IT-TWIN-01: Operator writes NodeTwin when NodeHardware and profile are present.
-func TestIT_TWIN_01_OperatorWritesNodeTwin(t *testing.T) {
+// IT-TWIN-01: Controller manager writes NodeTwin when NodeHardware and profile are present.
+func TestIT_TWIN_01_ControllerManagerWritesNodeTwin(t *testing.T) {
 	kubeconfig := os.Getenv("KUBECONFIG")
 	clients, err := helpers.NewClients(kubeconfig)
 	if err != nil {
@@ -68,7 +68,7 @@ func TestIT_TWIN_01_OperatorWritesNodeTwin(t *testing.T) {
 		t.Logf("seed NodeHardware: %v (may already exist)", err)
 	}
 
-	// Wait for operator to write NodeTwin
+	// Wait for the controller manager to write NodeTwin
 	twinObj, err := helpers.WaitForObject(ctx, clients.Dynamic, nodeTwinGVR, "", nodeName, 90*time.Second)
 	if err != nil {
 		t.Fatalf("NodeTwin not found for node %s within 90s: %v", nodeName, err)

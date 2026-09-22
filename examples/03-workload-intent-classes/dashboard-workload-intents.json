@@ -100,17 +100,17 @@
       "pluginVersion": "12.4.0",
       "targets": [
         {
-          "expr": "joulie_operator_node_state{node=~\"$node\",state=\"ActivePerformance\"}",
+          "expr": "joulie_policy_node_state{node=~\"$node\",state=\"ActivePerformance\"}",
           "legendFormat": "{{node}} ActivePerformance",
           "refId": "A"
         },
         {
-          "expr": "joulie_operator_node_state{node=~\"$node\",state=\"DrainingPerformance\"}",
+          "expr": "joulie_policy_node_state{node=~\"$node\",state=\"DrainingPerformance\"}",
           "legendFormat": "{{node}} DrainingPerformance",
           "refId": "B"
         },
         {
-          "expr": "joulie_operator_node_state{node=~\"$node\",state=\"ActiveEco\"}",
+          "expr": "joulie_policy_node_state{node=~\"$node\",state=\"ActiveEco\"}",
           "legendFormat": "{{node}} ActiveEco",
           "refId": "C"
         }
@@ -198,12 +198,12 @@
       "pluginVersion": "12.4.0",
       "targets": [
         {
-          "expr": "increase(joulie_operator_state_transitions_total{node=~\"$node\",result=\"applied\"}[5m])",
+          "expr": "increase(joulie_policy_state_transitions_total{node=~\"$node\",result=\"applied\"}[5m])",
           "legendFormat": "{{node}} {{from_state}}->{{to_state}} applied",
           "refId": "A"
         },
         {
-          "expr": "increase(joulie_operator_state_transitions_total{node=~\"$node\",result=\"deferred\"}[5m])",
+          "expr": "increase(joulie_policy_state_transitions_total{node=~\"$node\",result=\"deferred\"}[5m])",
           "legendFormat": "{{node}} {{from_state}}->{{to_state}} deferred",
           "refId": "B"
         }
@@ -291,17 +291,17 @@
       "pluginVersion": "12.4.0",
       "targets": [
         {
-          "expr": "((max by(node) (kube_node_labels{node=~\"$node\",label_joulie_io_power_profile=\"performance\"}) > bool 0) or on(node) (0 * max by(node) (joulie_operator_node_state{node=~\"$node\"})))",
+          "expr": "((max by(node) (kube_node_labels{node=~\"$node\",label_joulie_io_power_profile=\"performance\"}) > bool 0) or on(node) (0 * max by(node) (joulie_policy_node_state{node=~\"$node\"})))",
           "legendFormat": "{{node}} performance (0/1)",
           "refId": "A"
         },
         {
-          "expr": "((max by(node) (kube_node_labels{node=~\"$node\",label_joulie_io_draining=\"true\"}) > bool 0) or on(node) (0 * max by(node) (joulie_operator_node_state{node=~\"$node\"})))",
+          "expr": "((max by(node) (kube_node_labels{node=~\"$node\",label_joulie_io_draining=\"true\"}) > bool 0) or on(node) (0 * max by(node) (joulie_policy_node_state{node=~\"$node\"})))",
           "legendFormat": "{{node}} draining=true (0/1)",
           "refId": "B"
         },
         {
-          "expr": "((max by(node) (kube_node_labels{node=~\"$node\",label_joulie_io_power_profile=\"eco\"}) > bool 0) or on(node) (0 * max by(node) (joulie_operator_node_state{node=~\"$node\"})))",
+          "expr": "((max by(node) (kube_node_labels{node=~\"$node\",label_joulie_io_power_profile=\"eco\"}) > bool 0) or on(node) (0 * max by(node) (joulie_policy_node_state{node=~\"$node\"})))",
           "legendFormat": "{{node}} eco (0/1)",
           "refId": "C"
         }
@@ -702,7 +702,7 @@
         "name": "node",
         "options": [],
         "query": {
-          "query": "label_values(joulie_operator_node_state, node)",
+          "query": "label_values(joulie_policy_node_state, node)",
           "refId": "NodeVariableQuery"
         },
         "refresh": 1,

@@ -27,7 +27,7 @@ Current trace behavior:
 
 ## Baselines
 
-- `A`: simulator only (no operator/agent), using affinity-free workload pods (Joulie-free baseline).
+- `A`: simulator only (no controller manager/agent), using affinity-free workload pods (Joulie-free baseline).
 - `B`: simulator + Joulie with static partition-oriented config.
 - `C`: simulator + Joulie with queue-aware policy-oriented config.
 
@@ -56,7 +56,7 @@ Each run writes to `results/<run_id>/`:
 - `trace.jsonl`
 - `pods.json`
 - `nodepowerprofiles.yaml`
-- operator/agent/simulator logs
+- controller manager/agent/simulator logs
 - simulator debug snapshots
   - `sim_debug_energy.json` (simulator-integrated energy over all managed nodes)
 

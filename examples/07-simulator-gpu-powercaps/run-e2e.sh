@@ -14,10 +14,10 @@ LOCAL_TAG="${LOCAL_TAG:-gpu-e2e-$(date +%Y%m%d%H%M%S)}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-$ROOT_DIR/tmp/gpu-e2e-${LOCAL_TAG}}"
 
 AGENT_IMAGE_REPO="${AGENT_IMAGE_REPO:-joulie-agent}"
-OPERATOR_IMAGE_REPO="${OPERATOR_IMAGE_REPO:-joulie-operator}"
+CONTROLLER_MANAGER_IMAGE_REPO="${CONTROLLER_MANAGER_IMAGE_REPO:-joulie-controller-manager}"
 SIMULATOR_IMAGE_REPO="${SIMULATOR_IMAGE_REPO:-joulie-simulator}"
 AGENT_IMAGE="${AGENT_IMAGE_REPO}:${LOCAL_TAG}"
-OPERATOR_IMAGE="${OPERATOR_IMAGE_REPO}:${LOCAL_TAG}"
+CONTROLLER_MANAGER_IMAGE="${CONTROLLER_MANAGER_IMAGE_REPO}:${LOCAL_TAG}"
 SIMULATOR_IMAGE="${SIMULATOR_IMAGE_REPO}:${LOCAL_TAG}"
 
 mkdir -p "$ARTIFACT_DIR"
@@ -80,7 +80,7 @@ collect_diagnostics() {
   k -n joulie-system get all >"$out/joulie-system.all.txt" 2>&1 || true
   k -n joulie-sim-demo get all >"$out/joulie-sim-demo.all.txt" 2>&1 || true
 
-  k -n joulie-system logs deploy/joulie-operator --tail=-1 >"$out/operator.log" 2>&1 || true
+  k -n joulie-system logs deploy/joulie-controller-manager --tail=-1 >"$out/controller-manager.log" 2>&1 || true
   k -n joulie-system logs statefulset/joulie-agent-pool --tail=-1 >"$out/agent-pool.log" 2>&1 || true
   k -n joulie-sim-demo logs deploy/joulie-telemetry-sim --tail=-1 >"$out/simulator.log" 2>&1 || true
 
@@ -194,11 +194,11 @@ main() {
 
   log "building local images"
   run docker build --build-arg COMPONENT=agent -t "$AGENT_IMAGE" -f "$ROOT_DIR/Dockerfile" "$ROOT_DIR"
-  run docker build --build-arg COMPONENT=operator -t "$OPERATOR_IMAGE" -f "$ROOT_DIR/Dockerfile" "$ROOT_DIR"
+  run docker build --build-arg COMPONENT=controller-manager -t "$CONTROLLER_MANAGER_IMAGE" -f "$ROOT_DIR/Dockerfile" "$ROOT_DIR"
   run docker build -t "$SIMULATOR_IMAGE" -f "$ROOT_DIR/simulator/Dockerfile" "$ROOT_DIR"
 
   log "loading images into kind"
-  run kind load docker-image --name "$CLUSTER_NAME" "$AGENT_IMAGE" "$OPERATOR_IMAGE" "$SIMULATOR_IMAGE"
+  run kind load docker-image --name "$CLUSTER_NAME" "$AGENT_IMAGE" "$CONTROLLER_MANAGER_IMAGE" "$SIMULATOR_IMAGE"
   run k -n joulie-sim-demo set image deploy/joulie-telemetry-sim simulator="$SIMULATOR_IMAGE"
   run k -n joulie-sim-demo patch deploy/joulie-telemetry-sim --type='json' \
     -p='[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}]'
@@ -215,11 +215,11 @@ main() {
     --set "agent.image.repository=${AGENT_IMAGE_REPO}" \
     --set "agent.image.tag=${LOCAL_TAG}" \
     --set "agent.image.pullPolicy=IfNotPresent" \
-    --set "operator.image.repository=${OPERATOR_IMAGE_REPO}" \
-    --set "operator.image.tag=${LOCAL_TAG}" \
-    --set "operator.image.pullPolicy=IfNotPresent"
+    --set "controllerManager.image.repository=${CONTROLLER_MANAGER_IMAGE_REPO}" \
+    --set "controllerManager.image.tag=${LOCAL_TAG}" \
+    --set "controllerManager.image.pullPolicy=IfNotPresent"
 
-  run k -n joulie-system rollout status deploy/joulie-operator --timeout=240s
+  run k -n joulie-system rollout status deploy/joulie-controller-manager --timeout=240s
   run k -n joulie-system rollout status statefulset/joulie-agent-pool --timeout=240s
 
   log "configuring agent telemetry/control env vars for simulator HTTP routing"

@@ -11,9 +11,9 @@ agent:
     METRICS_ADDR: ":8080"
     SIMULATE_ONLY: "false"
 
-operator:
+controllerManager:
   image:
-    repository: registry.cern.ch/mbunino/joulie/joulie-operator
+    repository: registry.cern.ch/mbunino/joulie/joulie-controller-manager
     tag: latest
     pullPolicy: Always
   env:

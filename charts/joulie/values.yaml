@@ -29,10 +29,14 @@ agent:
       prometheus.io/port: "8080"
       prometheus.io/path: /metrics
 
-operator:
+# Cluster-scoped controller manager (Deployment joulie-controller-manager).
+# Upgrading from a chart that still shipped "joulie-operator": the Deployment,
+# ServiceAccount and RBAC objects are renamed, so helm upgrade creates the new
+# ones and deletes the old; expect one restart of the control loop.
+controllerManager:
   nodeSelector: {}
   image:
-    repository: registry.cern.ch/mbunino/joulie/joulie-operator
+    repository: registry.cern.ch/mbunino/joulie/joulie-controller-manager
     tag: latest
     pullPolicy: IfNotPresent
   leaderElection:
@@ -66,6 +70,10 @@ operator:
       prometheus.io/port: "8081"
       prometheus.io/path: /metrics
 
+# Deprecated: old name of the controllerManager section, removed in the next
+# minor release. Keys set here are merged over controllerManager for now.
+operator: {}
+
 schedulerExtender:
   enabled: false  # disabled by default; enable when using custom kube-scheduler config
   image:
@@ -80,7 +88,7 @@ schedulerExtender:
   env: {}
 
 hardwareCatalog:
-  enabled: false  # mount hardware catalog ConfigMap into operator and agent
+  enabled: false  # mount hardware catalog ConfigMap into controller manager and agent
   configMapName: joulie-hardware-catalog
   key: hardware.yaml
   mountPath: /etc/joulie-catalog

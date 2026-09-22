@@ -32,7 +32,7 @@ Joulie supports heterogeneous GPU fleets by profile percentages:
 - performance profile: `capPctOfMax=100`
 - eco profile: `capPctOfMax` lower than 100 (for example 60)
 
-Optional deterministic mode (simulator-oriented): operator can resolve percentages to absolute watts using model mapping (`GPU_MODEL_CAPS_JSON`) and write `capWattsPerGpu`.
+Optional deterministic mode (simulator-oriented): controller manager can resolve percentages to absolute watts using model mapping (`GPU_MODEL_CAPS_JSON`) and write `capWattsPerGpu`.
 
 ## Agent host backends
 

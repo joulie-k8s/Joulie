@@ -31,15 +31,15 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "joulie_operator_node_state{node=~\"$node\",state=\"ActivePerformance\"}",
+          "expr": "joulie_policy_node_state{node=~\"$node\",state=\"ActivePerformance\"}",
           "legendFormat": "{{node}} ActivePerformance"
         },
         {
-          "expr": "joulie_operator_node_state{node=~\"$node\",state=\"DrainingPerformance\"}",
+          "expr": "joulie_policy_node_state{node=~\"$node\",state=\"DrainingPerformance\"}",
           "legendFormat": "{{node}} DrainingPerformance"
         },
         {
-          "expr": "joulie_operator_node_state{node=~\"$node\",state=\"ActiveEco\"}",
+          "expr": "joulie_policy_node_state{node=~\"$node\",state=\"ActiveEco\"}",
           "legendFormat": "{{node}} ActiveEco"
         }
       ]
@@ -59,15 +59,15 @@
       "type": "bargauge",
       "targets": [
         {
-          "expr": "count(joulie_operator_node_state{state=\"ActivePerformance\"} == 1)",
+          "expr": "count(joulie_policy_node_state{state=\"ActivePerformance\"} == 1)",
           "legendFormat": "Performance"
         },
         {
-          "expr": "count(joulie_operator_node_state{state=\"ActiveEco\"} == 1)",
+          "expr": "count(joulie_policy_node_state{state=\"ActiveEco\"} == 1)",
           "legendFormat": "Eco"
         },
         {
-          "expr": "count(joulie_operator_node_state{state=\"DrainingPerformance\"} == 1)",
+          "expr": "count(joulie_policy_node_state{state=\"DrainingPerformance\"} == 1)",
           "legendFormat": "Draining"
         }
       ]
@@ -87,11 +87,11 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "joulie_operator_node_profile_label{node=~\"$node\",profile=\"performance\"}",
+          "expr": "joulie_policy_node_profile_label{node=~\"$node\",profile=\"performance\"}",
           "legendFormat": "{{node}} performance"
         },
         {
-          "expr": "joulie_operator_node_profile_label{node=~\"$node\",profile=\"eco\"}",
+          "expr": "joulie_policy_node_profile_label{node=~\"$node\",profile=\"eco\"}",
           "legendFormat": "{{node}} eco"
         }
       ]
@@ -117,7 +117,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by (from_state, to_state, result) (rate(joulie_operator_state_transitions_total{node=~\"$node\"}[5m]))",
+          "expr": "sum by (from_state, to_state, result) (rate(joulie_policy_state_transitions_total{node=~\"$node\"}[5m]))",
           "legendFormat": "{{from_state}} → {{to_state}} ({{result}})"
         }
       ]
@@ -136,7 +136,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "expr": "joulie_operator_node_compute_density{node=~\"$node\"}",
+          "expr": "joulie_policy_node_compute_density{node=~\"$node\"}",
           "legendFormat": "{{node}} ({{component}})"
         }
       ]
@@ -729,7 +729,7 @@
           "value": "$__all"
         },
         "datasource": { "type": "prometheus", "uid": "${datasource}" },
-        "definition": "label_values(joulie_operator_node_state, node)",
+        "definition": "label_values(joulie_policy_node_state, node)",
         "hide": 0,
         "includeAll": true,
         "label": "Node",
@@ -737,7 +737,7 @@
         "name": "node",
         "options": [],
         "query": {
-          "query": "label_values(joulie_operator_node_state, node)",
+          "query": "label_values(joulie_policy_node_state, node)",
           "refId": "NodeVariableQuery"
         },
         "refresh": 1,

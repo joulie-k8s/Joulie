@@ -59,7 +59,7 @@ Where:
   - `trendBonus` = -clamp(powerTrend / trendScale, -25, +25)
   - `clusterTrend` = sum of all per-node power trends (W/min)
 
-**Design rationale**: Headroom dominates (0.7) because it carries the most information: actual load, the pod's marginal impact, and the operator's power budget — all in one number. Cooling stress is low weight (0.15) as a physical safety signal. The adaptive trend (+/-25) provides strong power smoothing during steady state (trendScale=6.0 amplifies the signal) while becoming more conservative during cluster-wide bursts (trendScale=2.0 avoids over-reacting to coordinated ramps).
+**Design rationale**: Headroom dominates (0.7) because it carries the most information: actual load, the pod's marginal impact, and the controller manager's power budget, all in one number. Cooling stress is low weight (0.15) as a physical safety signal. The adaptive trend (+/-25) provides strong power smoothing during steady state (trendScale=6.0 amplifies the signal) while becoming more conservative during cluster-wide bursts (trendScale=2.0 avoids over-reacting to coordinated ramps).
 
 Key simplifications over the legacy formula:
 - No PSU stress term (same for all nodes, zero differentiation)

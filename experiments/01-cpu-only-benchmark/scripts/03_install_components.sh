@@ -79,7 +79,7 @@ else
   if [[ -n "$INFRA_NODE" ]]; then
     INFRA_SELECTOR_ARGS=(
       --set-string "agent.pool.podNodeSelector.joulie\\.io/infra=true"
-      --set-string "operator.nodeSelector.joulie\\.io/infra=true"
+      --set-string "controllerManager.nodeSelector.joulie\\.io/infra=true"
     )
   fi
 
@@ -109,34 +109,34 @@ else
     --set "agent.image.repository=${JOULIE_REGISTRY}/joulie-agent" \
     --set "agent.image.tag=${JOULIE_TAG}" \
     --set "agent.image.pullPolicy=IfNotPresent" \
-    --set "operator.image.repository=${JOULIE_REGISTRY}/joulie-operator" \
-    --set "operator.image.tag=${JOULIE_TAG}" \
-    --set "operator.image.pullPolicy=IfNotPresent" \
+    --set "controllerManager.image.repository=${JOULIE_REGISTRY}/joulie-controller-manager" \
+    --set "controllerManager.image.tag=${JOULIE_TAG}" \
+    --set "controllerManager.image.pullPolicy=IfNotPresent" \
     --set "agent.env.RECONCILE_INTERVAL=${AGENT_RECONCILE_INTERVAL}" \
     --set "agent.env.KUBE_CLIENT_QPS=200" \
     --set "agent.env.KUBE_CLIENT_BURST=400" \
-    --set "operator.env.RECONCILE_INTERVAL=${OPERATOR_RECONCILE_INTERVAL}" \
-    --set "operator.env.KUBE_CLIENT_QPS=200" \
-    --set "operator.env.KUBE_CLIENT_BURST=400" \
-    --set "operator.env.POLICY_TYPE=${POLICY_TYPE}" \
-    --set "operator.env.STATIC_HP_FRAC=${STATIC_HP_FRAC}" \
-    --set "operator.env.QUEUE_HP_BASE_FRAC=${QUEUE_HP_BASE_FRAC}" \
-    --set "operator.env.QUEUE_HP_MIN=${QUEUE_HP_MIN}" \
-    --set "operator.env.QUEUE_HP_MAX=${QUEUE_HP_MAX}" \
-    --set "operator.env.QUEUE_PERF_PER_HP_NODE=${QUEUE_PERF_PER_HP_NODE}" \
-    --set "operator.env.CPU_PERFORMANCE_CAP_PCT_OF_MAX=${CPU_PERFORMANCE_CAP_PCT_OF_MAX}" \
-    --set "operator.env.CPU_ECO_CAP_PCT_OF_MAX=${CPU_ECO_CAP_PCT_OF_MAX}" \
-    --set "operator.env.CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS}" \
-    --set "operator.env.PERFORMANCE_CAP_WATTS=${PERFORMANCE_CAP_WATTS}" \
-    --set "operator.env.ECO_CAP_WATTS=${ECO_CAP_WATTS}" \
-    --set "operator.env.ENABLE_FACILITY_METRICS=${ENABLE_FACILITY_METRICS}" \
+    --set "controllerManager.env.RECONCILE_INTERVAL=${OPERATOR_RECONCILE_INTERVAL}" \
+    --set "controllerManager.env.KUBE_CLIENT_QPS=200" \
+    --set "controllerManager.env.KUBE_CLIENT_BURST=400" \
+    --set "controllerManager.env.POLICY_TYPE=${POLICY_TYPE}" \
+    --set "controllerManager.env.STATIC_HP_FRAC=${STATIC_HP_FRAC}" \
+    --set "controllerManager.env.QUEUE_HP_BASE_FRAC=${QUEUE_HP_BASE_FRAC}" \
+    --set "controllerManager.env.QUEUE_HP_MIN=${QUEUE_HP_MIN}" \
+    --set "controllerManager.env.QUEUE_HP_MAX=${QUEUE_HP_MAX}" \
+    --set "controllerManager.env.QUEUE_PERF_PER_HP_NODE=${QUEUE_PERF_PER_HP_NODE}" \
+    --set "controllerManager.env.CPU_PERFORMANCE_CAP_PCT_OF_MAX=${CPU_PERFORMANCE_CAP_PCT_OF_MAX}" \
+    --set "controllerManager.env.CPU_ECO_CAP_PCT_OF_MAX=${CPU_ECO_CAP_PCT_OF_MAX}" \
+    --set "controllerManager.env.CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS}" \
+    --set "controllerManager.env.PERFORMANCE_CAP_WATTS=${PERFORMANCE_CAP_WATTS}" \
+    --set "controllerManager.env.ECO_CAP_WATTS=${ECO_CAP_WATTS}" \
+    --set "controllerManager.env.ENABLE_FACILITY_METRICS=${ENABLE_FACILITY_METRICS}" \
     "${AGENT_TELEMETRY_ARGS[@]}" \
     "${SCHED_ARGS[@]}" \
     ${INFRA_SELECTOR_ARGS[@]+"${INFRA_SELECTOR_ARGS[@]}"}
 
   # Extender must be ready first — operator/agent pods go through the extender filter.
   kubectl -n joulie-system rollout status deploy/joulie-scheduler-extender --timeout=120s
-  kubectl -n joulie-system rollout status deploy/joulie-operator
+  kubectl -n joulie-system rollout status deploy/joulie-controller-manager
   kubectl -n joulie-system rollout status statefulset/joulie-agent-pool
 
   # Verify the extender is reachable. On KinD we can check from the control-plane

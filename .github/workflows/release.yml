@@ -44,14 +44,20 @@ jobs:
             registry.cern.ch/mbunino/joulie/joulie-agent:${{ steps.vars.outputs.version }}
             registry.cern.ch/mbunino/joulie/joulie-agent:latest
 
-      - name: Build and push operator
+      # The joulie-operator tags are a compatibility alias for the image that
+      # was renamed to joulie-controller-manager (same build, same digest).
+      # Drop the two joulie-operator lines in the minor release after the one
+      # that introduced joulie-controller-manager.
+      - name: Build and push controller manager
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
-          build-args: COMPONENT=operator
+          build-args: COMPONENT=controller-manager
           push: true
           tags: |
+            registry.cern.ch/mbunino/joulie/joulie-controller-manager:${{ steps.vars.outputs.version }}
+            registry.cern.ch/mbunino/joulie/joulie-controller-manager:latest
             registry.cern.ch/mbunino/joulie/joulie-operator:${{ steps.vars.outputs.version }}
             registry.cern.ch/mbunino/joulie/joulie-operator:latest
 

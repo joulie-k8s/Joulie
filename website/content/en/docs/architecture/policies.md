@@ -4,12 +4,12 @@ weight: 40
 ---
 
 
-This page documents the controller policy algorithms implemented in `pkg/operator/policy/`.
+This page documents the controller policy algorithms implemented in `pkg/controller/policy/`.
 
 Use this page after:
 
 1. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
-2. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}})
+2. [Joulie Controller Manager]({{< relref "/docs/architecture/controller-manager.md" >}})
 
 ## Classification Input
 
@@ -111,7 +111,7 @@ When planned profile is `eco` on a node currently `performance`:
 2. If count > 0:
    - keep desired profile as `eco`,
    - set `NodeTwin.status.schedulableClass` to `draining`,
-   - record transition as deferred in operator FSM/metrics.
+   - record transition as deferred in controller manager FSM/metrics.
 3. If count == 0:
    - keep desired profile `eco`,
    - set `NodeTwin.status.schedulableClass` to `eco`.

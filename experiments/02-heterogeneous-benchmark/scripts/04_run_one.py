@@ -452,7 +452,7 @@ def collect_artifacts(
     (run_dir / "nodepowerprofiles.yaml").write_text(run(["kubectl", "get", "nodepowerprofiles", "-o", "yaml"], capture=True, check=False).stdout)
     (run_dir / "nodehardwares.yaml").write_text(run(["kubectl", "get", "nodehardwares", "-o", "yaml"], capture=True, check=False).stdout)
 
-    (run_dir / "operator.log").write_text(run(["kubectl", "-n", "joulie-system", "logs", "deploy/joulie-operator", "--tail=400"], capture=True, check=False).stdout)
+    (run_dir / "controller-manager.log").write_text(run(["kubectl", "-n", "joulie-system", "logs", "deploy/joulie-controller-manager", "--tail=400"], capture=True, check=False).stdout)
     (run_dir / "agent.log").write_text(run(["kubectl", "-n", "joulie-system", "logs", "statefulset/joulie-agent-pool", "--tail=400"], capture=True, check=False).stdout)
     (run_dir / "simulator.log").write_text(run(["kubectl", "-n", "joulie-sim-demo", "logs", "deploy/joulie-telemetry-sim", "--tail=400"], capture=True).stdout)
     (run_dir / "nodes.json").write_text(run(["kubectl", "get", "nodes", "-o", "json"], capture=True, check=False).stdout)
