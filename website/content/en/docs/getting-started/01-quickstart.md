@@ -28,13 +28,13 @@ helm upgrade --install joulie oci://registry.cern.ch/mbunino/joulie/joulie \
   -f values/joulie.yaml
 ```
 
-### Label nodes managed by the operator
+### Label nodes managed by the controller manager
 
 **Important**: Joulie will only target nodes with a specific label, and ignore
 all the others. By default, install does not auto-select nodes.
 Default expected selector value is:
 
-- `joulie.io/managed=true` (operator env `NODE_SELECTOR`)
+- `joulie.io/managed=true` (controller manager env `NODE_SELECTOR`)
 
 So you must label target worker nodes, for example:
 
@@ -43,7 +43,7 @@ kubectl label node <node-a> joulie.io/managed=true --overwrite
 kubectl label node <node-b> joulie.io/managed=true --overwrite
 ```
 
-If this is missing, operator logs will show `no eligible nodes matched selector`.
+If this is missing, controller manager logs will show `no eligible nodes matched selector`.
 By default, the agent DaemonSet uses the same selector scope (`joulie.io/managed=true`), so unlabeled nodes will not run agent pods.
 
 ## Install from source (when developing)
@@ -58,7 +58,7 @@ make install TAG=<tag>
 This pushes:
 
 - `registry.cern.ch/mbunino/joulie/joulie-agent:<tag>`
-- `registry.cern.ch/mbunino/joulie/joulie-operator:<tag>`
+- `registry.cern.ch/mbunino/joulie/joulie-controller-manager:<tag>`
 - `registry.cern.ch/mbunino/joulie/joulie-scheduler:<tag>`
 
 You can also do build+push+install in one command:
@@ -90,7 +90,7 @@ make install TAG=<tag> HELM_VALUES=<path-to-values.yaml>
 
 Node selection behavior is the same as release install:
 
-- operator expects `joulie.io/managed=true` by default
+- controller manager expects `joulie.io/managed=true` by default
 - label target nodes before verifying reconciliation
 
 Joulie will only target nodes with that specific label.
@@ -107,20 +107,20 @@ make uninstall
 make rollout TAG=<new-tag>
 ```
 
-## Joulie operator and agents
+## Joulie controller manager and agents
 
 Joulie control is a desired-state loop:
 
 - agent discovers per-node hardware and publishes `NodeHardware`,
-- operator resolves hardware/inventory and decides per-node target state,
-- operator writes that desired state into `NodeTwin.spec`,
+- controller manager resolves hardware/inventory and decides per-node target state,
+- controller manager writes that desired state into `NodeTwin.spec`,
 - node labels (`joulie.io/power-profile`) expose current supply to the scheduler,
 - agent enforces node-local controls from desired state and telemetry/control profile.
 
 Meaning of the key node labels:
 
 - `joulie.io/managed=true`
-  - node is in Joulie operator scope (eligible for policy decisions)
+  - node is in controller manager scope (eligible for policy decisions)
 - `joulie.io/power-profile=performance`
   - node currently offers high-performance supply
 - `joulie.io/power-profile=eco`
@@ -129,37 +129,37 @@ Meaning of the key node labels:
 Read the architecture path after this quickstart:
 
 1. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
-2. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}})
+2. [Joulie Controller Manager]({{< relref "/docs/architecture/controller-manager.md" >}})
 3. [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
 
 Architecture overview:
 
 <img src='{{< relURL "images/joulie-arch.png" >}}' alt="Joulie architecture overview">
 
-### Central operator mode
+### Central controller manager mode
 
-The operator continuously writes `NodeTwin.spec` assignments from the active policy (for example static partition or queue-aware), mapping desired states to node profiles (`performance`/`eco`).
+The controller manager continuously writes `NodeTwin.spec` assignments from the active policy (for example static partition or queue-aware), mapping desired states to node profiles (`performance`/`eco`).
 
 Configuration details:
 
 - [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
-- [Operator]({{< relref "/docs/architecture/operator.md" >}})
+- [Controller Manager]({{< relref "/docs/architecture/controller-manager.md" >}})
 - Optional runnable manifest walkthrough:
-  - [Operator Configuration Example](https://github.com/joulie-k8s/Joulie/tree/main/examples/04-operator-configuration/README.md)
+  - [Controller Manager Configuration Example](https://github.com/joulie-k8s/Joulie/tree/main/examples/04-operator-configuration/README.md)
 
 Verify:
 
 ```bash
 kubectl get nodehardwares
 kubectl get nodetwins
-kubectl -n joulie-system logs deploy/joulie-operator --tail=100
+kubectl -n joulie-system logs deploy/joulie-controller-manager --tail=100
 kubectl -n joulie-system logs -l app.kubernetes.io/name=joulie-agent --tail=100
 ```
 
 Look for:
 
 - `NodeHardware` objects appearing for managed nodes,
-- operator logs mentioning inventory-aware planning or desired-state assignment,
+- controller manager logs mentioning inventory-aware planning or desired-state assignment,
 - agent logs containing desired-state source and enforcement/fallback actions.
 
 Also verify installed images:
@@ -169,7 +169,7 @@ kubectl -n joulie-system get pods \
   -o custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[0].image,IMAGEID:.status.containerStatuses[0].imageID
 ```
 
-If operator logs show `no eligible nodes matched selector`, verify node labels:
+If controller manager logs show `no eligible nodes matched selector`, verify node labels:
 
 ```bash
 kubectl get nodes --show-labels | grep 'joulie.io/managed=true'
@@ -189,7 +189,7 @@ helm upgrade --install joulie-simulator oci://registry.cern.ch/mbunino/joulie/jo
 
 Or from source: `make simulator-install TAG=<version>`
 
-For fake-node workload + power simulation (real scheduler, fake [KWOK](https://kwok.sigs.k8s.io/) nodes, real operator, agent pool mode), see:
+For fake-node workload + power simulation (real scheduler, fake [KWOK](https://kwok.sigs.k8s.io/) nodes, real controller manager, agent pool mode), see:
 
 - [Simulator Overview]({{< relref "/docs/simulator/simulator.md" >}})
 - [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})

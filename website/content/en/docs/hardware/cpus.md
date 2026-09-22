@@ -19,7 +19,7 @@ Precedence:
 
 ## Policy behavior
 
-Operator profile assignment remains `performance` vs `eco`.
+Controller manager profile assignment remains `performance` vs `eco`.
 CPU cap values are generated per profile and written into `NodeTwin.spec`:
 
 - performance profile typically maps to a higher cap (often 100%)

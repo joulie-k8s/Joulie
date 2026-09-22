@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/matbun/joulie/pkg/operator/policy"
+	"github.com/matbun/joulie/pkg/controller/policy"
 )
 
 // These conformance tests verify that the standalone simulator's scheduling

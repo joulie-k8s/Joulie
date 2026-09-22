@@ -37,8 +37,8 @@ Workload class is determined from the `joulie.io/workload-class` pod annotation:
 
 Node supply is represented by:
 
-- `joulie.io/power-profile=performance|eco` (node label, set by operator)
-- `NodeTwin.status.schedulableClass` (internal, set by operator twin controller)
+- `joulie.io/power-profile=performance|eco` (node label, set by the controller manager)
+- `NodeTwin.status.schedulableClass` (internal, set by controller manager's twin controller)
 
 Semantics:
 
@@ -46,11 +46,11 @@ Semantics:
 - `eco`: low-power supply
 - `draining` (schedulableClass only): transition safeguard active while node is moving toward eco; the scheduler extender applies a score penalty
 
-The `schedulableClass` field is internal to the operator and scheduler extender. Users interact only with the `joulie.io/workload-class` pod annotation for placement intent.
+The `schedulableClass` field is internal to the controller manager and scheduler extender. Users interact only with the `joulie.io/workload-class` pod annotation for placement intent.
 
 ## Desired-state + twin output: `NodeTwin`
 
-`NodeTwin` is the operator-to-agent contract for one node. The `spec` carries desired state; the `status` carries twin output (including control feedback and schedulable class).
+`NodeTwin` is the controller-manager-to-agent contract for one node. The `spec` carries desired state; the `status` carries twin output (including control feedback and schedulable class).
 
 Main spec fields:
 
@@ -69,12 +69,12 @@ Resolution/precedence in agent runtime:
 1. CPU: `packagePowerCapWatts` if present, otherwise `packagePowerCapPctOfMax`
 2. GPU: `capWattsPerGpu` if present, otherwise `capPctOfMax`
 
-What the operator typically writes today:
+What the controller manager typically writes today:
 
 - CPU intent is commonly emitted as `packagePowerCapPctOfMax`.
 - GPU intent may be emitted as:
   - `capPctOfMax` only, when the agent is expected to resolve percentage to watts from device limits,
-  - `capWattsPerGpu` plus `capPctOfMax`, when the operator has deterministic model-based mapping available and wants the absolute target to be explicit.
+  - `capWattsPerGpu` plus `capPctOfMax`, when the controller manager has deterministic model-based mapping available and wants the absolute target to be explicit.
 
 Example:
 
@@ -105,7 +105,7 @@ In this example:
 
 ## Hardware-discovery object: `NodeHardware`
 
-`NodeHardware` is the agent-to-operator contract for discovered node capabilities.
+`NodeHardware` is the agent-to-controller-manager contract for discovered node capabilities.
 
 It is status-oriented and agent-owned.
 Users should not normally create it by hand.
@@ -176,13 +176,13 @@ status:
     warnings: []
 ```
 
-The operator uses `NodeHardware` as the source of truth for:
+The controller manager uses `NodeHardware` as the source of truth for:
 
 - hardware recognition against the inventory,
 - compute-density-aware planning,
 - per-device fallback when only part of the node is recognized.
 
-In simulator-first setups, the operator can fall back to node hardware labels when `NodeHardware` has not been published yet.
+In simulator-first setups, the controller manager can fall back to node hardware labels when `NodeHardware` has not been published yet.
 This keeps simulator examples lightweight while preserving the same architecture once the agent starts publishing discovered hardware.
 
 ## Telemetry/control backend selection
@@ -212,12 +212,12 @@ The full runtime contract, backend types, HTTP payloads, and status semantics ar
 
 1. User submits workload with Kubernetes scheduling constraints.
 2. Scheduler places pods according to available node labels.
-3. Operator observes demand/supply and computes new node targets.
+3. The controller manager observes demand/supply and computes new node targets.
 4. Agent publishes `NodeHardware`.
-5. Operator resolves discovered hardware against the inventory.
-6. Operator writes `NodeTwin` and updates node supply labels.
+5. The controller manager resolves discovered hardware against the inventory.
+6. The controller manager writes `NodeTwin` and updates node supply labels.
 7. Agent enforces controls and reports status/metrics.
 
 ## Next step
 
-Read [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}}) for reconcile behavior and transition guards.
+Read [Joulie Controller Manager]({{< relref "/docs/architecture/controller-manager.md" >}}) for reconcile behavior and transition guards.

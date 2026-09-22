@@ -36,11 +36,11 @@ Together, these produce three categories of signal:
 
 ### Stage 2: Prometheus aggregation
 
-All telemetry is scraped into Prometheus. The operator and classifier query Prometheus over configurable windows (default 10 minutes for classification, 30 seconds for twin updates). This decouples data collection from decision-making and lets each consumer query at its own cadence.
+All telemetry is scraped into Prometheus. The controller manager and classifier query Prometheus over configurable windows (default 10 minutes for classification, 30 seconds for twin updates). This decouples data collection from decision-making and lets each consumer query at its own cadence.
 
 ### Stage 3: Digital twin computation
 
-The operator's twin controller ingests `NodeHardware` (static capabilities) and Prometheus telemetry to compute three scores per node, written to `NodeTwin.status`:
+The controller manager's twin controller ingests `NodeHardware` (static capabilities) and Prometheus telemetry to compute three scores per node, written to `NodeTwin.status`:
 
 - **Power headroom** (0-100): remaining power budget before hitting thermal or PSU limits.
 - **CoolingStress** (0-100): predicted fraction of cooling capacity in use.
@@ -134,7 +134,7 @@ Fan, Weber, and Barroso (2007) demonstrated that aggregate power consumption in 
 
 ### Digital twin for data centers
 
-The concept of a digital twin for thermal-aware provisioning was introduced by Patel, Bash, and Sharma (2003), who proposed using thermal models to guide server placement in data centers. Joulie extends this idea to Kubernetes: the digital twin is a lightweight parametric model embedded in the operator, continuously updated from telemetry, and consumed by the scheduler in real time.
+The concept of a digital twin for thermal-aware provisioning was introduced by Patel, Bash, and Sharma (2003), who proposed using thermal models to guide server placement in data centers. Joulie extends this idea to Kubernetes: the digital twin is a lightweight parametric model embedded in the controller manager, continuously updated from telemetry, and consumed by the scheduler in real time.
 
 > C.D. Patel, C.E. Bash, and R. Sharma. "Thermal Considerations in Cooling Large Scale High Compute Density Data Centers." Proceedings of the International Symposium on High Performance Computer Architecture (HPCA), 2003.
 

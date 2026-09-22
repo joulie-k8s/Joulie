@@ -4,7 +4,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// NodeTwinSpec is the desired power state of a node. The operator writes it
+// NodeTwinSpec is the desired power state of a node. The controller manager writes it
 // from the policy decision; the agent applies it to the hardware.
 type NodeTwinSpec struct {
 	NodeName string `json:"nodeName"`
@@ -56,7 +56,7 @@ type NodeTwinScheduling struct {
 }
 
 // NodeTwinStatus is the digital twin output for one node, computed by the
-// operator from NodeHardware and NodeTwinSpec and read by the scheduler
+// controller manager from NodeHardware and NodeTwinSpec and read by the scheduler
 // extender. controlStatus is the exception: the agent writes it.
 type NodeTwinStatus struct {
 	// +kubebuilder:validation:Enum=eco;performance;draining;unknown
@@ -76,7 +76,7 @@ type NodeTwinStatus struct {
 	EstimatedPUE float64 `json:"estimatedPUE,omitempty"`
 	// Control feedback from the agent
 	ControlStatus *ControlStatus `json:"controlStatus,omitempty"`
-	// LastUpdated is the RFC3339 time of the last operator write.
+	// LastUpdated is the RFC3339 time of the last controller manager write.
 	LastUpdated string `json:"lastUpdated,omitempty"`
 }
 
@@ -106,7 +106,7 @@ type PowerMeasurement struct {
 	PowerTrendWPerMin float64 `json:"powerTrendWPerMin,omitempty"`
 }
 
-// CapState is the cap the operator believes is in effect, as a percentage
+// CapState is the cap the controller manager believes is in effect, as a percentage
 // of the hardware maximum.
 type CapState struct {
 	CPUPct float64 `json:"cpuPct,omitempty"`
@@ -142,15 +142,15 @@ type ControlResult struct {
 // +kubebuilder:printcolumn:name="Draining",type=boolean,JSONPath=".spec.scheduling.draining"
 
 // NodeTwin combines a node's desired power state and its computed twin
-// output. spec is written by the operator, status by the operator's twin
+// output. spec is written by the controller manager, status by its twin
 // model plus the agent's control feedback.
 type NodeTwin struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	// Desired power state for this node, written by the operator.
+	// Desired power state for this node, written by the controller manager.
 	Spec NodeTwinSpec `json:"spec,omitempty"`
-	// Computed twin state, written by the operator's digital twin model.
+	// Computed twin state, written by the controller manager's digital twin model.
 	Status NodeTwinStatus `json:"status,omitempty"`
 }
 

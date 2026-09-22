@@ -38,7 +38,7 @@ import (
 //   SIM_SA_HP_MIN               — min HP nodes for baseline C, default 1
 //   SIM_SA_HP_MAX               — max HP nodes for baseline C, default 25
 //   SIM_SA_PERF_PER_HP_NODE     — queue depth per HP node for baseline C, default 10
-//   SIM_SA_RECONCILE_INTERVAL   — operator reconcile sim-seconds for C, default 300
+//   SIM_SA_RECONCILE_INTERVAL   — controller manager reconcile sim-seconds for C, default 300
 // ---------------------------------------------------------------------------
 
 // inventoryFile is the top-level YAML structure for cluster-nodes.yaml.
@@ -218,7 +218,7 @@ func runStandalone(s *simulator) {
 			s.appendTimeseriesRow(virtualNow)
 		}
 
-		// 4. Periodic operator reconcile for baseline C.
+		// 4. Periodic controller manager reconcile for baseline C.
 		if baseline == "C" && elapsed-lastReconcileSec >= reconcileInterval {
 			perfIntentPods := countPerformanceSensitivePending(tracker, s.workload.jobs)
 			applyPowerPolicy(s, tracker, nodeNames, nodeByName, baseline, hpFrac, cpuEcoPct, gpuEcoPct, perfIntentPods, perfPerHP, hpBaseFrac, hpMin, hpMax)
@@ -1173,7 +1173,7 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 	return int(completedTotal)
 }
 
-// nodeFamily returns the hardware family key for a node (matches operator's NodeFamily).
+// nodeFamily returns the hardware family key for a node (matches the controller manager's NodeFamily).
 func nodeFamily(n *expandedNode) string {
 	if n.GPUCount > 0 {
 		model := n.Product
@@ -1191,7 +1191,7 @@ func nodeFamily(n *expandedNode) string {
 
 // selectPerformanceNodes picks hpCount nodes for performance, prioritizing
 // one node from each hardware family before filling remaining slots.
-// Matches the real operator's selectPerformanceNodes in policy.go.
+// Matches the real controller manager's selectPerformanceNodes in policy.go.
 func selectPerformanceNodes(nodeNames []string, nodeByName map[string]*expandedNode, hpCount int) map[string]bool {
 	perfNodes := make(map[string]bool, hpCount)
 	seenFamilies := make(map[string]struct{}, len(nodeNames))
@@ -1225,7 +1225,7 @@ func selectPerformanceNodes(nodeNames []string, nodeByName map[string]*expandedN
 }
 
 // countPerformanceSensitivePending counts pending+running performance-class pods
-// across all nodes. This matches the real operator's queue-aware metric.
+// across all nodes. This matches the real controller manager's queue-aware metric.
 func countPerformanceSensitivePending(tracker map[string]*standaloneNodeTracker, jobs []*simJob) int {
 	count := 0
 	// Running performance pods on all nodes.
@@ -1243,7 +1243,7 @@ func countPerformanceSensitivePending(tracker map[string]*standaloneNodeTracker,
 }
 
 // applyPowerPolicy sets eco/performance labels and corresponding power caps on nodes.
-// Matches the real operator logic:
+// Matches the real controller manager logic:
 //   - Family diversity: at least 1 perf node per hardware family
 //   - FSM draining: nodes with running perf pods can't instantly transition to eco
 //   - Queue-aware (C): counts performance-sensitive pods, not all pending

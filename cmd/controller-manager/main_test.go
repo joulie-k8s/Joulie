@@ -8,10 +8,10 @@ import (
 
 	"github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/controller/policy"
+	"github.com/matbun/joulie/pkg/controller/twin"
 	"github.com/matbun/joulie/pkg/hwinv"
 	"github.com/matbun/joulie/pkg/kube"
-	"github.com/matbun/joulie/pkg/operator/policy"
-	"github.com/matbun/joulie/pkg/operator/twin"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -718,9 +718,9 @@ func TestPodTransformKeepsOnlyFSMFields(t *testing.T) {
 	}
 }
 
-func TestOperatorCacheOptionsTransformPods(t *testing.T) {
+func TestManagerCacheOptionsTransformPods(t *testing.T) {
 	t.Parallel()
-	opts := operatorCacheOptions()
+	opts := managerCacheOptions()
 	if opts.DefaultTransform == nil {
 		t.Fatal("DefaultTransform not set: managedFields would be cached for every kind")
 	}
@@ -1155,12 +1155,12 @@ func TestImplausibleNodePowerCatchesJoulesCounter(t *testing.T) {
 func TestNodeTwinStatusMapNeverContainsControlStatus(t *testing.T) {
 	t.Parallel()
 	status := joulieNodeTwinStatusForTest()
-	// Even if a ControlStatus is present in memory, the operator must never
+	// Even if a ControlStatus is present in memory, the controller manager must never
 	// write it: that subtree belongs to the agent.
 	status.ControlStatus = &joulie.ControlStatus{CPU: &joulie.ControlResult{Backend: "rapl", Result: "applied"}}
 	m := nodeTwinStatusToMap(status)
 	if _, ok := m["controlStatus"]; ok {
-		t.Fatalf("operator status payload contains controlStatus: %v", m)
+		t.Fatalf("controller manager status payload contains controlStatus: %v", m)
 	}
 }
 

@@ -1,6 +1,5 @@
 [![CI](https://github.com/joulie-k8s/Joulie/actions/workflows/ci.yml/badge.svg)](https://github.com/joulie-k8s/Joulie/actions/workflows/ci.yml)
 [![Release](https://github.com/joulie-k8s/Joulie/actions/workflows/release.yml/badge.svg)](https://github.com/joulie-k8s/Joulie/actions/workflows/release.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/joulie-k8s/Joulie)](https://goreportcard.com/report/github.com/joulie-k8s/Joulie)
 
 # Joulie
 
@@ -18,7 +17,7 @@ up-to-date model of every node's thermal and power state.
 
 These per-node digital twins drive two things:
 
-1. **Energy control**: the operator writes desired power state into `NodeTwin` CRs
+1. **Energy control**: the controller manager writes desired power state into `NodeTwin` CRs
    (CPU and GPU power caps). The node agent reads `NodeTwin.spec` and enforces them.
 
 2. **Scheduling decisions**: a scheduler extender reads the twin's computed
@@ -43,7 +42,7 @@ As AI and scientific workloads scale, clusters face:
 - **PSU/PDU overcommit**: peak power draw exceeds rack power budgets
 - **Carbon cost**: flat power profiles waste energy during low-demand periods
 
-Joulie addresses these by making the scheduler and operator aware of the physical
+Joulie addresses these by making the scheduler and controller manager aware of the physical
 energy state of the cluster in real time, using per-node digital twins that
 predict the impact of scheduling decisions before they are made.
 
@@ -54,17 +53,17 @@ Joulie has five components:
 | Component | What it does |
 |-----------|-------------|
 | **Agent** (`cmd/agent`) | Runs on every node. Discovers hardware (CPU/GPU caps, slicing modes). Enforces RAPL/NVML power caps. Publishes `NodeHardware` CR. Reads `NodeTwin.spec` for desired state. Writes control feedback to `NodeTwin.status.controlStatus`. |
-| **Operator** (`cmd/operator`) | Cluster-wide control loop. Reads `NodeHardware` + Prometheus metrics. Runs the digital twin model. Writes `NodeTwin` (spec = desired power state, status = twin output). |
+| **Controller manager** (`cmd/controller-manager`) | Cluster-wide control loop. Reads `NodeHardware` + Prometheus metrics. Runs the digital twin model. Writes `NodeTwin` (spec = desired power state, status = twin output). |
 | **Scheduler extender** (`cmd/scheduler`) | HTTP extender for kube-scheduler. Reads `NodeTwin.status` (30s TTL cache). Rejects eco nodes for performance pods. Scores nodes by power headroom and stress. |
 | **kubectl plugin** (`cmd/kubectl-joulie`) | `kubectl joulie status` for cluster energy overview. |
-| **Digital twin** (`pkg/operator/twin`) | O(1) parametric model. Computes power headroom, cooling stress (% of cooling capacity), PSU stress (% of PDU capacity), and estimated PUE. CoolingModel is pluggable (default: linear proxy; future: openModelica thermal simulation). |
+| **Digital twin** (`pkg/controller/twin`) | O(1) parametric model. Computes power headroom, cooling stress (% of cooling capacity), PSU stress (% of PDU capacity), and estimated PUE. CoolingModel is pluggable (default: linear proxy; future: openModelica thermal simulation). |
 
 ## CRDs
 
 | CRD | Owner | Purpose |
 |-----|-------|---------|
 | `NodeHardware` | Agent | Hardware facts: CPU/GPU model, cap ranges, frequency landmarks, GPU slicing modes |
-| `NodeTwin` | Operator | Desired state (spec: power cap %) + twin output (status: headroom, cooling stress, PSU stress, estimated PUE, control feedback) |
+| `NodeTwin` | Controller manager | Desired state (spec: power cap %) + twin output (status: headroom, cooling stress, PSU stress, estimated PUE, control feedback) |
 
 ## Workload classes
 
@@ -82,32 +81,32 @@ Without it, pods run anywhere and get standard Kubernetes scheduling.
 
 | Label / Annotation | Where | Purpose |
 |--------------------|-------|---------|
-| `joulie.io/power-profile` | Node label | `eco` or `performance`. Set by operator. |
+| `joulie.io/power-profile` | Node label | `eco` or `performance`. Set by the controller manager. |
 | `joulie.io/workload-class` | Pod annotation | `performance`, `standard`. |
 
 ## Repository layout
 
 ```
-cmd/agent/          Node agent: orchestration, reconcile loop
-cmd/operator/       Cluster operator: twin computation, NodeTwin
-cmd/scheduler/      HTTP scheduler extender: filter + score via NodeTwin.status
-cmd/kubectl-joulie/ kubectl plugin: `kubectl joulie status`
-pkg/agent/dvfs/     DVFS controller (EMA smoothing, hysteresis, frequency capping)
-pkg/agent/control/  HTTP control and telemetry clients
-pkg/agent/hardware/ Hardware discovery (CPU/GPU caps, freq landmarks, slicing)
-pkg/api/            Shared Go types (NodeHardware, NodeTwin)
-pkg/operator/policy/  Policy algorithms (static_partition, queue_aware_v1, rule_swap_v1)
-pkg/operator/fsm/   Node state machine (downgrade guards, pod classification, NodeOps interface)
-pkg/operator/twin/  Digital twin model (CoolingModel interface)
-simulator/          Workload and power simulator for offline experiments
-charts/joulie/      Helm chart (includes Grafana dashboard)
-config/crd/         CRD manifests
-experiments/        Benchmark experiments
+cmd/agent/              Node agent: orchestration, reconcile loop
+cmd/controller-manager/ Cluster controller manager: twin computation, NodeTwin
+cmd/scheduler/          HTTP scheduler extender: filter + score via NodeTwin.status
+cmd/kubectl-joulie/     kubectl plugin: `kubectl joulie status`
+pkg/agent/dvfs/         DVFS controller (EMA smoothing, hysteresis, frequency capping)
+pkg/agent/control/      HTTP control and telemetry clients
+pkg/agent/hardware/     Hardware discovery (CPU/GPU caps, freq landmarks, slicing)
+pkg/api/                Shared Go types (NodeHardware, NodeTwin)
+pkg/controller/policy/  Policy algorithms (static_partition, queue_aware_v1, rule_swap_v1)
+pkg/controller/fsm/     Node state machine (downgrade guards, pod classification, NodeOps interface)
+pkg/controller/twin/    Digital twin model (CoolingModel interface)
+simulator/              Workload and power simulator for offline experiments
+charts/joulie/          Helm chart (includes Grafana dashboard)
+config/crd/             CRD manifests
+experiments/            Benchmark experiments
   01-cpu-only-benchmark/
   02-heterogeneous-benchmark/
   03-homogeneous-h100-benchmark/
-examples/           Runnable examples
-website/            Documentation site
+examples/               Runnable examples
+website/                Documentation site
 ```
 
 ## Quick start
@@ -118,8 +117,7 @@ kubectl apply -f config/crd/bases/
 
 # Install via Helm
 helm install joulie charts/joulie \
-  --set agent.enabled=true \
-  --set operator.enabled=true
+  -n joulie-system --create-namespace
 
 # Annotate a performance pod
 kubectl annotate pod my-gpu-job joulie.io/workload-class=performance

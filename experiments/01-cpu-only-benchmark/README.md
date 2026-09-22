@@ -5,7 +5,7 @@ This experiment harness measures throughput/latency vs energy-control behavior i
 - real scheduler/API server,
 - fake KWOK worker nodes for workload pods,
 - simulator telemetry/control loop,
-- optional Joulie operator+agent(pool).
+- optional Joulie controller manager+agent(pool).
 
 Workload scheduling in benchmark pods uses affinity on `joulie.io/power-profile`:
 
@@ -27,7 +27,7 @@ Current trace behavior:
 
 ## Baselines
 
-- `A`: simulator only (no operator/agent), using affinity-free workload pods (Joulie-free baseline).
+- `A`: simulator only (no controller manager/agent), using affinity-free workload pods (Joulie-free baseline).
 - `B`: simulator + Joulie with static partition-oriented config.
 - `C`: simulator + Joulie with queue-aware policy-oriented config.
 
@@ -56,7 +56,7 @@ Each run writes to `results/<run_id>/`:
 - `trace.jsonl`
 - `pods.json`
 - `nodepowerprofiles.yaml`
-- operator/agent/simulator logs
+- controller manager/agent/simulator logs
 - simulator debug snapshots
   - `sim_debug_energy.json` (simulator-integrated energy over all managed nodes)
 
@@ -132,7 +132,7 @@ You can manually check that the right containers were used by running:
 
 ```bash
 kubectl get pods -A -o=jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{range .spec.containers[*]}{.name}{"="}{.image}{" "}{end}{"\n"}{end}' \
-| egrep 'joulie-(agent|operator)|joulie-telemetry-sim'
+| egrep 'joulie-(agent|controller-manager)|joulie-telemetry-sim'
 ```
 
 Policy/image override for manual component installs (when running `03_install_components.sh` directly):
@@ -150,7 +150,7 @@ export SIM_TAG=dev0.0.13
 
 `05_sweep.py` manages policy per baseline automatically:
 
-- `A` -> simulator-only / no policy (operator+agent not installed)
+- `A` -> simulator-only / no policy (controller manager+agent not installed)
 - `B` -> `static_partition`
 - `C` -> `queue_aware_v1`
 

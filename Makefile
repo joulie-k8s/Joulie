@@ -18,7 +18,7 @@ CRD_DIR ?= config/crd/bases
 CHART_CRD_DIR ?= charts/joulie/crds
 
 # Image names must follow joulie-<component>, where <component> matches cmd/<component>.
-IMAGES ?= joulie-agent joulie-operator joulie-scheduler
+IMAGES ?= joulie-agent joulie-controller-manager joulie-scheduler
 
 .PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-experiments test-all test-examples controller-gen generate manifests verify-manifests kubectl-plugin kubectl-plugin-install kubectl-plugin-push kubectl-plugin-build-push simulator-build simulator-push simulator-build-push simulator-install simulator-uninstall simulator-build-push-deploy simulator-logs docs-serve
 
@@ -26,7 +26,7 @@ help:
 	@echo "Targets:"
 	@echo "  make install TAG=<tag> [HELM_VALUES=values/joulie.yaml]  Helm install/upgrade"
 	@echo "  make uninstall                        Helm uninstall and remove CRD"
-	@echo "  make build TAG=<tag>                  Build all images (agent+operator+scheduler)"
+	@echo "  make build TAG=<tag>                  Build all images (agent+controller-manager+scheduler)"
 	@echo "  make push TAG=<tag>                   Push all images"
 	@echo "  make build-push TAG=<tag>             Build and push all images"
 	@echo "  make build-push-all TAG=<tag>         Build and push all images + simulator"
@@ -63,10 +63,10 @@ install:
 		-n "$(NAMESPACE)" --create-namespace \
 		-f "$(HELM_VALUES)" \
 		--set agent.image.repository="$(REGISTRY)/joulie-agent" \
-		--set operator.image.repository="$(REGISTRY)/joulie-operator" \
+		--set controllerManager.image.repository="$(REGISTRY)/joulie-controller-manager" \
 		--set schedulerExtender.image.repository="$(REGISTRY)/joulie-scheduler" \
 		--set agent.image.tag="$(TAG)" \
-		--set operator.image.tag="$(TAG)" \
+		--set controllerManager.image.tag="$(TAG)" \
 		--set schedulerExtender.image.tag="$(TAG)"
 
 uninstall:
@@ -97,14 +97,14 @@ rollout:
 		-n "$(NAMESPACE)" --create-namespace \
 		-f "$(HELM_VALUES)" \
 		--set agent.image.repository="$(REGISTRY)/joulie-agent" \
-		--set operator.image.repository="$(REGISTRY)/joulie-operator" \
+		--set controllerManager.image.repository="$(REGISTRY)/joulie-controller-manager" \
 		--set schedulerExtender.image.repository="$(REGISTRY)/joulie-scheduler" \
 		--set agent.image.tag="$(TAG)" \
-		--set operator.image.tag="$(TAG)" \
+		--set controllerManager.image.tag="$(TAG)" \
 		--set schedulerExtender.image.tag="$(TAG)"
 	@echo "Waiting for rollout to complete"
 	kubectl -n "$(NAMESPACE)" rollout status daemonset/joulie-agent
-	kubectl -n "$(NAMESPACE)" rollout status deployment/joulie-operator
+	kubectl -n "$(NAMESPACE)" rollout status deployment/joulie-controller-manager
 	@kubectl -n "$(NAMESPACE)" get deploy/joulie-scheduler-extender >/dev/null 2>&1 && \
 		kubectl -n "$(NAMESPACE)" rollout status deploy/joulie-scheduler-extender || true
 
@@ -113,7 +113,7 @@ build-push-rollout: build-push rollout
 build-push-install: build-push install
 	@echo "Waiting for rollout to complete"
 	kubectl -n "$(NAMESPACE)" rollout status daemonset/joulie-agent
-	kubectl -n "$(NAMESPACE)" rollout status deployment/joulie-operator
+	kubectl -n "$(NAMESPACE)" rollout status deployment/joulie-controller-manager
 	@kubectl -n "$(NAMESPACE)" get deploy/joulie-scheduler-extender >/dev/null 2>&1 && \
 		kubectl -n "$(NAMESPACE)" rollout status deploy/joulie-scheduler-extender || true
 

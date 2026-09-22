@@ -48,7 +48,7 @@ echo "=== 3/6 Build images ==="
 make build TAG=demo
 make simulator-build TAG=demo
 kind load docker-image "registry.cern.ch/mbunino/joulie/joulie-agent:demo" --name "$CLUSTER"
-kind load docker-image "registry.cern.ch/mbunino/joulie/joulie-operator:demo" --name "$CLUSTER"
+kind load docker-image "registry.cern.ch/mbunino/joulie/joulie-controller-manager:demo" --name "$CLUSTER"
 kind load docker-image "registry.cern.ch/mbunino/joulie/joulie-scheduler:demo" --name "$CLUSTER"
 kind load docker-image "registry.cern.ch/mbunino/joulie/joulie-simulator:demo" --name "$CLUSTER"
 
@@ -96,8 +96,8 @@ echo "=== 6/6 Install Joulie ==="
 helm upgrade --install joulie charts/joulie \
   -n joulie-system \
   -f "$DEMO_DIR/joulie-values.yaml" \
-  --set operator.image.tag=demo \
-  --set operator.image.pullPolicy=IfNotPresent \
+  --set controllerManager.image.tag=demo \
+  --set controllerManager.image.pullPolicy=IfNotPresent \
   --set agent.image.tag=demo \
   --set agent.image.pullPolicy=IfNotPresent \
   --set schedulerExtender.image.tag=demo \

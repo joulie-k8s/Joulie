@@ -185,7 +185,7 @@ If power measurement data is unavailable (no `powerMeasurement` in NodeTwin stat
 
 ### Stale twin fallback
 
-If the NodeTwin's `lastUpdated` timestamp is older than 5 minutes (configurable via `TWIN_STALENESS_THRESHOLD`), the node receives a neutral score of 50. This prevents stale data from an operator that may have stopped updating from influencing placement. Nodes with no `lastUpdated` timestamp at all are also treated as stale. Nodes with no NodeTwin state at all also receive 50.
+If the NodeTwin's `lastUpdated` timestamp is older than 5 minutes (configurable via `TWIN_STALENESS_THRESHOLD`), the node receives a neutral score of 50. This prevents stale data from a controller manager that may have stopped updating from influencing placement. Nodes with no `lastUpdated` timestamp at all are also treated as stale. Nodes with no NodeTwin state at all also receive 50.
 
 ### Adaptive performance pressure relief
 
@@ -216,7 +216,7 @@ All scores are clamped to `[0, 100]` before being returned to kube-scheduler.
 
 ### PUE-weighted marginal power estimation
 
-When facility metrics are enabled (`ENABLE_FACILITY_METRICS=true`), the operator computes PUE from real data-center metrics and writes `NodeTwin.status.estimatedPUE`. The scheduler extender uses this to weight marginal power estimates:
+When facility metrics are enabled (`ENABLE_FACILITY_METRICS=true`), the controller manager computes PUE from real data-center metrics and writes `NodeTwin.status.estimatedPUE`. The scheduler extender uses this to weight marginal power estimates:
 
 ```
 if estimatedPUE > 1.0:
@@ -327,4 +327,4 @@ curl -s -X POST \
 
 1. [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}})
 2. [Pod Compatibility]({{< relref "/docs/getting-started/03-pod-compatibility.md" >}})
-3. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}})
+3. [Joulie Controller Manager]({{< relref "/docs/architecture/controller-manager.md" >}})

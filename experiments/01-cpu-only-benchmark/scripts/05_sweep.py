@@ -604,7 +604,7 @@ def main():
         "configured images "
         f"sim={install_env_base['SIM_REGISTRY']}/{install_env_base['SIM_IMAGE']}"
         + (f":{install_env_base['SIM_TAG']}" if install_env_base["SIM_TAG"] else " (manifest-tag)")
-        + f" operator={install_env_base['JOULIE_REGISTRY']}/joulie-operator:{install_env_base['JOULIE_TAG']}"
+        + f" controller-manager={install_env_base['JOULIE_REGISTRY']}/joulie-controller-manager:{install_env_base['JOULIE_TAG']}"
         + f" agent={install_env_base['JOULIE_REGISTRY']}/joulie-agent:{install_env_base['JOULIE_TAG']}"
     )
     log(
@@ -633,13 +633,13 @@ def main():
             install_env["POLICY_TYPE"] = baseline_policy[baseline]
         else:
             install_env.pop("POLICY_TYPE", None)
-        # For queue-aware (baseline C), compute the operator reconcile interval
+        # For queue-aware (baseline C), compute the controller manager reconcile interval
         # from simulated seconds divided by time_scale.
         if baseline == "C":
             qa_sim_sec = float(get_cfg(cfg, "policy", "loop", "queue_aware_operator_reconcile_sim_seconds", default=300))
             qa_wall_sec = max(1, int(qa_sim_sec / time_scale))
             install_env["OPERATOR_RECONCILE_INTERVAL"] = f"{qa_wall_sec}s"
-            log(f"baseline C: queue-aware operator reconcile = {qa_sim_sec}s simulated / {time_scale} = {qa_wall_sec}s wall")
+            log(f"baseline C: queue-aware controller manager reconcile = {qa_sim_sec}s simulated / {time_scale} = {qa_wall_sec}s wall")
         run_with_env(
             [
                 "bash",

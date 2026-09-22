@@ -225,7 +225,7 @@ func detectRAPLCapRange(sockets int) joulie.CPUCapRange {
 		}
 	}
 
-	// Fallback: if RAPL not readable, leave zeros (operator will use catalog)
+	// Fallback: if RAPL not readable, leave zeros (controller manager will use catalog)
 	return cr
 }
 

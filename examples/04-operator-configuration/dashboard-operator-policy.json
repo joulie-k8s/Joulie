@@ -1,6 +1,6 @@
 {
-  "title": "Joulie Operator Policy View",
-  "uid": "joulie-operator-policy",
+  "title": "Joulie Controller Manager Policy View",
+  "uid": "joulie-controller-manager-policy",
   "schemaVersion": 39,
   "version": 1,
   "refresh": "10s",

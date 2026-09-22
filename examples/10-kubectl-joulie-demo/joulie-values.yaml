@@ -18,11 +18,11 @@ agent:
     TELEMETRY_GPU_CONTROL: http
     TELEMETRY_GPU_CONTROL_HTTP_ENDPOINT: "http://joulie-telemetry-sim.joulie-system.svc/control/{node}"
 
-operator:
+controllerManager:
   env:
     RECONCILE_INTERVAL: "3s"
     NODE_SELECTOR: "joulie.io/managed=true"
-    OPERATOR_NODE_POWER_SOURCE: http
-    OPERATOR_NODE_POWER_HTTP_ENDPOINT: "http://joulie-telemetry-sim.joulie-system.svc/telemetry/{node}"
+    NODE_POWER_SOURCE: http
+    NODE_POWER_HTTP_ENDPOINT: "http://joulie-telemetry-sim.joulie-system.svc/telemetry/{node}"
     ENABLE_FACILITY_METRICS: "true"
     FACILITY_PROMETHEUS_ADDRESS: "http://joulie-telemetry-sim.joulie-system.svc"

@@ -2,7 +2,7 @@ spec:
   template:
     spec:
       containers:
-        - name: operator
+        - name: controller-manager
           env:
             - name: RECONCILE_INTERVAL
               value: 30s

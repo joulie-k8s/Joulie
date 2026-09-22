@@ -18,7 +18,7 @@ This section is ordered intentionally:
 
 By the end, you should understand:
 
-- what operator, agent, and scheduler extender each do,
+- what controller manager, agent, and scheduler extender each do,
 - how workload placement intent is expressed via pod annotations,
 - how to configure and run Joulie in real-node and simulator workflows.
 

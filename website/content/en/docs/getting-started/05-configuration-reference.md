@@ -5,7 +5,7 @@ weight: 50
 
 Complete reference for all Joulie environment variables. These are set via Helm values or directly in the Deployment/DaemonSet manifests.
 
-Defaults listed below are the **code defaults**. The Helm chart (`charts/joulie/values.yaml`) overrides some of them — notably, the operator `NODE_SELECTOR` defaults to `joulie.io/managed=true` in the chart even though the code default is `node-role.kubernetes.io/worker`.
+Defaults listed below are the **code defaults**. The Helm chart (`charts/joulie/values.yaml`) overrides some of them: notably, the controller manager `NODE_SELECTOR` defaults to `joulie.io/managed=true` in the chart even though the code default is `node-role.kubernetes.io/worker`.
 
 ## Agent
 
@@ -52,21 +52,23 @@ Defaults listed below are the **code defaults**. The Helm chart (`charts/joulie/
 | `TELEMETRY_GPU_CONTROL_MODE` | (empty) | GPU control mode override |
 | `TELEMETRY_HTTP_TIMEOUT_SECONDS` | `5` | HTTP client timeout for telemetry/control requests |
 
-## Operator
+## Controller manager
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RECONCILE_INTERVAL` | `1m` | How often the operator reconciles cluster state |
+| `RECONCILE_INTERVAL` | `1m` | How often the controller manager reconciles cluster state |
 | `METRICS_ADDR` | `:8081` | Address for the Prometheus metrics endpoint |
-| `LEADER_ELECT` | `false` | Run the reconcile loop only on the leader of a `coordination.k8s.io` lease. Required before running more than one operator replica. Helm: `operator.leaderElection.enabled`, which also creates the lease Role. |
+| `LEADER_ELECT` | `false` | Run the reconcile loop only on the leader of a `coordination.k8s.io` lease. Required before running more than one controller manager replica. Helm: `controllerManager.leaderElection.enabled`, which also creates the lease Role. |
 | `POD_NAMESPACE` | `joulie-system` | Namespace of the leader election lease. The chart sets it from the downward API. |
 | `NODE_SELECTOR` | `node-role.kubernetes.io/worker` | Label selector for managed nodes |
 | `RESERVED_LABEL_KEY` | `joulie.io/reserved` | Label key for nodes excluded from policy decisions |
 | `POWER_PROFILE_LABEL` | `joulie.io/power-profile` | Node label key for the active power profile |
-| `OPERATOR_NODE_POWER_SOURCE` | `static` | Node power data source: `static`, `http`, `prometheus` |
-| `OPERATOR_NODE_POWER_HTTP_ENDPOINT` | (empty) | HTTP endpoint for per-node power readings |
-| `OPERATOR_NODE_POWER_PROMETHEUS_ADDRESS` | (empty) | Prometheus address for per-node power queries |
-| `OPERATOR_NODE_POWER_PROMETHEUS_QUERY` | (empty) | PromQL query for per-node power readings, in **watts**. `{node}` is replaced with the node name. |
+| `NODE_POWER_SOURCE` | `static` | Node power data source: `static`, `http`, `prometheus` |
+| `NODE_POWER_HTTP_ENDPOINT` | (empty) | HTTP endpoint for per-node power readings |
+| `NODE_POWER_PROMETHEUS_ADDRESS` | (empty) | Prometheus address for per-node power queries |
+| `NODE_POWER_PROMETHEUS_QUERY` | (empty) | PromQL query for per-node power readings, in **watts**. `{node}` is replaced with the node name. |
+
+Deprecated aliases, removed in the next minor release: `OPERATOR_NODE_POWER_SOURCE`, `OPERATOR_NODE_POWER_HTTP_ENDPOINT`, `OPERATOR_NODE_POWER_PROMETHEUS_ADDRESS`, `OPERATOR_NODE_POWER_PROMETHEUS_QUERY`. They are read only when the new name is unset, and the controller manager logs a warning naming the replacement.
 
 The query must return instantaneous power in watts. Kepler and most energy
 exporters publish cumulative joules counters, which grow without bound, so they
@@ -78,7 +80,7 @@ rate(kepler_node_platform_joules_total{exported_instance="{node}"}[5m])
 
 Passing the counter directly makes `measuredNodePowerW` climb forever, which
 drives power headroom negative and cooling stress to 100% on every node. The
-operator logs a warning when a reading exceeds twice the node's TDP.
+controller manager logs a warning when a reading exceeds twice the node's TDP.
 
 ### Power cap configuration
 
@@ -126,7 +128,7 @@ Joulie supports optional per-rack PSU stress and per-zone cooling stress. This i
 - `joulie.io/rack`: physical rack identifier (e.g., `rack-1`)
 - `joulie.io/cooling-zone`: cooling zone identifier (e.g., `zone-a`)
 
-When these labels are present, the operator computes PSU stress per-rack (sum of estimated node power within the rack) instead of cluster-wide, and uses per-zone ambient temperature from facility metrics instead of the global value. The twin model interfaces remain the same; topology just groups nodes for more accurate stress computation.
+When these labels are present, the controller manager computes PSU stress per-rack (sum of estimated node power within the rack) instead of cluster-wide, and uses per-zone ambient temperature from facility metrics instead of the global value. The twin model interfaces remain the same; topology just groups nodes for more accurate stress computation.
 
 Nodes without topology labels fall back to cluster-wide stress computation.
 

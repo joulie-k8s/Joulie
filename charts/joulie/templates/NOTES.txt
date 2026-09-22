@@ -1,0 +1,5 @@
+{{- if .Values.operator }}
+WARNING: the values key "operator" is deprecated and will be removed in the next
+minor release. Move its contents under "controllerManager"; where both set the
+same key, "operator" currently wins.
+{{- end }}

@@ -17,10 +17,10 @@ import (
 
 	"github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/controller/fsm"
+	"github.com/matbun/joulie/pkg/controller/policy"
 	"github.com/matbun/joulie/pkg/hwinv"
 	"github.com/matbun/joulie/pkg/kube"
-	"github.com/matbun/joulie/pkg/operator/fsm"
-	"github.com/matbun/joulie/pkg/operator/policy"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	corev1 "k8s.io/api/core/v1"
@@ -41,7 +41,7 @@ const (
 
 	// leaderElectionID names the Lease the replicas compete for when
 	// LEADER_ELECT is set. It lives in the POD_NAMESPACE namespace.
-	leaderElectionID = "joulie-operator"
+	leaderElectionID = "joulie-controller-manager"
 
 	// reconcileTimeout bounds one cluster-wide reconcile.
 	reconcileTimeout = 20 * time.Second
@@ -54,7 +54,7 @@ const (
 	workloadClassPerfOnly = "performance-only"
 )
 
-// NodeAssignment and GPUCapIntent are defined in pkg/operator/policy.
+// NodeAssignment and GPUCapIntent are defined in pkg/controller/policy.
 type NodeAssignment = policy.NodeAssignment
 type GPUCapIntent = policy.GPUCapIntent
 
@@ -104,40 +104,34 @@ var (
 	gpuIntentWarningMu   sync.Mutex
 	gpuIntentWarningSeen = map[string]struct{}{}
 
-	operatorNodeState = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "joulie_operator_node_state",
-			Help: "Current operator view of node state (1 for active state, 0 otherwise).",
-		},
+	// Policy controller outputs. Each is exported under its joulie_policy_*
+	// name and, for one release, under the deprecated joulie_operator_* alias
+	// (see deprecated.go).
+	policyNodeState = newDualGaugeVec(
+		"joulie_policy_node_state", "joulie_operator_node_state",
+		"Current policy controller view of node state (1 for active state, 0 otherwise).",
 		[]string{"node", "state"},
 	)
-	operatorNodeProfileLabel = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "joulie_operator_node_profile_label",
-			Help: "Current node power-profile label as seen/applied by operator (1 for active profile, 0 otherwise).",
-		},
+	policyNodeProfileLabel = newDualGaugeVec(
+		"joulie_policy_node_profile_label", "joulie_operator_node_profile_label",
+		"Current node power-profile label as seen/applied by the policy controller (1 for active profile, 0 otherwise).",
 		[]string{"node", "profile"},
 	)
-	operatorStateTransitions = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "joulie_operator_state_transitions_total",
-			Help: "Total number of state-transition events handled by operator.",
-		},
+	policyStateTransitions = newDualCounterVec(
+		"joulie_policy_state_transitions_total", "joulie_operator_state_transitions_total",
+		"Total number of state-transition events handled by the policy controller.",
 		[]string{"node", "from_state", "to_state", "result"},
 	)
-
-	operatorNodeDensity = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "joulie_operator_node_compute_density",
-			Help: "Normalized compute density score used by the operator for heterogeneous planning.",
-		},
+	policyNodeDensity = newDualGaugeVec(
+		"joulie_policy_node_compute_density", "joulie_operator_node_compute_density",
+		"Normalized compute density score used by the policy controller for heterogeneous planning.",
 		[]string{"node", "component"},
 	)
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.SetPrefix("[joulie-operator] ")
+	log.SetPrefix("[joulie-controller-manager] ")
 
 	reconcileEvery := durationEnv("RECONCILE_INTERVAL", time.Minute)
 	metricsAddr := envOrDefault("METRICS_ADDR", ":8081")
@@ -199,7 +193,7 @@ func main() {
 		LeaderElect:      boolEnv("LEADER_ELECT", false),
 		LeaderElectionID: leaderElectionID,
 		LeaderElectionNS: envOrDefault("POD_NAMESPACE", "joulie-system"),
-		Cache:            operatorCacheOptions(),
+		Cache:            managerCacheOptions(),
 	})
 	if err != nil {
 		log.Fatalf("manager: %v", err)
@@ -213,10 +207,10 @@ func main() {
 	}
 
 	// --- Node power source (per-node telemetry) ---
-	nodePowerSource = strings.ToLower(envOrDefault("OPERATOR_NODE_POWER_SOURCE", "static"))
-	nodePowerHTTPEndpoint = envOrDefault("OPERATOR_NODE_POWER_HTTP_ENDPOINT", "")
-	nodePowerPromAddress = envOrDefault("OPERATOR_NODE_POWER_PROMETHEUS_ADDRESS", "")
-	nodePowerPromQuery = envOrDefault("OPERATOR_NODE_POWER_PROMETHEUS_QUERY", "")
+	nodePowerSource = strings.ToLower(envOrDeprecated("NODE_POWER_SOURCE", "static"))
+	nodePowerHTTPEndpoint = envOrDeprecated("NODE_POWER_HTTP_ENDPOINT", "")
+	nodePowerPromAddress = envOrDeprecated("NODE_POWER_PROMETHEUS_ADDRESS", "")
+	nodePowerPromQuery = envOrDeprecated("NODE_POWER_PROMETHEUS_QUERY", "")
 	switch nodePowerSource {
 	case "http":
 		log.Printf("node power source: http endpoint=%s", nodePowerHTTPEndpoint)
@@ -282,8 +276,17 @@ func reconcileLoop(ctx context.Context, interval time.Duration, run func(context
 	}
 }
 
+// registerMetrics registers every policy metric, current and deprecated name,
+// with reg.
+func registerMetrics(reg prometheus.Registerer) {
+	reg.MustRegister(policyNodeState.collectors()...)
+	reg.MustRegister(policyNodeProfileLabel.collectors()...)
+	reg.MustRegister(policyStateTransitions.collectors()...)
+	reg.MustRegister(policyNodeDensity.collectors()...)
+}
+
 func startMetricsServer(addr string) {
-	prometheus.MustRegister(operatorNodeState, operatorNodeProfileLabel, operatorStateTransitions, operatorNodeDensity)
+	registerMetrics(prometheus.DefaultRegisterer)
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	go func() {
@@ -402,12 +405,12 @@ func reconcileWithCatalog(
 	for _, nodeName := range eligible {
 		nh, ok := nodeHardwareByName[nodeName]
 		if !ok {
-			operatorNodeDensity.WithLabelValues(nodeName, "cpu").Set(0)
-			operatorNodeDensity.WithLabelValues(nodeName, "gpu").Set(0)
+			policyNodeDensity.Set(0, nodeName, "cpu")
+			policyNodeDensity.Set(0, nodeName, "gpu")
 			continue
 		}
-		operatorNodeDensity.WithLabelValues(nodeName, "cpu").Set(nh.CPUComputeDensity)
-		operatorNodeDensity.WithLabelValues(nodeName, "gpu").Set(nh.GPUComputeDensity)
+		policyNodeDensity.Set(nh.CPUComputeDensity, nodeName, "cpu")
+		policyNodeDensity.Set(nh.GPUComputeDensity, nodeName, "gpu")
 	}
 
 	plan := buildPlanByPolicy(ctx, reader, policyType, eligible, nodeHardwareByName, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
@@ -587,9 +590,9 @@ func recordNodeStateMetrics(nodeName, state string) {
 	if state == "ActiveEco" {
 		activeEco = 1
 	}
-	operatorNodeState.WithLabelValues(nodeName, "ActivePerformance").Set(activePerf)
-	operatorNodeState.WithLabelValues(nodeName, "DrainingPerformance").Set(draining)
-	operatorNodeState.WithLabelValues(nodeName, "ActiveEco").Set(activeEco)
+	policyNodeState.Set(activePerf, nodeName, "ActivePerformance")
+	policyNodeState.Set(draining, nodeName, "DrainingPerformance")
+	policyNodeState.Set(activeEco, nodeName, "ActiveEco")
 }
 
 func recordNodeProfileLabelMetrics(nodeName, profile string) {
@@ -601,8 +604,8 @@ func recordNodeProfileLabelMetrics(nodeName, profile string) {
 	if profile == profileEco {
 		eco = 1
 	}
-	operatorNodeProfileLabel.WithLabelValues(nodeName, profilePerformance).Set(perf)
-	operatorNodeProfileLabel.WithLabelValues(nodeName, profileEco).Set(eco)
+	policyNodeProfileLabel.Set(perf, nodeName, profilePerformance)
+	policyNodeProfileLabel.Set(eco, nodeName, profileEco)
 }
 
 func recordTransitionMetrics(a NodeAssignment) {
@@ -614,7 +617,7 @@ func recordTransitionMetrics(a NodeAssignment) {
 	if fromState == "Unknown" || toState == "Unknown" || fromState == toState {
 		return
 	}
-	operatorStateTransitions.WithLabelValues(a.NodeName, fromState, toState, "applied").Inc()
+	policyStateTransitions.Inc(a.NodeName, fromState, toState, "applied")
 }
 
 func applyDowngradeGuards(
@@ -628,7 +631,7 @@ func applyDowngradeGuards(
 	// Record metrics for guarded transitions.
 	for _, a := range plan {
 		if a.Draining {
-			operatorStateTransitions.WithLabelValues(a.NodeName, "ActivePerformance", "ActiveEco", "deferred").Inc()
+			policyStateTransitions.Inc(a.NodeName, "ActivePerformance", "ActiveEco", "deferred")
 		}
 	}
 }
@@ -636,7 +639,7 @@ func applyDowngradeGuards(
 // computeDesiredLabels delegates to fsm.ComputeDesiredLabels.
 var computeDesiredLabels = fsm.ComputeDesiredLabels
 
-// toHardwareInfoMap converts the operator's NodeHardware map to the minimal
+// toHardwareInfoMap converts the controller manager's NodeHardware map to the minimal
 // policy.NodeHardwareInfo map needed by the policy algorithms.
 func toHardwareInfoMap(hw map[string]NodeHardware) map[string]policy.NodeHardwareInfo {
 	out := make(map[string]policy.NodeHardwareInfo, len(hw))
@@ -1160,7 +1163,7 @@ func upsertNodeLabels(ctx context.Context, kubeClient kubernetes.Interface, prof
 	if err != nil {
 		return fmt.Errorf("marshal node label patch for %s: %w", a.NodeName, err)
 	}
-	if _, err := kubeClient.CoreV1().Nodes().Patch(ctx, a.NodeName, types.MergePatchType, rawPatch, metav1.PatchOptions{FieldManager: joulie.FieldManagerOperator}); err != nil {
+	if _, err := kubeClient.CoreV1().Nodes().Patch(ctx, a.NodeName, types.MergePatchType, rawPatch, metav1.PatchOptions{FieldManager: joulie.FieldManagerControllerManager}); err != nil {
 		return fmt.Errorf("patch node %s label %s=%s: %w", a.NodeName, profileLabel, labelValue, err)
 	}
 	return nil

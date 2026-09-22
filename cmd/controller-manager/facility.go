@@ -88,7 +88,7 @@ type facilityConfig struct {
 	// zone or rack label value. Empty = topology metrics disabled.
 	zoneAmbientMetricTemplate string // e.g. datacenter_ambient_temperature_celsius{zone="%s"}
 	rackPowerMetricTemplate   string // e.g. datacenter_rack_power_watts{rack="%s"}
-	// Known zones and racks to query. Populated by the operator from node labels.
+	// Known zones and racks to query. Populated by the controller manager from node labels.
 	knownZones []string
 	knownRacks []string
 }

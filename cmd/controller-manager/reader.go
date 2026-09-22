@@ -22,10 +22,10 @@ func podNodeNameIndex(obj client.Object) []string {
 	return []string{pod.Spec.NodeName}
 }
 
-// operatorCacheOptions scopes what the operator keeps in memory. Pods are the
+// managerCacheOptions scopes what the controller manager keeps in memory. Pods are the
 // risk at cluster scale, so their informer stores only the fields the FSM
 // reads; every other kind just drops managedFields.
-func operatorCacheOptions() cache.Options {
+func managerCacheOptions() cache.Options {
 	return cache.Options{
 		DefaultTransform: cache.TransformStripManagedFields(),
 		ByObject: map[client.Object]cache.ByObject{
@@ -34,7 +34,7 @@ func operatorCacheOptions() cache.Options {
 	}
 }
 
-// podTransform keeps only what pkg/operator/fsm reads (annotations,
+// podTransform keeps only what pkg/controller/fsm reads (annotations,
 // spec.nodeSelector, spec.affinity, deletionTimestamp, status.phase), the
 // spec.nodeName index key, and the identity and ownership metadata. Containers,
 // volumes and container statuses, which dominate a Pod's size, never enter the
@@ -68,7 +68,7 @@ func podTransform(obj any) (any, error) {
 }
 
 // twinHardwareFromNodeHardware copies the inventory fields the twin model
-// reads out of a NodeHardware object into the in-memory struct pkg/operator/twin
+// reads out of a NodeHardware object into the in-memory struct pkg/controller/twin
 // consumes.
 func twinHardwareFromNodeHardware(nodeName string, obj *v1alpha1.NodeHardware) joulie.NodeHardware {
 	hw := joulie.NodeHardware{NodeName: nodeName}

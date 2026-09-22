@@ -5,7 +5,7 @@
 // generator emits a class name that no other component recognizes.
 //
 // Components covered: simulator, workload generator, scheduler extender,
-// operator FSM, and agent control client.
+// controller manager FSM, and agent control client.
 package contracts_test
 
 import (
@@ -19,7 +19,7 @@ import (
 	"testing"
 
 	joulie "github.com/matbun/joulie/pkg/api"
-	"github.com/matbun/joulie/pkg/operator/fsm"
+	"github.com/matbun/joulie/pkg/controller/fsm"
 	"sigs.k8s.io/yaml"
 )
 
@@ -183,7 +183,7 @@ const (
 	workloadClassAnnotationKey = "joulie.io/workload-class"
 
 	// Power profile label key.
-	// Source: pkg/operator/fsm/fsm.go:33, cmd/scheduler/main.go:292,
+	// Source: pkg/controller/fsm/fsm.go:33, cmd/scheduler/main.go:292,
 	//         simulator/cmd/simulator/main.go:2212
 	powerProfileLabelKey = "joulie.io/power-profile"
 )
@@ -705,7 +705,7 @@ func TestSimulatorTelemetryFormatMatchesAgentExpectations(t *testing.T) {
 		t.Error("cpu.packagePowerWatts should be > 0")
 	}
 
-	// Verify GPU fields the agent and operator may need
+	// Verify GPU fields the agent and controller manager may need
 	gpuMap, ok := simulatorResp["gpu"].(map[string]any)
 	if !ok {
 		t.Fatal("simulator response missing gpu map")
@@ -875,7 +875,7 @@ func TestNodeTwinSchemaAcceptsEveryPowerSourceValue(t *testing.T) {
 	}
 	for _, v := range joulie.PowerSourceValues {
 		if !allowed[v] {
-			t.Fatalf("operator emits powerMeasurement.source=%q but the CRD enum %v rejects it", v, source["enum"])
+			t.Fatalf("controller manager emits powerMeasurement.source=%q but the CRD enum %v rejects it", v, source["enum"])
 		}
 	}
 }

@@ -21,7 +21,7 @@ Joulie must run in two worlds with the same control logic:
 - real hardware clusters,
 - simulator/KWOK clusters.
 
-So agent/operator logic depends on provider interfaces, not directly on sysfs or simulator HTTP shape.
+So agent/controller manager logic depends on provider interfaces, not directly on sysfs or simulator HTTP shape.
 
 ## Backend selection in one sentence
 
@@ -179,7 +179,7 @@ Current deployment convention mounts host `/sys` into container `/host-sys`.
 Current runtime responsibilities:
 
 - agent publishes `NodeHardware` for discovered hardware/capability state,
-- operator writes `NodeTwin.spec` targets,
+- controller manager writes `NodeTwin.spec` targets,
 - agent reads `NodeTwin.spec` for desired state,
 - agent selects telemetry/control backends via environment variables,
 - agent writes control status under `NodeTwin.status.controlStatus`.

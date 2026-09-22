@@ -11,7 +11,7 @@ agent:
     shards: 2
     nodeSelector: "joulie.io/managed=true"
 
-operator:
+controllerManager:
   env:
     RECONCILE_INTERVAL: "20s"
     NODE_SELECTOR: "joulie.io/managed=true"

@@ -14,8 +14,8 @@ If you are new, first read:
 ## Core story
 
 1. **Agent** discovers node hardware (CPU/GPU models, cap ranges, frequency landmarks) and publishes a single `NodeHardware` CR per node.
-2. **Operator twin controller** ingests `NodeHardware` + Prometheus telemetry, runs the digital twin model, and writes `NodeTwin.status` per node (headroom, cooling stress, PSU stress).
-3. **Operator policy controller** reads `NodeTwin.status` + demand signals, runs a policy algorithm, writes `NodeTwin.spec` and node supply labels (`joulie.io/power-profile`). Transition state is tracked internally via `NodeTwin.status.schedulableClass`.
+2. **Twin controller** (in the controller manager) ingests `NodeHardware` + Prometheus telemetry, runs the digital twin model, and writes `NodeTwin.status` per node (headroom, cooling stress, PSU stress).
+3. **Policy controller** (in the controller manager) reads `NodeTwin.status` + demand signals, runs a policy algorithm, writes `NodeTwin.spec` and node supply labels (`joulie.io/power-profile`). Transition state is tracked internally via `NodeTwin.status.schedulableClass`.
 4. **Agent** reads `NodeTwin.spec` and enforces power caps via RAPL (CPU) and NVML (GPU). Writes control feedback to `NodeTwin.status.controlStatus`.
 5. **Scheduler extender** reads `NodeTwin.status` and filters/scores nodes at pod scheduling time based on power profile, facility stress, and workload class.
 6. Telemetry and status feed the next reconcile step, closing the loop.
@@ -27,37 +27,37 @@ If you are new, first read:
 | CRD | Owner | Purpose |
 |-----|-------|---------|
 | `NodeHardware` | Agent | Hardware facts: CPU/GPU model, cap ranges, frequency landmarks |
-| `NodeTwin` | Operator | Desired state (spec: power cap %) + twin output (status: headroom, cooling stress, PSU stress, control feedback) |
+| `NodeTwin` | Controller manager | Desired state (spec: power cap %) + twin output (status: headroom, cooling stress, PSU stress, control feedback) |
 
 ### Who writes what
 
-`NodeTwin` is written by two components, so ownership is defined per field. Every write carries a field manager name (`joulie-operator`, `joulie-agent`), so `kubectl get nodetwin <node> -o yaml --show-managed-fields` shows the owner of each field, and contract tests assert that no writer touches another owner's fields.
+`NodeTwin` is written by two components, so ownership is defined per field. Every write carries a field manager name (`joulie-controller-manager`, `joulie-agent`), so `kubectl get nodetwin <node> -o yaml --show-managed-fields` shows the owner of each field, and contract tests assert that no writer touches another owner's fields.
 
 | Object | Field | Owner | Meaning |
 |--------|-------|-------|---------|
 | `NodeHardware` | `spec.nodeName` | Agent | which node this describes |
 | `NodeHardware` | `status.*` | Agent | discovered hardware facts |
-| `NodeTwin` | `spec.*` | Operator (policy) | desired profile, caps, policy name, draining |
+| `NodeTwin` | `spec.*` | Controller manager (policy) | desired profile, caps, policy name, draining |
 | `NodeTwin` | `status.controlStatus.*` | Agent | what was applied on the node, per component |
-| `NodeTwin` | every other `status` field | Operator (twin) | the twin's computed state: measured power, headroom, stress scores, PUE |
+| `NodeTwin` | every other `status` field | Controller manager (twin) | the twin's computed state: measured power, headroom, stress scores, PUE |
 
 Rules that follow from the table:
 
-- The operator never writes `status.controlStatus`, and the agent never writes anything outside it. Both are patch-shaped so a violation is visible in the payload, not only in the result.
+- The controller manager never writes `status.controlStatus`, and the agent never writes anything outside it. Both are patch-shaped so a violation is visible in the payload, not only in the result.
 - Both components derive the object name from the node name with the same function (`pkg/api.ObjectNameForNode`), so a node whose name is not a valid object name still maps to one object.
 - Writers skip a write when nothing changed. A write bumps `resourceVersion` and wakes every watcher, so idle nodes must not generate traffic. Unchanged state is rewritten at most every five minutes, which bounds how long a lost object stays unrepaired.
 - `status` holds the twin's current computed state, forecasts included. That is what a twin is; the CRD field descriptions say so.
 
 ## Component roles
 
-### Operator
+### Controller manager
 
-The operator contains two reconcile-loop controllers and one background controller:
+The controller manager contains two reconcile-loop controllers and one background controller:
 
 **Reconcile-loop controllers** (run each tick):
 
 - **Twin controller**: ingests per-node telemetry into `NodeTwin.status`. Runs the `CoolingModel` and PSU stress computations. Incorporates facility metrics (ambient temperature, PUE) when available. When nodes carry `joulie.io/rack` or `joulie.io/cooling-zone` labels, the twin computes PSU stress per-rack and cooling stress with per-zone ambient temperature.
-- **Policy controller**: reads `NodeTwin.status` + pod demand signals, runs the policy algorithm (`pkg/operator/policy/`), writes `NodeTwin.spec` and the `joulie.io/power-profile` node label. The state machine (`pkg/operator/fsm/`) enforces downgrade guards: nodes cannot transition from performance to eco while performance-sensitive pods are still running. Transition state is tracked via `NodeTwin.status.schedulableClass`.
+- **Policy controller**: reads `NodeTwin.status` + pod demand signals, runs the policy algorithm (`pkg/controller/policy/`), writes `NodeTwin.spec` and the `joulie.io/power-profile` node label. The state machine (`pkg/controller/fsm/`) enforces downgrade guards: nodes cannot transition from performance to eco while performance-sensitive pods are still running. Transition state is tracked via `NodeTwin.status.schedulableClass`.
 
 **Background controllers** (run on independent intervals):
 
@@ -87,7 +87,7 @@ No configuration is needed. The plugin reads your current kubeconfig context.
 
 ### Digital twin model
 
-The `pkg/operator/twin` package implements an O(1) parametric model computing:
+The `pkg/controller/twin` package implements an O(1) parametric model computing:
 - **Power headroom**: remaining capacity before hitting the configured cap
 - **Cooling stress** (0-100): predicted % of cooling capacity in use. High means risk of thermal throttling.
 - **PSU stress** (0-100): predicted % of PDU/rack power capacity in use. High means risk of power brownout.
@@ -97,7 +97,7 @@ The `CoolingModel` interface is pluggable. Default: `LinearCoolingModel` (algebr
 ## Read in this order
 
 1. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}}) -- NodeHardware and NodeTwin CRDs, policy state machine
-2. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}}) -- twin controller, policy controller, facility metrics poller
+2. [Joulie Controller Manager]({{< relref "/docs/architecture/controller-manager.md" >}}) -- twin controller, policy controller, facility metrics poller
 3. [Joulie Agent]({{< relref "/docs/architecture/agent.md" >}}) -- hardware discovery, cap enforcement via RAPL/NVML
 4. [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}) -- O(1) parametric model: headroom, cooling stress, PSU stress
 5. [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}}) -- filter and prioritize endpoints, scoring formula

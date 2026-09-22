@@ -1273,7 +1273,7 @@ func readGaugeValue(g prometheus.Gauge) float64 {
 
 // handleFakePrometheusQuery serves a minimal /api/v1/query endpoint that
 // returns facility metrics in the Prometheus instant-query response format.
-// This allows the operator's facility metrics poller to query the simulator
+// This allows the controller manager's facility metrics poller to query the simulator
 // directly, without needing a real Prometheus instance in simulation.
 func (s *simulator) handleFakePrometheusQuery(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("query")

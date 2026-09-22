@@ -119,7 +119,7 @@ Nodes are then understood as:
 This is used consistently by:
 
 - the agent, which discovers raw hardware facts,
-- the operator, which resolves those facts against the inventory,
+- the controller manager, which resolves those facts against the inventory,
 - the simulator, which composes node models from the same CPU/GPU entries.
 
 In the codebase, the shared inventory shape lives in:
@@ -263,7 +263,7 @@ Proxy entries remain easy to replace once direct measurements become available.
 
 ## 5.3 DVFS and power-cap semantics
 
-The CPU control path matters because the simulator is trying to mirror the same qualitative behavior that the real agent/operator path expects:
+The CPU control path matters because the simulator is trying to mirror the same qualitative behavior that the real agent/controller manager path expects:
 
 - performance hints and DVFS affect attainable throughput,
 - package power caps constrain average power rather than clipping instantaneous power,
@@ -634,7 +634,7 @@ rather than only a coarse workload label.
 
 Because the cluster contains devices with very different power ranges, a single absolute cap cannot be applied everywhere.
 
-Joulie therefore treats operator intent as **normalized** by default:
+Joulie therefore treats controller manager intent as **normalized** by default:
 - CPU cap as a percentage of the attainable range
 - GPU cap as a percentage of the per-device maximum
 

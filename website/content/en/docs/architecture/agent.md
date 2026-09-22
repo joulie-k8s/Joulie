@@ -7,7 +7,7 @@ The agent is Joulie's node-side enforcement component.
 
 It consumes desired state and applies node-local controls through configured backends.
 
-If the operator decides "this node should now behave like eco" or "this node should stay performance",
+If the controller manager decides "this node should now behave like eco" or "this node should stay performance",
 the agent is the component that turns that intent into concrete control actions.
 
 ## Responsibilities
@@ -37,7 +37,7 @@ Outputs:
 - status updates (`NodeTwin.status.controlStatus`)
 - Prometheus metrics (`/metrics`)
 
-This makes the agent the node-side discovery and execution layer of the architecture: it does not plan global policy, but it does publish the hardware facts the operator needs to plan against.
+This makes the agent the node-side discovery and execution layer of the architecture: it does not plan global policy, but it does publish the hardware facts the controller manager needs to plan against.
 
 `NodeHardware` is automatic output, not a user-authored input.
 Users normally configure:
@@ -60,7 +60,7 @@ In practice, pool mode enforces this through `POOL_NODE_SELECTOR`, and DaemonSet
 
 ### K8s API client tuning
 
-The agent and operator use elevated Kubernetes API client rate limits (QPS=50, Burst=100) to ensure timely reconciliation in large clusters. The default Go client limits (QPS=5, Burst=10) can cause the agent pool to process only a fraction of its managed nodes per reconcile cycle, preventing eco caps from being applied on time.
+The agent and controller manager use elevated Kubernetes API client rate limits (QPS=50, Burst=100) to ensure timely reconciliation in large clusters. The default Go client limits (QPS=5, Burst=10) can cause the agent pool to process only a fraction of its managed nodes per reconcile cycle, preventing eco caps from being applied on time.
 
 Detailed deployment/runtime configuration is documented in:
 
@@ -69,13 +69,13 @@ Detailed deployment/runtime configuration is documented in:
 ## Enforcement behavior
 
 The agent does not choose cluster policy.
-It enforces operator intent and reports what happened:
+It enforces controller manager intent and reports what happened:
 
 - `applied`
 - `blocked`
 - `error`
 
-This separation keeps policy logic centralized in the operator and actuator logic localized in the agent.
+This separation keeps policy logic centralized in the controller manager and actuator logic localized in the agent.
 
 ## CPU enforcement algorithm
 
@@ -163,11 +163,11 @@ This keeps GPU behavior aligned with CPU behavior:
 
 ## Performance -> eco transition and safeguards
 
-This transition is safety-critical and is split between operator policy logic and agent enforcement.
+This transition is safety-critical and is split between controller manager policy logic and agent enforcement.
 
 ### Who does what
 
-- Operator:
+- Controller manager:
   - decides whether a node is allowed to downgrade from performance to eco,
   - runs safeguard checks,
   - publishes desired state and scheduler-facing labels accordingly.
@@ -182,18 +182,18 @@ Prevent a node from dropping to eco while it still runs workloads that require p
 ### Step-by-step transition flow
 
 1. Policy plans `performance -> eco` for node `N`.
-2. Operator evaluates safeguard on `N`:
+2. The controller manager evaluates safeguard on `N`:
    - classify active pods from workload-class annotations,
    - detect whether performance pods are still running on `N`.
 3. If performance pods are present:
-   - operator keeps desired profile as `eco`,
-   - operator sets `NodeTwin.status.schedulableClass` to `draining`.
+   - controller manager keeps desired profile as `eco`,
+   - controller manager sets `NodeTwin.status.schedulableClass` to `draining`.
 4. Agent reconciles:
    - sees desired profile from `NodeTwin.spec`,
    - enforces the desired eco/performance target through configured backend.
-5. On later reconcile ticks, operator re-checks safeguard.
+5. On later reconcile ticks, controller manager re-checks safeguard.
 6. When no blocking performance pods remain:
-   - operator keeps profile `eco` and sets `NodeTwin.status.schedulableClass` to `eco`.
+   - controller manager keeps profile `eco` and sets `NodeTwin.status.schedulableClass` to `eco`.
    - agent continues enforcing desired target on next reconcile.
 
 ### Transition FSM (with conditions)
@@ -214,8 +214,8 @@ stateDiagram-v2
 
 Interpretation:
 
-- `DrainingPerformance` is the operator transition state.
-- In `DrainingPerformance`, operator publishes eco as desired state and sets `NodeTwin.status.schedulableClass` to `draining`.
+- `DrainingPerformance` is the controller manager transition state.
+- In `DrainingPerformance`, controller manager publishes eco as desired state and sets `NodeTwin.status.schedulableClass` to `draining`.
 - The scheduler extender reads the `draining` schedulable class and applies a score penalty to avoid placing new workloads on the node.
 - Transition to eco occurs when safeguard condition becomes true (`performance pods == 0`).
 
@@ -231,16 +231,16 @@ Transition conditions:
 
 - avoids violating workload placement/intent guarantees mid-flight,
 - avoids abrupt performance loss for pods that explicitly require performance nodes,
-- keeps transition behavior deterministic and auditable via operator/agent metrics and logs.
+- keeps transition behavior deterministic and auditable via controller manager/agent metrics and logs.
 
 Current behavior is defer-until-safe (no forced eviction in this path).
 
 The practical takeaway is that the agent stays simple on purpose:
-it continuously enforces the latest published target, while the operator owns the logic for when a target is safe to publish.
+it continuously enforces the latest published target, while the controller manager owns the logic for when a target is safe to publish.
 
 For policy-side details, see:
 
-1. [Joulie Operator]({{< relref "/docs/architecture/operator.md" >}})
+1. [Joulie Controller Manager]({{< relref "/docs/architecture/controller-manager.md" >}})
 2. [Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}})
 
 ## Next steps

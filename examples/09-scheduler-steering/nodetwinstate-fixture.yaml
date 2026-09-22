@@ -1,5 +1,5 @@
-# Fixture NodeTwinState for testing the scheduler extender without a running operator.
-# In production, the operator automatically maintains these objects.
+# Fixture NodeTwinState for testing the scheduler extender without a running controller manager.
+# In production, the controller manager automatically maintains these objects.
 apiVersion: joulie.io/v1alpha1
 kind: NodeTwin
 metadata:

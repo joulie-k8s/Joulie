@@ -35,7 +35,7 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "joulie.fullname" . }}-operator
+  name: {{ include "joulie.fullname" . }}-controller-manager
 rules:
   - apiGroups: [""]
     resources: ["nodes"]
@@ -56,22 +56,22 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "joulie.fullname" . }}-operator
+  name: {{ include "joulie.fullname" . }}-controller-manager
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "joulie.fullname" . }}-operator
+  name: {{ include "joulie.fullname" . }}-controller-manager
 subjects:
   - kind: ServiceAccount
-    name: joulie-operator
+    name: joulie-controller-manager
     namespace: {{ .Release.Namespace }}
-{{- if .Values.operator.leaderElection.enabled }}
+{{- if (include "joulie.controllerManager" . | fromYaml).leaderElection.enabled }}
 ---
 # Leader election: the replicas compete for a Lease in the release namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ include "joulie.fullname" . }}-operator-leader-election
+  name: {{ include "joulie.fullname" . }}-controller-manager-leader-election
   namespace: {{ .Release.Namespace }}
 rules:
   - apiGroups: ["coordination.k8s.io"]
@@ -81,15 +81,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "joulie.fullname" . }}-operator-leader-election
+  name: {{ include "joulie.fullname" . }}-controller-manager-leader-election
   namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ include "joulie.fullname" . }}-operator-leader-election
+  name: {{ include "joulie.fullname" . }}-controller-manager-leader-election
 subjects:
   - kind: ServiceAccount
-    name: joulie-operator
+    name: joulie-controller-manager
     namespace: {{ .Release.Namespace }}
 {{- end }}
 {{- if .Values.schedulerExtender.enabled }}

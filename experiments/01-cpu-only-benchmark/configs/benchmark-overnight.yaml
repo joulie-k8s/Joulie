@@ -41,7 +41,7 @@ policy:
   loop:
     operator_reconcile_interval: "20s"
     agent_reconcile_interval: "10s"
-    # Queue-aware (baseline C) uses a slower operator reconcile to avoid
+    # Queue-aware (baseline C) uses a slower controller manager reconcile to avoid
     # thrashing node profiles. Value is in simulated seconds; the sweep script
     # divides by run.time_scale to get the wall-clock interval.
     queue_aware_operator_reconcile_sim_seconds: 300

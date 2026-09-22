@@ -3,7 +3,7 @@
 // from these types by controller-gen (`make generate manifests`), so the
 // schema has a single source of truth.
 //
-// The running components (agent, operator, scheduler) still exchange
+// The running components (agent, controller manager, scheduler) still exchange
 // unstructured objects and the plain structs in pkg/api; these types exist
 // for the CRD schema and for typed clients that may adopt them later.
 //

@@ -795,7 +795,7 @@ func TestReconcileOnceSimulateOnlyWritesAppliedStatus(t *testing.T) {
 func TestReconcileOnceRelaxesCapsWhenSpecReadTimesOut(t *testing.T) {
 	t.Parallel()
 	nodeName := "node-a"
-	// No NodeTwin objects - simulates operator being gone.
+	// No NodeTwin objects - simulates the controller manager being gone.
 	reader, dyn := newTestClients(t, intelNode(nodeName))
 	metrics := newTestAgentMetrics("reconcile-timeout")
 	nc := &NodeController{

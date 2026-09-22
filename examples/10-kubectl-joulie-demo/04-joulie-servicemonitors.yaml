@@ -1,12 +1,12 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: joulie-operator
+  name: joulie-controller-manager
   namespace: joulie-system
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: joulie-operator
+      app.kubernetes.io/name: joulie-controller-manager
   endpoints:
     - port: metrics
       path: /metrics

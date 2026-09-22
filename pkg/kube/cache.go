@@ -3,7 +3,7 @@
 //
 // Reads go through the cache so that a reconcile touches the API server only
 // when it writes. The previous design fetched every object on every tick,
-// which made the operator's API call count proportional to the node count and
+// which made the controller manager's API call count proportional to the node count and
 // every agent list all NodeTwins to find its own.
 package kube
 

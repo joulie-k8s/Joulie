@@ -8,8 +8,8 @@ The Joulie simulator lets you evaluate energy management policies without physic
 
 The simulator keeps scheduling behavior real while simulating telemetry, control dynamics, and workload progression.
 
-The simulator mirrors the real Joulie architecture. The operator, agent, and scheduler extender are the real components running against simulated hardware:
-- the real operator computes desired state (`NodeTwin.spec`, `NodeTwin.status`),
+The simulator mirrors the real Joulie architecture. The controller manager, agent, and scheduler extender are the real components running against simulated hardware:
+- the real controller manager computes desired state (`NodeTwin.spec`, `NodeTwin.status`),
 - the real agent (pool mode) realizes caps via HTTP against the simulator,
 - the real scheduler extender reads `NodeTwin.status` and applies workload-class-aware scoring,
 - workloads carry trace-defined fields (criticality, cap sensitivity),
@@ -17,7 +17,7 @@ The simulator mirrors the real Joulie architecture. The operator, agent, and sch
 
 The heterogeneous benchmark (`experiments/02-heterogeneous-benchmark/`) demonstrates the full architecture across three baselines: no Joulie, static partition, and queue-aware policy with scheduler extender steering.
 
-Use simulator docs after you are familiar with the core operator/agent control loop in Getting Started + Architecture.
+Use simulator docs after you are familiar with the core controller manager/agent control loop in Getting Started + Architecture.
 
 ## Read in this order
 

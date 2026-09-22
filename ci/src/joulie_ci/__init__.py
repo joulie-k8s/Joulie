@@ -4,7 +4,7 @@ This module builds local Joulie binaries into container images, publishes them
 to an ephemeral in-pipeline registry with `dev*` tags, starts a 2-node k3s test
 cluster, and runs the integration suite against the freshly built artifacts.
 
-The 2-node cluster (server + agent) is required because the operator enforces a
+The 2-node cluster (server + agent) is required because the controller manager enforces a
 per-hardware-family performance floor: with a single managed node, STATIC_HP_FRAC=0
 cannot move that node to eco.  With two nodes, one stays in performance (floor)
 and the other can freely transition to eco.
@@ -46,7 +46,7 @@ _LOCAL_REGISTRY_PORT = 5000
 _DEFAULT_REGISTRY_REPO = f"{_LOCAL_REGISTRY_HOST}:{_LOCAL_REGISTRY_PORT}/mbunino/joulie"
 
 # Stable node names registered in Kubernetes via --node-name.
-# Alphabetically "k3s-server" < "k3s-worker-0", so the operator's density sort
+# Alphabetically "k3s-server" < "k3s-worker-0", so the controller manager's density sort
 # (tie-broken lexicographically) always assigns performance to k3s-server and
 # eco to k3s-worker-0 when STATIC_HP_FRAC=0.
 K3S_SERVER_NODE = "k3s-server"
@@ -324,13 +324,13 @@ class JoulieCi:
         Build/push local Joulie images and run the 2-node k3s integration suite.
 
         Workflow:
-        1. Build `agent`, `operator`, and `scheduler` images from current repo source.
+        1. Build `agent`, `controller-manager`, and `scheduler` images from current repo source.
         2. Publish images to an ephemeral in-pipeline registry using a `dev*` tag.
         3. Start a 2-node k3s cluster (server + agent) with a static join token.
         4. Install Joulie Helm chart with the freshly published images.
         5. Execute integration tests and return runner stdout.
 
-        Node roles (deterministic via --node-name + operator sort):
+        Node roles (deterministic via --node-name + controller manager sort):
           k3s-server   → always stays in performance (family floor)
           k3s-worker-0 → transitions to eco when STATIC_HP_FRAC=0
         """
@@ -371,9 +371,9 @@ class JoulieCi:
         # Push images via crane inside a container with the registry service
         # bound, since Dagger's publish() runs in buildkit which cannot resolve
         # ephemeral service hostnames.
-        agent_ref, operator_ref, scheduler_ref = await asyncio.gather(
+        agent_ref, controller_manager_ref, scheduler_ref = await asyncio.gather(
             self._publish_component_image(source, "agent", registry_repo, tag, started_registry),
-            self._publish_component_image(source, "operator", registry_repo, tag, started_registry),
+            self._publish_component_image(source, "controller-manager", registry_repo, tag, started_registry),
             self._publish_component_image(source, "scheduler", registry_repo, tag, started_registry),
         )
 
@@ -404,12 +404,12 @@ class JoulieCi:
                 "/tmp/kubeconfig.yaml"])
             .with_env_variable("JOULIE_AGENT_IMAGE_REPOSITORY", f"{registry_repo}/joulie-agent")
             .with_env_variable("JOULIE_AGENT_IMAGE_TAG", tag)
-            .with_env_variable("JOULIE_OPERATOR_IMAGE_REPOSITORY", f"{registry_repo}/joulie-operator")
-            .with_env_variable("JOULIE_OPERATOR_IMAGE_TAG", tag)
+            .with_env_variable("JOULIE_CONTROLLER_MANAGER_IMAGE_REPOSITORY", f"{registry_repo}/joulie-controller-manager")
+            .with_env_variable("JOULIE_CONTROLLER_MANAGER_IMAGE_TAG", tag)
             .with_env_variable("JOULIE_SCHEDULER_IMAGE_REPOSITORY", f"{registry_repo}/joulie-scheduler")
             .with_env_variable("JOULIE_SCHEDULER_IMAGE_TAG", tag)
             .with_env_variable("JOULIE_AGENT_IMAGE_REF", agent_ref)
-            .with_env_variable("JOULIE_OPERATOR_IMAGE_REF", operator_ref)
+            .with_env_variable("JOULIE_CONTROLLER_MANAGER_IMAGE_REF", controller_manager_ref)
             .with_env_variable("JOULIE_SCHEDULER_IMAGE_REF", scheduler_ref)
             .with_env_variable("IT_SCOPE", it_scope)
             .with_workdir("/src")
@@ -430,7 +430,7 @@ class JoulieCi:
         chart with new CRDs, and run the Go integration tests in tests/integration/.
 
         Workflow:
-        1. Build `agent`, `operator`, and `scheduler` images from current repo source.
+        1. Build `agent`, `controller-manager`, and `scheduler` images from current repo source.
         2. Publish images to an ephemeral in-pipeline registry using a `dev*` tag.
         3. Start a single-node k3s cluster (server only, no worker).
         4. Install Joulie Helm chart so CRDs are registered.
@@ -467,9 +467,9 @@ class JoulieCi:
         started_server = await server_svc.start()
 
         # --- Build and publish images concurrently ---
-        agent_ref, operator_ref, scheduler_ref = await asyncio.gather(
+        agent_ref, controller_manager_ref, scheduler_ref = await asyncio.gather(
             self._publish_component_image(source, "agent", registry_repo, tag, started_registry),
-            self._publish_component_image(source, "operator", registry_repo, tag, started_registry),
+            self._publish_component_image(source, "controller-manager", registry_repo, tag, started_registry),
             self._publish_component_image(source, "scheduler", registry_repo, tag, started_registry),
         )
 
@@ -500,19 +500,19 @@ class JoulieCi:
             # Install Helm chart so Joulie CRDs are registered.
             .with_env_variable("JOULIE_AGENT_IMAGE_REPOSITORY", f"{registry_repo}/joulie-agent")
             .with_env_variable("JOULIE_AGENT_IMAGE_TAG", tag)
-            .with_env_variable("JOULIE_OPERATOR_IMAGE_REPOSITORY", f"{registry_repo}/joulie-operator")
-            .with_env_variable("JOULIE_OPERATOR_IMAGE_TAG", tag)
+            .with_env_variable("JOULIE_CONTROLLER_MANAGER_IMAGE_REPOSITORY", f"{registry_repo}/joulie-controller-manager")
+            .with_env_variable("JOULIE_CONTROLLER_MANAGER_IMAGE_TAG", tag)
             .with_env_variable("JOULIE_SCHEDULER_IMAGE_REPOSITORY", f"{registry_repo}/joulie-scheduler")
             .with_env_variable("JOULIE_SCHEDULER_IMAGE_TAG", tag)
             .with_env_variable("JOULIE_AGENT_IMAGE_REF", agent_ref)
-            .with_env_variable("JOULIE_OPERATOR_IMAGE_REF", operator_ref)
+            .with_env_variable("JOULIE_CONTROLLER_MANAGER_IMAGE_REF", controller_manager_ref)
             .with_env_variable("JOULIE_SCHEDULER_IMAGE_REF", scheduler_ref)
             .with_exec(["sh", "-c",
                 "helm upgrade --install joulie /src/charts/joulie "
                 "--set agent.image.repository=${JOULIE_AGENT_IMAGE_REPOSITORY} "
                 "--set agent.image.tag=${JOULIE_AGENT_IMAGE_TAG} "
-                "--set operator.image.repository=${JOULIE_OPERATOR_IMAGE_REPOSITORY} "
-                "--set operator.image.tag=${JOULIE_OPERATOR_IMAGE_TAG} "
+                "--set controllerManager.image.repository=${JOULIE_CONTROLLER_MANAGER_IMAGE_REPOSITORY} "
+                "--set controllerManager.image.tag=${JOULIE_CONTROLLER_MANAGER_IMAGE_TAG} "
                 "--set schedulerExtender.image.repository=${JOULIE_SCHEDULER_IMAGE_REPOSITORY} "
                 "--set schedulerExtender.image.tag=${JOULIE_SCHEDULER_IMAGE_TAG} "
                 "--wait --timeout=5m"])

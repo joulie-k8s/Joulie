@@ -260,7 +260,7 @@ So short spikes, long steady-state runs, and sustained capped operation do not a
 
 ## Workload profile fields in simulation
 
-The simulator generates workload profile fields for each job. These fields are consumed by the simulated operator/twin and scheduler extender.
+The simulator generates workload profile fields for each job. These fields are consumed by the simulated controller manager/twin and scheduler extender.
 
 Generated fields:
 
@@ -273,7 +273,7 @@ Generated fields:
 | `gpu.bound` | `compute`, `memory`, `mixed`, `none` | Affects slowdown model under GPU cap |
 
 These fields are used by:
-- the simulated operator twin (`pkg/operator/twin`) to compute headroom and stress scores,
+- the simulated controller manager twin (`pkg/controller/twin`) to compute headroom and stress scores,
 - the scheduler extender (`cmd/scheduler`) to apply workload-class-aware scoring.
 
 The heterogeneous benchmark (`experiments/02-heterogeneous-benchmark/`) exercises all three baselines using a mixed batch with all the above profile variants.

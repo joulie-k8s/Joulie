@@ -15,7 +15,7 @@ It continuously ingests telemetry from every node (CPU/GPU power draw via RAPL a
 
 These per-node digital twins drive two outcomes:
 
-1. **Energy control**: the operator writes desired power state into `NodeTwin` CRs (CPU and GPU power caps). The node agent reads `NodeTwin.spec` and enforces them.
+1. **Energy control**: the controller manager writes desired power state into `NodeTwin` CRs (CPU and GPU power caps). The node agent reads `NodeTwin.spec` and enforces them.
 2. **Scheduling decisions**: the scheduler extender reads computed `NodeTwin.status` (power headroom, predicted cooling stress, PSU load) to steer new pods toward nodes with the best energy-efficiency / performance trade-off.
 
 The feedback loop: telemetry → twin update → cap decisions → new pod placement → updated telemetry. This keeps the cluster's power envelope stable and prevents cooling or PSU spikes without sacrificing critical workload performance.
@@ -27,11 +27,22 @@ As AI and scientific workloads scale, clusters face:
 - **PSU/PDU overcommit**: peak power draw exceeds rack power budgets
 - **Carbon cost**: flat power profiles waste energy during low-demand periods
 
-Joulie addresses these by making the scheduler and operator aware of the physical energy state of the cluster in real time.
+Joulie addresses these by making the scheduler and controller manager aware of the physical energy state of the cluster in real time.
+
+## Vocabulary
+
+In Kubernetes an *operator* is a whole extension: custom resources plus the controllers that act on them. Joulie uses the word that way:
+
+- **Joulie operator**, or just **Joulie**: the whole system (CRDs, controller manager, agent, scheduler extender, kubectl plugin).
+- **Controller manager** (`joulie-controller-manager`): the single cluster-scoped binary that hosts Joulie's controllers (twin, policy, facility metrics), like `kube-controller-manager` hosts the built-in ones.
+- **Agent** (`joulie-agent`): the per-node DaemonSet, Joulie's counterpart of the kubelet as the primary node agent.
+- **Scheduler extender** (`joulie-scheduler-extender`): the HTTP service configured under `extenders` in the kube-scheduler configuration.
+
+Older releases and dashboards called the controller manager "the operator"; its image, Deployment, values key and metric names carried that name and are kept as deprecated aliases for one release.
 
 ## Main components
 
-- **Operator** (`cmd/operator`): cluster-level decision engine and twin controller
+- **Controller manager** (`cmd/controller-manager`): cluster-level decision engine and twin controller
   - runs the digital twin model, computes `NodeTwin.status`
   - decides desired node power profile/cap assignments
   - writes desired state into `NodeTwin.spec`
@@ -54,11 +65,11 @@ Joulie addresses these by making the scheduler and operator aware of the physica
 | CRD | Owner | Purpose |
 |-----|-------|---------|
 | `NodeHardware` | Agent | Hardware facts: CPU/GPU model, cap ranges, frequency landmarks |
-| `NodeTwin` | Operator | Desired state (spec: power cap %) + twin output (status: headroom, cooling stress, PSU stress, schedulable class, control feedback) |
+| `NodeTwin` | Controller manager | Desired state (spec: power cap %) + twin output (status: headroom, cooling stress, PSU stress, schedulable class, control feedback) |
 
 ## Node supply labels
 
-The operator sets one label on each managed node:
+The controller manager sets one label on each managed node:
 
 - `joulie.io/power-profile`: `performance` or `eco`
 

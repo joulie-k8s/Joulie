@@ -17,7 +17,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/matbun/joulie/pkg/operator/policy"
+	"github.com/matbun/joulie/pkg/controller/policy"
 	corev1 "k8s.io/api/core/v1"
 )
 

@@ -32,7 +32,7 @@ If you are completely new, the smoothest path is:
 Core mental model:
 
 - telemetry feeds the digital twin,
-- the twin drives operator decisions (power caps, node profiles),
+- the twin drives controller manager decisions (power caps, node profiles),
 - the scheduler extender reads twin state to steer new pod placement,
 - feedback from new placements updates telemetry, closing the loop.
 
@@ -41,7 +41,7 @@ Core mental model:
 - [Getting Started]({{< relref "/docs/getting-started/_index.md" >}})
   - core concepts, Helm-based install, workload class annotations, agent runtime modes, full configuration reference
 - [Architecture]({{< relref "/docs/architecture/_index.md" >}})
-  - operator, agent, digital twin, and scheduler extender roles; CRD definitions; policy algorithms; telemetry and actuation interfaces; kubectl plugin
+  - controller manager, agent, digital twin, and scheduler extender roles; CRD definitions; policy algorithms; telemetry and actuation interfaces; kubectl plugin
 - [Hardware]({{< relref "/docs/hardware/_index.md" >}})
   - CPU (RAPL) and GPU (NVML) support, heterogeneous node strategies, cap range discovery, hardware modeling for simulation
 - [Simulator]({{< relref "/docs/simulator/_index.md" >}})

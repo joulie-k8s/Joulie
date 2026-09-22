@@ -13,9 +13,9 @@ import (
 
 	"github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/controller/twin"
 	"github.com/matbun/joulie/pkg/hwinv"
 	"github.com/matbun/joulie/pkg/kube"
-	"github.com/matbun/joulie/pkg/operator/twin"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -248,14 +248,14 @@ func upsertNodeTwinStatus(ctx context.Context, dynClient dynamic.Interface, node
 				},
 			},
 		}
-		if _, err := dynClient.Resource(nodeTwinGVR).Create(ctx, obj, metav1.CreateOptions{FieldManager: joulie.FieldManagerOperator}); err != nil && !apierrors.IsAlreadyExists(err) {
+		if _, err := dynClient.Resource(nodeTwinGVR).Create(ctx, obj, metav1.CreateOptions{FieldManager: joulie.FieldManagerControllerManager}); err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create NodeTwin %s: %w", nodeName, err)
 		}
 	}
 
 	// Patch status subresource
 	_, err = dynClient.Resource(nodeTwinGVR).Patch(
-		ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{FieldManager: joulie.FieldManagerOperator}, "status",
+		ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{FieldManager: joulie.FieldManagerControllerManager}, "status",
 	)
 	if err != nil {
 		// Fallback: full patch if status subresource not available
@@ -269,7 +269,7 @@ func upsertNodeTwinStatus(ctx context.Context, dynClient dynamic.Interface, node
 		if err != nil {
 			return fmt.Errorf("marshal NodeTwin %s status patch: %w", nodeName, err)
 		}
-		_, err = dynClient.Resource(nodeTwinGVR).Patch(ctx, name, types.MergePatchType, fp, metav1.PatchOptions{FieldManager: joulie.FieldManagerOperator})
+		_, err = dynClient.Resource(nodeTwinGVR).Patch(ctx, name, types.MergePatchType, fp, metav1.PatchOptions{FieldManager: joulie.FieldManagerControllerManager})
 		if err != nil {
 			return fmt.Errorf("patch NodeTwin %s status: %w", nodeName, err)
 		}
@@ -330,7 +330,7 @@ func upsertNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, a NodeAssign
 		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("get NodeTwin %s: %w", name, err)
 		}
-		_, err := res.Create(ctx, obj, metav1.CreateOptions{FieldManager: joulie.FieldManagerOperator})
+		_, err := res.Create(ctx, obj, metav1.CreateOptions{FieldManager: joulie.FieldManagerControllerManager})
 		if err != nil {
 			return fmt.Errorf("create NodeTwin %s: %w", name, err)
 		}
@@ -343,7 +343,7 @@ func upsertNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, a NodeAssign
 		return nil
 	}
 	existing.Object["spec"] = obj.Object["spec"]
-	if _, err := res.Update(ctx, existing, metav1.UpdateOptions{FieldManager: joulie.FieldManagerOperator}); err != nil {
+	if _, err := res.Update(ctx, existing, metav1.UpdateOptions{FieldManager: joulie.FieldManagerControllerManager}); err != nil {
 		return fmt.Errorf("update NodeTwin %s: %w", name, err)
 	}
 	return nil
@@ -393,8 +393,8 @@ func nodeTwinStatusToMap(status joulie.NodeTwinStatus) map[string]interface{} {
 
 // --- Measured power resolution ---
 
-// nodePowerConfig holds the operator's per-node power source configuration.
-// Configured via OPERATOR_NODE_POWER_SOURCE env var.
+// nodePowerConfig holds the controller manager's per-node power source configuration.
+// Configured via NODE_POWER_SOURCE env var.
 //
 // Sources (tried in priority order based on config):
 //   - "prometheus": PromQL query for direct node power (e.g. Kepler RAPL/DCMI).
@@ -430,7 +430,7 @@ const powerTrendWindow = 5 * time.Minute
 
 // resolveNodePower returns the best available measured power for a node.
 //
-// The source is selected via OPERATOR_NODE_POWER_SOURCE:
+// The source is selected via NODE_POWER_SOURCE:
 //   - "prometheus": queries Prometheus for direct node power (e.g. Kepler).
 //   - "http": queries an HTTP telemetry endpoint (e.g. simulator).
 //   - "static" (default): returns 0.

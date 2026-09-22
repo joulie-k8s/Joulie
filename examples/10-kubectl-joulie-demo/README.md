@@ -2,7 +2,7 @@
 
 End-to-end demo of the Joulie energy management system on a 6-node simulated
 heterogeneous cluster. Uses KWOK fake nodes, the Joulie simulator for power
-telemetry, and the full Joulie control loop (operator + agent + scheduler).
+telemetry, and the full Joulie control loop (controller manager + agent + scheduler).
 The `kubectl joulie status` plugin shows live cluster energy state.
 
 **Cluster layout:**
@@ -39,10 +39,10 @@ through an interactive presentation.
 
 1. Create kind cluster + install KWOK controller
 2. Apply KWOK stages + 6 fake nodes
-3. Build all Joulie images (operator, agent, scheduler, simulator)
+3. Build all Joulie images (controller manager, agent, scheduler, simulator)
 4. Install kube-prometheus-stack (Prometheus + Grafana)
 5. Deploy simulator **without workload** (empty trace)
-6. Install Joulie (operator + agent in pool mode + scheduler extender + dashboards)
+6. Install Joulie (controller manager + agent in pool mode + scheduler extender + dashboards)
 7. Open Grafana via port-forward (`http://localhost:3300`, admin / joulie)
 
 ### Phase 2: Interactive demo (guided)
@@ -79,7 +79,7 @@ to idle.
 
 | Column | Meaning |
 |--------|---------|
-| CLASS | Operator-assigned power profile (eco / performance / draining) |
+| CLASS | Controller-manager-assigned power profile (eco / performance / draining) |
 | HEADROOM | % of capped power budget remaining unused |
 | COOLING | Thermal stress — fraction of physical cooling capacity in use |
 | CPU% | CPU cores requested vs allocatable |
@@ -103,7 +103,7 @@ to idle.
         │ HTTP (per-node power)     │ fake Prometheus       │ /metrics
         ▼                           ▼ (facility)            ▼
  ┌──────────────┐            ┌──────────────┐        ┌────────────┐
- │   Operator   │            │   Operator   │        │ Prometheus │
+ │ Ctrl manager │            │ Ctrl manager │        │ Prometheus │
  │ resolveNode  │            │ facilityLoop │        │  (scrape)  │
  │ Power(http)  │            │ (prom query) │        └──────┬─────┘
  └──────┬───────┘            └──────┬───────┘               │

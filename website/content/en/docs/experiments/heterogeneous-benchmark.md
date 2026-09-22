@@ -159,7 +159,7 @@ Stacked bar chart showing IT power + cooling power per baseline.
 
 ### Heterogeneous challenge
 
-The heterogeneous GPU fleet creates placement constraints: GPU jobs require specific vendor/product node selectors. This limits the operator's flexibility to consolidate work onto performance nodes. The queue-aware policy partially mitigates this through dynamic adjustment.
+The heterogeneous GPU fleet creates placement constraints: GPU jobs require specific vendor/product node selectors. This limits the controller manager's flexibility to consolidate work onto performance nodes. The queue-aware policy partially mitigates this through dynamic adjustment.
 
 ### Why queue-aware (C) outperforms static (B)
 

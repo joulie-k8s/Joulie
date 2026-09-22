@@ -5,7 +5,7 @@ This example runs:
 - real Kubernetes API + scheduler,
 - real infra nodes (kind worker),
 - fake KWOK nodes/pods,
-- real Joulie operator,
+- real Joulie controller manager,
 - Joulie agent in `pool` mode,
 - Joulie simulator with HTTP telemetry/control and trace-driven batch workload.
 
@@ -60,7 +60,7 @@ export TAG=dev0.0.5
 helm upgrade --install joulie ../../charts/joulie \
   -n joulie-system --create-namespace \
   --set agent.image.tag="$TAG" \
-  --set operator.image.tag="$TAG" \
+  --set controllerManager.image.tag="$TAG" \
   -f manifests/15-joulie-values-pool.yaml
 ```
 
@@ -106,9 +106,9 @@ curl -s localhost:18080/debug/events | jq
 
 ## Expected behavior
 
-- infra pods (`joulie-simulator`, operator, agent pool) schedule on real kind node(s),
+- infra pods (`joulie-simulator`, controller manager, agent pool) schedule on real kind node(s),
 - fake workload pods are scheduled on fake KWOK nodes,
-- operator writes `NodeTwin` for managed fake nodes,
+- controller manager writes `NodeTwin` for managed fake nodes,
 - exactly one pool shard controls each node,
 - simulator power/freq telemetry changes with controls,
 - job completion slows under stronger caps/throttling.

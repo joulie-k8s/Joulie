@@ -1,41 +1,42 @@
 ---
-title: "Joulie Operator"
+title: "Joulie Controller Manager"
 weight: 20
+aliases: ["/docs/architecture/operator/"]
 ---
 
-The operator is Joulie's cluster-level decision engine.
+The controller manager is Joulie's cluster-level decision engine.
 
 It does not write host power interfaces directly.
 Instead, it decides desired node states and publishes them through Kubernetes objects and labels.
 
-In practice, the operator answers one question over and over:
+In practice, the controller manager answers one question over and over:
 which nodes should currently supply `performance` capacity, and which can safely supply `eco` capacity?
 
 ## Responsibilities
 
-At each reconcile tick, the operator:
+At each reconcile tick, the controller manager:
 
 1. selects eligible managed nodes,
 2. reads `NodeHardware` when available and falls back to node labels when it is not,
 3. resolves hardware identity against the shared inventory,
 4. classifies workload demand from pod scheduling constraints,
-5. runs a policy algorithm (`pkg/operator/policy/`) to compute a plan,
+5. runs a policy algorithm (`pkg/controller/policy/`) to compute a plan,
 6. applies transition guards for safe downgrades,
 7. writes desired node targets (`NodeTwin.spec`) and the `joulie.io/power-profile` node label.
 
 The agent then enforces those targets node-by-node.
 
-In addition to the reconcile loop, the operator runs a background controller:
+In addition to the reconcile loop, the controller manager runs a background controller:
 
 ## Reads, writes and leader election
 
-All reads (nodes, pods, `NodeHardware`, `NodeTwin`) come from an informer cache maintained by a controller-runtime manager, so a reconcile touches the API server only when it writes. The pod informer keeps only the fields the policy needs (node name, node selector, affinity, annotations, phase); container specs and statuses are dropped before they reach memory. Writes use the same clients as before, carry the `joulie-operator` field manager, and are skipped when nothing changed.
+All reads (nodes, pods, `NodeHardware`, `NodeTwin`) come from an informer cache maintained by a controller-runtime manager, so a reconcile touches the API server only when it writes. The pod informer keeps only the fields the policy needs (node name, node selector, affinity, annotations, phase); container specs and statuses are dropped before they reach memory. Writes use the same clients as before, carry the `joulie-controller-manager` field manager, and are skipped when nothing changed.
 
-The reconcile loop and the facility poller run as manager runnables: they start once the cache has synced and, with `LEADER_ELECT=true` (Helm `operator.leaderElection.enabled`), only on the holder of the `joulie-operator` lease. Leader election is off by default, which matches the single replica the chart deploys.
+The reconcile loop and the facility poller run as manager runnables: they start once the cache has synced and, with `LEADER_ELECT=true` (Helm `controllerManager.leaderElection.enabled`), only on the holder of the `joulie-controller-manager` lease. Leader election is off by default, which matches the single replica the chart deploys.
 
 ## Facility metrics
 
-The facility metrics poller (`cmd/operator/facility.go`) queries Prometheus for data-center-level signals: ambient temperature, total IT power, and cooling power. These feed into the twin computation for PUE estimation and cooling stress refinement.
+The facility metrics poller (`cmd/controller-manager/facility.go`) queries Prometheus for data-center-level signals: ambient temperature, total IT power, and cooling power. These feed into the twin computation for PUE estimation and cooling stress refinement.
 
 Disabled by default (`ENABLE_FACILITY_METRICS=false`). When enabled, the poller runs every `FACILITY_POLL_INTERVAL` (default 30s) and computes PUE as `(IT power + cooling power) / IT power`. The ambient temperature is passed to the twin's `LinearCoolingModel` for temperature-aware stress scoring. The scheduler extender then weights marginal power costs by PUE.
 
@@ -43,7 +44,7 @@ See [Configuration Reference]({{< relref "/docs/getting-started/05-configuration
 
 ## Control boundary with the agent
 
-- operator decides **what** each node should be
+- controller manager decides **what** each node should be
 - agent decides **how** to apply the corresponding controls on that node
 
 This separation keeps policy logic portable while actuator details stay node-local.
@@ -76,7 +77,7 @@ The important distinction is:
 
 ## Power intent configuration knobs
 
-Operator intent emission is controlled by env vars:
+Controller manager intent emission is controlled by env vars:
 
 - CPU:
   - `CPU_WRITE_ABSOLUTE_CAPS` (`true|false`)
@@ -94,17 +95,17 @@ Operator intent emission is controlled by env vars:
 High-level behavior:
 
 - CPU:
-  - when `CPU_WRITE_ABSOLUTE_CAPS=false`, operator writes normalized percentage intent,
-  - when `CPU_WRITE_ABSOLUTE_CAPS=true`, operator writes absolute watts intent.
+  - when `CPU_WRITE_ABSOLUTE_CAPS=false`, controller manager writes normalized percentage intent,
+  - when `CPU_WRITE_ABSOLUTE_CAPS=true`, controller manager writes absolute watts intent.
 - GPU:
-  - when `GPU_WRITE_ABSOLUTE_CAPS=false`, operator writes percentage intent,
-  - when `GPU_WRITE_ABSOLUTE_CAPS=true`, operator may write resolved `capWattsPerGpu` in addition to `capPctOfMax`, when model-based mapping is available.
+  - when `GPU_WRITE_ABSOLUTE_CAPS=false`, controller manager writes percentage intent,
+  - when `GPU_WRITE_ABSOLUTE_CAPS=true`, controller manager may write resolved `capWattsPerGpu` in addition to `capPctOfMax`, when model-based mapping is available.
 
 This is why GPU `NodeTwin.spec` objects may contain both normalized intent and resolved absolute caps at the same time.
 
 ## Heterogeneous planning
 
-The operator is now inventory-aware.
+The controller manager is now inventory-aware.
 
 Its first heterogeneous-planning input is a normalized compute-density score built from:
 
@@ -116,7 +117,7 @@ So, for the same policy parameters, denser nodes are preferred first for `perfor
 
 If `NodeHardware` is not available yet:
 
-- the operator derives a best-effort hardware view from labels such as `joulie.io/hw.cpu-model`, `joulie.io/hw.gpu-model`, `joulie.io/hw.gpu-count`,
+- the controller manager derives a best-effort hardware view from labels such as `joulie.io/hw.cpu-model`, `joulie.io/hw.gpu-model`, `joulie.io/hw.gpu-count`,
 - and from allocatable extended resources (`nvidia.com/gpu`, `amd.com/gpu`).
 
 That keeps simulator-first and bootstrap scenarios working without making `NodeHardware` a hand-authored prerequisite.
@@ -128,11 +129,11 @@ Joulie models two scheduler-facing supply states:
 - `performance`
 - `eco`
 
-`DrainingPerformance` is an internal operator FSM state tracked via `NodeTwin.status.schedulableClass = "draining"`.
+`DrainingPerformance` is an internal controller manager FSM state tracked via `NodeTwin.status.schedulableClass = "draining"`.
 
 That state means:
 
-- the operator wants the node to end up in eco,
+- the controller manager wants the node to end up in eco,
 - the transition is still guarded because performance pods are still present,
 - the scheduler extender sees `schedulableClass: draining` and applies a score penalty to avoid placing new workloads on the node.
 
