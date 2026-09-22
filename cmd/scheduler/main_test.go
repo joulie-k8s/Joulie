@@ -585,3 +585,78 @@ func TestParseNodeHardwareNoStatus(t *testing.T) {
 		t.Error("expected empty hw info for node with no status")
 	}
 }
+
+// nodeTwinJSON is a NodeTwin as the API server returns it for a healthy
+// 4-socket node: every value that happens to be whole is decoded as int64.
+func nodeTwinJSON(lastUpdated time.Time) string {
+	return `{
+  "apiVersion": "joulie.io/v1alpha1",
+  "kind": "NodeTwin",
+  "metadata": {"name": "n2-atos"},
+  "spec": {"nodeName": "n2-atos", "profile": "performance"},
+  "status": {
+    "schedulableClass": "performance",
+    "predictedPowerHeadroomScore": 50,
+    "predictedCoolingStressScore": 0,
+    "hardwareDensityScore": 100,
+    "estimatedPUE": 1.4,
+    "effectiveCapState": {"cpuPct": 100, "gpuPct": 100},
+    "powerMeasurement": {
+      "source": "prometheus",
+      "measuredNodePowerW": 330,
+      "nodeCappedPowerW": 660,
+      "cpuCappedPowerW": 660,
+      "cpuTdpW": 660,
+      "nodeTdpW": 660,
+      "powerTrendWPerMin": 0
+    },
+    "lastUpdated": "` + lastUpdated.Format(time.RFC3339) + `"
+  }
+}`
+}
+
+func TestParseTwinStateAcceptsWholeNumbers(t *testing.T) {
+	u := unstructured.Unstructured{}
+	if err := u.UnmarshalJSON([]byte(nodeTwinJSON(time.Now().UTC()))); err != nil {
+		t.Fatalf("decode NodeTwin: %v", err)
+	}
+
+	nodeName, ts := parseTwinState(u)
+	if nodeName != "n2-atos" {
+		t.Fatalf("nodeName=%q want=n2-atos", nodeName)
+	}
+	if ts.PredictedPowerHeadroomScore != 50 {
+		t.Fatalf("headroom=%v want=50 (int64 from the API must be accepted)", ts.PredictedPowerHeadroomScore)
+	}
+	if ts.EffectiveCapState.CPUPct != 100 || ts.EffectiveCapState.GPUPct != 100 {
+		t.Fatalf("capState=%+v want cpu/gpu 100", ts.EffectiveCapState)
+	}
+	if ts.HardwareDensityScore != 100 {
+		t.Fatalf("density=%v want=100", ts.HardwareDensityScore)
+	}
+	if ts.PowerMeasurement == nil {
+		t.Fatal("powerMeasurement missing")
+	}
+	if ts.PowerMeasurement.MeasuredNodePowerW != 330 {
+		t.Fatalf("measured=%v want=330", ts.PowerMeasurement.MeasuredNodePowerW)
+	}
+	if ts.PowerMeasurement.NodeCappedPowerW != 660 || ts.PowerMeasurement.NodeTdpW != 660 {
+		t.Fatalf("capped=%v tdp=%v want 660/660", ts.PowerMeasurement.NodeCappedPowerW, ts.PowerMeasurement.NodeTdpW)
+	}
+}
+
+func TestScoreNodeUsesWholeNumberTwinFields(t *testing.T) {
+	u := unstructured.Unstructured{}
+	if err := u.UnmarshalJSON([]byte(nodeTwinJSON(time.Now().UTC()))); err != nil {
+		t.Fatalf("decode NodeTwin: %v", err)
+	}
+	nodeName, ts := parseTwinState(u)
+	states := map[string]*joulie.NodeTwinStatus{nodeName: ts}
+
+	// 330 W drawn against a 660 W budget is half the budget left:
+	// 50 * 0.7 + (100 - 0) * 0.15 = 50.
+	got := scoreNode(nodeName, states, map[string]nodeHWInfo{}, "standard", 0, 0, nil)
+	if got != 50 {
+		t.Fatalf("score=%d want=50 (dropped twin fields collapse this to 15)", got)
+	}
+}
