@@ -273,6 +273,16 @@ Default expected selector value is:&lt;/p&gt;</description></item><item><title>P
  &lt;td&gt;Address for the Prometheus metrics endpoint&lt;/td&gt;
  &lt;/tr&gt;
  &lt;tr&gt;
+ &lt;td&gt;&lt;code&gt;LEADER_ELECT&lt;/code&gt;&lt;/td&gt;
+ &lt;td&gt;&lt;code&gt;false&lt;/code&gt;&lt;/td&gt;
+ &lt;td&gt;Run the reconcile loop only on the leader of a &lt;code&gt;coordination.k8s.io&lt;/code&gt; lease. Required before running more than one operator replica. Helm: &lt;code&gt;operator.leaderElection.enabled&lt;/code&gt;, which also creates the lease Role.&lt;/td&gt;
+ &lt;/tr&gt;
+ &lt;tr&gt;
+ &lt;td&gt;&lt;code&gt;POD_NAMESPACE&lt;/code&gt;&lt;/td&gt;
+ &lt;td&gt;&lt;code&gt;joulie-system&lt;/code&gt;&lt;/td&gt;
+ &lt;td&gt;Namespace of the leader election lease. The chart sets it from the downward API.&lt;/td&gt;
+ &lt;/tr&gt;
+ &lt;tr&gt;
  &lt;td&gt;&lt;code&gt;NODE_SELECTOR&lt;/code&gt;&lt;/td&gt;
  &lt;td&gt;&lt;code&gt;node-role.kubernetes.io/worker&lt;/code&gt;&lt;/td&gt;
  &lt;td&gt;Label selector for managed nodes&lt;/td&gt;
