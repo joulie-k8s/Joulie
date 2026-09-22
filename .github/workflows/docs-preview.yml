@@ -14,9 +14,11 @@ permissions:
   contents: write
   pull-requests: write
 
+# One group per PR: a newer push to the same PR cancels the older preview build,
+# and previews can no longer evict main or release deploys from a shared queue.
 concurrency:
-  group: gh-pages-publish
-  cancel-in-progress: false
+  group: gh-pages-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   preview:
