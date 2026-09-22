@@ -1,6 +1,9 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
   name: nodehardwares.joulie.io
 spec:
   group: joulie.io
@@ -8,139 +11,238 @@ spec:
     kind: NodeHardware
     listKind: NodeHardwareList
     plural: nodehardwares
-    singular: nodehardware
     shortNames:
-      - nhw
+    - nhw
+    singular: nodehardware
   scope: Cluster
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          properties:
-            spec:
-              type: object
-              properties:
-                nodeName:
-                  type: string
-              required:
-                - nodeName
-            status:
-              type: object
-              properties:
-                cpu:
-                  type: object
-                  properties:
-                    rawModel: { type: string }
-                    model: { type: string }
-                    vendor: { type: string }
-                    sockets: { type: integer }
-                    totalCores: { type: integer }
-                    coresPerSocket: { type: integer }
-                    driverFamily: { type: string }
-                    capRange:
-                      type: object
-                      properties:
-                        type: { type: string }
-                        minWattsPerSocket: { type: number }
-                        maxWattsPerSocket: { type: number }
-                    landmarks:
-                      type: object
-                      properties:
-                        minFreqMHz: { type: number }
-                        nominalFreqMHz: { type: number }
-                        maxBoostMHz: { type: number }
-                        lowestNonlinearFreqMHz: { type: number }
-                    controlAvailable: { type: boolean }
-                    telemetryAvailable: { type: boolean }
-                    warnings:
-                      type: array
-                      items: { type: string }
-                gpu:
-                  type: object
-                  properties:
-                    present: { type: boolean }
-                    rawModel: { type: string }
-                    model: { type: string }
-                    vendor: { type: string }
-                    count: { type: integer }
-                    capRangePerGpu:
-                      type: object
-                      properties:
-                        minWatts: { type: number }
-                        maxWatts: { type: number }
-                        defaultWatts: { type: number }
-                    currentCapWatts: { type: number }
-                    slicing:
-                      type: object
-                      properties:
-                        supported: { type: boolean }
-                        modes:
-                          type: array
-                          items: { type: string }
-                    controlAvailable: { type: boolean }
-                    telemetryAvailable: { type: boolean }
-                    warnings:
-                      type: array
-                      items: { type: string }
-                memory:
-                  type: object
-                  properties:
-                    totalBytes: { type: integer, format: int64 }
-                network:
-                  type: object
-                  properties:
-                    linkClass: { type: string }
-                inventoryResolution:
-                  type: object
-                  properties:
-                    hardwareCatalogKey:
-                      type: object
-                      properties:
-                        cpu: { type: string }
-                        gpu: { type: string }
-                    exactness:
-                      type: object
-                      properties:
-                        cpu: { type: string }
-                        gpu: { type: string }
-                capabilities:
-                  type: object
-                  properties:
-                    cpuControl: { type: boolean }
-                    gpuControl: { type: boolean }
-                    cpuTelemetry: { type: boolean }
-                    gpuTelemetry: { type: boolean }
-                quality:
-                  type: object
-                  properties:
-                    overall: { type: string }
-                    warnings:
-                      type: array
-                      items: { type: string }
-                updatedAt: { type: string }
-          required:
-            - spec
-            - metadata
-            - apiVersion
-            - kind
-      additionalPrinterColumns:
-        - name: Node
-          type: string
-          jsonPath: .spec.nodeName
-        - name: CPU
-          type: string
-          jsonPath: .status.cpu.model
-        - name: GPU
-          type: string
-          jsonPath: .status.gpu.model
-        - name: GPUCount
-          type: integer
-          jsonPath: .status.gpu.count
-        - name: Quality
-          type: string
-          jsonPath: .status.quality.overall
-      subresources:
-        status: {}
+  - additionalPrinterColumns:
+    - jsonPath: .spec.nodeName
+      name: Node
+      type: string
+    - jsonPath: .status.cpu.model
+      name: CPU
+      type: string
+    - jsonPath: .status.gpu.model
+      name: GPU
+      type: string
+    - jsonPath: .status.gpu.count
+      name: GPUCount
+      type: integer
+    - jsonPath: .status.quality.overall
+      name: Quality
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          NodeHardware holds the hardware capabilities of a node, as published by
+          the agent. The spec names the node; the status carries the inventory.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: NodeHardwareSpec identifies the node this inventory belongs
+              to.
+            properties:
+              nodeName:
+                description: NodeName is the Kubernetes node this inventory describes.
+                type: string
+            required:
+            - nodeName
+            type: object
+          status:
+            description: |-
+              NodeHardwareStatus holds the hardware inventory published by the agent.
+              It is the single source of truth for static node hardware facts: CPU and
+              GPU specs, power cap ranges, frequency landmarks, GPU slicing modes,
+              memory, network and inventory resolution confidence.
+            properties:
+              capabilities:
+                description: |-
+                  NodeHardwareCapabilities summarises which control and telemetry paths the
+                  agent found usable on the node.
+                properties:
+                  cpuControl:
+                    type: boolean
+                  cpuTelemetry:
+                    type: boolean
+                  gpuControl:
+                    type: boolean
+                  gpuTelemetry:
+                    type: boolean
+                type: object
+              cpu:
+                description: NodeHardwareCPU describes the CPU package(s) of the node.
+                properties:
+                  capRange:
+                    description: CapRange is the RAPL/MSR power cap range, per socket.
+                    properties:
+                      maxWattsPerSocket:
+                        type: number
+                      minWattsPerSocket:
+                        type: number
+                      type:
+                        description: Type is the cap domain, currently always "package".
+                        type: string
+                    type: object
+                  controlAvailable:
+                    type: boolean
+                  coresPerSocket:
+                    type: integer
+                  driverFamily:
+                    type: string
+                  landmarks:
+                    description: CPULandmarks holds the characteristic frequencies
+                      of the CPU.
+                    properties:
+                      lowestNonlinearFreqMHz:
+                        type: number
+                      maxBoostMHz:
+                        type: number
+                      minFreqMHz:
+                        type: number
+                      nominalFreqMHz:
+                        type: number
+                    type: object
+                  model:
+                    type: string
+                  rawModel:
+                    type: string
+                  sockets:
+                    type: integer
+                  telemetryAvailable:
+                    type: boolean
+                  totalCores:
+                    type: integer
+                  vendor:
+                    type: string
+                  warnings:
+                    items:
+                      type: string
+                    type: array
+                type: object
+              gpu:
+                description: NodeHardwareGPU describes the GPUs of the node.
+                properties:
+                  capRangePerGpu:
+                    description: CapRangePerGPU is the power cap range of one GPU,
+                      not the sum over all GPUs.
+                    properties:
+                      defaultWatts:
+                        type: number
+                      maxWatts:
+                        type: number
+                      minWatts:
+                        type: number
+                    type: object
+                  controlAvailable:
+                    type: boolean
+                  count:
+                    type: integer
+                  currentCapWatts:
+                    type: number
+                  model:
+                    type: string
+                  present:
+                    type: boolean
+                  rawModel:
+                    type: string
+                  slicing:
+                    description: GPUSlicing lists the partitioning modes the GPUs
+                      support.
+                    properties:
+                      modes:
+                        items:
+                          type: string
+                        type: array
+                      supported:
+                        type: boolean
+                    type: object
+                  telemetryAvailable:
+                    type: boolean
+                  vendor:
+                    type: string
+                  warnings:
+                    items:
+                      type: string
+                    type: array
+                type: object
+              inventoryResolution:
+                description: |-
+                  InventoryResolution records how confidently the detected hardware was
+                  matched against the hardware catalog.
+                properties:
+                  exactness:
+                    description: |-
+                      CatalogExactness is the match quality per component: "exact", "proxy" or
+                      "generic".
+                    properties:
+                      cpu:
+                        type: string
+                      gpu:
+                        type: string
+                    type: object
+                  hardwareCatalogKey:
+                    description: CatalogKey is the catalog entry the CPU and GPU resolved
+                      to.
+                    properties:
+                      cpu:
+                        type: string
+                      gpu:
+                        type: string
+                    type: object
+                type: object
+              memory:
+                description: NodeHardwareMemory describes the system memory of the
+                  node.
+                properties:
+                  totalBytes:
+                    format: int64
+                    type: integer
+                type: object
+              network:
+                description: NodeHardwareNetwork describes the network attachment
+                  of the node.
+                properties:
+                  linkClass:
+                    type: string
+                type: object
+              quality:
+                description: |-
+                  NodeHardwareQuality rates the inventory as a whole: "full", "partial" or
+                  "unknown", with the warnings that lowered it.
+                properties:
+                  overall:
+                    type: string
+                  warnings:
+                    items:
+                      type: string
+                    type: array
+                type: object
+              updatedAt:
+                description: UpdatedAt is the RFC3339 time of the last inventory write.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

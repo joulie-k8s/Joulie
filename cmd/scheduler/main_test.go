@@ -1,12 +1,18 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/kube"
 	"github.com/matbun/joulie/pkg/scheduler/powerest"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // --- Twin-based scoring tests ---
@@ -454,35 +460,32 @@ func TestScoreNodeNoHardwarePreservesBase(t *testing.T) {
 	}
 }
 
-// --- parseTwinState powerMeasurement ---
+// --- twinStatusFromObject powerMeasurement ---
 
-func TestParseTwinStatePowerMeasurement(t *testing.T) {
-	obj := unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"spec": map[string]interface{}{
-				"nodeName": "test-node",
-			},
-			"status": map[string]interface{}{
-				"schedulableClass":            "performance",
-				"predictedPowerHeadroomScore": float64(75),
-				"predictedCoolingStressScore": float64(20),
-				"lastUpdated":                time.Now().Format(time.RFC3339),
-				"powerMeasurement": map[string]interface{}{
-					"source":             "kepler",
-					"measuredNodePowerW": float64(500),
-					"cpuCappedPowerW":    float64(600),
-					"gpuCappedPowerW":    float64(2800),
-					"nodeCappedPowerW":   float64(3400),
-					"cpuTdpW":            float64(720),
-					"gpuTdpW":            float64(5600),
-					"nodeTdpW":           float64(6320),
-					"powerTrendWPerMin":  float64(-50),
-				},
+func TestTwinStatusFromObjectPowerMeasurement(t *testing.T) {
+	obj := &v1alpha1.NodeTwin{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-node"},
+		Spec:       v1alpha1.NodeTwinSpec{NodeName: "test-node"},
+		Status: v1alpha1.NodeTwinStatus{
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 75,
+			PredictedCoolingStressScore: 20,
+			LastUpdated:                 time.Now().Format(time.RFC3339),
+			PowerMeasurement: &v1alpha1.PowerMeasurement{
+				Source:             "kepler",
+				MeasuredNodePowerW: 500,
+				CPUCappedPowerW:    600,
+				GPUCappedPowerW:    2800,
+				NodeCappedPowerW:   3400,
+				CPUTdpW:            720,
+				GPUTdpW:            5600,
+				NodeTdpW:           6320,
+				PowerTrendWPerMin:  -50,
 			},
 		},
 	}
 
-	name, ts := parseTwinState(obj)
+	name, ts := twinStatusFromObject(obj)
 	if name != "test-node" {
 		t.Errorf("expected node name 'test-node', got %q", name)
 	}
@@ -505,41 +508,52 @@ func TestParseTwinStatePowerMeasurement(t *testing.T) {
 	if pm.PowerTrendWPerMin != -50 {
 		t.Errorf("expected powerTrendWPerMin -50, got %.0f", pm.PowerTrendWPerMin)
 	}
+	if ts.LastUpdated.IsZero() {
+		t.Error("expected lastUpdated to be parsed from the RFC3339 string")
+	}
 }
 
-// --- parseNodeHardware ---
+func TestTwinStatusFromObjectNoPowerMeasurement(t *testing.T) {
+	obj := &v1alpha1.NodeTwin{
+		Spec:   v1alpha1.NodeTwinSpec{NodeName: "bare"},
+		Status: v1alpha1.NodeTwinStatus{SchedulableClass: "eco"},
+	}
+	name, ts := twinStatusFromObject(obj)
+	if name != "bare" {
+		t.Errorf("expected 'bare', got %q", name)
+	}
+	if ts.PowerMeasurement != nil {
+		t.Error("expected nil powerMeasurement when the status has none")
+	}
+	if !ts.LastUpdated.IsZero() {
+		t.Error("expected zero lastUpdated when the status has none")
+	}
+}
 
-func TestParseNodeHardwareFromStatus(t *testing.T) {
-	obj := unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"spec": map[string]interface{}{
-				"nodeName": "test-node",
+// --- hwInfoFromObject ---
+
+func TestHWInfoFromObjectFromStatus(t *testing.T) {
+	obj := &v1alpha1.NodeHardware{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-node"},
+		Spec:       v1alpha1.NodeHardwareSpec{NodeName: "test-node"},
+		Status: v1alpha1.NodeHardwareStatus{
+			CPU: &v1alpha1.NodeHardwareCPU{
+				Model:      "EPYC-9654",
+				TotalCores: 96,
+				Sockets:    2,
+				CapRange:   &v1alpha1.CPUCapRange{MaxWattsPerSocket: 360},
 			},
-			"status": map[string]interface{}{
-				"cpu": map[string]interface{}{
-					"model":      "EPYC-9654",
-					"totalCores": float64(96),
-					"sockets":    float64(2),
-					"capRange": map[string]interface{}{
-						"maxWattsPerSocket": float64(360),
-					},
-				},
-				"gpu": map[string]interface{}{
-					"present": true,
-					"model":   "H100-SXM",
-					"vendor":  "nvidia",
-					"count":   float64(8),
-					"capRangePerGpu": map[string]interface{}{
-						"maxWatts": float64(700),
-					},
-				},
-				"memory": map[string]interface{}{
-					"totalBytes": float64(1099511627776),
-				},
+			GPU: &v1alpha1.NodeHardwareGPU{
+				Present:        true,
+				Model:          "H100-SXM",
+				Vendor:         "nvidia",
+				Count:          8,
+				CapRangePerGPU: &v1alpha1.GPUCapRange{MaxWatts: 700},
 			},
+			Memory: &v1alpha1.NodeHardwareMemory{TotalBytes: 1099511627776},
 		},
 	}
-	name, info := parseNodeHardware(obj)
+	name, info := hwInfoFromObject(obj)
 	if name != "test-node" {
 		t.Errorf("expected node name 'test-node', got %q", name)
 	}
@@ -569,15 +583,11 @@ func TestParseNodeHardwareFromStatus(t *testing.T) {
 	}
 }
 
-func TestParseNodeHardwareNoStatus(t *testing.T) {
-	obj := unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"spec": map[string]interface{}{
-				"nodeName": "empty-node",
-			},
-		},
+func TestHWInfoFromObjectNoStatus(t *testing.T) {
+	obj := &v1alpha1.NodeHardware{
+		Spec: v1alpha1.NodeHardwareSpec{NodeName: "empty-node"},
 	}
-	name, info := parseNodeHardware(obj)
+	name, info := hwInfoFromObject(obj)
 	if name != "empty-node" {
 		t.Errorf("expected 'empty-node', got %q", name)
 	}
@@ -615,13 +625,27 @@ func nodeTwinJSON(lastUpdated time.Time) string {
 }`
 }
 
-func TestParseTwinStateAcceptsWholeNumbers(t *testing.T) {
+// decodeNodeTwinJSON takes the JSON the API server would return and decodes
+// it the way the informer does: JSON to an unstructured map (whole numbers
+// stay int64 here) and then through the unstructured converter into the
+// typed NodeTwin, which is where int64 must become float64.
+func decodeNodeTwinJSON(t *testing.T, raw string) *v1alpha1.NodeTwin {
+	t.Helper()
 	u := unstructured.Unstructured{}
-	if err := u.UnmarshalJSON([]byte(nodeTwinJSON(time.Now().UTC()))); err != nil {
-		t.Fatalf("decode NodeTwin: %v", err)
+	if err := u.UnmarshalJSON([]byte(raw)); err != nil {
+		t.Fatalf("decode NodeTwin JSON: %v", err)
 	}
+	nt := &v1alpha1.NodeTwin{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, nt); err != nil {
+		t.Fatalf("convert NodeTwin to typed: %v", err)
+	}
+	return nt
+}
 
-	nodeName, ts := parseTwinState(u)
+func TestTwinStatusFromObjectAcceptsWholeNumbers(t *testing.T) {
+	nt := decodeNodeTwinJSON(t, nodeTwinJSON(time.Now().UTC()))
+
+	nodeName, ts := twinStatusFromObject(nt)
 	if nodeName != "n2-atos" {
 		t.Fatalf("nodeName=%q want=n2-atos", nodeName)
 	}
@@ -646,11 +670,8 @@ func TestParseTwinStateAcceptsWholeNumbers(t *testing.T) {
 }
 
 func TestScoreNodeUsesWholeNumberTwinFields(t *testing.T) {
-	u := unstructured.Unstructured{}
-	if err := u.UnmarshalJSON([]byte(nodeTwinJSON(time.Now().UTC()))); err != nil {
-		t.Fatalf("decode NodeTwin: %v", err)
-	}
-	nodeName, ts := parseTwinState(u)
+	nt := decodeNodeTwinJSON(t, nodeTwinJSON(time.Now().UTC()))
+	nodeName, ts := twinStatusFromObject(nt)
 	states := map[string]*joulie.NodeTwinStatus{nodeName: ts}
 
 	// 330 W drawn against a 660 W budget is half the budget left:
@@ -658,5 +679,108 @@ func TestScoreNodeUsesWholeNumberTwinFields(t *testing.T) {
 	got := scoreNode(nodeName, states, map[string]nodeHWInfo{}, "standard", 0, 0, nil)
 	if got != 50 {
 		t.Fatalf("score=%d want=50 (dropped twin fields collapse this to 15)", got)
+	}
+}
+
+// --- reader-backed maps ---
+
+// resetReaderState points the package-level reader at r and clears the
+// memoized maps, restoring everything when the test ends. The state is
+// package-level, so tests using this must not call t.Parallel().
+func resetReaderState(t *testing.T, r kube.Reader) {
+	t.Helper()
+	prevReader := reader
+	twinStateMu.Lock()
+	prevTwin, prevTwinAt := twinStateCache, lastCacheRefresh
+	twinStateCache, lastCacheRefresh = nil, time.Time{}
+	twinStateMu.Unlock()
+	nodeHWMu.Lock()
+	prevHW, prevHWAt := nodeHWCache, lastNodeHWRefresh
+	nodeHWCache, lastNodeHWRefresh = nil, time.Time{}
+	nodeHWMu.Unlock()
+	setReader(r)
+	t.Cleanup(func() {
+		setReader(prevReader)
+		twinStateMu.Lock()
+		twinStateCache, lastCacheRefresh = prevTwin, prevTwinAt
+		twinStateMu.Unlock()
+		nodeHWMu.Lock()
+		nodeHWCache, lastNodeHWRefresh = prevHW, prevHWAt
+		nodeHWMu.Unlock()
+	})
+}
+
+func TestReaderBackedMaps(t *testing.T) {
+	s, err := kube.NewScheme(v1alpha1.AddToScheme)
+	if err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	twinA := &v1alpha1.NodeTwin{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		Spec:       v1alpha1.NodeTwinSpec{NodeName: "node-a", Profile: "performance"},
+		Status: v1alpha1.NodeTwinStatus{
+			SchedulableClass:            "performance",
+			PredictedPowerHeadroomScore: 60,
+			LastUpdated:                 now,
+			PowerMeasurement:            &v1alpha1.PowerMeasurement{MeasuredNodePowerW: 400, NodeCappedPowerW: 1000},
+		},
+	}
+	twinB := &v1alpha1.NodeTwin{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-b"},
+		Spec:       v1alpha1.NodeTwinSpec{NodeName: "node-b", Profile: "eco"},
+		Status:     v1alpha1.NodeTwinStatus{SchedulableClass: "eco", LastUpdated: now},
+	}
+	hwA := &v1alpha1.NodeHardware{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+		Spec:       v1alpha1.NodeHardwareSpec{NodeName: "node-a"},
+		Status: v1alpha1.NodeHardwareStatus{
+			CPU: &v1alpha1.NodeHardwareCPU{TotalCores: 64, Sockets: 2, CapRange: &v1alpha1.CPUCapRange{MaxWattsPerSocket: 300}},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(twinA, twinB, hwA).Build()
+	resetReaderState(t, c)
+
+	ctx := context.Background()
+	states := getNodeTwinStates(ctx)
+	if len(states) != 2 {
+		t.Fatalf("twin states=%d want=2: %v", len(states), states)
+	}
+	if st := states["node-a"]; st == nil || st.SchedulableClass != "performance" || st.PowerMeasurement == nil || st.PowerMeasurement.NodeCappedPowerW != 1000 {
+		t.Fatalf("node-a state=%+v", st)
+	}
+	if st := states["node-b"]; st == nil || st.SchedulableClass != "eco" || st.PowerMeasurement != nil {
+		t.Fatalf("node-b state=%+v", st)
+	}
+
+	hw := getNodeHardwareInfo(ctx)
+	if len(hw) != 1 {
+		t.Fatalf("hw infos=%d want=1: %v", len(hw), hw)
+	}
+	if got := hw["node-a"]; got.CPUTotalCores != 64 || got.CPUMaxWattsTotal != 600 {
+		t.Fatalf("node-a hw=%+v want cores=64 cpuMaxW=600", got)
+	}
+
+	// Within CACHE_TTL the memoized map is returned as is: a new object in
+	// the reader is not visible until the next rebuild.
+	if err := c.Create(ctx, &v1alpha1.NodeTwin{
+		ObjectMeta: metav1.ObjectMeta{Name: "node-c"},
+		Spec:       v1alpha1.NodeTwinSpec{NodeName: "node-c", Profile: "eco"},
+	}); err != nil {
+		t.Fatalf("create node-c: %v", err)
+	}
+	if again := getNodeTwinStates(ctx); len(again) != 2 {
+		t.Fatalf("memoized twin states=%d want=2 within CACHE_TTL", len(again))
+	}
+}
+
+func TestReaderNilReturnsEmptyMaps(t *testing.T) {
+	resetReaderState(t, nil)
+	ctx := context.Background()
+	if got := getNodeTwinStates(ctx); len(got) != 0 {
+		t.Fatalf("twin states=%d want=0 without Kubernetes", len(got))
+	}
+	if got := getNodeHardwareInfo(ctx); len(got) != 0 {
+		t.Fatalf("hw infos=%d want=0 without Kubernetes", len(got))
 	}
 }

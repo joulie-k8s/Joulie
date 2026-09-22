@@ -10,10 +10,17 @@ SIM_HELM_RELEASE ?= joulie-simulator
 SIM_HELM_CHART ?= charts/joulie-simulator
 SIM_HELM_VALUES ?= values/joulie-simulator.yaml
 
+# CRDs are generated from api/ by controller-gen and shipped twice: once for
+# kubectl apply and once inside the Helm chart. Both copies must be identical.
+CONTROLLER_GEN_VERSION ?= v0.16.5
+CONTROLLER_GEN ?= $(PWD)/bin/controller-gen
+CRD_DIR ?= config/crd/bases
+CHART_CRD_DIR ?= charts/joulie/crds
+
 # Image names must follow joulie-<component>, where <component> matches cmd/<component>.
 IMAGES ?= joulie-agent joulie-operator joulie-scheduler
 
-.PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-experiments test-all test-examples kubectl-plugin kubectl-plugin-install kubectl-plugin-push kubectl-plugin-build-push simulator-build simulator-push simulator-build-push simulator-install simulator-uninstall simulator-build-push-deploy simulator-logs docs-serve
+.PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-experiments test-all test-examples controller-gen generate manifests verify-manifests kubectl-plugin kubectl-plugin-install kubectl-plugin-push kubectl-plugin-build-push simulator-build simulator-push simulator-build-push simulator-install simulator-uninstall simulator-build-push-deploy simulator-logs docs-serve
 
 help:
 	@echo "Targets:"
@@ -32,6 +39,9 @@ help:
 	@echo "  make kubectl-plugin-build-push TAG=<tag> Build and push kubectl-joulie to Harbor"
 	@echo "  make test                             Run unit tests"
 	@echo "  make test-examples                    Validate example YAML manifests (kubectl dry-run client)"
+	@echo "  make generate                         Regenerate DeepCopy code for api/"
+	@echo "  make manifests                        Regenerate CRDs from api/ into config/ and the Helm chart"
+	@echo "  make verify-manifests                 Fail if generated code or CRDs are stale (CI)"
 	@echo "  make simulator-build TAG=<tag>        Build simulator image"
 	@echo "  make simulator-push TAG=<tag>         Push simulator image"
 	@echo "  make simulator-build-push TAG=<tag>   Build and push simulator image"
@@ -122,6 +132,26 @@ kubectl-plugin-build-push: kubectl-plugin kubectl-plugin-push
 
 test:
 	go test ./...
+
+# Installs the pinned controller-gen into ./bin unless that exact version is
+# already there, so every machine and CI generate the same output.
+controller-gen:
+	@if ! { test -x "$(CONTROLLER_GEN)" && "$(CONTROLLER_GEN)" --version | grep -q "$(CONTROLLER_GEN_VERSION)"; }; then \
+		echo "Installing controller-gen $(CONTROLLER_GEN_VERSION) into $(PWD)/bin"; \
+		GOBIN=$(PWD)/bin go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION); \
+	fi
+
+generate: controller-gen
+	$(CONTROLLER_GEN) object paths="./api/..."
+
+# allowDangerousTypes admits float64 fields, which the twin scores and power
+# values are.
+manifests: controller-gen
+	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths="./api/..." output:crd:artifacts:config=$(CRD_DIR)
+	cp $(CRD_DIR)/joulie.io_nodehardwares.yaml $(CRD_DIR)/joulie.io_nodetwins.yaml $(CHART_CRD_DIR)/
+
+verify-manifests: generate manifests
+	git diff --exit-code -- api $(CRD_DIR) $(CHART_CRD_DIR)
 
 test-experiments:
 	@echo "Running experiment sanity tests..."

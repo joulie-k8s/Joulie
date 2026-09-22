@@ -18,6 +18,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Verify generated code and CRDs are up to date
+        run: make verify-manifests
+
       - name: Run unit tests
         run: go test ./...
 

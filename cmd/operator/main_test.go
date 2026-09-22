@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/hwinv"
+	"github.com/matbun/joulie/pkg/kube"
 	"github.com/matbun/joulie/pkg/operator/policy"
 	"github.com/matbun/joulie/pkg/operator/twin"
 	corev1 "k8s.io/api/core/v1"
@@ -19,7 +21,49 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+	toolscache "k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
+
+func testScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s, err := kube.NewScheme(v1alpha1.AddToScheme)
+	if err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	return s
+}
+
+// fakeReader stands in for the manager's cache: a controller-runtime fake
+// client seeded with typed objects and carrying the same spec.nodeName index
+// main registers on the real cache.
+func fakeReader(t *testing.T, objs ...runtime.Object) kube.Reader {
+	t.Helper()
+	return fake.NewClientBuilder().
+		WithScheme(testScheme(t)).
+		WithRuntimeObjects(objs...).
+		WithIndex(&corev1.Pod{}, podNodeNameField, podNodeNameIndex).
+		Build()
+}
+
+// fakeClients seeds the reader and both write clients from one object list,
+// so a test's reads and writes see the same cluster. Core objects go to the
+// clientset, joulie.io objects to the dynamic client, everything to the reader.
+func fakeClients(t *testing.T, objs ...runtime.Object) (kube.Reader, *k8sfake.Clientset, *dynamicfake.FakeDynamicClient) {
+	t.Helper()
+	var core, joulieObjs []runtime.Object
+	for _, o := range objs {
+		switch o.(type) {
+		case *v1alpha1.NodeHardware, *v1alpha1.NodeTwin:
+			joulieObjs = append(joulieObjs, o)
+		default:
+			core = append(core, o)
+		}
+	}
+	return fakeReader(t, objs...),
+		k8sfake.NewSimpleClientset(core...),
+		dynamicfake.NewSimpleDynamicClient(testScheme(t), joulieObjs...)
+}
 
 func podWithRequiredPowerProfile(name, nodeName, profile string) *corev1.Pod {
 	return &corev1.Pod{
@@ -283,7 +327,7 @@ func TestClassifyPodBySchedulingCornerCases(t *testing.T) {
 
 func TestRunningPerformanceSensitivePodCountOnNodeFiltersCorrectly(t *testing.T) {
 	t.Parallel()
-	client := k8sfake.NewSimpleClientset(
+	reader := fakeReader(t,
 		podWithRequiredPowerProfile("p1", "node-a", "performance"),
 		podWithRequiredPowerProfile("p2", "node-a", "eco"),
 		&corev1.Pod{
@@ -296,9 +340,10 @@ func TestRunningPerformanceSensitivePodCountOnNodeFiltersCorrectly(t *testing.T)
 			Spec:       podWithRequiredPowerProfile("x", "node-a", "performance").Spec,
 			Status:     corev1.PodStatus{Phase: corev1.PodSucceeded},
 		}, // terminal, ignored
+		podWithRequiredPowerProfile("p5", "node-b", "performance"), // other node, filtered by the index
 	)
 
-	count, err := runningPerformanceSensitivePodCountOnNode(context.Background(), client, "node-a")
+	count, err := runningPerformanceSensitivePodCountOnNode(context.Background(), reader, "node-a")
 	if err != nil {
 		t.Fatalf("runningPerformanceSensitivePodCountOnNode error: %v", err)
 	}
@@ -309,7 +354,7 @@ func TestRunningPerformanceSensitivePodCountOnNodeFiltersCorrectly(t *testing.T)
 
 func TestApplyDowngradeGuardsSetsDrainingWhenPerfPodsExist(t *testing.T) {
 	t.Parallel()
-	client := k8sfake.NewSimpleClientset(
+	client := fakeReader(t,
 		podWithRequiredPowerProfile("perf", "node-a", "performance"),
 	)
 	plan := []NodeAssignment{{
@@ -329,7 +374,7 @@ func TestApplyDowngradeGuardsSetsDrainingWhenPerfPodsExist(t *testing.T) {
 
 func TestApplyDowngradeGuardsClearsDrainingWhenNoPerfPods(t *testing.T) {
 	t.Parallel()
-	client := k8sfake.NewSimpleClientset()
+	client := fakeReader(t)
 	plan := []NodeAssignment{{
 		NodeName:  "node-a",
 		Profile:   "eco",
@@ -468,20 +513,17 @@ func TestUpsertNodeLabelsIsIdempotent(t *testing.T) {
 
 func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 	t.Parallel()
-	client := k8sfake.NewSimpleClientset(
+	reader, client, dyn := fakeClients(t,
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a", Labels: map[string]string{"joulie.io/managed": "true"}}},
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-b", Labels: map[string]string{"joulie.io/managed": "true"}}},
 	)
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
-		nodeTwinGVR:         "NodeTwinList",
-		twinNodeHardwareGVR: "NodeHardwareList",
-	})
 	selector, err := labels.Parse("joulie.io/managed=true")
 	if err != nil {
 		t.Fatalf("parse selector: %v", err)
 	}
 	if err := reconcile(
 		context.Background(),
+		reader,
 		client,
 		dyn,
 		selector,
@@ -534,6 +576,166 @@ func TestReconcileCreatesProfilesAndLabels(t *testing.T) {
 	}
 	if perf != 1 || eco != 1 {
 		t.Fatalf("unexpected node labels perf=%d eco=%d", perf, eco)
+	}
+}
+
+// The twin's TDP comes from the NodeHardware the reader serves, parsed typed.
+func TestReconcileReadsNodeHardwareFromReader(t *testing.T) {
+	t.Parallel()
+	reader, client, dyn := fakeClients(t,
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n2-atos", Labels: map[string]string{"joulie.io/managed": "true"}}},
+		nodeHardwareFromJSON(t, nodeHardware165W),
+	)
+	selector, err := labels.Parse("joulie.io/managed=true")
+	if err != nil {
+		t.Fatalf("parse selector: %v", err)
+	}
+	if err := reconcile(
+		context.Background(), reader, client, dyn, selector,
+		"joulie.io/reserved", "joulie.io/power-profile", time.Minute,
+		5000, 120, "static_partition", 0.6, 0.6, 1, 5, 10,
+		100, 60, false, 100, 60, false,
+		map[string]GPUModelCaps{}, []string{"joulie.io/gpu.product"},
+	); err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+
+	got, err := dyn.Resource(nodeTwinGVR).Get(context.Background(), "n2-atos", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get NodeTwin: %v", err)
+	}
+	// The fake stores whole numbers as int64, like the API server does.
+	v, found, err := unstructured.NestedFieldNoCopy(got.Object, "status", "powerMeasurement", "cpuTdpW")
+	if err != nil || !found {
+		t.Fatalf("cpuTdpW missing from status: found=%v err=%v obj=%v", found, err, got.Object["status"])
+	}
+	var tdp float64
+	switch n := v.(type) {
+	case int64:
+		tdp = float64(n)
+	case float64:
+		tdp = n
+	default:
+		t.Fatalf("cpuTdpW has type %T", v)
+	}
+	if tdp != 660 {
+		t.Fatalf("cpuTdpW=%v want=660 (4 sockets x 165 W from the cached NodeHardware)", tdp)
+	}
+}
+
+func TestReconcileLoopStopsOnContextCancel(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	runs := 0
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reconcileLoop(ctx, time.Millisecond, func(context.Context) error {
+			runs++
+			if runs == 3 {
+				cancel()
+			}
+			return nil
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconcileLoop did not return after cancel")
+	}
+	if runs != 3 {
+		t.Fatalf("runs=%d want=3", runs)
+	}
+}
+
+func TestPodTransformKeepsOnlyFSMFields(t *testing.T) {
+	t.Parallel()
+	now := metav1.Now()
+	full := podWithRequiredPowerProfile("p1", "node-a", "performance")
+	full.UID = "uid-1"
+	full.ResourceVersion = "42"
+	full.Labels = map[string]string{"app": "train"}
+	full.Annotations = map[string]string{"joulie.io/workload-class": "performance"}
+	full.DeletionTimestamp = &now
+	full.OwnerReferences = []metav1.OwnerReference{{Kind: "Job", Name: "train"}}
+	full.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubelet"}}
+	full.Finalizers = []string{"example.com/keep"}
+	full.Spec.NodeSelector = map[string]string{"joulie.io/power-profile": "performance"}
+	full.Spec.Containers = []corev1.Container{{Name: "main", Image: "img"}}
+	full.Spec.Volumes = []corev1.Volume{{Name: "data"}}
+	full.Spec.Tolerations = []corev1.Toleration{{Key: "gpu"}}
+	full.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "main"}}
+	full.Status.PodIP = "10.0.0.1"
+	full.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady}}
+
+	out, err := podTransform(full)
+	if err != nil {
+		t.Fatalf("podTransform: %v", err)
+	}
+	pod, ok := out.(*corev1.Pod)
+	if !ok {
+		t.Fatalf("podTransform returned %T, want *corev1.Pod", out)
+	}
+	// Kept: identity, the fields fsm reads, and the index key.
+	if pod.Name != "p1" || pod.Namespace != "ns1" || pod.UID != "uid-1" || pod.ResourceVersion != "42" {
+		t.Fatalf("identity metadata lost: %#v", pod.ObjectMeta)
+	}
+	if pod.Labels["app"] != "train" || pod.Annotations["joulie.io/workload-class"] != "performance" {
+		t.Fatalf("labels or annotations lost: %#v", pod.ObjectMeta)
+	}
+	if pod.DeletionTimestamp == nil || len(pod.OwnerReferences) != 1 {
+		t.Fatalf("deletionTimestamp or ownerReferences lost: %#v", pod.ObjectMeta)
+	}
+	if pod.Spec.NodeName != "node-a" || pod.Spec.NodeSelector["joulie.io/power-profile"] != "performance" || pod.Spec.Affinity == nil {
+		t.Fatalf("scheduling fields lost: %#v", pod.Spec)
+	}
+	if pod.Status.Phase != corev1.PodRunning {
+		t.Fatalf("phase lost: %#v", pod.Status)
+	}
+	// Dropped: everything that makes a Pod large.
+	if pod.Spec.Containers != nil || pod.Spec.Volumes != nil || pod.Spec.Tolerations != nil {
+		t.Fatalf("spec not stripped: %#v", pod.Spec)
+	}
+	if pod.Status.ContainerStatuses != nil || pod.Status.PodIP != "" || pod.Status.Conditions != nil {
+		t.Fatalf("status not stripped: %#v", pod.Status)
+	}
+	if pod.ManagedFields != nil || pod.Finalizers != nil {
+		t.Fatalf("metadata not stripped: %#v", pod.ObjectMeta)
+	}
+	// The stripped Pod still classifies the way the FSM expects.
+	if !isPerformanceSensitivePod(pod) {
+		t.Fatal("stripped pod no longer classifies as performance-sensitive")
+	}
+
+	// Tombstones pass through untouched.
+	tomb := toolscache.DeletedFinalStateUnknown{Key: "ns1/p1", Obj: pod}
+	out, err = podTransform(tomb)
+	if err != nil {
+		t.Fatalf("podTransform(tombstone): %v", err)
+	}
+	if _, ok := out.(toolscache.DeletedFinalStateUnknown); !ok {
+		t.Fatalf("tombstone was replaced by %T", out)
+	}
+}
+
+func TestOperatorCacheOptionsTransformPods(t *testing.T) {
+	t.Parallel()
+	opts := operatorCacheOptions()
+	if opts.DefaultTransform == nil {
+		t.Fatal("DefaultTransform not set: managedFields would be cached for every kind")
+	}
+	found := false
+	for obj, byObj := range opts.ByObject {
+		if _, ok := obj.(*corev1.Pod); !ok {
+			continue
+		}
+		found = true
+		if byObj.Transform == nil {
+			t.Fatal("Pod transform not registered")
+		}
+	}
+	if !found {
+		t.Fatal("no ByObject entry for Pods")
 	}
 }
 
@@ -603,7 +805,7 @@ func TestBuildQueueAwarePlan(t *testing.T) {
 
 func TestBuildPlanByPolicyQueueAware(t *testing.T) {
 	t.Parallel()
-	client := k8sfake.NewSimpleClientset(
+	client := fakeReader(t,
 		podWithRequiredPowerProfile("perf-1", "node-a", "performance"),
 		podWithRequiredPowerProfile("perf-2", "node-b", "performance"),
 	)
@@ -643,7 +845,7 @@ func TestBuildPlanByPolicyQueueAware(t *testing.T) {
 
 func TestBuildPlanByPolicyUnknownFallsBackToStatic(t *testing.T) {
 	t.Parallel()
-	client := k8sfake.NewSimpleClientset()
+	client := fakeReader(t)
 	nodes := []string{"node-a", "node-b", "node-c", "node-d"}
 	hw := map[string]NodeHardware{
 		"node-a": {CPUModel: "same-cpu"},
@@ -813,29 +1015,19 @@ func resourceMustParse(v string) resource.Quantity {
 }
 
 // nodeHardwareFromJSON decodes a NodeHardware exactly as the API server sends
-// it, so whole numbers arrive as int64 the way they do in a real cluster.
-func nodeHardwareFromJSON(t *testing.T, raw string) *unstructured.Unstructured {
+// it (whole numbers arrive as int64) and converts it to the typed struct the
+// cache hands out, the same path a real informer takes.
+func nodeHardwareFromJSON(t *testing.T, raw string) *v1alpha1.NodeHardware {
 	t.Helper()
 	u := &unstructured.Unstructured{}
 	if err := u.UnmarshalJSON([]byte(raw)); err != nil {
 		t.Fatalf("decode NodeHardware: %v", err)
 	}
-	return u
-}
-
-func nodeHardwareClient(t *testing.T, objs ...*unstructured.Unstructured) *dynamicfake.FakeDynamicClient {
-	t.Helper()
-	scheme := runtime.NewScheme()
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{
-		nodeHardwareGVR: "NodeHardwareList",
-		nodeTwinGVR:     "NodeTwinList",
-	})
-	for _, o := range objs {
-		if _, err := dyn.Resource(nodeHardwareGVR).Create(context.Background(), o, metav1.CreateOptions{}); err != nil {
-			t.Fatalf("seed NodeHardware: %v", err)
-		}
+	nh := &v1alpha1.NodeHardware{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, nh); err != nil {
+		t.Fatalf("convert NodeHardware: %v", err)
 	}
-	return dyn
+	return nh
 }
 
 // n2-atos: the agent reports 165 W per socket as a whole number.
@@ -853,9 +1045,9 @@ const nodeHardware165W = `{
 
 func TestFetchNodeHardwareKeepsWholeNumberWatts(t *testing.T) {
 	t.Parallel()
-	dyn := nodeHardwareClient(t, nodeHardwareFromJSON(t, nodeHardware165W))
+	reader := fakeReader(t, nodeHardwareFromJSON(t, nodeHardware165W))
 
-	hw := fetchNodeHardware(context.Background(), dyn, "n2-atos")
+	hw := fetchNodeHardware(context.Background(), reader, "n2-atos")
 	if hw.CPU.CapRange.MaxWattsPerSocket != 165 {
 		t.Fatalf("maxWattsPerSocket=%v want=165 (int64 from the API must be accepted)", hw.CPU.CapRange.MaxWattsPerSocket)
 	}
@@ -869,9 +1061,9 @@ func TestFetchNodeHardwareKeepsWholeNumberWatts(t *testing.T) {
 
 func TestFetchNodeHardwareGivesTwinRealTDP(t *testing.T) {
 	t.Parallel()
-	dyn := nodeHardwareClient(t, nodeHardwareFromJSON(t, nodeHardware165W))
+	reader := fakeReader(t, nodeHardwareFromJSON(t, nodeHardware165W))
 
-	hw := fetchNodeHardware(context.Background(), dyn, "n2-atos")
+	hw := fetchNodeHardware(context.Background(), reader, "n2-atos")
 	out := twin.Compute(twin.Input{
 		NodeName:           "n2-atos",
 		Hardware:           hw,
@@ -886,9 +1078,9 @@ func TestFetchNodeHardwareGivesTwinRealTDP(t *testing.T) {
 func TestFetchNodeHardwareUsesSanitizedObjectName(t *testing.T) {
 	t.Parallel()
 	raw := strings.ReplaceAll(nodeHardware165W, `"nodeName": "n2-atos"`, `"nodeName": "n2.atos"`)
-	dyn := nodeHardwareClient(t, nodeHardwareFromJSON(t, raw))
+	reader := fakeReader(t, nodeHardwareFromJSON(t, raw))
 
-	hw := fetchNodeHardware(context.Background(), dyn, "n2.atos")
+	hw := fetchNodeHardware(context.Background(), reader, "n2.atos")
 	if hw.CPU.CapRange.MaxWattsPerSocket != 165 {
 		t.Fatalf("maxWattsPerSocket=%v want=165 (object is stored under the sanitized name)", hw.CPU.CapRange.MaxWattsPerSocket)
 	}
@@ -896,7 +1088,7 @@ func TestFetchNodeHardwareUsesSanitizedObjectName(t *testing.T) {
 
 func TestUpsertNodeTwinStatusUsesSanitizedObjectName(t *testing.T) {
 	t.Parallel()
-	dyn := nodeHardwareClient(t)
+	_, _, dyn := fakeClients(t)
 
 	if err := upsertNodeTwinSpec(context.Background(), dyn, NodeAssignment{NodeName: "n2.atos", Profile: "performance"}); err != nil {
 		t.Fatalf("upsert spec: %v", err)
@@ -922,7 +1114,7 @@ func TestUpsertNodeTwinStatusUsesSanitizedObjectName(t *testing.T) {
 
 func TestParseNodeHardwareReadsCapRange(t *testing.T) {
 	t.Parallel()
-	nh := parseNodeHardware(*nodeHardwareFromJSON(t, nodeHardware165W))
+	nh := parseNodeHardware(nodeHardwareFromJSON(t, nodeHardware165W))
 
 	if !nh.CPUCapKnown || nh.CPUCapMaxWatts != 165 || nh.CPUCapMinWatts != 90 {
 		t.Fatalf("cpu cap known=%v max=%v min=%v want true/165/90", nh.CPUCapKnown, nh.CPUCapMaxWatts, nh.CPUCapMinWatts)
@@ -957,5 +1149,47 @@ func TestImplausibleNodePowerCatchesJoulesCounter(t *testing.T) {
 		if got := implausibleNodePower(tc.measuredW, tc.tdpW); got != tc.want {
 			t.Fatalf("%s: implausibleNodePower(%v, %v)=%v want=%v", tc.name, tc.measuredW, tc.tdpW, got, tc.want)
 		}
+	}
+}
+
+func TestNodeTwinStatusMapNeverContainsControlStatus(t *testing.T) {
+	t.Parallel()
+	status := joulieNodeTwinStatusForTest()
+	// Even if a ControlStatus is present in memory, the operator must never
+	// write it: that subtree belongs to the agent.
+	status.ControlStatus = &joulie.ControlStatus{CPU: &joulie.ControlResult{Backend: "rapl", Result: "applied"}}
+	m := nodeTwinStatusToMap(status)
+	if _, ok := m["controlStatus"]; ok {
+		t.Fatalf("operator status payload contains controlStatus: %v", m)
+	}
+}
+
+func TestUpsertNodeTwinSpecSkipsUpdateWhenUnchanged(t *testing.T) {
+	t.Parallel()
+	_, _, dyn := fakeClients(t)
+	a := NodeAssignment{NodeName: "node-same", Profile: "eco", CapWatts: 120, ManagedBy: "static-partition-v1"}
+	updates := func() int {
+		n := 0
+		for _, act := range dyn.Actions() {
+			if act.GetVerb() == "update" {
+				n++
+			}
+		}
+		return n
+	}
+	for i := 0; i < 3; i++ {
+		if err := upsertNodeTwinSpec(context.Background(), dyn, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := updates(); got != 0 {
+		t.Fatalf("updates=%d want=0 (unchanged spec must not be rewritten)", got)
+	}
+	a.Profile = "performance"
+	if err := upsertNodeTwinSpec(context.Background(), dyn, a); err != nil {
+		t.Fatal(err)
+	}
+	if got := updates(); got != 1 {
+		t.Fatalf("updates=%d want=1 (changed spec must be written)", got)
 	}
 }

@@ -13,16 +13,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matbun/joulie/api/v1alpha1"
 	"github.com/matbun/joulie/pkg/agent/dvfs"
+	"github.com/matbun/joulie/pkg/kube"
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
-	k8sfake "k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	crfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestNormalizeCPUVendor(t *testing.T) {
@@ -85,48 +90,67 @@ func TestCPUIndexFromPath(t *testing.T) {
 	}
 }
 
+// nodeTwinFromMap decodes an unstructured NodeTwin the way the typed cache
+// does, so the test still exercises the int and float shapes the API server
+// hands out.
+func nodeTwinFromMap(t *testing.T, obj map[string]any) *v1alpha1.NodeTwin {
+	t.Helper()
+	nt := &v1alpha1.NodeTwin{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj, nt); err != nil {
+		t.Fatalf("decode NodeTwin: %v", err)
+	}
+	return nt
+}
+
 func TestParseNodeTwinAsProfileWithIntAndFloatCaps(t *testing.T) {
 	t.Parallel()
-	intObj := unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "NodeTwin",
-			"metadata": map[string]any{
-				"name": "node-a",
-			},
-			"spec": map[string]any{
-				"nodeName": "node-a",
-				"profile":  "eco",
-				"cpu": map[string]any{
-					"packagePowerCapWatts": int64(120),
-				},
+	intObj := map[string]any{
+		"apiVersion": "joulie.io/v1alpha1",
+		"kind":       "NodeTwin",
+		"metadata": map[string]any{
+			"name": "node-a",
+		},
+		"spec": map[string]any{
+			"nodeName": "node-a",
+			"profile":  "eco",
+			"cpu": map[string]any{
+				"packagePowerCapWatts": int64(120),
 			},
 		},
 	}
-	npInt := parseNodeTwinAsProfile(intObj)
+	npInt := nodeTwinSpecFromObject(nodeTwinFromMap(t, intObj))
 	if npInt.PowerWatts == nil || *npInt.PowerWatts != 120 {
 		t.Fatalf("int cap parse failed: %#v", npInt.PowerWatts)
 	}
+	if npInt.PowerPctOfMax != nil || npInt.GPU != nil {
+		t.Fatalf("absent caps must stay nil: pct=%v gpu=%v", npInt.PowerPctOfMax, npInt.GPU)
+	}
 
-	floatObj := unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "NodeTwin",
-			"metadata": map[string]any{
-				"name": "node-b",
+	floatObj := map[string]any{
+		"apiVersion": "joulie.io/v1alpha1",
+		"kind":       "NodeTwin",
+		"metadata": map[string]any{
+			"name": "node-b",
+		},
+		"spec": map[string]any{
+			"nodeName": "node-b",
+			"profile":  "performance",
+			"cpu": map[string]any{
+				"packagePowerCapWatts": 5000.0,
 			},
-			"spec": map[string]any{
-				"nodeName": "node-b",
-				"profile":  "performance",
-				"cpu": map[string]any{
-					"packagePowerCapWatts": 5000.0,
+			"gpu": map[string]any{
+				"powerCap": map[string]any{
+					"capPctOfMax": int64(80),
 				},
 			},
 		},
 	}
-	npFloat := parseNodeTwinAsProfile(floatObj)
+	npFloat := nodeTwinSpecFromObject(nodeTwinFromMap(t, floatObj))
 	if npFloat.PowerWatts == nil || *npFloat.PowerWatts != 5000 {
 		t.Fatalf("float cap parse failed: %#v", npFloat.PowerWatts)
+	}
+	if npFloat.GPU == nil || npFloat.GPU.Scope != "perGpu" || npFloat.GPU.CapPctOfMax == nil || *npFloat.GPU.CapPctOfMax != 80 || npFloat.GPU.CapWattsPerGPU != nil {
+		t.Fatalf("gpu cap parse failed: %#v", npFloat.GPU)
 	}
 }
 
@@ -580,25 +604,9 @@ func TestApplyCPUPercentIntentBlockedWithoutBackends(t *testing.T) {
 
 func TestResolveDesiredStateFromNodeTwin(t *testing.T) {
 	t.Parallel()
-	scheme := runtime.NewScheme()
-	dyn := dynamicfake.NewSimpleDynamicClient(scheme,
-		&unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "NodeTwin",
-			"metadata": map[string]any{
-				"name": "node-a",
-			},
-			"spec": map[string]any{
-				"nodeName": "node-a",
-				"profile":  "eco",
-				"cpu": map[string]any{
-					"packagePowerCapWatts": 120.0,
-				},
-			},
-		}},
-	)
+	reader, _ := newTestClients(t, nodeTwinWithCPUCap("node-a", 120))
 
-	state, src, err := resolveDesiredStateForNode(context.Background(), dyn, "node-a")
+	state, src, err := resolveDesiredStateForNode(context.Background(), reader, "node-a")
 	if err != nil {
 		t.Fatalf("resolveDesiredStateForNode error: %v", err)
 	}
@@ -689,21 +697,50 @@ func newTestAgentMetrics(prefix string) *AgentMetrics {
 	}
 }
 
+// intelNode is the Node every reconcile test reads: the NFD vendor label
+// makes discoverHardware pick a RAPL-capable vendor without touching sysfs.
+func intelNode(name string) *corev1.Node {
+	return &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: map[string]string{"feature.node.kubernetes.io/cpu-model.vendor_id": "GenuineIntel"},
+		},
+	}
+}
+
+func nodeTwinWithCPUCap(nodeName string, watts float64) *v1alpha1.NodeTwin {
+	return &v1alpha1.NodeTwin{
+		ObjectMeta: metav1.ObjectMeta{Name: sanitizeNodeObjectName(nodeName)},
+		Spec: v1alpha1.NodeTwinSpec{
+			NodeName: nodeName,
+			Profile:  "eco",
+			CPU:      &v1alpha1.NodeTwinCPU{PackagePowerCapWatts: &watts},
+		},
+	}
+}
+
+// newTestClients seeds the reader reconcile reads through and the dynamic
+// client it writes through from one list of objects, so the two views
+// cannot drift. The dynamic client converts the typed objects itself.
+func newTestClients(t *testing.T, objs ...client.Object) (kube.Reader, *dynamicfake.FakeDynamicClient) {
+	t.Helper()
+	s, err := kube.NewScheme(v1alpha1.AddToScheme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := crfake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
+	runtimeObjs := make([]runtime.Object, 0, len(objs))
+	for _, o := range objs {
+		runtimeObjs = append(runtimeObjs, o)
+	}
+	dyn := dynamicfake.NewSimpleDynamicClient(s, runtimeObjs...)
+	return reader, dyn
+}
+
 func TestReconcileOnceNoProfileWritesNoneStatus(t *testing.T) {
 	t.Parallel()
 	nodeName := "node-a"
-	kube := k8sfake.NewSimpleClientset(
-		&corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   nodeName,
-				Labels: map[string]string{"feature.node.kubernetes.io/cpu-model.vendor_id": "GenuineIntel"},
-			},
-		},
-	)
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
-		nodeTwinGVR:     "NodeTwinList",
-		nodeHardwareGVR: "NodeHardwareList",
-	})
+	reader, dyn := newTestClients(t, intelNode(nodeName))
 	metrics := newTestAgentMetrics("reconcile-no-profile")
 	nc := &NodeController{
 		nodeName:               nodeName,
@@ -713,7 +750,7 @@ func TestReconcileOnceNoProfileWritesNoneStatus(t *testing.T) {
 		lastSuccessfulSpecRead: time.Now(),
 		specReadTimeout:        5 * time.Minute,
 	}
-	if err := reconcileOnce(context.Background(), kube, dyn, nc); err != nil {
+	if err := reconcileOnce(context.Background(), reader, dyn, nc); err != nil {
 		t.Fatalf("reconcileOnce error: %v", err)
 	}
 	if nc.lastRaplKey != "" {
@@ -731,31 +768,7 @@ func TestReconcileOnceNoProfileWritesNoneStatus(t *testing.T) {
 func TestReconcileOnceSimulateOnlyWritesAppliedStatus(t *testing.T) {
 	t.Parallel()
 	nodeName := "node-a"
-	kube := k8sfake.NewSimpleClientset(
-		&corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   nodeName,
-				Labels: map[string]string{"feature.node.kubernetes.io/cpu-model.vendor_id": "GenuineIntel"},
-			},
-		},
-	)
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
-		nodeTwinGVR:     "NodeTwinList",
-		nodeHardwareGVR: "NodeHardwareList",
-	},
-		&unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "joulie.io/v1alpha1",
-			"kind":       "NodeTwin",
-			"metadata":   map[string]any{"name": "node-a"},
-			"spec": map[string]any{
-				"nodeName": nodeName,
-				"profile":  "eco",
-				"cpu": map[string]any{
-					"packagePowerCapWatts": 120.0,
-				},
-			},
-		}},
-	)
+	reader, dyn := newTestClients(t, intelNode(nodeName), nodeTwinWithCPUCap(nodeName, 120))
 	metrics := newTestAgentMetrics("reconcile-sim-only")
 	nc := &NodeController{
 		nodeName:               nodeName,
@@ -764,7 +777,7 @@ func TestReconcileOnceSimulateOnlyWritesAppliedStatus(t *testing.T) {
 		lastSuccessfulSpecRead: time.Now(),
 		specReadTimeout:        5 * time.Minute,
 	}
-	if err := reconcileOnce(context.Background(), kube, dyn, nc); err != nil {
+	if err := reconcileOnce(context.Background(), reader, dyn, nc); err != nil {
 		t.Fatalf("reconcileOnce error: %v", err)
 	}
 	obj, err := dyn.Resource(nodeTwinGVR).Get(context.Background(), "node-a", metav1.GetOptions{})
@@ -782,19 +795,8 @@ func TestReconcileOnceSimulateOnlyWritesAppliedStatus(t *testing.T) {
 func TestReconcileOnceRelaxesCapsWhenSpecReadTimesOut(t *testing.T) {
 	t.Parallel()
 	nodeName := "node-a"
-	kube := k8sfake.NewSimpleClientset(
-		&corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   nodeName,
-				Labels: map[string]string{"feature.node.kubernetes.io/cpu-model.vendor_id": "GenuineIntel"},
-			},
-		},
-	)
 	// No NodeTwin objects - simulates operator being gone.
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
-		nodeTwinGVR:     "NodeTwinList",
-		nodeHardwareGVR: "NodeHardwareList",
-	})
+	reader, dyn := newTestClients(t, intelNode(nodeName))
 	metrics := newTestAgentMetrics("reconcile-timeout")
 	nc := &NodeController{
 		nodeName:               nodeName,
@@ -806,7 +808,7 @@ func TestReconcileOnceRelaxesCapsWhenSpecReadTimesOut(t *testing.T) {
 
 	// With no NodeTwin objects, resolveDesiredStateForNode returns nil/nil (no error, no profile).
 	// This counts as a successful API read (API was reachable, just no profile).
-	err := reconcileOnce(context.Background(), kube, dyn, nc)
+	err := reconcileOnce(context.Background(), reader, dyn, nc)
 	if err != nil {
 		t.Fatalf("reconcileOnce error: %v", err)
 	}
@@ -1241,5 +1243,224 @@ func TestDiscoverCPURawModelFallsBackToCPUInfo(t *testing.T) {
 	})
 	if labelled != "AMD EPYC 9654 96-Core Processor" {
 		t.Fatalf("rawModel=%q want the label to win", labelled)
+	}
+}
+
+func nodeTwinObject(name, nodeName string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "joulie.io/v1alpha1",
+		"kind":       "NodeTwin",
+		"metadata":   map[string]any{"name": name},
+		"spec":       map[string]any{"nodeName": nodeName, "profile": "eco"},
+	}}
+}
+
+// countingReader records which verbs a reconcile path uses on the reader.
+type countingReader struct {
+	kube.Reader
+	gets, lists int
+}
+
+func (c *countingReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	c.gets++
+	return c.Reader.Get(ctx, key, obj, opts...)
+}
+
+func (c *countingReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	c.lists++
+	return c.Reader.List(ctx, list, opts...)
+}
+
+func TestGetNodeTwinSpecGetsByNameWithoutListing(t *testing.T) {
+	t.Parallel()
+	inner, _ := newTestClients(t,
+		nodeTwinWithCPUCap("node-get", 100),
+		&v1alpha1.NodeTwin{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-other"},
+			Spec:       v1alpha1.NodeTwinSpec{NodeName: "someone-else", Profile: "eco"},
+		},
+	)
+	reader := &countingReader{Reader: inner}
+
+	np, err := getNodeTwinSpec(context.Background(), reader, "node-get")
+	if err != nil || np == nil || np.Profile != "eco" {
+		t.Fatalf("np=%+v err=%v want eco profile", np, err)
+	}
+	if reader.lists != 0 || reader.gets != 1 {
+		t.Fatalf("gets=%d lists=%d; agent must Get its own NodeTwin by name, never list", reader.gets, reader.lists)
+	}
+	np, err = getNodeTwinSpec(context.Background(), reader, "node-absent")
+	if err != nil || np != nil {
+		t.Fatalf("absent twin: np=%+v err=%v want nil/nil", np, err)
+	}
+	// A twin whose spec.nodeName disagrees with its object name is an error,
+	// not a profile to apply.
+	if np, err = getNodeTwinSpec(context.Background(), reader, "node-other"); err == nil || np != nil {
+		t.Fatalf("mismatched twin: np=%+v err=%v want error", np, err)
+	}
+}
+
+func TestDaemonsetCacheSelectsOnlyThisNodeByName(t *testing.T) {
+	t.Parallel()
+	s, err := kube.NewScheme(v1alpha1.AddToScheme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := cacheOptionsForNode(s, "n2.atos")
+	if opts.Scheme != s {
+		t.Fatal("cache options must carry the scheme")
+	}
+	got := map[string]string{}
+	for obj, by := range opts.ByObject {
+		if by.Label != nil {
+			t.Fatalf("%T: daemonset cache must not filter by label, got %q", obj, by.Label.String())
+		}
+		if by.Field == nil {
+			t.Fatalf("%T: daemonset cache must select by name, got no field selector", obj)
+		}
+		got[fmt.Sprintf("%T", obj)] = by.Field.String()
+	}
+	want := map[string]string{
+		"*v1.Node":           "metadata.name=n2.atos",
+		"*v1alpha1.NodeTwin": "metadata.name=n2-atos",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ByObject=%v want exactly %v", got, want)
+	}
+	for kind, sel := range want {
+		if got[kind] != sel {
+			t.Fatalf("%s selector=%q want=%q (whole ByObject=%v)", kind, got[kind], sel, got)
+		}
+	}
+}
+
+func TestPoolCacheSelectsNodesByLabel(t *testing.T) {
+	t.Parallel()
+	s, err := kube.NewScheme(v1alpha1.AddToScheme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector, err := labels.Parse("joulie.io/managed=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := cacheOptionsForPool(s, selector)
+	if opts.Scheme != s {
+		t.Fatal("cache options must carry the scheme")
+	}
+	if len(opts.ByObject) != 1 {
+		t.Fatalf("ByObject has %d entries, want only Node (NodeTwin stays unrestricted)", len(opts.ByObject))
+	}
+	for obj, by := range opts.ByObject {
+		if _, ok := obj.(*corev1.Node); !ok {
+			t.Fatalf("restricted kind is %T, want *v1.Node", obj)
+		}
+		if by.Field != nil {
+			t.Fatalf("pool cache must not select nodes by name, got %q", by.Field.String())
+		}
+		if by.Label == nil || by.Label.String() != "joulie.io/managed=true" {
+			t.Fatalf("node label selector=%v want joulie.io/managed=true", by.Label)
+		}
+	}
+}
+
+func TestControlStatusWriteSkippedWhenUnchanged(t *testing.T) {
+	t.Parallel()
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), nodeTwinObject("node-dedupe", "node-dedupe"))
+	write := func(result string) {
+		if err := updateNodeTwinControlStatus(context.Background(), dyn, "node-dedupe", "cpu", "rapl", result, "ok"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	patches := func() int {
+		n := 0
+		for _, a := range dyn.Actions() {
+			if a.GetVerb() == "patch" {
+				n++
+			}
+		}
+		return n
+	}
+
+	write("applied")
+	write("applied")
+	if got := patches(); got != 1 {
+		t.Fatalf("patches=%d want=1 (identical payload must not be rewritten)", got)
+	}
+	write("blocked")
+	if got := patches(); got != 2 {
+		t.Fatalf("patches=%d want=2 (changed payload must be written)", got)
+	}
+}
+
+func TestControlStatusPatchTouchesOnlyItsOwnSubtree(t *testing.T) {
+	t.Parallel()
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), nodeTwinObject("node-shape", "node-shape"))
+	var captured []byte
+	dyn.PrependReactor("patch", "nodetwins", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		captured = action.(clienttesting.PatchAction).GetPatch()
+		return false, nil, nil
+	})
+	if err := updateNodeTwinControlStatus(context.Background(), dyn, "node-shape", "gpu", "nvml", "applied", "ok"); err != nil {
+		t.Fatal(err)
+	}
+
+	var patch map[string]any
+	if err := json.Unmarshal(captured, &patch); err != nil {
+		t.Fatalf("decode patch: %v", err)
+	}
+	// Contract: the agent owns status.controlStatus.<component> and nothing else.
+	if len(patch) != 1 || patch["status"] == nil {
+		t.Fatalf("patch touches keys other than status: %v", patch)
+	}
+	status := patch["status"].(map[string]any)
+	if len(status) != 1 || status["controlStatus"] == nil {
+		t.Fatalf("patch touches status fields other than controlStatus: %v", status)
+	}
+	cs := status["controlStatus"].(map[string]any)
+	if len(cs) != 1 || cs["gpu"] == nil {
+		t.Fatalf("patch touches components other than gpu: %v", cs)
+	}
+}
+
+func TestNodeHardwareStatusWriteSkippedWhenUnchanged(t *testing.T) {
+	t.Parallel()
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		nodeHardwareGVR: "NodeHardwareList",
+	})
+	hw := HardwareInfo{CPUVendor: "GenuineIntel", CPUSockets: 4, CPUTotalCores: 192, CPUCapKnown: true, CPUCapMaxWatts: 165}
+	statusWrites := func() int {
+		n := 0
+		for _, a := range dyn.Actions() {
+			if a.GetVerb() == "update" && a.GetSubresource() == "status" {
+				n++
+			}
+		}
+		return n
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := upsertNodeHardwareStatus(context.Background(), dyn, "node-hw-dedupe", hw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := statusWrites(); got != 1 {
+		t.Fatalf("status writes=%d want=1 (unchanged hardware must not be rewritten each tick)", got)
+	}
+	hw.CPUCapMaxWatts = 200
+	if err := upsertNodeHardwareStatus(context.Background(), dyn, "node-hw-dedupe", hw); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusWrites(); got != 2 {
+		t.Fatalf("status writes=%d want=2 (changed hardware must be written)", got)
+	}
+}
+
+func TestObjectNameSharedWithOperator(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{"n2.atos": "n2-atos", "Node_A/1": "node-a-1", "gpu:01": "gpu-01"} {
+		if got := sanitizeNodeObjectName(in); got != want {
+			t.Fatalf("sanitizeNodeObjectName(%q)=%q want=%q", in, got, want)
+		}
 	}
 }

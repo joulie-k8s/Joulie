@@ -18,7 +18,9 @@ import (
 	"strings"
 	"testing"
 
+	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/operator/fsm"
+	"sigs.k8s.io/yaml"
 )
 
 // --------------------------------------------------------------------------
@@ -188,7 +190,8 @@ const (
 
 // Known valid intent classes: "performance" and "standard".
 // Source: cmd/scheduler/main.go:248 (podWorkloadClass defaults to "standard"),
-//         simulator/cmd/workloadgen/main.go:348-365 (sampleIntentClass returns only these two).
+//
+//	simulator/cmd/workloadgen/main.go:348-365 (sampleIntentClass returns only these two).
 var validIntentClasses = map[string]bool{
 	"performance": true,
 	"standard":    true,
@@ -824,4 +827,67 @@ func TestGeneratedTraceHasNoHardcodedNodeNames(t *testing.T) {
 				"traces must be node-agnostic", j.JobID, matches)
 		}
 	}
+}
+
+// --------------------------------------------------------------------------
+// CRD copies and schema
+// --------------------------------------------------------------------------
+
+// The CRDs are shipped twice: config/crd/bases for kubectl apply and
+// charts/joulie/crds for Helm. They drifted once (the chart accepted
+// powerMeasurement.source values the config copy rejected), so both are
+// generated from the same Go types and must be byte-identical.
+func TestCRDCopiesAreIdentical(t *testing.T) {
+	root := repoRoot(t)
+	for _, name := range []string{"joulie.io_nodehardwares.yaml", "joulie.io_nodetwins.yaml"} {
+		a, err := os.ReadFile(filepath.Join(root, "config", "crd", "bases", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(root, "charts", "joulie", "crds", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(a) != string(b) {
+			t.Fatalf("%s differs between config/crd/bases and charts/joulie/crds; run `make manifests`", name)
+		}
+	}
+}
+
+func TestNodeTwinSchemaAcceptsEveryPowerSourceValue(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "config", "crd", "bases", "joulie.io_nodetwins.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crd map[string]any
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatalf("parse CRD: %v", err)
+	}
+	versions := crd["spec"].(map[string]any)["versions"].([]any)
+	schema := versions[0].(map[string]any)["schema"].(map[string]any)["openAPIV3Schema"].(map[string]any)
+	source := dig(schema, "properties", "status", "properties", "powerMeasurement", "properties", "source")
+	if source == nil {
+		t.Fatal("status.powerMeasurement.source missing from schema")
+	}
+	allowed := map[string]bool{}
+	for _, v := range source["enum"].([]any) {
+		allowed[v.(string)] = true
+	}
+	for _, v := range joulie.PowerSourceValues {
+		if !allowed[v] {
+			t.Fatalf("operator emits powerMeasurement.source=%q but the CRD enum %v rejects it", v, source["enum"])
+		}
+	}
+}
+
+func dig(m map[string]any, path ...string) map[string]any {
+	cur := m
+	for _, p := range path {
+		next, ok := cur[p].(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur = next
+	}
+	return cur
 }

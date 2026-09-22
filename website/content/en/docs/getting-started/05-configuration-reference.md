@@ -58,6 +58,8 @@ Defaults listed below are the **code defaults**. The Helm chart (`charts/joulie/
 |----------|---------|-------------|
 | `RECONCILE_INTERVAL` | `1m` | How often the operator reconciles cluster state |
 | `METRICS_ADDR` | `:8081` | Address for the Prometheus metrics endpoint |
+| `LEADER_ELECT` | `false` | Run the reconcile loop only on the leader of a `coordination.k8s.io` lease. Required before running more than one operator replica. Helm: `operator.leaderElection.enabled`, which also creates the lease Role. |
+| `POD_NAMESPACE` | `joulie-system` | Namespace of the leader election lease. The chart sets it from the downward API. |
 | `NODE_SELECTOR` | `node-role.kubernetes.io/worker` | Label selector for managed nodes |
 | `RESERVED_LABEL_KEY` | `joulie.io/reserved` | Label key for nodes excluded from policy decisions |
 | `POWER_PROFILE_LABEL` | `joulie.io/power-profile` | Node label key for the active power profile |
@@ -134,7 +136,7 @@ Nodes without topology labels fall back to cluster-wide stress computation.
 |----------|---------|-------------|
 | `EXTENDER_ADDR` | `:9876` | Bind address for the scheduler extender HTTP server |
 | `METRICS_ADDR` | `:9877` | Address for the scheduler's Prometheus metrics endpoint |
-| `CACHE_TTL` | `30s` | TTL for the NodeTwin status cache |
+| `CACHE_TTL` | `30s` | Minimum interval between rebuilding the scoring maps from the informer cache. Reads no longer hit the API server; NodeTwin and NodeHardware are watched. |
 | `TWIN_STALENESS_THRESHOLD` | `5m` | Duration after which NodeTwin data is considered stale |
 
 ## kubectl plugin

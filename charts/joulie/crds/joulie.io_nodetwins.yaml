@@ -1,6 +1,9 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
   name: nodetwins.joulie.io
 spec:
   group: joulie.io
@@ -8,169 +11,243 @@ spec:
     kind: NodeTwin
     listKind: NodeTwinList
     plural: nodetwins
-    singular: nodetwin
     shortNames:
-      - nt
+    - nt
+    singular: nodetwin
   scope: Cluster
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          properties:
-            spec:
-              type: object
-              description: "Desired power state for this node, written by the operator."
-              properties:
-                nodeName:
-                  type: string
-                profile:
-                  type: string
-                  enum: ["performance", "eco"]
-                cpu:
-                  type: object
-                  properties:
-                    packagePowerCapWatts:
-                      type: number
-                      minimum: 1
-                    packagePowerCapPctOfMax:
-                      type: number
-                      minimum: 0
-                      exclusiveMinimum: true
-                      maximum: 100
-                gpu:
-                  type: object
-                  properties:
-                    powerCap:
-                      type: object
-                      properties:
-                        scope:
-                          type: string
-                          enum: ["perGpu"]
-                        capWattsPerGpu:
-                          type: number
-                          minimum: 1
-                        capPctOfMax:
-                          type: number
-                          minimum: 0
-                          exclusiveMinimum: true
-                          maximum: 100
-                policy:
-                  type: object
-                  properties:
-                    name:
-                      type: string
-                scheduling:
-                  type: object
-                  properties:
-                    draining: { type: boolean }
-              required:
-                - nodeName
-                - profile
-            status:
-              type: object
-              description: "Computed twin state, written by the operator's digital twin model."
-              properties:
-                schedulableClass:
-                  type: string
-                  enum: ["eco", "performance", "draining", "unknown"]
-                powerMeasurement:
-                  type: object
-                  description: "Measured power data, TDP/cap breakdowns, and power trend."
-                  properties:
-                    source:
-                      type: string
-                      description: "Measurement source: kepler, utilization, or static"
-                      enum: ["kepler", "utilization", "static", "http", "http-error", "http-no-endpoint", "prometheus", "prometheus-no-data"]
-                    measuredNodePowerW:
-                      type: number
-                      description: "Measured total node power draw in watts"
-                    cpuCappedPowerW:
-                      type: number
-                      description: "CPU power budget based on TDP and cap percentage"
-                    gpuCappedPowerW:
-                      type: number
-                      description: "GPU power budget based on TDP and cap percentage"
-                    nodeCappedPowerW:
-                      type: number
-                      description: "Total node power budget (cpuCappedPowerW + gpuCappedPowerW)"
-                    cpuTdpW:
-                      type: number
-                      description: "CPU thermal design power (uncapped hardware maximum)"
-                    gpuTdpW:
-                      type: number
-                      description: "GPU thermal design power (uncapped hardware maximum)"
-                    nodeTdpW:
-                      type: number
-                      description: "Total node TDP (cpuTdpW + gpuTdpW)"
-                    powerTrendWPerMin:
-                      type: number
-                      description: "Rate of change of measured power in watts per minute"
-                predictedPowerHeadroomScore:
-                  type: number
-                  description: "0=no headroom, 100=full headroom"
-                predictedCoolingStressScore:
-                  type: number
-                  description: "0=no stress, 100=max stress"
-                predictedPsuStressScore:
-                  type: number
-                  description: "Reserved for future rack-topology-aware extensions. Not used in scoring. 0=no stress, 100=max stress"
-                effectiveCapState:
-                  type: object
-                  properties:
-                    cpuPct: { type: number }
-                    gpuPct: { type: number }
-                hardwareDensityScore:
-                  type: number
-                  description: "Relative compute density score"
-                estimatedPUE:
-                  type: number
-                  description: "Reserved for future rack-topology-aware extensions. Not used in scoring. Estimated Power Usage Effectiveness (1.05-1.40)"
-                controlStatus:
-                  type: object
-                  description: "Control feedback from the agent"
-                  properties:
-                    cpu:
-                      type: object
-                      properties:
-                        backend: { type: string }
-                        result: { type: string }
-                        message: { type: string }
-                        updatedAt: { type: string }
-                    gpu:
-                      type: object
-                      properties:
-                        backend: { type: string }
-                        result: { type: string }
-                        message: { type: string }
-                        updatedAt: { type: string }
-                lastUpdated: { type: string }
-      additionalPrinterColumns:
-        - name: Node
-          type: string
-          jsonPath: .spec.nodeName
-        - name: Profile
-          type: string
-          jsonPath: .spec.profile
-        - name: Class
-          type: string
-          jsonPath: .status.schedulableClass
-        - name: PowerHeadroom
-          type: number
-          jsonPath: .status.predictedPowerHeadroomScore
-        - name: CoolingStress
-          type: number
-          jsonPath: .status.predictedCoolingStressScore
-        - name: PSUStress
-          type: number
-          jsonPath: .status.predictedPsuStressScore
-        - name: CPU-Cap
-          type: string
-          jsonPath: .spec.cpu.packagePowerCapPctOfMax
-        - name: Draining
-          type: boolean
-          jsonPath: .spec.scheduling.draining
-      subresources:
-        status: {}
+  - additionalPrinterColumns:
+    - jsonPath: .spec.nodeName
+      name: Node
+      type: string
+    - jsonPath: .spec.profile
+      name: Profile
+      type: string
+    - jsonPath: .status.schedulableClass
+      name: Class
+      type: string
+    - jsonPath: .status.predictedPowerHeadroomScore
+      name: PowerHeadroom
+      type: number
+    - jsonPath: .status.predictedCoolingStressScore
+      name: CoolingStress
+      type: number
+    - jsonPath: .status.predictedPsuStressScore
+      name: PSUStress
+      type: number
+    - jsonPath: .spec.cpu.packagePowerCapPctOfMax
+      name: CPU-Cap
+      type: string
+    - jsonPath: .spec.scheduling.draining
+      name: Draining
+      type: boolean
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          NodeTwin combines a node's desired power state and its computed twin
+          output. spec is written by the operator, status by the operator's twin
+          model plus the agent's control feedback.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: Desired power state for this node, written by the operator.
+            properties:
+              cpu:
+                description: |-
+                  NodeTwinCPU is the CPU package power cap, as an absolute value or as a
+                  fraction of the hardware maximum. At most one is set.
+                properties:
+                  packagePowerCapPctOfMax:
+                    exclusiveMinimum: true
+                    maximum: 100
+                    minimum: 0
+                    type: number
+                  packagePowerCapWatts:
+                    minimum: 1
+                    type: number
+                type: object
+              gpu:
+                description: NodeTwinGPU holds the GPU power controls.
+                properties:
+                  powerCap:
+                    description: |-
+                      GPUPowerCap is the GPU power cap, as an absolute value per GPU or as a
+                      fraction of the hardware maximum.
+                    properties:
+                      capPctOfMax:
+                        exclusiveMinimum: true
+                        maximum: 100
+                        minimum: 0
+                        type: number
+                      capWattsPerGpu:
+                        minimum: 1
+                        type: number
+                      scope:
+                        enum:
+                        - perGpu
+                        type: string
+                    type: object
+                type: object
+              nodeName:
+                type: string
+              policy:
+                description: NodeTwinPolicy names the policy that produced this spec.
+                properties:
+                  name:
+                    type: string
+                type: object
+              profile:
+                enum:
+                - performance
+                - eco
+                type: string
+              scheduling:
+                description: NodeTwinScheduling carries scheduling hints derived from
+                  the policy.
+                properties:
+                  draining:
+                    type: boolean
+                type: object
+            required:
+            - nodeName
+            - profile
+            type: object
+          status:
+            description: Computed twin state, written by the operator's digital twin
+              model.
+            properties:
+              controlStatus:
+                description: Control feedback from the agent
+                properties:
+                  cpu:
+                    description: ControlResult is the outcome of the last control
+                      write for one component.
+                    properties:
+                      backend:
+                        type: string
+                      message:
+                        type: string
+                      result:
+                        type: string
+                      updatedAt:
+                        description: UpdatedAt is the RFC3339 time of the last agent
+                          write.
+                        type: string
+                    type: object
+                  gpu:
+                    description: ControlResult is the outcome of the last control
+                      write for one component.
+                    properties:
+                      backend:
+                        type: string
+                      message:
+                        type: string
+                      result:
+                        type: string
+                      updatedAt:
+                        description: UpdatedAt is the RFC3339 time of the last agent
+                          write.
+                        type: string
+                    type: object
+                type: object
+              effectiveCapState:
+                description: |-
+                  CapState is the cap the operator believes is in effect, as a percentage
+                  of the hardware maximum.
+                properties:
+                  cpuPct:
+                    type: number
+                  gpuPct:
+                    type: number
+                type: object
+              estimatedPUE:
+                description: Reserved for future rack-topology-aware extensions. Not
+                  used in scoring. Estimated Power Usage Effectiveness (1.05-1.40)
+                type: number
+              hardwareDensityScore:
+                description: Relative compute density score
+                type: number
+              lastUpdated:
+                description: LastUpdated is the RFC3339 time of the last operator
+                  write.
+                type: string
+              powerMeasurement:
+                description: Measured power data, TDP/cap breakdowns, and power trend.
+                properties:
+                  cpuCappedPowerW:
+                    description: CPU power budget based on TDP and cap percentage
+                    type: number
+                  cpuTdpW:
+                    description: CPU thermal design power (uncapped hardware maximum)
+                    type: number
+                  gpuCappedPowerW:
+                    description: GPU power budget based on TDP and cap percentage
+                    type: number
+                  gpuTdpW:
+                    description: GPU thermal design power (uncapped hardware maximum)
+                    type: number
+                  measuredNodePowerW:
+                    description: Measured total node power draw in watts
+                    type: number
+                  nodeCappedPowerW:
+                    description: Total node power budget (cpuCappedPowerW + gpuCappedPowerW)
+                    type: number
+                  nodeTdpW:
+                    description: Total node TDP (cpuTdpW + gpuTdpW)
+                    type: number
+                  powerTrendWPerMin:
+                    description: Rate of change of measured power in watts per minute
+                    type: number
+                  source:
+                    description: 'Measurement source: kepler, utilization, or static'
+                    enum:
+                    - kepler
+                    - utilization
+                    - static
+                    - http
+                    - http-error
+                    - http-no-endpoint
+                    - prometheus
+                    - prometheus-no-data
+                    type: string
+                type: object
+              predictedCoolingStressScore:
+                description: 0=no stress, 100=max stress
+                type: number
+              predictedPowerHeadroomScore:
+                description: 0=no headroom, 100=full headroom
+                type: number
+              predictedPsuStressScore:
+                description: Reserved for future rack-topology-aware extensions. Not
+                  used in scoring. 0=no stress, 100=max stress
+                type: number
+              schedulableClass:
+                enum:
+                - eco
+                - performance
+                - draining
+                - unknown
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

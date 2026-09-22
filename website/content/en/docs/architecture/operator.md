@@ -27,6 +27,12 @@ The agent then enforces those targets node-by-node.
 
 In addition to the reconcile loop, the operator runs a background controller:
 
+## Reads, writes and leader election
+
+All reads (nodes, pods, `NodeHardware`, `NodeTwin`) come from an informer cache maintained by a controller-runtime manager, so a reconcile touches the API server only when it writes. The pod informer keeps only the fields the policy needs (node name, node selector, affinity, annotations, phase); container specs and statuses are dropped before they reach memory. Writes use the same clients as before, carry the `joulie-operator` field manager, and are skipped when nothing changed.
+
+The reconcile loop and the facility poller run as manager runnables: they start once the cache has synced and, with `LEADER_ELECT=true` (Helm `operator.leaderElection.enabled`), only on the holder of the `joulie-operator` lease. Leader election is off by default, which matches the single replica the chart deploys.
+
 ## Facility metrics
 
 The facility metrics poller (`cmd/operator/facility.go`) queries Prometheus for data-center-level signals: ambient temperature, total IT power, and cooling power. These feed into the twin computation for PUE estimation and cooling stress refinement.

@@ -16,27 +16,33 @@ import (
 	"sync"
 	"time"
 
+	"github.com/matbun/joulie/api/v1alpha1"
 	agentctl "github.com/matbun/joulie/pkg/agent/control"
 	"github.com/matbun/joulie/pkg/agent/dvfs"
+	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/hwinv"
+	"github.com/matbun/joulie/pkg/kube"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var (
 	nodeTwinGVR       = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
-	nodeHardwareGVR     = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
-	defaultHTTPTimout   = 2 * time.Second
+	nodeHardwareGVR   = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodehardwares"}
+	defaultHTTPTimout = 2 * time.Second
 
 	registerMetricsOnce sync.Once
 	backendModeMetric   *prometheus.GaugeVec
@@ -178,11 +184,11 @@ type AgentMetrics struct {
 }
 
 type NodeController struct {
-	nodeName              string
-	metrics               *AgentMetrics
-	dvfs                  *DVFSController
-	simulateOnly          bool
-	lastRaplKey           string
+	nodeName               string
+	metrics                *AgentMetrics
+	dvfs                   *DVFSController
+	simulateOnly           bool
+	lastRaplKey            string
 	lastSuccessfulSpecRead time.Time
 	specReadTimeout        time.Duration
 	capsRelaxed            bool // true when caps have been relaxed due to stale spec
@@ -295,6 +301,7 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[joulie-agent] ")
 
+	kube.UseStdLogger()
 	mode := strings.ToLower(strings.TrimSpace(envOrDefault("AGENT_MODE", "daemonset")))
 	startMetricsServer()
 	switch mode {
@@ -318,10 +325,11 @@ func runDaemonsetMode() {
 	if err != nil {
 		log.Fatalf("init controller: %v", err)
 	}
-	kube, dyn := initKubeClients()
+	cfg, dyn := initKubeClients()
+	reader := startReader(context.Background(), cfg, cacheOptionsForNode(newScheme(), nodeName))
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := controller.reconcile(ctx, kube, dyn); err != nil {
+		if err := controller.reconcile(ctx, reader, dyn); err != nil {
 			controller.metrics.reconcileErrorsTotal.WithLabelValues(nodeName).Inc()
 			log.Printf("reconcile failed node=%s: %v", nodeName, err)
 		}
@@ -346,14 +354,15 @@ func runPoolMode() {
 	if err != nil {
 		log.Fatalf("invalid POOL_NODE_SELECTOR=%q: %v", selectorExpr, err)
 	}
-	kube, dyn := initKubeClients()
+	cfg, dyn := initKubeClients()
+	reader := startReader(context.Background(), cfg, cacheOptionsForPool(newScheme(), selector))
 	controllers := map[string]*NodeController{}
 	log.Printf("pool mode enabled selector=%q shards=%d shardID=%d interval=%s", selectorExpr, shards, shardID, reconcileEvery)
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		nodes, err := kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-		if err != nil {
+		var nodes corev1.NodeList
+		if err := reader.List(ctx, &nodes, client.MatchingLabelsSelector{Selector: selector}); err != nil {
 			cancel()
 			log.Printf("pool list nodes failed: %v", err)
 			time.Sleep(reconcileEvery)
@@ -361,9 +370,6 @@ func runPoolMode() {
 		}
 		active := map[string]bool{}
 		for _, n := range nodes.Items {
-			if !selector.Matches(labels.Set(n.Labels)) {
-				continue
-			}
 			if !ownsNodeForShard(n.Name, shards, shardID) {
 				continue
 			}
@@ -378,7 +384,7 @@ func runPoolMode() {
 				controllers[n.Name] = c
 				log.Printf("controller started node=%s shard=%d/%d", n.Name, shardID, shards)
 			}
-			if err := c.reconcile(ctx, kube, dyn); err != nil {
+			if err := c.reconcile(ctx, reader, dyn); err != nil {
 				c.metrics.reconcileErrorsTotal.WithLabelValues(c.nodeName).Inc()
 				log.Printf("reconcile failed node=%s: %v", c.nodeName, err)
 			}
@@ -416,23 +422,91 @@ func resolvePoolShardID() int {
 	return v
 }
 
-func initKubeClients() (kubernetes.Interface, dynamic.Interface) {
+// initKubeClients returns the rest config the read cache is built from and
+// the dynamic client every write goes through.
+func initKubeClients() (*rest.Config, dynamic.Interface) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		log.Fatalf("in-cluster config: %v", err)
 	}
 	cfg.QPS = float32(floatEnv("KUBE_CLIENT_QPS", 50))
 	cfg.Burst = intEnv("KUBE_CLIENT_BURST", 100)
-	kube, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		log.Fatalf("kube client: %v", err)
-	}
 	dyn, err := dynamic.NewForConfig(cfg)
 	if err != nil {
 		log.Fatalf("dynamic client: %v", err)
 	}
-	return kube, dyn
+	return cfg, dyn
 }
+
+func newScheme() *runtime.Scheme {
+	s, err := kube.NewScheme(v1alpha1.AddToScheme)
+	if err != nil {
+		log.Fatalf("scheme: %v", err)
+	}
+	return s
+}
+
+// cacheOptionsForNode restricts the cache to what one daemonset process
+// reads: its own Node and its own NodeTwin, both selected by name. Caching
+// every node's objects in every DaemonSet pod would be O(N^2) memory
+// cluster-wide, the same shape as the per-tick list this replaces.
+func cacheOptionsForNode(s *runtime.Scheme, nodeName string) cache.Options {
+	objectName := sanitizeNodeObjectName(nodeName)
+	return cache.Options{
+		Scheme: s,
+		ByObject: map[client.Object]cache.ByObject{
+			&corev1.Node{}:       {Field: fields.OneTermEqualSelector("metadata.name", nodeName)},
+			&v1alpha1.NodeTwin{}: {Field: fields.OneTermEqualSelector("metadata.name", objectName)},
+		},
+	}
+}
+
+// cacheOptionsForPool restricts Nodes to the pool selector. NodeTwins are
+// unrestricted: few pool processes exist, and each reads one twin per node
+// it owns.
+func cacheOptionsForPool(s *runtime.Scheme, selector labels.Selector) cache.Options {
+	return cache.Options{
+		Scheme: s,
+		ByObject: map[client.Object]cache.ByObject{
+			&corev1.Node{}: {Label: selector},
+		},
+	}
+}
+
+// startReader builds the cache, registers the informers for the kinds the
+// agent reads, and blocks until they have synced. ctx bounds the cache's
+// lifetime, so callers pass a long-lived one.
+func startReader(ctx context.Context, cfg *rest.Config, opts cache.Options) kube.Reader {
+	c, err := kube.NewCache(cfg, opts)
+	if err != nil {
+		log.Fatalf("cache: %v", err)
+	}
+	// Prime the informers so Start really waits for a synced cache. Before
+	// the CRDs are installed the NodeTwin informer cannot be created; the
+	// old code tolerated that per tick, so wait here instead of exiting.
+	for _, obj := range []client.Object{&corev1.Node{}, &v1alpha1.NodeTwin{}} {
+		for {
+			_, err := c.GetInformer(ctx, obj)
+			if err == nil {
+				break
+			}
+			log.Printf("warning: cache informer for %T not available yet: %v (retrying in %s)", obj, err, informerRetryInterval)
+			select {
+			case <-ctx.Done():
+				log.Fatalf("cache informer for %T: %v", obj, ctx.Err())
+			case <-time.After(informerRetryInterval):
+			}
+		}
+	}
+	if err := kube.Start(ctx, c); err != nil {
+		log.Fatalf("start cache: %v", err)
+	}
+	return c
+}
+
+// informerRetryInterval is how long the agent waits between attempts to set
+// up an informer whose CRD is not installed yet.
+const informerRetryInterval = 10 * time.Second
 
 func newNodeController(nodeName string, simulateOnly bool) (*NodeController, error) {
 	metrics := newAgentMetrics(nodeName)
@@ -451,8 +525,8 @@ func newNodeController(nodeName string, simulateOnly bool) (*NodeController, err
 	}, nil
 }
 
-func (n *NodeController) reconcile(ctx context.Context, kube kubernetes.Interface, dyn dynamic.Interface) error {
-	return reconcileOnce(ctx, kube, dyn, n)
+func (n *NodeController) reconcile(ctx context.Context, reader kube.Reader, dyn dynamic.Interface) error {
+	return reconcileOnce(ctx, reader, dyn, n)
 }
 
 func ownsNodeForShard(nodeName string, shards, shardID int) bool {
@@ -479,9 +553,11 @@ func startMetricsServer() {
 	}()
 }
 
+// reconcileOnce reads through reader (a cache in production) and writes
+// through dyn, so a tick touches the API server only when state changed.
 func reconcileOnce(
 	ctx context.Context,
-	kube kubernetes.Interface,
+	reader kube.Reader,
 	dyn dynamic.Interface,
 	nc *NodeController,
 ) error {
@@ -491,14 +567,14 @@ func reconcileOnce(
 	simulateOnly := nc.simulateOnly
 	lastRaplKey := &nc.lastRaplKey
 
-	node, err := kube.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-	if err != nil {
+	node := &corev1.Node{}
+	if err := reader.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
 		return fmt.Errorf("get node: %w", err)
 	}
 
 	hw := discoverHardware(ctx, node)
 
-	selected, source, err := resolveDesiredStateForNode(ctx, dyn, nodeName)
+	selected, source, err := resolveDesiredStateForNode(ctx, reader, nodeName)
 	if err != nil {
 		// Spec read failed. Check if we've exceeded the timeout.
 		if !nc.lastSuccessfulSpecRead.IsZero() && time.Since(nc.lastSuccessfulSpecRead) > nc.specReadTimeout {
@@ -1198,7 +1274,7 @@ func gpuControlClientFromTelemetry(cfg *TelemetryConfig, nodeName string) *HTTPC
 func discoverHardware(ctx context.Context, node *corev1.Node) HardwareInfo {
 	nodeLabels := node.Labels
 	hw := HardwareInfo{
-		CPUVendor: discoverCPUVendor(nodeLabels),
+		CPUVendor:       discoverCPUVendor(nodeLabels),
 		CPURawModel:     discoverCPURawModel(nodeLabels),
 		CPUSockets:      discoverCPUSockets(nodeLabels),
 		CPUTotalCores:   cpuCoresFromNode(node),
@@ -1423,8 +1499,8 @@ func hasNFDGPUVendor(nodeLabels map[string]string, vendorHex string) bool {
 	return false
 }
 
-func resolveDesiredStateForNode(ctx context.Context, dyn dynamic.Interface, nodeName string) (*DesiredState, string, error) {
-	np, err := getNodeTwinSpec(ctx, dyn, nodeName)
+func resolveDesiredStateForNode(ctx context.Context, reader kube.Reader, nodeName string) (*DesiredState, string, error) {
+	np, err := getNodeTwinSpec(ctx, reader, nodeName)
 	if err != nil {
 		return nil, "", fmt.Errorf("get NodeTwin: %w", err)
 	}
@@ -1443,70 +1519,63 @@ func resolveTelemetryConfigForNode(ctx context.Context, dyn dynamic.Interface, n
 	return resolveTelemetryConfigFromEnv(), nil
 }
 
-func getNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, nodeName string) (*NodeTwinSpec, error) {
-	ul, err := dyn.Resource(nodeTwinGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
+// getNodeTwinSpec reads this node's NodeTwin by object name. Listing every
+// NodeTwin and scanning for spec.nodeName, as this used to do, is one full
+// list per node per tick, which is O(N^2) cluster-wide.
+func getNodeTwinSpec(ctx context.Context, reader kube.Reader, nodeName string) (*NodeTwinSpec, error) {
+	nt := &v1alpha1.NodeTwin{}
+	if err := reader.Get(ctx, client.ObjectKey{Name: sanitizeNodeObjectName(nodeName)}, nt); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	for _, item := range ul.Items {
-		np := parseNodeTwinAsProfile(item)
-		if np.NodeName == nodeName {
-			return &np, nil
-		}
+	np := nodeTwinSpecFromObject(nt)
+	if np.NodeName != "" && np.NodeName != nodeName {
+		return nil, fmt.Errorf("NodeTwin %s belongs to node %q, not %q", nt.Name, np.NodeName, nodeName)
 	}
-	return nil, nil
+	return &np, nil
 }
 
-// parseNodeTwinAsProfile reads the spec of a NodeTwin CR into the agent's NodeTwinSpec struct.
-func parseNodeTwinAsProfile(u unstructured.Unstructured) NodeTwinSpec {
-	np := NodeTwinSpec{Name: u.GetName()}
-	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "nodeName"); ok {
-		np.NodeName = v
+// nodeTwinSpecFromObject copies the spec of a NodeTwin into the agent's
+// NodeTwinSpec. Optional caps stay nil when absent, and the GPU cap is only
+// set when at least one of its values is.
+func nodeTwinSpecFromObject(nt *v1alpha1.NodeTwin) NodeTwinSpec {
+	np := NodeTwinSpec{
+		Name:     nt.Name,
+		NodeName: nt.Spec.NodeName,
+		Profile:  nt.Spec.Profile,
 	}
-	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "profile"); ok {
-		np.Profile = v
+	if nt.Spec.Policy != nil {
+		np.PolicyName = nt.Spec.Policy.Name
 	}
-	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "policy", "name"); ok {
-		np.PolicyName = v
+	if cpu := nt.Spec.CPU; cpu != nil {
+		np.PowerWatts = copyFloat64(cpu.PackagePowerCapWatts)
+		np.PowerPctOfMax = copyFloat64(cpu.PackagePowerCapPctOfMax)
 	}
-	if w, ok, _ := unstructured.NestedFloat64(u.Object, "spec", "cpu", "packagePowerCapWatts"); ok {
-		np.PowerWatts = &w
-	} else if wi, ok, _ := unstructured.NestedInt64(u.Object, "spec", "cpu", "packagePowerCapWatts"); ok {
-		w := float64(wi)
-		np.PowerWatts = &w
-	}
-	if p, ok, _ := unstructured.NestedFloat64(u.Object, "spec", "cpu", "packagePowerCapPctOfMax"); ok {
-		np.PowerPctOfMax = &p
-	} else if pi, ok, _ := unstructured.NestedInt64(u.Object, "spec", "cpu", "packagePowerCapPctOfMax"); ok {
-		p := float64(pi)
-		np.PowerPctOfMax = &p
-	}
-	gpu := GPUPowerCap{}
-	if v, ok, _ := unstructured.NestedString(u.Object, "spec", "gpu", "powerCap", "scope"); ok {
-		gpu.Scope = strings.TrimSpace(v)
-	}
-	if w, ok, _ := unstructured.NestedFloat64(u.Object, "spec", "gpu", "powerCap", "capWattsPerGpu"); ok {
-		gpu.CapWattsPerGPU = &w
-	} else if wi, ok, _ := unstructured.NestedInt64(u.Object, "spec", "gpu", "powerCap", "capWattsPerGpu"); ok {
-		w := float64(wi)
-		gpu.CapWattsPerGPU = &w
-	}
-	if p, ok, _ := unstructured.NestedFloat64(u.Object, "spec", "gpu", "powerCap", "capPctOfMax"); ok {
-		gpu.CapPctOfMax = &p
-	} else if pi, ok, _ := unstructured.NestedInt64(u.Object, "spec", "gpu", "powerCap", "capPctOfMax"); ok {
-		p := float64(pi)
-		gpu.CapPctOfMax = &p
-	}
-	if gpu.CapWattsPerGPU != nil || gpu.CapPctOfMax != nil {
-		if gpu.Scope == "" {
-			gpu.Scope = "perGpu"
+	if nt.Spec.GPU != nil && nt.Spec.GPU.PowerCap != nil {
+		pc := nt.Spec.GPU.PowerCap
+		gpu := GPUPowerCap{
+			Scope:          strings.TrimSpace(pc.Scope),
+			CapWattsPerGPU: copyFloat64(pc.CapWattsPerGPU),
+			CapPctOfMax:    copyFloat64(pc.CapPctOfMax),
 		}
-		np.GPU = &gpu
+		if gpu.CapWattsPerGPU != nil || gpu.CapPctOfMax != nil {
+			if gpu.Scope == "" {
+				gpu.Scope = "perGpu"
+			}
+			np.GPU = &gpu
+		}
 	}
 	return np
+}
+
+func copyFloat64(p *float64) *float64 {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 // resolveTelemetryConfigFromEnv builds TelemetryConfig from environment variables.
@@ -1552,9 +1621,38 @@ func updateTelemetryGPUStatus(ctx context.Context, dyn dynamic.Interface, cfg *T
 	return updateNodeTwinControlStatus(ctx, dyn, nodeName, "gpu", backend, result, message)
 }
 
+// lastWrites remembers the last payload written per object and component so
+// unchanged state is not rewritten every tick. A rewrite still happens after
+// rewriteInterval, which bounds how long a lost object stays unrepaired.
+var lastWrites sync.Map // key string -> lastWrite
+
+type lastWrite struct {
+	payload string
+	at      time.Time
+}
+
+const rewriteInterval = 5 * time.Minute
+
+// shouldWrite reports whether payload differs from what was last written
+// under key, or the last write is older than rewriteInterval. It records the
+// write when it returns true.
+func shouldWrite(key, payload string, now time.Time) bool {
+	if v, ok := lastWrites.Load(key); ok {
+		lw := v.(lastWrite)
+		if lw.payload == payload && now.Sub(lw.at) < rewriteInterval {
+			return false
+		}
+	}
+	lastWrites.Store(key, lastWrite{payload: payload, at: now})
+	return true
+}
+
 func updateNodeTwinControlStatus(ctx context.Context, dyn dynamic.Interface, nodeName, component, backend, result, message string) error {
 	name := sanitizeNodeObjectName(nodeName)
 	res := dyn.Resource(nodeTwinGVR)
+	if !shouldWrite("controlStatus|"+name+"|"+component, backend+"|"+result+"|"+message, time.Now()) {
+		return nil
+	}
 
 	// Use MergePatch on the status subresource to avoid overwriting fields
 	// written by the operator (e.g. schedulableClass, predicted scores).
@@ -1574,13 +1672,13 @@ func updateNodeTwinControlStatus(ctx context.Context, dyn dynamic.Interface, nod
 	if err != nil {
 		return fmt.Errorf("marshal controlStatus patch: %w", err)
 	}
-	_, err = res.Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{}, "status")
+	_, err = res.Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{FieldManager: joulie.FieldManagerAgent}, "status")
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil // NodeTwin not yet created by operator
 		}
 		// Fallback: patch without status subresource
-		_, err = res.Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+		_, err = res.Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{FieldManager: joulie.FieldManagerAgent})
 		if err != nil && apierrors.IsNotFound(err) {
 			return nil
 		}
@@ -1607,7 +1705,7 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 				"nodeName": nodeName,
 			},
 		}}
-		created, cerr := res.Create(ctx, obj, metav1.CreateOptions{})
+		created, cerr := res.Create(ctx, obj, metav1.CreateOptions{FieldManager: joulie.FieldManagerAgent})
 		if cerr != nil && !apierrors.IsAlreadyExists(cerr) {
 			return cerr
 		}
@@ -1699,21 +1797,33 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 		},
 	}
 
+	// Hardware facts change rarely; skip the write when nothing but the
+	// timestamp would change.
+	delete(status, "updatedAt")
+	fingerprint, err := json.Marshal(status)
+	if err != nil {
+		return fmt.Errorf("marshal NodeHardware status: %w", err)
+	}
+	if !shouldWrite("nodeHardware|"+name, string(fingerprint), time.Now()) {
+		return nil
+	}
+	status["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+
 	if err := unstructured.SetNestedField(obj.Object, status, "status"); err != nil {
 		return fmt.Errorf("set NodeHardware status: %w", err)
 	}
-	_, err = res.UpdateStatus(ctx, obj, metav1.UpdateOptions{})
+	_, err = res.UpdateStatus(ctx, obj, metav1.UpdateOptions{FieldManager: joulie.FieldManagerAgent})
 	if err == nil {
 		return nil
 	}
-	_, err = res.Update(ctx, obj, metav1.UpdateOptions{})
+	_, err = res.Update(ctx, obj, metav1.UpdateOptions{FieldManager: joulie.FieldManagerAgent})
 	return err
 }
 
+// sanitizeNodeObjectName maps a node name to its NodeTwin/NodeHardware
+// object name. Shared with the operator through pkg/api so both sides agree.
 func sanitizeNodeObjectName(nodeName string) string {
-	name := strings.ToLower(strings.TrimSpace(nodeName))
-	name = strings.NewReplacer(".", "-", "_", "-", "/", "-").Replace(name)
-	return strings.Trim(name, "-")
+	return joulie.ObjectNameForNode(nodeName)
 }
 
 func overallQuality(hw HardwareInfo) string {
