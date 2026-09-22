@@ -88,5 +88,7 @@ website/.hugo_build.lock
 /simulator/simulator
 /simulator/cmd/workloadgen/workloadgen
 /03-heterogeneous_cluster_control_loop
-.claude/
+# Local Claude Code state stays out; the project skill under .claude/skills is committed.
+.claude/*
+!.claude/skills/
 bin/
