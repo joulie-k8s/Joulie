@@ -96,7 +96,7 @@ For each managed node, the twin produces three scores written to `NodeTwin.statu
 
 The scheduler extender caches these scores (30-second TTL) and uses them for filter and score decisions.
 
-For formula details and the pluggable `CoolingModel` interface, see [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}).
+For the formulas and the inputs they read, see [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}).
 
 ## Digital twin feedback loop
 

@@ -123,7 +123,17 @@ func Compute(in Input) Output {
 	in.GPUCapPct = gpuPct
 
 	// Compute hardware TDP and capped power budgets.
-	cpuTDP := in.Hardware.CPU.CapRange.MaxWattsPerSocket * float64(in.Hardware.CPU.Sockets)
+	//
+	// An unknown socket count would multiply a known per-socket maximum to
+	// zero, and a zero budget reads as unlimited headroom further down, so a
+	// busy node would look like the emptiest one. Assume a single socket
+	// instead: that underestimates the budget on a multi-socket machine,
+	// which is the safe direction.
+	cpuSockets := in.Hardware.CPU.Sockets
+	if cpuSockets <= 0 && in.Hardware.CPU.CapRange.MaxWattsPerSocket > 0 {
+		cpuSockets = 1
+	}
+	cpuTDP := in.Hardware.CPU.CapRange.MaxWattsPerSocket * float64(cpuSockets)
 	var gpuTDP float64
 	if in.Hardware.GPU.Present {
 		gpuTDP = in.Hardware.GPU.CapRange.MaxWatts * float64(in.Hardware.GPU.Count)
@@ -174,7 +184,7 @@ func Compute(in Input) Output {
 //
 // Headroom can go negative (node drawing more than its budget) but is clamped
 // to 100 at the top. If nodeCappedPower is 0 (unknown hardware), returns 100
-// (neutral — don't penalize nodes we know nothing about).
+// (neutral, so a node we know nothing about is not penalised).
 func computePowerHeadroom(measuredPowerW, nodeCappedPowerW float64) float64 {
 	if nodeCappedPowerW <= 0 {
 		return 100

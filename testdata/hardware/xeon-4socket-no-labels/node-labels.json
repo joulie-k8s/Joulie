@@ -1,0 +1,18 @@
+{
+  "beta.kubernetes.io/arch": "amd64",
+  "beta.kubernetes.io/os": "linux",
+  "feature.node.kubernetes.io/cpu-cpuid.AVX512F": "true",
+  "feature.node.kubernetes.io/cpu-cpuid.AVX512VNNI": "true",
+  "feature.node.kubernetes.io/cpu-hardware_multithreading": "true",
+  "feature.node.kubernetes.io/cpu-model.family": "6",
+  "feature.node.kubernetes.io/cpu-model.id": "85",
+  "feature.node.kubernetes.io/cpu-model.vendor_id": "Intel",
+  "feature.node.kubernetes.io/kernel-version.full": "4.18.0-553.36.1.el8_10.x86_64",
+  "feature.node.kubernetes.io/kernel-version.major": "4",
+  "feature.node.kubernetes.io/system-os_release.ID": "rhel",
+  "feature.node.kubernetes.io/system-os_release.VERSION_ID": "8.10",
+  "kubernetes.io/arch": "amd64",
+  "kubernetes.io/hostname": "REDACTED-HOST",
+  "kubernetes.io/os": "linux",
+  "node-role.kubernetes.io/worker": ""
+}

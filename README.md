@@ -56,7 +56,7 @@ Joulie has five components:
 | **Controller manager** (`cmd/controller-manager`) | Cluster-wide control loop. Reads `NodeHardware` + Prometheus metrics. Runs the digital twin model. Writes `NodeTwin` (spec = desired power state, status = twin output). |
 | **Scheduler extender** (`cmd/scheduler`) | HTTP extender for kube-scheduler. Reads `NodeTwin.status` (30s TTL cache). Rejects eco nodes for performance pods. Scores nodes by power headroom and stress. |
 | **kubectl plugin** (`cmd/kubectl-joulie`) | `kubectl joulie status` for cluster energy overview. |
-| **Digital twin** (`pkg/controller/twin`) | O(1) parametric model. Computes power headroom, cooling stress (% of cooling capacity), PSU stress (% of PDU capacity), and estimated PUE. CoolingModel is pluggable (default: linear proxy; future: openModelica thermal simulation). |
+| **Digital twin** (`pkg/controller/twin`) | O(1) parametric model. From a measured node power reading it computes power headroom (% of the capped budget still unused), cooling stress (% of node TDP in use, scaled by ambient temperature), PSU stress (% of rack PDU capacity), and estimated PUE. |
 
 ## CRDs
 
@@ -97,7 +97,7 @@ pkg/agent/hardware/     Hardware discovery (CPU/GPU caps, freq landmarks, slicin
 pkg/api/                Shared Go types (NodeHardware, NodeTwin)
 pkg/controller/policy/  Policy algorithms (static_partition, queue_aware_v1, rule_swap_v1)
 pkg/controller/fsm/     Node state machine (downgrade guards, pod classification, NodeOps interface)
-pkg/controller/twin/    Digital twin model (CoolingModel interface)
+pkg/controller/twin/    Digital twin model (power headroom, cooling stress, PSU stress)
 simulator/              Workload and power simulator for offline experiments
 charts/joulie/          Helm chart (includes Grafana dashboard)
 config/crd/             CRD manifests

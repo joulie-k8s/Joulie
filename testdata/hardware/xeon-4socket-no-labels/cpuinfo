@@ -1,0 +1,158 @@
+processor	: 0
+vendor_id	: GenuineIntel
+cpu family	: 6
+model		: 85
+model name	: Intel(R) Xeon(R) Gold 6252 CPU @ 2.10GHz
+stepping	: 7
+microcode	: 0x5003604
+cpu MHz		: 2100.000
+cache size	: 36608 KB
+physical id	: 0
+siblings	: 48
+core id		: 0
+cpu cores	: 24
+apicid		: 0
+initial apicid	: 0
+fpu		: yes
+fpu_exception	: yes
+cpuid level	: 22
+wp		: yes
+bogomips	: 4200.00
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 46 bits physical, 48 bits virtual
+power management:
+
+processor	: 1
+vendor_id	: GenuineIntel
+cpu family	: 6
+model		: 85
+model name	: Intel(R) Xeon(R) Gold 6252 CPU @ 2.10GHz
+stepping	: 7
+cpu MHz		: 2100.000
+cache size	: 36608 KB
+physical id	: 0
+siblings	: 48
+core id		: 1
+cpu cores	: 24
+apicid		: 2
+bogomips	: 4200.00
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 46 bits physical, 48 bits virtual
+power management:
+
+processor	: 48
+vendor_id	: GenuineIntel
+cpu family	: 6
+model		: 85
+model name	: Intel(R) Xeon(R) Gold 6252 CPU @ 2.10GHz
+stepping	: 7
+cpu MHz		: 2100.000
+cache size	: 36608 KB
+physical id	: 1
+siblings	: 48
+core id		: 0
+cpu cores	: 24
+apicid		: 96
+bogomips	: 4200.00
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 46 bits physical, 48 bits virtual
+power management:
+
+processor	: 49
+vendor_id	: GenuineIntel
+cpu family	: 6
+model		: 85
+model name	: Intel(R) Xeon(R) Gold 6252 CPU @ 2.10GHz
+stepping	: 7
+cpu MHz		: 2100.000
+cache size	: 36608 KB
+physical id	: 1
+siblings	: 48
+core id		: 1
+cpu cores	: 24
+apicid		: 98
+bogomips	: 4200.00
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 46 bits physical, 48 bits virtual
+power management:
+
+processor	: 96
+vendor_id	: GenuineIntel
+cpu family	: 6
+model		: 85
+model name	: Intel(R) Xeon(R) Gold 6252 CPU @ 2.10GHz
+stepping	: 7
+cpu MHz		: 2100.000
+cache size	: 36608 KB
+physical id	: 2
+siblings	: 48
+core id		: 0
+cpu cores	: 24
+apicid		: 192
+bogomips	: 4200.00
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 46 bits physical, 48 bits virtual
+power management:
+
+processor	: 97
+vendor_id	: GenuineIntel
+cpu family	: 6
+model		: 85
+model name	: Intel(R) Xeon(R) Gold 6252 CPU @ 2.10GHz
+stepping	: 7
+cpu MHz		: 2100.000
+cache size	: 36608 KB
+physical id	: 2
+siblings	: 48
+core id		: 1
+cpu cores	: 24
+apicid		: 194
+bogomips	: 4200.00
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 46 bits physical, 48 bits virtual
+power management:
+
+processor	: 144
+vendor_id	: GenuineIntel
+cpu family	: 6
+model		: 85
+model name	: Intel(R) Xeon(R) Gold 6252 CPU @ 2.10GHz
+stepping	: 7
+cpu MHz		: 2100.000
+cache size	: 36608 KB
+physical id	: 3
+siblings	: 48
+core id		: 0
+cpu cores	: 24
+apicid		: 288
+bogomips	: 4200.00
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 46 bits physical, 48 bits virtual
+power management:
+
+processor	: 145
+vendor_id	: GenuineIntel
+cpu family	: 6
+model		: 85
+model name	: Intel(R) Xeon(R) Gold 6252 CPU @ 2.10GHz
+stepping	: 7
+cpu MHz		: 2100.000
+cache size	: 36608 KB
+physical id	: 3
+siblings	: 48
+core id		: 1
+cpu cores	: 24
+apicid		: 290
+bogomips	: 4200.00
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 46 bits physical, 48 bits virtual
+power management:
+

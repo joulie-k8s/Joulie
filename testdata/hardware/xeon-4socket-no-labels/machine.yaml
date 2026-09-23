@@ -1,0 +1,29 @@
+description: >-
+  Bare metal four socket Intel Xeon Gold 6252, 192 logical CPUs, no GPU. NFD is
+  installed but publishes neither cpu-sockets nor cpu-model.name, so the socket
+  count and the model string both have to come from /proc/cpuinfo. This is the
+  machine that motivated those fallbacks: without them the twin computed a node
+  TDP of maxWattsPerSocket times zero. Each package zone caps at 165 W and each
+  socket also exposes a DRAM sub-zone that reports a 47.25 W maximum and a zero
+  limit, which is the trap the "select zones by their name file" rule guards.
+source: >-
+  Hand built from a bare metal hardware report of the node the NFD gap was
+  first seen on. The powercap values and the model string are the reported
+  ones; the cpuinfo is trimmed to two processor blocks per socket, which is all
+  the parser reads (model name and the distinct physical id values). The full
+  file would be 192 blocks of the same two facts.
+capturedAt: "2026-09-23T00:00:00Z"
+allocatable:
+  cpu: "192"
+  memory: "394993664Ki"
+  gpu: {}
+# The DRAM sub-zones reject writes on this machine: their limit is pinned at 0
+# and writing to constraint_0_power_limit_uw returns an error. Listing them
+# here makes the test replay that, and the point is that nothing changes:
+# applyRAPLPackageCap selects zones by their name file, so it writes the four
+# package zones and never touches these.
+writeRejectingZones:
+  - "intel-rapl:0:0"
+  - "intel-rapl:1:0"
+  - "intel-rapl:2:0"
+  - "intel-rapl:3:0"

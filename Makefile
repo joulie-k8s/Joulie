@@ -38,7 +38,9 @@ help:
 	@echo "  make kubectl-plugin-push TAG=<tag>    Push kubectl-joulie to Harbor (requires oras)"
 	@echo "  make kubectl-plugin-build-push TAG=<tag> Build and push kubectl-joulie to Harbor"
 	@echo "  make test                             Run unit tests"
+	@echo "  make test-envtest                     Run the CRD suite against a real API server (downloads control-plane binaries)"
 	@echo "  make test-examples                    Validate example YAML manifests (kubectl dry-run client)"
+	@echo "  make ci-local                         Run every check a pull request runs, then print a summary"
 	@echo "  make generate                         Regenerate DeepCopy code for api/"
 	@echo "  make manifests                        Regenerate CRDs from api/ into config/ and the Helm chart"
 	@echo "  make verify-manifests                 Fail if generated code or CRDs are stale (CI)"
@@ -133,6 +135,27 @@ kubectl-plugin-build-push: kubectl-plugin kubectl-plugin-push
 test:
 	go test ./...
 
+# tests/envtest starts a real etcd and kube-apiserver so the generated CRDs
+# and the server-side apply field managers are checked by the API server and
+# not by a test's idea of it. The `envtest` build tag keeps the control-plane
+# binaries out of `make test`. ENVTEST_VERSION tracks the controller-runtime
+# minor version in go.mod, and setup-envtest is installed into ./bin the same
+# way controller-gen is, so every machine runs the same tool.
+.PHONY: test-envtest
+ENVTEST_VERSION ?= release-0.19
+ENVTEST_K8S_VERSION ?= 1.31.0
+ENVTEST_BIN_DIR ?= $(PWD)/bin
+SETUP_ENVTEST ?= $(PWD)/bin/setup-envtest
+
+test-envtest:
+	@if ! test -x "$(SETUP_ENVTEST)"; then \
+		echo "Installing setup-envtest $(ENVTEST_VERSION) into $(PWD)/bin"; \
+		GOBIN=$(PWD)/bin go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION); \
+	fi
+	@assets="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(ENVTEST_BIN_DIR) -p path)"; \
+		echo "KUBEBUILDER_ASSETS=$$assets"; \
+		KUBEBUILDER_ASSETS="$$assets" go test -tags envtest -count=1 ./tests/envtest/...
+
 # Installs the pinned controller-gen into ./bin unless that exact version is
 # already there, so every machine and CI generate the same output.
 controller-gen:
@@ -182,6 +205,41 @@ test-examples:
 		fi; \
 	done; \
 	echo "All example manifests validated."
+
+.PHONY: ci-local
+# ci-local runs, in the same order, every check a pull request runs, so a red
+# CI is found before pushing rather than after. Each step runs even when an
+# earlier one failed, because the useful answer is the whole list of what is
+# broken; the summary at the end names every step and the target exits
+# non-zero if any of them failed. The envtest step downloads control plane
+# binaries into bin/ the first time, so the first run needs network access.
+ci-local:
+	@set -u; \
+	failed=""; results=""; \
+	run() { \
+		name="$$1"; shift; \
+		printf '\n==> %s\n' "$$name"; \
+		if "$$@"; then \
+			results="$$results\n  PASS  $$name"; \
+		else \
+			results="$$results\n  FAIL  $$name"; \
+			failed="$$failed $$name"; \
+		fi; \
+	}; \
+	run "make verify-manifests" $(MAKE) --no-print-directory verify-manifests; \
+	run "go build ./..." go build ./...; \
+	run "go vet ./..." go vet ./...; \
+	run "go test ./..." go test ./...; \
+	run "make test-envtest" $(MAKE) --no-print-directory test-envtest; \
+	run "hack/verify-chart-renders.sh" bash hack/verify-chart-renders.sh; \
+	run "helm lint" helm lint charts/joulie charts/joulie-simulator; \
+	printf '\n==================== ci-local summary ====================\n'; \
+	printf '%b\n' "$$results"; \
+	if [ -n "$$failed" ]; then \
+		printf '\nci-local: FAIL (failed steps:%s)\n' "$$failed"; \
+		exit 1; \
+	fi; \
+	printf '\nci-local: PASS\n'
 
 simulator-build:
 	docker build -f simulator/Dockerfile -t "$(REGISTRY)/$(SIM_IMAGE):$(TAG)" .

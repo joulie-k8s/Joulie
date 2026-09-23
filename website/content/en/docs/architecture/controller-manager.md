@@ -38,7 +38,7 @@ The reconcile loop and the facility poller run as manager runnables: they start 
 
 The facility metrics poller (`cmd/controller-manager/facility.go`) queries Prometheus for data-center-level signals: ambient temperature, total IT power, and cooling power. These feed into the twin computation for PUE estimation and cooling stress refinement.
 
-Disabled by default (`ENABLE_FACILITY_METRICS=false`). When enabled, the poller runs every `FACILITY_POLL_INTERVAL` (default 30s) and computes PUE as `(IT power + cooling power) / IT power`. The ambient temperature is passed to the twin's `LinearCoolingModel` for temperature-aware stress scoring. The scheduler extender then weights marginal power costs by PUE.
+Disabled by default (`ENABLE_FACILITY_METRICS=false`). When enabled, the poller runs every `FACILITY_POLL_INTERVAL` (default 30s) and computes PUE as `(IT power + cooling power) / IT power`. The ambient temperature is passed to the twin, which uses it to scale cooling stress: the warmer the air, the harder the same watts are to remove. See [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}) for the multiplier.
 
 See [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md" >}}) for the full list of facility env vars.
 

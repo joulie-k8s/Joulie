@@ -1053,7 +1053,7 @@ func detectGPUVendor(ctx context.Context, nodeLabels map[string]string) string {
 	if hasNFDGPUVendor(nodeLabels, "1002") {
 		return "amd"
 	}
-	if _, err := os.Stat("/dev/nvidiactl"); err == nil {
+	if _, err := os.Stat(nvidiaControlDevicePath); err == nil {
 		return "nvidia"
 	}
 	if _, err := runCommand(ctx, "nvidia-smi", "-L"); err == nil {
@@ -1366,9 +1366,18 @@ func cpuCoresFromNode(node *corev1.Node) int {
 	return 0
 }
 
-// procCPUInfoPath is the procfs CPU inventory. cpuinfo is not namespaced, so
-// a container sees the host CPUs. Variable so tests can point at a fixture.
-var procCPUInfoPath = "/proc/cpuinfo"
+// Host paths the agent reads to discover hardware. They are variables, not
+// constants, so a test can replay a captured machine from
+// testdata/hardware instead of describing whatever host it runs on.
+var (
+	// procCPUInfoPath is the procfs CPU inventory. cpuinfo is not
+	// namespaced, so a container sees the host CPUs.
+	procCPUInfoPath = "/proc/cpuinfo"
+	// nvidiaControlDevicePath exists when the NVIDIA driver is loaded.
+	nvidiaControlDevicePath = "/dev/nvidiactl"
+	// cpufreqDriverPath names the active cpufreq scaling driver.
+	cpufreqDriverPath = "/host-sys/devices/system/cpu/cpufreq/policy0/scaling_driver"
+)
 
 // readProcCPUInfo returns the CPU model name and the number of populated
 // sockets (distinct "physical id" values). Missing or unreadable file yields
@@ -1855,7 +1864,7 @@ func stringAnySlice(in []string) []any {
 }
 
 func detectCPUDriverFamily() string {
-	b, err := os.ReadFile("/host-sys/devices/system/cpu/cpufreq/policy0/scaling_driver")
+	b, err := os.ReadFile(cpufreqDriverPath)
 	if err != nil {
 		return ""
 	}

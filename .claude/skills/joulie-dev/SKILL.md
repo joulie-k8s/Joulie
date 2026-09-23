@@ -85,28 +85,40 @@ The per-field table lives in `architecture/_index.md` ("Who writes what"). What 
 
 **Before calling a change ready (a PR about to merge)**: the code is one part of the repository; the rest must still be true afterwards. Walk every consumer of what changed and bring it along in the same PR:
 
-1. Inventory: `git grep -n -i` for each renamed or removed name, env var, value key, metric, CRD field or file path across `docs`, `examples`, `experiments`, `charts`, `values`, `ci`, `simulator` and the README.
-2. Docs: pages that describe the changed behaviour, the configuration reference, the ownership table, `architecture/metrics.md` for metrics.
-3. Examples: each example that exercises the changed surface is updated and still renders or applies (`make test-examples` for manifests, `helm template` for values files).
-4. Experiments: installers, sweep configs and scripts that set the changed env vars or names.
-5. When an example or experiment cannot be ported (a breaking change, a removed feature): remove the example rather than leave it broken, and in the experiment's `README.md` and `REPORT.md` state the last Joulie version it was run with (`Results were produced with Joulie vX.Y.Z; the experiment has not been ported to later versions because ...`) so the numbers remain interpretable. Update the docs pages that pointed at it.
-6. Only then say it is ready, with the commands you ran.
+1. Tests: name the test that fails without this change, and for anything crossing a component boundary the test on the reading side too (see "Tests that would have caught it"). Existing tests staying green is not evidence of new coverage.
+2. Inventory: `git grep -n -i` for each renamed or removed name, env var, value key, metric, CRD field or file path across `docs`, `examples`, `experiments`, `charts`, `values`, `ci`, `simulator` and the README.
+3. Docs: pages that describe the changed behaviour, the configuration reference, the ownership table, `architecture/metrics.md` for metrics. A formula or default quoted in the docs is part of the change: recompute the worked examples.
+4. Examples: each example that exercises the changed surface is updated and still renders or applies (`make test-examples` for manifests, `helm template` for values files).
+5. Experiments: installers, sweep configs and scripts that set the changed env vars or names.
+6. When an example or experiment cannot be ported (a breaking change, a removed feature): remove the example rather than leave it broken, and in the experiment's `README.md` and `REPORT.md` state the last Joulie version it was run with (`Results were produced with Joulie vX.Y.Z; the experiment has not been ported to later versions because ...`) so the numbers remain interpretable. Update the docs pages that pointed at it.
+7. Only then say it is ready, with the commands you ran.
 
 **Release**: tag `vX.Y.Z` on `main`; the release workflow builds images, the kubectl plugin and both charts; verify each image with `docker manifest inspect` and the chart with `helm template` before telling adopters.
 
+## Tests that would have caught it
+
+Every change carries a claim: something now behaves differently. The test worth writing is the one that fails when that claim is false. Coverage percentages say nothing about that.
+
+- **Name the test that fails without the change.** For a bug fix that means a test that fails on the old code, and it asserts behaviour, not the shape of the fix: "a node with no socket count still reports a finite budget", never "the function now checks for zero".
+- **A value that crosses a component boundary needs the whole road tested**: the writer puts it on the wire, the wire preserves it, the reader gets it, and it reaches its use (a score, a cap, a printed column). Defects here have repeatedly lived in the middle while the writer's own test was green. Fake clients hand back the Go values you gave them, so they prove nothing about the wire: exercise a real encode and decode (`runtime.DefaultUnstructuredConverter`, the typed round trip in `api/v1alpha1/roundtrip_test.go`) or use envtest.
+- **Boundary values that actually bite here**: a whole number (it arrives as `int64`), a zero or missing hardware fact (a zero multiplier erases a budget), an absent file or tool (no powercap tree, no labels, no GPU), a command that succeeds with empty output, a value that is present but stale, a node name that is not a valid object name.
+- **Prefer captured input to invented input.** A hand written sample proves the parser handles your sample; `testdata/hardware` replays machines that exist. When a change affects discovery, add or update a corpus machine.
+- **Put the test at the lowest layer that can fail**: parsing and arithmetic in a unit test; a key, format or enum shared between components in `tests/contracts`; schema acceptance and field ownership in `tests/envtest`; install, rollout and labels in the Dagger integration run.
+
 ## Testing without hardware
 
-The agent reads files and command output, nothing else, so a captured tree is a faithful replay. Point `dvfs.PowercapRoot` at a fixture powercap tree, `procCPUInfoPath` at a fixture cpuinfo, and feed captured `nvidia-smi` output through the fake command runner (`cmd/agent/main_test.go`: `raplFixture`, `withProcCPUInfo`, `fakeCommandRunner`). Simulate a zone that rejects writes by making its limit file a directory. Real dumps are obtainable by asking adopters and colleagues; a corpus is tracked in issue #53.
+The agent reads files and command output, nothing else, so a captured tree is a faithful replay. `testdata/hardware/<machine>/` holds captured machines (powercap tree, cpuinfo, GPU query output, node labels, a golden `NodeHardware` status); `hack/collect-hardware-fixture.sh` captures a new one from a node or from inside the agent container, and the corpus test regenerates its goldens with `-update`. For a one-off case, point `dvfs.PowercapRoot` and `procCPUInfoPath` at a temporary tree and feed GPU output through the fake command runner (`cmd/agent/main_test.go`: `raplFixture`, `withProcCPUInfo`, `fakeCommandRunner`). Simulate a zone that rejects writes by making its limit file a directory. Adopters and colleagues can run the capture script, so a machine you do not own can still become a test.
 
 | Layer | Command | Proves |
 |---|---|---|
-| unit, fake clients and fixtures | `go test ./...`, `go test -race ./cmd/...` | logic, parsing, ownership shapes, cache scoping |
+| unit, fixtures and the machine corpus | `go test ./...`, `go test -race ./cmd/...` | logic, parsing, discovery against real machines, ownership shapes, cache scoping |
 | contracts | `go test ./tests/contracts/...` | keys, enums and formats agree across components |
-| chart | `helm lint charts/joulie`, `helm template joulie charts/joulie -f values/joulie.yaml` | the chart renders, one Deployment per component |
+| envtest | `make test-envtest` | a real API server accepts what components write and enforces field ownership |
+| chart | `hack/verify-chart-renders.sh` | every values combination renders, one workload per component, the legacy key renders identically |
 | integration | `cd ci && dagger call integration --source=..` (2-node k3s, HTTP telemetry mock) | install, labels, draining, twin writes, scheduler filter and score |
 | scale | `experiments/*` on KWOK | policy behaviour at hundreds of nodes, not in CI |
 
-There is no envtest; schema acceptance is proven by the generated CRD plus the round-trip test. `ci.yml` runs only for PRs against `main`; a stacked PR gets only the Dagger job.
+`make ci-local` runs what a pull request runs. The Dagger integration job is the only one gated on paths (`ci/`, `cmd/`, `charts/`, `config/`, `simulator/`, `go.mod`), so a change that touches only docs, `pkg/` or `testdata/` never reaches it.
 
 ## Keeping this skill true
 
