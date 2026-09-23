@@ -3,7 +3,7 @@ package main
 // Hardware fixture corpus.
 //
 // The agent reads hardware only through files and command output, so a captured
-// machine replays exactly. Each directory under testdata/hardware is one real
+// machine replays exactly. Each directory under cmd/agent/testdata/hardware is one real
 // machine: its powercap tree, its /proc/cpuinfo, the stdout of the GPU queries
 // the agent runs, its node labels, hand written metadata, and the golden
 // NodeHardware status the agent publishes for it.
@@ -37,10 +37,10 @@ import (
 
 // updateCorpusGolden rewrites every expected.json from the fixture inputs.
 var updateCorpusGolden = flag.Bool("update", false,
-	"rewrite testdata/hardware/*/expected.json from the fixture inputs")
+	"rewrite cmd/agent/testdata/hardware/*/expected.json from the fixture inputs")
 
 const (
-	corpusDir     = "../../testdata/hardware"
+	corpusDir     = "testdata/hardware"
 	corpusCatalog = "../../pkg/hwinv/assets/hardware.yaml"
 )
 

@@ -61,7 +61,7 @@ needed to describe hardware except hardware.
 ## Layout
 
 ```
-testdata/hardware/<machine>/
+cmd/agent/testdata/hardware/<machine>/
   powercap/                 copy of /sys/class/powercap, one directory per zone
     intel-rapl:0/name                    package-0
     intel-rapl:0/constraint_0_max_power_uw
@@ -106,8 +106,8 @@ has the matching query file.
 key, ready to copy:
 
 ```sh
-cp -r testdata/hardware/_template testdata/hardware/<machine>
-rm testdata/hardware/<machine>/README.md
+cp -r cmd/agent/testdata/hardware/_template cmd/agent/testdata/hardware/<machine>
+rm cmd/agent/testdata/hardware/<machine>/README.md
 ```
 
 Directories whose name starts with an underscore are not machines. Both the
@@ -153,10 +153,10 @@ their `name` file, never by a directory pattern.
 1. **Capture it.** On the node, or in a debug pod that sees the host `/sys`:
 
    ```sh
-   sudo sh hack/collect-hardware-fixture.sh --name <machine> --out /tmp/fixtures
+   sudo sh scripts/collect-hardware-fixture.sh --name <machine> --out /tmp/fixtures
    ```
 
-   `hack/collect-hardware-fixture.sh --help` documents the `kubectl` route as
+   `scripts/collect-hardware-fixture.sh --help` documents the `kubectl` route as
    well. The script writes the layout above, redacts what it can, and tars the
    directory. It never writes `expected.json`.
 
@@ -169,7 +169,7 @@ their `name` file, never by a directory pattern.
 3. **Unpack it into the corpus:**
 
    ```sh
-   tar -xf <machine>.tar -C testdata/hardware/
+   tar -xf <machine>.tar -C cmd/agent/testdata/hardware/
    ```
 
 4. **Fill in `machine.yaml`.** Copy `_template/machine.yaml` over the skeleton
@@ -181,7 +181,7 @@ their `name` file, never by a directory pattern.
 
    ```sh
    go test ./cmd/agent/ -run Corpus -update
-   git diff testdata/hardware
+   git diff cmd/agent/testdata/hardware
    ```
 
    That diff is the agent's own conclusion about your machine. If a number in it

@@ -12,16 +12,16 @@ by `TestCorpusListingsSkipUnderscoreDirectories`, not assumed.
 ## Use it
 
 ```sh
-cp -r testdata/hardware/_template testdata/hardware/<machine>
-rm testdata/hardware/<machine>/README.md
+cp -r cmd/agent/testdata/hardware/_template cmd/agent/testdata/hardware/<machine>
+rm cmd/agent/testdata/hardware/<machine>/README.md
 ```
 
 Then overwrite the copies with the output of the capture script, which is the
 only thing that should ever produce the machine files:
 
 ```sh
-sudo sh hack/collect-hardware-fixture.sh --name <machine> --out /tmp/fixtures
-tar -xf /tmp/fixtures/<machine>.tar -C testdata/hardware/
+sudo sh scripts/collect-hardware-fixture.sh --name <machine> --out /tmp/fixtures
+tar -xf /tmp/fixtures/<machine>.tar -C cmd/agent/testdata/hardware/
 ```
 
 The script overwrites `powercap/`, `cpuinfo`, `cpufreq-driver`,
@@ -31,7 +31,7 @@ this template's or the script's, and fill in the same keys either way. Delete
 any file the script did not write, because it describes a machine that is not
 yours: if your node has no GPU, `nvidia-smi.txt` has to go.
 
-`testdata/hardware/README.md` is the full contributor guide. Read it before you
+`cmd/agent/testdata/hardware/README.md` is the full contributor guide. Read it before you
 open a pull request.
 
 ## The files
@@ -72,7 +72,7 @@ capture is complete and reviewed:
 
 ```sh
 go test ./cmd/agent/ -run Corpus -update
-git diff testdata/hardware
+git diff cmd/agent/testdata/hardware
 ```
 
 Read that diff. It is the agent's own conclusion about your machine, and it is

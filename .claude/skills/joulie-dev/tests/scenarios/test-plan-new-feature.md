@@ -23,7 +23,7 @@ Question: which tests do you write, and why is each one worth writing? For every
 
 - controller-manager|fetchNodeHardware|hwInfoFromObject|reader\.go
 - round.?trip|DefaultUnstructuredConverter|envtest
-- testdata/hardware|corpus|captured
+- cmd/agent/testdata/hardware|corpus|captured
 - empty output|returns nothing|empty string
 
 ## Baseline

@@ -6,7 +6,7 @@ description: >-
   twin's per-socket arithmetic has to survive it.
 source: >-
   Captured on the Joulie development box with
-  hack/collect-hardware-fixture.sh, reviewed by Matteo Bunino. Not a cluster
+  scripts/collect-hardware-fixture.sh, reviewed by Matteo Bunino. Not a cluster
   node, so node-labels.json is empty.
 capturedAt: "2026-09-23T07:26:32Z"
 allocatable:

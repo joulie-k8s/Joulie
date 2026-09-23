@@ -12,4 +12,5 @@ Kubernetes energy management: a controller manager (policy + digital twin), a no
 - Node object names come from `pkg/api.ObjectNameForNode`; never derive them elsewhere.
 - Every confirmed bug ships with a regression test that fails on the old code.
 - Every user-visible change (env var, metric, Helm value, CRD field, image name) updates `website/content/en/docs/getting-started/05-configuration-reference.md` and, for chart values, `charts/joulie/values.yaml`.
+- Do not add directories to the repository root unless nothing existing can hold the files. Nest instead: helper scripts in `scripts/`, test fixtures in `<package>/testdata/`, test suites in `tests/`, docs in `website/content/`. The root is the first thing a newcomer reads, and every entry added to it costs them attention.
 - No em dashes or en dashes in prose, docs, commit messages or code comments.

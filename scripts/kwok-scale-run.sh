@@ -58,7 +58,7 @@ MAX_RSS_MB=128
 
 usage() {
   cat <<'USAGE'
-Usage: hack/kwok-scale-run.sh [options]
+Usage: scripts/kwok-scale-run.sh [options]
 
 Creates a kind cluster, installs KWOK, registers fake nodes, installs the
 Joulie chart from the working tree with the agent disabled, and measures how
@@ -110,8 +110,8 @@ Exit status
   0 when every threshold held, 1 otherwise (the summary is still printed).
 
 Examples
-  hack/kwok-scale-run.sh --nodes 200 --pods 1000
-  hack/kwok-scale-run.sh --nodes 50 --pods 0 --keep
+  scripts/kwok-scale-run.sh --nodes 200 --pods 1000
+  scripts/kwok-scale-run.sh --nodes 50 --pods 0 --keep
 USAGE
 }
 

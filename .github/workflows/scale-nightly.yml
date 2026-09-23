@@ -64,7 +64,7 @@ jobs:
 
       - name: Run the KWOK scale run
         run: |
-          bash hack/kwok-scale-run.sh \
+          bash scripts/kwok-scale-run.sh \
             --nodes "${NODES}" \
             --pods "${PODS}" \
             --max-seconds "${MAX_SECONDS}" \

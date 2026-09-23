@@ -1368,7 +1368,7 @@ func cpuCoresFromNode(node *corev1.Node) int {
 
 // Host paths the agent reads to discover hardware. They are variables, not
 // constants, so a test can replay a captured machine from
-// testdata/hardware instead of describing whatever host it runs on.
+// cmd/agent/testdata/hardware instead of describing whatever host it runs on.
 var (
 	// procCPUInfoPath is the procfs CPU inventory. cpuinfo is not
 	// namespaced, so a container sees the host CPUs.

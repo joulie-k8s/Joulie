@@ -231,7 +231,7 @@ ci-local:
 	run "go vet ./..." go vet ./...; \
 	run "go test ./..." go test ./...; \
 	run "make test-envtest" $(MAKE) --no-print-directory test-envtest; \
-	run "hack/verify-chart-renders.sh" bash hack/verify-chart-renders.sh; \
+	run "scripts/verify-chart-renders.sh" bash scripts/verify-chart-renders.sh; \
 	run "helm lint" helm lint charts/joulie charts/joulie-simulator; \
 	printf '\n==================== ci-local summary ====================\n'; \
 	printf '%b\n' "$$results"; \

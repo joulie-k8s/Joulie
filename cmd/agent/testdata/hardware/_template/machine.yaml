@@ -1,7 +1,7 @@
 # machine.yaml: the hand written half of a hardware capture.
 #
 # Everything else in this directory is copied off the machine by
-# hack/collect-hardware-fixture.sh. This file is the part only you can write,
+# scripts/collect-hardware-fixture.sh. This file is the part only you can write,
 # because only you know what the machine is and what the kubelet says about it.
 #
 # Copy this directory, then replace every value below. The capture script also

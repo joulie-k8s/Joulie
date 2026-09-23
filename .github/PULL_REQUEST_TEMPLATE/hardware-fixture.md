@@ -1,15 +1,15 @@
 ---
 name: Hardware fixture
-about: Contribute a captured machine to testdata/hardware
+about: Contribute a captured machine to cmd/agent/testdata/hardware
 labels: hardware-fixture
 ---
 
 <!--
 Thank you for contributing a machine. This template is for a pull request that
-adds or updates a directory under testdata/hardware. Anything else belongs in
+adds or updates a directory under cmd/agent/testdata/hardware. Anything else belongs in
 the ordinary pull request description.
 
-Read testdata/hardware/README.md first. It explains what a capture proves, the
+Read cmd/agent/testdata/hardware/README.md first. It explains what a capture proves, the
 exact steps, and what is never accepted.
 
 Captures are published as part of this repository: committed to git, mirrored by
@@ -22,7 +22,7 @@ publish what this capture contains.
 Fill this in even where `machine.yaml` already says it. A reviewer reads this
 first.
 
-- **Corpus directory:** `testdata/hardware/<machine>`
+- **Corpus directory:** `cmd/agent/testdata/hardware/<machine>`
 - **Vendor and model:** <!-- e.g. Intel Xeon Gold 6252, AMD EPYC 9654 -->
 - **Sockets and logical CPUs:** <!-- e.g. 4 sockets, 192 logical CPUs -->
 - **GPU:** <!-- vendor, model and count, or "none" -->
@@ -41,7 +41,7 @@ bug report, link the issue.
 
 ## Checklist
 
-- [ ] I ran `hack/collect-hardware-fixture.sh` to produce the capture. Nothing
+- [ ] I ran `scripts/collect-hardware-fixture.sh` to produce the capture. Nothing
       in it was hand written. (If something had to be, it says so in
       `machine.yaml` under `source`.)
 - [ ] I opened and read **every file** in the capture, including

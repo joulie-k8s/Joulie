@@ -45,7 +45,7 @@ Useful targets:
 
 The agent reads hardware only through files and command output, so a copy of
 those inputs replays a machine in a unit test with no hardware and no cluster.
-`testdata/hardware/` is a corpus of captured machines, and every one of them is
+`cmd/agent/testdata/hardware/` is a corpus of captured machines, and every one of them is
 replayed on every `go test ./...`.
 
 The corpus needs machines that maintainers do not own. If you have bare metal, a
@@ -53,16 +53,16 @@ GPU node or an unusual virtual machine, a capture takes a few minutes and turns
 your machine into a permanent regression test:
 
 ```bash
-sudo sh hack/collect-hardware-fixture.sh --name <machine> --out /tmp/fixtures
-tar -xf /tmp/fixtures/<machine>.tar -C testdata/hardware/
+sudo sh scripts/collect-hardware-fixture.sh --name <machine> --out /tmp/fixtures
+tar -xf /tmp/fixtures/<machine>.tar -C cmd/agent/testdata/hardware/
 # review every file, complete machine.yaml, then
 go test ./cmd/agent/ -run Corpus -update
 go test ./cmd/agent/...
 ```
 
-Read [`testdata/hardware/README.md`](./testdata/hardware/README.md) before you
+Read [`cmd/agent/testdata/hardware/README.md`](./cmd/agent/testdata/hardware/README.md) before you
 start. It has the full steps, a copyable template in
-`testdata/hardware/_template/`, and the rules about what is never accepted.
+`cmd/agent/testdata/hardware/_template/`, and the rules about what is never accepted.
 
 Two of those rules matter before you capture anything:
 

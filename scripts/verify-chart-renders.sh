@@ -25,7 +25,7 @@ verify-chart-renders.sh - render the Joulie charts under the value combinations
 CI covers and assert the workload objects they produce.
 
 Usage:
-  hack/verify-chart-renders.sh [options]
+  scripts/verify-chart-renders.sh [options]
 
 Options:
   -h, --help     Show this help and exit.
@@ -45,7 +45,7 @@ Every case also asserts that no two documents share a Kind and name.
 
 Run it from anywhere; it resolves the repository root from its own location:
 
-  hack/verify-chart-renders.sh
+  scripts/verify-chart-renders.sh
 EOF
 }
 

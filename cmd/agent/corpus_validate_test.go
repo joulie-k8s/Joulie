@@ -2,7 +2,7 @@ package main
 
 // Format and privacy validation for the hardware fixture corpus.
 //
-// testdata/hardware is published as part of this repository, so a capture that
+// cmd/agent/testdata/hardware is published as part of this repository, so a capture that
 // still carries a hostname, a MAC address or a serial number is a leak, not a
 // review comment. This file is the machine that catches that before a human
 // reads the diff, and the same run also checks that the capture has the shape
@@ -10,12 +10,12 @@ package main
 //
 // Every check here answers one question a reviewer would otherwise have to ask
 // by hand, and every failure message says what to change. The privacy patterns
-// are deliberately the ones hack/collect-hardware-fixture.sh redacts with, so
+// are deliberately the ones scripts/collect-hardware-fixture.sh redacts with, so
 // the capture and the lint cannot drift apart: whatever the script rewrites,
 // this rejects if it survived.
 //
 // The corpus root comes from the JOULIE_HARDWARE_CORPUS environment variable
-// and defaults to this repository's testdata/hardware. That indirection is here
+// and defaults to this repository's cmd/agent/testdata/hardware. That indirection is here
 // so the corpus can later move to a repository of its own, or be validated from
 // a checkout somewhere else, without rewriting this test.
 
@@ -48,7 +48,7 @@ func corpusRoot() string {
 	if v := strings.TrimSpace(os.Getenv(corpusRootEnv)); v != "" {
 		return v
 	}
-	// corpusDir is "../../testdata/hardware", relative to this package.
+	// corpusDir is "testdata/hardware", relative to this package.
 	return corpusDir
 }
 
@@ -111,7 +111,7 @@ const corpusNvidiaColumns = 6
 // ---------------------------------------------------------------------------
 // Privacy patterns
 //
-// These mirror the sed program in hack/collect-hardware-fixture.sh. A match is
+// These mirror the sed program in scripts/collect-hardware-fixture.sh. A match is
 // ignored when the matched text contains REDACTED, because that is what the
 // script writes in place of the real value.
 // ---------------------------------------------------------------------------
@@ -287,8 +287,8 @@ func validateCorpusLayout(p *corpusProblems, dir string) map[string]bool {
 	}
 	for _, name := range corpusRequiredFiles {
 		if !present[name] {
-			p.addf(name, 0, "required file is missing. Fix: copy it from testdata/hardware/_template and fill it in, "+
-				"or rerun hack/collect-hardware-fixture.sh")
+			p.addf(name, 0, "required file is missing. Fix: copy it from cmd/agent/testdata/hardware/_template and fill it in, "+
+				"or rerun scripts/collect-hardware-fixture.sh")
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(dir, name))
@@ -312,7 +312,7 @@ func validateCorpusMachineYAML(p *corpusProblems, dir string) {
 	}
 	var raw map[string]any
 	if err := yaml.Unmarshal(b, &raw); err != nil {
-		p.addf(file, 0, "does not parse as YAML: %v. Fix: compare it with testdata/hardware/_template/machine.yaml", err)
+		p.addf(file, 0, "does not parse as YAML: %v. Fix: compare it with cmd/agent/testdata/hardware/_template/machine.yaml", err)
 		return
 	}
 	unknown := []string{}
@@ -333,7 +333,7 @@ func validateCorpusMachineYAML(p *corpusProblems, dir string) {
 			continue
 		}
 		if v, set := raw[key]; !set || v == nil {
-			p.addf(file, 0, "missing required key %q. Fix: copy it from testdata/hardware/_template/machine.yaml, "+
+			p.addf(file, 0, "missing required key %q. Fix: copy it from cmd/agent/testdata/hardware/_template/machine.yaml, "+
 				"which documents what goes in it", key)
 		}
 	}
@@ -425,7 +425,7 @@ func validateCorpusCPUInfo(p *corpusProblems, dir string) {
 			processors++
 			if _, err := strconv.Atoi(value); err != nil {
 				p.addf(file, i+1, "processor index %q is not a number. Fix: do not hand edit cpuinfo; copy it with "+
-					"hack/collect-hardware-fixture.sh", value)
+					"scripts/collect-hardware-fixture.sh", value)
 			}
 		case "model name":
 			if value != "" {
@@ -441,7 +441,7 @@ func validateCorpusCPUInfo(p *corpusProblems, dir string) {
 	}
 	if processors == 0 {
 		p.addf(file, 0, "has no \"processor\" block. Fix: this is not a /proc/cpuinfo. Recapture with "+
-			"hack/collect-hardware-fixture.sh")
+			"scripts/collect-hardware-fixture.sh")
 		return
 	}
 	if models == 0 {
@@ -495,7 +495,7 @@ func validateCorpusPowercap(p *corpusProblems, dir string) {
 			}
 			if !corpusZoneFilePattern.MatchString(zf.Name()) {
 				p.addf(path.Join(rel, zf.Name()), 0, "unexpected file in a powercap zone. Fix: delete it; "+
-					"hack/collect-hardware-fixture.sh copies name, enabled, energy_uj, max_energy_range_uj and the constraint_N_* attributes")
+					"scripts/collect-hardware-fixture.sh copies name, enabled, energy_uj, max_energy_range_uj and the constraint_N_* attributes")
 				continue
 			}
 			if zf.Name() == "name" {
@@ -623,7 +623,7 @@ func validateCorpusNodeLabels(p *corpusProblems, dir string) {
 		}
 		if k == "kubernetes.io/hostname" && s != "REDACTED-HOST" && s != "" {
 			p.addf(file, 0, "kubernetes.io/hostname is %q. Fix: replace it with REDACTED-HOST, which is what "+
-				"hack/collect-hardware-fixture.sh writes in place of every spelling of the machine's name", s)
+				"scripts/collect-hardware-fixture.sh writes in place of every spelling of the machine's name", s)
 		}
 	}
 }
@@ -691,7 +691,7 @@ func validateCorpusPrivacy(p *corpusProblems, dir string) {
 				}
 				reported[fmt.Sprint(i, m)] = true
 				p.addf(rel, i+1, "contains a hostname or FQDN: %q. Fix: replace it with REDACTED-HOST. "+
-					"hack/collect-hardware-fixture.sh does that for every spelling of the machine's name, "+
+					"scripts/collect-hardware-fixture.sh does that for every spelling of the machine's name, "+
 					"including the domain on its own", corpusTruncate(m))
 			}
 		}
@@ -837,7 +837,7 @@ func TestHardwareCorpusIsValid(t *testing.T) {
 func TestCorpusListingsSkipUnderscoreDirectories(t *testing.T) {
 	// The template has to exist, otherwise this test would pass vacuously.
 	if _, err := os.Stat(filepath.Join(corpusRoot(), "_template", "machine.yaml")); err != nil {
-		t.Fatalf("testdata/hardware/_template is missing: %v", err)
+		t.Fatalf("cmd/agent/testdata/hardware/_template is missing: %v", err)
 	}
 	for _, machine := range corpusMachines(t) {
 		if strings.HasPrefix(machine, "_") {
@@ -930,7 +930,7 @@ const corpusGoodMachineYAML = `description: >-
   Two socket Intel Xeon Gold 6252 with one NVIDIA GPU, NVIDIA driver 535.183.01,
   kernel 4.18.0-553.36.1.el8_10.x86_64.
 source: >-
-  Captured with hack/collect-hardware-fixture.sh and reviewed file by file.
+  Captured with scripts/collect-hardware-fixture.sh and reviewed file by file.
 capturedAt: "2026-01-31T09:00:00Z"
 allocatable:
   cpu: "2"
@@ -1135,7 +1135,7 @@ func TestCorpusValidatorRejects(t *testing.T) {
 			mutate: func(t *testing.T, dir string) {
 				corpusWrite(t, dir, "machine.yaml",
 					strings.Replace(corpusGoodMachineYAML,
-						"source: >-\n  Captured with hack/collect-hardware-fixture.sh and reviewed file by file.\n",
+						"source: >-\n  Captured with scripts/collect-hardware-fixture.sh and reviewed file by file.\n",
 						"source:\n", 1))
 			},
 			want: `missing required key "source"`,

@@ -45,7 +45,7 @@ jobs:
       # mode) and asserts the workload objects. Run it locally with the same
       # command.
       - name: Verify chart renders
-        run: bash hack/verify-chart-renders.sh --verbose
+        run: bash scripts/verify-chart-renders.sh --verbose
 
   # envtest runs the Go tests behind the "envtest" build tag against a real
   # kube-apiserver and etcd, which setup-envtest downloads at test time. It is

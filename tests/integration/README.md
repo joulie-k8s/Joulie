@@ -130,7 +130,7 @@ and pushes to `main` that touch `ci/`, `cmd/`, `charts/`, `config/`,
 - **Leader election.** The controller manager runs one replica and the chart
   is installed with leader election off. No Lease is ever contended. The chart
   side of it, the Role and RoleBinding, is covered by
-  `hack/verify-chart-renders.sh`.
+  `scripts/verify-chart-renders.sh`.
 - **Chart upgrades.** `helm upgrade --install` runs exactly once per job, as a
   first install. Every later configuration change is a `kubectl set env`, so no
   upgrade path is exercised.
@@ -140,7 +140,7 @@ and pushes to `main` that touch `ci/`, `cmd/`, `charts/`, `config/`,
 ## The nightly scale run
 
 The bullet above is honest: the Dagger suite has two nodes, so nothing in CI
-says what happens at hundreds. `hack/kwok-scale-run.sh` does, and
+says what happens at hundreds. `scripts/kwok-scale-run.sh` does, and
 `.github/workflows/scale-nightly.yml` runs it every night at 02:37 UTC. It has
 no `pull_request` and no `push` trigger on purpose: it builds two images and
 creates a kind cluster, minutes of work that would say nothing about a one line
@@ -183,15 +183,15 @@ Needs `kind`, `kubectl`, `helm`, `docker`, `jq` and `python3` with PyYAML.
 
 ```bash
 # the nightly size, about five minutes on a 28 core box
-bash hack/kwok-scale-run.sh --nodes 200 --pods 1000
+bash scripts/kwok-scale-run.sh --nodes 200 --pods 1000
 
 # a fast shape check
-bash hack/kwok-scale-run.sh --nodes 20 --pods 40 --observe-seconds 10
+bash scripts/kwok-scale-run.sh --nodes 20 --pods 40 --observe-seconds 10
 
 # leave the cluster up to poke at it
-bash hack/kwok-scale-run.sh --nodes 50 --pods 0 --keep
+bash scripts/kwok-scale-run.sh --nodes 50 --pods 0 --keep
 
-bash hack/kwok-scale-run.sh --help
+bash scripts/kwok-scale-run.sh --help
 ```
 
 The cluster is deleted on the way out, including when the run fails, unless

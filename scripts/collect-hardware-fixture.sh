@@ -1,6 +1,6 @@
 #!/bin/sh
 # collect-hardware-fixture.sh: capture one machine into the Joulie hardware
-# fixture corpus (testdata/hardware/<machine>/).
+# fixture corpus (cmd/agent/testdata/hardware/<machine>/).
 #
 # The Joulie agent reads hardware only through files and command output, so a
 # faithful copy of those inputs replays the machine in a unit test. This script
@@ -51,7 +51,7 @@ Options:
 
 Way 1: on the node itself
 
-  sudo sh hack/collect-hardware-fixture.sh --name my-machine --out /tmp/fixtures
+  sudo sh scripts/collect-hardware-fixture.sh --name my-machine --out /tmp/fixtures
   # then copy /tmp/fixtures/my-machine.tar off the node
 
 Way 2: through the cluster, against the agent DaemonSet
@@ -65,7 +65,7 @@ script in, and pull the tar back out:
   POD=$(kubectl -n "$NS" get pod -l app.kubernetes.io/name=joulie-agent \
         --field-selector "spec.nodeName=$NODE" -o jsonpath='{.items[0].metadata.name}')
   kubectl -n "$NS" exec -i "$POD" -- sh -s -- --name "$NODE" --out /tmp/fx \
-        < hack/collect-hardware-fixture.sh
+        < scripts/collect-hardware-fixture.sh
   kubectl -n "$NS" cp "$NS/$POD:/tmp/fx/$NODE.tar" "./$NODE.tar"
 
 The stock agent image is gcr.io/distroless/static, which has no shell, so that
@@ -77,10 +77,10 @@ debug container on the same node instead, which sees the same host files:
 
 Then, back in the repository:
 
-  tar -xf <node>.tar -C testdata/hardware/
+  tar -xf <node>.tar -C cmd/agent/testdata/hardware/
   # review every file, complete machine.yaml, then
   go test ./cmd/agent/ -run Corpus -update
-  git add testdata/hardware/<machine>
+  git add cmd/agent/testdata/hardware/<machine>
 EOF
 }
 
