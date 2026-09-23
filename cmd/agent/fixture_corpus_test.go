@@ -431,7 +431,11 @@ func corpusMachines(t *testing.T) []string {
 	}
 	out := []string{}
 	for _, e := range entries {
-		if e.IsDir() {
+		// A directory whose name starts with an underscore is not a machine:
+		// _template is the contributor's starting point and is full of
+		// placeholders. corpus_validate_test.go skips them too, and
+		// TestCorpusListingsSkipUnderscoreDirectories asserts both do.
+		if e.IsDir() && !strings.HasPrefix(e.Name(), "_") {
 			out = append(out, e.Name())
 		}
 	}

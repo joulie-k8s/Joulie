@@ -41,6 +41,47 @@ Useful targets:
 - `make build-push-all TAG=<tag>` (agent + controller manager + simulator)
 - `make test-examples` (YAML dry-run validation)
 
+## Contributing a hardware capture
+
+The agent reads hardware only through files and command output, so a copy of
+those inputs replays a machine in a unit test with no hardware and no cluster.
+`testdata/hardware/` is a corpus of captured machines, and every one of them is
+replayed on every `go test ./...`.
+
+The corpus needs machines that maintainers do not own. If you have bare metal, a
+GPU node or an unusual virtual machine, a capture takes a few minutes and turns
+your machine into a permanent regression test:
+
+```bash
+sudo sh hack/collect-hardware-fixture.sh --name <machine> --out /tmp/fixtures
+tar -xf /tmp/fixtures/<machine>.tar -C testdata/hardware/
+# review every file, complete machine.yaml, then
+go test ./cmd/agent/ -run Corpus -update
+go test ./cmd/agent/...
+```
+
+Read [`testdata/hardware/README.md`](./testdata/hardware/README.md) before you
+start. It has the full steps, a copyable template in
+`testdata/hardware/_template/`, and the rules about what is never accepted.
+
+Two of those rules matter before you capture anything:
+
+- **Captures are published as part of this repository**, permanently and in
+  every fork. Nothing identifying may be in one: no hostname, MAC address, IP
+  address, UUID, serial number, asset tag, username or cloud instance id.
+  `cmd/agent/corpus_validate_test.go` fails the build on any of those, naming
+  the file and the line, but it is a backstop and not a substitute for reading
+  the files yourself.
+- **`expected.json` is generated, never hand edited.** If it looks wrong, the
+  fixture or the agent is wrong; say so in the pull request.
+
+Open the pull request with the fixture checklist by appending
+`?template=hardware-fixture.md` to the URL:
+
+```
+https://github.com/joulie-k8s/Joulie/compare/main...<your-branch>?template=hardware-fixture.md
+```
+
 ## Documentation changes
 
 Docs live under `website/` (Hugo + Docsy).

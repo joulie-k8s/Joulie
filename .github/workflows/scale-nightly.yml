@@ -1,0 +1,90 @@
+name: scale-nightly
+
+# Nightly only, never on a pull request or a push. The run builds images,
+# creates a kind cluster and registers hundreds of fake KWOK nodes: minutes of
+# work that would say nothing useful about a one line change, and that would
+# turn red for reasons unrelated to the diff. There is deliberately no
+# pull_request or push trigger here.
+on:
+  schedule:
+    # 02:37 UTC: after the European evening and before the US morning, and off
+    # the hour so the job does not queue behind every other cron on GitHub.
+    - cron: "37 2 * * *"
+  workflow_dispatch:
+    inputs:
+      nodes:
+        description: "Fake KWOK nodes to register"
+        required: false
+        default: "200"
+      pods:
+        description: "Pods to spread over the fake nodes (0 for none)"
+        required: false
+        default: "1000"
+      max_seconds:
+        description: "Fail if the twins take longer than this many seconds"
+        required: false
+        default: "60"
+      max_rss_mb:
+        description: "Fail if the controller manager peak RSS exceeds this many MiB"
+        required: false
+        default: "128"
+
+permissions:
+  contents: read
+
+# One nightly at a time. A queued run would fight the running one for Docker
+# and for the kind cluster name.
+concurrency:
+  group: scale-nightly
+  cancel-in-progress: false
+
+jobs:
+  scale:
+    runs-on: ubuntu-latest
+    # The run creates a cluster, builds two images, registers the nodes and
+    # then observes for a steady-state window. 90 minutes leaves room for a
+    # slow runner without letting a hung wait loop burn a whole day.
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Install kind
+        run: |
+          curl -sSLo /usr/local/bin/kind \
+            https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
+          chmod +x /usr/local/bin/kind
+          kind version
+
+      - name: Install PyYAML
+        run: python3 -c "import yaml" || pip install --user pyyaml
+
+      - name: Run the KWOK scale run
+        run: |
+          bash hack/kwok-scale-run.sh \
+            --nodes "${NODES}" \
+            --pods "${PODS}" \
+            --max-seconds "${MAX_SECONDS}" \
+            --max-rss-mb "${MAX_RSS_MB}" \
+            --out-dir "${GITHUB_WORKSPACE}/scale-run-out"
+        env:
+          NODES: ${{ inputs.nodes || '200' }}
+          PODS: ${{ inputs.pods || '1000' }}
+          MAX_SECONDS: ${{ inputs.max_seconds || '60' }}
+          MAX_RSS_MB: ${{ inputs.max_rss_mb || '128' }}
+
+      # Uploaded whatever the outcome: a failed run is exactly when the summary
+      # and the controller manager log are worth reading.
+      - name: Upload the scale summary and the controller manager log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale-nightly-${{ github.run_id }}
+          path: |
+            scale-run-out/summary.json
+            scale-run-out/controller-manager.log
+          if-no-files-found: warn
+          retention-days: 30

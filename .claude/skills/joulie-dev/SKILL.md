@@ -107,7 +107,9 @@ Every change carries a claim: something now behaves differently. The test worth 
 
 ## Testing without hardware
 
-The agent reads files and command output, nothing else, so a captured tree is a faithful replay. `testdata/hardware/<machine>/` holds captured machines (powercap tree, cpuinfo, GPU query output, node labels, a golden `NodeHardware` status); `hack/collect-hardware-fixture.sh` captures a new one from a node or from inside the agent container, and the corpus test regenerates its goldens with `-update`. For a one-off case, point `dvfs.PowercapRoot` and `procCPUInfoPath` at a temporary tree and feed GPU output through the fake command runner (`cmd/agent/main_test.go`: `raplFixture`, `withProcCPUInfo`, `fakeCommandRunner`). Simulate a zone that rejects writes by making its limit file a directory. Adopters and colleagues can run the capture script, so a machine you do not own can still become a test.
+The agent reads files and command output, nothing else, so a captured tree is a faithful replay. `testdata/hardware/<machine>/` holds captured machines (powercap tree, cpuinfo, GPU query output, node labels, a golden `NodeHardware` status); `hack/collect-hardware-fixture.sh` captures a new one from a node or from inside the agent container, and the corpus test regenerates its goldens with `-update`. For a one-off case, point `dvfs.PowercapRoot` and `procCPUInfoPath` at a temporary tree and feed GPU output through the fake command runner (`cmd/agent/main_test.go`: `raplFixture`, `withProcCPUInfo`, `fakeCommandRunner`). Simulate a zone that rejects writes by making its limit file a directory.
+
+A machine you do not own can still become a test: adopters and colleagues run the capture script and open a pull request. `testdata/hardware/_template/` is what they copy, `testdata/hardware/README.md` is the contributor's page, and a validation test checks every capture on every run: required files, a complete `machine.yaml`, parsable inputs, and no identifying data (the corpus is published, so a hostname, MAC, IP, UUID or serial fails the build with the file, the line and the fix). Reviewing a capture means reading it, then regenerating the golden with `-update`; never hand edit `expected.json`.
 
 | Layer | Command | Proves |
 |---|---|---|
@@ -116,7 +118,9 @@ The agent reads files and command output, nothing else, so a captured tree is a 
 | envtest | `make test-envtest` | a real API server accepts what components write and enforces field ownership |
 | chart | `hack/verify-chart-renders.sh` | every values combination renders, one workload per component, the legacy key renders identically |
 | integration | `cd ci && dagger call integration --source=..` (2-node k3s, HTTP telemetry mock) | install, labels, draining, twin writes, scheduler filter and score |
-| scale | `experiments/*` on KWOK | policy behaviour at hundreds of nodes, not in CI |
+| scale | `hack/kwok-scale-run.sh` nightly, `experiments/*` by hand | reconcile time, controller manager memory and missed deadlines at hundreds of fake nodes; never on a pull request |
+
+Two numbers to compare against when you touch the reconcile path or the cache: 200 nodes with 1000 pods reach a written twin in under 20 seconds, and the controller manager peaks around 25 MiB with the pod transform in place. The nightly fails above 60 seconds or 128 MiB, so a change that drops the transform or adds a per node round trip shows up as a red nightly rather than as an adopter's bill.
 
 `make ci-local` runs what a pull request runs. The Dagger integration job is the only one gated on paths (`ci/`, `cmd/`, `charts/`, `config/`, `simulator/`, `go.mod`), so a change that touches only docs, `pkg/` or `testdata/` never reaches it.
 

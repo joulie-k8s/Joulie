@@ -1,0 +1,88 @@
+# machine.yaml: the hand written half of a hardware capture.
+#
+# Everything else in this directory is copied off the machine by
+# hack/collect-hardware-fixture.sh. This file is the part only you can write,
+# because only you know what the machine is and what the kubelet says about it.
+#
+# Copy this directory, then replace every value below. The capture script also
+# writes a skeleton of this file with the counts it could read; either start
+# from that skeleton or from this template, but fill in the same keys.
+#
+# Keys marked REQUIRED must be present and non empty. A key marked OPTIONAL may
+# be absent, but when present it must be well formed. No other top level key is
+# accepted: cmd/agent/corpus_validate_test.go rejects anything it does not know,
+# so a typo cannot be silently ignored.
+
+# REQUIRED. One paragraph: what kind of machine this is, and what it proves that
+# the machines already in the corpus do not. "Another Xeon" is not a reason to
+# add a fixture; "the only machine where the BIOS reports a zero minimum power
+# limit" is. Write it for the person who will one day wonder whether they may
+# delete this directory.
+description: >-
+  TODO one paragraph. What the machine is (vendor, generation, sockets, cores,
+  GPU, kernel) and which discovery path it exercises that no other corpus
+  machine does.
+
+# REQUIRED. Where the dump came from and who reviewed it before it was
+# published. Name the capture route (the script on the node, the script in a
+# debug pod) and the human who read every file. If the machine is not yours,
+# say whose it is and that they agreed to publish it.
+source: >-
+  TODO where this dump came from, how it was captured, and who read every file
+  of it before it was proposed for the corpus.
+
+# REQUIRED. When the capture was taken, as an RFC3339 timestamp or a plain
+# YYYY-MM-DD date. The capture script fills this in for you. It matters because
+# a firmware or driver update changes what the machine reports, and a golden
+# regenerated years later has to be readable against the right vintage.
+capturedAt: "2026-01-01T00:00:00Z"
+
+# REQUIRED. What the kubelet reports for this node, not what the capture host
+# has. The corpus test builds a fake Node object from these values:
+# cpuCoresFromNode reads the CPU capacity and allocatableGPUCount reads the GPU
+# resources, so both of them feed the golden directly. Read them with
+#
+#   kubectl get node <node> -o jsonpath='{.status.allocatable}'
+#
+# and copy the quantities verbatim. They are strings, quoted, in Kubernetes
+# quantity notation.
+allocatable:
+  # REQUIRED. Logical CPUs the kubelet reports, for example "192".
+  cpu: "TODO"
+  # REQUIRED. Memory as the kubelet reports it, for example "394993664Ki".
+  memory: "TODO"
+  # REQUIRED as a key, may be an empty map. One entry per GPU resource name the
+  # node advertises, for example:
+  #
+  #   gpu:
+  #     nvidia.com/gpu: "8"
+  #
+  # Use {} when the node has no GPU resource, including when it has a GPU that
+  # no device plugin advertises.
+  gpu: {}
+
+# REQUIRED as a key, may be an empty list. Zone directories under powercap/
+# whose constraint_0_power_limit_uw refuses a write on the real machine, most
+# often a disabled DRAM zone. Every name here must be a directory that exists in
+# this capture and that has a constraint_0_power_limit_uw file.
+#
+# TestHardwareFixtureCorpusRAPLWrites replays each one by replacing its limit
+# file with a directory in a temporary copy of the tree, then asserts that
+# applyRAPLPackageCap wrote every package zone it should have and reported
+# exactly the failures it should have. For a machine whose only rejecting zones
+# are DRAM sub-zones the expected outcome is that nothing changes at all, which
+# is the whole point: zones are selected by their name file, never by a
+# directory pattern.
+#
+# If you are not sure, try it on the machine and see:
+#
+#   echo 100000000 | sudo tee /sys/class/powercap/intel-rapl:0:0/constraint_0_power_limit_uw
+#
+# A write error means the zone belongs in this list. Restore the original value
+# afterwards.
+writeRejectingZones: []
+
+# OPTIONAL. Free text notes that do not belong in description, for example a
+# firmware quirk you had to work around while capturing. Leave it out if you
+# have nothing to say.
+# notes: ""
