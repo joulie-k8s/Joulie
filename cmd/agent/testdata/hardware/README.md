@@ -150,6 +150,12 @@ their `name` file, never by a directory pattern.
 
 ## Adding a machine
 
+All you need is the node and a shell. A Go checkout is optional: it buys you
+step 5, and a maintainer can do that step for you after your pull request is
+open. Nothing registers a machine anywhere. The tests list the corpus directory
+and run whatever is in it, so a capture is added by adding a directory and
+removed by deleting one.
+
 1. **Capture it.** On the node, or in a debug pod that sees the host `/sys`:
 
    ```sh
@@ -177,16 +183,22 @@ their `name` file, never by a directory pattern.
    prose a stranger has to be able to act on; the validation test rejects a
    `TODO` left in either.
 
-5. **Generate the golden and read the diff:**
+5. **Optional, and only if you have Go: pin the output.**
 
    ```sh
    go test ./cmd/agent/ -run Corpus -update
-   git diff cmd/agent/testdata/hardware
    ```
 
-   That diff is the agent's own conclusion about your machine. If a number in it
-   is wrong, the fixture or the agent is wrong; say so in the pull request
-   rather than editing the golden.
+   Then read what changed under the corpus directory. That is the agent's own
+   conclusion about your machine. If a number in it is wrong, the fixture or the
+   agent is wrong; say so in the pull request rather than editing the golden.
+
+   Skipping this step does not hold the machine back. Without `expected.json`
+   the corpus test still replays your capture through the real discovery path on
+   every `go test ./cmd/agent/`, which is the half that catches a parser falling
+   over on your hardware, and it reports the machine as skipped rather than
+   failing the build. The golden adds the other half, that the output stops
+   changing.
 
 6. **Run the validation test:**
 

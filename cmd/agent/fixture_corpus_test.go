@@ -12,12 +12,19 @@ package main
 //
 //	go test ./cmd/agent/ -run Corpus -update
 //
-// expected.json is generated, never hand edited. A bug report from an adopter
-// becomes a test by adding their dump here and running that command.
+// expected.json is generated, never hand edited, and optional: a machine
+// without one still replays through discovery, it is simply not pinned. That
+// keeps a Go toolchain from being the price of contributing hardware.
+//
+// Nothing here names a machine. The corpus is whatever directories live under
+// the corpus root, which is JOULIE_HARDWARE_CORPUS when set and this package's
+// testdata/hardware otherwise, so a capture is added by dropping a directory in
+// and a corpus can live in a repository of its own.
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -112,7 +119,7 @@ func TestHardwareFixtureCorpus(t *testing.T) {
 
 	for _, machine := range corpusMachines(t) {
 		t.Run(machine, func(t *testing.T) {
-			dir := filepath.Join(corpusDir, machine)
+			dir := filepath.Join(corpusRoot(), machine)
 			meta := readCorpusMachine(t, dir)
 			hideHostGPUProbe(t, dir)
 
@@ -131,8 +138,17 @@ func TestHardwareFixtureCorpus(t *testing.T) {
 				return
 			}
 			want, err := os.ReadFile(golden)
+			if errors.Is(err, os.ErrNotExist) {
+				// A machine with no golden is still worth running: it proves
+				// the discovery path survives that hardware. Pinning the
+				// output needs a Go toolchain, and the person who has the
+				// node often does not, so a golden is not the price of
+				// contributing a machine. The skip keeps it visible.
+				t.Skipf("%s has no expected.json, so nothing is pinned. Discovery replayed it and published:\n%s\n"+
+					"Pin it with: go test ./cmd/agent/ -run Corpus -update", machine, got)
+			}
 			if err != nil {
-				t.Fatalf("%v (run: go test ./cmd/agent/ -run Corpus -update)", err)
+				t.Fatal(err)
 			}
 			if string(got) != string(want) {
 				t.Fatalf("NodeHardware status for %s does not match the golden.\ngot:\n%s\nwant:\n%s\n"+
@@ -155,7 +171,7 @@ func TestHardwareFixtureCorpusRAPLWrites(t *testing.T) {
 	const wantPayload = "120000000"
 
 	for _, machine := range corpusMachines(t) {
-		dir := filepath.Join(corpusDir, machine)
+		dir := filepath.Join(corpusRoot(), machine)
 		meta := readCorpusMachine(t, dir)
 		if len(meta.WriteRejectingZones) == 0 {
 			continue
@@ -425,9 +441,10 @@ func corpusPackageZones(t *testing.T, root string) []string {
 
 func corpusMachines(t *testing.T) []string {
 	t.Helper()
-	entries, err := os.ReadDir(corpusDir)
+	root := corpusRoot()
+	entries, err := os.ReadDir(root)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("cannot read the corpus at %s: %v (set %s to point elsewhere)", root, err, corpusRootEnv)
 	}
 	out := []string{}
 	for _, e := range entries {
@@ -440,7 +457,7 @@ func corpusMachines(t *testing.T) []string {
 		}
 	}
 	if len(out) == 0 {
-		t.Fatalf("no machines in %s", corpusDir)
+		t.Fatalf("no machines in %s", root)
 	}
 	return out
 }

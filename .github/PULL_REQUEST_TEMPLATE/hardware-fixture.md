@@ -55,13 +55,20 @@ bug report, link the issue.
       it, `capturedAt` is the capture date, `allocatable` is what the **kubelet**
       reports, and `writeRejectingZones` lists every zone whose
       `constraint_0_power_limit_uw` refuses a write (or is `[]`).
-- [ ] `expected.json` was generated with
-      `go test ./cmd/agent/ -run Corpus -update` and **not hand edited**. I read
-      the resulting diff and it describes my machine correctly.
-- [ ] `go test ./cmd/agent/...` passes on my checkout.
-- [ ] `go test ./cmd/agent/ -run TestHardwareCorpusIsValid -v` passes.
 - [ ] I am entitled to publish this capture, and I understand it becomes a
       permanent, public part of this repository.
+
+The rest of the list is only for contributors who have a Go checkout. If you
+have the node but not the toolchain, skip it and say so: the capture is enough
+to open this pull request, and a maintainer will run these for you.
+
+- [ ] `expected.json` was generated with
+      `go test ./cmd/agent/ -run Corpus -update` and **not hand edited**. I read
+      the resulting diff and it describes my machine correctly. (Optional. A
+      machine without a golden still replays through discovery; the test reports
+      it as skipped rather than failing.)
+- [ ] `go test ./cmd/agent/...` passes on my checkout.
+- [ ] `go test ./cmd/agent/ -run TestHardwareCorpusIsValid -v` passes.
 
 ## Anything surprising in the golden
 
