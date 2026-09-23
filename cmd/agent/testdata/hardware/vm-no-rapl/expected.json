@@ -1,0 +1,57 @@
+{
+  "capabilities": {
+    "cpuControl": false,
+    "cpuTelemetry": true,
+    "gpuControl": true,
+    "gpuTelemetry": true
+  },
+  "cpu": {
+    "controlAvailable": false,
+    "coresPerSocket": 1,
+    "driverFamily": "",
+    "model": "",
+    "rawModel": "Intel(R) Xeon(R) Silver 4216 CPU @ 2.10GHz",
+    "sockets": 28,
+    "telemetryAvailable": true,
+    "totalCores": 28,
+    "vendor": "",
+    "warnings": [
+      "cpu model not recognized"
+    ]
+  },
+  "gpu": {
+    "capRangePerGpu": {
+      "defaultWatts": 70,
+      "maxWatts": 70,
+      "minWatts": 60
+    },
+    "controlAvailable": true,
+    "count": 1,
+    "currentCapWatts": 70,
+    "model": "",
+    "present": true,
+    "rawModel": "Tesla T4",
+    "telemetryAvailable": true,
+    "vendor": "nvidia",
+    "warnings": [
+      "gpu model not recognized"
+    ]
+  },
+  "inventoryResolution": {
+    "exactness": {
+      "cpu": "proxy",
+      "gpu": "proxy"
+    },
+    "hardwareCatalogKey": {
+      "cpu": "",
+      "gpu": ""
+    }
+  },
+  "quality": {
+    "overall": "heuristic",
+    "warnings": [
+      "cpu model not recognized",
+      "gpu model not recognized"
+    ]
+  }
+}

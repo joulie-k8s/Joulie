@@ -1,0 +1,53 @@
+{
+  "capabilities": {
+    "cpuControl": true,
+    "cpuTelemetry": true,
+    "gpuControl": false,
+    "gpuTelemetry": false
+  },
+  "cpu": {
+    "capRange": {
+      "maxWattsPerSocket": 165,
+      "minWattsPerSocket": 0,
+      "type": "package"
+    },
+    "controlAvailable": true,
+    "coresPerSocket": 48,
+    "driverFamily": "",
+    "model": "",
+    "rawModel": "Intel(R) Xeon(R) Gold 6252 CPU @ 2.10GHz",
+    "sockets": 4,
+    "telemetryAvailable": true,
+    "totalCores": 192,
+    "vendor": "GenuineIntel",
+    "warnings": [
+      "cpu model not recognized"
+    ]
+  },
+  "gpu": {
+    "controlAvailable": false,
+    "count": 0,
+    "currentCapWatts": 0,
+    "model": "",
+    "rawModel": "",
+    "telemetryAvailable": false,
+    "vendor": "none",
+    "warnings": null
+  },
+  "inventoryResolution": {
+    "exactness": {
+      "cpu": "proxy",
+      "gpu": "generic"
+    },
+    "hardwareCatalogKey": {
+      "cpu": "",
+      "gpu": ""
+    }
+  },
+  "quality": {
+    "overall": "heuristic",
+    "warnings": [
+      "cpu model not recognized"
+    ]
+  }
+}

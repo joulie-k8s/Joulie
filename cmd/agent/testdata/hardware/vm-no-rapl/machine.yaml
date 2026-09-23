@@ -1,0 +1,19 @@
+description: >-
+  Virtual machine with one NVIDIA Tesla T4 and no RAPL. The hypervisor exposes
+  every vCPU as its own package, so /proc/cpuinfo reports 28 distinct
+  "physical id" values and the agent reads 28 sockets. That is the machine
+  talking, not a parsing bug, and it is why this fixture is in the corpus: the
+  twin's per-socket arithmetic has to survive it.
+source: >-
+  Captured on the Joulie development box with
+  scripts/collect-hardware-fixture.sh, reviewed by Matteo Bunino. Not a cluster
+  node, so node-labels.json is empty.
+capturedAt: "2026-09-23T07:26:32Z"
+allocatable:
+  cpu: "28"
+  memory: "168694232Ki"
+  gpu:
+    nvidia.com/gpu: "1"
+# No powercap tree at all, so there is no zone whose limit file could reject a
+# write. applyRAPLPackageCap has nothing to write here and reports so.
+writeRejectingZones: []

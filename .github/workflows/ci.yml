@@ -1,8 +1,10 @@
 name: ci
 
+# Every pull request, whatever its base branch. A PR stacked on another feature
+# branch used to get no unit tests and no helm lint, which is how a chart that
+# rendered a template twice reached main once.
 on:
   pull_request:
-    branches: [main]
   push:
     branches: [main]
 
@@ -38,8 +40,28 @@ jobs:
           helm lint charts/joulie
           helm lint charts/joulie-simulator
 
-      - name: Render charts
-        run: |
-          helm template joulie charts/joulie -f values/joulie.yaml >/dev/null
-          helm template joulie-simulator charts/joulie-simulator >/dev/null
+      # Renders the chart under the value combinations that have broken before
+      # (defaults, the deprecated operator: key, leader election, agent pool
+      # mode) and asserts the workload objects. Run it locally with the same
+      # command.
+      - name: Verify chart renders
+        run: bash scripts/verify-chart-renders.sh --verbose
 
+  # envtest runs the Go tests behind the "envtest" build tag against a real
+  # kube-apiserver and etcd, which setup-envtest downloads at test time. It is
+  # a separate job so the fast "test" job above still reports in a minute and
+  # is never held up by the control-plane download.
+  envtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run envtest suite
+        run: make test-envtest

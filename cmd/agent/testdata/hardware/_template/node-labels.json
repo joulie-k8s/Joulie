@@ -1,0 +1,12 @@
+{
+  "PLACEHOLDER": "Replace this whole file with the node's labels, then delete this key. JSON has no comments, so the explanation lives in testdata/hardware/_template/README.md. The file must stay a flat object whose values are all strings. {} is valid, and is what the capture script writes when it cannot reach the API server.",
+  "beta.kubernetes.io/arch": "amd64",
+  "beta.kubernetes.io/os": "linux",
+  "feature.node.kubernetes.io/cpu-model.family": "6",
+  "feature.node.kubernetes.io/cpu-model.id": "85",
+  "feature.node.kubernetes.io/cpu-model.vendor_id": "Intel",
+  "kubernetes.io/arch": "amd64",
+  "kubernetes.io/hostname": "REDACTED-HOST",
+  "kubernetes.io/os": "linux",
+  "node-role.kubernetes.io/worker": ""
+}

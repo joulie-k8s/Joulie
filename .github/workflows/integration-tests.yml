@@ -5,6 +5,8 @@ on:
     paths:
       - "ci/**"
       - "cmd/**"
+      - "pkg/**"
+      - "api/**"
       - "charts/**"
       - "config/**"
       - "simulator/**"
@@ -16,6 +18,8 @@ on:
     paths:
       - "ci/**"
       - "cmd/**"
+      - "pkg/**"
+      - "api/**"
       - "charts/**"
       - "config/**"
       - "simulator/**"

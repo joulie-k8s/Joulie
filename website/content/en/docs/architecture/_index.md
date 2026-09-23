@@ -56,7 +56,7 @@ The controller manager contains two reconcile-loop controllers and one backgroun
 
 **Reconcile-loop controllers** (run each tick):
 
-- **Twin controller**: ingests per-node telemetry into `NodeTwin.status`. Runs the `CoolingModel` and PSU stress computations. Incorporates facility metrics (ambient temperature, PUE) when available. When nodes carry `joulie.io/rack` or `joulie.io/cooling-zone` labels, the twin computes PSU stress per-rack and cooling stress with per-zone ambient temperature.
+- **Twin controller**: ingests per-node telemetry into `NodeTwin.status`. Runs the cooling stress and PSU stress computations. Incorporates facility metrics (ambient temperature, PUE) when available. When nodes carry `joulie.io/rack` or `joulie.io/cooling-zone` labels, the twin computes PSU stress per-rack and cooling stress with per-zone ambient temperature.
 - **Policy controller**: reads `NodeTwin.status` + pod demand signals, runs the policy algorithm (`pkg/controller/policy/`), writes `NodeTwin.spec` and the `joulie.io/power-profile` node label. The state machine (`pkg/controller/fsm/`) enforces downgrade guards: nodes cannot transition from performance to eco while performance-sensitive pods are still running. Transition state is tracked via `NodeTwin.status.schedulableClass`.
 
 **Background controllers** (run on independent intervals):
@@ -92,7 +92,7 @@ The `pkg/controller/twin` package implements an O(1) parametric model computing:
 - **Cooling stress** (0-100): predicted % of cooling capacity in use. High means risk of thermal throttling.
 - **PSU stress** (0-100): predicted % of PDU/rack power capacity in use. High means risk of power brownout.
 
-The `CoolingModel` interface is pluggable. Default: `LinearCoolingModel` (algebraic proxy). Future: openModelica reduced-order thermal simulation via the same interface.
+All three start from a measured node power reading supplied by the controller manager. Cooling stress is a single closed-form expression in `computeCoolingStress`: measured power over node TDP, scaled by an ambient temperature multiplier. There is no cooling model interface and no alternative implementation to select.
 
 ## Read in this order
 

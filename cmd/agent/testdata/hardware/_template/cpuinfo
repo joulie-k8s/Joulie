@@ -1,0 +1,74 @@
+# PLACEHOLDER. Delete this file and put the real /proc/cpuinfo here, exactly as
+# hack/collect-hardware-fixture.sh copied it. Do not hand write it and do not
+# reformat it: the point of the corpus is that the parser meets bytes a machine
+# actually produced.
+#
+# readProcCPUInfo in cmd/agent/main.go reads two keys and nothing else:
+#
+#   model name    the first one wins, and it is what the hardware catalog is
+#                 matched against, so a single character matters
+#   physical id   the number of distinct values is the socket count
+#
+# Every other line is carried along untouched because a future parser may want
+# it. You may trim the file to a few processor blocks per socket if the full one
+# is enormous, as testdata/hardware/xeon-4socket-no-labels does, but then say so
+# in machine.yaml under source, and keep one physical id line per processor
+# block: the validation test checks that the two counts agree.
+#
+# Nothing in here may identify the machine. cpuinfo is usually clean on x86, but
+# on ARM it carries a Serial line, and that is exactly what the redaction in the
+# capture script rewrites.
+processor	: 0
+vendor_id	: PlaceholderVendor
+cpu family	: 6
+model		: 85
+model name	: Placeholder CPU Model 0000 @ 0.00GHz
+stepping	: 7
+microcode	: 0x0
+cpu MHz		: 2100.000
+cache size	: 36608 KB
+physical id	: 0
+siblings	: 2
+core id		: 0
+cpu cores	: 1
+apicid		: 0
+initial apicid	: 0
+fpu		: yes
+fpu_exception	: yes
+cpuid level	: 22
+wp		: yes
+flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat
+bugs		: spectre_v1 spectre_v2 spec_store_bypass
+bogomips	: 4200.00
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 46 bits physical, 48 bits virtual
+power management:
+
+processor	: 1
+vendor_id	: PlaceholderVendor
+cpu family	: 6
+model		: 85
+model name	: Placeholder CPU Model 0000 @ 0.00GHz
+stepping	: 7
+microcode	: 0x0
+cpu MHz		: 2100.000
+cache size	: 36608 KB
+physical id	: 1
+siblings	: 2
+core id		: 0
+cpu cores	: 1
+apicid		: 2
+initial apicid	: 2
+fpu		: yes
+fpu_exception	: yes
+cpuid level	: 22
+wp		: yes
+flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat
+bugs		: spectre_v1 spectre_v2 spec_store_bypass
+bogomips	: 4200.00
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 46 bits physical, 48 bits virtual
+power management:
+
