@@ -1,15 +1,16 @@
 name: scale-nightly
 
-# Nightly only, never on a pull request or a push. The run builds images,
+# Weekly only, never on a pull request or a push. The run builds images,
 # creates a kind cluster and registers hundreds of fake KWOK nodes: minutes of
 # work that would say nothing useful about a one line change, and that would
 # turn red for reasons unrelated to the diff. There is deliberately no
 # pull_request or push trigger here.
 on:
   schedule:
-    # 02:37 UTC: after the European evening and before the US morning, and off
-    # the hour so the job does not queue behind every other cron on GitHub.
-    - cron: "37 2 * * *"
+    # Mondays at 02:37 UTC: weekly to keep the compute small, early in the week
+    # so a regression merged since the last run is seen before the next one
+    # lands, and off the hour so the job does not queue behind every other cron.
+    - cron: "37 2 * * 1"
   workflow_dispatch:
     inputs:
       nodes:

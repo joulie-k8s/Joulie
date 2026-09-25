@@ -141,7 +141,7 @@ and pushes to `main` that touch `ci/`, `cmd/`, `charts/`, `config/`,
 
 The bullet above is honest: the Dagger suite has two nodes, so nothing in CI
 says what happens at hundreds. `scripts/kwok-scale-run.sh` does, and
-`.github/workflows/scale-nightly.yml` runs it every night at 02:37 UTC. It has
+`.github/workflows/scale-nightly.yml` runs it every Monday at 02:37 UTC. It has
 no `pull_request` and no `push` trigger on purpose: it builds two images and
 creates a kind cluster, minutes of work that would say nothing about a one line
 change and would fail for reasons unrelated to the diff. `workflow_dispatch`
