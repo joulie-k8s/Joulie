@@ -121,7 +121,7 @@ The corpus is modular on purpose: nothing names a machine, the tests list the co
 | envtest | `make test-envtest` | a real API server accepts what components write and enforces field ownership |
 | chart | `scripts/verify-chart-renders.sh` | every values combination renders, one workload per component, the legacy key renders identically |
 | integration | `cd ci && dagger call integration --source=..` (2-node k3s, HTTP telemetry mock) | install, labels, draining, twin writes, scheduler filter and score |
-| scale | `scripts/kwok-scale-run.sh` nightly, `experiments/*` by hand | reconcile time, controller manager memory and missed deadlines at hundreds of fake nodes; never on a pull request |
+| scale | `scripts/kwok-scale-run.sh` weekly (`scale-nightly.yml`), `experiments/*` by hand | reconcile time, controller manager memory and missed deadlines at hundreds of fake nodes; never on a pull request |
 
 Two numbers to compare against when you touch the reconcile path or the cache: 200 nodes with 1000 pods reach a written twin in under 20 seconds, and the controller manager peaks around 25 MiB with the pod transform in place. The nightly fails above 60 seconds or 128 MiB, so a change that drops the transform or adds a per node round trip shows up as a red nightly rather than as an adopter's bill.
 
