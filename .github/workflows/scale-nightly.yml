@@ -52,12 +52,16 @@ jobs:
       - name: Setup Helm
         uses: azure/setup-helm@v4
 
+      # Into a directory the runner user owns: the image ships a root owned
+      # /usr/local/bin/kind that curl can overwrite but chmod cannot touch.
       - name: Install kind
         run: |
-          curl -sSLo /usr/local/bin/kind \
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl -fsSLo "${RUNNER_TEMP}/bin/kind" \
             https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
-          chmod +x /usr/local/bin/kind
-          kind version
+          chmod +x "${RUNNER_TEMP}/bin/kind"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+          "${RUNNER_TEMP}/bin/kind" version
 
       - name: Install PyYAML
         run: python3 -c "import yaml" || pip install --user pyyaml
