@@ -18,7 +18,7 @@ spec:
       serviceAccountName: joulie-simulator
       containers:
         - name: simulator
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             {{- range $key, $val := .Values.env }}

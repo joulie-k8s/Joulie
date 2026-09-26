@@ -1,6 +1,8 @@
 image:
   repository: registry.cern.ch/joulie/joulie-simulator
-  tag: latest
+  # Empty pulls the chart's appVersion: the release's own version for a chart
+  # from the registry, latest for a chart from a checkout.
+  tag: ""
   pullPolicy: IfNotPresent
 
 replicas: 1

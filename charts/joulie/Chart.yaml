@@ -3,5 +3,5 @@ name: joulie
 description: Lean node-level power orchestrator (controller manager + agent + scheduler extender)
 type: application
 version: 0.1.0
-appVersion: "0.1.0"
+appVersion: "latest"
 

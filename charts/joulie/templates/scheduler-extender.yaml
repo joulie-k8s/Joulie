@@ -47,7 +47,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: extender
-          image: "{{ .Values.schedulerExtender.image.repository }}:{{ .Values.schedulerExtender.image.tag }}"
+          image: "{{ .Values.schedulerExtender.image.repository }}:{{ .Values.schedulerExtender.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.schedulerExtender.image.pullPolicy | default "IfNotPresent" }}
           ports:
             - name: http
