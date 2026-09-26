@@ -64,6 +64,7 @@ The per-field table lives in `architecture/_index.md` ("Who writes what"). What 
 | A missing CRD at startup is retried, not fatal | install order is not guaranteed | agent `startReader`, scheduler `startReaderInBackground` |
 | Renamed or deprecated names get one release of aliases | adopters configure env vars, metrics and Helm keys | `cmd/controller-manager/deprecated.go` and its tests |
 | The README's repository layout matches the tree | it is the first thing a newcomer reads, and prose that names files drifts without anyone noticing | `TestREADMELayoutPathsExist`, `TestREADMELayoutListsEveryRootDirectory` |
+| A pre-release never moves `:latest`; a released chart pulls the images of its own version | `v0.2.0-rc0` moved every `:latest`, and the chart defaulted to `latest`, so default installs ran a release candidate | `TestReleaseVersionMovesLatestOnlyForStableReleases`, `TestReleaseWorkflowTagsLatestOnlyForStableReleases`, the "packaged charts pull their appVersion" case in `scripts/verify-chart-renders.sh` |
 | A confirmed bug ships with a test that fails on the old code | the only proof that the cause was the cause | project rule |
 
 ## Checklists
