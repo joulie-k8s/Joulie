@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Getting Started on Joulie</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-62/docs/getting-started/</link><description>Recent content in Getting Started on Joulie</description><generator>Hugo</generator><language>en-us</language><atom:link href="https://joulie-k8s.github.io/Joulie/previews/pr-62/docs/getting-started/index.xml" rel="self" type="application/rss+xml"/><item><title>Core Concepts</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-62/docs/getting-started/core-concepts/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-62/docs/getting-started/core-concepts/</guid><description>&lt;p&gt;Before installing Joulie, understand the control model.&lt;/p&gt;
+&lt;h2 id="what-joulie-is"&gt;What Joulie is&lt;/h2&gt;
+&lt;p&gt;Joulie is a Kubernetes-native energy management system that uses &lt;strong&gt;per-node digital twins&lt;/strong&gt; to optimize data center power consumption.&lt;/p&gt;
+&lt;p&gt;It continuously ingests telemetry from every node (CPU/GPU power draw via RAPL and NVML/DCGM, per-pod resource utilization via cAdvisor, and optional energy counters from &lt;a href="https://github.com/sustainable-computing-io/kepler"&gt;Kepler&lt;/a&gt;) to maintain an up-to-date model of each node&amp;rsquo;s thermal and power state.&lt;/p&gt;
+&lt;p&gt;These per-node digital twins drive two outcomes:&lt;/p&gt;</description></item><item><title>Quickstart</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-62/docs/getting-started/quickstart/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-62/docs/getting-started/quickstart/</guid><description>&lt;p&gt;This page is the fastest path to run Joulie.
+For conceptual context first, read &lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-62/docs/getting-started/core-concepts/"&gt;Core Concepts&lt;/a&gt;.&lt;/p&gt;
+&lt;h2 id="prerequisites"&gt;Prerequisites&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;Kubernetes cluster with worker nodes&lt;/li&gt;
+&lt;li&gt;Node Feature Discovery (NFD) deployed&lt;/li&gt;
+&lt;li&gt;Optional for real enforcement: nodes exposing writable power interfaces
+&lt;ul&gt;
+&lt;li&gt;RAPL power limit files, or&lt;/li&gt;
+&lt;li&gt;cpufreq sysfs interfaces&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="install-from-release-recommended"&gt;Install from release (recommended)&lt;/h2&gt;
+&lt;p&gt;Install directly from OCI chart release:&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;helm upgrade --install joulie oci://registry.cern.ch/joulie/joulie &lt;span style="color:#ae81ff"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; --version &amp;lt;version&amp;gt; &lt;span style="color:#ae81ff"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; -n joulie-system &lt;span style="color:#ae81ff"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; --create-namespace &lt;span style="color:#ae81ff"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; -f values/joulie.yaml
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Charts, images and the kubectl plugin used to be published under &lt;code&gt;registry.cern.ch/mbunino/joulie&lt;/code&gt;. Every tag published there up to 0.2.0 was copied to &lt;code&gt;registry.cern.ch/joulie&lt;/code&gt; with the same digest, and later releases are published only to &lt;code&gt;registry.cern.ch/joulie&lt;/code&gt;. If your values file sets an &lt;code&gt;image.repository&lt;/code&gt; or you pull &lt;code&gt;latest&lt;/code&gt;, point it at the new path.&lt;/p&gt;</description></item><item><title>Pod Compatibility for Joulie</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-62/docs/getting-started/workload-compatibility/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-62/docs/getting-started/workload-compatibility/</guid><description>&lt;p&gt;Joulie uses a single pod annotation to express workload placement intent:&lt;/p&gt;
+&lt;pre tabindex="0"&gt;&lt;code&gt;joulie.io/workload-class: performance | standard
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;The scheduler extender reads this annotation and steers pods accordingly. No node affinity rules are needed.&lt;/p&gt;
+&lt;h2 id="workload-classes"&gt;Workload classes&lt;/h2&gt;
+&lt;table&gt;
+ &lt;thead&gt;
+ &lt;tr&gt;
+ &lt;th&gt;Class&lt;/th&gt;
+ &lt;th&gt;Behavior&lt;/th&gt;
+ &lt;/tr&gt;
+ &lt;/thead&gt;
+ &lt;tbody&gt;
+ &lt;tr&gt;
+ &lt;td&gt;&lt;code&gt;performance&lt;/code&gt;&lt;/td&gt;
+ &lt;td&gt;Must run on full-power nodes. The extender hard-rejects eco nodes.&lt;/td&gt;
+ &lt;/tr&gt;
+ &lt;tr&gt;
+ &lt;td&gt;&lt;code&gt;standard&lt;/code&gt;&lt;/td&gt;
+ &lt;td&gt;Default. Can run on any node. Adaptive scoring steers toward eco when performance nodes are congested.&lt;/td&gt;
+ &lt;/tr&gt;
+ &lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;If no annotation is present, the extender treats it as &lt;code&gt;standard&lt;/code&gt;.&lt;/p&gt;</description></item><item><title>Agent Runtime Modes</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-62/docs/getting-started/daemonset/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-62/docs/getting-started/daemonset/</guid><description>&lt;p&gt;The agent supports two runtime modes:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;daemonset&lt;/code&gt;: real-hardware mode, one pod per real node.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;pool&lt;/code&gt;: simulation mode, one pod hosts many logical per-node controllers.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Chart templates:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;charts/joulie/templates/agent-daemonset.yaml&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;charts/joulie/templates/agent-statefulset.yaml&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="daemonset-mode-real-hardware"&gt;DaemonSet mode (real hardware)&lt;/h2&gt;
+&lt;h3 id="required-runtime-settings"&gt;Required runtime settings&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;securityContext.privileged: true&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;Host mount:
+&lt;ul&gt;
+&lt;li&gt;host path &lt;code&gt;/sys&lt;/code&gt; -&amp;gt; container path &lt;code&gt;/host-sys&lt;/code&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;Env:
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;NODE_NAME&lt;/code&gt; from &lt;code&gt;spec.nodeName&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;AGENT_MODE=daemonset&lt;/code&gt; (default)&lt;/li&gt;
+&lt;li&gt;optional &lt;code&gt;RECONCILE_INTERVAL&lt;/code&gt; (default &lt;code&gt;20s&lt;/code&gt;)&lt;/li&gt;
+&lt;li&gt;optional &lt;code&gt;SIMULATE_ONLY=true&lt;/code&gt; (skip host writes, log requested actions)&lt;/li&gt;
+&lt;li&gt;optional &lt;code&gt;METRICS_ADDR&lt;/code&gt; (default &lt;code&gt;:8080&lt;/code&gt;)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id="pool-mode-kwok--simulation"&gt;Pool mode (KWOK / simulation)&lt;/h2&gt;
+&lt;p&gt;Pool mode preserves per-node semantics but shards logical node controllers across replicas.&lt;/p&gt;</description></item><item><title>Configuration Reference</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-62/docs/getting-started/05-configuration-reference/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-62/docs/getting-started/05-configuration-reference/</guid><description>&lt;p&gt;Complete reference for all Joulie environment variables. These are set via Helm values or directly in the Deployment/DaemonSet manifests.&lt;/p&gt;
+&lt;p&gt;Defaults listed below are the &lt;strong&gt;code defaults&lt;/strong&gt;. The Helm chart (&lt;code&gt;charts/joulie/values.yaml&lt;/code&gt;) overrides some of them: notably, the controller manager &lt;code&gt;NODE_SELECTOR&lt;/code&gt; defaults to &lt;code&gt;joulie.io/managed=true&lt;/code&gt; in the chart even though the code default is &lt;code&gt;node-role.kubernetes.io/worker&lt;/code&gt;.&lt;/p&gt;
+&lt;h2 id="images"&gt;Images&lt;/h2&gt;
+&lt;p&gt;The chart values &lt;code&gt;agent.image.tag&lt;/code&gt;, &lt;code&gt;controllerManager.image.tag&lt;/code&gt; and &lt;code&gt;schedulerExtender.image.tag&lt;/code&gt; (and &lt;code&gt;image.tag&lt;/code&gt; in the simulator chart) default to empty, which pulls the chart&amp;rsquo;s &lt;code&gt;appVersion&lt;/code&gt;. A chart installed from &lt;code&gt;oci://registry.cern.ch/joulie&lt;/code&gt; carries the version it was released with, so it runs the images of that release. A chart installed from a checkout has &lt;code&gt;appVersion: latest&lt;/code&gt; and runs the newest stable release. Set a tag only to run other images, for example your own build.&lt;/p&gt;</description></item></channel></rss>
