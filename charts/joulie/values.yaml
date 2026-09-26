@@ -4,7 +4,7 @@ fullnameOverride: ""
 agent:
   mode: daemonset
   image:
-    repository: registry.cern.ch/mbunino/joulie/joulie-agent
+    repository: registry.cern.ch/joulie/joulie-agent
     tag: latest
     pullPolicy: IfNotPresent
   hostNetwork: true
@@ -36,7 +36,7 @@ agent:
 controllerManager:
   nodeSelector: {}
   image:
-    repository: registry.cern.ch/mbunino/joulie/joulie-controller-manager
+    repository: registry.cern.ch/joulie/joulie-controller-manager
     tag: latest
     pullPolicy: IfNotPresent
   leaderElection:
@@ -77,7 +77,7 @@ operator: {}
 schedulerExtender:
   enabled: false  # disabled by default; enable when using custom kube-scheduler config
   image:
-    repository: registry.cern.ch/mbunino/joulie/joulie-scheduler
+    repository: registry.cern.ch/joulie/joulie-scheduler
     tag: latest
   port: 9876
   clusterIP: ""  # set a fixed ClusterIP so the scheduler config can use an IP instead of DNS

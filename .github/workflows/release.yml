@@ -41,8 +41,8 @@ jobs:
           build-args: COMPONENT=agent
           push: true
           tags: |
-            registry.cern.ch/mbunino/joulie/joulie-agent:${{ steps.vars.outputs.version }}
-            registry.cern.ch/mbunino/joulie/joulie-agent:latest
+            registry.cern.ch/joulie/joulie-agent:${{ steps.vars.outputs.version }}
+            registry.cern.ch/joulie/joulie-agent:latest
 
       # The joulie-operator tags are a compatibility alias for the image that
       # was renamed to joulie-controller-manager (same build, same digest).
@@ -56,10 +56,10 @@ jobs:
           build-args: COMPONENT=controller-manager
           push: true
           tags: |
-            registry.cern.ch/mbunino/joulie/joulie-controller-manager:${{ steps.vars.outputs.version }}
-            registry.cern.ch/mbunino/joulie/joulie-controller-manager:latest
-            registry.cern.ch/mbunino/joulie/joulie-operator:${{ steps.vars.outputs.version }}
-            registry.cern.ch/mbunino/joulie/joulie-operator:latest
+            registry.cern.ch/joulie/joulie-controller-manager:${{ steps.vars.outputs.version }}
+            registry.cern.ch/joulie/joulie-controller-manager:latest
+            registry.cern.ch/joulie/joulie-operator:${{ steps.vars.outputs.version }}
+            registry.cern.ch/joulie/joulie-operator:latest
 
       - name: Build and push scheduler extender
         uses: docker/build-push-action@v6
@@ -69,8 +69,8 @@ jobs:
           build-args: COMPONENT=scheduler
           push: true
           tags: |
-            registry.cern.ch/mbunino/joulie/joulie-scheduler:${{ steps.vars.outputs.version }}
-            registry.cern.ch/mbunino/joulie/joulie-scheduler:latest
+            registry.cern.ch/joulie/joulie-scheduler:${{ steps.vars.outputs.version }}
+            registry.cern.ch/joulie/joulie-scheduler:latest
 
       - name: Build and push simulator
         uses: docker/build-push-action@v6
@@ -79,8 +79,8 @@ jobs:
           file: simulator/Dockerfile
           push: true
           tags: |
-            registry.cern.ch/mbunino/joulie/joulie-simulator:${{ steps.vars.outputs.version }}
-            registry.cern.ch/mbunino/joulie/joulie-simulator:latest
+            registry.cern.ch/joulie/joulie-simulator:${{ steps.vars.outputs.version }}
+            registry.cern.ch/joulie/joulie-simulator:latest
 
   publish-kubectl-plugin:
     runs-on: ubuntu-latest
@@ -137,7 +137,7 @@ jobs:
           TAG="${{ steps.vars.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}"
           curl -sLO "https://github.com/oras-project/oras/releases/download/v1.2.2/oras_1.2.2_linux_amd64.tar.gz"
           tar xzf oras_1.2.2_linux_amd64.tar.gz oras
-          ./oras push "registry.cern.ch/mbunino/joulie/kubectl-joulie:${TAG}" \
+          ./oras push "registry.cern.ch/joulie/kubectl-joulie:${TAG}" \
             "${BINARY}:application/octet-stream"
 
       - name: Attach binary to GitHub release
@@ -180,5 +180,5 @@ jobs:
 
       - name: Push charts to CERN registry (OCI)
         run: |
-          helm push "joulie-${{ steps.vars.outputs.version }}.tgz" "oci://registry.cern.ch/mbunino/joulie"
-          helm push "joulie-sim-${{ steps.vars.outputs.version }}.tgz" "oci://registry.cern.ch/mbunino/joulie"
+          helm push "joulie-${{ steps.vars.outputs.version }}.tgz" "oci://registry.cern.ch/joulie"
+          helm push "joulie-sim-${{ steps.vars.outputs.version }}.tgz" "oci://registry.cern.ch/joulie"

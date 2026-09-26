@@ -65,3 +65,25 @@ jobs:
 
       - name: Run envtest suite
         run: make test-envtest
+
+  # The experiment sanity tests check the sweep scripts and the benchmark
+  # configs. They need the experiments' own requirements (pandas pulls numpy,
+  # which the sweep scripts import at module level).
+  experiments:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: experiments/*/requirements.txt
+
+      - name: Install experiment requirements
+        run: pip install $(printf -- '-r %s ' experiments/*/requirements.txt)
+
+      - name: Run experiment sanity tests
+        run: make test-experiments

@@ -20,7 +20,7 @@ spec:
       serviceAccountName: joulie-scheduler-extender
       containers:
         - name: extender
-          image: registry.cern.ch/mbunino/joulie/joulie-scheduler:latest
+          image: registry.cern.ch/joulie/joulie-scheduler:latest
           ports:
             - containerPort: 9876
           env:

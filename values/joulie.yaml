@@ -1,6 +1,6 @@
 agent:
   image:
-    repository: registry.cern.ch/mbunino/joulie/joulie-agent
+    repository: registry.cern.ch/joulie/joulie-agent
     tag: latest
     pullPolicy: Always
   daemonset:
@@ -13,7 +13,7 @@ agent:
 
 controllerManager:
   image:
-    repository: registry.cern.ch/mbunino/joulie/joulie-controller-manager
+    repository: registry.cern.ch/joulie/joulie-controller-manager
     tag: latest
     pullPolicy: Always
   env:

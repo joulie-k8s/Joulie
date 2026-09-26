@@ -43,7 +43,7 @@ _K3S_IMAGE = "rancher/k3s:v1.34.1-k3s1"
 _LOCAL_REGISTRY_ALIAS = "registry"
 _LOCAL_REGISTRY_HOST = "joulie-registry.local"
 _LOCAL_REGISTRY_PORT = 5000
-_DEFAULT_REGISTRY_REPO = f"{_LOCAL_REGISTRY_HOST}:{_LOCAL_REGISTRY_PORT}/mbunino/joulie"
+_DEFAULT_REGISTRY_REPO = f"{_LOCAL_REGISTRY_HOST}:{_LOCAL_REGISTRY_PORT}/joulie"
 
 # Stable node names registered in Kubernetes via --node-name.
 # Alphabetically "k3s-server" < "k3s-worker-0", so the controller manager's density sort

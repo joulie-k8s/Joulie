@@ -159,8 +159,8 @@ export SIM_TAG=dev0.0.13
 Optional registry/image overrides for manual install script:
 
 ```bash
-export JOULIE_REGISTRY=registry.cern.ch/mbunino/joulie
-export SIM_REGISTRY=registry.cern.ch/mbunino/joulie
+export JOULIE_REGISTRY=registry.cern.ch/joulie
+export SIM_REGISTRY=registry.cern.ch/joulie
 export SIM_IMAGE=joulie-simulator
 ```
 

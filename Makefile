@@ -1,4 +1,4 @@
-REGISTRY ?= registry.cern.ch/mbunino/joulie
+REGISTRY ?= registry.cern.ch/joulie
 TAG ?= latest
 NAMESPACE ?= joulie-system
 HELM_RELEASE ?= joulie
@@ -233,6 +233,7 @@ ci-local:
 	run "make test-envtest" $(MAKE) --no-print-directory test-envtest; \
 	run "scripts/verify-chart-renders.sh" bash scripts/verify-chart-renders.sh; \
 	run "helm lint" helm lint charts/joulie charts/joulie-simulator; \
+	run "make test-experiments" $(MAKE) --no-print-directory test-experiments; \
 	printf '\n==================== ci-local summary ====================\n'; \
 	printf '%b\n' "$$results"; \
 	if [ -n "$$failed" ]; then \

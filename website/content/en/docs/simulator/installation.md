@@ -16,20 +16,20 @@ This page covers how to install the Joulie simulator in a Kubernetes cluster.
 The simulator is published as an OCI Helm chart. Install it with:
 
 ```bash
-helm install joulie-sim oci://registry.cern.ch/mbunino/joulie/joulie-sim \
+helm install joulie-sim oci://registry.cern.ch/joulie/joulie-sim \
   -n joulie-system --create-namespace
 ```
 
 To customize values, download the default values first:
 
 ```bash
-helm show values oci://registry.cern.ch/mbunino/joulie/joulie-sim > values.yaml
+helm show values oci://registry.cern.ch/joulie/joulie-sim > values.yaml
 ```
 
 Then install with overrides:
 
 ```bash
-helm install joulie-sim oci://registry.cern.ch/mbunino/joulie/joulie-sim \
+helm install joulie-sim oci://registry.cern.ch/joulie/joulie-sim \
   -n joulie-system --create-namespace \
   -f values.yaml
 ```
@@ -37,7 +37,7 @@ helm install joulie-sim oci://registry.cern.ch/mbunino/joulie/joulie-sim \
 To upgrade an existing release:
 
 ```bash
-helm upgrade joulie-sim oci://registry.cern.ch/mbunino/joulie/joulie-sim \
+helm upgrade joulie-sim oci://registry.cern.ch/joulie/joulie-sim \
   -n joulie-system
 ```
 

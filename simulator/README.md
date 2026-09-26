@@ -31,7 +31,7 @@ Current scope includes CPU and GPU-cap simulation with trace-driven completion s
 The simulator has its own Helm chart, published to the CERN OCI registry on every release:
 
 ```bash
-helm upgrade --install joulie-simulator oci://registry.cern.ch/mbunino/joulie/joulie-sim \
+helm upgrade --install joulie-simulator oci://registry.cern.ch/joulie/joulie-sim \
   --version <version> \
   -n joulie-sim-demo \
   --create-namespace \
@@ -55,8 +55,8 @@ make simulator-uninstall
 From repo root:
 
 ```bash
-docker build -f simulator/Dockerfile -t registry.cern.ch/mbunino/joulie/joulie-simulator:latest .
-docker push registry.cern.ch/mbunino/joulie/joulie-simulator:latest
+docker build -f simulator/Dockerfile -t registry.cern.ch/joulie/joulie-simulator:latest .
+docker push registry.cern.ch/joulie/joulie-simulator:latest
 ```
 
 Or use make targets:

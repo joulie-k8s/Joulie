@@ -21,12 +21,14 @@ For conceptual context first, read [Core Concepts]({{< relref "/docs/getting-sta
 Install directly from OCI chart release:
 
 ```bash
-helm upgrade --install joulie oci://registry.cern.ch/mbunino/joulie/joulie \
+helm upgrade --install joulie oci://registry.cern.ch/joulie/joulie \
   --version <version> \
   -n joulie-system \
   --create-namespace \
   -f values/joulie.yaml
 ```
+
+Charts, images and the kubectl plugin used to be published under `registry.cern.ch/mbunino/joulie`. Every tag published there up to 0.2.0 was copied to `registry.cern.ch/joulie` with the same digest, and later releases are published only to `registry.cern.ch/joulie`. If your values file sets an `image.repository` or you pull `latest`, point it at the new path.
 
 ### Label nodes managed by the controller manager
 
@@ -57,9 +59,9 @@ make install TAG=<tag>
 
 This pushes:
 
-- `registry.cern.ch/mbunino/joulie/joulie-agent:<tag>`
-- `registry.cern.ch/mbunino/joulie/joulie-controller-manager:<tag>`
-- `registry.cern.ch/mbunino/joulie/joulie-scheduler:<tag>`
+- `registry.cern.ch/joulie/joulie-agent:<tag>`
+- `registry.cern.ch/joulie/joulie-controller-manager:<tag>`
+- `registry.cern.ch/joulie/joulie-scheduler:<tag>`
 
 You can also do build+push+install in one command:
 
@@ -180,7 +182,7 @@ kubectl get nodes --show-labels | grep 'joulie.io/managed=true'
 The simulator has its own Helm chart, published alongside the main Joulie chart:
 
 ```bash
-helm upgrade --install joulie-simulator oci://registry.cern.ch/mbunino/joulie/joulie-sim \
+helm upgrade --install joulie-simulator oci://registry.cern.ch/joulie/joulie-sim \
   --version <version> \
   -n joulie-sim-demo \
   --create-namespace \
@@ -210,7 +212,7 @@ Download the pre-built binary for your platform from the CERN OCI registry using
 PLATFORM="linux-amd64"
 VERSION="<version>"
 
-oras pull "registry.cern.ch/mbunino/joulie/kubectl-joulie:${VERSION}-${PLATFORM}"
+oras pull "registry.cern.ch/joulie/kubectl-joulie:${VERSION}-${PLATFORM}"
 chmod +x "kubectl-joulie-${PLATFORM}"
 # User-local install (no sudo required, ensure ~/.local/bin is in your PATH)
 install "kubectl-joulie-${PLATFORM}" ~/.local/bin/kubectl-joulie
