@@ -622,9 +622,9 @@ def main():
         install_env_base["CLUSTER_NAME"] = kind_cfg.get("name", "joulie-heterogeneous")
 
     # Image and manifest config
-    install_env_base["JOULIE_REGISTRY"] = str(get_cfg(cfg, "images", "joulie_registry", default="registry.cern.ch/mbunino/joulie"))
+    install_env_base["JOULIE_REGISTRY"] = str(get_cfg(cfg, "images", "joulie_registry", default="registry.cern.ch/joulie"))
     install_env_base["JOULIE_TAG"] = str(get_cfg(cfg, "images", "joulie_tag", default="latest"))
-    install_env_base["SIM_REGISTRY"] = str(get_cfg(cfg, "images", "sim_registry", default="registry.cern.ch/mbunino/joulie"))
+    install_env_base["SIM_REGISTRY"] = str(get_cfg(cfg, "images", "sim_registry", default="registry.cern.ch/joulie"))
     install_env_base["SIM_IMAGE"] = str(get_cfg(cfg, "images", "sim_image", default="joulie-simulator"))
     install_env_base["SIM_TAG"] = str(get_cfg(cfg, "images", "sim_tag", default=""))
 

@@ -13,7 +13,7 @@ dagger -m ./ci call integration \
 #   --source=..
 #
 # Optional overrides:
-# --registry-repo joulie-registry.local:5000/mbunino/joulie
+# --registry-repo joulie-registry.local:5000/joulie
 # --tag dev-my-debug-tag
 
 # For a plain output:

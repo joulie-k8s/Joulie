@@ -106,7 +106,7 @@ spec:
       serviceAccountName: joulie-simulator
       containers:
         - name: simulator
-          image: registry.cern.ch/mbunino/joulie/joulie-simulator:dev0.0.4
+          image: registry.cern.ch/joulie/joulie-simulator:dev0.0.4
           imagePullPolicy: Always
           env:
             - name: SIM_ADDR

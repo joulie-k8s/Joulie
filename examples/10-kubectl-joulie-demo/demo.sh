@@ -47,10 +47,10 @@ kubectl apply -f "$DEMO_DIR/01-kwok-nodes.yaml"
 echo "=== 3/6 Build images ==="
 make build TAG=demo
 make simulator-build TAG=demo
-kind load docker-image "registry.cern.ch/mbunino/joulie/joulie-agent:demo" --name "$CLUSTER"
-kind load docker-image "registry.cern.ch/mbunino/joulie/joulie-controller-manager:demo" --name "$CLUSTER"
-kind load docker-image "registry.cern.ch/mbunino/joulie/joulie-scheduler:demo" --name "$CLUSTER"
-kind load docker-image "registry.cern.ch/mbunino/joulie/joulie-simulator:demo" --name "$CLUSTER"
+kind load docker-image "registry.cern.ch/joulie/joulie-agent:demo" --name "$CLUSTER"
+kind load docker-image "registry.cern.ch/joulie/joulie-controller-manager:demo" --name "$CLUSTER"
+kind load docker-image "registry.cern.ch/joulie/joulie-scheduler:demo" --name "$CLUSTER"
+kind load docker-image "registry.cern.ch/joulie/joulie-simulator:demo" --name "$CLUSTER"
 
 echo "=== 4/6 kube-prometheus-stack ==="
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update 2>/dev/null

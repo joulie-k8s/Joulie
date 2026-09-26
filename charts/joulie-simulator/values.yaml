@@ -1,5 +1,5 @@
 image:
-  repository: registry.cern.ch/mbunino/joulie/joulie-simulator
+  repository: registry.cern.ch/joulie/joulie-simulator
   tag: latest
   pullPolicy: IfNotPresent
 

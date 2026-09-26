@@ -1,4 +1,4 @@
-REGISTRY ?= registry.cern.ch/mbunino/joulie
+REGISTRY ?= registry.cern.ch/joulie
 TAG ?= latest
 NAMESPACE ?= joulie-system
 HELM_RELEASE ?= joulie

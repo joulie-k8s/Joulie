@@ -124,7 +124,7 @@ earlier implementation that nothing imports; do not change it expecting a node t
 
 ```bash
 # Install the released chart (it carries the CRDs)
-helm upgrade --install joulie oci://registry.cern.ch/mbunino/joulie/joulie \
+helm upgrade --install joulie oci://registry.cern.ch/joulie/joulie \
   -n joulie-system --create-namespace -f values/joulie.yaml
 
 # From a checkout instead

@@ -52,9 +52,9 @@ policy:
     perf_per_hp_node: 18
 
 images:
-  joulie_registry: registry.cern.ch/mbunino/joulie
+  joulie_registry: registry.cern.ch/joulie
   joulie_tag: dev0.1.1
-  sim_registry: registry.cern.ch/mbunino/joulie
+  sim_registry: registry.cern.ch/joulie
   sim_image: joulie-simulator
   sim_tag: dev0.1.1
 
