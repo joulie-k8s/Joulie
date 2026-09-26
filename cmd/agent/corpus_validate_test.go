@@ -1386,12 +1386,12 @@ func TestCorpusValidatorRejects(t *testing.T) {
 		},
 		{
 			name:   "home directory path",
-			mutate: func(t *testing.T, dir string) { corpusAppend(t, dir, "README.md", "dumped to /home/mbunino/capture\n") },
+			mutate: func(t *testing.T, dir string) { corpusAppend(t, dir, "README.md", "dumped to /home/jdoe/capture\n") },
 			want:   "contains a home directory path",
 		},
 		{
 			name:   "username",
-			mutate: func(t *testing.T, dir string) { corpusAppend(t, dir, "README.md", "user: mbunino\n") },
+			mutate: func(t *testing.T, dir string) { corpusAppend(t, dir, "README.md", "user: jdoe\n") },
 			want:   "contains a username",
 		},
 		{
