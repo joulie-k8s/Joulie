@@ -40,6 +40,9 @@ Cases:
   agent.mode=pool          asserts the StatefulSet replaces the DaemonSet
   schedulerExtender        asserts a second Deployment, one per component
   joulie-simulator         the simulator chart
+  packaged appVersion      packages both charts the way the release does and
+                           asserts every image is tagged with the appVersion,
+                           also under values/joulie.yaml, unless a tag is set
 
 Every case also asserts that no two documents share a Kind and name.
 
@@ -155,6 +158,25 @@ assert_count() {
 	return 0
 }
 
+# assert_image_tags checks that every container image in the render carries
+# the given tag. A chart that pulls ":latest" runs whatever was published last,
+# a release candidate included, instead of the version it was packaged with.
+assert_image_tags() {
+	local slug="$1" want="$2" images bad
+	images="$(grep -E '^[[:space:]]+image:' "${WORKDIR}/${slug}.yaml" | sed -E 's/^[[:space:]]+image:[[:space:]]*//; s/"//g')"
+	if [ -z "${images}" ]; then
+		fail "no container images in the render"
+		return 1
+	fi
+	bad="$(printf '%s\n' "${images}" | grep -vE ":${want}\$")" || true
+	if [ -n "${bad}" ]; then
+		fail "images not tagged ${want}:"
+		printf '%s\n' "${bad}" | sed 's/^/    /' >&2
+		return 1
+	fi
+	return 0
+}
+
 case_start() {
 	CASES=$((CASES + 1))
 	echo "==> $1"
@@ -174,6 +196,9 @@ if render defaults "${CHART}"; then
 	assert_no_duplicates defaults
 	assert_count defaults '^Role/.*-controller-manager-leader-election$' 0
 	assert_count defaults '^RoleBinding/.*-controller-manager-leader-election$' 0
+	# From a checkout the chart follows the newest release; only a packaged
+	# release pins its own version (the "packaged" case below).
+	assert_image_tags defaults latest
 fi
 
 # --------------------------------------------------------------------------
@@ -262,6 +287,33 @@ case_start "joulie-simulator defaults"
 if render simulator "${SIM_CHART}"; then
 	assert_workloads simulator "Deployment/joulie-telemetry-sim"
 	assert_no_duplicates simulator
+	assert_image_tags simulator latest
+fi
+
+# --------------------------------------------------------------------------
+# Packaged the way the release packages them (--app-version), both charts must
+# pull the images of that version and not ":latest", also with the values file
+# the quickstart installs with. An explicit tag still wins.
+# --------------------------------------------------------------------------
+case_start "packaged charts pull their appVersion"
+APP_VERSION="9.9.9-rc1"
+if helm package "${CHART}" "${SIM_CHART}" --version "${APP_VERSION}" --app-version "${APP_VERSION}" \
+	--destination "${WORKDIR}/pkg" >"${WORKDIR}/package.err" 2>&1; then
+	PKG="${WORKDIR}/pkg/joulie-${APP_VERSION}.tgz"
+	SIM_PKG="${WORKDIR}/pkg/joulie-sim-${APP_VERSION}.tgz"
+	render packaged "${PKG}" --set 'schedulerExtender.enabled=true' &&
+		assert_image_tags packaged "${APP_VERSION}"
+	render packaged-pool "${PKG}" --set 'agent.mode=pool' &&
+		assert_image_tags packaged-pool "${APP_VERSION}"
+	render packaged-values "${PKG}" -f "${REPO_ROOT}/values/joulie.yaml" &&
+		assert_image_tags packaged-values "${APP_VERSION}"
+	render packaged-sim "${SIM_PKG}" &&
+		assert_image_tags packaged-sim "${APP_VERSION}"
+	render packaged-pinned "${PKG}" --set 'agent.image.tag=pinned' --set 'controllerManager.image.tag=pinned' &&
+		assert_image_tags packaged-pinned "pinned"
+else
+	fail "helm package failed"
+	sed 's/^/    /' "${WORKDIR}/package.err" >&2
 fi
 
 echo

@@ -17,11 +17,14 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
           fetch-depth: 0
 
+      # "latest" is false for a pre-release, flagged on GitHub or named like one
+      # (v0.2.0-rc0), so a release candidate never moves the :latest tags below.
       - name: Set release version
         id: vars
-        run: |
-          TAG="${{ github.event.release.tag_name }}"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: bash scripts/release-version.sh "${TAG}" "${PRERELEASE}" >> "$GITHUB_OUTPUT"
 
       - name: Login to CERN registry
         uses: docker/login-action@v3
@@ -42,7 +45,7 @@ jobs:
           push: true
           tags: |
             registry.cern.ch/joulie/joulie-agent:${{ steps.vars.outputs.version }}
-            registry.cern.ch/joulie/joulie-agent:latest
+            ${{ steps.vars.outputs.latest == 'true' && 'registry.cern.ch/joulie/joulie-agent:latest' || '' }}
 
       # The joulie-operator tags are a compatibility alias for the image that
       # was renamed to joulie-controller-manager (same build, same digest).
@@ -57,9 +60,9 @@ jobs:
           push: true
           tags: |
             registry.cern.ch/joulie/joulie-controller-manager:${{ steps.vars.outputs.version }}
-            registry.cern.ch/joulie/joulie-controller-manager:latest
+            ${{ steps.vars.outputs.latest == 'true' && 'registry.cern.ch/joulie/joulie-controller-manager:latest' || '' }}
             registry.cern.ch/joulie/joulie-operator:${{ steps.vars.outputs.version }}
-            registry.cern.ch/joulie/joulie-operator:latest
+            ${{ steps.vars.outputs.latest == 'true' && 'registry.cern.ch/joulie/joulie-operator:latest' || '' }}
 
       - name: Build and push scheduler extender
         uses: docker/build-push-action@v6
@@ -70,7 +73,7 @@ jobs:
           push: true
           tags: |
             registry.cern.ch/joulie/joulie-scheduler:${{ steps.vars.outputs.version }}
-            registry.cern.ch/joulie/joulie-scheduler:latest
+            ${{ steps.vars.outputs.latest == 'true' && 'registry.cern.ch/joulie/joulie-scheduler:latest' || '' }}
 
       - name: Build and push simulator
         uses: docker/build-push-action@v6
@@ -80,7 +83,7 @@ jobs:
           push: true
           tags: |
             registry.cern.ch/joulie/joulie-simulator:${{ steps.vars.outputs.version }}
-            registry.cern.ch/joulie/joulie-simulator:latest
+            ${{ steps.vars.outputs.latest == 'true' && 'registry.cern.ch/joulie/joulie-simulator:latest' || '' }}
 
   publish-kubectl-plugin:
     runs-on: ubuntu-latest
@@ -109,9 +112,10 @@ jobs:
 
       - name: Set release version
         id: vars
-        run: |
-          TAG="${{ github.event.release.tag_name }}"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: bash scripts/release-version.sh "${TAG}" "${PRERELEASE}" >> "$GITHUB_OUTPUT"
 
       - name: Build kubectl-joulie
         env:
@@ -162,9 +166,10 @@ jobs:
 
       - name: Set release version
         id: vars
-        run: |
-          TAG="${{ github.event.release.tag_name }}"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: bash scripts/release-version.sh "${TAG}" "${PRERELEASE}" >> "$GITHUB_OUTPUT"
 
       - name: Login to CERN registry for Helm OCI
         run: echo "${{ secrets.CERN_REGISTRY_PASSWORD }}" | helm registry login registry.cern.ch -u "${{ secrets.CERN_REGISTRY_USER }}" --password-stdin

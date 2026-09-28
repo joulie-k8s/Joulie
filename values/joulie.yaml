@@ -1,7 +1,6 @@
 agent:
   image:
     repository: registry.cern.ch/joulie/joulie-agent
-    tag: latest
     pullPolicy: Always
   daemonset:
     nodeSelector:
@@ -14,7 +13,6 @@ agent:
 controllerManager:
   image:
     repository: registry.cern.ch/joulie/joulie-controller-manager
-    tag: latest
     pullPolicy: Always
   env:
     RECONCILE_INTERVAL: "1m"

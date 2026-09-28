@@ -7,6 +7,12 @@ Complete reference for all Joulie environment variables. These are set via Helm 
 
 Defaults listed below are the **code defaults**. The Helm chart (`charts/joulie/values.yaml`) overrides some of them: notably, the controller manager `NODE_SELECTOR` defaults to `joulie.io/managed=true` in the chart even though the code default is `node-role.kubernetes.io/worker`.
 
+## Images
+
+The chart values `agent.image.tag`, `controllerManager.image.tag` and `schedulerExtender.image.tag` (and `image.tag` in the simulator chart) default to empty, which pulls the chart's `appVersion`. A chart installed from `oci://registry.cern.ch/joulie` carries the version it was released with, so it runs the images of that release. A chart installed from a checkout has `appVersion: latest` and runs the newest stable release. Set a tag only to run other images, for example your own build.
+
+Pre-releases (a GitHub pre-release, or a version such as `0.2.0-rc0`) are published under their version only and never move `latest`.
+
 ## Agent
 
 | Variable | Default | Description |

@@ -24,7 +24,7 @@ spec:
       {{- end }}
       containers:
         - name: controller-manager
-          image: "{{ $cm.image.repository }}:{{ $cm.image.tag }}"
+          image: "{{ $cm.image.repository }}:{{ $cm.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ $cm.image.pullPolicy }}
           ports:
             - name: metrics

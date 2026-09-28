@@ -5,7 +5,9 @@ agent:
   mode: daemonset
   image:
     repository: registry.cern.ch/joulie/joulie-agent
-    tag: latest
+    # Empty pulls the chart's appVersion: the release's own version for a chart
+    # from the registry, latest for a chart from a checkout.
+    tag: ""
     pullPolicy: IfNotPresent
   hostNetwork: true
   privileged: true
@@ -37,7 +39,9 @@ controllerManager:
   nodeSelector: {}
   image:
     repository: registry.cern.ch/joulie/joulie-controller-manager
-    tag: latest
+    # Empty pulls the chart's appVersion: the release's own version for a chart
+    # from the registry, latest for a chart from a checkout.
+    tag: ""
     pullPolicy: IfNotPresent
   leaderElection:
     enabled: false  # only the leader reconciles; needed before running more than one replica
@@ -78,7 +82,9 @@ schedulerExtender:
   enabled: false  # disabled by default; enable when using custom kube-scheduler config
   image:
     repository: registry.cern.ch/joulie/joulie-scheduler
-    tag: latest
+    # Empty pulls the chart's appVersion: the release's own version for a chart
+    # from the registry, latest for a chart from a checkout.
+    tag: ""
   port: 9876
   clusterIP: ""  # set a fixed ClusterIP so the scheduler config can use an IP instead of DNS
   replicas: 1

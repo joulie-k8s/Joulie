@@ -22,7 +22,7 @@ spec:
       {{- end }}
       containers:
         - name: agent
-          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
+          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
           ports:
             - name: metrics
