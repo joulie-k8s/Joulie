@@ -1,0 +1,31 @@
+description: >-
+  Bare metal 4 socket Intel Xeon Platinum 8260, 192 logical CPUs (24 cores x 2
+  threads x 4 sockets), 165 W per package zone with disabled DRAM sub-zones at
+  47.25 W, no GPU, Linux 6.18. It is the labelled counterpart to
+  xeon-4socket-no-labels: Node Feature Discovery is running and publishes a full
+  cpu-cpuid label set, so the CPU model still comes from /proc/cpuinfo while the
+  node carries 69 labels. It is also the only corpus machine that captures the
+  cpufreq scaling driver (intel_pstate).
+source: >-
+  Captured on the node itself with scripts/collect-hardware-fixture.sh, run as
+  root against /etc/kubernetes/admin.conf so node labels were fetched and
+  redacted. Every file was read after capture: cpuinfo carries no serial,
+  node-labels.json redacts the hostname to REDACTED-HOST and carries no site,
+  team, rack or tenant label, and the whole capture scans clean for MAC, IP,
+  UUID, serial and asset-tag patterns. The node owner agreed to publish it.
+capturedAt: "2026-09-30T12:40:20Z"
+allocatable:
+  cpu: "192"
+  memory: "1583834572Ki"
+  gpu: {}
+# Zone directories whose constraint_0_power_limit_uw rejects writes on the
+# real machine, for example a disabled DRAM zone. The test replays them by
+# turning the limit file into a directory. All four DRAM sub-zones here are
+# disabled (enabled=0) and reject a write with EAGAIN ("No data available"),
+# verified on the machine before capture.
+writeRejectingZones:
+  - "intel-rapl:0:0"
+  - "intel-rapl:1:0"
+  - "intel-rapl:2:0"
+  - "intel-rapl:3:0"
+
