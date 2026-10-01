@@ -12,7 +12,7 @@ source: >-
   redacted. Every file was read after capture: cpuinfo carries no serial,
   node-labels.json redacts the hostname to REDACTED-HOST and carries no site,
   team, rack or tenant label, and the whole capture scans clean for MAC, IP,
-  UUID, serial and asset-tag patterns. The node owner agreed to publish it.
+  UUID, serial and asset-tag patterns.
 capturedAt: "2026-09-30T12:40:20Z"
 allocatable:
   cpu: "192"
@@ -28,4 +28,3 @@ writeRejectingZones:
   - "intel-rapl:1:0"
   - "intel-rapl:2:0"
   - "intel-rapl:3:0"
-

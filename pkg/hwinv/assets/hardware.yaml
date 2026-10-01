@@ -119,6 +119,15 @@ cpuModels:
     proxyFrom:
       family: XEON_GEN5_GENERIC
       method: tdp+freq-normalized
+  INTEL_XEON_PLATINUM_8260:
+    aliases: ["INTEL(R) XEON(R) PLATINUM 8260 CPU @ 2.40GHZ", "INTEL XEON PLATINUM 8260", "Xeon Platinum 8260"]
+    provenance: official
+    official:
+      vendor: intel
+      baseGHz: 2.4
+      boostGHz: 3.9
+      tdpW: 165
+      driverFamily: intel_pstate
 
 gpuModels:
   NVIDIA_H100_NVL:

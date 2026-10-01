@@ -14,15 +14,13 @@
     "controlAvailable": true,
     "coresPerSocket": 48,
     "driverFamily": "intel_pstate",
-    "model": "",
+    "model": "INTEL_XEON_PLATINUM_8260",
     "rawModel": "Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz",
     "sockets": 4,
     "telemetryAvailable": true,
     "totalCores": 192,
     "vendor": "GenuineIntel",
-    "warnings": [
-      "cpu model not recognized"
-    ]
+    "warnings": null
   },
   "gpu": {
     "controlAvailable": false,
@@ -36,18 +34,16 @@
   },
   "inventoryResolution": {
     "exactness": {
-      "cpu": "proxy",
+      "cpu": "exact",
       "gpu": "generic"
     },
     "hardwareCatalogKey": {
-      "cpu": "",
+      "cpu": "INTEL_XEON_PLATINUM_8260",
       "gpu": ""
     }
   },
   "quality": {
-    "overall": "heuristic",
-    "warnings": [
-      "cpu model not recognized"
-    ]
+    "overall": "exact",
+    "warnings": null
   }
 }
