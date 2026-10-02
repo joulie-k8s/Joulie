@@ -232,7 +232,9 @@ func main() {
 	if len(classes) > 0 {
 		log.Printf("node class config loaded classes=%d", len(classes))
 	}
-	catalogPath := strings.TrimSpace(envOrDefault("SIM_HARDWARE_CATALOG_PATH", "simulator/catalog/hardware.yaml"))
+	// Empty means the catalog embedded in pkg/hwinv. The experiments mount a
+	// generated catalog over it with SIM_HARDWARE_CATALOG_PATH.
+	catalogPath := strings.TrimSpace(envOrDefault("SIM_HARDWARE_CATALOG_PATH", ""))
 	catalog, err := hw.LoadCatalog(catalogPath)
 	if err != nil {
 		log.Printf("warning: failed to load hardware catalog path=%s err=%v", catalogPath, err)

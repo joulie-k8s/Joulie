@@ -46,10 +46,7 @@ import (
 var updateCorpusGolden = flag.Bool("update", false,
 	"rewrite cmd/agent/testdata/hardware/*/expected.json from the fixture inputs")
 
-const (
-	corpusDir     = "testdata/hardware"
-	corpusCatalog = "../../pkg/hwinv/assets/hardware.yaml"
-)
+const corpusDir = "testdata/hardware"
 
 // corpusMachine is machine.yaml. sigs.k8s.io/yaml routes YAML through JSON, so
 // the json tags are the field names in the file.
@@ -112,10 +109,11 @@ func (r corpusCommandRunner) Run(_ context.Context, name string, args ...string)
 // discovery and publish path and compares the published NodeHardware status
 // with the golden.
 func TestHardwareFixtureCorpus(t *testing.T) {
-	// The agent loads the hardware catalog once per process from
-	// HARDWARE_CATALOG_PATH, so the golden reflects the catalog the chart
-	// ships rather than an empty one.
-	t.Setenv("HARDWARE_CATALOG_PATH", corpusCatalog)
+	// The agent loads the hardware catalog once per process. An empty
+	// HARDWARE_CATALOG_PATH is the production default and means the catalog
+	// embedded in pkg/hwinv, so pinning it here makes the golden reflect
+	// what a deployed agent sees, whatever the developer's shell has set.
+	t.Setenv("HARDWARE_CATALOG_PATH", "")
 
 	for _, machine := range corpusMachines(t) {
 		t.Run(machine, func(t *testing.T) {
@@ -165,7 +163,7 @@ func TestHardwareFixtureCorpus(t *testing.T) {
 // sub-zones are the trap: they are selected by no correct implementation, so
 // making their limit file unwritable must change nothing.
 func TestHardwareFixtureCorpusRAPLWrites(t *testing.T) {
-	t.Setenv("HARDWARE_CATALOG_PATH", corpusCatalog)
+	t.Setenv("HARDWARE_CATALOG_PATH", "")
 
 	const capWatts = 120.0
 	const wantPayload = "120000000"

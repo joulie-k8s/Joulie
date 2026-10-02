@@ -81,7 +81,7 @@ kubectl create configmap joulie-simulator-hardware-catalog \
 
 kubectl create configmap joulie-hardware-catalog \
   -n joulie-system \
-  --from-file=hardware.yaml=simulator/catalog/hardware.yaml \
+  --from-file=hardware.yaml=pkg/hwinv/assets/hardware.yaml \
   --dry-run=client -o yaml | kubectl apply -f -
 
 helm upgrade --install joulie-sim charts/joulie-simulator \

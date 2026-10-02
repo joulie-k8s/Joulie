@@ -5,9 +5,9 @@ output the Joulie agent reads, plus the `NodeHardware` status the agent
 publishes for it. `cmd/agent/fixture_corpus_test.go` replays each one through
 the real discovery and publish path on every `go test ./...`.
 
-**Contributions of new machines are wanted.** Two machines is not a corpus; the
-list at the bottom of this page is short because every entry after the first has
-to come from somebody else's hardware. If you own bare metal, a GPU node or an
+**Contributions of new machines are wanted.** Three machines is not a corpus;
+the list at the bottom of this page is short because every entry after the first
+has to come from somebody else's hardware. If you own bare metal, a GPU node or an
 unusual virtual machine, a capture takes a few minutes and makes your machine a
 permanent regression test.
 
@@ -287,4 +287,5 @@ non-test change this corpus would need.
 | Machine | What it is | Why it is here |
 |---|---|---|
 | `xeon-4socket-no-labels` | Bare metal 4 socket Intel Xeon Gold 6252, 192 logical CPUs, 165 W per package zone, DRAM sub-zones at 47.25 W, no GPU | NFD publishes neither `cpu-sockets` nor `cpu-model.name`, so sockets and model both come from `/proc/cpuinfo`. The DRAM sub-zones are the trap that zone selection by name exists to avoid. |
+| `xeon-4socket-nfd-labels` | Bare metal 4 socket Intel Xeon Platinum 8260, 192 logical CPUs, 165 W per package zone, DRAM sub-zones at 47.25 W, no GPU | A real capture, contributed by the node's owner, of the same machine class the row above approximates by hand. NFD publishes 69 labels here and still neither `cpu-sockets` nor `cpu-model.name`, which is the evidence that those two cannot be depended on. It is also the only machine with a cpufreq driver (`intel_pstate`) and with a `pci-0300` display device that belongs to no GPU vendor. |
 | `vm-no-rapl` | VM with one NVIDIA Tesla T4, no powercap tree at all | The hypervisor gives every vCPU its own `physical id`, so the agent reads 28 sockets. No RAPL means no CPU cap range and no CPU control, and the GPU path has to carry the node on its own. |

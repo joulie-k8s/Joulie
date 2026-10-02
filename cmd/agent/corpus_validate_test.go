@@ -43,6 +43,10 @@ import (
 // it is unset the corpus is the one in this repository.
 const corpusRootEnv = "JOULIE_HARDWARE_CORPUS"
 
+// corpusREADMETableHeading is the section of README.md that must name every
+// machine. TestCorpusREADMEListsEveryMachine reads only what follows it.
+const corpusREADMETableHeading = "## The machines"
+
 // corpusRoot resolves the directory that holds one subdirectory per machine.
 func corpusRoot() string {
 	if v := strings.TrimSpace(os.Getenv(corpusRootEnv)); v != "" {
@@ -1432,5 +1436,34 @@ func corpusRemove(t *testing.T, dir, rel string) {
 	t.Helper()
 	if err := os.Remove(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestCorpusREADMEListsEveryMachine keeps the contributor's page honest. The
+// table under "## The machines" is where a reader learns what the corpus
+// covers, and a capture merged without a row is invisible there. #64 added a
+// machine and no test noticed the missing row.
+func TestCorpusREADMEListsEveryMachine(t *testing.T) {
+	if _, err := os.Stat(filepath.Join(corpusRoot(), "README.md")); err != nil {
+		// A corpus pointed at by JOULIE_HARDWARE_CORPUS carries no page of
+		// ours to keep honest.
+		t.Skipf("no README.md beside the corpus at %s", corpusRoot())
+	}
+	readme, err := os.ReadFile(filepath.Join(corpusRoot(), "README.md"))
+	if err != nil {
+		t.Fatalf("read the corpus README: %v", err)
+	}
+	// Only the table counts. Machines are named in the prose as examples,
+	// xeon-4socket-no-labels among them, so searching the whole page would
+	// pass for a machine that has no row.
+	_, table, found := strings.Cut(string(readme), corpusREADMETableHeading)
+	if !found {
+		t.Fatalf("%s/README.md has no %q section to list machines under", corpusRoot(), corpusREADMETableHeading)
+	}
+	for _, machine := range corpusMachines(t) {
+		if !strings.Contains(table, "`"+machine+"`") {
+			t.Errorf("machine %q has no row in %s/README.md: add one to the table under %q",
+				machine, corpusRoot(), corpusREADMETableHeading)
+		}
 	}
 }

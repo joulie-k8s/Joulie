@@ -11,6 +11,7 @@ package contracts_test
 import (
 	"bufio"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 
 	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/controller/fsm"
+	"github.com/matbun/joulie/pkg/hwinv"
 	"sigs.k8s.io/yaml"
 )
 
@@ -851,6 +853,90 @@ func TestCRDCopiesAreIdentical(t *testing.T) {
 		if string(a) != string(b) {
 			t.Fatalf("%s differs between config/crd/bases and charts/joulie/crds; run `make manifests`", name)
 		}
+	}
+}
+
+// --------------------------------------------------------------------------
+// Hardware catalog
+// --------------------------------------------------------------------------
+
+// The hardware catalog was shipped twice: pkg/hwinv/assets/hardware.yaml,
+// embedded in every binary, and a copy at simulator/catalog/hardware.yaml that
+// every binary read first, because it was the default HARDWARE_CATALOG_PATH. A
+// contributed Xeon Platinum 8260 entry landed in the embedded copy alone, so
+// the match worked in the images, where that path does not exist and the
+// embedded catalog wins, and silently did not work from a checkout, where the
+// stale copy won. The copy is gone and the default is empty, which already
+// means the embedded catalog.
+func TestHardwareCatalogHasOneSourceOfTruth(t *testing.T) {
+	root := repoRoot(t)
+	const embeddedPath = "pkg/hwinv/assets/hardware.yaml"
+
+	// An empty path is the production default of HARDWARE_CATALOG_PATH and of
+	// SIM_HARDWARE_CATALOG_PATH, and it has to yield a usable catalog: every
+	// binary relies on it, and a change to LoadCatalog's empty-path branch
+	// would otherwise leave them modelling every node as generic.
+	embedded, err := hwinv.LoadCatalog("")
+	if err != nil {
+		t.Fatalf("an empty path must load the embedded catalog: %v", err)
+	}
+	if len(embedded.CPUModels) == 0 || len(embedded.GPUModels) == 0 {
+		t.Fatalf("an empty path yielded an empty catalog: %+v", embedded)
+	}
+
+	// A YAML with a top level cpuModels key is a catalog. A generated one is
+	// output rather than a source: the experiments write it and mount it on
+	// purpose.
+	catalogKey := regexp.MustCompile(`(?m)^cpuModels:`)
+	// A catalog path inside the tree reintroduces the trap in either
+	// spelling, the literal and the one assembled from path segments.
+	inTreePath := regexp.MustCompile(`catalog["'/,\s]+hardware\.yaml`)
+	// Build output and dependencies, not sources. Walking the tree rather
+	// than asking git keeps this working in a release tarball and in a
+	// container that holds no .git.
+	skipDir := map[string]bool{".git": true, "bin": true, "node_modules": true, "public": true, "resources": true}
+
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if skipDir[d.Name()] {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == embeddedPath || strings.Contains(rel, ".generated.") {
+			return nil
+		}
+		ext := filepath.Ext(rel)
+		if ext != ".yaml" && ext != ".yml" && ext != ".go" {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if ext == ".go" {
+			// A test may name the old path to explain it; no binary reads a
+			// test, so only shipped code can reship the catalog twice.
+			if !strings.HasPrefix(rel, "tests/") && inTreePath.Match(body) {
+				t.Errorf("%s names a catalog path inside the repository; the default must be empty, which already means the embedded catalog", rel)
+			}
+			return nil
+		}
+		if catalogKey.Match(body) {
+			t.Errorf("%s is a second hardware catalog; %s is the only source of truth, and two copies drift the moment one of them is edited", rel, embeddedPath)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk %s: %v", root, walkErr)
 	}
 }
 
