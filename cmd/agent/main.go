@@ -1480,10 +1480,10 @@ func normalizeCPUVendor(raw string) string {
 
 func loadHardwareCatalog() *hwinv.Catalog {
 	hardwareCatalogOnce.Do(func() {
+		// An empty path means the catalog embedded in pkg/hwinv, which is
+		// the only copy the image carries. Setting HARDWARE_CATALOG_PATH
+		// overrides it with a mounted file.
 		path := strings.TrimSpace(os.Getenv("HARDWARE_CATALOG_PATH"))
-		if path == "" {
-			path = "simulator/catalog/hardware.yaml"
-		}
 		cat, err := hwinv.LoadCatalog(path)
 		if err != nil {
 			log.Printf("warning: failed to load hardware catalog path=%s err=%v", path, err)

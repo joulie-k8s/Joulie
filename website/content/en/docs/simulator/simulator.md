@@ -121,6 +121,7 @@ See the dedicated [Installation]({{< relref "/docs/simulator/installation.md" >}
 
 - **`SIM_NODE_SELECTOR`** — Only nodes matching this label selector are simulated. Default: `joulie.io/managed=true`.
 - **`SIM_NODE_CLASS_CONFIG`** — YAML file with label-matched model overrides, applied on top of inventory/label-based hardware identity.
+- **`SIM_HARDWARE_CATALOG_PATH`**: path to a hardware inventory catalog YAML that replaces the one embedded in the binary. Default: empty, meaning the embedded catalog. The experiments set it to a generated catalog that describes their fake nodes.
 
 The preferred hardware bootstrap flow:
 

@@ -127,9 +127,9 @@ In the codebase, the shared inventory shape lives in:
 - `pkg/hwinv/catalog.go`
 - embedded catalog data under `pkg/hwinv/assets/hardware.yaml`
 
-The simulator also keeps its source catalog in:
-
-- `simulator/catalog/hardware.yaml`
+All three binaries read that embedded copy unless `HARDWARE_CATALOG_PATH`
+(or `SIM_HARDWARE_CATALOG_PATH` for the simulator) points at a file that
+replaces it, which is how the experiments feed in a generated catalog.
 
 Matching is alias-based and normalization-based:
 

@@ -22,7 +22,7 @@ Pre-releases (a GitHub pre-release, or a version such as `0.2.0-rc0`) are publis
 | `RECONCILE_INTERVAL` | `20s` | How often the agent reconciles desired state |
 | `METRICS_ADDR` | `:8080` | Address for the Prometheus metrics endpoint |
 | `SIMULATE_ONLY` | `false` | If `true`, agent discovers hardware but does not apply power caps |
-| `HARDWARE_CATALOG_PATH` | `simulator/catalog/hardware.yaml` | Path to the hardware inventory catalog YAML |
+| `HARDWARE_CATALOG_PATH` | (empty: the catalog embedded in the binary) | Path to a hardware inventory catalog YAML that replaces the embedded one |
 
 ### Agent pool mode
 
@@ -66,6 +66,7 @@ Pre-releases (a GitHub pre-release, or a version such as `0.2.0-rc0`) are publis
 | `METRICS_ADDR` | `:8081` | Address for the Prometheus metrics endpoint |
 | `LEADER_ELECT` | `false` | Run the reconcile loop only on the leader of a `coordination.k8s.io` lease. Required before running more than one controller manager replica. Helm: `controllerManager.leaderElection.enabled`, which also creates the lease Role. |
 | `POD_NAMESPACE` | `joulie-system` | Namespace of the leader election lease. The chart sets it from the downward API. |
+| `HARDWARE_CATALOG_PATH` | (empty: the catalog embedded in the binary) | Path to a hardware inventory catalog YAML that replaces the embedded one |
 | `NODE_SELECTOR` | `node-role.kubernetes.io/worker` | Label selector for managed nodes |
 | `RESERVED_LABEL_KEY` | `joulie.io/reserved` | Label key for nodes excluded from policy decisions |
 | `POWER_PROFILE_LABEL` | `joulie.io/power-profile` | Node label key for the active power profile |

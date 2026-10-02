@@ -8,10 +8,13 @@ description: >-
   limit, which is the trap the "select zones by their name file" rule guards.
 source: >-
   Hand built from a bare metal hardware report of the node the NFD gap was
-  first seen on. The powercap values and the model string are the reported
-  ones; the cpuinfo is trimmed to two processor blocks per socket, which is all
-  the parser reads (model name and the distinct physical id values). The full
-  file would be 192 blocks of the same two facts.
+  first seen on. The powercap values are the reported ones; the model string is
+  a representative Cascade Lake part, because the report did not name the CPU.
+  That node has since been captured for real in xeon-4socket-nfd-labels, where
+  it reports an Intel Xeon Platinum 8260. The cpuinfo here is trimmed to two
+  processor blocks per socket, which is all the parser reads (model name and
+  the distinct physical id values). The full file would be 192 blocks of the
+  same two facts.
 capturedAt: "2026-09-23T00:00:00Z"
 allocatable:
   cpu: "192"
