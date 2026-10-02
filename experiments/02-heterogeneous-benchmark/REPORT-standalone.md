@@ -4,6 +4,8 @@ This page reports results from the standalone simulator benchmark on a heterogen
 
 - [`experiments/02-heterogeneous-benchmark/`](.)
 
+> **Note:** These results were produced with the standalone simulator before Joulie v0.2.2. That simulator chose the performance nodes as one node per hardware family, then filled the remaining slots in node-name order. Joulie v0.2.2 splits the performance slots across hardware families in proportion to family size. These results have not been rerun with that split, and the exact configuration of the published runs is not recorded in the repository. On this cluster that order put 995 of the 1,000 static performance slots on CPU nodes; see section 7.1.
+
 ## Scope
 
 The benchmark compares three baselines on a **heterogeneous GPU cluster** mixing 5 distinct GPU hardware families plus CPU-only nodes, using the **Go standalone simulator** (`joulie-simulator`) rather than Kind+KWOK. There is no Kubernetes control plane involved; all scheduling, power capping, and job lifecycle management happen via direct in-memory simulation with scoring-based job placement.
@@ -142,7 +144,7 @@ The 80/20 eco/performance split is more aggressive than the Kind+KWOK benchmark'
 
 Dynamically adjusts performance node count based on running performance-sensitive pods:
 - `hp_base_frac=0.05`, `hp_min=50`, `hp_max=4000`, `perf_per_hp_node=3`
-- During high-demand periods: more nodes shift to performance to absorb GPU-intensive load.
+- During high-demand periods: more nodes shift to performance. Before v0.2.2 the extra slots were filled in node-name order, so they went to the `kwok-cpu-*` nodes before any GPU node beyond one per family (a reconstruction from the committed code, not a measurement).
 - During low-demand periods: most nodes revert to eco, with as few as 50 nodes remaining at full power.
 - The low `perf_per_hp_node=3` ratio means each HP node is expected to serve only 3 performance pods, which is appropriate for GPU jobs requesting 4 GPUs each (a single 8-GPU node can host at most 2 such jobs).
 
@@ -279,7 +281,7 @@ Bar chart summary of total facility energy per baseline with error bars from the
 
 ### 7.1 Why does Joulie save 20--21% on this heterogeneous GPU cluster?
 
-1. **GPU power dominates**: With 22,760 GPUs drawing up to 750 W each at TDP, GPU power accounts for approximately 80% of total IT power. Capping 80% of GPU nodes to 60% of TDP produces large absolute wattage reductions.
+1. **GPU power dominates**: With 22,760 GPUs drawing up to 750 W each at TDP, GPU power accounts for approximately 80% of total IT power. Capping GPU nodes to 60% of TDP produces large absolute wattage reductions. In B the capped share of GPU nodes was not 80%: the simulator filled the 1,000 performance slots one per family and then in node-name order, and every `kwok-cpu-*` name sorts before the GPU prefixes. Replaying that selection from the committed code at `hp_frac=0.20` keeps 995 CPU nodes and 5 of the 4,000 GPU nodes in performance, so 3,995 GPU nodes are eco-capped. This is a reconstruction from the committed code, not a measurement.
 
 2. **60% eco cap is effective**: At 60% of TDP, GPU eco caps reduce per-device power by 40% on capped nodes. For the H100 NVL (the most numerous GPU), this means 240 W vs 400 W -- a 160 W reduction per GPU, or 1,280 W per 8-GPU node.
 

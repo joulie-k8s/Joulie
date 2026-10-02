@@ -3,7 +3,6 @@ cpuModels:
   AMD_EPYC_9654:
     aliases: ["AMD EPYC 9654 96-Core Processor", "AMD EPYC 9654"]
     provenance: exact+official
-    computeDensity: 710.4
     official:
       vendor: amd
       baseGHz: 2.4
@@ -29,7 +28,6 @@ cpuModels:
   AMD_EPYC_9655:
     aliases: ["AMD EPYC 9655 96-Core Processor", "AMD EPYC 9655"]
     provenance: exact+official
-    computeDensity: 1040.0
     official:
       vendor: amd
       baseGHz: 2.6
@@ -55,7 +53,6 @@ cpuModels:
   AMD_EPYC_9965:
     aliases: ["AMD EPYC 9965 192-Core Processor", "AMD EPYC 9965"]
     provenance: exact+official
-    computeDensity: 1776.0
     official:
       vendor: amd
       baseGHz: 2.25
@@ -81,7 +78,6 @@ cpuModels:
   AMD_EPYC_9534:
     aliases: ["AMD EPYC 9534 64-Core Processor", "AMD EPYC 9534"]
     provenance: official+proxy
-    computeDensity: 473.6
     official:
       vendor: amd
       baseGHz: 2.45
@@ -95,7 +91,6 @@ cpuModels:
   AMD_EPYC_9375F:
     aliases: ["AMD EPYC 9375F 32-Core Processor", "AMD EPYC 9375F"]
     provenance: official+proxy
-    computeDensity: 486.4
     official:
       vendor: amd
       baseGHz: 3.8
@@ -109,7 +104,6 @@ cpuModels:
   INTEL_XEON_GOLD_6530:
     aliases: ["INTEL(R) XEON(R) GOLD 6530", "INTEL XEON GOLD 6530", "Xeon Gold 6530"]
     provenance: official+proxy
-    computeDensity: 256.0
     official:
       vendor: intel
       baseGHz: 2.1
@@ -133,7 +127,6 @@ gpuModels:
   NVIDIA_H100_NVL:
     aliases: ["NVIDIA-H100-NVL", "NVIDIA H100 NVL", "H100 NVL"]
     provenance: official+runtime+literature
-    computeDensity: 400
     official:
       vendor: nvidia
       maxBoardPowerW: 400
@@ -141,7 +134,6 @@ gpuModels:
   NVIDIA_H100_SXM:
     aliases: ["NVIDIA-H100-80GB-HBM3", "NVIDIA H100 80GB HBM3", "H100 SXM"]
     provenance: official+runtime+literature
-    computeDensity: 700
     official:
       vendor: nvidia
       maxBoardPowerW: 700
@@ -149,7 +141,6 @@ gpuModels:
   NVIDIA_L40S:
     aliases: ["NVIDIA-L40S", "NVIDIA L40S", "L40S"]
     provenance: official+runtime+literature
-    computeDensity: 350
     official:
       vendor: nvidia
       maxBoardPowerW: 350
@@ -157,7 +148,6 @@ gpuModels:
   AMD_INSTINCT_MI300X:
     aliases: ["AMD_Instinct_MI300X", "AMD Instinct MI300X", "MI300X"]
     provenance: official+runtime+literature
-    computeDensity: 750
     official:
       vendor: amd
       maxBoardPowerW: 750
@@ -165,7 +155,6 @@ gpuModels:
   AMD_RADEON_PRO_W7900:
     aliases: ["AMD_Radeon_PRO_W7900", "AMD Radeon PRO W7900", "W7900"]
     provenance: official+runtime+literature
-    computeDensity: 295
     official:
       vendor: amd
       maxBoardPowerW: 295

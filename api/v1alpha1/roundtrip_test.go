@@ -52,7 +52,6 @@ func TestNodeTwinRoundTrip(t *testing.T) {
 			PredictedCoolingStressScore: 20.5,
 			PredictedPsuStressScore:     10,
 			EffectiveCapState:           &CapState{CPUPct: 60, GPUPct: 75},
-			HardwareDensityScore:        88,
 			EstimatedPUE:                1.12,
 			ControlStatus: &ControlStatus{
 				CPU: &ControlResult{Backend: "rapl", Result: "applied", Message: "ok", UpdatedAt: "2026-01-01T00:00:00Z"},
@@ -70,7 +69,7 @@ func TestNodeTwinRoundTrip(t *testing.T) {
 		"status.schedulableClass", "status.powerMeasurement.source", "status.powerMeasurement.powerTrendWPerMin",
 		"status.predictedPowerHeadroomScore", "status.predictedCoolingStressScore", "status.predictedPsuStressScore",
 		"status.effectiveCapState.cpuPct", "status.effectiveCapState.gpuPct",
-		"status.hardwareDensityScore", "status.estimatedPUE",
+		"status.estimatedPUE",
 		"status.controlStatus.cpu.backend", "status.controlStatus.gpu.updatedAt", "status.lastUpdated",
 	} {
 		mustHavePath(t, u, p)

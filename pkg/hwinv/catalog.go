@@ -20,14 +20,16 @@ type Catalog struct {
 	GPUModels      map[string]GPUModelSpec `yaml:"gpuModels"`
 }
 
+// CPUModelSpec is one CPU model in the catalogue. A computeDensity or
+// performanceHints key in an older catalogue file is ignored: the first had no
+// defined meaning and ranked many-core CPU-only nodes above GPU nodes, the second was
+// never read.
 type CPUModelSpec struct {
-	Aliases          []string             `yaml:"aliases,omitempty"`
-	Provenance       string               `yaml:"provenance"`
-	Official         CPUOfficialSpec      `yaml:"official"`
-	MeasuredCurves   *CPUMeasuredCurveSet `yaml:"measuredCurves,omitempty"`
-	ProxyFrom        *CPUProxySpec        `yaml:"proxyFrom,omitempty"`
-	ComputeDensity   float64              `yaml:"computeDensity,omitempty"`
-	PerformanceHints map[string]float64   `yaml:"performanceHints,omitempty"`
+	Aliases        []string             `yaml:"aliases,omitempty"`
+	Provenance     string               `yaml:"provenance"`
+	Official       CPUOfficialSpec      `yaml:"official"`
+	MeasuredCurves *CPUMeasuredCurveSet `yaml:"measuredCurves,omitempty"`
+	ProxyFrom      *CPUProxySpec        `yaml:"proxyFrom,omitempty"`
 }
 
 type CPUOfficialSpec struct {
@@ -58,12 +60,12 @@ type CPUProxySpec struct {
 	Method string `yaml:"method"`
 }
 
+// GPUModelSpec is one GPU model in the catalogue; see CPUModelSpec for the
+// keys older files may still carry.
 type GPUModelSpec struct {
-	Aliases          []string           `yaml:"aliases,omitempty"`
-	Provenance       string             `yaml:"provenance"`
-	Official         GPUOfficialSpec    `yaml:"official"`
-	ComputeDensity   float64            `yaml:"computeDensity,omitempty"`
-	PerformanceHints map[string]float64 `yaml:"performanceHints,omitempty"`
+	Aliases    []string        `yaml:"aliases,omitempty"`
+	Provenance string          `yaml:"provenance"`
+	Official   GPUOfficialSpec `yaml:"official"`
 }
 
 type GPUOfficialSpec struct {

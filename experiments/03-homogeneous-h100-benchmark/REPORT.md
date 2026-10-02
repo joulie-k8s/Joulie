@@ -103,6 +103,8 @@ H100 NVL parameters:
 
 ## 2. Policy Algorithms
 
+> **Note:** These runs used the controller manager's compute-density order to choose the performance nodes: one node per hardware family, then the remaining slots by descending compute-density score. Joulie v0.2.2 removed that order and splits the performance slots across hardware families in proportion to family size.
+
 ### 2.1 Static partition (`static_partition`)
 
 Given `N=41` managed nodes with `STATIC_HP_FRAC=0.25`:

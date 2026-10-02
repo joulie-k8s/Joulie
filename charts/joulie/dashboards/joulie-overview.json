@@ -100,7 +100,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
       "id": 101,
-      "title": "Policy controller: transitions and density",
+      "title": "Policy controller: transitions and families",
       "type": "row"
     },
     {
@@ -132,12 +132,12 @@
       },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
       "id": 5,
-      "title": "Compute Density Score",
+      "title": "Performance nodes per family",
       "type": "timeseries",
       "targets": [
         {
-          "expr": "joulie_policy_node_compute_density{node=~\"$node\"}",
-          "legendFormat": "{{node}} ({{component}})"
+          "expr": "joulie_policy_family_performance_nodes",
+          "legendFormat": "{{family}}"
         }
       ]
     },

@@ -201,7 +201,6 @@ type NodeTwinStatus struct {
 	// Reserved for future rack-topology-aware extensions. Not used in scoring.
 	PredictedPsuStressScore float64  `json:"predictedPsuStressScore,omitempty"`
 	EffectiveCapState       CapState `json:"effectiveCapState,omitempty"`
-	HardwareDensityScore    float64  `json:"hardwareDensityScore,omitempty"`
 	// EstimatedPUE is the estimated Power Usage Effectiveness for this node.
 	// PUE = 1.0 + overhead. Ranges from ~1.05 (idle, cool) to ~1.40 (stressed cooling).
 	// Reserved for future rack-topology-aware extensions. Not used in scoring.

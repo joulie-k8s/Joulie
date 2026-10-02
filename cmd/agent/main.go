@@ -1410,7 +1410,7 @@ func readProcCPUInfo() (model string, sockets int) {
 // discoverCPURawModel resolves the CPU model string. NFD publishes
 // cpu-model.vendor_id, family and id, but no model name, so on bare metal
 // /proc/cpuinfo is the only source; without it the hardware catalog can never
-// match and the node has no TDP or compute-density data.
+// match and the node gets no catalogue TDP to fall back on.
 func discoverCPURawModel(nodeLabels map[string]string) string {
 	if v := firstNonEmpty(
 		nodeLabels["feature.node.kubernetes.io/cpu-model.name"],

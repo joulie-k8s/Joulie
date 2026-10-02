@@ -13,7 +13,7 @@ The workflow:
 
 - agent publishes `NodeHardware`,
 - controller manager resolves discovered hardware against the shared inventory,
-- the controller manager plans with CPU/GPU density awareness,
+- the controller manager splits the performance slots across hardware families (one per GPU model, or per CPU model on CPU-only nodes) in proportion to family size,
 - simulator uses the same CPU/GPU inventory for node composition and fallback modeling.
 
 ## Files
@@ -392,7 +392,7 @@ are preferred over transient startup/shutdown phases.
 
 ## Notes
 
-- The first heterogeneous policy version reasons on CPU and GPU density only.
+- The policy splits the performance slots across hardware families in proportion to family size, with at least one per family. Up to Joulie v0.2.1 the controller manager filled the remaining slots in CPU and GPU compute-density order; v0.2.2 removed that order.
 - Unknown hardware uses per-device fallback.
 - `NodeHardware` is not hand-authored in this experiment; it is published by the agent.
 - This experiment is intended to be the benchmark-facing consumer of the shared hardware inventory and physical model.

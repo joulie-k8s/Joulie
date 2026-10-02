@@ -99,10 +99,14 @@ Exported by the controller manager. Until the next minor release each metric is 
 
 ### Heterogeneous planning
 
-- `joulie_policy_node_compute_density{node,component}` (gauge)
-  - normalized per-node density signal used for heterogeneous planning
-  - `component`: `cpu|gpu`
-  - higher values mean the controller manager considers that node relatively denser for that subsystem
+These two gauges are new in v0.2.2 and have no `joulie_operator_*` alias. Both are reset every reconcile and computed from the plan after the downgrade guard, so a draining node counts as not performance. `family` is `gpu:<model>` when the node has GPUs, otherwise `cpu:<model>` (see [Heterogeneous planning]({{< relref "/docs/architecture/controller-manager.md#heterogeneous-planning" >}})).
+
+- `joulie_policy_family_nodes{family}` (gauge)
+  - eligible nodes in each hardware family
+- `joulie_policy_family_performance_nodes{family}` (gauge)
+  - nodes of each hardware family planned in the `performance` profile
+
+`joulie_policy_node_compute_density{node,component}` and its alias `joulie_operator_node_compute_density` were removed in v0.2.2, together with the compute-density ordering that used them. The density values had no defined meaning and ranked many-core CPU-only nodes above GPU nodes; performance slots are now split across hardware families instead.
 
 ## Scheduler extender metrics
 

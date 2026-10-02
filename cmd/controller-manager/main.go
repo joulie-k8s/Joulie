@@ -95,8 +95,6 @@ type NodeHardware struct {
 	GPUCapKnown         bool
 	CPUControlAvailable bool
 	GPUControlAvailable bool
-	CPUComputeDensity   float64
-	GPUComputeDensity   float64
 	Warnings            []string
 }
 
@@ -122,11 +120,20 @@ var (
 		"Total number of state-transition events handled by the policy controller.",
 		[]string{"node", "from_state", "to_state", "result"},
 	)
-	policyNodeDensity = newDualGaugeVec(
-		"joulie_policy_node_compute_density", "joulie_operator_node_compute_density",
-		"Normalized compute density score used by the policy controller for heterogeneous planning.",
-		[]string{"node", "component"},
-	)
+
+	// How the policy split the performance slots across hardware families.
+	// New in the per-family split, so there is no joulie_operator_* alias.
+	// Both are reset every reconcile because family keys change at runtime:
+	// cpu:unknown-cpu becomes a catalogue key once the agent publishes
+	// NodeHardware.
+	policyFamilyNodes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "joulie_policy_family_nodes",
+		Help: "Eligible nodes in each hardware family, as the policy controller groups them.",
+	}, []string{"family"})
+	policyFamilyPerformanceNodes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "joulie_policy_family_performance_nodes",
+		Help: "Nodes of each hardware family planned in the performance profile after the downgrade guard.",
+	}, []string{"family"})
 )
 
 func main() {
@@ -282,7 +289,7 @@ func registerMetrics(reg prometheus.Registerer) {
 	reg.MustRegister(policyNodeState.collectors()...)
 	reg.MustRegister(policyNodeProfileLabel.collectors()...)
 	reg.MustRegister(policyStateTransitions.collectors()...)
-	reg.MustRegister(policyNodeDensity.collectors()...)
+	reg.MustRegister(policyFamilyNodes, policyFamilyPerformanceNodes)
 }
 
 func startMetricsServer(addr string) {
@@ -386,6 +393,7 @@ func reconcileWithCatalog(
 	sort.Strings(eligible)
 	if len(eligible) == 0 {
 		log.Printf("no eligible nodes matched selector=%q", selector.String())
+		recordFamilySplit(nil, nil) // no families left, so no stale split either
 		return nil
 	}
 
@@ -401,19 +409,7 @@ func reconcileWithCatalog(
 			nodeHardwareByName[nodeName] = nodeHardwareFromLabels(*n, hardwareCatalog, gpuProductLabelKeys)
 		}
 	}
-	sortNodesByDensity(eligible, nodeHardwareByName)
-	for _, nodeName := range eligible {
-		nh, ok := nodeHardwareByName[nodeName]
-		if !ok {
-			policyNodeDensity.Set(0, nodeName, "cpu")
-			policyNodeDensity.Set(0, nodeName, "gpu")
-			continue
-		}
-		policyNodeDensity.Set(nh.CPUComputeDensity, nodeName, "cpu")
-		policyNodeDensity.Set(nh.GPUComputeDensity, nodeName, "gpu")
-	}
-
-	plan := buildPlanByPolicy(ctx, reader, policyType, eligible, nodeHardwareByName, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
+	plan := buildPlanByPolicy(ctx, reader, policyType, eligible, nodeHardwareByName, nodesByName, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
 	for i := range plan {
 		plan[i].SourceProfile = currentProfileOrDefault(nodesByName[plan[i].NodeName])
 		plan[i].Draining = false
@@ -455,6 +451,7 @@ func reconcileWithCatalog(
 		}
 	}
 	applyDowngradeGuards(ctx, reader, plan, nodesByName)
+	recordFamilySplit(plan, nodeHardwareByName)
 
 	// Build per-rack estimated power for topology-aware PSU stress.
 	// Sum each node's estimated power (CPU + GPU at current cap %) per rack.
@@ -655,12 +652,33 @@ func toHardwareInfoMap(hw map[string]NodeHardware) map[string]policy.NodeHardwar
 	return out
 }
 
+// recordFamilySplit exports how the plan, after the downgrade guard, splits
+// the performance profile across hardware families.
+func recordFamilySplit(plan []NodeAssignment, nodeHardwareByName map[string]NodeHardware) {
+	hw := toHardwareInfoMap(nodeHardwareByName)
+	nodes, perf := map[string]float64{}, map[string]float64{}
+	for _, a := range plan {
+		family := policy.NodeFamily(a.NodeName, hw)
+		nodes[family]++
+		if a.Profile == profilePerformance {
+			perf[family]++
+		}
+	}
+	policyFamilyNodes.Reset()
+	policyFamilyPerformanceNodes.Reset()
+	for family, n := range nodes {
+		policyFamilyNodes.WithLabelValues(family).Set(n)
+		policyFamilyPerformanceNodes.WithLabelValues(family).Set(perf[family])
+	}
+}
+
 func buildPlanByPolicy(
 	ctx context.Context,
 	reader kube.Reader,
 	policyType string,
 	nodes []string,
 	nodeHardwareByName map[string]NodeHardware,
+	currentProfiles map[string]string,
 	interval time.Duration,
 	perfCap, ecoCap, staticHPFrac, queueHPBaseFrac float64,
 	queueHPMin, queueHPMax, queuePerfPerHPNode int,
@@ -668,19 +686,19 @@ func buildPlanByPolicy(
 	hw := toHardwareInfoMap(nodeHardwareByName)
 	switch policyType {
 	case "static_partition", "":
-		return policy.BuildStaticPlan(nodes, hw, perfCap, ecoCap, staticHPFrac)
+		return policy.BuildStaticPlan(nodes, hw, currentProfiles, perfCap, ecoCap, staticHPFrac)
 	case "queue_aware_v1":
 		perfIntentPods, err := runningPerformanceSensitivePodCountAllNodes(ctx, reader)
 		if err != nil {
 			log.Printf("warning: cannot classify running pods for queue_aware_v1: %v; falling back to static fraction", err)
-			return policy.BuildStaticPlan(nodes, hw, perfCap, ecoCap, queueHPBaseFrac)
+			return policy.BuildStaticPlan(nodes, hw, currentProfiles, perfCap, ecoCap, queueHPBaseFrac)
 		}
-		return policy.BuildQueueAwarePlan(nodes, hw, perfCap, ecoCap, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode, perfIntentPods)
+		return policy.BuildQueueAwarePlan(nodes, hw, currentProfiles, perfCap, ecoCap, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode, perfIntentPods)
 	case "rule_swap_v1":
 		return policy.BuildRuleSwapPlan(nodes, interval, perfCap, ecoCap)
 	default:
 		log.Printf("warning: unknown POLICY_TYPE=%q, falling back to static_partition", policyType)
-		return policy.BuildStaticPlan(nodes, hw, perfCap, ecoCap, staticHPFrac)
+		return policy.BuildStaticPlan(nodes, hw, currentProfiles, perfCap, ecoCap, staticHPFrac)
 	}
 }
 
@@ -730,17 +748,6 @@ func summarizePlan(plan []NodeAssignment) string {
 		parts = append(parts, fmt.Sprintf("%s=%s(cpu=%s%s)", p.NodeName, p.Profile, cpuPart, gpuPart))
 	}
 	return strings.Join(parts, ",")
-}
-
-func sortNodesByDensity(nodes []string, hardwareByName map[string]NodeHardware) {
-	sort.SliceStable(nodes, func(i, j int) bool {
-		di := nodeDensityScore(hardwareByName[nodes[i]])
-		dj := nodeDensityScore(hardwareByName[nodes[j]])
-		if di == dj {
-			return nodes[i] < nodes[j]
-		}
-		return di > dj
-	})
 }
 
 func computeAbsoluteCPUCap(profile string, nh NodeHardware, catalog *hwinv.Catalog, perfCap, ecoCap float64) (float64, bool) {
@@ -978,11 +985,9 @@ func listNodeHardware(ctx context.Context, reader kube.Reader, catalog *hwinv.Ca
 			})
 			if match.CPUSpec != nil {
 				nh.CPUModel = match.CPUKey
-				nh.CPUComputeDensity = computeCPUNodeDensity(*match.CPUSpec, nh.CPUSockets, nh.CPUTotalCores)
 			}
 			if match.GPUSpec != nil {
 				nh.GPUModel = match.GPUKey
-				nh.GPUComputeDensity = computeGPUNodeDensity(*match.GPUSpec, nh.GPUCount)
 			}
 			nh.Warnings = append(nh.Warnings, match.Warnings...)
 		}
@@ -1058,11 +1063,9 @@ func nodeHardwareFromLabels(node corev1.Node, catalog *hwinv.Catalog, gpuProduct
 		})
 		if match.CPUSpec != nil {
 			nh.CPUModel = match.CPUKey
-			nh.CPUComputeDensity = computeCPUNodeDensity(*match.CPUSpec, nh.CPUSockets, nh.CPUTotalCores)
 		}
 		if match.GPUSpec != nil {
 			nh.GPUModel = match.GPUKey
-			nh.GPUComputeDensity = computeGPUNodeDensity(*match.GPUSpec, nh.GPUCount)
 		}
 		nh.Warnings = append(nh.Warnings, match.Warnings...)
 	}
@@ -1076,36 +1079,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func computeCPUNodeDensity(spec hwinv.CPUModelSpec, sockets, totalCores int) float64 {
-	base := spec.ComputeDensity
-	if base <= 0 {
-		base = spec.Official.BoostGHz * spec.Official.TDPW
-	}
-	multiplier := float64(totalCores)
-	if multiplier <= 0 && sockets > 0 {
-		multiplier = float64(sockets)
-	}
-	if multiplier <= 0 {
-		multiplier = 1
-	}
-	return base * multiplier
-}
-
-func computeGPUNodeDensity(spec hwinv.GPUModelSpec, count int) float64 {
-	base := spec.ComputeDensity
-	if base <= 0 {
-		base = spec.Official.MaxBoardPowerW
-	}
-	if count <= 0 {
-		count = 1
-	}
-	return base * float64(count)
-}
-
-func nodeDensityScore(nh NodeHardware) float64 {
-	return nh.CPUComputeDensity + nh.GPUComputeDensity
 }
 
 // estimateNodePowerW estimates the total power draw of a node from its hardware

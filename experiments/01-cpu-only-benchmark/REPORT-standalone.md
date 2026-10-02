@@ -4,6 +4,8 @@ This page reports results from the CPU-only standalone simulator benchmark:
 
 - [`experiments/01-cpu-only-benchmark/`](.)
 
+> **Note:** These results were produced with the standalone simulator before Joulie v0.2.2. That simulator chose the performance nodes as one node per hardware family, then filled the remaining slots in node-name order. Joulie v0.2.2 splits the performance slots across hardware families in proportion to family size. These results have not been rerun with that split, and the exact configuration of the published runs is not recorded in the repository.
+
 ## Scope
 
 The benchmark compares three baselines on a **CPU-only cluster** with 5,000 nodes across 3 hardware families, running entirely in the **standalone Go simulator** (`joulie-simulator`) — no Kubernetes, no Kind, no KWOK. All scheduling, power modelling, and job lifecycle management happen in-memory via scoring-based job placement, with physics-based cooling co-simulation provided by the DXCooledAirsideEconomizer FMU.

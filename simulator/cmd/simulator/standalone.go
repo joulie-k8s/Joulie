@@ -12,6 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/matbun/joulie/pkg/controller/policy"
+	"github.com/matbun/joulie/pkg/hwinv"
+	"github.com/matbun/joulie/simulator/pkg/hw"
 	"github.com/matbun/joulie/simulator/pkg/phys"
 	"sigs.k8s.io/yaml"
 )
@@ -1173,55 +1176,37 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 	return int(completedTotal)
 }
 
-// nodeFamily returns the hardware family key for a node (matches the controller manager's NodeFamily).
-func nodeFamily(n *expandedNode) string {
-	if n.GPUCount > 0 {
-		model := n.Product
-		if model == "" {
-			model = "unknown-gpu"
-		}
-		return "gpu:" + model
-	}
-	model := n.CPUModel
-	if model == "" {
-		model = "unknown-cpu"
-	}
-	return "cpu:" + model
-}
-
-// selectPerformanceNodes picks hpCount nodes for performance, prioritizing
-// one node from each hardware family before filling remaining slots.
-// Matches the real controller manager's selectPerformanceNodes in policy.go.
-func selectPerformanceNodes(nodeNames []string, nodeByName map[string]*expandedNode, hpCount int) map[string]bool {
-	perfNodes := make(map[string]bool, hpCount)
-	seenFamilies := make(map[string]struct{}, len(nodeNames))
-	// First pass: one node per family.
+// performanceNodes is the simulator's whole decision of which nodes stay in
+// performance. It describes the simulated nodes the way the controller manager
+// hands them to pkg/controller/policy and calls the same PerformanceSet:
+//   - a model the catalogue knows is keyed by its catalogue key, otherwise by
+//     its raw string, as listNodeHardware does in the controller manager. The
+//     key matters: PerformanceSet gives a tied slot to the smaller key;
+//   - a node is currently in performance when it is neither eco nor draining.
+//     The controller labels a draining node eco, so it is not kept first there
+//     either.
+func performanceNodes(catalog *hw.Catalog, nodeNames []string, nodeByName map[string]*expandedNode, tracker map[string]*standaloneNodeTracker, hpCount int) map[string]bool {
+	hwInfo := make(map[string]policy.NodeHardwareInfo, len(nodeNames))
+	current := make(map[string]string, len(nodeNames))
 	for _, name := range nodeNames {
-		n := nodeByName[name]
-		if n == nil {
-			continue
+		if n := nodeByName[name]; n != nil {
+			info := policy.NodeHardwareInfo{CPURawModel: n.CPUModel, GPURawModel: n.Product, GPUCount: n.GPUCount}
+			if catalog != nil {
+				match := catalog.MatchNode(hwinv.NodeDescriptor{CPUModelRaw: n.CPUModel, GPUModelRaw: n.Product, GPUCount: n.GPUCount})
+				if match.CPUSpec != nil {
+					info.CPUModel = match.CPUKey
+				}
+				if match.GPUSpec != nil {
+					info.GPUModel = match.GPUKey
+				}
+			}
+			hwInfo[name] = info
 		}
-		family := nodeFamily(n)
-		if _, ok := seenFamilies[family]; ok {
-			continue
-		}
-		perfNodes[name] = true
-		seenFamilies[family] = struct{}{}
-		if len(perfNodes) >= hpCount {
-			return perfNodes
-		}
-	}
-	// Second pass: fill remaining slots.
-	for _, name := range nodeNames {
-		if perfNodes[name] {
-			continue
-		}
-		perfNodes[name] = true
-		if len(perfNodes) >= hpCount {
-			break
+		if t := tracker[name]; t != nil && !t.isEco && !t.isDraining {
+			current[name] = "performance"
 		}
 	}
-	return perfNodes
+	return policy.PerformanceSet(nodeNames, hwInfo, current, hpCount)
 }
 
 // countPerformanceSensitivePending counts pending+running performance-class pods
@@ -1244,7 +1229,7 @@ func countPerformanceSensitivePending(tracker map[string]*standaloneNodeTracker,
 
 // applyPowerPolicy sets eco/performance labels and corresponding power caps on nodes.
 // Matches the real controller manager logic:
-//   - Family diversity: at least 1 perf node per hardware family
+//   - Per-family split: policy.PerformanceSet, at least 1 perf node per hardware family
 //   - FSM draining: nodes with running perf pods can't instantly transition to eco
 //   - Queue-aware (C): counts performance-sensitive pods, not all pending
 func applyPowerPolicy(s *simulator, tracker map[string]*standaloneNodeTracker, nodeNames []string, nodeByName map[string]*expandedNode, baseline string, hpFrac, cpuEcoPct, gpuEcoPct float64, perfIntentPods int, perfPerHP, hpBaseFrac float64, hpMin, hpMax int) {
@@ -1298,22 +1283,9 @@ func applyPowerPolicy(s *simulator, tracker map[string]*standaloneNodeTracker, n
 		hpCount = 0
 	}
 
-	// Enforce family diversity: at least 1 perf node per HW family.
-	families := map[string]struct{}{}
-	for _, name := range nodeNames {
-		if n := nodeByName[name]; n != nil {
-			families[nodeFamily(n)] = struct{}{}
-		}
-	}
-	if len(families) > hpCount {
-		hpCount = len(families)
-	}
-	if hpCount > totalNodes {
-		hpCount = totalNodes
-	}
-
-	// Select performance nodes with family diversity.
-	perfNodes := selectPerformanceNodes(nodeNames, nodeByName, hpCount)
+	// Split the slots across hardware families exactly as the controller
+	// manager does, at least one per family.
+	perfNodes := performanceNodes(s.catalog, nodeNames, nodeByName, tracker, hpCount)
 
 	s.mu.Lock()
 	for _, name := range nodeNames {

@@ -46,9 +46,10 @@ _LOCAL_REGISTRY_PORT = 5000
 _DEFAULT_REGISTRY_REPO = f"{_LOCAL_REGISTRY_HOST}:{_LOCAL_REGISTRY_PORT}/joulie"
 
 # Stable node names registered in Kubernetes via --node-name.
-# Alphabetically "k3s-server" < "k3s-worker-0", so the controller manager's density sort
-# (tie-broken lexicographically) always assigns performance to k3s-server and
-# eco to k3s-worker-0 when STATIC_HP_FRAC=0.
+# Both nodes form one hardware family, and the policy keeps one performance node
+# per family even when STATIC_HP_FRAC=0. It picks the first name, "k3s-server" <
+# "k3s-worker-0", and keeps that node on later reconciles, so k3s-server stays in
+# performance and k3s-worker-0 goes to eco.
 K3S_SERVER_NODE = "k3s-server"
 K3S_WORKER_NODE = "k3s-worker-0"
 
@@ -330,7 +331,7 @@ class JoulieCi:
         4. Install Joulie Helm chart with the freshly published images.
         5. Execute integration tests and return runner stdout.
 
-        Node roles (deterministic via --node-name + controller manager sort):
+        Node roles (deterministic via --node-name and the policy's name order):
           k3s-server   → always stays in performance (family floor)
           k3s-worker-0 → transitions to eco when STATIC_HP_FRAC=0
         """

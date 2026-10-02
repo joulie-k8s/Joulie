@@ -57,13 +57,12 @@ This separation keeps policy logic portable while actuator details stay node-loc
    - prefer `NodeHardware`
    - otherwise derive hardware identity from node labels / allocatable resources
    - resolve CPU/GPU models against the inventory
-   - compute per-node CPU/GPU density signals
 4. Build demand view from active pods:
    - performance-constrained
    - eco-constrained
    - unconstrained
-5. Sort eligible nodes by normalized compute density (CPU + GPU), highest first.
-6. Run policy (`static_partition`, `queue_aware_v1`, or debug `rule_swap_v1`).
+5. Sort eligible nodes by name. The order does not choose performance nodes; only `rule_swap_v1` depends on it.
+6. Run policy (`static_partition`, `queue_aware_v1`, or debug `rule_swap_v1`). `static_partition` and `queue_aware_v1` split their performance slots across hardware families (see [Heterogeneous planning](#heterogeneous-planning)).
 7. For planned `performance -> eco` transitions, run downgrade guard:
    - publish `profile=eco` as desired state
    - set `NodeTwin.status.schedulableClass` to `draining` while performance pods are still present
@@ -107,13 +106,18 @@ This is why GPU `NodeTwin.spec` objects may contain both normalized intent and r
 
 The controller manager is now inventory-aware.
 
-Its first heterogeneous-planning input is a normalized compute-density score built from:
+`static_partition` and `queue_aware_v1` decide how many nodes stay in `performance` (`hpCount`); `policy.PerformanceSet` (`pkg/controller/policy/policy.go`) decides which ones. It groups eligible nodes into hardware families (`policy.NodeFamily`): `gpu:<model>` when the node has GPUs, otherwise `cpu:<model>`. The `hpCount` slots are then split across families in proportion to family size, with at least one per family.
 
-- recognized CPU model + socket/core shape
-- recognized GPU model + GPU count
+- `static_partition`: `hpCount = round(N * STATIC_HP_FRAC)`, so in effect about `STATIC_HP_FRAC` of every family stays in `performance`.
+- `queue_aware_v1`: `hpCount = max(round(N * QUEUE_HP_BASE_FRAC), ceil(running performance-sensitive pods / QUEUE_PERF_PER_HP_NODE))`, clamped to `[QUEUE_HP_MIN, QUEUE_HP_MAX]`.
 
-This score is used to order eligible nodes before policy assignment.
-So, for the same policy parameters, denser nodes are preferred first for `performance` supply.
+`hpCount` is raised to the number of families and capped at the number of nodes. The split is the Sainte-Lague divisor method started from one slot per family: each further slot goes to the family with the largest `size / (2 * slots + 1)`, ties to the smaller family key. The method is house monotone, so when `hpCount` changes by one, exactly one node changes profile.
+
+Within a family, nodes whose current `joulie.io/power-profile` label is `performance` are kept first, so a reconcile at constant demand moves nothing; the node name orders the rest. The result does not depend on the order of the input list.
+
+**Example**: the exp02 5k inventory (`experiments/02-heterogeneous-benchmark/configs/cluster-nodes-5k.yaml`) with 1000 performance slots gives h100-nvl 290 of 1450, h100-sxm 146 of 730, l40s 170 of 850, mi300x 48 of 240, w7900 146 of 730, cpu-highcore 50 of 250, cpu-highfreq 50 of 250 and cpu-intensive 100 of 500. `TestPerformanceSetMatchesDocumentedExp02Split` pins this split.
+
+The `joulie_policy_family_nodes` and `joulie_policy_family_performance_nodes` gauges export the split per family (see [Metrics]({{< relref "/docs/architecture/metrics.md" >}})).
 
 If `NodeHardware` is not available yet:
 
@@ -135,7 +139,7 @@ That state means:
 
 - the controller manager wants the node to end up in eco,
 - the transition is still guarded because performance pods are still present,
-- the scheduler extender sees `schedulableClass: draining` and applies a score penalty to avoid placing new workloads on the node.
+- the scheduler extender sees `schedulableClass: draining` and filters the node out for performance pods; it applies no score penalty to draining nodes.
 
 ## Why this model
 

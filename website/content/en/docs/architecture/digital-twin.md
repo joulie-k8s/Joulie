@@ -18,7 +18,6 @@ For each managed node, the twin produces three scores stored in `NodeTwin.status
 The twin also computes:
 
 - **SchedulableClass**: `performance`, `eco`, or `draining` (transition state). The scheduler extender uses this to filter and score nodes.
-- **HardwareDensityScore**: normalized compute density proxy used for heterogeneous planning.
 - **EstimatedPUE**: derived from cooling stress, between 1.05 and 1.40. Published for observability; not read by the scheduler today.
 - **PowerMeasurement**: a block of measured and derived power values consumed directly by the scheduler for projected headroom scoring.
 
@@ -173,18 +172,6 @@ The scheduler does not read this score today. It is published for observability 
 
 - `psuStress` = 30000 / 50000 * 100 = **60**
 
-## HardwareDensityScore
-
-A normalized compute density proxy used for heterogeneous planning:
-
-```
-cpuScore = totalCores / 192 * 100
-gpuScore = gpuCount / 8 * 100
-density  = clamp(gpuPresent ? (cpuScore + gpuScore) / 2 : cpuScore, 0, 100)
-```
-
-The references are a 192-core CPU and an 8-GPU node. **Example**: the reference node (192 cores, 4 GPUs) scores (100 + 50) / 2 = **75**.
-
 ## Estimated PUE
 
 ```
@@ -203,7 +190,7 @@ The twin controller runs in the controller manager on each reconcile tick (~1 mi
 twin controller (controller manager)
   → writes NodeTwin.status
     → scheduler extender cache (30s TTL)
-      → filter: rejects eco nodes for performance pods
+      → filter: rejects eco and draining nodes for performance pods
       → score: headroomScore*0.7 + (100-coolingStress)*0.15 + trendBonus + profileBonus + pressureRelief
 ```
 
@@ -225,7 +212,6 @@ The twin is implemented in `pkg/controller/twin/twin.go`. Key types and function
 - `Output`: the computed `NodeTwin.status` fields.
 - `Compute(Input) Output`: the main computation function. Derives TDP and capped budgets, then calls the helpers below.
 - `computePowerHeadroom`, `computeCoolingStress`, `computePSUStress`: the three score formulas.
-- `ComputeHardwareDensityScore`: the density proxy, exported for the controller manager and tests.
 
 There is no cooling model interface and no alternative cooling implementation. Cooling stress is the single closed-form expression above; replacing it with a higher-fidelity thermal model means changing `computeCoolingStress`.
 

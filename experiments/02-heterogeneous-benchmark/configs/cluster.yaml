@@ -4,7 +4,6 @@ inventory:
   generated_classes: examples/07-simulator-gpu-powercaps/manifests/10-node-classes.yaml
   generated_catalog: simulator/catalog/hardware.generated.yaml
 policy:
-  density_inputs: [cpu, gpu]
   unknown_hardware: per-device-fallback
   cpu_write_absolute_caps: false
   gpu_write_absolute_caps: false
