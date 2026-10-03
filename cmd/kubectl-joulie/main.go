@@ -100,7 +100,6 @@ type nodeState struct {
 	psuStress     float64
 	cpuCapPct     float64
 	gpuCapPct     float64
-	density       float64
 	lastUpdated   string
 	// Resource allocation
 	cpuAllocPct float64
@@ -232,7 +231,6 @@ func parseNodeState(u unstructured.Unstructured) nodeState {
 	ns.headroom = math.Max(0, nestedNumber(u.Object, "status", "predictedPowerHeadroomScore"))
 	ns.coolingStress = nestedNumber(u.Object, "status", "predictedCoolingStressScore")
 	ns.psuStress = nestedNumber(u.Object, "status", "predictedPsuStressScore")
-	ns.density = nestedNumber(u.Object, "status", "hardwareDensityScore")
 	ns.lastUpdated, _, _ = unstructured.NestedString(u.Object, "status", "lastUpdated")
 
 	if cap, ok := status["effectiveCapState"].(map[string]interface{}); ok {

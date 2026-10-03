@@ -24,13 +24,44 @@ Each reconcile tick:
 
 1. Select eligible nodes from `NODE_SELECTOR`, excluding reserved and unschedulable nodes.
 2. Build a hardware view from `NodeHardware` when available, otherwise from node labels/inventory fallback.
-3. Sort eligible nodes by normalized compute density (highest first).
-4. Preserve at least one performance-capable node per discovered hardware family whenever the requested HP count allows it.
-5. Build a desired plan with the selected policy.
-6. Apply downgrade guard (sets `NodeTwin.status.schedulableClass` to `draining` while blocking pods still run).
-7. Write `NodeTwin.spec` and update the `joulie.io/power-profile` node label.
+3. Build a desired plan with the selected policy.
+4. Apply downgrade guard (sets `NodeTwin.status.schedulableClass` to `draining` while blocking pods still run).
+5. Write `NodeTwin.spec` and update the `joulie.io/power-profile` node label.
 
-In other words, policies still decide *how many* high-performance nodes are needed, but the density-aware ordering influences *which* nodes get those assignments.
+In other words, `static_partition` and `queue_aware_v1` decide *how many* nodes stay in `performance`, and the per-family split below decides *which* nodes those are.
+
+## Performance Node Selection
+
+`static_partition` and `queue_aware_v1` compute a performance slot count `hp_count` and pass it to `policy.PerformanceSet`:
+
+1. Group the eligible nodes into hardware families (`policy.NodeFamily`): `gpu:<model>` when the node has GPUs, otherwise `cpu:<model>`.
+2. Raise `hp_count` to the number of families and cap it at the number of nodes.
+3. Give every family one slot. Each further slot goes to the family with the largest `size / (2 * slots + 1)`, ties to the smaller family key (the Sainte-Lague divisor method). A family never gets more slots than it has nodes.
+4. Within a family, fill the slots with nodes whose current `joulie.io/power-profile` label is `performance` first, then by node name.
+
+Properties:
+
+- every family keeps performance capacity in proportion to its size, and at least one node,
+- house monotone: when `hp_count` changes by one, exactly one node changes profile,
+- a reconcile at constant demand moves no node, because nodes already in `performance` are kept first,
+- the result does not depend on the order of the input node list.
+
+Example: the exp02 5k inventory (`experiments/02-heterogeneous-benchmark/configs/cluster-nodes-5k.yaml`, 5000 nodes in 8 families) with 1000 performance slots (`STATIC_HP_FRAC=0.2`) keeps a fifth of every family in `performance`:
+
+| Family | Nodes | Performance |
+|---|---|---|
+| h100-nvl | 1450 | 290 |
+| h100-sxm | 730 | 146 |
+| l40s | 850 | 170 |
+| mi300x | 240 | 48 |
+| w7900 | 730 | 146 |
+| cpu-highcore | 250 | 50 |
+| cpu-highfreq | 250 | 50 |
+| cpu-intensive | 500 | 100 |
+
+`TestPerformanceSetMatchesDocumentedExp02Split` in `pkg/controller/policy/policy_test.go` pins this split. The standalone simulator calls the same `policy.PerformanceSet`.
+
+The controller manager exports the split after the downgrade guard as `joulie_policy_family_nodes{family}` and `joulie_policy_family_performance_nodes{family}`, so a draining node counts as not performance.
 
 ## `static_partition`
 
@@ -44,17 +75,14 @@ Inputs:
 Algorithm:
 
 1. `hp_count = round(N * STATIC_HP_FRAC)`.
-2. Clamp `hp_count` to `[0, N]`.
-3. Sort eligible nodes by compute density descending.
-4. Reserve at least one performance node per hardware family (GPU model for GPU nodes, CPU model for CPU-only nodes).
-5. Fill the remaining performance slots by density order.
-6. Remaining nodes -> `eco`.
+2. Pick the performance nodes with the [per-family split](#performance-node-selection), which raises `hp_count` to the number of families and caps it at `N`.
+3. Remaining nodes -> `eco`.
 
 Properties:
 
 - deterministic,
 - stable over time unless node set changes.
-- keeps at least some performance supply across heterogeneous hardware families.
+- keeps about `STATIC_HP_FRAC` of every hardware family in `performance`, and at least one node per family.
 
 This policy is exercised in the [CPU-Only Benchmark]({{< relref "/docs/experiments/cpu-only-benchmark.md" >}}) and [Heterogeneous GPU Cluster Benchmark]({{< relref "/docs/experiments/heterogeneous-benchmark.md" >}}).
 
@@ -77,17 +105,15 @@ Algorithm:
 2. `need = ceil(P / QUEUE_PERF_PER_HP_NODE)`.
 3. `hp_count = max(base, need)`.
 4. Clamp `hp_count` to `[QUEUE_HP_MIN, QUEUE_HP_MAX]`.
-5. Clamp again to `[0, N]`.
-6. Reserve at least one performance node per hardware family.
-7. Fill the remaining performance slots by density order.
-8. Remaining nodes -> `eco`.
+5. Pick the performance nodes with the [per-family split](#performance-node-selection), which raises `hp_count` to the number of families and caps it at `N`.
+6. Remaining nodes -> `eco`.
 
 Properties:
 
-- deterministic for a fixed `(N, P)`,
+- deterministic for a fixed `(N, P)` and the current profile labels,
 - monotonic in pressure `P`,
-- bounded by min/max limits,
-- heterogeneous-aware because denser nodes are preferred first while each family keeps some performance capacity.
+- bounded by min/max limits, except that every family keeps at least one performance node,
+- heterogeneous-aware because slots follow family size, and a change of `hp_count` by one moves exactly one node.
 
 This policy is exercised in the [CPU-Only Benchmark]({{< relref "/docs/experiments/cpu-only-benchmark.md" >}}) and [Heterogeneous GPU Cluster Benchmark]({{< relref "/docs/experiments/heterogeneous-benchmark.md" >}}).
 
@@ -98,7 +124,7 @@ Goal: force visible state transitions for debugging.
 Algorithm:
 
 1. Compute phase from wall-clock and `RECONCILE_INTERVAL`.
-2. Alternate which of the first nodes is assigned `eco`.
+2. Alternate which of the first two eligible nodes, in node-name order, is assigned `eco`.
 3. Others remain `performance`.
 
 This policy is intended for debugging only, not as default production behavior.
@@ -116,4 +142,4 @@ When planned profile is `eco` on a node currently `performance`:
    - keep desired profile `eco`,
    - set `NodeTwin.status.schedulableClass` to `eco`.
 
-The scheduler extender reads `schedulableClass` and applies a -20 score penalty for draining nodes, discouraging new workload placement during transitions.
+The scheduler extender reads `schedulableClass` and filters `draining` nodes out for performance pods, as it does `eco` nodes, so no new performance work lands on a node during the transition. Standard pods are not filtered.

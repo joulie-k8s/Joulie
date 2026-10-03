@@ -30,9 +30,6 @@ func TestComputeEcoProfile(t *testing.T) {
 	if out.EffectiveCapState.CPUPct != 60 {
 		t.Errorf("expected CPUPct=60, got %f", out.EffectiveCapState.CPUPct)
 	}
-	if out.HardwareDensityScore <= 0 || out.HardwareDensityScore > 100 {
-		t.Errorf("invalid density score: %f", out.HardwareDensityScore)
-	}
 }
 
 func TestComputeDraining(t *testing.T) {
@@ -48,28 +45,6 @@ func TestComputeDraining(t *testing.T) {
 		t.Errorf("expected draining, got %s", out.SchedulableClass)
 	}
 }
-
-func TestComputeHardwareDensityScore(t *testing.T) {
-	hw := joulie.NodeHardware{
-		CPU: joulie.NodeHardwareCPU{TotalCores: 192},
-		GPU: joulie.NodeHardwareGPU{Present: true, Count: 8},
-	}
-	score := ComputeHardwareDensityScore(hw)
-	if score < 90 || score > 100 {
-		t.Errorf("expected near-100 score for full node, got %f", score)
-	}
-
-	hw2 := joulie.NodeHardware{
-		CPU: joulie.NodeHardwareCPU{TotalCores: 64},
-		GPU: joulie.NodeHardwareGPU{Present: false},
-	}
-	score2 := ComputeHardwareDensityScore(hw2)
-	if score2 >= score {
-		t.Errorf("smaller node should have lower density score")
-	}
-}
-
-// Edge case tests
 
 func TestComputeUnknownProfile(t *testing.T) {
 	out := Compute(Input{NodeName: "n", Profile: "bogus"})
@@ -130,9 +105,6 @@ func TestComputeZeroHardwareNoPanic(t *testing.T) {
 		CPUCapPct: 60,
 		GPUCapPct: 60,
 	})
-	if out.HardwareDensityScore != 0 {
-		t.Errorf("expected 0 density for zero hardware, got %f", out.HardwareDensityScore)
-	}
 	// nodeCappedPower = 0 → headroom = 100 (neutral for unknown hardware)
 	if out.PredictedPowerHeadroomScore != 100 {
 		t.Errorf("expected headroom 100 for zero hardware, got %f", out.PredictedPowerHeadroomScore)

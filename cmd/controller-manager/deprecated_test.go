@@ -114,7 +114,6 @@ func TestPolicyMetricsRegisteredUnderBothNames(t *testing.T) {
 
 	recordNodeStateMetrics("dual-n1", "ActiveEco")
 	recordNodeProfileLabelMetrics("dual-n1", profileEco)
-	policyNodeDensity.Set(42.5, "dual-n1", "cpu")
 	recordTransitionMetrics(NodeAssignment{
 		NodeName: "dual-n1", SourceProfile: profilePerformance, Profile: profileEco, State: "ActiveEco",
 	})
@@ -127,7 +126,6 @@ func TestPolicyMetricsRegisteredUnderBothNames(t *testing.T) {
 		{"joulie_policy_node_state", "joulie_operator_node_state", map[string]string{"node": "dual-n1", "state": "ActiveEco"}, 1},
 		{"joulie_policy_node_state", "joulie_operator_node_state", map[string]string{"node": "dual-n1", "state": "ActivePerformance"}, 0},
 		{"joulie_policy_node_profile_label", "joulie_operator_node_profile_label", map[string]string{"node": "dual-n1", "profile": "eco"}, 1},
-		{"joulie_policy_node_compute_density", "joulie_operator_node_compute_density", map[string]string{"node": "dual-n1", "component": "cpu"}, 42.5},
 		{"joulie_policy_state_transitions_total", "joulie_operator_state_transitions_total", map[string]string{"node": "dual-n1", "from_state": "ActivePerformance", "to_state": "ActiveEco", "result": "applied"}, 1},
 	}
 	for _, c := range cases {

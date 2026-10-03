@@ -63,3 +63,34 @@ func TestMatchCPUAcceptsProcCPUInfoStrings(t *testing.T) {
 		}
 	}
 }
+
+// A catalogue mounted through HARDWARE_CATALOG_PATH that predates the removal
+// of computeDensity and performanceHints must keep loading and matching:
+// adopters copied the shipped file, keys included.
+func TestCatalogWithRemovedKeysStillLoads(t *testing.T) {
+	legacy := []byte(`catalogVersion: v1
+cpuModels:
+  AMD_EPYC_9654:
+    aliases: ["AMD EPYC 9654 96-Core Processor"]
+    provenance: exact+official
+    computeDensity: 710.4
+    performanceHints: {spec: 1.0}
+    official: {vendor: amd, baseGHz: 2.4, boostGHz: 3.7, tdpW: 360}
+gpuModels:
+  NVIDIA_H100_NVL:
+    aliases: ["NVIDIA H100 NVL"]
+    provenance: official
+    computeDensity: 400
+    official: {vendor: nvidia, maxBoardPowerW: 400, minBoardPowerW: 200}
+`)
+	cat, err := loadCatalogBytes(legacy)
+	if err != nil {
+		t.Fatalf("a catalogue carrying computeDensity no longer loads: %v", err)
+	}
+	if key, spec, ok := cat.MatchCPU("AMD EPYC 9654 96-Core Processor"); !ok || key != "AMD_EPYC_9654" || spec.Official.TDPW != 360 {
+		t.Fatalf("cpu match key=%q ok=%v spec=%+v", key, ok, spec)
+	}
+	if key, _, ok := cat.MatchGPU("NVIDIA H100 NVL"); !ok || key != "NVIDIA_H100_NVL" {
+		t.Fatalf("gpu match key=%q ok=%v", key, ok)
+	}
+}

@@ -598,6 +598,8 @@ func TestHWInfoFromObjectNoStatus(t *testing.T) {
 
 // nodeTwinJSON is a NodeTwin as the API server returns it for a healthy
 // 4-socket node: every value that happens to be whole is decoded as int64.
+// It still carries hardwareDensityScore, which a release before the field's
+// removal stored and an un-upgraded CRD keeps serving; decoding must ignore it.
 func nodeTwinJSON(lastUpdated time.Time) string {
 	return `{
   "apiVersion": "joulie.io/v1alpha1",
@@ -654,9 +656,6 @@ func TestTwinStatusFromObjectAcceptsWholeNumbers(t *testing.T) {
 	}
 	if ts.EffectiveCapState.CPUPct != 100 || ts.EffectiveCapState.GPUPct != 100 {
 		t.Fatalf("capState=%+v want cpu/gpu 100", ts.EffectiveCapState)
-	}
-	if ts.HardwareDensityScore != 100 {
-		t.Fatalf("density=%v want=100", ts.HardwareDensityScore)
 	}
 	if ts.PowerMeasurement == nil {
 		t.Fatal("powerMeasurement missing")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/matbun/joulie/pkg/controller/twin"
 	"github.com/matbun/joulie/pkg/hwinv"
 	"github.com/matbun/joulie/pkg/kube"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -116,20 +118,6 @@ func TestProfileMapping(t *testing.T) {
 	}
 }
 
-func TestSortNodesByDensityPrefersGPUHeavyNodes(t *testing.T) {
-	t.Parallel()
-	nodes := []string{"cpu-node", "gpu-node", "mixed-node"}
-	hw := map[string]NodeHardware{
-		"cpu-node":   {CPUComputeDensity: 500, GPUComputeDensity: 0},
-		"gpu-node":   {CPUComputeDensity: 300, GPUComputeDensity: 2400},
-		"mixed-node": {CPUComputeDensity: 700, GPUComputeDensity: 700},
-	}
-	sortNodesByDensity(nodes, hw)
-	if nodes[0] != "gpu-node" {
-		t.Fatalf("unexpected order: %#v", nodes)
-	}
-}
-
 func TestBuildStaticPlanPreservesOnePerformanceNodePerHardwareFamily(t *testing.T) {
 	t.Parallel()
 	nodes := []string{"h100-a", "h100-b", "mi300x-a", "cpu-a"}
@@ -140,7 +128,7 @@ func TestBuildStaticPlanPreservesOnePerformanceNodePerHardwareFamily(t *testing.
 		"cpu-a":    {CPUModel: "AMD-EPYC-9654"},
 	}
 
-	plan := policy.BuildStaticPlan(nodes, hw, 5000, 120, 0.25)
+	plan := policy.BuildStaticPlan(nodes, hw, nil, 5000, 120, 0.25)
 	perfByNode := map[string]bool{}
 	for _, a := range plan {
 		perfByNode[a.NodeName] = a.Profile == profilePerformance
@@ -166,7 +154,7 @@ func TestBuildQueueAwarePlanPreservesOnePerformanceNodePerHardwareFamily(t *test
 		"cpu-a":   {CPUModel: "Intel-Xeon-Gold-6530"},
 	}
 
-	plan := policy.BuildQueueAwarePlan(nodes, hw, 5000, 120, 0.10, 0, 2, 10, 0)
+	plan := policy.BuildQueueAwarePlan(nodes, hw, nil, 5000, 120, 0.10, 0, 2, 10, 0)
 	perfFamilies := map[string]bool{}
 	for _, a := range plan {
 		if a.Profile != profilePerformance {
@@ -749,7 +737,7 @@ func TestBuildStaticPlan(t *testing.T) {
 		"node-d": {CPUModel: "same-cpu"},
 		"node-e": {CPUModel: "same-cpu"},
 	}
-	plan := policy.BuildStaticPlan(nodes, hw, 5000, 120, 0.6)
+	plan := policy.BuildStaticPlan(nodes, hw, nil, 5000, 120, 0.6)
 	if len(plan) != len(nodes) {
 		t.Fatalf("len(plan)=%d", len(plan))
 	}
@@ -779,7 +767,7 @@ func TestBuildQueueAwarePlan(t *testing.T) {
 	}
 
 	// Base 60% of 5 => 3 performance nodes at idle.
-	plan := policy.BuildQueueAwarePlan(nodes, hw, 5000, 120, 0.6, 1, 5, 10, 0)
+	plan := policy.BuildQueueAwarePlan(nodes, hw, nil, 5000, 120, 0.6, 1, 5, 10, 0)
 	perf := 0
 	for _, a := range plan {
 		if a.Profile == "performance" {
@@ -791,7 +779,7 @@ func TestBuildQueueAwarePlan(t *testing.T) {
 	}
 
 	// 40 performance-intent pods with perfPerHPNode=10 => 4 performance nodes.
-	plan = policy.BuildQueueAwarePlan(nodes, hw, 5000, 120, 0.6, 1, 5, 10, 40)
+	plan = policy.BuildQueueAwarePlan(nodes, hw, nil, 5000, 120, 0.6, 1, 5, 10, 40)
 	perf = 0
 	for _, a := range plan {
 		if a.Profile == "performance" {
@@ -821,6 +809,7 @@ func TestBuildPlanByPolicyQueueAware(t *testing.T) {
 		"queue_aware_v1",
 		nodes,
 		hw,
+		nil,
 		time.Minute,
 		5000,
 		120,
@@ -859,6 +848,7 @@ func TestBuildPlanByPolicyUnknownFallsBackToStatic(t *testing.T) {
 		"unknown_policy",
 		nodes,
 		hw,
+		nil,
 		time.Minute,
 		5000,
 		120,
@@ -1191,5 +1181,147 @@ func TestUpsertNodeTwinSpecSkipsUpdateWhenUnchanged(t *testing.T) {
 	}
 	if got := updates(); got != 1 {
 		t.Fatalf("updates=%d want=1 (changed spec must be written)", got)
+	}
+}
+
+// reconcileStaticPartition runs one static_partition reconcile with the given
+// fraction of performance nodes and returns the profile label of every node.
+func reconcileStaticPartition(t *testing.T, hpFrac float64, objs ...runtime.Object) map[string]string {
+	t.Helper()
+	reader, client, dyn := fakeClients(t, objs...)
+	selector, err := labels.Parse("joulie.io/managed=true")
+	if err != nil {
+		t.Fatalf("parse selector: %v", err)
+	}
+	if err := reconcile(
+		context.Background(), reader, client, dyn, selector,
+		"joulie.io/reserved", "joulie.io/power-profile", time.Minute,
+		5000, 120, "static_partition", hpFrac, hpFrac, 1, 5, 10,
+		100, 60, false, 100, 60, false,
+		map[string]GPUModelCaps{}, []string{"joulie.io/gpu.product"},
+	); err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+	nodes, err := client.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	out := make(map[string]string, len(nodes.Items))
+	for _, n := range nodes.Items {
+		out[n.Name] = n.Labels["joulie.io/power-profile"]
+	}
+	return out
+}
+
+func managedNode(name, profile string) *corev1.Node {
+	l := map[string]string{"joulie.io/managed": "true"}
+	if profile != "" {
+		l["joulie.io/power-profile"] = profile
+	}
+	return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: l}}
+}
+
+// nodeHardwareFor builds the NodeHardware the agent publishes for a node with
+// the given CPU and, if gpuCount > 0, GPU model strings as discovery reports
+// them.
+func nodeHardwareFor(t *testing.T, node, cpuRaw string, totalCores int, gpuRaw string, gpuCount int) *v1alpha1.NodeHardware {
+	t.Helper()
+	return nodeHardwareFromJSON(t, fmt.Sprintf(`{
+  "apiVersion": "joulie.io/v1alpha1", "kind": "NodeHardware",
+  "metadata": {"name": %q}, "spec": {"nodeName": %q},
+  "status": {
+    "cpu": {"vendor": "AuthenticAMD", "rawModel": %q, "sockets": 2, "totalCores": %d},
+    "gpu": {"present": %t, "rawModel": %q, "count": %d}
+  }
+}`, node, node, cpuRaw, totalCores, gpuCount > 0, gpuRaw, gpuCount))
+}
+
+// STATIC_HP_FRAC is a share of every hardware family, not of the cluster in
+// some order. The old density order ranked a CPU-only 2x EPYC 9965 node
+// (1776 x 768) far above an 8x H100 NVL node, so the CPU family took both of
+// its nodes into performance and the GPU family got what was left: 2 of 2
+// against 3 of 8. Half of each family is 1 of 2 and 4 of 8.
+func TestReconcileSplitsPerformanceSlotsPerHardwareFamily(t *testing.T) {
+	t.Parallel()
+	objs := []runtime.Object{}
+	for i := 0; i < 2; i++ {
+		name := fmt.Sprintf("cpu-9965-%d", i)
+		objs = append(objs, managedNode(name, ""),
+			nodeHardwareFor(t, name, "AMD EPYC 9965 192-Core Processor", 768, "", 0))
+	}
+	for i := 0; i < 8; i++ {
+		name := fmt.Sprintf("gpu-h100-%d", i)
+		objs = append(objs, managedNode(name, ""),
+			nodeHardwareFor(t, name, "AMD EPYC 9654 96-Core Processor", 384, "NVIDIA H100 NVL", 8))
+	}
+	profiles := reconcileStaticPartition(t, 0.5, objs...)
+
+	perf := map[string]int{}
+	for name, p := range profiles {
+		if p == "performance" {
+			perf[strings.SplitN(name, "-", 2)[0]]++
+		}
+	}
+	if perf["cpu"] != 1 || perf["gpu"] != 4 {
+		t.Fatalf("performance nodes per family cpu=%d gpu=%d, want 1 of 2 and 4 of 8: %v", perf["cpu"], perf["gpu"], profiles)
+	}
+}
+
+// At constant demand a reconcile must not move the performance profile from
+// one node to an identical one: every move throttles whatever runs on the
+// node that leaves. The old code picked the first names, so n0 and n1 took
+// over from n2 and n3 on every reconcile after a relabel.
+func TestReconcileKeepsCurrentPerformanceNodes(t *testing.T) {
+	t.Parallel()
+	profiles := reconcileStaticPartition(t, 0.5,
+		managedNode("n0", "eco"), managedNode("n1", "eco"),
+		managedNode("n2", "performance"), managedNode("n3", "performance"),
+	)
+	want := map[string]string{"n0": "eco", "n1": "eco", "n2": "performance", "n3": "performance"}
+	for name, p := range want {
+		if profiles[name] != p {
+			t.Fatalf("node %s profile=%q want=%q (all: %v)", name, profiles[name], p, profiles)
+		}
+	}
+}
+
+// hardwareDensityScore left the CRD. Helm never upgrades crds/, so a cluster
+// can keep the old schema and the number the previous release stored; the
+// merge patch must carry null to delete it rather than leave a stale value.
+func TestNodeTwinStatusMapClearsHardwareDensityScore(t *testing.T) {
+	m := nodeTwinStatusToMap(joulie.NodeTwinStatus{})
+	v, ok := m["hardwareDensityScore"]
+	if !ok || v != nil {
+		t.Fatalf("hardwareDensityScore = %v (present=%v), want an explicit null", v, ok)
+	}
+}
+
+// The family gauges describe the latest plan only. A family that left the
+// cluster, or a selector that now matches nothing, must not keep its old
+// series, or a sum over families double counts.
+func TestRecordFamilySplitReplacesThePreviousSplit(t *testing.T) {
+	hw := map[string]NodeHardware{
+		"c0": {CPUModel: "AMD_EPYC_9654"}, "c1": {CPUModel: "AMD_EPYC_9654"},
+		"g0": {GPUModel: "NVIDIA_H100_NVL", GPUCount: 8},
+	}
+	recordFamilySplit([]NodeAssignment{
+		{NodeName: "c0", Profile: profilePerformance},
+		{NodeName: "c1", Profile: profileEco},
+		{NodeName: "g0", Profile: profilePerformance},
+	}, hw)
+	if got := testutil.ToFloat64(policyFamilyNodes.WithLabelValues("cpu:AMD_EPYC_9654")); got != 2 {
+		t.Fatalf("cpu family nodes = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(policyFamilyPerformanceNodes.WithLabelValues("cpu:AMD_EPYC_9654")); got != 1 {
+		t.Fatalf("cpu family performance nodes = %v, want 1", got)
+	}
+
+	recordFamilySplit([]NodeAssignment{{NodeName: "c0", Profile: profilePerformance}}, hw)
+	if n := testutil.CollectAndCount(policyFamilyNodes); n != 1 {
+		t.Fatalf("family gauge has %d series after the GPU family left, want 1", n)
+	}
+	recordFamilySplit(nil, nil)
+	if n := testutil.CollectAndCount(policyFamilyNodes) + testutil.CollectAndCount(policyFamilyPerformanceNodes); n != 0 {
+		t.Fatalf("family gauges keep %d series with no eligible node, want 0", n)
 	}
 }

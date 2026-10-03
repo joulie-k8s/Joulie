@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/matbun/joulie/pkg/controller/policy"
+	"github.com/matbun/joulie/pkg/hwinv"
 )
 
 // These conformance tests verify that the standalone simulator's scheduling
@@ -14,70 +15,72 @@ import (
 
 // --- Operator Policy Conformance ---
 
-// TestConformance_StaticPartition_FamilyDiversity verifies that the standalone
-// selectPerformanceNodes picks at least one node per hardware family, matching
-// the real operator's policy.BuildStaticPlan behavior.
-func TestConformance_StaticPartition_FamilyDiversity(t *testing.T) {
-	// 4 nodes across 2 families: 2 GPU (H100), 2 CPU-only.
-	nodes := []expandedNode{
-		{Name: "gpu-0", Product: "H100", GPUCount: 8, CPUModel: "Xeon"},
-		{Name: "gpu-1", Product: "H100", GPUCount: 8, CPUModel: "Xeon"},
-		{Name: "cpu-0", GPUCount: 0, CPUModel: "EPYC-9654"},
-		{Name: "cpu-1", GPUCount: 0, CPUModel: "EPYC-9654"},
+// TestConformance_PerformanceSetMatchesController verifies that the simulator
+// keeps the same nodes in performance as the controller manager would for the
+// same cluster. The controller side is written out by hand as what
+// listNodeHardware and the node labels give the policy: catalogue keys for the
+// models, and eco for a draining node. Writing it from the simulator's own
+// mapping would hide a mapping bug. The two H100 families are the same size,
+// so some slot counts tie and the tie goes to the smaller family key: raw
+// product strings sort SXM first ("NVIDIA H100 80GB HBM3"), catalogue keys
+// sort NVL first.
+func TestConformance_PerformanceSetMatchesController(t *testing.T) {
+	catalog, err := hwinv.LoadDefaultCatalog()
+	if err != nil {
+		t.Fatalf("load catalogue: %v", err)
 	}
-	nodeNames := []string{"cpu-0", "cpu-1", "gpu-0", "gpu-1"}
+	const epyc, nvl, sxm = "AMD EPYC 9654 96-Core Processor", "NVIDIA H100 NVL", "NVIDIA H100 80GB HBM3"
+	nodes := []expandedNode{
+		{Name: "cpu-0", CPUModel: epyc},
+		{Name: "cpu-1", CPUModel: epyc},
+		{Name: "cpu-2", CPUModel: epyc},
+		{Name: "nvl-0", Product: nvl, GPUCount: 8, CPUModel: epyc},
+		{Name: "nvl-1", Product: nvl, GPUCount: 8, CPUModel: epyc},
+		{Name: "sxm-0", Product: sxm, GPUCount: 4, CPUModel: epyc},
+		{Name: "sxm-1", Product: sxm, GPUCount: 4, CPUModel: epyc},
+	}
+	nodeNames := make([]string, 0, len(nodes))
 	nodeByName := map[string]*expandedNode{}
 	for i := range nodes {
+		nodeNames = append(nodeNames, nodes[i].Name)
 		nodeByName[nodes[i].Name] = &nodes[i]
 	}
+	tracker := map[string]*standaloneNodeTracker{
+		"cpu-0": {isEco: true}, "cpu-1": {isEco: true}, "cpu-2": {},
+		"nvl-0": {isEco: true}, "nvl-1": {isEco: true},
+		"sxm-0": {isEco: true}, "sxm-1": {isEco: true, isDraining: true},
+	}
 
-	// hpCount=1 but there are 2 families → family floor promotes to 2.
-	// Apply the same family floor logic as applyPowerPolicy.
-	hpCount := 1
-	families := map[string]struct{}{}
-	for _, name := range nodeNames {
-		if n := nodeByName[name]; n != nil {
-			families[nodeFamily(n)] = struct{}{}
+	cpu := policy.NodeHardwareInfo{CPUModel: "AMD_EPYC_9654"}
+	ctrlHW := map[string]policy.NodeHardwareInfo{
+		"cpu-0": cpu, "cpu-1": cpu, "cpu-2": cpu,
+		"nvl-0": {CPUModel: "AMD_EPYC_9654", GPUModel: "NVIDIA_H100_NVL", GPUCount: 8},
+		"nvl-1": {CPUModel: "AMD_EPYC_9654", GPUModel: "NVIDIA_H100_NVL", GPUCount: 8},
+		"sxm-0": {CPUModel: "AMD_EPYC_9654", GPUModel: "NVIDIA_H100_SXM", GPUCount: 4},
+		"sxm-1": {CPUModel: "AMD_EPYC_9654", GPUModel: "NVIDIA_H100_SXM", GPUCount: 4},
+	}
+	ctrlProfiles := map[string]string{
+		"cpu-0": "eco", "cpu-1": "eco", "cpu-2": "performance",
+		"nvl-0": "eco", "nvl-1": "eco", "sxm-0": "eco", "sxm-1": "eco",
+	}
+
+	for hp := 0; hp <= len(nodes); hp++ {
+		sim := performanceNodes(catalog, nodeNames, nodeByName, tracker, hp)
+		plan := policy.BuildStaticPlan(nodeNames, ctrlHW, ctrlProfiles, 5000, 120, float64(hp)/float64(len(nodes)))
+		ctrl := map[string]bool{}
+		for _, a := range plan {
+			if a.Profile == "performance" {
+				ctrl[a.NodeName] = true
+			}
 		}
-	}
-	if len(families) > hpCount {
-		hpCount = len(families)
-	}
-	perfNodes := selectPerformanceNodes(nodeNames, nodeByName, hpCount)
-
-	// Real operator: build same scenario.
-	hw := map[string]policy.NodeHardwareInfo{
-		"gpu-0": {GPUModel: "H100", GPUCount: 8, CPUModel: "Xeon"},
-		"gpu-1": {GPUModel: "H100", GPUCount: 8, CPUModel: "Xeon"},
-		"cpu-0": {CPUModel: "EPYC-9654"},
-		"cpu-1": {CPUModel: "EPYC-9654"},
-	}
-	realPlan := policy.BuildStaticPlan(nodeNames, hw, 5000, 120, 0.25) // 25% of 4 = 1
-
-	realPerfCount := 0
-	realFamilies := map[string]bool{}
-	for _, a := range realPlan {
-		if a.Profile == "performance" {
-			realPerfCount++
-			realFamilies[policy.NodeFamily(a.NodeName, hw)] = true
+		if len(sim) != len(ctrl) {
+			t.Fatalf("hp=%d: simulator keeps %v in performance, controller %v", hp, sim, ctrl)
 		}
-	}
-
-	// Standalone should match real operator behavior.
-	if len(perfNodes) < 2 {
-		t.Errorf("standalone selectPerformanceNodes: expected ≥2 (one per family), got %d", len(perfNodes))
-	}
-
-	// Both should have nodes from each family.
-	standalFamilies := map[string]bool{}
-	for name := range perfNodes {
-		standalFamilies[nodeFamily(nodeByName[name])] = true
-	}
-	if len(standalFamilies) < 2 {
-		t.Errorf("standalone: expected 2 families represented, got %d", len(standalFamilies))
-	}
-	if len(realFamilies) < 2 {
-		t.Errorf("real operator: expected 2 families represented, got %d", len(realFamilies))
+		for name := range ctrl {
+			if !sim[name] {
+				t.Fatalf("hp=%d: simulator keeps %v in performance, controller %v", hp, sim, ctrl)
+			}
+		}
 	}
 }
 
@@ -104,7 +107,7 @@ func TestConformance_QueueAware_PerfPodCounting(t *testing.T) {
 		realNodes[i] = name
 		hw[name] = policy.NodeHardwareInfo{CPUModel: "Xeon"}
 	}
-	realPlan := policy.BuildQueueAwarePlan(realNodes, hw, 5000, 120, hpBaseFrac, hpMin, hpMax, perfPerHPNode, perfIntentPods)
+	realPlan := policy.BuildQueueAwarePlan(realNodes, hw, nil, 5000, 120, hpBaseFrac, hpMin, hpMax, perfPerHPNode, perfIntentPods)
 	realPerfCount := 0
 	for _, a := range realPlan {
 		if a.Profile == "performance" {

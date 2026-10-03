@@ -774,7 +774,6 @@ func twinStatusFromObject(nt *v1alpha1.NodeTwin) (string, *joulie.NodeTwinStatus
 		PredictedPowerHeadroomScore: st.PredictedPowerHeadroomScore,
 		PredictedCoolingStressScore: st.PredictedCoolingStressScore,
 		PredictedPsuStressScore:     st.PredictedPsuStressScore,
-		HardwareDensityScore:        st.HardwareDensityScore,
 		EstimatedPUE:                st.EstimatedPUE,
 	}
 	if cs := st.EffectiveCapState; cs != nil {

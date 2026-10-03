@@ -73,7 +73,6 @@ type Output struct {
 	// Not used in scoring.
 	PredictedPsuStressScore float64
 	EffectiveCapState       joulie.CapState
-	HardwareDensityScore    float64
 	// EstimatedPUE is reserved for future extensions. Not used in scoring.
 	EstimatedPUE     float64
 	PowerMeasurement PowerMeasurementOutput
@@ -107,16 +106,6 @@ func Compute(in Input) Output {
 		gpuPct = 100
 	}
 	out.EffectiveCapState = joulie.CapState{CPUPct: cpuPct, GPUPct: gpuPct}
-
-	// Hardware density score: normalized compute density proxy
-	cpuScore := float64(in.Hardware.CPU.TotalCores) / 192.0 * 100.0 // normalize to 192-core reference
-	gpuScore := float64(in.Hardware.GPU.Count) / 8.0 * 100.0        // normalize to 8-GPU reference
-	if in.Hardware.GPU.Present {
-		out.HardwareDensityScore = (cpuScore + gpuScore) / 2.0
-	} else {
-		out.HardwareDensityScore = cpuScore
-	}
-	out.HardwareDensityScore = math.Min(100, math.Max(0, out.HardwareDensityScore))
 
 	// Apply defaulted cap values so downstream helpers see consistent inputs.
 	in.CPUCapPct = cpuPct
@@ -237,14 +226,4 @@ func computePSUStress(in Input) float64 {
 	const referenceRackCapacityW = 50000.0 // 50kW rack
 	stress := (powerW / referenceRackCapacityW) * 100.0
 	return math.Min(100, math.Max(0, stress))
-}
-
-// ComputeHardwareDensityScore is exported for use in tests and the controller manager.
-func ComputeHardwareDensityScore(hw joulie.NodeHardware) float64 {
-	cpuScore := float64(hw.CPU.TotalCores) / 192.0 * 100.0
-	gpuScore := float64(hw.GPU.Count) / 8.0 * 100.0
-	if hw.GPU.Present {
-		return math.Min(100, (cpuScore+gpuScore)/2.0)
-	}
-	return math.Min(100, cpuScore)
 }

@@ -44,7 +44,7 @@ Semantics:
 
 - `performance`: full-performance supply
 - `eco`: low-power supply
-- `draining` (schedulableClass only): transition safeguard active while node is moving toward eco; the scheduler extender applies a score penalty
+- `draining` (schedulableClass only): transition safeguard active while node is moving toward eco; the scheduler extender filters it out for performance pods
 
 The `schedulableClass` field is internal to the controller manager and scheduler extender. Users interact only with the `joulie.io/workload-class` pod annotation for placement intent.
 
@@ -179,7 +179,7 @@ status:
 The controller manager uses `NodeHardware` as the source of truth for:
 
 - hardware recognition against the inventory,
-- compute-density-aware planning,
+- the hardware family of each node, used by the per-family performance split ([Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}})),
 - per-device fallback when only part of the node is recognized.
 
 In simulator-first setups, the controller manager can fall back to node hardware labels when `NodeHardware` has not been published yet.

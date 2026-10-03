@@ -323,3 +323,26 @@ func TestWholeNumberWattsSurviveTheTypedRoundTrip(t *testing.T) {
 		t.Fatalf("measuredNodePowerW came back as %T(%v), want int64(250)", stored, stored)
 	}
 }
+
+// TestNodeTwinStatusPatchMayClearRemovedHardwareDensityScore pins the
+// migration of the removed status.hardwareDensityScore. For one release the
+// controller manager sends it as null in its status merge patch, to delete a
+// value an older release stored. Under the new CRD the field is unknown, and
+// if the API server rejected that patch every twin status write would fail.
+func TestNodeTwinStatusPatchMayClearRemovedHardwareDensityScore(t *testing.T) {
+	c := newClient(t)
+	ctx := testContext(t)
+	twin := newNodeTwin(t, c, objectName(t, ""))
+
+	patch := []byte(`{"status":{"schedulableClass":"performance","hardwareDensityScore":null}}`)
+	if err := c.Status().Patch(ctx, twin, client.RawPatch(types.MergePatchType, patch)); err != nil {
+		t.Fatalf("API server rejected the controller manager's status patch: %v", err)
+	}
+	var got v1alpha1.NodeTwin
+	if err := c.Get(ctx, types.NamespacedName{Name: twin.Name}, &got); err != nil {
+		t.Fatalf("read back NodeTwin: %v", err)
+	}
+	if got.Status.SchedulableClass != "performance" {
+		t.Fatalf("the rest of the patch was lost: schedulableClass=%q", got.Status.SchedulableClass)
+	}
+}

@@ -102,7 +102,6 @@ func reconcileNodeTwin(ctx context.Context, reader kube.Reader, dynClient dynami
 		PredictedCoolingStressScore: out.PredictedCoolingStressScore,
 		PredictedPsuStressScore:     out.PredictedPsuStressScore,
 		EffectiveCapState:           out.EffectiveCapState,
-		HardwareDensityScore:        out.HardwareDensityScore,
 		EstimatedPUE:                out.EstimatedPUE,
 		PowerMeasurement:            pm,
 		LastUpdated:                 out.LastUpdated,
@@ -367,9 +366,13 @@ func nodeTwinStatusToMap(status joulie.NodeTwinStatus) map[string]interface{} {
 		"predictedPowerHeadroomScore": status.PredictedPowerHeadroomScore,
 		"predictedCoolingStressScore": status.PredictedCoolingStressScore,
 		"predictedPsuStressScore":     status.PredictedPsuStressScore,
-		"hardwareDensityScore":        status.HardwareDensityScore,
-		"estimatedPUE":                status.EstimatedPUE,
-		"lastUpdated":                 status.LastUpdated.Format(time.RFC3339),
+		// Removed from the CRD. In this merge patch null deletes the value a
+		// previous release stored, including on clusters where Helm kept the
+		// old CRD (it never upgrades crds/). Drop this line in the next minor
+		// release.
+		"hardwareDensityScore": nil,
+		"estimatedPUE":         status.EstimatedPUE,
+		"lastUpdated":          status.LastUpdated.Format(time.RFC3339),
 		"effectiveCapState": map[string]interface{}{
 			"cpuPct": status.EffectiveCapState.CPUPct,
 			"gpuPct": status.EffectiveCapState.GPUPct,

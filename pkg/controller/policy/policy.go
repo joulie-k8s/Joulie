@@ -4,16 +4,25 @@
 // assigning each node to "performance" or "eco" with the corresponding power cap.
 //
 // Available policies:
-//   - static_partition: fixed fraction of nodes are performance
+//   - static_partition: a fixed fraction of every hardware family is performance
 //   - queue_aware_v1: adjusts performance count based on running perf-sensitive pods
 //   - rule_swap_v1: time-phased round-robin (legacy, for benchmarking)
+//
+// static_partition and queue_aware_v1 decide how many nodes stay in
+// performance; PerformanceSet decides which ones.
 package policy
 
 import (
 	"math"
+	"sort"
 	"strings"
 	"time"
 )
+
+// profilePerformance is the value of the power-profile label on a node that
+// runs uncapped. It mirrors fsm.ProfilePerformance, which imports this
+// package and so cannot be imported here.
+const profilePerformance = "performance"
 
 // NodeAssignment is the output of a policy: one entry per managed node.
 type NodeAssignment struct {
@@ -45,18 +54,18 @@ type NodeHardwareInfo struct {
 	GPUCount    int
 }
 
-// BuildStaticPlan allocates a fixed fraction of nodes to performance.
-// Nodes are selected to maximize hardware family diversity.
-func BuildStaticPlan(nodes []string, hw map[string]NodeHardwareInfo, perfCap, ecoCap, hpFrac float64) []NodeAssignment {
+// BuildStaticPlan keeps a fixed fraction of the nodes in performance, split
+// across hardware families by PerformanceSet. current maps a node to its
+// present power-profile label; nodes absent from it are treated as not in
+// performance.
+func BuildStaticPlan(nodes []string, hw map[string]NodeHardwareInfo, current map[string]string, perfCap, ecoCap, hpFrac float64) []NodeAssignment {
 	n := len(nodes)
 	if n == 0 {
 		return nil
 	}
 	hpFrac = clamp01(hpFrac)
 	hpCount := int(math.Round(float64(n) * hpFrac))
-	hpCount = clampInt(hpCount, 0, n)
-	hpCount = enforceFamilyPerformanceFloor(nodes, hw, hpCount)
-	perfNodes := selectPerformanceNodes(nodes, hw, hpCount)
+	perfNodes := PerformanceSet(nodes, hw, current, hpCount)
 
 	plan := make([]NodeAssignment, 0, n)
 	for _, node := range nodes {
@@ -78,7 +87,8 @@ func BuildStaticPlan(nodes []string, hw map[string]NodeHardwareInfo, perfCap, ec
 
 // BuildQueueAwarePlan adjusts performance node count based on running
 // performance-sensitive pods. More perf pods → more perf nodes (up to max).
-func BuildQueueAwarePlan(nodes []string, hw map[string]NodeHardwareInfo, perfCap, ecoCap, hpBaseFrac float64, hpMin, hpMax, perfPerHPNode, perfIntentPods int) []NodeAssignment {
+// The nodes are chosen by PerformanceSet, as in BuildStaticPlan.
+func BuildQueueAwarePlan(nodes []string, hw map[string]NodeHardwareInfo, current map[string]string, perfCap, ecoCap, hpBaseFrac float64, hpMin, hpMax, perfPerHPNode, perfIntentPods int) []NodeAssignment {
 	n := len(nodes)
 	if n == 0 {
 		return nil
@@ -103,10 +113,7 @@ func BuildQueueAwarePlan(nodes []string, hw map[string]NodeHardwareInfo, perfCap
 		hpCount = queueNeed
 	}
 	hpCount = clampInt(hpCount, hpMin, hpMax)
-	hpCount = clampInt(hpCount, 0, n)
-	hpCount = enforceFamilyPerformanceFloor(nodes, hw, hpCount)
-
-	perfNodes := selectPerformanceNodes(nodes, hw, hpCount)
+	perfNodes := PerformanceSet(nodes, hw, current, hpCount)
 	plan := make([]NodeAssignment, 0, n)
 	for _, node := range nodes {
 		profile := "eco"
@@ -164,52 +171,80 @@ func BuildRuleSwapPlanAt(nodes []string, interval time.Duration, perfCap, ecoCap
 	return plan
 }
 
-// enforceFamilyPerformanceFloor ensures at least one performance node per
-// hardware family (GPU model or CPU model), so each family stays represented.
-func enforceFamilyPerformanceFloor(nodes []string, hw map[string]NodeHardwareInfo, hpCount int) int {
-	families := make(map[string]struct{}, len(nodes))
-	for _, node := range nodes {
-		families[NodeFamily(node, hw)] = struct{}{}
-	}
-	if len(families) > hpCount {
-		hpCount = len(families)
-	}
-	if hpCount > len(nodes) {
-		hpCount = len(nodes)
-	}
-	return hpCount
-}
-
-// selectPerformanceNodes greedily picks hpCount nodes for performance,
-// prioritizing one node from each hardware family before filling remaining slots.
-func selectPerformanceNodes(nodes []string, hw map[string]NodeHardwareInfo, hpCount int) map[string]bool {
-	perfNodes := make(map[string]bool, hpCount)
-	seenFamilies := make(map[string]struct{}, len(nodes))
+// PerformanceSet returns the nodes to keep in the performance profile when
+// hpCount of them may run uncapped.
+//
+// The slots are split across hardware families (NodeFamily) in proportion to
+// family size, with at least one per family, so STATIC_HP_FRAC=0.2 keeps about
+// a fifth of every family uncapped instead of giving every slot to whichever
+// family a ranking puts first. hpCount is raised to the number of families
+// and capped at the number of nodes.
+//
+// The split is the Sainte-Lague divisor method started from one slot per
+// family: each further slot goes to the family with the largest
+// size/(2*slots+1), ties to the smaller family key. A divisor method is house
+// monotone: the split for k slots is contained in the split for k+1, so when
+// queue pressure moves hpCount by one, exactly one node changes profile.
+//
+// Within a family, nodes whose current label is performance are kept first,
+// so a reconcile at constant demand moves nothing; the node name orders the
+// rest. The result does not depend on the order of nodes.
+func PerformanceSet(nodes []string, hw map[string]NodeHardwareInfo, current map[string]string, hpCount int) map[string]bool {
+	members := make(map[string][]string)
 	for _, node := range nodes {
 		family := NodeFamily(node, hw)
-		if _, ok := seenFamilies[family]; ok {
-			continue
+		members[family] = append(members[family], node)
+	}
+	families := make([]string, 0, len(members))
+	for family, m := range members {
+		families = append(families, family)
+		sort.Slice(m, func(i, j int) bool {
+			pi, pj := current[m[i]] == profilePerformance, current[m[j]] == profilePerformance
+			if pi != pj {
+				return pi
+			}
+			return m[i] < m[j]
+		})
+	}
+	sort.Strings(families)
+
+	hpCount = clampInt(hpCount, len(families), len(nodes))
+	slots := make(map[string]int, len(families))
+	for _, family := range families {
+		slots[family] = 1
+	}
+	for left := hpCount - len(families); left > 0; left-- {
+		next := ""
+		for _, family := range families {
+			if slots[family] == len(members[family]) {
+				continue
+			}
+			if next == "" || deservesNextSlot(len(members[family]), slots[family], len(members[next]), slots[next]) {
+				next = family
+			}
 		}
-		perfNodes[node] = true
-		seenFamilies[family] = struct{}{}
-		if len(perfNodes) >= hpCount {
-			return perfNodes
+		slots[next]++
+	}
+
+	perf := make(map[string]bool, hpCount)
+	for _, family := range families {
+		for _, node := range members[family][:slots[family]] {
+			perf[node] = true
 		}
 	}
-	for _, node := range nodes {
-		if perfNodes[node] {
-			continue
-		}
-		perfNodes[node] = true
-		if len(perfNodes) >= hpCount {
-			break
-		}
-	}
-	return perfNodes
+	return perf
 }
 
-// NodeFamily classifies a node by its hardware family for diversity in
-// performance node selection. Returns "gpu:<model>" or "cpu:<model>".
+// deservesNextSlot reports whether a family of size na holding qa slots has a
+// strictly larger Sainte-Lague quotient na/(2*qa+1) than one of size nb
+// holding qb. Cross multiplication keeps the comparison exact, so ties fall to
+// the family met first, which is the smaller key.
+func deservesNextSlot(na, qa, nb, qb int) bool {
+	return na*(2*qb+1) > nb*(2*qa+1)
+}
+
+// NodeFamily classifies a node by its hardware family, the unit PerformanceSet
+// splits performance slots across. Returns "gpu:<model>" or "cpu:<model>".
 func NodeFamily(node string, hw map[string]NodeHardwareInfo) string {
 	nh, ok := hw[node]
 	if !ok {

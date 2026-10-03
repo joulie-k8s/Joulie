@@ -6,6 +6,8 @@ This page reports results from the standalone simulator benchmark of a homogeneo
 
 **Simulator**: Go standalone binary (`joulie-simulator`) — no Kubernetes, no Kind, no KWOK. Direct in-memory simulation with scoring-based job placement.
 
+> **Note:** These results were produced with the standalone simulator before Joulie v0.2.2. That simulator chose the performance nodes as one node per hardware family, then filled the remaining slots in node-name order. Joulie v0.2.2 splits the performance slots across hardware families in proportion to family size. These results have not been rerun with that split, and the exact configuration of the published runs is not recorded in the repository.
+
 ---
 
 ## Scope
@@ -92,7 +94,7 @@ The 70% GPU eco cap is less aggressive than the Kind+KWOK experiment's 50%, but 
 | Eco nodes | 3,750 | dynamic (up to 4,950) |
 | perf_per_hp_node | — | 3 |
 
-**Static (B)**: Fixed 1,250 HP / 3,750 eco split. All 3,750 eco GPU nodes run at 280 W per GPU (70% of 400 W TDP). All 1,250 HP nodes run uncapped at 400 W.
+**Static (B)**: Fixed 1,250 HP / 3,750 eco split. All 3,750 eco GPU nodes run at 280 W per GPU (70% of 400 W TDP). The 1,250 HP nodes run uncapped. Under the node-name order the simulator used before v0.2.2 they were the 1,000 CPU-only nodes and 250 of the 4,000 H100 nodes, so 3,750 of the 4,000 GPU nodes (about 94%) were capped (a reconstruction from the committed code, not a measurement).
 
 **Queue-aware (C)**: Starts with 5% HP (250 nodes), dynamically scaling between 50 and 4,000 HP nodes based on the number of running performance-sensitive pods (1 HP node per 3 perf pods). This gives maximum flexibility to shift nodes between HP and eco as demand fluctuates.
 
@@ -245,7 +247,7 @@ Six-panel timeseries showing active jobs, IT power, CPU utilization, GPU utiliza
 
 **Active Jobs**: B and C handle ~40,000 concurrent jobs vs A's ~20,000–31,000. The HP/eco partition enables B/C to pull far more jobs from the trace by providing structured scheduling that avoids resource fragmentation.
 
-**IT Power**: A runs at ~4,500–5,000 kW. B drops to ~3,200–3,500 kW. C tracks ~3,300–3,600 kW. The massive gap is because 32,000 GPUs dominate the power draw, and capping 75% (B) or up to 95% (C, at night) of them at 70% TDP produces a dramatic reduction.
+**IT Power**: A runs at ~4,500 to 5,000 kW. B drops to ~3,200 to 3,500 kW. C tracks ~3,300 to 3,600 kW. The massive gap is because 32,000 GPUs dominate the power draw, and capping about 94% (B) or nearly all (C at night: 3,999 of 4,000) of them at 70% TDP produces a dramatic reduction. Both shares are reconstructed from the node-name order described in the note on the static split above, not measured.
 
 **CPU Utilization**: B (55.2%) and C (56.9%) exceed A (47.8%). This is the workload concentration effect: by steering standard jobs to eco nodes and performance jobs to HP nodes, B/C pack work more tightly, raising utilization per node even as total power drops.
 

@@ -182,9 +182,6 @@ spec:
                 description: Reserved for future rack-topology-aware extensions. Not
                   used in scoring. Estimated Power Usage Effectiveness (1.05-1.40)
                 type: number
-              hardwareDensityScore:
-                description: Relative compute density score
-                type: number
               lastUpdated:
                 description: LastUpdated is the RFC3339 time of the last controller
                   manager write.

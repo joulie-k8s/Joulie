@@ -70,8 +70,6 @@ type NodeTwinStatus struct {
 	// Reserved for future rack-topology-aware extensions. Not used in scoring. 0=no stress, 100=max stress
 	PredictedPsuStressScore float64   `json:"predictedPsuStressScore,omitempty"`
 	EffectiveCapState       *CapState `json:"effectiveCapState,omitempty"`
-	// Relative compute density score
-	HardwareDensityScore float64 `json:"hardwareDensityScore,omitempty"`
 	// Reserved for future rack-topology-aware extensions. Not used in scoring. Estimated Power Usage Effectiveness (1.05-1.40)
 	EstimatedPUE float64 `json:"estimatedPUE,omitempty"`
 	// Control feedback from the agent

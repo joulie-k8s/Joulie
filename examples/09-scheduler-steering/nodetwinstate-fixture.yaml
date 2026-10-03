@@ -15,7 +15,6 @@ status:
   effectiveCapState:
     cpuPct: 60
     gpuPct: 60
-  hardwareDensityScore: 90
   lastUpdated: "2026-03-13T12:00:00Z"
 ---
 apiVersion: joulie.io/v1alpha1
@@ -33,5 +32,4 @@ status:
   effectiveCapState:
     cpuPct: 100
     gpuPct: 100
-  hardwareDensityScore: 75
   lastUpdated: "2026-03-13T12:00:00Z"
