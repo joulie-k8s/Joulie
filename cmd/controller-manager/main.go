@@ -414,6 +414,24 @@ func reconcileWithCatalog(
 		plan[i].SourceProfile = currentProfileOrDefault(nodesByName[plan[i].NodeName])
 		plan[i].Draining = false
 		plan[i].State = assignmentState(plan[i].Profile, plan[i].Draining)
+	}
+	// The guard runs before the caps are set: a node it keeps draining still
+	// runs performance pods, which keep performance caps until they finish
+	// (fsm.StateDrainingPerformance). Only the label and the scheduler see eco.
+	applyDowngradeGuards(ctx, reader, plan, nodesByName)
+	for i := range plan {
+		capProfile := plan[i].Profile
+		if plan[i].Draining {
+			capProfile = profilePerformance
+		}
+		// The policy set CapWatts from the planned profile; reset it from the
+		// profile the node runs at, which the spec writes whenever no percent
+		// cap is set (GPU nodes, and the absolute path below when it cannot
+		// resolve the hardware).
+		plan[i].CapWatts = ecoCap
+		if capProfile == profilePerformance {
+			plan[i].CapWatts = perfCap
+		}
 		// Skip CPU cap on GPU nodes: CPU is ~6% of GPU node power; capping it
 		// saves ~1.2% but slows GPU data feed by ~4.5%, costing 3.8x more energy
 		// than saved (exp-03 finding). GPU nodes get only GPU caps.
@@ -425,32 +443,31 @@ func reconcileWithCatalog(
 			if cpuWriteAbsolute {
 				plan[i].CPUCapPctOfMax = nil
 				if nh, ok := nodeHardwareByName[plan[i].NodeName]; ok {
-					if abs, ok := computeAbsoluteCPUCap(plan[i].Profile, nh, hardwareCatalog, perfCap, ecoCap); ok {
+					if abs, ok := computeAbsoluteCPUCap(capProfile, nh, hardwareCatalog, perfCap, ecoCap); ok {
 						plan[i].CapWatts = abs
 					}
 				}
 			} else {
 				pct := cpuEcoCapPct
-				if plan[i].Profile == profilePerformance {
+				if capProfile == profilePerformance {
 					pct = cpuPerfCapPct
 				}
 				plan[i].CPUCapPctOfMax = floatPtr(pct)
 			}
 		}
 		if n := nodeObjs[plan[i].NodeName]; n != nil {
-			plan[i].GPU = computeGPUIntentForNodeWithHardware(*n, plan[i].Profile, gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, nodeHardwareByName[plan[i].NodeName], hardwareCatalog)
+			plan[i].GPU = computeGPUIntentForNodeWithHardware(*n, capProfile, gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, nodeHardwareByName[plan[i].NodeName], hardwareCatalog)
 			if discoverGPUCount(*n) > 0 && plan[i].GPU == nil {
 				reason := "no GPU cap configured"
-				if plan[i].Profile == profilePerformance && gpuPerfCapPct <= 0 {
+				if capProfile == profilePerformance && gpuPerfCapPct <= 0 {
 					reason = "GPU_PERFORMANCE_CAP_PCT_OF_MAX <= 0"
-				} else if plan[i].Profile != profilePerformance && gpuEcoCapPct <= 0 {
+				} else if capProfile != profilePerformance && gpuEcoCapPct <= 0 {
 					reason = "GPU_ECO_CAP_PCT_OF_MAX <= 0"
 				}
-				warnNoGPUIntentOnce(plan[i].NodeName, plan[i].Profile, reason)
+				warnNoGPUIntentOnce(plan[i].NodeName, capProfile, reason)
 			}
 		}
 	}
-	applyDowngradeGuards(ctx, reader, plan, nodesByName)
 	recordFamilySplit(plan, nodeHardwareByName)
 
 	// Build per-rack estimated power for topology-aware PSU stress.

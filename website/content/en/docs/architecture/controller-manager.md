@@ -139,6 +139,7 @@ That state means:
 
 - the controller manager wants the node to end up in eco,
 - the transition is still guarded because performance pods are still present,
+- the node keeps its performance caps until those pods finish, and only then receives the eco caps,
 - the scheduler extender sees `schedulableClass: draining` and filters the node out for performance pods; it applies no score penalty to draining nodes.
 
 ## Why this model
