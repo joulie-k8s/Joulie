@@ -109,7 +109,7 @@ The controller manager is now inventory-aware.
 `static_partition` and `queue_aware_v1` decide how many nodes stay in `performance` (`hpCount`); `policy.PerformanceSet` (`pkg/controller/policy/policy.go`) decides which ones. It groups eligible nodes into hardware families (`policy.NodeFamily`): `gpu:<model>` when the node has GPUs, otherwise `cpu:<model>`. The `hpCount` slots are then split across families in proportion to family size, with at least one per family.
 
 - `static_partition`: `hpCount = round(N * STATIC_HP_FRAC)`, so in effect about `STATIC_HP_FRAC` of every family stays in `performance`.
-- `queue_aware_v1`: `hpCount = max(round(N * QUEUE_HP_BASE_FRAC), ceil(running performance-sensitive pods / QUEUE_PERF_PER_HP_NODE))`, clamped to `[QUEUE_HP_MIN, QUEUE_HP_MAX]`.
+- `queue_aware_v1`: `hpCount = max(round(N * QUEUE_HP_BASE_FRAC), ceil(running and pending performance-sensitive pods / QUEUE_PERF_PER_HP_NODE))`, clamped to `[QUEUE_HP_MIN, QUEUE_HP_MAX]`.
 
 `hpCount` is raised to the number of families and capped at the number of nodes. The split is the Sainte-Lague divisor method started from one slot per family: each further slot goes to the family with the largest `size / (2 * slots + 1)`, ties to the smaller family key. The method is house monotone, so when `hpCount` changes by one, exactly one node changes profile.
 

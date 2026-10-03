@@ -209,6 +209,30 @@ func CountPerformanceSensitivePods(pods []corev1.Pod) int {
 	return count
 }
 
+// CountPerformanceDemand counts the performance-sensitive pods that need a
+// performance node, cluster-wide: running ones and pending ones. It is the
+// demand queue_aware_v1 sizes the performance set from, so a queue of
+// performance pods waiting for a node raises it. CountPerformanceSensitivePods
+// leaves Pending pods out because it answers a different question: whether a
+// node still runs performance work and must keep draining.
+func CountPerformanceDemand(pods []corev1.Pod) int {
+	count := 0
+	for i := range pods {
+		p := &pods[i]
+		if p.DeletionTimestamp != nil {
+			continue
+		}
+		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		if !IsPerformanceSensitivePod(p) {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 // GuardedTransitionInfo returns a human-readable summary of why a node
 // transition was guarded (for logging/debugging).
 func GuardedTransitionInfo(nodeName string, perfPodCount int) string {

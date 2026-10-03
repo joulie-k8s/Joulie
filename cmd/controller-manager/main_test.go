@@ -328,6 +328,11 @@ func TestRunningPerformanceSensitivePodCountOnNodeFiltersCorrectly(t *testing.T)
 			Spec:       podWithRequiredPowerProfile("x", "node-a", "performance").Spec,
 			Status:     corev1.PodStatus{Phase: corev1.PodSucceeded},
 		}, // terminal, ignored
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "p6", Namespace: "ns1"},
+			Spec:       podWithRequiredPowerProfile("y", "node-a", "performance").Spec,
+			Status:     corev1.PodStatus{Phase: corev1.PodPending},
+		}, // pending: queue-aware demand counts it, the drain check does not
 		podWithRequiredPowerProfile("p5", "node-b", "performance"), // other node, filtered by the index
 	)
 
@@ -829,6 +834,45 @@ func TestBuildPlanByPolicyQueueAware(t *testing.T) {
 	// queueNeed=ceil(2/2)=1, base=round(3*0.34)=1 => 1 perf node.
 	if perf != 1 {
 		t.Fatalf("perf nodes=%d want=1 plan=%#v", perf, plan)
+	}
+}
+
+// queue_aware_v1 sizes the performance set from the performance pods that
+// need it, and the ones that need it most are those still waiting for a node.
+// The old count skipped Pending pods, so a queue of three performance pods
+// with nowhere to run added no demand and the policy kept its floor of one.
+func TestQueueAwareCountsPendingPerformancePodsAsDemand(t *testing.T) {
+	t.Parallel()
+	pending := func(name string) *corev1.Pod {
+		p := podWithRequiredPowerProfile(name, "", "performance")
+		p.Status.Phase = corev1.PodPending
+		return p
+	}
+	finished := podWithRequiredPowerProfile("done", "node-a", "performance")
+	finished.Status.Phase = corev1.PodSucceeded
+	standard := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "standard", Namespace: "ns1"},
+		Status:     corev1.PodStatus{Phase: corev1.PodPending},
+	}
+	client := fakeReader(t, pending("wait-1"), pending("wait-2"), pending("wait-3"), finished, standard)
+
+	nodes := []string{"node-a", "node-b", "node-c", "node-d"}
+	hw := map[string]NodeHardware{}
+	for _, n := range nodes {
+		hw[n] = NodeHardware{CPUModel: "same-cpu"}
+	}
+	// base fraction 0, min 0, max 4, one performance pod per performance node.
+	plan := buildPlanByPolicy(context.Background(), client, "queue_aware_v1", nodes, hw, nil,
+		time.Minute, 5000, 120, 0.6, 0, 0, 4, 1)
+
+	perf := 0
+	for _, a := range plan {
+		if a.Profile == "performance" {
+			perf++
+		}
+	}
+	if perf != 3 {
+		t.Fatalf("performance nodes = %d, want 3: one per waiting performance pod, none for the finished or standard pod", perf)
 	}
 }
 

@@ -223,7 +223,7 @@ func runStandalone(s *simulator) {
 
 		// 4. Periodic controller manager reconcile for baseline C.
 		if baseline == "C" && elapsed-lastReconcileSec >= reconcileInterval {
-			perfIntentPods := countPerformanceSensitivePending(tracker, s.workload.jobs)
+			perfIntentPods := countPerformanceSensitivePending(tracker, s.workload.jobs, virtualNow.Sub(s.workload.startTime).Seconds())
 			applyPowerPolicy(s, tracker, nodeNames, nodeByName, baseline, hpFrac, cpuEcoPct, gpuEcoPct, perfIntentPods, perfPerHP, hpBaseFrac, hpMin, hpMax)
 			lastReconcileSec = elapsed
 		}
@@ -1209,18 +1209,22 @@ func performanceNodes(catalog *hw.Catalog, nodeNames []string, nodeByName map[st
 	return policy.PerformanceSet(nodeNames, hwInfo, current, hpCount)
 }
 
-// countPerformanceSensitivePending counts pending+running performance-class pods
-// across all nodes. This matches the real controller manager's queue-aware metric.
-func countPerformanceSensitivePending(tracker map[string]*standaloneNodeTracker, jobs []*simJob) int {
+// countPerformanceSensitivePending is the queue-aware demand: performance jobs
+// running on a node plus performance jobs waiting for one, the counterpart of
+// fsm.CountPerformanceDemand over Running and Pending pods. A job is waiting
+// when its submit time has passed (readySec, seconds since the workload start)
+// and no node has taken it: standalone marks a job Submitted only when it
+// places it, so a waiting job is one that is ready but not Submitted.
+func countPerformanceSensitivePending(tracker map[string]*standaloneNodeTracker, jobs []*simJob, readySec float64) int {
 	count := 0
-	// Running performance pods on all nodes.
 	for _, t := range tracker {
 		count += t.perfPodCount
 	}
-	// Pending (submitted but not placed yet) performance jobs — these are still
-	// in the job list but haven't been assigned a node.
 	for _, j := range jobs {
-		if j.Submitted && !j.Completed && j.NodeName == "" && j.Class == "performance" {
+		if j.SubmitOffsetSec > readySec {
+			break // jobs are sorted by submit time; the rest are in the future
+		}
+		if !j.Submitted && !j.Completed && j.Class == "performance" {
 			count++
 		}
 	}
