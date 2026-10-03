@@ -360,3 +360,24 @@ func TestCountPerformanceSensitivePodsPendingSkipped(t *testing.T) {
 		t.Errorf("Pending pods should not count as performance-sensitive, got %d", got)
 	}
 }
+
+// The queue-aware demand counts what still needs a performance node: running
+// and pending performance pods, not finished, deleting or standard ones.
+func TestCountPerformanceDemandIncludesPendingPods(t *testing.T) {
+	perf := corev1.PodSpec{NodeSelector: map[string]string{PowerProfileLabelKey: ProfilePerformance}}
+	pods := []corev1.Pod{
+		{Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodRunning}},
+		{Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodPending}},
+		{Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodSucceeded}},
+		{Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodFailed}},
+		{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &metav1.Time{}}, Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodPending}},
+		{Status: corev1.PodStatus{Phase: corev1.PodPending}},
+	}
+	if got := CountPerformanceDemand(pods); got != 2 {
+		t.Fatalf("CountPerformanceDemand() = %d, want 2 (one running, one pending)", got)
+	}
+	// The drain check over the same pods still ignores the pending one.
+	if got := CountPerformanceSensitivePods(pods); got != 1 {
+		t.Fatalf("CountPerformanceSensitivePods() = %d, want 1", got)
+	}
+}

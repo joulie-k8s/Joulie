@@ -4,7 +4,7 @@ This page reports results from the CPU-only standalone simulator benchmark:
 
 - [`experiments/01-cpu-only-benchmark/`](.)
 
-> **Note:** These results were produced with the standalone simulator before Joulie v0.2.2. That simulator chose the performance nodes as one node per hardware family, then filled the remaining slots in node-name order. Joulie v0.2.2 splits the performance slots across hardware families in proportion to family size. These results have not been rerun with that split, and the exact configuration of the published runs is not recorded in the repository.
+> **Note:** These results were produced with the standalone simulator before Joulie v0.2.2. That simulator chose the performance nodes as one node per hardware family, then filled the remaining slots in node-name order. Joulie v0.2.2 splits the performance slots across hardware families in proportion to family size. These results have not been rerun with that split, and the exact configuration of the published runs is not recorded in the repository. Its `queue_aware_v1` demand also counted only running performance jobs, not jobs waiting for a node; that changed after v0.2.2.
 
 ## Scope
 

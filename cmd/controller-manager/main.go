@@ -705,9 +705,9 @@ func buildPlanByPolicy(
 	case "static_partition", "":
 		return policy.BuildStaticPlan(nodes, hw, currentProfiles, perfCap, ecoCap, staticHPFrac)
 	case "queue_aware_v1":
-		perfIntentPods, err := runningPerformanceSensitivePodCountAllNodes(ctx, reader)
+		perfIntentPods, err := performancePodDemand(ctx, reader)
 		if err != nil {
-			log.Printf("warning: cannot classify running pods for queue_aware_v1: %v; falling back to static fraction", err)
+			log.Printf("warning: cannot list pods for queue_aware_v1: %v; falling back to static fraction", err)
 			return policy.BuildStaticPlan(nodes, hw, currentProfiles, perfCap, ecoCap, queueHPBaseFrac)
 		}
 		return policy.BuildQueueAwarePlan(nodes, hw, currentProfiles, perfCap, ecoCap, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode, perfIntentPods)
@@ -719,7 +719,9 @@ func buildPlanByPolicy(
 	}
 }
 
-func runningPerformanceSensitivePodCountAllNodes(
+// performancePodDemand is the queue_aware_v1 demand: running and pending
+// performance-sensitive pods across the cluster.
+func performancePodDemand(
 	ctx context.Context,
 	reader kube.Reader,
 ) (int, error) {
@@ -727,7 +729,7 @@ func runningPerformanceSensitivePodCountAllNodes(
 	if err := reader.List(ctx, &pods); err != nil {
 		return 0, err
 	}
-	return fsm.CountPerformanceSensitivePods(pods.Items), nil
+	return fsm.CountPerformanceDemand(pods.Items), nil
 }
 
 // Delegate pod classification to fsm package.

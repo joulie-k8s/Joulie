@@ -113,7 +113,7 @@ controller manager logs a warning when a reading exceeds twice the node's TDP.
 | `QUEUE_HP_BASE_FRAC` | `0.60` | Base fraction of performance nodes in `queue_aware_v1`. The resulting count is split across hardware families in proportion to their size, at least one node per family |
 | `QUEUE_HP_MIN` | `1` | Minimum performance nodes in `queue_aware_v1` |
 | `QUEUE_HP_MAX` | `1000000` | Maximum performance nodes in `queue_aware_v1` |
-| `QUEUE_PERF_PER_HP_NODE` | `10` | Performance pods per performance node ratio in `queue_aware_v1` |
+| `QUEUE_PERF_PER_HP_NODE` | `10` | Running or pending performance pods per performance node in `queue_aware_v1` |
 
 The controller manager exports the split as `joulie_policy_family_nodes{family}` and `joulie_policy_family_performance_nodes{family}`, where `family` is `gpu:<model>` or `cpu:<model>`. See [Metrics]({{< relref "/docs/architecture/metrics.md" >}}).
 

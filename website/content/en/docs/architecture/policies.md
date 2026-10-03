@@ -93,7 +93,7 @@ Goal: adapt HP count to current performance-only pressure.
 Inputs:
 
 - `N`: number of eligible nodes.
-- `P`: count of active performance-sensitive pods cluster-wide.
+- `P`: count of performance-sensitive pods cluster-wide that are running or pending, so performance pods still waiting for a node raise the demand. Every Pending performance pod counts, including one that more performance nodes would not help (an unsatisfiable constraint, an image pull); `QUEUE_HP_MAX` bounds the effect. The downgrade guard counts running pods only.
 - `QUEUE_HP_BASE_FRAC`
 - `QUEUE_HP_MIN`
 - `QUEUE_HP_MAX`

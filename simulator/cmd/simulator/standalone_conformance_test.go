@@ -4,8 +4,10 @@ import (
 	"math"
 	"testing"
 
+	"github.com/matbun/joulie/pkg/controller/fsm"
 	"github.com/matbun/joulie/pkg/controller/policy"
 	"github.com/matbun/joulie/pkg/hwinv"
+	corev1 "k8s.io/api/core/v1"
 )
 
 // These conformance tests verify that the standalone simulator's scheduling
@@ -349,4 +351,38 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return s
+}
+
+// TestConformance_QueueAwareDemandMatchesController pins the queue_aware_v1
+// demand on both sides: what fsm.CountPerformanceDemand counts over pods, the
+// simulator counts over the same workload as jobs. A running performance pod
+// is a performance job placed on a node; a Pending one is a performance job
+// whose submit time has passed and that no node has taken. Before this test
+// the simulator's waiting-job branch could never match anything, because
+// standalone marks a job Submitted only when it places it.
+func TestConformance_QueueAwareDemandMatchesController(t *testing.T) {
+	jobs := []*simJob{
+		{Class: "performance", SubmitOffsetSec: 10, Submitted: true, NodeName: "n1"}, // running
+		{Class: "performance", SubmitOffsetSec: 20},                                  // waiting
+		{Class: "performance", SubmitOffsetSec: 30},                                  // waiting
+		{Class: "performance", SubmitOffsetSec: 40, Submitted: true, Completed: true, NodeName: "n1"},
+		{Class: "standard", SubmitOffsetSec: 50},     // waiting, not performance
+		{Class: "performance", SubmitOffsetSec: 900}, // not submitted yet
+	}
+	tracker := map[string]*standaloneNodeTracker{"n1": {perfPodCount: 1}, "n2": {}}
+	sim := countPerformanceSensitivePending(tracker, jobs, 100)
+
+	perf := corev1.PodSpec{NodeSelector: map[string]string{fsm.PowerProfileLabelKey: fsm.ProfilePerformance}}
+	pods := []corev1.Pod{
+		{Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodRunning}},
+		{Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodPending}},
+		{Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodPending}},
+		{Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodSucceeded}},
+		{Status: corev1.PodStatus{Phase: corev1.PodPending}},
+	}
+	ctrl := fsm.CountPerformanceDemand(pods)
+
+	if sim != 3 || ctrl != 3 {
+		t.Fatalf("queue-aware demand: simulator=%d controller=%d, want 3 on both (one running, two waiting)", sim, ctrl)
+	}
 }
