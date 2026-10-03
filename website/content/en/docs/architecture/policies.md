@@ -131,12 +131,13 @@ This policy is intended for debugging only, not as default production behavior.
 
 ## Downgrade Guard
 
-When planned profile is `eco` on a node currently `performance`:
+When the planned profile of a node is `eco`:
 
 1. Count active performance pods on that node.
 2. If count > 0:
    - keep desired profile as `eco`,
    - set `NodeTwin.status.schedulableClass` to `draining`,
+   - write the performance caps in `NodeTwin.spec` until those pods finish, so they are not throttled; this holds for a node leaving `performance` and for one already in `eco` that runs a performance pod,
    - record transition as deferred in controller manager FSM/metrics.
 3. If count == 0:
    - keep desired profile `eco`,

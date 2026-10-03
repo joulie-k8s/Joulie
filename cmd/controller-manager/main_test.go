@@ -1325,3 +1325,95 @@ func TestRecordFamilySplitReplacesThePreviousSplit(t *testing.T) {
 		t.Fatalf("family gauges keep %d series with no eligible node, want 0", n)
 	}
 }
+
+// A node the policy moves out of performance while performance pods still run
+// on it is draining: the scheduler sends it no new performance pod, and the
+// running ones keep performance caps until they finish (the FSM's
+// DrainingPerformance, and what the simulator does). The old code computed the
+// caps from the planned eco profile before the guard ran, so the running pods
+// were capped at once. Every cap the spec can carry is checked: CPU percent,
+// GPU percent, and the CPU watts written on GPU nodes and in absolute mode.
+func TestDrainingNodeKeepsPerformanceCaps(t *testing.T) {
+	const perfW, ecoW = 5000.0, 120.0
+	gpus := corev1.ResourceList{"nvidia.com/gpu": resource.MustParse("4")}
+	type check struct {
+		path []string
+		want float64
+	}
+	for _, tc := range []struct {
+		name        string
+		withGPU     bool
+		absolute    bool
+		capRangeMax float64 // NodeHardware maxWattsPerSocket; 0 publishes none
+		checks      []check
+	}{
+		{name: "cpu node", checks: []check{{[]string{"spec", "cpu", "packagePowerCapPctOfMax"}, 100}}},
+		{name: "gpu node", withGPU: true, checks: []check{
+			{[]string{"spec", "gpu", "powerCap", "capPctOfMax"}, 100},
+			{[]string{"spec", "cpu", "packagePowerCapWatts"}, perfW},
+		}},
+		{name: "cpu node, absolute, known cap range", absolute: true, capRangeMax: 300,
+			checks: []check{{[]string{"spec", "cpu", "packagePowerCapWatts"}, 300}}},
+		{name: "cpu node, absolute, unknown hardware", absolute: true,
+			checks: []check{{[]string{"spec", "cpu", "packagePowerCapWatts"}, perfW}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Both nodes are in performance and the fraction is 0, so the
+			// family keeps one: n0 by name, and n1 must go to eco.
+			n0, n1 := managedNode("n0", "performance"), managedNode("n1", "performance")
+			if tc.withGPU {
+				n0.Status.Allocatable, n1.Status.Allocatable = gpus, gpus
+			}
+			perfPod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "train", Namespace: "default",
+					Annotations: map[string]string{"joulie.io/workload-class": "performance"}},
+				Spec:   corev1.PodSpec{NodeName: "n1"},
+				Status: corev1.PodStatus{Phase: corev1.PodRunning},
+			}
+			objs := []runtime.Object{n0, n1, perfPod}
+			if tc.capRangeMax > 0 {
+				for _, n := range []string{"n0", "n1"} {
+					objs = append(objs, nodeHardwareFromJSON(t, fmt.Sprintf(`{
+  "apiVersion": "joulie.io/v1alpha1", "kind": "NodeHardware",
+  "metadata": {"name": %q}, "spec": {"nodeName": %q},
+  "status": {"cpu": {"sockets": 1, "totalCores": 8, "controlAvailable": true,
+    "capRange": {"type": "package", "minWattsPerSocket": 50, "maxWattsPerSocket": %v}}}
+}`, n, n, tc.capRangeMax)))
+				}
+			}
+			reader, client, dyn := fakeClients(t, objs...)
+			selector, err := labels.Parse("joulie.io/managed=true")
+			if err != nil {
+				t.Fatalf("parse selector: %v", err)
+			}
+			if err := reconcile(
+				context.Background(), reader, client, dyn, selector,
+				"joulie.io/reserved", "joulie.io/power-profile", time.Minute,
+				perfW, ecoW, "static_partition", 0, 0, 1, 5, 10,
+				100, 60, tc.absolute, 100, 60, false,
+				map[string]GPUModelCaps{}, []string{"joulie.io/gpu.product"},
+			); err != nil {
+				t.Fatalf("reconcile error: %v", err)
+			}
+
+			twin, err := dyn.Resource(nodeTwinGVR).Get(context.Background(), "n1", metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get NodeTwin n1: %v", err)
+			}
+			draining, _, _ := unstructured.NestedBool(twin.Object, "spec", "scheduling", "draining")
+			if !draining {
+				t.Fatalf("n1 runs a performance pod and should be draining: spec=%v", twin.Object["spec"])
+			}
+			for _, c := range tc.checks {
+				v, found, _ := unstructured.NestedFieldNoCopy(twin.Object, c.path...)
+				got, ok := v.(float64)
+				if i, isInt := v.(int64); isInt {
+					got, ok = float64(i), true
+				}
+				if !found || !ok || got != c.want {
+					t.Fatalf("%v = %v while draining, want the performance cap %v (spec=%v)", c.path, v, c.want, twin.Object["spec"])
+				}
+			}
+		})
+	}
+}

@@ -904,6 +904,14 @@ func TestHardwareCatalogHasOneSourceOfTruth(t *testing.T) {
 			if skipDir[d.Name()] {
 				return fs.SkipDir
 			}
+			// A nested checkout, such as a git worktree under
+			// .claude/worktrees, is another copy of the repository, not a
+			// second catalog in this one.
+			if path != root {
+				if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
+					return fs.SkipDir
+				}
+			}
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)

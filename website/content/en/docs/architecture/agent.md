@@ -215,7 +215,7 @@ stateDiagram-v2
 Interpretation:
 
 - `DrainingPerformance` is the controller manager transition state.
-- In `DrainingPerformance`, controller manager publishes eco as desired state and sets `NodeTwin.status.schedulableClass` to `draining`.
+- In `DrainingPerformance`, controller manager publishes eco as desired state, sets `NodeTwin.status.schedulableClass` to `draining`, and keeps the performance caps in the spec, so the agent does not throttle the running performance pods.
 - The scheduler extender reads the `draining` schedulable class and filters the node out for performance pods, so no new performance work lands on it.
 - Transition to eco occurs when safeguard condition becomes true (`performance pods == 0`).
 
