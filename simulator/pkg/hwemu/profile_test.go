@@ -436,3 +436,27 @@ func renderSortedStrings(in []string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// The GPU limits are ordered: minW <= defaultW <= maxW, and a currentW an
+// admin set stays inside [minW, maxW].
+func TestGPULimitsAreOrdered(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		mutate func(l *Fact[float64], d *Fact[float64])
+		want   string
+	}{
+		{"current above max", func(c, _ *Fact[float64]) { *c = Fact[float64]{V: 450, Src: "assumed:test"} }, "limits.currentW needs minW <= currentW <= maxW"},
+		{"current below min", func(c, _ *Fact[float64]) { *c = Fact[float64]{V: 150, Src: "assumed:test"} }, "limits.currentW needs minW <= currentW <= maxW"},
+		{"default above max", func(_, d *Fact[float64]) { d.V = 450 }, "limits need 0 <= minW <= defaultW <= maxW"},
+	} {
+		p := renderBuiltin(t, "nvidia-h100-nvl-8gpu")
+		tc.mutate(&p.GPUs.Limits.CurrentW, &p.GPUs.Limits.DefaultW)
+		if err := p.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+	if err := renderBuiltin(t, "nvidia-h100-nvl-8gpu").Validate(); err != nil {
+		t.Fatalf("the builtin profile must validate: %v", err)
+	}
+}

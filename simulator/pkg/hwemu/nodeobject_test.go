@@ -139,14 +139,16 @@ func TestH17ExposureModesRenderResourcesAndGFDLabels(t *testing.T) {
 					t.Errorf("label %s = %q, want %q", k, n.Labels[k], v)
 				}
 			}
+			// GFD publishes its configured strategies on every node: none
+			// outside MIG and outside time-slicing.
 			if c.exposure != "mig-single" && c.exposure != "mig-mixed" {
-				if _, ok := n.Labels["nvidia.com/mig.strategy"]; ok {
-					t.Errorf("mig.strategy set without MIG")
+				if got := n.Labels["nvidia.com/mig.strategy"]; got != "none" {
+					t.Errorf("mig.strategy = %q without MIG, want none", got)
 				}
 			}
 			if !strings.HasPrefix(c.exposure, "timeslice") {
-				if _, ok := n.Labels["nvidia.com/gpu.sharing-strategy"]; ok {
-					t.Errorf("sharing-strategy set without time-slicing")
+				if got := n.Labels["nvidia.com/gpu.sharing-strategy"]; got != "none" {
+					t.Errorf("sharing-strategy = %q without time-slicing, want none", got)
 				}
 			}
 		})
@@ -156,8 +158,18 @@ func TestH17ExposureModesRenderResourcesAndGFDLabels(t *testing.T) {
 	if got := renderQty(amd.Status.Allocatable, "amd.com/gpu"); got != "8" {
 		t.Errorf("mi300x amd.com/gpu = %q, want 8", got)
 	}
-	if amd.Labels["amd.com/gpu.product-name"] != "AMD_Instinct_MI300X" {
-		t.Errorf("mi300x: the listed labeller labels are missing: %v", amd.Labels)
+	// The node labeller publishes each value under both prefixes, and a
+	// per-value key whose value is the GPU count.
+	for k, v := range map[string]string{
+		"amd.com/gpu.product-name":                              "AMD_Instinct_MI300X_OAM",
+		"beta.amd.com/gpu.product-name":                         "AMD_Instinct_MI300X_OAM",
+		"beta.amd.com/gpu.product-name.AMD_Instinct_MI300X_OAM": "8",
+		"amd.com/gpu.device-id":                                 "74a1",
+		"amd.com/gpu.family":                                    "AI",
+	} {
+		if amd.Labels[k] != v {
+			t.Errorf("mi300x: label %s = %q, want %q", k, amd.Labels[k], v)
+		}
 	}
 	for k := range amd.Labels {
 		if strings.HasPrefix(k, "nvidia.com/") {

@@ -4,6 +4,7 @@ schemaVersion: 1
 name: amd-epyc-2s-energy-only
 description: Two socket EPYC 9654, acpi-cpufreq, RAPL energy counters only (package and core), no constraints.
 sources:
+  nodedesc9654: {kind: measured, ref: "read-only node description of a node with 2x EPYC 9654, 2026-10", note: "capacity minus allocatable"}
   cpufreq9654: {kind: measured, ref: "read-only dump of /sys/devices/system/cpu on one bare-metal node with 2x EPYC 9654, 2026-10", note: "policy attributes identical on all 384 policies; global cpufreq/boost"}
   amd9654:     {kind: published, ref: "https://www.amd.com/en/products/processors/server/epyc/4th-generation-9004-and-8004-series/amd-epyc-9654.html", note: "96 cores, 192 threads, base 2.4 GHz, boost up to 3.7 GHz, default TDP 360W, cTDP 320-400W"}
   spec01203:   {kind: published, ref: "https://www.spec.org/power_ssj2008/results/res2022q4/power_ssj2008-20221204-01203.txt", note: "2x EPYC 9654: Active Idle 128 W"}
@@ -31,7 +32,7 @@ node:
   capacity:
     cpu: {v: 384, src: "derived:amd9654#2 x 192 threads"}
     memoryKi: {v: 1584000000, src: "assumed:placeholder, 1.5 TiB class node"}
-  reserved: {cpu: "2", memory: 8Gi, src: "assumed:typical kubelet reservation"}
+  reserved: {cpu: "2", memory: 1000Mi, src: "measured:nodedesc9654#capacity minus allocatable"}
 pci:
   - {class: "0x030000", vendor: "0x1a03", src: "assumed:BMC VGA on a typical server board"}
 cpu:

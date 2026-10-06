@@ -12,8 +12,9 @@ import (
 )
 
 // renderDriverVersion is state/nvml/driver_version. No profile field holds
-// it and the agent never reads it (assumed: a public R550 release number).
-const renderDriverVersion = "550.54.15"
+// it and the agent never reads it: the version a read-only nvidia-smi -q of
+// H100 and L40S hosts reported (2026-10).
+const renderDriverVersion = "590.48.01"
 
 // renderNVMLFields maps each nvidia-smi query field the emulated tool
 // answers to the NVML state file behind it. gpus.fieldSupport names fields
@@ -50,6 +51,10 @@ func renderNVML(b *renderBuilder, p *Profile, o RenderOptions) error {
 		return err
 	}
 	mw := func(w float64) string { return renderUint(int64(math.Round(w * 1000))) }
+	current := g.Limits.DefaultW.V
+	if g.Limits.CurrentW.Src != "" {
+		current = g.Limits.CurrentW.V
+	}
 	for i := 0; i < g.Count.V; i++ {
 		entries := []renderEntry{
 			{name: "name", content: g.Product.V + "\n", owner: layout.OwnerRender, mode: 0o444},
@@ -58,8 +63,8 @@ func renderNVML(b *renderBuilder, p *Profile, o RenderOptions) error {
 			{name: "power_min_limit_mw", content: mw(g.Limits.MinW.V), owner: layout.OwnerRender, mode: 0o444},
 			{name: "power_max_limit_mw", content: mw(g.Limits.MaxW.V), owner: layout.OwnerRender, mode: 0o444},
 			{name: "power_default_limit_mw", content: mw(g.Limits.DefaultW.V), owner: layout.OwnerRender, mode: 0o444},
-			{name: "power_limit_mw", content: mw(g.Limits.DefaultW.V), owner: layout.OwnerAgent, mode: 0o644},
-			{name: "enforced_power_limit_mw", content: mw(g.Limits.DefaultW.V), owner: layout.OwnerEmulator, mode: 0o444},
+			{name: "power_limit_mw", content: mw(current), owner: layout.OwnerAgent, mode: 0o644},
+			{name: "enforced_power_limit_mw", content: mw(current), owner: layout.OwnerEmulator, mode: 0o444},
 			{name: "power_draw_mw", content: mw(p.Physics.GPU.IdleW.V), owner: layout.OwnerEmulator, mode: 0o444},
 			{name: "total_energy_mj", content: "0\n", owner: layout.OwnerEmulator, mode: 0o444},
 			{name: "utilization_gpu_pct", content: "0\n", owner: layout.OwnerEmulator, mode: 0o444},

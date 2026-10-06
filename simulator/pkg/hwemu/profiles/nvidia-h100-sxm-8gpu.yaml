@@ -4,9 +4,13 @@ name: nvidia-h100-sxm-8gpu
 extends: nvidia-h100-nvl-8gpu
 description: 8x H100 SXM on the two socket Xeon RAPL host, nvidia-smi, GFD labels.
 sources:
+  nvsmiqsxm:  {kind: measured, ref: "read-only nvidia-smi -q of a node with 4x H100 SXM, 2026-10", note: "GPU Power Readings, Persistence Mode, an idle GPU's Average Power Draw"}
+  gfdlabelssxm: {kind: measured, ref: "read-only node description of a node with 4x H100 SXM, 2026-10", note: "GPU feature discovery label gpu.memory"}
   h100page: {kind: published, ref: "https://www.nvidia.com/en-us/data-center/h100/", note: "SXM Max TDP: Up to 700W (configurable)"}
   smih100:  {kind: published, ref: "https://github.com/utkuozdemir/nvidia_gpu_exporter/blob/f6977bb790011483824091c916da991ae7ca97cf/internal/captures/linux-x86_64__nvidia-h100-80gb-hbm3__590.48.01.txt", note: "nvidia-smi -q, driver 590.48.01, lines 1488-1678: Product Name NVIDIA H100 80GB HBM3, Device Id 0x233010DE; Current, Default and Max Power Limit 700.00 W, Min Power Limit 200.00 W"}
 gpus:
+  persistenceMode: {v: enabled, src: measured:nvsmiqsxm}
+  memoryMiB: {v: 81559, src: measured:gfdlabelssxm}
   product: {v: "NVIDIA H100 80GB HBM3", src: "assumed:nvidia-smi name; equals the NVIDIA_H100_SXM alias of the hardware catalog"}
   pci: {device: {v: "", src: "assumed:SXM device ID not read"}}
   limits:
@@ -15,5 +19,5 @@ gpus:
     minW: {v: 200, src: "published:smih100#Min Power Limit 200.00 W"}
 physics:
   gpu:
-    idleW: {v: 70, src: "assumed:placeholder"}
+    idleW: {v: 69.6, src: "measured:nvsmiqsxm#an idle GPU's Average Power Draw"}
     naturalMaxW: {v: 700, src: published:h100page}

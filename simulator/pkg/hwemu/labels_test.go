@@ -60,3 +60,41 @@ func TestH16NFDPCILabels(t *testing.T) {
 		t.Errorf("nfd absent must keep the non-NFD labels, got %v", labels)
 	}
 }
+
+// GPU feature discovery labels carry the profile's architecture, compute
+// capability, memory and MIG capability, GFD's configuration defaults, and
+// cuda.driver labels that agree with the emulated driver version, so a node
+// looks like what GFD publishes next to nvidia-smi.
+func TestGFDLabelsCarryNVMLFactsAndDriverVersion(t *testing.T) {
+	t.Parallel()
+	major, minor, _ := strings.Cut(renderDriverVersion, ".")
+	minor, rev, _ := strings.Cut(minor, ".")
+	for name, want := range map[string]map[string]string{
+		"nvidia-h100-sxm-4gpu": {
+			"nvidia.com/gpu.family": "hopper", "nvidia.com/gpu.compute.major": "9", "nvidia.com/gpu.compute.minor": "0",
+			"nvidia.com/gpu.memory": "81559", "nvidia.com/mig.capable": "true",
+		},
+		"nvidia-l40s-4gpu": {
+			"nvidia.com/gpu.family": "ampere", "nvidia.com/gpu.compute.major": "8", "nvidia.com/gpu.compute.minor": "9",
+			"nvidia.com/gpu.memory": "46068", "nvidia.com/mig.capable": "false",
+		},
+	} {
+		labels := renderBuiltin(t, name).NodeObject("n").Labels
+		for k, v := range map[string]string{
+			"nvidia.com/gpu.present": "true", "nvidia.com/gpu.mode": "compute",
+			"nvidia.com/gpu.sharing-strategy": "none", "nvidia.com/mig.strategy": "none",
+			"nvidia.com/cuda.driver-version.full": renderDriverVersion,
+			"nvidia.com/cuda.driver.major":        major, "nvidia.com/cuda.driver.minor": minor, "nvidia.com/cuda.driver.rev": rev,
+		} {
+			want[k] = v
+		}
+		for k, v := range want {
+			if labels[k] != v {
+				t.Errorf("%s: %s = %q, want %q", name, k, labels[k], v)
+			}
+		}
+		if _, ok := labels["nvidia.com/gpu.machine"]; ok {
+			t.Errorf("%s: gpu.machine names a server product; it must not be rendered", name)
+		}
+	}
+}

@@ -5,6 +5,7 @@ name: amd-instinct-mi300x-8gpu
 extends: amd-epyc-2s-energy-only
 description: 8x Instinct MI300X on the energy-only two socket EPYC host, as AMD's node-level architecture pairs them; amdgpu hwmon, current rocm-smi (no --showpowercap) and amd-smi 7.2.
 sources:
+  amdlabelsmi300x: {kind: measured, ref: "read-only node description of a node with 8x MI300X, 2026-10", note: "AMD node labeller label set under both of its label prefixes"}
   mi300xds:    {kind: published, ref: "https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/data-sheets/amd-instinct-mi300x-data-sheet.pdf", note: "Maximum TBP 750W; sold as an AMD Instinct Platform with eight accelerators"}
   mi300arch:   {kind: published, ref: "https://rocm.docs.amd.com/en/latest/reference/gpu-arch/mi300.html", note: "Node-level architecture: AMD EPYC processors in a dual-socket configuration and eight AMD Instinct MI300X GPUs, attached by PCIe Gen 5 x16"}
   amdsmidoc:   {kind: published, ref: "https://rocm.docs.amd.com/projects/amdsmi/en/latest/how-to/amdsmi-cli-tool.html", note: "MI300A (0x74a0) example: PPT0 max 550 W, min 0 W"}
@@ -17,10 +18,29 @@ sources:
 node:
   labels:
     amdgpu:
-      src: "assumed:key and value format per amdlabeller; MI300X family code not read"
+      src: "measured:amdlabelsmi300x#each value under both label prefixes, plus a per-value key whose value is the GPU count"
       values:
-        amd.com/gpu.product-name: AMD_Instinct_MI300X
-        amd.com/gpu.family: AI
+        amd.com/gpu.cu-count: "304"
+        amd.com/gpu.device-id: "74a1"
+        amd.com/gpu.driver-version: "6.16.13"
+        amd.com/gpu.family: "AI"
+        amd.com/gpu.product-name: "AMD_Instinct_MI300X_OAM"
+        amd.com/gpu.simd-count: "1216"
+        amd.com/gpu.vram: "192G"
+        beta.amd.com/gpu.cu-count: "304"
+        beta.amd.com/gpu.cu-count.304: "8"
+        beta.amd.com/gpu.device-id: "74a1"
+        beta.amd.com/gpu.device-id.74a1: "8"
+        beta.amd.com/gpu.family: "AI"
+        beta.amd.com/gpu.family.AI: "8"
+        beta.amd.com/gpu.product-name: "AMD_Instinct_MI300X_OAM"
+        beta.amd.com/gpu.product-name.AMD_Instinct_MI300X_OAM: "8"
+        beta.amd.com/gpu.simd-count: "1216"
+        beta.amd.com/gpu.simd-count.1216: "8"
+        beta.amd.com/gpu.vram: "192G"
+        beta.amd.com/gpu.vram.192G: "8"
+  # Admins commonly taint GPU nodes; the AMD device plugin tolerates this taint.
+  taints: [{key: amd.com/gpu, effect: NoSchedule}]
 pci:
   - {class: "0x030000", vendor: "0x1a03", drm: true, src: "assumed:BMC VGA as card0"}
 gpus:

@@ -809,6 +809,9 @@ func renderValidateGPUs(p *Profile) []error {
 	if l.MinW.V < 0 || l.MinW.V > l.DefaultW.V || l.DefaultW.V > l.MaxW.V || l.MaxW.V <= 0 {
 		fail("limits need 0 <= minW <= defaultW <= maxW and maxW > 0")
 	}
+	if l.CurrentW.Src != "" && (l.CurrentW.V < l.MinW.V || l.CurrentW.V > l.MaxW.V) {
+		fail("limits.currentW needs minW <= currentW <= maxW")
+	}
 	if !renderExposures[g.Vendor][g.Exposure.V] {
 		fail("exposure %q is not supported for %s", g.Exposure.V, g.Vendor)
 	}

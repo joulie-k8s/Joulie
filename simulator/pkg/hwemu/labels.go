@@ -68,13 +68,44 @@ func renderGFDProduct(product string) string {
 //     driver).
 //
 // gpu.replicas is 1 in the mig modes (assumed: no sharing is configured).
+//
+// Every mode also carries what GPU feature discovery reads from NVML and its
+// own configuration: gpu.present, gpu.mode=compute, gpu.family,
+// gpu.compute.major and minor, gpu.memory in MiB, mig.capable,
+// gpu.sharing-strategy (none unless time-sliced), mig.strategy (none unless a
+// MIG mode sets it) and the cuda.driver labels of the emulated driver
+// version, so they agree with what nvidia-smi reports. gpu.machine, the
+// server's product name, is left out.
 func renderGFDLabels(g *GPUSpec) map[string]string {
 	n := g.Count.V
 	product := renderGFDProduct(g.Product.V)
 	out := map[string]string{
-		"nvidia.com/gpu.product":  product,
-		"nvidia.com/gpu.count":    strconv.Itoa(n),
-		"nvidia.com/gpu.replicas": "1",
+		"nvidia.com/gpu.product":          product,
+		"nvidia.com/gpu.count":            strconv.Itoa(n),
+		"nvidia.com/gpu.replicas":         "1",
+		"nvidia.com/gpu.present":          "true",
+		"nvidia.com/gpu.mode":             "compute",
+		"nvidia.com/gpu.sharing-strategy": "none",
+		"nvidia.com/mig.strategy":         "none",
+	}
+	if g.Architecture.V != "" {
+		out["nvidia.com/gpu.family"] = g.Architecture.V
+	}
+	if major, minor, ok := strings.Cut(g.ComputeCapability.V, "."); ok {
+		out["nvidia.com/gpu.compute.major"] = major
+		out["nvidia.com/gpu.compute.minor"] = minor
+	}
+	if g.MemoryMiB.V > 0 {
+		out["nvidia.com/gpu.memory"] = strconv.Itoa(g.MemoryMiB.V)
+	}
+	if g.MIGCapable.Src != "" {
+		out["nvidia.com/mig.capable"] = strconv.FormatBool(g.MIGCapable.V)
+	}
+	if v := strings.SplitN(renderDriverVersion, ".", 3); len(v) == 3 {
+		out["nvidia.com/cuda.driver-version.full"] = renderDriverVersion
+		out["nvidia.com/cuda.driver-version.major"], out["nvidia.com/cuda.driver.major"] = v[0], v[0]
+		out["nvidia.com/cuda.driver-version.minor"], out["nvidia.com/cuda.driver.minor"] = v[1], v[1]
+		out["nvidia.com/cuda.driver-version.revision"], out["nvidia.com/cuda.driver.rev"] = v[2], v[2]
 	}
 	switch g.Exposure.V {
 	case "mig-single":

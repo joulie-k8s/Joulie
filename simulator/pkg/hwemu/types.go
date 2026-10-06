@@ -163,6 +163,9 @@ type GPUSpec struct {
 		MinW     Fact[float64] `json:"minW"`
 		MaxW     Fact[float64] `json:"maxW"`
 		DefaultW Fact[float64] `json:"defaultW"`
+		// CurrentW is the limit in force when the node starts, when an admin
+		// set it away from the default; unset, the default is in force.
+		CurrentW Fact[float64] `json:"currentW"`
 	} `json:"limits"`
 	PowerSensor       Fact[string]      `json:"powerSensor"`
 	PPT1              Fact[string]      `json:"ppt1"`
@@ -183,6 +186,13 @@ type GPUSpec struct {
 	// only. With persistence off, the driver unloads when no client holds
 	// the GPU, and the power limit goes back to its default.
 	PersistenceMode Fact[string] `json:"persistenceMode"`
+	// Architecture, ComputeCapability ("9.0"), MemoryMiB and MIGCapable feed
+	// the GPU feature discovery labels gpu.family, gpu.compute.major and
+	// minor, gpu.memory and mig.capable. NVIDIA only.
+	Architecture      Fact[string] `json:"architecture"`
+	ComputeCapability Fact[string] `json:"computeCapability"`
+	MemoryMiB         Fact[int]    `json:"memoryMiB"`
+	MIGCapable        Fact[bool]   `json:"migCapable"`
 }
 
 // GPU persistence modes, the values of GPUSpec.PersistenceMode.

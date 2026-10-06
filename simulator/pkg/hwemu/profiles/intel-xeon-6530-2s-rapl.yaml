@@ -7,6 +7,7 @@ schemaVersion: 1
 name: intel-xeon-6530-2s-rapl
 description: Two socket Xeon Gold 6530, intel_cpufreq (intel_pstate passive), MSR RAPL PL1/PL2, disabled write-rejecting DRAM sub-zones.
 sources:
+  nodedesc6530: {kind: measured, ref: "read-only node description of a node with 2x Xeon Gold 6530, 2026-10", note: "capacity minus allocatable"}
   cpufreq6530: {kind: measured, ref: "read-only dump of /sys/devices/system/cpu on one bare-metal node with 2x Xeon Gold 6530, 2026-10", note: "policy attributes identical on all 128 policies; intel_pstate/status passive, no_turbo 0; no global cpufreq/boost"}
   ark6530:     {kind: published, ref: "https://www.intel.com/content/www/us/en/products/sku/237249/intel-xeon-gold-6530-processor-160m-cache-2-10-ghz/specifications.html", note: "32 cores, 64 threads, base 2.1 GHz, max turbo 4 GHz, TDP 270 W, products formerly Emerald Rapids, max CPU configuration 2S (fetched 2026-10-06)"}
   cpuinfo6530: {kind: published, ref: "https://github.com/spcl/confidential-llms-in-tees/blob/bd3f2f681568268ed82fe64f27686f41b5f24ec0/CPU/sgx/cpuinfo.patch", note: "line 8, py-cpuinfo output of a 6530 host: vendor_id_raw GenuineIntel, brand_raw INTEL(R) XEON(R) GOLD 6530, family 6, model 207, stepping 2, count 128, hz_actual 800.0000 MHz, flags include hwp, hwp_act_window, hwp_epp and hwp_pkg_req"}
@@ -37,7 +38,7 @@ node:
   capacity:
     cpu: {v: 128, src: "derived:ark6530#2 sockets x 32 cores x 2 threads"}
     memoryKi: {v: 1073741824, src: "assumed:placeholder, 1 TiB"}
-  reserved: {cpu: "2", memory: 8Gi, src: "assumed:typical kubelet reservation"}
+  reserved: {cpu: "2", memory: 1000Mi, src: "measured:nodedesc6530#capacity minus allocatable"}
 pci:
   - {class: "0x030000", vendor: "0x1a03", src: "assumed:BMC VGA on a typical server board"}
 cpu:

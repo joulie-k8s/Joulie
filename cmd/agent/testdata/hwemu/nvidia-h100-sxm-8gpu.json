@@ -30,7 +30,7 @@
     },
     "controlAvailable": true,
     "count": 8,
-    "currentCapWatts": 700,
+    "currentCapWatts": 400,
     "model": "NVIDIA_H100_SXM",
     "present": true,
     "rawModel": "NVIDIA H100 80GB HBM3",

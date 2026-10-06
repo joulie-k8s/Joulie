@@ -21,13 +21,15 @@ func TestH02NVMLState(t *testing.T) {
 		return renderReadFile(t, tree, path.Join(layout.StateDir, layout.NVMLGPUDir(i), file))
 	}
 	for file, want := range map[string]string{
-		"name":                    "NVIDIA H100 NVL\n",
-		"power_min_limit_mw":      "200000\n",
-		"power_max_limit_mw":      "400000\n",
-		"power_default_limit_mw":  "400000\n",
+		"name":               "NVIDIA H100 NVL\n",
+		"power_min_limit_mw": "200000\n",
+		"power_max_limit_mw": "400000\n",
+		// The driver default is 310 W; the profile's currentW starts the
+		// limit at the 400 W maximum an admin set.
+		"power_default_limit_mw":  "310000\n",
 		"power_limit_mw":          "400000\n",
 		"enforced_power_limit_mw": "400000\n",
-		"power_draw_mw":           "50000\n",
+		"power_draw_mw":           "58600\n",
 		"total_energy_mj":         "0\n",
 		"utilization_gpu_pct":     "0\n",
 		"pci_bus_id":              "00000000:17:00.0\n",
