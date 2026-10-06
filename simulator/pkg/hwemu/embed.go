@@ -5,9 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"reflect"
+	"regexp"
 	"sort"
-	"strings"
 )
 
 //go:embed profiles/*.yaml
@@ -19,9 +18,13 @@ func BuiltinProfiles() (map[string]*Profile, error) {
 	return renderLoadEmbedded(renderProfilesFS, "profiles")
 }
 
+// renderHostPattern matches what identifies one machine: a numbered node
+// name, an IPv4 address or a dotted host name.
+var renderHostPattern = regexp.MustCompile(`(?i)node-?[0-9]|\b[0-9]{1,3}(\.[0-9]{1,3}){3}\b|\b[a-z0-9-]+\.[a-z0-9-]+\.[a-z]{2,}\b`)
+
 // renderLoadEmbedded is LoadProfiles plus the rule for profiles shipped in
-// the repository: no measured: provenance and no measured source, because
-// measurements of one site's machines belong only in local profiles.
+// the repository: a measured source describes the machine by its hardware
+// only, never by a node name, address or host name.
 func renderLoadEmbedded(fsys fs.FS, dir string) (map[string]*Profile, error) {
 	profiles, err := LoadProfiles(fsys, dir)
 	if err != nil {
@@ -30,19 +33,13 @@ func renderLoadEmbedded(fsys fs.FS, dir string) (map[string]*Profile, error) {
 	var errs []error
 	for _, name := range renderSortedProfileNames(profiles) {
 		p := profiles[name]
-		for id, s := range p.Sources {
-			if s.Kind == renderKindMeasured {
-				errs = append(errs, fmt.Errorf("%s: source %q is measured; measured sources belong only in local profiles", name, id))
+		for _, id := range renderSortedSourceIDs(p.Sources) {
+			s := p.Sources[id]
+			if s.Kind != renderKindMeasured {
+				continue
 			}
-		}
-		renderWalkFacts(reflect.ValueOf(p).Elem(), "", func(at string, f renderFact) {
-			if strings.HasPrefix(f.renderSource(), renderKindMeasured+":") {
-				errs = append(errs, fmt.Errorf("%s: %s: measured: provenance belongs only in local profiles", name, at))
-			}
-		})
-		for g, lg := range p.Node.Labels {
-			if strings.HasPrefix(lg.Src, renderKindMeasured+":") {
-				errs = append(errs, fmt.Errorf("%s: node.labels.%s: measured: provenance belongs only in local profiles", name, g))
+			if m := renderHostPattern.FindString(s.Ref + " " + s.Note); m != "" {
+				errs = append(errs, fmt.Errorf("%s: measured source %q names a machine (%q); describe it by its hardware only", name, id, m))
 			}
 		}
 	}
@@ -59,4 +56,14 @@ func renderSortedProfileNames(m map[string]*Profile) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// renderSortedSourceIDs keeps error order stable.
+func renderSortedSourceIDs(m map[string]Source) []string {
+	ids := make([]string, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }

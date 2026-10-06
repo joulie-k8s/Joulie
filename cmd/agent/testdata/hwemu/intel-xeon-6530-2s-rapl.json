@@ -13,7 +13,7 @@
     },
     "controlAvailable": true,
     "coresPerSocket": 64,
-    "driverFamily": "intel_pstate",
+    "driverFamily": "intel_cpufreq",
     "model": "INTEL_XEON_GOLD_6530",
     "rawModel": "INTEL(R) XEON(R) GOLD 6530",
     "sockets": 2,

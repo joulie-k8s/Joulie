@@ -7,6 +7,7 @@ name: amd-epyc-9534-2s-energy-only
 extends: amd-epyc-2s-energy-only
 description: Two socket EPYC 9534, acpi-cpufreq, RAPL energy counters only (package and core), no constraints.
 sources:
+  cpufreq9534: {kind: measured, ref: "read-only dump of /sys/devices/system/cpu on one bare-metal node with 2x EPYC 9534, 2026-10", note: "policy attributes identical on all 256 policies; driver, governors and boost equal the 9654 dump"}
   amd9534:    {kind: published, ref: "https://www.amd.com/en/products/processors/server/epyc/4th-generation-9004-and-8004-series/amd-epyc-9534.html", note: "64 cores, 128 threads, base 2.45 GHz, max boost up to 3.7 GHz, all core boost 3.55 GHz, default TDP 280W, cTDP 240-300W, 1P/2P (fetched 2026-10-06)"}
   cpuname9534: {kind: published, ref: "https://github.com/quattor/template-library-standard/blob/3a9e11bdc74fe80776feb2400ea3ae2f28bd82e1/hardware/cpu/amd/epyc_9534.pan", note: "model AMD EPYC 9534 64-Core Processor, 64 cores, 128 threads"}
 node:
@@ -17,8 +18,8 @@ cpu:
   coresPerSocket: {v: 64, src: published:amd9534}
   threadsPerCore: {v: 2, src: "derived:amd9534#128 threads / 64 cores"}
 cpufreq:
-  availableKHz: {v: [2450000, 1900000, 1500000], src: "assumed:3 P-states, P0 = published base amd9534"}
-  cpuinfoMaxKHz: {v: 2450000, src: "derived:amd9534#base 2.45 GHz as P0; boost assumed not in the table"}
+  availableKHz: {v: [2450000, 1900000, 1500000], src: measured:cpufreq9534}
+  cpuinfoMaxKHz: {v: 3718066, src: "measured:cpufreq9534#includes boost, above the table"}
 physics:
   cpu:
     maxPkgW: {v: 280, src: "published:amd9534#Default TDP"}

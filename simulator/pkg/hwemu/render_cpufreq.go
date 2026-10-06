@@ -21,10 +21,13 @@ var renderSetpolicyDrivers = map[string]bool{"intel_pstate": true, "amd-pstate-e
 // amd-pstate.c:54, 968-976, 1086). amd-pstate-epp never sets it
 // (amd_pstate_epp_cpu_init, amd-pstate.c:1875-1972), so the zeroed policy
 // (cpufreq.c:1248) reads 0 (cpufreq.c:699). acpi-cpufreq takes it from the
-// firmware's _PSS table (acpi-cpufreq.c:831-842), so its value is assumed,
-// and so is intel_pstate's.
+// firmware's _PSS table (acpi-cpufreq.c:831-842); 0 is what the measured
+// EPYC dumps the amd-epyc profiles cite read. intel_cpufreq, intel_pstate in
+// passive mode, sets INTEL_CPUFREQ_TRANSITION_LATENCY (intel_pstate.c:43),
+// which the measured Xeon dump confirms. intel_pstate's value is assumed.
 var renderTransitionLatencyNS = map[string]int{
-	"acpi-cpufreq":   10000,
+	"acpi-cpufreq":   0,
+	"intel_cpufreq":  20000,
 	"amd-pstate":     20000,
 	"amd-pstate-epp": 0,
 	"intel_pstate":   0,

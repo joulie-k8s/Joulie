@@ -96,6 +96,7 @@ type nodePolicy struct {
 	setpolicy bool // intel_pstate or amd-pstate-epp: powersave follows load
 	governors []string
 	governor  string
+	boost     *int // the global cpufreq/boost, shared by every policy
 	epp       string
 	reqMinKHz int64 // as written
 	reqMaxKHz int64
@@ -143,6 +144,26 @@ func (p *nodePolicy) resolveKHz(v int64, high bool) int64 {
 
 func (p *nodePolicy) effMaxKHz() int64 { return p.resolveKHz(p.clampKHz(p.reqMaxKHz), true) }
 
+// ceilingKHz is the highest frequency the policy runs at. A table driver with
+// boost on runs above its top entry, up to cpuinfo_max_freq, while the policy
+// allows that entry: the hardware boosts only from P0 (AMD core performance
+// boost, acpi-cpufreq.c:79-120; the EPYC dumps list a 2.4 GHz top entry under
+// a 3.7 GHz cpuinfo_max_freq). A lower scaling_max_freq leaves no boost.
+func (p *nodePolicy) ceilingKHz() int64 {
+	hi := p.effMaxKHz()
+	if len(p.table) == 0 || p.boost == nil || *p.boost != 1 || hi >= p.maxKHz {
+		return hi
+	}
+	top := p.table[0]
+	for _, f := range p.table {
+		top = max(top, f)
+	}
+	if hi >= top {
+		return p.maxKHz
+	}
+	return hi
+}
+
 func (p *nodePolicy) effMinKHz() int64 {
 	return min(p.resolveKHz(p.clampKHz(p.reqMinKHz), false), p.effMaxKHz())
 }
@@ -153,7 +174,7 @@ func (p *nodePolicy) effMinKHz() int64 {
 // amd-pstate-epp, schedutil, ondemand and any other governor scale linearly
 // with load between the two (assumed).
 func (p *nodePolicy) target(util float64) float64 {
-	lo, hi := float64(p.effMinKHz()), float64(p.effMaxKHz())
+	lo, hi := float64(p.effMinKHz()), float64(p.ceilingKHz())
 	switch {
 	case p.governor == "performance":
 		return hi

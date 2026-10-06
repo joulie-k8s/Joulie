@@ -566,7 +566,7 @@ func (n *Node) buildCPUFreq() error {
 	}
 	boost := cf.Boost.V
 	h, cur := nodeBoolHandler(&boost)
-	n.addAFile(filepath.Join(cpufreqDir, "boost"), h, cur) // no effect: cpuinfo_max_freq is fixed
+	n.addAFile(filepath.Join(cpufreqDir, "boost"), h, cur) // read by nodePolicy.ceilingKHz
 	var indices []int
 	for _, e := range entries {
 		if k, err := strconv.Atoi(strings.TrimPrefix(e.Name(), "policy")); err == nil && strings.HasPrefix(e.Name(), "policy") && e.IsDir() {
@@ -577,7 +577,7 @@ func (n *Node) buildCPUFreq() error {
 	for _, k := range indices {
 		dir := n.sysPath(layout.PolicyDir(k))
 		file := func(name string) string { return filepath.Join(dir, name) }
-		p := &nodePolicy{index: k, minKHz: cf.CPUInfoMinKHz.V, maxKHz: cf.CPUInfoMaxKHz.V, table: append([]int64(nil), cf.AvailableKHz.V...), governor: cf.Governor.V}
+		p := &nodePolicy{index: k, minKHz: cf.CPUInfoMinKHz.V, maxKHz: cf.CPUInfoMaxKHz.V, table: append([]int64(nil), cf.AvailableKHz.V...), governor: cf.Governor.V, boost: &boost}
 		if s, ok := nodeReadString(file("related_cpus")); ok {
 			for _, f := range strings.Fields(s) {
 				if c, err := strconv.Atoi(f); err == nil {

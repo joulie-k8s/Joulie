@@ -194,7 +194,7 @@ var a02Paths = map[string]a02Path{
 		gpuVendor: "none",
 	},
 	"intel-xeon-6530-2s-rapl": {
-		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 270, cpuDriverFamily: "intel_pstate", cpuControl: true, cpuModel: "INTEL_XEON_GOLD_6530",
+		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 270, cpuDriverFamily: "intel_cpufreq", cpuControl: true, cpuModel: "INTEL_XEON_GOLD_6530",
 		gpuVendor: "none",
 	},
 	"amd-epyc-2s-energy-only": {
@@ -218,7 +218,7 @@ var a02Paths = map[string]a02Path{
 		gpuVendor: "nvidia", gpuCount: 8, gpuCapMinW: 200, gpuCapMaxW: 700, gpuControl: true, gpuModel: "NVIDIA_H100_SXM", gpuVendorFrom: nvidiaPCILabel,
 	},
 	"nvidia-h100-sxm-4gpu": {
-		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 270, cpuDriverFamily: "intel_pstate", cpuControl: true, cpuModel: "INTEL_XEON_GOLD_6530",
+		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 270, cpuDriverFamily: "intel_cpufreq", cpuControl: true, cpuModel: "INTEL_XEON_GOLD_6530",
 		gpuVendor: "nvidia", gpuCount: 4, gpuCapMinW: 200, gpuCapMaxW: 700, gpuControl: true, gpuModel: "NVIDIA_H100_SXM", gpuVendorFrom: nvidiaPCILabel,
 	},
 	"nvidia-l40s-4gpu": {

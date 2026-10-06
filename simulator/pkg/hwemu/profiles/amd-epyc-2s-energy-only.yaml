@@ -4,6 +4,7 @@ schemaVersion: 1
 name: amd-epyc-2s-energy-only
 description: Two socket EPYC 9654, acpi-cpufreq, RAPL energy counters only (package and core), no constraints.
 sources:
+  cpufreq9654: {kind: measured, ref: "read-only dump of /sys/devices/system/cpu on one bare-metal node with 2x EPYC 9654, 2026-10", note: "policy attributes identical on all 384 policies; global cpufreq/boost"}
   amd9654:     {kind: published, ref: "https://www.amd.com/en/products/processors/server/epyc/4th-generation-9004-and-8004-series/amd-epyc-9654.html", note: "96 cores, 192 threads, base 2.4 GHz, boost up to 3.7 GHz, default TDP 360W, cTDP 320-400W"}
   spec01203:   {kind: published, ref: "https://www.spec.org/power_ssj2008/results/res2022q4/power_ssj2008-20221204-01203.txt", note: "2x EPYC 9654: Active Idle 128 W"}
   raplmsr:     {kind: published, ref: "linux v7.3-rc5 drivers/powercap/intel_rapl_msr.c:119-124", note: "AMD: PACKAGE and PP0 status registers only"}
@@ -56,14 +57,14 @@ powercap:
           children:
             - {nameFormat: core, enabled: 0, energyUnitNJ: 15258, constraints: [], src: "published:raplmsr#PP0 status only; enabled per powercapsys"}
 cpufreq:
-  driver: {v: acpi-cpufreq, src: "assumed:default kernel command line on a server board; amdpstate keeps amd-pstate off below family 0x1A (Genoa is 0x19), so acpicf binds"}
-  governor: {v: performance, src: "assumed:common server setting; holds max frequency at any load (cpufreqcore cpufreq.rst:372-379)"}
-  availableGovernors: {v: "performance powersave ondemand schedutil", src: "assumed:governors built into a typical distribution kernel"}
-  availableKHz: {v: [2400000, 1900000, 1500000], src: "assumed:3 P-states, P0 = published base amd9654"}
-  cpuinfoMaxKHz: {v: 2400000, src: "derived:amd9654#base 2.4 GHz as P0; boost assumed not in the table"}
-  cpuinfoMinKHz: {v: 1500000, src: "assumed:lowest P-state"}
-  boost: {v: 1, src: "assumed:boost enabled in firmware"}
-  policyGrouping: {v: per-cpu, src: "assumed:policy sharing follows firmware _PSD, not read"}
+  driver: {v: acpi-cpufreq, src: "measured:cpufreq9654#scaling_driver; amdpstate keeps amd-pstate off below family 0x1A (Genoa is 0x19), so acpicf binds"}
+  governor: {v: schedutil, src: measured:cpufreq9654}
+  availableGovernors: {v: "conservative ondemand userspace powersave performance schedutil", src: measured:cpufreq9654}
+  availableKHz: {v: [2400000, 1900000, 1500000], src: measured:cpufreq9654}
+  cpuinfoMaxKHz: {v: 3707812, src: "measured:cpufreq9654#includes boost, above the table"}
+  cpuinfoMinKHz: {v: 1500000, src: measured:cpufreq9654}
+  boost: {v: 1, src: measured:cpufreq9654}
+  policyGrouping: {v: per-cpu, src: "measured:cpufreq9654#related_cpus is the CPU itself"}
 physics:
   cpu:
     model: analytic

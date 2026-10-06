@@ -272,3 +272,28 @@ func TestH11NVMLLimitSettlesPowerDraw(t *testing.T) {
 		t.Errorf("GPU 0 power_limit_mw = %q, want 250000 kept", got)
 	}
 }
+
+// A table policy with boost on runs above its top entry up to
+// cpuinfo_max_freq at full load; with boost off, or with scaling_max_freq
+// below the top entry, it stays on the table. Without this a fully loaded
+// EPYC host whose cpuinfo_max_freq includes boost never reaches its rated
+// package power.
+func TestNodePolicyBoostRunsAboveTheTopTableEntry(t *testing.T) {
+	on, off := 1, 0
+	p := &nodePolicy{minKHz: 1500000, maxKHz: 3707812, table: []int64{2400000, 1900000, 1500000}, governor: "schedutil", reqMinKHz: 1500000, reqMaxKHz: 3707812, boost: &on}
+	if got := p.target(1); got != 3707812 {
+		t.Errorf("boost on, full load: target %v kHz, want cpuinfo_max_freq 3707812", got)
+	}
+	if got := p.target(0); got != 1500000 {
+		t.Errorf("boost on, idle: target %v kHz, want the 1500000 minimum", got)
+	}
+	p.boost = &off
+	if got := p.target(1); got != 2400000 {
+		t.Errorf("boost off, full load: target %v kHz, want the 2400000 top entry", got)
+	}
+	p.boost = &on
+	p.reqMaxKHz = 1900000
+	if got := p.target(1); got != 1900000 {
+		t.Errorf("scaling_max_freq 1900000, full load: target %v kHz, want 1900000 with no boost", got)
+	}
+}

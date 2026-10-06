@@ -102,7 +102,7 @@ func TestH01BuiltinProfilesLoadWithProvenance(t *testing.T) {
 		}
 	}
 
-	// The 8-GPU NVIDIA profiles extend the Skylake-SP RAPL host, so their CPU
+	// The 8-GPU NVIDIA profiles extend the Cascade Lake RAPL host, so their CPU
 	// block and package limits are its own, with its sources.
 	for _, name := range []string{"nvidia-h100-nvl-8gpu", "nvidia-h100-sxm-8gpu"} {
 		p := profiles[name]
@@ -131,7 +131,7 @@ func TestH01BuiltinProfilesLoadWithProvenance(t *testing.T) {
 		t.Errorf("mi300x: want the energy-only EPYC host")
 	}
 
-	// The 6530 host is standalone: no fact of it may come from the Skylake-SP
+	// The 6530 host is standalone: no fact of it may come from the Cascade Lake
 	// corpus capture, and its package limits and cpufreq block are its own:
 	// intel_pstate in active mode, since the CPU reports HWP and EPP.
 	// The 4-GPU SXM profile inherits that CPU block and replaces the GPUs.
@@ -141,19 +141,19 @@ func TestH01BuiltinProfilesLoadWithProvenance(t *testing.T) {
 			t.Errorf("%s: cpu %q with %d cores per socket and capacity %d, want the 6530 with 32 and 128", name, p.CPU.ModelName.V, p.CPU.CoresPerSocket.V, p.Node.Capacity.CPU.V)
 		}
 		if _, ok := p.Sources["corpus"]; ok {
-			t.Errorf("%s: lists the Skylake-SP corpus source; the 6530 host must not inherit from it", name)
+			t.Errorf("%s: lists the Cascade Lake corpus source; the 6530 host must not inherit from it", name)
 		}
 		pkg := p.Powercap.ControlTypes[0].Zones[0]
 		if pkg.Constraints[0].MaxPowerUW.V != 270000000 || pkg.Constraints[1].Name != "short_term" {
 			t.Errorf("%s: package constraints %+v, want PL1 at the 270 W TDP and a PL2", name, pkg.Constraints)
 		}
 		// rapl_defaults_spr_server sets no dram_domain_energy_unit, so the
-		// DRAM zone counts in the package unit, unlike Skylake-SP's 15300.
+		// DRAM zone counts in the package unit, unlike Cascade Lake's 15300.
 		if dram := pkg.Children[0]; dram.EnergyUnitNJ.V != pkg.EnergyUnitNJ.V {
 			t.Errorf("%s: dram energy unit %d nJ, want the package's %d", name, dram.EnergyUnitNJ.V, pkg.EnergyUnitNJ.V)
 		}
-		if f := p.CPUFreq; f.Driver.V != "intel_pstate" || f.Governor.V != "powersave" || f.CPUInfoMaxKHz.V != 4000000 || len(f.AvailableKHz.V) != 0 || f.Boost.Src != "" {
-			t.Errorf("%s: cpufreq %+v, want intel_pstate under powersave up to the 4 GHz turbo, with no frequency table and no boost file", name, f)
+		if f := p.CPUFreq; f.Driver.V != "intel_cpufreq" || f.Governor.V != "schedutil" || f.CPUInfoMinKHz.V != 800000 || f.CPUInfoMaxKHz.V != 4000000 || len(f.AvailableKHz.V) != 0 || f.Boost.Src != "" {
+			t.Errorf("%s: cpufreq %+v, want the measured intel_cpufreq under schedutil from 0.8 to 4 GHz, with no frequency table and no boost file", name, f)
 		}
 	}
 	sxm4 := profiles["nvidia-h100-sxm-4gpu"]
@@ -169,8 +169,8 @@ func TestH01BuiltinProfilesLoadWithProvenance(t *testing.T) {
 		if p.CPU.ModelName.V != "AMD EPYC 9534 64-Core Processor" || p.CPU.CoresPerSocket.V != 64 || p.Node.Capacity.CPU.V != 256 {
 			t.Errorf("%s: cpu %q with %d cores per socket and capacity %d, want the 9534 with 64 and 256", name, p.CPU.ModelName.V, p.CPU.CoresPerSocket.V, p.Node.Capacity.CPU.V)
 		}
-		if p.Physics.CPU.MaxPkgW.V != 280 || p.CPUFreq.CPUInfoMaxKHz.V != 2450000 || p.CPUFreq.AvailableKHz.V[0] != 2450000 {
-			t.Errorf("%s: maxPkgW %v, cpuinfoMaxKHz %d, table %v, want the 9534's 280 W and 2.45 GHz base", name, p.Physics.CPU.MaxPkgW.V, p.CPUFreq.CPUInfoMaxKHz.V, p.CPUFreq.AvailableKHz.V)
+		if p.Physics.CPU.MaxPkgW.V != 280 || p.CPUFreq.CPUInfoMaxKHz.V != 3718066 || p.CPUFreq.AvailableKHz.V[0] != 2450000 {
+			t.Errorf("%s: maxPkgW %v, cpuinfoMaxKHz %d, table %v, want the 9534's 280 W, the measured boost maximum and the 2.45 GHz base as P0", name, p.Physics.CPU.MaxPkgW.V, p.CPUFreq.CPUInfoMaxKHz.V, p.CPUFreq.AvailableKHz.V)
 		}
 		if p.CPUFreq.Driver.V != "acpi-cpufreq" || p.Powercap.ControlTypes[0].Zones[0].Enabled.V != 0 || p.CPU.Sockets.Src != "assumed:generic 2S node" {
 			t.Errorf("%s: want the energy-only zones, acpi-cpufreq and the sockets fact of the 9654 host", name)
@@ -231,27 +231,39 @@ func TestH01RejectsBadProvenance(t *testing.T) {
 	}
 }
 
-// H01: measured: provenance is allowed in local profiles and rejected in the
-// profiles shipped with the repository.
-func TestH01MeasuredOnlyInLocalProfiles(t *testing.T) {
+// H01: a measured source is allowed in every profile, but a profile shipped
+// in the repository must describe the machine by its hardware only: a node
+// name, an address or a host name in the source is rejected.
+func TestH01EmbeddedMeasuredSourcesNameNoMachine(t *testing.T) {
 	t.Parallel()
-	body := strings.Replace(renderMinimalProfile, `  cap: {kind: corpus`, `  bench: {kind: measured, ref: "local bench run"}
+	withRef := func(ref string) fstest.MapFS {
+		body := strings.Replace(renderMinimalProfile, `  cap: {kind: corpus`, `  bench: {kind: measured, ref: "`+ref+`"}
   cap: {kind: corpus`, 1)
-	body = strings.Replace(body, `maxPkgW: {v: 100, src: published:doc}`, `maxPkgW: {v: 100, src: "measured:bench#run 3"}`, 1)
-	fsys := renderMapFS(map[string]string{"base": body})
-	if _, err := LoadProfiles(fsys, "p"); err != nil {
+		body = strings.Replace(body, `maxPkgW: {v: 100, src: published:doc}`, `maxPkgW: {v: 100, src: "measured:bench#run 3"}`, 1)
+		return renderMapFS(map[string]string{"base": body})
+	}
+	neutral := withRef("read-only dump on one bare-metal node with 2x EPYC 9654, 2026-10")
+	if _, err := LoadProfiles(neutral, "p"); err != nil {
 		t.Fatalf("a local profile may cite a measured source: %v", err)
 	}
-	_, err := renderLoadEmbedded(fsys, "p")
-	if err == nil || !strings.Contains(err.Error(), "physics.cpu.maxPkgW: measured: provenance belongs only in local profiles") {
-		t.Fatalf("err = %v, want measured: rejected in an embedded profile", err)
+	if _, err := renderLoadEmbedded(neutral, "p"); err != nil {
+		t.Fatalf("a measured source that names only the hardware must load as embedded: %v", err)
+	}
+	for _, ref := range []string{"dump of rack3-node-12", "dump of 10.1.2.3", "dump of gpu01.example.org", "dump of node7"} {
+		_, err := renderLoadEmbedded(withRef(ref), "p")
+		if err == nil || !strings.Contains(err.Error(), "names a machine") {
+			t.Errorf("ref %q: err = %v, want the machine name rejected", ref, err)
+		}
 	}
 }
 
-// H01: the shipped profiles never mention a measurement or a non-ASCII dash,
-// whatever the loader accepts.
-func TestH01EmbeddedProfilesHaveNoMeasuredProvenance(t *testing.T) {
+// H01: the shipped profiles load under the embedded rule and contain no
+// non-ASCII dash.
+func TestH01EmbeddedProfilesLoadAndHaveNoDashes(t *testing.T) {
 	t.Parallel()
+	if _, err := BuiltinProfiles(); err != nil {
+		t.Fatalf("builtin profiles: %v", err)
+	}
 	files, err := fs.Glob(renderProfilesFS, "profiles/*.yaml")
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no embedded profiles: %v", err)
@@ -262,9 +274,6 @@ func TestH01EmbeddedProfilesHaveNoMeasuredProvenance(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i, line := range bytes.Split(b, []byte("\n")) {
-			if bytes.Contains(line, []byte("measured:")) {
-				t.Errorf("%s:%d cites a measurement; measured: belongs only in local profiles: %s", f, i+1, line)
-			}
 			if bytes.ContainsAny(line, "\u2013\u2014") {
 				t.Errorf("%s:%d has an en or em dash", f, i+1)
 			}

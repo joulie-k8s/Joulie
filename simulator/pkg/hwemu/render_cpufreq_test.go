@@ -110,11 +110,11 @@ func TestH18CPUFreqAttributesPerDriver(t *testing.T) {
 		}, []string{"policy7/scaling_available_frequencies", "policy7/energy_performance_preference", "boost"}},
 		{"amd-epyc-2s-energy-only", []file{
 			{"policy7/scaling_driver", "acpi-cpufreq\n"},
-			{"policy7/scaling_available_governors", "performance powersave ondemand schedutil \n"},
+			{"policy7/scaling_available_governors", "conservative ondemand userspace powersave performance schedutil \n"},
 			{"policy7/scaling_available_frequencies", "2400000 1900000 1500000 \n"},
-			{"policy7/scaling_cur_freq", "2400000\n"},
+			{"policy7/scaling_cur_freq", "1500000\n"},
 			{"policy7/scaling_setspeed", "<unsupported>\n"},
-			{"policy7/cpuinfo_transition_latency", "10000\n"},
+			{"policy7/cpuinfo_transition_latency", "0\n"},
 			{"boost", "1\n"},
 		}, []string{"policy7/energy_performance_preference"}},
 		{"amd-epyc-2s-hsmp", []file{
