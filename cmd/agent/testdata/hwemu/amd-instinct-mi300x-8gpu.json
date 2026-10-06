@@ -1,0 +1,48 @@
+{
+  "capabilities": {
+    "cpuControl": true,
+    "cpuTelemetry": true,
+    "gpuControl": false,
+    "gpuTelemetry": true
+  },
+  "cpu": {
+    "controlAvailable": true,
+    "coresPerSocket": 192,
+    "driverFamily": "acpi-cpufreq",
+    "model": "AMD_EPYC_9654",
+    "rawModel": "AMD EPYC 9654 96-Core Processor",
+    "sockets": 2,
+    "telemetryAvailable": true,
+    "totalCores": 384,
+    "vendor": "AuthenticAMD",
+    "warnings": null
+  },
+  "gpu": {
+    "controlAvailable": false,
+    "count": 8,
+    "currentCapWatts": 0,
+    "model": "",
+    "rawModel": "AI",
+    "telemetryAvailable": true,
+    "vendor": "amd",
+    "warnings": [
+      "gpu model not recognized"
+    ]
+  },
+  "inventoryResolution": {
+    "exactness": {
+      "cpu": "exact",
+      "gpu": "proxy"
+    },
+    "hardwareCatalogKey": {
+      "cpu": "AMD_EPYC_9654",
+      "gpu": ""
+    }
+  },
+  "quality": {
+    "overall": "heuristic",
+    "warnings": [
+      "gpu model not recognized"
+    ]
+  }
+}

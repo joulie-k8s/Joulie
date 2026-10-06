@@ -1,0 +1,87 @@
+# Two socket Intel host with RAPL package limits. The values come from the
+# public corpus capture xeon-4socket-nfd-labels and the public sources below;
+# the profile keeps two of its four sockets.
+schemaVersion: 1
+name: intel-xeon-2s-rapl
+description: Two socket Xeon Platinum 8260, intel_pstate, RAPL PL1/PL2, disabled write-rejecting DRAM sub-zones. Two socket cut of corpus xeon-4socket-nfd-labels.
+sources:
+  corpus:     {kind: corpus, ref: cmd/agent/testdata/hardware/xeon-4socket-nfd-labels}
+  ark8260:    {kind: published, ref: "https://www.intel.com/content/www/us/en/products/sku/192474/intel-xeon-platinum-8260-processor-35-75m-cache-2-40-ghz/specifications.html", note: "24 cores, 2.40 GHz base, 3.90 GHz turbo, TDP 165 W (HTTP 403 on refetch 2026-10-03; cores, base and 165 W corroborated by the corpus)"}
+  raplcommon: {kind: published, ref: "linux v7.3-rc5 drivers/powercap/intel_rapl_common.c:33,50,215,479-486,558-563,741,744"}
+  raplmsr:    {kind: published, ref: "linux v7.3-rc5 drivers/powercap/intel_rapl_msr.c:349-354,432", note: "dram_domain_energy_unit = 15300 for INTEL_SKYLAKE_X"}
+  pstate:     {kind: published, ref: "linux v7.3-rc5 Documentation/admin-guide/pm/intel_pstate.rst:39-41,90-91", note: "one policy per logical CPU; active mode offers powersave and performance"}
+  nfd:        {kind: published, ref: "https://kubernetes-sigs.github.io/node-feature-discovery/stable/reference/worker-configuration-reference.html", note: "deviceClassWhitelist [03, 0b40, 12]; deviceLabelFields [class, vendor]"}
+node:
+  nfd: present
+  labels:
+    cpu:
+      src: corpus:corpus#node-labels.json
+      values:
+        feature.node.kubernetes.io/cpu-model.vendor_id: Intel
+        feature.node.kubernetes.io/cpu-model.family: "6"
+        feature.node.kubernetes.io/cpu-model.id: "85"
+        feature.node.kubernetes.io/cpu-model.hypervisor: none
+        feature.node.kubernetes.io/cpu-hardware_multithreading: "true"
+        feature.node.kubernetes.io/cpu-pstate.status: active
+        feature.node.kubernetes.io/cpu-pstate.scaling_governor: powersave
+        feature.node.kubernetes.io/cpu-pstate.turbo: "true"
+        kubernetes.io/arch: amd64
+        kubernetes.io/os: linux
+  taints: []
+  capacity:
+    cpu: {v: 96, src: "derived:ark8260#2 sockets x 24 cores x 2 threads"}
+    memoryKi: {v: 791917286, src: "assumed:half of the corpus machine's allocatable memory (machine.yaml allocatable.memory)"}
+  reserved: {cpu: "1", memory: 4Gi, src: "assumed:typical kubelet reservation"}
+pci:
+  - {class: "0x030000", vendor: "0x102b", src: "corpus:corpus#node-labels.json pci-0300_102b; prog-if byte assumed 00"}
+cpu:
+  src: corpus:corpus#cpuinfo
+  vendorID: GenuineIntel
+  family: 6
+  model: 85
+  stepping: 7
+  modelName: "Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz"
+  sockets: {v: 2, src: "assumed:two socket cut of the four socket corpus machine"}
+  coresPerSocket: 24
+  threadsPerCore: 2
+  numbering: socket-major-smt-last
+  cpuMHz: 1000.000
+powercap:
+  controlTypes:
+    - name: intel-rapl
+      zones:
+        - repeat: per-package
+          nameFormat: package-%d
+          enabled: {v: 1, src: corpus:corpus}
+          energyUnitNJ: {v: 61035, src: "derived:raplcommon#1e9>>ESU14, reproduces corpus 262143328850"}
+          powerUnitUW: {v: 125000, src: "assumed:PU=3; every corpus limit is a multiple of 125000 uW"}
+          constraints:
+            - {src: corpus:corpus, name: long_term,  powerLimitUW: 165000000, maxPowerUW: 165000000, timeWindowUS: 999424, rejectWrites: ""}
+            - {src: corpus:corpus, name: short_term, powerLimitUW: 198000000, maxPowerUW: 413000000, timeWindowUS: 976, rejectWrites: ""}
+          children:
+            - nameFormat: dram
+              enabled: {v: 0, src: corpus:corpus}
+              energyUnitNJ: {v: 15300, src: published:raplmsr}
+              constraints:
+                - {src: "corpus:corpus#machine.yaml writeRejectingZones", name: long_term, powerLimitUW: 0, maxPowerUW: 47250000, timeWindowUS: 976, rejectWrites: disabled}
+cpufreq:
+  driver: {v: intel_pstate, src: corpus:corpus#cpufreq-driver}
+  governor: {v: powersave, src: corpus:corpus#node-labels.json}
+  availableGovernors: {v: "performance powersave", src: published:pstate}
+  cpuinfoMaxKHz: {v: 3900000, src: published:ark8260}
+  cpuinfoMinKHz: {v: 1000000, src: "assumed:matches corpus idle 'cpu MHz : 1000.000' on 163 of 192 CPUs"}
+  policyGrouping: {v: per-cpu, src: "published:pstate#39-41"}
+physics:
+  cpu:
+    model: analytic
+    maxPkgW: {v: 165, src: published:ark8260}
+    idlePkgW: {v: 40, src: "assumed:no public package idle figure"}
+    alphaUtil: {v: 1.15, src: "assumed:simulator default SIM_ALPHA_UTIL"}
+    betaFreq: {v: 1.35, src: "assumed:simulator default SIM_BETA_FREQ"}
+    knee: {v: 0.7, src: "assumed:phys default knee of MeasuredCurveCPUModel"}
+    freqRampMS: {v: 500, src: "assumed:simulator default SIM_DVFS_RAMP_MS"}
+  dram: {wattsPerSocket: {v: 8, src: "assumed:placeholder, no public DRAM figure"}}
+  platform: {otherW: {v: 0, src: "assumed:no psys zone in this profile"}}
+  rapl:
+    settleTau: timeWindow
+    floorW: {v: 0, src: "assumed:MIN_POWER is not exposed in sysfs (raplcommon#479-486); only the frequency floor applies"}

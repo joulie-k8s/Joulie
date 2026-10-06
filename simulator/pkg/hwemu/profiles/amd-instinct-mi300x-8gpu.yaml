@@ -1,0 +1,50 @@
+# Eight Instinct MI300X on the energy-only EPYC host. AMD's own node-level
+# description pairs MI300X with two EPYC sockets (source mi300arch).
+schemaVersion: 1
+name: amd-instinct-mi300x-8gpu
+extends: amd-epyc-2s-energy-only
+description: 8x Instinct MI300X on the energy-only two socket EPYC host, as AMD's node-level architecture pairs them; amdgpu hwmon, current rocm-smi (no --showpowercap) and amd-smi 7.2.
+sources:
+  mi300xds:    {kind: published, ref: "https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/data-sheets/amd-instinct-mi300x-data-sheet.pdf", note: "Maximum TBP 750W; sold as an AMD Instinct Platform with eight accelerators"}
+  mi300arch:   {kind: published, ref: "https://rocm.docs.amd.com/en/latest/reference/gpu-arch/mi300.html", note: "Node-level architecture: AMD EPYC processors in a dual-socket configuration and eight AMD Instinct MI300X GPUs, attached by PCIe Gen 5 x16"}
+  amdsmidoc:   {kind: published, ref: "https://rocm.docs.amd.com/projects/amdsmi/en/latest/how-to/amdsmi-cli-tool.html", note: "MI300A (0x74a0) example: PPT0 max 550 W, min 0 W"}
+  amdgpupm:    {kind: published, ref: "linux v7.3-rc5 drivers/gpu/drm/amd/pm/amdgpu_pm.c:3469-3496,3591-3600,3664-3674,3827-3834"}
+  amdgpudrv:   {kind: published, ref: "linux v7.3-rc5 drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c:2193-2206", note: "binds VGA, display-other and accelerator-processing classes"}
+  rocmsmi:     {kind: published, ref: "https://github.com/ROCm/rocm_smi_lib/blob/323ab1105dce/python_smi_tools/rocm_smi.py", note: "head of the develop branch"}
+  amdlabeller: {kind: published, ref: "https://github.com/ROCm/k8s-device-plugin/blob/3b9a79fe1ed1/cmd/k8s-node-labeller/main.go", note: "lines 38-39, 84, 209-238"}
+  pciids:      {kind: published, ref: "https://pci-ids.ucw.cz/read/PC/1002/74a1", note: "1002:74a1 Aqua Vanjaram [Instinct MI300X] (pci.ids 2026.10.01)"}
+  llvmamdgpu:  {kind: published, ref: "https://llvm.org/docs/AMDGPUUsage.html", note: "processor table: gfx942 lists AMD Instinct MI300X"}
+node:
+  labels:
+    amdgpu:
+      src: "assumed:key and value format per amdlabeller; MI300X family code not read"
+      values:
+        amd.com/gpu.product-name: AMD_Instinct_MI300X
+        amd.com/gpu.family: AI
+pci:
+  - {class: "0x030000", vendor: "0x1a03", drm: true, src: "assumed:BMC VGA as card0"}
+gpus:
+  vendor: amd
+  count: {v: 8, src: "published:mi300arch#Node-level architecture"}
+  product: {v: "AMD Instinct MI300X", src: "assumed:product_name; equals the AMD_INSTINCT_MI300X alias of the hardware catalog"}
+  pci: {vendor: {v: "0x1002", src: "published:pciids#1002"}, device: {v: "0x74a1", src: "published:pciids#1002:74a1"}, class: "0x120000", src: "assumed:accelerator class, one of the classes amdgpudrv binds"}
+  exposure: {v: whole, src: "assumed:AMD device plugin resource amd.com/gpu"}
+  labeller: {v: listed, src: published:amdlabeller}
+  vbiosVersion: {v: "113-X0000000-102", src: "assumed:synthetic; pattern parsed by showProduct in rocmsmi (lines 2756-2761)"}
+  gfxVersion: {v: gfx942, src: "published:llvmamdgpu#processor table, gfx942 row"}
+  limits:
+    minW: {v: 0, src: "assumed:by analogy with amdsmidoc MI300A example"}
+    maxW: {v: 750, src: published:mi300xds}
+    defaultW: {v: 750, src: "assumed:equal to max"}
+  powerSensor: {v: input, src: "assumed:average vs input is per product (amdgpupm:3827-3834)"}
+  ppt1: {v: absent, src: "assumed:fast PPT only on a few GPUs (amdgpupm:3670-3674)"}
+  tools: [{name: rocm-smi, variant: current}, {name: amd-smi, variant: "7.2"}]
+physics:
+  gpu:
+    idleW: {v: 120, src: "assumed:placeholder"}
+    naturalMaxW: {v: 750, src: published:mi300xds}
+    computeGamma: {v: 1.0, src: "assumed:simulator default SIM_GPU_COMPUTE_GAMMA; throughput only"}
+    memoryEpsilon: {v: 0.2, src: "assumed:simulator default SIM_GPU_MEMORY_EPSILON; throughput only"}
+    memoryGamma: {v: 1.2, src: "assumed:simulator default SIM_GPU_MEMORY_GAMMA; throughput only"}
+    capSettleTauMS: {v: 350, src: "assumed:no public settling data; simulator uses 350 only when CapApplyTauMS<=0 (updateNodeDynamicsWithModel)"}
+    telemetryWindowMS: {v: 1000, src: "assumed:no public averaging window for power1_average"}

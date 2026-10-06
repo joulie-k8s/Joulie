@@ -1,0 +1,31 @@
+# Eight H100 NVL boards on the two socket Intel RAPL host, so the NVIDIA GPU
+# path is covered next to an Intel CPU block.
+schemaVersion: 1
+name: nvidia-h100-nvl-8gpu
+extends: intel-xeon-2s-rapl
+description: 8x H100 NVL on the two socket Xeon RAPL host, nvidia-smi, GFD labels.
+sources:
+  pb11773:    {kind: published, ref: "https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/h100/PB-11773-001_v01.pdf", note: "Table 1, 16-pin strapped 450/600 W: 400 W maximum (default), 200 W minimum; Device ID 0x2321"}
+  nvml:       {kind: published, ref: "https://docs.nvidia.com/deploy/nvml-api/api/group__nvmlDeviceQueries.html", note: "power averaged over 1 s on Ampere (except GA100) or newer; limits in mW"}
+  nvsmi:      {kind: published, ref: "https://docs.nvidia.com/deploy/nvidia-smi/index.html", note: "RETURN VALUE codes; -pl accepts integer and floating point watts"}
+  gfd:        {kind: published, ref: "https://github.com/NVIDIA/k8s-device-plugin/blob/d7265fdcf89f/docs/gpu-feature-discovery/README.md", note: "lines 216-242"}
+  k8sdp:      {kind: published, ref: "https://github.com/NVIDIA/k8s-device-plugin/blob/d7265fdcf89f/README.md", note: "lines 250-263, 402, 954-975"}
+  containerd: {kind: published, ref: "https://github.com/containerd/containerd/blob/81af89b1d4b1/docs/cri/config.md", note: "lines 548-552: privileged containers receive host devices by default"}
+gpus:
+  vendor: nvidia
+  count: {v: 8, src: "assumed:generic 8-GPU node"}
+  product: {v: "NVIDIA H100 NVL", src: "assumed:nvidia-smi name; equals the NVIDIA_H100_NVL alias of the hardware catalog"}
+  pci: {vendor: "0x10de", device: {v: "0x2321", src: published:pb11773}, class: "0x030200", src: "assumed:3D controller"}
+  exposure: {v: whole, src: "assumed:no MIG and no sharing configured"}
+  labeller: {v: gfd, src: published:gfd}
+  limits: {minW: 200, maxW: 400, defaultW: 400, src: "published:pb11773#Table 1"}
+  tools: [{name: nvidia-smi, variant: default}]
+physics:
+  gpu:
+    idleW: {v: 50, src: "assumed:placeholder"}
+    naturalMaxW: {v: 400, src: published:pb11773}
+    computeGamma: {v: 1.0, src: "assumed:simulator default SIM_GPU_COMPUTE_GAMMA; throughput only"}
+    memoryEpsilon: {v: 0.2, src: "assumed:simulator default SIM_GPU_MEMORY_EPSILON; throughput only"}
+    memoryGamma: {v: 1.2, src: "assumed:simulator default SIM_GPU_MEMORY_GAMMA; throughput only"}
+    capSettleTauMS: {v: 150, src: "assumed:simulator default SIM_GPU_CAP_APPLY_TAU_MS"}
+    telemetryWindowMS: {v: 1000, src: published:nvml}

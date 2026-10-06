@@ -1,0 +1,31 @@
+# A virtual machine: no powercap, no cpufreq, and every vCPU its own package,
+# as the public corpus capture vm-no-rapl shows.
+schemaVersion: 1
+name: vm-no-powercap
+description: KVM guest, no powercap, no cpufreq, every vCPU its own package (corpus vm-no-rapl quirk).
+sources:
+  corpusvm: {kind: corpus, ref: cmd/agent/testdata/hardware/vm-no-rapl}
+node:
+  nfd: present
+  labels:
+    cpu:
+      src: "assumed:corpus capture has no labels (not a cluster node)"
+      values: {feature.node.kubernetes.io/cpu-model.vendor_id: Intel, feature.node.kubernetes.io/cpu-model.hypervisor: KVM, kubernetes.io/arch: amd64, kubernetes.io/os: linux}
+  taints: []
+  capacity: {cpu: {v: 8, src: "assumed:small generic VM (corpus has 28)"}, memoryKi: {v: 32000000, src: "assumed:small generic VM"}}
+  reserved: {cpu: 100m, memory: 512Mi, src: "assumed:small kubelet reservation"}
+pci: []
+cpu:
+  src: corpus:corpusvm#cpuinfo
+  vendorID: GenuineIntel
+  family: 6
+  model: 85
+  stepping: 7
+  modelName: "Intel(R) Xeon(R) Silver 4216 CPU @ 2.10GHz"
+  sockets: {v: 8, src: "derived:corpusvm#one package per vCPU (machine.yaml description) times the 8 assumed vCPUs"}
+  coresPerSocket: 1
+  threadsPerCore: 1
+  oneSocketPerVCPU: true
+  hypervisor: true
+  cpuMHz: 2099.926
+physics: {cpu: {model: analytic, maxPkgW: {v: 0, src: "derived:corpusvm#no powercap zone in the capture, so no package power is exposed"}}}

@@ -1,0 +1,182 @@
+bin R dir 0755
+bin/nvidia-smi R link 0777 -> /emu/lib/fakesmi
+cpuinfo R file 0444
+dev R dir 0755
+dev/nvidiactl R file 0666
+state R dir 0755
+state/.tmp R dir 0755
+state/hwemu.json R file 0444
+state/nvml R dir 0755
+state/nvml/driver_version R file 0444
+state/nvml/gpu0 R dir 0755
+state/nvml/gpu0/enforced_power_limit_mw S file 0444
+state/nvml/gpu0/name R file 0444
+state/nvml/gpu0/pci_bus_id R file 0444
+state/nvml/gpu0/power_default_limit_mw R file 0444
+state/nvml/gpu0/power_draw_mw S file 0444
+state/nvml/gpu0/power_limit_mw A file 0644
+state/nvml/gpu0/power_max_limit_mw R file 0444
+state/nvml/gpu0/power_min_limit_mw R file 0444
+state/nvml/gpu0/total_energy_mj S file 0444
+state/nvml/gpu0/utilization_gpu_pct S file 0444
+state/nvml/gpu0/uuid R file 0444
+state/nvml/gpu1 R dir 0755
+state/nvml/gpu1/enforced_power_limit_mw S file 0444
+state/nvml/gpu1/name R file 0444
+state/nvml/gpu1/pci_bus_id R file 0444
+state/nvml/gpu1/power_default_limit_mw R file 0444
+state/nvml/gpu1/power_draw_mw S file 0444
+state/nvml/gpu1/power_limit_mw A file 0644
+state/nvml/gpu1/power_max_limit_mw R file 0444
+state/nvml/gpu1/power_min_limit_mw R file 0444
+state/nvml/gpu1/total_energy_mj S file 0444
+state/nvml/gpu1/utilization_gpu_pct S file 0444
+state/nvml/gpu1/uuid R file 0444
+state/nvml/gpu2 R dir 0755
+state/nvml/gpu2/enforced_power_limit_mw S file 0444
+state/nvml/gpu2/name R file 0444
+state/nvml/gpu2/pci_bus_id R file 0444
+state/nvml/gpu2/power_default_limit_mw R file 0444
+state/nvml/gpu2/power_draw_mw S file 0444
+state/nvml/gpu2/power_limit_mw A file 0644
+state/nvml/gpu2/power_max_limit_mw R file 0444
+state/nvml/gpu2/power_min_limit_mw R file 0444
+state/nvml/gpu2/total_energy_mj S file 0444
+state/nvml/gpu2/utilization_gpu_pct S file 0444
+state/nvml/gpu2/uuid R file 0444
+state/nvml/gpu3 R dir 0755
+state/nvml/gpu3/enforced_power_limit_mw S file 0444
+state/nvml/gpu3/name R file 0444
+state/nvml/gpu3/pci_bus_id R file 0444
+state/nvml/gpu3/power_default_limit_mw R file 0444
+state/nvml/gpu3/power_draw_mw S file 0444
+state/nvml/gpu3/power_limit_mw A file 0644
+state/nvml/gpu3/power_max_limit_mw R file 0444
+state/nvml/gpu3/power_min_limit_mw R file 0444
+state/nvml/gpu3/total_energy_mj S file 0444
+state/nvml/gpu3/utilization_gpu_pct S file 0444
+state/nvml/gpu3/uuid R file 0444
+state/nvml/gpu4 R dir 0755
+state/nvml/gpu4/enforced_power_limit_mw S file 0444
+state/nvml/gpu4/name R file 0444
+state/nvml/gpu4/pci_bus_id R file 0444
+state/nvml/gpu4/power_default_limit_mw R file 0444
+state/nvml/gpu4/power_draw_mw S file 0444
+state/nvml/gpu4/power_limit_mw A file 0644
+state/nvml/gpu4/power_max_limit_mw R file 0444
+state/nvml/gpu4/power_min_limit_mw R file 0444
+state/nvml/gpu4/total_energy_mj S file 0444
+state/nvml/gpu4/utilization_gpu_pct S file 0444
+state/nvml/gpu4/uuid R file 0444
+state/nvml/gpu5 R dir 0755
+state/nvml/gpu5/enforced_power_limit_mw S file 0444
+state/nvml/gpu5/name R file 0444
+state/nvml/gpu5/pci_bus_id R file 0444
+state/nvml/gpu5/power_default_limit_mw R file 0444
+state/nvml/gpu5/power_draw_mw S file 0444
+state/nvml/gpu5/power_limit_mw A file 0644
+state/nvml/gpu5/power_max_limit_mw R file 0444
+state/nvml/gpu5/power_min_limit_mw R file 0444
+state/nvml/gpu5/total_energy_mj S file 0444
+state/nvml/gpu5/utilization_gpu_pct S file 0444
+state/nvml/gpu5/uuid R file 0444
+state/nvml/gpu6 R dir 0755
+state/nvml/gpu6/enforced_power_limit_mw S file 0444
+state/nvml/gpu6/name R file 0444
+state/nvml/gpu6/pci_bus_id R file 0444
+state/nvml/gpu6/power_default_limit_mw R file 0444
+state/nvml/gpu6/power_draw_mw S file 0444
+state/nvml/gpu6/power_limit_mw A file 0644
+state/nvml/gpu6/power_max_limit_mw R file 0444
+state/nvml/gpu6/power_min_limit_mw R file 0444
+state/nvml/gpu6/total_energy_mj S file 0444
+state/nvml/gpu6/utilization_gpu_pct S file 0444
+state/nvml/gpu6/uuid R file 0444
+state/nvml/gpu7 R dir 0755
+state/nvml/gpu7/enforced_power_limit_mw S file 0444
+state/nvml/gpu7/name R file 0444
+state/nvml/gpu7/pci_bus_id R file 0444
+state/nvml/gpu7/power_default_limit_mw R file 0444
+state/nvml/gpu7/power_draw_mw S file 0444
+state/nvml/gpu7/power_limit_mw A file 0644
+state/nvml/gpu7/power_max_limit_mw R file 0444
+state/nvml/gpu7/power_min_limit_mw R file 0444
+state/nvml/gpu7/total_energy_mj S file 0444
+state/nvml/gpu7/utilization_gpu_pct S file 0444
+state/nvml/gpu7/uuid R file 0444
+state/tools.json R file 0444
+sys R dir 0755
+sys/class R dir 0755
+sys/class/powercap R dir 0755
+sys/class/powercap/intel-rapl R link 0777 -> ../../devices/virtual/powercap/intel-rapl
+sys/class/powercap/intel-rapl:0 R link 0777 -> ../../devices/virtual/powercap/intel-rapl/intel-rapl:0
+sys/class/powercap/intel-rapl:0:0 R link 0777 -> ../../devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0
+sys/class/powercap/intel-rapl:1 R link 0777 -> ../../devices/virtual/powercap/intel-rapl/intel-rapl:1
+sys/class/powercap/intel-rapl:1:0 R link 0777 -> ../../devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0
+sys/devices R dir 0755
+sys/devices/system R dir 0755
+sys/devices/system/cpu R dir 0755
+sys/devices/system/cpu/cpufreq R dir 0755
+sys/devices/system/cpu/cpufreq/policy{N} R dir 0755 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/affected_cpus R file 0444 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_max_freq R file 0444 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_min_freq R file 0444 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_transition_latency R file 0444 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/related_cpus R file 0444 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_available_governors R file 0444 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_cur_freq S file 0444 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_driver R file 0444 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_governor A file 0644 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_max_freq A file 0644 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_min_freq A file 0644 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_setspeed R file 0644 [N=0-95]
+sys/devices/system/cpu/cpu{N} R dir 0755 [N=0-95]
+sys/devices/system/cpu/cpu{N}/cpufreq R link 0777 -> ../cpufreq/policy{N} [N=0-95]
+sys/devices/virtual R dir 0755
+sys/devices/virtual/powercap R dir 0755
+sys/devices/virtual/powercap/intel-rapl R dir 0755
+sys/devices/virtual/powercap/intel-rapl/enabled A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0 R dir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/constraint_0_max_power_uw R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/constraint_0_name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/constraint_0_time_window_us A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/constraint_1_max_power_uw R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/constraint_1_name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/constraint_1_time_window_us A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/enabled A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj S file 0400
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0 R dir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/constraint_0_max_power_uw R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/constraint_0_name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/constraint_0_power_limit_uw R rejectdir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/constraint_0_time_window_us R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/enabled R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/energy_uj S file 0400
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/max_energy_range_uj R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/max_energy_range_uj R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1 R dir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/constraint_0_max_power_uw R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/constraint_0_name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/constraint_0_power_limit_uw A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/constraint_0_time_window_us A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/constraint_1_max_power_uw R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/constraint_1_name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/constraint_1_power_limit_uw A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/constraint_1_time_window_us A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/enabled A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/energy_uj S file 0400
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0 R dir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/constraint_0_max_power_uw R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/constraint_0_name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/constraint_0_power_limit_uw R rejectdir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/constraint_0_time_window_us R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/enabled R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/energy_uj S file 0400
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/max_energy_range_uj R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/max_energy_range_uj R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/name R file 0444

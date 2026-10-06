@@ -1,0 +1,47 @@
+# The energy-only EPYC host on a kernel with the HSMP hwmon driver, which
+# exposes a socket power cap the agent does not use yet.
+schemaVersion: 1
+name: amd-epyc-2s-hsmp
+extends: amd-epyc-2s-energy-only
+description: Two socket EPYC 9655 on kernel >= 6.16, amd-pstate-epp, HSMP hwmon socket caps (platform layout), RAPL energy only.
+sources:
+  amd9655:   {kind: published, ref: "https://www.amd.com/en/products/processors/server/epyc/9005-series/amd-epyc-9655.html", note: "96 cores, 192 threads, base 2.6 GHz, boost up to 4.5 GHz, default TDP 400W, cTDP 320-400W"}
+  spec01457: {kind: published, ref: "https://www.spec.org/power_ssj2008/results/res2024q4/power_ssj2008-20240923-01457.txt", note: "2x EPYC 9655: Active Idle 126 W"}
+  hsmphwmon: {kind: published, ref: "linux v7.3-rc5 drivers/platform/x86/amd/hsmp/hwmon.c:20,34-38,74,79-96; plat.c:30,198,286,300-341"}
+  hsmpdoc:   {kind: published, ref: "linux v7.3-rc5 Documentation/arch/x86/amd_hsmp.rst:148-155; merged platform-drivers-x86-v6.16-1"}
+  pstate:    {kind: published, ref: "linux v7.3-rc5 drivers/cpufreq/amd-pstate.c:1941-1944,2185 (.name amd-pstate-epp)"}
+node:
+  labels:
+    cpu:
+      src: "assumed:NFD label set for a Fam1Ah host on kernel 6.16"
+      values:
+        feature.node.kubernetes.io/cpu-model.vendor_id: AMD
+        feature.node.kubernetes.io/cpu-model.family: "26"
+        feature.node.kubernetes.io/cpu-model.id: "2"
+        feature.node.kubernetes.io/cpu-model.hypervisor: none
+        feature.node.kubernetes.io/kernel-version.major: "6"
+        feature.node.kubernetes.io/kernel-version.minor: "16"
+        kubernetes.io/arch: amd64
+        kubernetes.io/os: linux
+cpu:
+  family: {v: 26, src: "published:hsmpdoc#Fam1Ah"}
+  model: {v: 2, src: "assumed:Turin model within Fam1Ah 0x00-0x0F (hsmphwmon plat.c:316-321)"}
+  modelName: {v: "AMD EPYC 9655 96-Core Processor", src: "assumed:cpuinfo name format; equals the AMD_EPYC_9655 alias of the hardware catalog"}
+  coresPerSocket: {v: 96, src: published:amd9655}
+cpufreq:
+  driver: {v: amd-pstate-epp, src: published:pstate}
+  governor: {v: performance, src: "derived:pstate#amd_pstate_epp_cpu_init sets the performance policy for a server or undefined FADT PM profile (amd-pstate.c:1941-1944), and cpufreq_init_policy keeps it unless the default governor is powersave (cpufreq.c:1132-1139)"}
+  availableGovernors: {v: "performance powersave", src: "assumed:setpolicy driver in active mode offers these two"}
+  availableKHz: {v: [], src: "derived:pstate#amd-pstate.c sets no frequency table, so cpufreq creates no scaling_available_frequencies"}
+  cpuinfoMaxKHz: {v: 4500000, src: "published:amd9655#boost up to 4.5 GHz"}
+  cpuinfoMinKHz: {v: 1500000, src: "assumed:lowest frequency not published"}
+  policyGrouping: {v: per-cpu, src: "assumed:amd-pstate registers one policy per CPU, not read"}
+hsmp:
+  layout: {v: platform, src: "assumed:firmware exposes no ACPI HSMP device (hsmphwmon plat.c:335-341); hwmon under amd_hsmp (plat.c:30,198,286)"}
+  capMaxUW: {v: 400000000, src: "published:amd9655#cTDP 320-400W, top of range"}
+  capDefaultUW: {v: 400000000, src: "published:amd9655#Default TDP 400W"}
+physics:
+  cpu:
+    maxPkgW: {v: 400, src: "published:amd9655#Default TDP"}
+    idlePkgW: {v: 45, src: "assumed:bounded by spec01457 Active Idle 126 W for the whole node"}
+  hsmp: {settleTauMS: {v: 1000, src: "assumed:no public settling data"}}

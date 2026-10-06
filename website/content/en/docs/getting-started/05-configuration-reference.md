@@ -150,6 +150,17 @@ Nodes without topology labels fall back to cluster-wide stress computation.
 | `CACHE_TTL` | `30s` | Minimum interval between rebuilding the scoring maps from the informer cache. Reads no longer hit the API server; NodeTwin and NodeHardware are watched. |
 | `TWIN_STALENESS_THRESHOLD` | `5m` | Duration after which NodeTwin data is considered stale |
 
+## Simulator hardware emulation
+
+`fakesmi` (`simulator/cmd/fakesmi`) stands in for `nvidia-smi`, `rocm-smi` and `amd-smi` on an emulated node. It runs as the tool its name says, through a `bin/<tool>` link, and reads and writes the node's emulated hardware files instead of a driver. The agent does not read these variables; only `fakesmi` does.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HWEMU_SYS_ROOT` | `/host-sys` | The emulated node's `sys/` directory, where the amdgpu PCI and hwmon attributes live. The default is where an emulated agent pod mounts it. |
+| `HWEMU_STATE_ROOT` | `/emu/state` | The emulated node's `state/` directory: `tools.json`, which lists the tools the node has and the variant each one emulates, the NVML state of NVIDIA GPUs, and the per-card AMD values sysfs has no text attribute for (`amdgpu/card<N>/`). The default is where an emulated agent pod mounts it. |
+
+A tool that `tools.json` does not list exits 127 with `fakesmi: <tool> is not installed on this emulated node`.
+
 ## kubectl plugin
 
 The `kubectl joulie` plugin requires no configuration. It reads your current kubeconfig context.
