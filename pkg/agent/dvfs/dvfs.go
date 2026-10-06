@@ -373,15 +373,33 @@ func cpuFreqGlobs() []string {
 	}
 }
 
-// CPUFreqList enumerates cpufreq scaling entries on the host.
+// CPUFreqList enumerates cpufreq scaling entries on the host, one per policy.
+//
+// Every cpuN/cpufreq is a symlink to its policy directory, and policies may
+// cover several CPUs (SMT siblings), so the cpuN and the policyN globs reach
+// the same policy more than once. Entries are deduplicated by their resolved
+// directory, keeping the first: otherwise a throttle percentage counts each
+// policy several times, and a sibling's unthrottled entry writes the maximum
+// back over the throttled one.
 func CPUFreqList() ([]CPU, error) {
 	matches := make([]string, 0)
+	seen := map[string]struct{}{}
 	for _, p := range cpuFreqGlobs() {
 		m, err := filepath.Glob(p)
 		if err != nil {
 			return nil, err
 		}
-		matches = append(matches, m...)
+		for _, maxf := range m {
+			key := filepath.Dir(maxf)
+			if resolved, err := filepath.EvalSymlinks(key); err == nil {
+				key = resolved
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			matches = append(matches, maxf)
+		}
 	}
 
 	cpus := make([]CPU, 0, len(matches))

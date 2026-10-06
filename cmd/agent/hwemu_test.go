@@ -23,7 +23,7 @@ package main
 //   - D5 (fixed): dvfs.EnergyFiles deduped by path string, so it listed every
 //     package twice, through class/powercap and devices/virtual/powercap. It
 //     now dedupes by resolved path; A04 and the dvfs D03 test guard it.
-//   - D6: dvfs.CPUFreqList lists every policy twice, through cpuN/cpufreq and
+//   - D6 (fixed): dvfs.CPUFreqList listed every policy twice, through cpuN/cpufreq and
 //     as policyN. An odd entry count throttles one policy fewer than
 //     intended; with policies shared per core, the later entry of each
 //     sibling writes the maximum back.
@@ -56,8 +56,8 @@ package main
 //
 // The fixes that flip them:
 //
-//   - F1: dedupe CPUFreqList by resolved path, and document that a CPU cap is
-//     per socket (D6, D7). EnergyFiles is already deduplicated (D5).
+//   - F1: document that a CPU cap is per socket (D7). EnergyFiles and
+//     CPUFreqList are deduplicated by resolved path (D5, D6).
 //   - F2: the simulator uses phys.AnalyticCPUModel, SolveFreqScaleForCap and
 //     FirstOrderToward instead of its own copies (D13).
 //   - F3: AMD and NVIDIA tool handling: real rocm-smi flags, output checks
@@ -573,22 +573,21 @@ func totalPackagePower(n *hwemu.Node) float64 {
 	return total
 }
 
-// A04b: dvfs.CPUFreqList lists every policy twice, once through each
-// cpuN/cpufreq link and once as policyN (D6). On the Intel host, one policy
-// per CPU, a 15 % throttle reaches 14 policies where 15 were intended: the
-// odd entry count splits one policy's pair, and its second entry writes the
-// maximum back. With policies shared per core, a 30 % throttle reaches none:
-// the throttled entries all come first, and each sibling's later entry writes
-// the maximum back. F1 makes both what was intended.
-func TestHwemuA04bCPUFreqListCountsEveryPolicyTwice(t *testing.T) {
+// A04b: a throttle percentage reaches exactly that share of the policies.
+// Regression for D6: dvfs.CPUFreqList listed every policy twice, through each
+// cpuN/cpufreq link and as policyN. On the Intel host, one policy per CPU, a
+// 15 % throttle then reached 14 policies where 15 were intended; with
+// policies shared per core, a 30 % throttle reached none, because each
+// sibling's later entry wrote the maximum back.
+func TestHwemuA04bThrottleReachesTheIntendedPolicies(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		mutate        func(*hwemu.Profile)
 		pct           int
 		wantThrottled int
 	}{
-		{"per-cpu", nil, 15, 14},
-		{"per-core", withPerCorePolicies, 30, 0},
+		{"per-cpu", nil, 15, 15},
+		{"per-core", withPerCorePolicies, 30, 15},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, tree, _ := hwemutest.NewNode(t, "intel-xeon-2s-rapl", tc.mutate)
@@ -627,10 +626,10 @@ func TestHwemuA04bCPUFreqListCountsEveryPolicyTwice(t *testing.T) {
 			}
 			if throttled != tc.wantThrottled {
 				t.Fatalf("a %d%% throttle left %d of %d policies throttled (%d intended); CPUFreqList returned %d entries for %d policies. "+
-					"Today it throttles %d, because CPUFreqList lists every policy twice (D6); if F1 landed, expect %d",
-					tc.pct, throttled, policies, intended, len(ctl.Cpus), policies, tc.wantThrottled, intended)
+					"want %d: one entry per policy (D6)",
+					tc.pct, throttled, policies, intended, len(ctl.Cpus), policies, tc.wantThrottled)
 			}
-			t.Logf("%d%% throttle: %d of %d policies throttled, %d intended; CPUFreqList returned %d entries (D6)",
+			t.Logf("%d%% throttle: %d of %d policies throttled, %d intended; CPUFreqList returned %d entries",
 				tc.pct, throttled, policies, intended, len(ctl.Cpus))
 		})
 	}

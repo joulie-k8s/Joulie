@@ -112,8 +112,8 @@ func TestD01HostSysRootDefaultsToHostSys(t *testing.T) {
 
 // TestD02CPUFreqListUnderHostSysRootListsCPUAndPolicyEntries replays the sysfs
 // cpufreq layout, where each cpuN/cpufreq is a link to its policy directory,
-// under a temporary HostSysRoot. Every CPU is listed twice, once per path,
-// which is what CPUFreqList does on a real host today.
+// under a temporary HostSysRoot. Regression for D6: every policy is listed
+// once, through the cpuN link the first glob finds, not once per path.
 func TestD02CPUFreqListUnderHostSysRootListsCPUAndPolicyEntries(t *testing.T) {
 	root := t.TempDir()
 	want := map[string]int{}
@@ -126,7 +126,6 @@ func TestD02CPUFreqListUnderHostSysRootListsCPUAndPolicyEntries(t *testing.T) {
 		link := fmt.Sprintf("devices/system/cpu/cpu%d/cpufreq", cpu)
 		linkSys(t, root, link, fmt.Sprintf("../cpufreq/policy%d", cpu))
 		want[filepath.Join(root, link, "scaling_max_freq")] = cpu
-		want[filepath.Join(root, policy, "scaling_max_freq")] = cpu
 	}
 	withHostSysRoot(t, root)
 
@@ -148,8 +147,7 @@ func TestD02CPUFreqListUnderHostSysRootListsCPUAndPolicyEntries(t *testing.T) {
 		got[c.MaxFile] = c.Index
 	}
 	if len(cpus) != len(want) || !reflect.DeepEqual(got, want) {
-		t.Fatalf("CPUFreqList listed %d entries %v, want %d %v. Today it lists every CPU through its cpuN/cpufreq link "+
-			"and its policy directory (D6 in cmd/agent/hwemu_test.go); F1 dedupes them, so update want with it",
+		t.Fatalf("CPUFreqList listed %d entries %v, want %d %v: one per policy (D6)",
 			len(cpus), got, len(want), want)
 	}
 }
