@@ -6,34 +6,29 @@
     "gpuTelemetry": true
   },
   "cpu": {
-    "capRange": {
-      "maxWattsPerSocket": 165,
-      "minWattsPerSocket": 0,
-      "type": "package"
-    },
     "controlAvailable": true,
-    "coresPerSocket": 48,
-    "driverFamily": "intel_pstate",
-    "model": "INTEL_XEON_PLATINUM_8260",
-    "rawModel": "Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz",
+    "coresPerSocket": 128,
+    "driverFamily": "acpi-cpufreq",
+    "model": "AMD_EPYC_9534",
+    "rawModel": "AMD EPYC 9534 64-Core Processor",
     "sockets": 2,
     "telemetryAvailable": true,
-    "totalCores": 96,
-    "vendor": "GenuineIntel",
+    "totalCores": 256,
+    "vendor": "AuthenticAMD",
     "warnings": null
   },
   "gpu": {
     "capRangePerGpu": {
-      "defaultWatts": 700,
-      "maxWatts": 700,
-      "minWatts": 200
+      "defaultWatts": 350,
+      "maxWatts": 350,
+      "minWatts": 100
     },
     "controlAvailable": true,
-    "count": 8,
-    "currentCapWatts": 700,
-    "model": "NVIDIA_H100_SXM",
+    "count": 4,
+    "currentCapWatts": 350,
+    "model": "NVIDIA_L40S",
     "present": true,
-    "rawModel": "NVIDIA H100 80GB HBM3",
+    "rawModel": "NVIDIA L40S",
     "telemetryAvailable": true,
     "vendor": "nvidia",
     "warnings": null
@@ -44,8 +39,8 @@
       "gpu": "exact"
     },
     "hardwareCatalogKey": {
-      "cpu": "INTEL_XEON_PLATINUM_8260",
-      "gpu": "NVIDIA_H100_SXM"
+      "cpu": "AMD_EPYC_9534",
+      "gpu": "NVIDIA_L40S"
     }
   },
   "quality": {

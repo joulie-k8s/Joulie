@@ -5,14 +5,14 @@ extends: nvidia-h100-nvl-8gpu
 description: 8x H100 SXM on the two socket Xeon RAPL host, nvidia-smi, GFD labels.
 sources:
   h100page: {kind: published, ref: "https://www.nvidia.com/en-us/data-center/h100/", note: "SXM Max TDP: Up to 700W (configurable)"}
-  mlperf4:  {kind: published, ref: "https://github.com/mlcommons/inference_results_v4.0/tree/main/closed/NVIDIA", note: "H100_SXM_80GBx8_MaxQ power_limit = 300"}
+  smih100:  {kind: published, ref: "https://github.com/utkuozdemir/nvidia_gpu_exporter/blob/f6977bb790011483824091c916da991ae7ca97cf/internal/captures/linux-x86_64__nvidia-h100-80gb-hbm3__590.48.01.txt", note: "nvidia-smi -q, driver 590.48.01, lines 1488-1678: Product Name NVIDIA H100 80GB HBM3, Device Id 0x233010DE; Current, Default and Max Power Limit 700.00 W, Min Power Limit 200.00 W"}
 gpus:
   product: {v: "NVIDIA H100 80GB HBM3", src: "assumed:nvidia-smi name; equals the NVIDIA_H100_SXM alias of the hardware catalog"}
   pci: {device: {v: "", src: "assumed:SXM device ID not read"}}
   limits:
     maxW: {v: 700, src: published:h100page}
-    defaultW: {v: 700, src: "assumed:equal to max"}
-    minW: {v: 300, src: "assumed:lowest vendor-set limit in mlperf4; no datasheet minimum"}
+    defaultW: {v: 700, src: "published:smih100#Default Power Limit 700.00 W"}
+    minW: {v: 200, src: "published:smih100#Min Power Limit 200.00 W"}
 physics:
   gpu:
     idleW: {v: 70, src: "assumed:placeholder"}

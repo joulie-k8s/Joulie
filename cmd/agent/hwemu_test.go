@@ -159,11 +159,15 @@ type a02Path struct {
 	cpuCapMaxW      float64 // 0: no capRange
 	cpuDriverFamily string
 	cpuControl      bool
-	gpuVendor       string
-	gpuCount        int
-	gpuCapMinW      float64 // with gpuCapMaxW 0: no capRangePerGpu
-	gpuCapMaxW      float64
-	gpuControl      bool
+	// cpuModel and gpuModel are the hardware catalog keys the raw model
+	// strings match; "" when none does.
+	cpuModel   string
+	gpuVendor  string
+	gpuCount   int
+	gpuCapMinW float64 // with gpuCapMaxW 0: no capRangePerGpu
+	gpuCapMaxW float64
+	gpuControl bool
+	gpuModel   string
 	// gpuVendorFrom names what decided the GPU vendor: an NFD label, or the
 	// command whose success did.
 	gpuVendorFrom string
@@ -179,32 +183,50 @@ const (
 	amdLabellerProduct = "amd.com/gpu.product-name"
 )
 
-// a02Paths is the road each generic profile takes. The NVIDIA profiles run
-// on the two socket Intel RAPL host, so they publish its CPU block next to
-// their GPU block.
+// a02Paths is the road each generic profile takes. Each GPU profile runs on
+// one of the CPU hosts, so it publishes that host's CPU block next to its
+// GPU block: the 8-GPU H100 profiles on the Xeon 8260 RAPL host, the 4-GPU
+// SXM profile on the Xeon 6530 RAPL host, the L40S on the energy-only EPYC
+// 9534 host and the MI300X on the energy-only EPYC 9654 host.
 var a02Paths = map[string]a02Path{
 	"intel-xeon-2s-rapl": {
-		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 165, cpuDriverFamily: "intel_pstate", cpuControl: true,
+		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 165, cpuDriverFamily: "intel_pstate", cpuControl: true, cpuModel: "INTEL_XEON_PLATINUM_8260",
+		gpuVendor: "none",
+	},
+	"intel-xeon-6530-2s-rapl": {
+		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 270, cpuDriverFamily: "intel_pstate", cpuControl: true, cpuModel: "INTEL_XEON_GOLD_6530",
 		gpuVendor: "none",
 	},
 	"amd-epyc-2s-energy-only": {
-		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true,
+		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9654",
+		gpuVendor: "none",
+	},
+	"amd-epyc-9534-2s-energy-only": {
+		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9534",
 		gpuVendor: "none",
 	},
 	"amd-epyc-2s-hsmp": {
-		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "amd-pstate-epp", cpuControl: true,
+		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "amd-pstate-epp", cpuControl: true, cpuModel: "AMD_EPYC_9655",
 		gpuVendor: "none",
 	},
 	"nvidia-h100-nvl-8gpu": {
-		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 165, cpuDriverFamily: "intel_pstate", cpuControl: true,
-		gpuVendor: "nvidia", gpuCount: 8, gpuCapMinW: 200, gpuCapMaxW: 400, gpuControl: true, gpuVendorFrom: nvidiaPCILabel,
+		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 165, cpuDriverFamily: "intel_pstate", cpuControl: true, cpuModel: "INTEL_XEON_PLATINUM_8260",
+		gpuVendor: "nvidia", gpuCount: 8, gpuCapMinW: 200, gpuCapMaxW: 400, gpuControl: true, gpuModel: "NVIDIA_H100_NVL", gpuVendorFrom: nvidiaPCILabel,
 	},
 	"nvidia-h100-sxm-8gpu": {
-		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 165, cpuDriverFamily: "intel_pstate", cpuControl: true,
-		gpuVendor: "nvidia", gpuCount: 8, gpuCapMinW: 300, gpuCapMaxW: 700, gpuControl: true, gpuVendorFrom: nvidiaPCILabel,
+		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 165, cpuDriverFamily: "intel_pstate", cpuControl: true, cpuModel: "INTEL_XEON_PLATINUM_8260",
+		gpuVendor: "nvidia", gpuCount: 8, gpuCapMinW: 200, gpuCapMaxW: 700, gpuControl: true, gpuModel: "NVIDIA_H100_SXM", gpuVendorFrom: nvidiaPCILabel,
+	},
+	"nvidia-h100-sxm-4gpu": {
+		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 270, cpuDriverFamily: "intel_pstate", cpuControl: true, cpuModel: "INTEL_XEON_GOLD_6530",
+		gpuVendor: "nvidia", gpuCount: 4, gpuCapMinW: 200, gpuCapMaxW: 700, gpuControl: true, gpuModel: "NVIDIA_H100_SXM", gpuVendorFrom: nvidiaPCILabel,
+	},
+	"nvidia-l40s-4gpu": {
+		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9534",
+		gpuVendor: "nvidia", gpuCount: 4, gpuCapMinW: 100, gpuCapMaxW: 350, gpuControl: true, gpuModel: "NVIDIA_L40S", gpuVendorFrom: nvidiaPCILabel,
 	},
 	"amd-instinct-mi300x-8gpu": {
-		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true,
+		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9654",
 		gpuVendor: "amd", gpuCount: 8, gpuVendorFrom: rocmProductProbe,
 	},
 	"vm-no-powercap": {
@@ -215,12 +237,15 @@ var a02Paths = map[string]a02Path{
 
 // A02: each generic profile publishes the NodeHardware status pinned in
 // testdata/hwemu/<profile>.json, and takes its family's road: Intel RAPL
-// gives a 165 W capRange (min 0, since RAPL has no min file); the energy-only
-// and HSMP EPYC hosts give no capRange and control through the cpufreq
-// driver; H100 NVL and SXM give their per-GPU range, with the vendor from the
-// NFD 0302 label; MI300X counts its GPUs from allocatable, has no GPU control
-// and gets its vendor from rocm-smi --showproductname; the VM reads one socket
-// per vCPU and has no control.
+// gives a capRange of the package TDP (165 W on the 8260, 270 W on the 6530;
+// min 0, since RAPL has no min file) and controls through intel_pstate; the
+// energy-only and HSMP EPYC hosts give no capRange and control through the
+// cpufreq driver; H100 NVL and SXM and L40S give their per-GPU range, with
+// the vendor from the NFD 0302 label; MI300X counts its GPUs from
+// allocatable, has no GPU control and gets its vendor from rocm-smi
+// --showproductname; the VM reads one socket per vCPU and has no control.
+// Every CPU and GPU model string matches its hardware catalog entry, except
+// the VM's CPU and the MI300X, whose inventory fails (D1).
 func TestHwemuA02GenericProfilesTakeTheirFamilyPath(t *testing.T) {
 	profiles, err := hwemu.BuiltinProfiles()
 	if err != nil {
@@ -279,6 +304,10 @@ func checkA02Path(t *testing.T, e *emulatedNode, node *corev1.Node, hw HardwareI
 		t.Errorf("cpu capRange %v to %v W, want none", hw.CPUCapMinWatts, hw.CPUCapMaxWatts)
 	case want.cpuCapMaxW > 0 && (!hw.CPUCapKnown || hw.CPUCapMaxWatts != want.cpuCapMaxW || hw.CPUCapMinWatts != 0):
 		t.Errorf("cpu capRange known=%v %v to %v W, want 0 to %v W", hw.CPUCapKnown, hw.CPUCapMinWatts, hw.CPUCapMaxWatts, want.cpuCapMaxW)
+	}
+	if hw.CPUModel != want.cpuModel || hw.GPUModel != want.gpuModel {
+		t.Errorf("catalog keys cpu=%q (raw %q) gpu=%q (raw %q), want %q and %q",
+			hw.CPUModel, hw.CPURawModel, hw.GPUModel, hw.GPURawModel, want.cpuModel, want.gpuModel)
 	}
 	if hw.GPUVendor != want.gpuVendor || hw.GPUCount != want.gpuCount || hw.GPUControl != want.gpuControl {
 		t.Errorf("gpu vendor=%q count=%d control=%v, want %q %d %v", hw.GPUVendor, hw.GPUCount, hw.GPUControl, want.gpuVendor, want.gpuCount, want.gpuControl)

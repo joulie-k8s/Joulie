@@ -7,18 +7,18 @@
   },
   "cpu": {
     "capRange": {
-      "maxWattsPerSocket": 165,
+      "maxWattsPerSocket": 270,
       "minWattsPerSocket": 0,
       "type": "package"
     },
     "controlAvailable": true,
-    "coresPerSocket": 48,
+    "coresPerSocket": 64,
     "driverFamily": "intel_pstate",
-    "model": "INTEL_XEON_PLATINUM_8260",
-    "rawModel": "Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz",
+    "model": "INTEL_XEON_GOLD_6530",
+    "rawModel": "INTEL(R) XEON(R) GOLD 6530",
     "sockets": 2,
     "telemetryAvailable": true,
-    "totalCores": 96,
+    "totalCores": 128,
     "vendor": "GenuineIntel",
     "warnings": null
   },
@@ -29,7 +29,7 @@
       "minWatts": 200
     },
     "controlAvailable": true,
-    "count": 8,
+    "count": 4,
     "currentCapWatts": 700,
     "model": "NVIDIA_H100_SXM",
     "present": true,
@@ -44,7 +44,7 @@
       "gpu": "exact"
     },
     "hardwareCatalogKey": {
-      "cpu": "INTEL_XEON_PLATINUM_8260",
+      "cpu": "INTEL_XEON_GOLD_6530",
       "gpu": "NVIDIA_H100_SXM"
     }
   },

@@ -1,0 +1,41 @@
+# Four L40S boards on the two socket EPYC 9534 energy-only host, so the
+# NVIDIA GPU path is covered next to a CPU that the agent controls through
+# cpufreq only. cryodrgn477 is a public system of that shape: four L40S on
+# a two socket EPYC 9654, a Genoa part of the same socket and family as the
+# 9534.
+schemaVersion: 1
+name: nvidia-l40s-4gpu
+extends: amd-epyc-9534-2s-energy-only
+description: 4x L40S on the two socket EPYC 9534 energy-only host, nvidia-smi, GFD labels.
+sources:
+  l40spb:      {kind: published, ref: "https://www.pny.com/File%20Library/Company/Support/product-briefs/data-center-gpus/NVIDIA-L40S-Product-Brief.pdf", note: "NVIDIA PB-11470-001_v02, August 2023. Table 1: total board power 350 W default, 350 W maximum, TBD W minimum; Device ID 26B9, Vendor ID 0x10DE; MIG not supported. Table 3: PCI class code 0x03, subclass 0x02 (3D controller); Display Off is the default mode. Programmable Power: example nvidia-smi -pl 150"}
+  l40pb:       {kind: published, ref: "https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/datasheets/L-40/product-brief-L40.pdf", note: "NVIDIA PB-11131-001_v03, the L40 on the same AD102 board family. Table 1: 300 W default, 300 W maximum, 100 W minimum"}
+  cryodrgn477: {kind: published, ref: "https://github.com/ml-struct-bio/cryodrgn/issues/477", note: "lscpu: AMD EPYC 9654 96-Core Processor, 2 sockets; nvidia-smi 580.105.08 table: GPUs 0 to 3, each NVIDIA L40S at P8, 0% utilization, 0MiB used, 31W / 350W"}
+  smil40s:     {kind: published, ref: "https://github.com/utkuozdemir/nvidia_gpu_exporter/blob/0eee0d3187e2f014f1ba6736fd729a195e13a8c8/internal/captures/linux-x86_64__nvidia-l40s__595.80.txt", note: "nvidia-smi -q, driver 595.80, lines 1433-1625: Product Name NVIDIA L40S, Device Id 0x26B910DE; Current, Default and Max Power Limit 350.00 W, Min Power Limit 100.00 W"}
+  pciids:      {kind: published, ref: "https://pci-ids.ucw.cz/read/PC/10de/26b9", note: "10de:26b9 AD102GL [L40S] (pci.ids 2026.10.01)"}
+  nvml:        {kind: published, ref: "https://docs.nvidia.com/deploy/nvml-api/api/group__nvmlDeviceQueries.html", note: "power averaged over 1 s on Ampere (except GA100) or newer; limits in mW"}
+  gfd:         {kind: published, ref: "https://github.com/NVIDIA/k8s-device-plugin/blob/d7265fdcf89f/docs/gpu-feature-discovery/README.md", note: "lines 216-242"}
+gpus:
+  vendor: nvidia
+  count: {v: 4, src: "published:cryodrgn477#nvidia-smi lists four NVIDIA L40S"}
+  product: {v: "NVIDIA L40S", src: "published:cryodrgn477#nvidia-smi name; equals the NVIDIA_L40S alias of the hardware catalog"}
+  pci:
+    vendor: {v: "0x10de", src: "published:l40spb#Table 1 Vendor ID 0x10DE"}
+    device: {v: "0x26b9", src: "published:pciids#10de:26b9; l40spb Table 1 lists Device ID 26B9 too"}
+    class: {v: "0x030200", src: "published:l40spb#Table 3 class 0x03, subclass 0x02 in the default Display Off mode; prog-if 00 assumed"}
+  exposure: {v: whole, src: "assumed:no sharing configured; l40spb lists MIG as not supported"}
+  labeller: {v: gfd, src: published:gfd}
+  limits:
+    maxW: {v: 350, src: "published:l40spb#Table 1 350 W maximum"}
+    defaultW: {v: 350, src: "published:l40spb#Table 1 350 W default"}
+    minW: {v: 100, src: "published:smil40s#Min Power Limit 100.00 W; l40spb gives the minimum as TBD, and l40pb states the same 100 W for the L40"}
+  tools: [{name: nvidia-smi, variant: default}]
+physics:
+  gpu:
+    idleW: {v: 31, src: "published:cryodrgn477#31W at P8 with no process"}
+    naturalMaxW: {v: 350, src: "published:l40spb#Table 1 350 W maximum"}
+    computeGamma: {v: 1.0, src: "assumed:simulator default SIM_GPU_COMPUTE_GAMMA; throughput only"}
+    memoryEpsilon: {v: 0.2, src: "assumed:simulator default SIM_GPU_MEMORY_EPSILON; throughput only"}
+    memoryGamma: {v: 1.2, src: "assumed:simulator default SIM_GPU_MEMORY_GAMMA; throughput only"}
+    capSettleTauMS: {v: 150, src: "assumed:simulator default SIM_GPU_CAP_APPLY_TAU_MS"}
+    telemetryWindowMS: {v: 1000, src: "published:nvml#Ampere or newer; the L40S is Ada"}

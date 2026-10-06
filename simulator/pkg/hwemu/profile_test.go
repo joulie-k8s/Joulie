@@ -29,10 +29,14 @@ func renderBuiltin(t testing.TB, name string) *Profile {
 var renderBuiltinNames = []string{
 	"amd-epyc-2s-energy-only",
 	"amd-epyc-2s-hsmp",
+	"amd-epyc-9534-2s-energy-only",
 	"amd-instinct-mi300x-8gpu",
 	"intel-xeon-2s-rapl",
+	"intel-xeon-6530-2s-rapl",
 	"nvidia-h100-nvl-8gpu",
+	"nvidia-h100-sxm-4gpu",
 	"nvidia-h100-sxm-8gpu",
+	"nvidia-l40s-4gpu",
 	"vm-no-powercap",
 }
 
@@ -98,8 +102,8 @@ func TestH01BuiltinProfilesLoadWithProvenance(t *testing.T) {
 		}
 	}
 
-	// The NVIDIA profiles extend the Intel RAPL host, so their CPU block and
-	// package limits are the Intel ones, with Intel's sources.
+	// The 8-GPU NVIDIA profiles extend the Skylake-SP RAPL host, so their CPU
+	// block and package limits are its own, with its sources.
 	for _, name := range []string{"nvidia-h100-nvl-8gpu", "nvidia-h100-sxm-8gpu"} {
 		p := profiles[name]
 		if p.CPU.VendorID.V != "GenuineIntel" || p.CPU.VendorID.Src != "corpus:corpus#cpuinfo" {
@@ -113,8 +117,8 @@ func TestH01BuiltinProfilesLoadWithProvenance(t *testing.T) {
 		}
 	}
 	sxm := profiles["nvidia-h100-sxm-8gpu"]
-	if sxm.GPUs.Limits.MinW.V != 300 || sxm.GPUs.Limits.MaxW.V != 700 || sxm.GPUs.Count.V != 8 {
-		t.Errorf("sxm limits %+v count %d, want 300 to 700 W on 8 GPUs", sxm.GPUs.Limits, sxm.GPUs.Count.V)
+	if sxm.GPUs.Limits.MinW.V != 200 || sxm.GPUs.Limits.MaxW.V != 700 || sxm.GPUs.Count.V != 8 {
+		t.Errorf("sxm limits %+v count %d, want 200 to 700 W on 8 GPUs", sxm.GPUs.Limits, sxm.GPUs.Count.V)
 	}
 	if sxm.GPUs.PCI.Vendor.V != "0x10de" || sxm.GPUs.PCI.Device.V != "" {
 		t.Errorf("sxm pci %+v: want the NVL vendor kept and the device replaced", sxm.GPUs.PCI)
@@ -126,6 +130,62 @@ func TestH01BuiltinProfilesLoadWithProvenance(t *testing.T) {
 	if mi.CPU.VendorID.V != "AuthenticAMD" || mi.Powercap.ControlTypes[0].Zones[0].Enabled.V != 0 {
 		t.Errorf("mi300x: want the energy-only EPYC host")
 	}
+
+	// The 6530 host is standalone: no fact of it may come from the Skylake-SP
+	// corpus capture, and its package limits and cpufreq block are its own:
+	// intel_pstate in active mode, since the CPU reports HWP and EPP.
+	// The 4-GPU SXM profile inherits that CPU block and replaces the GPUs.
+	for _, name := range []string{"intel-xeon-6530-2s-rapl", "nvidia-h100-sxm-4gpu"} {
+		p := profiles[name]
+		if p.CPU.ModelName.V != "INTEL(R) XEON(R) GOLD 6530" || p.CPU.CoresPerSocket.V != 32 || p.Node.Capacity.CPU.V != 128 {
+			t.Errorf("%s: cpu %q with %d cores per socket and capacity %d, want the 6530 with 32 and 128", name, p.CPU.ModelName.V, p.CPU.CoresPerSocket.V, p.Node.Capacity.CPU.V)
+		}
+		if _, ok := p.Sources["corpus"]; ok {
+			t.Errorf("%s: lists the Skylake-SP corpus source; the 6530 host must not inherit from it", name)
+		}
+		pkg := p.Powercap.ControlTypes[0].Zones[0]
+		if pkg.Constraints[0].MaxPowerUW.V != 270000000 || pkg.Constraints[1].Name != "short_term" {
+			t.Errorf("%s: package constraints %+v, want PL1 at the 270 W TDP and a PL2", name, pkg.Constraints)
+		}
+		// rapl_defaults_spr_server sets no dram_domain_energy_unit, so the
+		// DRAM zone counts in the package unit, unlike Skylake-SP's 15300.
+		if dram := pkg.Children[0]; dram.EnergyUnitNJ.V != pkg.EnergyUnitNJ.V {
+			t.Errorf("%s: dram energy unit %d nJ, want the package's %d", name, dram.EnergyUnitNJ.V, pkg.EnergyUnitNJ.V)
+		}
+		if f := p.CPUFreq; f.Driver.V != "intel_pstate" || f.Governor.V != "powersave" || f.CPUInfoMaxKHz.V != 4000000 || len(f.AvailableKHz.V) != 0 || f.Boost.Src != "" {
+			t.Errorf("%s: cpufreq %+v, want intel_pstate under powersave up to the 4 GHz turbo, with no frequency table and no boost file", name, f)
+		}
+	}
+	sxm4 := profiles["nvidia-h100-sxm-4gpu"]
+	if g := sxm4.GPUs; g.Count.V != 4 || g.Limits.MinW.V != 200 || g.Limits.MaxW.V != 700 || g.Limits.DefaultW.V != 700 || g.PCI.Device.V != "0x2330" || g.Product.V != "NVIDIA H100 80GB HBM3" {
+		t.Errorf("sxm 4-GPU: count %d, limits %+v, device %q, product %q", g.Count.V, g.Limits, g.PCI.Device.V, g.Product.V)
+	}
+
+	// The 9534 host keeps the energy-only zones, the driver and the sockets
+	// of the 9654 host with their sources, and replaces what follows from the
+	// core count, the clocks and the TDP.
+	for _, name := range []string{"amd-epyc-9534-2s-energy-only", "nvidia-l40s-4gpu"} {
+		p := profiles[name]
+		if p.CPU.ModelName.V != "AMD EPYC 9534 64-Core Processor" || p.CPU.CoresPerSocket.V != 64 || p.Node.Capacity.CPU.V != 256 {
+			t.Errorf("%s: cpu %q with %d cores per socket and capacity %d, want the 9534 with 64 and 256", name, p.CPU.ModelName.V, p.CPU.CoresPerSocket.V, p.Node.Capacity.CPU.V)
+		}
+		if p.Physics.CPU.MaxPkgW.V != 280 || p.CPUFreq.CPUInfoMaxKHz.V != 2450000 || p.CPUFreq.AvailableKHz.V[0] != 2450000 {
+			t.Errorf("%s: maxPkgW %v, cpuinfoMaxKHz %d, table %v, want the 9534's 280 W and 2.45 GHz base", name, p.Physics.CPU.MaxPkgW.V, p.CPUFreq.CPUInfoMaxKHz.V, p.CPUFreq.AvailableKHz.V)
+		}
+		if p.CPUFreq.Driver.V != "acpi-cpufreq" || p.Powercap.ControlTypes[0].Zones[0].Enabled.V != 0 || p.CPU.Sockets.Src != "assumed:generic 2S node" {
+			t.Errorf("%s: want the energy-only zones, acpi-cpufreq and the sockets fact of the 9654 host", name)
+		}
+		for at, src := range map[string]string{"coresPerSocket": p.CPU.CoresPerSocket.Src, "threadsPerCore": p.CPU.ThreadsPerCore.Src, "capacity.cpu": p.Node.Capacity.CPU.Src, "maxPkgW": p.Physics.CPU.MaxPkgW.Src, "cpuinfoMaxKHz": p.CPUFreq.CPUInfoMaxKHz.Src} {
+			if strings.Contains(src, "amd9654") {
+				t.Errorf("%s: %s cites the 9654 (%q)", name, at, src)
+			}
+		}
+	}
+	l40s := profiles["nvidia-l40s-4gpu"]
+	if g := l40s.GPUs; g.Count.V != 4 || g.Limits.MinW.V != 100 || g.Limits.MaxW.V != 350 || g.Limits.DefaultW.V != 350 || g.PCI.Device.V != "0x26b9" || g.PCI.Class.V != "0x030200" || g.Product.V != "NVIDIA L40S" {
+		t.Errorf("l40s: count %d, limits %+v, pci %+v, product %q", g.Count.V, g.Limits, g.PCI, g.Product.V)
+	}
+
 	hsmp := profiles["amd-epyc-2s-hsmp"]
 	if hsmp.CPU.Sockets.V != 2 || hsmp.CPU.Sockets.Src != "assumed:generic 2S node" {
 		t.Errorf("hsmp sockets = %+v, want the parent's fact and source", hsmp.CPU.Sockets)

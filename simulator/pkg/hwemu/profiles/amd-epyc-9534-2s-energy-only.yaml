@@ -1,0 +1,25 @@
+# The energy-only EPYC host with the 64-core EPYC 9534 in place of the 9654.
+# Both are Genoa parts of the same family and model, so the RAPL zones, the
+# cpufreq driver and the NFD labels are inherited; every value that follows
+# from the core count, the clocks or the TDP is overridden.
+schemaVersion: 1
+name: amd-epyc-9534-2s-energy-only
+extends: amd-epyc-2s-energy-only
+description: Two socket EPYC 9534, acpi-cpufreq, RAPL energy counters only (package and core), no constraints.
+sources:
+  amd9534:    {kind: published, ref: "https://www.amd.com/en/products/processors/server/epyc/4th-generation-9004-and-8004-series/amd-epyc-9534.html", note: "64 cores, 128 threads, base 2.45 GHz, max boost up to 3.7 GHz, all core boost 3.55 GHz, default TDP 280W, cTDP 240-300W, 1P/2P (fetched 2026-10-06)"}
+  cpuname9534: {kind: published, ref: "https://github.com/quattor/template-library-standard/blob/3a9e11bdc74fe80776feb2400ea3ae2f28bd82e1/hardware/cpu/amd/epyc_9534.pan", note: "model AMD EPYC 9534 64-Core Processor, 64 cores, 128 threads"}
+node:
+  capacity:
+    cpu: {v: 256, src: "derived:amd9534#2 x 128 threads"}
+cpu:
+  modelName: {v: "AMD EPYC 9534 64-Core Processor", src: "published:cpuname9534#model; equals the AMD_EPYC_9534 alias of the hardware catalog, so the agent matches it"}
+  coresPerSocket: {v: 64, src: published:amd9534}
+  threadsPerCore: {v: 2, src: "derived:amd9534#128 threads / 64 cores"}
+cpufreq:
+  availableKHz: {v: [2450000, 1900000, 1500000], src: "assumed:3 P-states, P0 = published base amd9534"}
+  cpuinfoMaxKHz: {v: 2450000, src: "derived:amd9534#base 2.45 GHz as P0; boost assumed not in the table"}
+physics:
+  cpu:
+    maxPkgW: {v: 280, src: "published:amd9534#Default TDP"}
+    idlePkgW: {v: 40, src: "assumed:no public idle figure for the 9534; the 9654 host's placeholder kept"}
