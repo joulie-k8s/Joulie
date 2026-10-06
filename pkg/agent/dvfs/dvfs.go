@@ -443,7 +443,12 @@ func energyFileGlobs() []string {
 	}
 }
 
-// EnergyFiles returns RAPL energy counter file paths.
+// EnergyFiles returns RAPL energy counter file paths, one per counter.
+//
+// On a real host every class/powercap entry is a symlink into
+// devices/virtual/powercap, so the class and the devices globs reach the
+// same counter under two paths. Entries are deduplicated by their resolved
+// path, or every package would be counted twice.
 func EnergyFiles() ([]string, error) {
 	seen := map[string]struct{}{}
 	out := make([]string, 0)
@@ -453,10 +458,14 @@ func EnergyFiles() ([]string, error) {
 			return nil, err
 		}
 		for _, m := range matches {
-			if _, ok := seen[m]; ok {
+			key := m
+			if resolved, err := filepath.EvalSymlinks(m); err == nil {
+				key = resolved
+			}
+			if _, ok := seen[key]; ok {
 				continue
 			}
-			seen[m] = struct{}{}
+			seen[key] = struct{}{}
 			out = append(out, m)
 		}
 	}

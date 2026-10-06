@@ -20,8 +20,9 @@ package main
 //     empty stdin and exits 1.
 //   - D4: listAmdDevices takes the model from Card SKU, a VBIOS segment, and
 //     the maximum from --showmaxpower, which reports the current cap.
-//   - D5: dvfs.EnergyFiles dedupes by path string, so it lists every package
-//     twice, through class/powercap and through devices/virtual/powercap.
+//   - D5 (fixed): dvfs.EnergyFiles deduped by path string, so it listed every
+//     package twice, through class/powercap and devices/virtual/powercap. It
+//     now dedupes by resolved path; A04 and the dvfs D03 test guard it.
 //   - D6: dvfs.CPUFreqList lists every policy twice, through cpuN/cpufreq and
 //     as policyN. An odd entry count throttles one policy fewer than
 //     intended; with policies shared per core, the later entry of each
@@ -55,8 +56,8 @@ package main
 //
 // The fixes that flip them:
 //
-//   - F1: dedupe EnergyFiles and CPUFreqList by resolved path, and document
-//     that a CPU cap is per socket (D5, D6, D7).
+//   - F1: dedupe CPUFreqList by resolved path, and document that a CPU cap is
+//     per socket (D6, D7). EnergyFiles is already deduplicated (D5).
 //   - F2: the simulator uses phys.AnalyticCPUModel, SolveFreqScaleForCap and
 //     FirstOrderToward instead of its own copies (D13).
 //   - F3: AMD and NVIDIA tool handling: real rocm-smi flags, output checks
@@ -461,9 +462,8 @@ func TestHwemuA03RAPLCapsEachPackage(t *testing.T) {
 // through the agent's whole reconcileOnce, which hands the cap to DVFS, and
 // DVFS compares it with the node total (D7).
 //
-// It skips while dvfs.EnergyFiles lists every package twice (D5): the agent
-// then reads about twice the true power and throttles to the floor. F1 fixes
-// that and this test runs from then on.
+// It skips if dvfs.EnergyFiles lists a package twice again (D5): the agent
+// would then read about twice the true power and throttle to the floor.
 //
 // The agent turns energy_uj deltas into watts over its own wall-clock
 // interval, so the files must hold the energy of the instant it reads them.
@@ -491,7 +491,7 @@ func TestHwemuA04DVFSHoldsTheEnergyOnlyHostAtItsCap(t *testing.T) {
 	}
 	if len(files) != len(zones) {
 		t.Logf("dvfs.EnergyFiles lists %d counters for %d package zones: %v", len(files), len(zones), files)
-		t.Skip("EnergyFiles counts every package twice (D5); passes with F1")
+		t.Skip("EnergyFiles counts a package twice (D5 regressed)")
 	}
 
 	n.SetLoad(load)
@@ -870,8 +870,10 @@ func TestHwemuA07HSMPCapIsNotUsedYet(t *testing.T) {
 // A08: with intel-rapl:0's energy_uj 1 J below its range, the counter wraps
 // between the agent's two readings, and the per-zone
 // joulie_rapl_estimated_power_watts for intel-rapl:0 is within 1 % of the
-// emulated package power over the agent's own interval. The total is not
-// asserted: it counts every package twice until F1 (D5).
+// emulated package power over the agent's own interval. The agent's total
+// equals the sum of both emulated packages: each package is counted once,
+// although the tree reaches it through class/powercap and
+// devices/virtual/powercap (D5).
 func TestHwemuA08RAPLPowerSurvivesTheCounterWrap(t *testing.T) {
 	profiles, err := hwemu.BuiltinProfiles()
 	if err != nil {
@@ -901,7 +903,11 @@ func TestHwemuA08RAPLPowerSurvivesTheCounterWrap(t *testing.T) {
 	n.SetLoad(hwemu.Load{CPUUtil: []float64{1}})
 	energyFile := filepath.Join(zoneDir(e, zone), "energy_uj")
 
-	first := n.State().Packages[0].EnergyUJ
+	var firsts []int64
+	for _, pkg := range n.State().Packages {
+		firsts = append(firsts, pkg.EnergyUJ)
+	}
+	first := firsts[0]
 	readAt := time.Now()
 	if _, _, err := nc.dvfs.ReadPowerWatts(); err != nil {
 		t.Fatal(err)
@@ -914,8 +920,9 @@ func TestHwemuA08RAPLPowerSurvivesTheCounterWrap(t *testing.T) {
 	if err := n.AdvanceTo(origin.Add(time.Since(readAt))); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := nc.dvfs.ReadPowerWatts(); err != nil {
-		t.Fatal(err)
+	total, ok, err := nc.dvfs.ReadPowerWatts()
+	if err != nil || !ok {
+		t.Fatalf("second ReadPowerWatts: %v (ok %v)", err, ok)
 	}
 	if after := readFileInt(t, energyFile); after >= startUJ {
 		t.Fatalf("%s reads %d after the interval, not below the %d it started at: the counter did not wrap", energyFile, after, startUJ)
@@ -928,6 +935,14 @@ func TestHwemuA08RAPLPowerSurvivesTheCounterWrap(t *testing.T) {
 		t.Fatalf("joulie_rapl_estimated_power_watts{zone=%q} = %.3f W across the wrap, want %.3f W within 1 %%", zone, got, want)
 	}
 	t.Logf("%s across the wrap: agent %.3f W, emulated %.3f W over %.3f s", zone, got, want, interval)
+
+	var wantTotal float64
+	for i, pkg := range n.State().Packages {
+		wantTotal += float64(pkg.EnergyUJ-firsts[i]) / 1e6 / interval
+	}
+	if math.Abs(total-wantTotal) > 0.01*wantTotal {
+		t.Fatalf("agent total %.3f W, want the emulated %.3f W of both packages within 1 %% (each counted once, D5)", total, wantTotal)
+	}
 }
 
 // A09: on the VM, which has neither powercap nor cpufreq, a CPU cap is

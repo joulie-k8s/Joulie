@@ -190,17 +190,17 @@ func TestD03EnergyFilesUnderHostSysRootMatchesDevicePowercapGlobs(t *testing.T) 
 	})
 
 	t.Run("class links too", func(t *testing.T) {
-		// EnergyFiles dedupes by path string, so a package reached through its
-		// class link and through its devices path is listed under both.
+		// Regression for D5: a package reached through its class link and
+		// through its devices path is one counter and is listed once, under
+		// the class path the first glob finds. Deduplicating by path string
+		// listed each package twice and doubled the measured power.
 		withPowercapRoot(t, filepath.Join(root, "class/powercap"))
 		files, err := EnergyFiles()
 		if err != nil {
 			t.Fatalf("EnergyFiles: %v", err)
 		}
-		want := append(append([]string{}, classPaths...), devicePaths...)
-		if !reflect.DeepEqual(files, want) {
-			t.Fatalf("EnergyFiles=%q want %q. Today it lists each package through its class link and its devices path "+
-				"(D5 in cmd/agent/hwemu_test.go); F1 dedupes them, so update want with it", files, want)
+		if !reflect.DeepEqual(files, classPaths) {
+			t.Fatalf("EnergyFiles=%q want %q, one entry per package counter", files, classPaths)
 		}
 	})
 }
