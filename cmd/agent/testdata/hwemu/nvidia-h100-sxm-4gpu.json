@@ -1,0 +1,55 @@
+{
+  "capabilities": {
+    "cpuControl": true,
+    "cpuTelemetry": true,
+    "gpuControl": true,
+    "gpuTelemetry": true
+  },
+  "cpu": {
+    "capRange": {
+      "maxWattsPerSocket": 270,
+      "minWattsPerSocket": 0,
+      "type": "package"
+    },
+    "controlAvailable": true,
+    "coresPerSocket": 64,
+    "driverFamily": "intel_cpufreq",
+    "model": "INTEL_XEON_GOLD_6530",
+    "rawModel": "INTEL(R) XEON(R) GOLD 6530",
+    "sockets": 2,
+    "telemetryAvailable": true,
+    "totalCores": 128,
+    "vendor": "GenuineIntel",
+    "warnings": null
+  },
+  "gpu": {
+    "capRangePerGpu": {
+      "defaultWatts": 700,
+      "maxWatts": 700,
+      "minWatts": 200
+    },
+    "controlAvailable": true,
+    "count": 4,
+    "currentCapWatts": 700,
+    "model": "NVIDIA_H100_SXM",
+    "present": true,
+    "rawModel": "NVIDIA H100 80GB HBM3",
+    "telemetryAvailable": true,
+    "vendor": "nvidia",
+    "warnings": null
+  },
+  "inventoryResolution": {
+    "exactness": {
+      "cpu": "exact",
+      "gpu": "exact"
+    },
+    "hardwareCatalogKey": {
+      "cpu": "INTEL_XEON_GOLD_6530",
+      "gpu": "NVIDIA_H100_SXM"
+    }
+  },
+  "quality": {
+    "overall": "exact",
+    "warnings": null
+  }
+}

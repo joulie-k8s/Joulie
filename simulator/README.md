@@ -24,6 +24,9 @@ Current scope includes CPU and GPU-cap simulation with trace-driven completion s
 - `config/node-classes.yaml`: sample class mapping by node labels
 - `cmd/workloadgen`: synthetic trace generator (`distribution -> trace`)
 - `cmd/traceextract`: trace normalizer/extractor helper (`input telemetry/export -> trace schema`)
+- `pkg/hwemu`: bare-metal node emulator for agent tests: hardware profile schema and loader, a renderer that writes a node's sysfs tree, cpuinfo and GPU tool state, and physics that turns the limits the agent writes into power and energy readings; `pkg/hwemu/profiles/` holds the builtin profiles
+- `pkg/hwemu/smi` and `cmd/fakesmi`: fake `nvidia-smi`, `rocm-smi` and `amd-smi` that read and write an emulated node's state (environment in the [configuration reference](../website/content/en/docs/getting-started/05-configuration-reference.md))
+- `pkg/hwemu/hwemutest`: test helpers that render a builtin profile into a test's temporary directory
 - `waok8s/`: external WAO code reference sandbox
 
 ## Install from release (recommended)

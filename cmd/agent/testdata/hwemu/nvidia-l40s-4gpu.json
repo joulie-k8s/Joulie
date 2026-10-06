@@ -1,0 +1,50 @@
+{
+  "capabilities": {
+    "cpuControl": true,
+    "cpuTelemetry": true,
+    "gpuControl": true,
+    "gpuTelemetry": true
+  },
+  "cpu": {
+    "controlAvailable": true,
+    "coresPerSocket": 128,
+    "driverFamily": "acpi-cpufreq",
+    "model": "AMD_EPYC_9534",
+    "rawModel": "AMD EPYC 9534 64-Core Processor",
+    "sockets": 2,
+    "telemetryAvailable": true,
+    "totalCores": 256,
+    "vendor": "AuthenticAMD",
+    "warnings": null
+  },
+  "gpu": {
+    "capRangePerGpu": {
+      "defaultWatts": 350,
+      "maxWatts": 350,
+      "minWatts": 100
+    },
+    "controlAvailable": true,
+    "count": 4,
+    "currentCapWatts": 350,
+    "model": "NVIDIA_L40S",
+    "present": true,
+    "rawModel": "NVIDIA L40S",
+    "telemetryAvailable": true,
+    "vendor": "nvidia",
+    "warnings": null
+  },
+  "inventoryResolution": {
+    "exactness": {
+      "cpu": "exact",
+      "gpu": "exact"
+    },
+    "hardwareCatalogKey": {
+      "cpu": "AMD_EPYC_9534",
+      "gpu": "NVIDIA_L40S"
+    }
+  },
+  "quality": {
+    "overall": "exact",
+    "warnings": null
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "capabilities": {
+    "cpuControl": true,
+    "cpuTelemetry": true,
+    "gpuControl": true,
+    "gpuTelemetry": true
+  },
+  "cpu": {
+    "capRange": {
+      "maxWattsPerSocket": 165,
+      "minWattsPerSocket": 0,
+      "type": "package"
+    },
+    "controlAvailable": true,
+    "coresPerSocket": 48,
+    "driverFamily": "intel_pstate",
+    "model": "INTEL_XEON_PLATINUM_8260",
+    "rawModel": "Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz",
+    "sockets": 2,
+    "telemetryAvailable": true,
+    "totalCores": 96,
+    "vendor": "GenuineIntel",
+    "warnings": null
+  },
+  "gpu": {
+    "capRangePerGpu": {
+      "defaultWatts": 400,
+      "maxWatts": 400,
+      "minWatts": 200
+    },
+    "controlAvailable": true,
+    "count": 8,
+    "currentCapWatts": 400,
+    "model": "NVIDIA_H100_NVL",
+    "present": true,
+    "rawModel": "NVIDIA H100 NVL",
+    "telemetryAvailable": true,
+    "vendor": "nvidia",
+    "warnings": null
+  },
+  "inventoryResolution": {
+    "exactness": {
+      "cpu": "exact",
+      "gpu": "exact"
+    },
+    "hardwareCatalogKey": {
+      "cpu": "INTEL_XEON_PLATINUM_8260",
+      "gpu": "NVIDIA_H100_NVL"
+    }
+  },
+  "quality": {
+    "overall": "exact",
+    "warnings": null
+  }
+}

@@ -38,17 +38,17 @@ type energySample struct {
 
 // Metrics holds prometheus metric references used by the DVFS controller.
 type Metrics struct {
-	Node             string
-	ObservedPowerW   *prometheus.GaugeVec
-	EMAPowerW        *prometheus.GaugeVec
-	ThrottlePct      *prometheus.GaugeVec
-	TripAbove        *prometheus.GaugeVec
-	TripBelow        *prometheus.GaugeVec
-	CPUCurFreqKHz    *prometheus.GaugeVec
-	CPUMaxFreqKHz    *prometheus.GaugeVec
-	ActionsTotal     *prometheus.CounterVec
-	RaplEnergyUJ     *prometheus.GaugeVec
-	RaplPowerWatts   *prometheus.GaugeVec
+	Node              string
+	ObservedPowerW    *prometheus.GaugeVec
+	EMAPowerW         *prometheus.GaugeVec
+	ThrottlePct       *prometheus.GaugeVec
+	TripAbove         *prometheus.GaugeVec
+	TripBelow         *prometheus.GaugeVec
+	CPUCurFreqKHz     *prometheus.GaugeVec
+	CPUMaxFreqKHz     *prometheus.GaugeVec
+	ActionsTotal      *prometheus.CounterVec
+	RaplEnergyUJ      *prometheus.GaugeVec
+	RaplPowerWatts    *prometheus.GaugeVec
 	RaplPackageTotalW *prometheus.GaugeVec
 }
 
@@ -103,7 +103,7 @@ func New(cfg Config, metrics *Metrics) (*Controller, error) {
 		return nil, err
 	}
 	if len(cpus) == 0 {
-		log.Printf("warning: no cpufreq files found under /host-sys/devices/system/cpu; host DVFS writes disabled, HTTP control can still be used")
+		log.Printf("warning: no cpufreq files found under %s/devices/system/cpu; host DVFS writes disabled, HTTP control can still be used", HostSysRoot)
 	}
 	return &Controller{
 		Cpus:        cpus,
@@ -160,7 +160,6 @@ func (d *Controller) SetThrottlePctMetric(pct float64) {
 		d.Metrics.ThrottlePct.WithLabelValues(d.Metrics.Node).Set(pct)
 	}
 }
-
 
 // Reconcile runs one iteration of the DVFS control loop.
 func (d *Controller) Reconcile(capWatts float64, controlClient *control.HTTPControlClient) (string, error) {
@@ -269,7 +268,7 @@ func (d *Controller) applyThrottlePct(pct int, controlClient *control.HTTPContro
 	}
 	count := len(d.Cpus)
 	if count == 0 {
-		return 0, fmt.Errorf("no cpufreq scaling_max_freq files found under /host-sys/devices/system/cpu")
+		return 0, fmt.Errorf("no cpufreq scaling_max_freq files found under %s/devices/system/cpu", HostSysRoot)
 	}
 	throttleCount := int(math.Ceil(float64(count) * float64(pct) / 100.0))
 	written := 0
@@ -359,19 +358,49 @@ func (d *Controller) readPowerWatts() (float64, bool, error) {
 	return totalW, true, nil
 }
 
-// CPUFreqList enumerates cpufreq scaling entries on the host.
+// HostSysRoot is the host's /sys as mounted into the agent container. The
+// cpufreq globs of CPUFreqList, the devices/virtual/powercap globs of
+// EnergyFiles and the messages that name them start here. It is a variable so
+// tests can point it at a fixture tree; PowercapRoot is redirected separately.
+var HostSysRoot = "/host-sys"
+
+// cpuFreqGlobs returns the patterns CPUFreqList matches, in order: the per-CPU
+// cpufreq directories, then the policy directories.
+func cpuFreqGlobs() []string {
+	return []string{
+		HostSysRoot + "/devices/system/cpu/cpu*/cpufreq/scaling_max_freq",
+		HostSysRoot + "/devices/system/cpu/cpufreq/policy*/scaling_max_freq",
+	}
+}
+
+// CPUFreqList enumerates cpufreq scaling entries on the host, one per policy.
+//
+// Every cpuN/cpufreq is a symlink to its policy directory, and policies may
+// cover several CPUs (SMT siblings), so the cpuN and the policyN globs reach
+// the same policy more than once. Entries are deduplicated by their resolved
+// directory, keeping the first: otherwise a throttle percentage counts each
+// policy several times, and a sibling's unthrottled entry writes the maximum
+// back over the throttled one.
 func CPUFreqList() ([]CPU, error) {
 	matches := make([]string, 0)
-	cpuMatches, err := filepath.Glob("/host-sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq")
-	if err != nil {
-		return nil, err
+	seen := map[string]struct{}{}
+	for _, p := range cpuFreqGlobs() {
+		m, err := filepath.Glob(p)
+		if err != nil {
+			return nil, err
+		}
+		for _, maxf := range m {
+			key := filepath.Dir(maxf)
+			if resolved, err := filepath.EvalSymlinks(key); err == nil {
+				key = resolved
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			matches = append(matches, maxf)
+		}
 	}
-	policyMatches, err := filepath.Glob("/host-sys/devices/system/cpu/cpufreq/policy*/scaling_max_freq")
-	if err != nil {
-		return nil, err
-	}
-	matches = append(matches, cpuMatches...)
-	matches = append(matches, policyMatches...)
 
 	cpus := make([]CPU, 0, len(matches))
 	for _, maxf := range matches {
@@ -421,27 +450,40 @@ func CPUIndexFromPath(cpufreqDir string) (int, bool) {
 // It is a variable so tests can point it at a fixture tree.
 var PowercapRoot = "/host-sys/class/powercap"
 
-// EnergyFiles returns RAPL energy counter file paths.
-func EnergyFiles() ([]string, error) {
-	patterns := []string{
+// energyFileGlobs returns the patterns EnergyFiles matches, in order.
+func energyFileGlobs() []string {
+	return []string{
 		PowercapRoot + "/*/energy_uj",
 		PowercapRoot + "/*:*/energy_uj",
 		PowercapRoot + "/*:*:*/energy_uj",
-		"/host-sys/devices/virtual/powercap/intel-rapl/*/energy_uj",
-		"/host-sys/devices/virtual/powercap/intel-rapl/*/*/energy_uj",
+		HostSysRoot + "/devices/virtual/powercap/intel-rapl/*/energy_uj",
+		HostSysRoot + "/devices/virtual/powercap/intel-rapl/*/*/energy_uj",
 	}
+}
+
+// EnergyFiles returns RAPL energy counter file paths, one per counter.
+//
+// On a real host every class/powercap entry is a symlink into
+// devices/virtual/powercap, so the class and the devices globs reach the
+// same counter under two paths. Entries are deduplicated by their resolved
+// path, or every package would be counted twice.
+func EnergyFiles() ([]string, error) {
 	seen := map[string]struct{}{}
 	out := make([]string, 0)
-	for _, p := range patterns {
+	for _, p := range energyFileGlobs() {
 		matches, err := filepath.Glob(p)
 		if err != nil {
 			return nil, err
 		}
 		for _, m := range matches {
-			if _, ok := seen[m]; ok {
+			key := m
+			if resolved, err := filepath.EvalSymlinks(m); err == nil {
+				key = resolved
+			}
+			if _, ok := seen[key]; ok {
 				continue
 			}
-			seen[m] = struct{}{}
+			seen[key] = struct{}{}
 			out = append(out, m)
 		}
 	}

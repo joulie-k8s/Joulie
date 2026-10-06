@@ -22,10 +22,36 @@ const repoRoot = "../.."
 // section after it.
 const layoutHeading = "## Repository layout"
 
-// rootDirsNotListed are the top level directories the layout block is allowed
-// to leave out: bin/ is build output (.gitignore line 94) and anything hidden
-// is tooling, not the project's shape.
-var rootDirsNotListed = map[string]bool{"bin": true}
+// gitignoredRootDir reports whether a pattern of the root .gitignore ignores
+// the top level directory name: such a directory, bin/ or a local tmp/, never
+// reaches a clone, so the layout block need not list it. Only patterns that
+// name one path segment are considered (tmp/, /bin/, results*/); negations
+// and nested paths never match a root directory here.
+func gitignoredRootDir(t *testing.T, name string) bool {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(repoRoot, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	return gitignoreMatchesRootDir(string(raw), name)
+}
+
+func gitignoreMatchesRootDir(gitignore, name string) bool {
+	for _, line := range strings.Split(gitignore, "\n") {
+		pattern := strings.TrimSpace(line)
+		if pattern == "" || strings.HasPrefix(pattern, "#") || strings.HasPrefix(pattern, "!") {
+			continue
+		}
+		pattern = strings.TrimSuffix(strings.TrimPrefix(pattern, "/"), "/")
+		if strings.Contains(pattern, "/") {
+			continue
+		}
+		if ok, err := filepath.Match(pattern, name); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
 
 // readLayoutPaths returns every path the layout block names, already joined to
 // the repository root. An indented line is relative to the last line that was
@@ -109,7 +135,8 @@ func TestREADMELayoutListsEveryRootDirectory(t *testing.T) {
 	}
 	for _, e := range entries {
 		name := e.Name()
-		if !e.IsDir() || strings.HasPrefix(name, ".") || rootDirsNotListed[name] {
+		// Hidden directories are tooling, not the project's shape.
+		if !e.IsDir() || strings.HasPrefix(name, ".") || gitignoredRootDir(t, name) {
 			continue
 		}
 		found := false
@@ -122,6 +149,20 @@ func TestREADMELayoutListsEveryRootDirectory(t *testing.T) {
 		if !found {
 			t.Errorf("%s/ is a top level directory that the README repository layout does not mention. "+
 				"Fix: add a line for it, or nest it under an existing directory (see CLAUDE.md).", name)
+		}
+	}
+}
+
+// The .gitignore matcher skips exactly the directories git would ignore at the
+// root, and nothing the repository tracks.
+func TestGitignoreMatchesRootDir(t *testing.T) {
+	const gitignore = "# build output\nbin/\n/tmp/\nresults*/\n!keep/\ndocs/generated/\n"
+	for name, want := range map[string]bool{
+		"bin": true, "tmp": true, "results-2026": true,
+		"pkg": false, "keep": false, "docs": false, "generated": false,
+	} {
+		if got := gitignoreMatchesRootDir(gitignore, name); got != want {
+			t.Errorf("%s: ignored = %v, want %v", name, got, want)
 		}
 	}
 }

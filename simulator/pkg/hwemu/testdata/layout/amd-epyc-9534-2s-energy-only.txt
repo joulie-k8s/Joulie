@@ -1,0 +1,59 @@
+bin R dir 0755
+cpuinfo R file 0444
+state R dir 0755
+state/.tmp R dir 0755
+state/hwemu.json R file 0444
+state/tools.json R file 0444
+sys R dir 0755
+sys/class R dir 0755
+sys/class/powercap R dir 0755
+sys/class/powercap/intel-rapl R link 0777 -> ../../devices/virtual/powercap/intel-rapl
+sys/class/powercap/intel-rapl:0 R link 0777 -> ../../devices/virtual/powercap/intel-rapl/intel-rapl:0
+sys/class/powercap/intel-rapl:0:0 R link 0777 -> ../../devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0
+sys/class/powercap/intel-rapl:1 R link 0777 -> ../../devices/virtual/powercap/intel-rapl/intel-rapl:1
+sys/class/powercap/intel-rapl:1:0 R link 0777 -> ../../devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0
+sys/devices R dir 0755
+sys/devices/system R dir 0755
+sys/devices/system/cpu R dir 0755
+sys/devices/system/cpu/cpufreq R dir 0755
+sys/devices/system/cpu/cpufreq/boost A file 0644
+sys/devices/system/cpu/cpufreq/policy{N} R dir 0755 [N=0-255]
+sys/devices/system/cpu/cpufreq/policy{N}/affected_cpus R file 0444 [N=0-255]
+sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_max_freq R file 0444 [N=0-255]
+sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_min_freq R file 0444 [N=0-255]
+sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_transition_latency R file 0444 [N=0-255]
+sys/devices/system/cpu/cpufreq/policy{N}/related_cpus R file 0444 [N=0-255]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_available_frequencies R file 0444 [N=0-255]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_available_governors R file 0444 [N=0-255]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_cur_freq S file 0444 [N=0-255]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_driver R file 0444 [N=0-255]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_governor A file 0644 [N=0-255]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_max_freq A file 0644 [N=0-255]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_min_freq A file 0644 [N=0-255]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_setspeed R file 0644 [N=0-255]
+sys/devices/system/cpu/cpu{N} R dir 0755 [N=0-255]
+sys/devices/system/cpu/cpu{N}/cpufreq R link 0777 -> ../cpufreq/policy{N} [N=0-255]
+sys/devices/virtual R dir 0755
+sys/devices/virtual/powercap R dir 0755
+sys/devices/virtual/powercap/intel-rapl R dir 0755
+sys/devices/virtual/powercap/intel-rapl/enabled A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0 R dir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/enabled R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj S file 0400
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0 R dir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/enabled R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/energy_uj S file 0400
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/max_energy_range_uj R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/max_energy_range_uj R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1 R dir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/enabled R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/energy_uj S file 0400
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0 R dir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/enabled R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/energy_uj S file 0400
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/max_energy_range_uj R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/max_energy_range_uj R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/name R file 0444

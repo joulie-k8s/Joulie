@@ -1,0 +1,81 @@
+# Two socket AMD EPYC host whose RAPL zones count energy and take no limit,
+# so the agent can control it only through cpufreq.
+schemaVersion: 1
+name: amd-epyc-2s-energy-only
+description: Two socket EPYC 9654, acpi-cpufreq, RAPL energy counters only (package and core), no constraints.
+sources:
+  nodedesc9654: {kind: measured, ref: "read-only node description of a node with 2x EPYC 9654, 2026-10", note: "capacity minus allocatable"}
+  cpufreq9654: {kind: measured, ref: "read-only dump of /sys/devices/system/cpu on one bare-metal node with 2x EPYC 9654, 2026-10", note: "policy attributes identical on all 384 policies; global cpufreq/boost"}
+  amd9654:     {kind: published, ref: "https://www.amd.com/en/products/processors/server/epyc/4th-generation-9004-and-8004-series/amd-epyc-9654.html", note: "96 cores, 192 threads, base 2.4 GHz, boost up to 3.7 GHz, default TDP 360W, cTDP 320-400W"}
+  spec01203:   {kind: published, ref: "https://www.spec.org/power_ssj2008/results/res2022q4/power_ssj2008-20221204-01203.txt", note: "2x EPYC 9654: Active Idle 128 W"}
+  raplmsr:     {kind: published, ref: "linux v7.3-rc5 drivers/powercap/intel_rapl_msr.c:119-124", note: "AMD: PACKAGE and PP0 status registers only"}
+  raplcommon:  {kind: published, ref: "linux v7.3-rc5 drivers/powercap/intel_rapl_common.c:33,50,215,279-296,689-698,741,1023-1049"}
+  powercapsys: {kind: published, ref: "linux v7.3-rc5 drivers/powercap/powercap_sys.c:420-441", note: "enabled prints 0 when get_enable fails"}
+  acpicf:      {kind: published, ref: "linux v7.3-rc5 drivers/cpufreq/acpi-cpufreq.c:990,1013-1014", note: "registers as acpi-cpufreq unless another cpufreq driver is loaded"}
+  amdpstate:   {kind: published, ref: "linux v7.3-rc5 drivers/cpufreq/amd-pstate.c:2281-2293 (amd_pstate_init)", note: "with no mode on the command line, a server ACPI PM profile on a CPU family below 0x1A leaves the driver unloaded"}
+  cpufreqcore: {kind: published, ref: "linux v7.3-rc5 drivers/cpufreq/cpufreq.c:956-970,2668-2681; Documentation/admin-guide/pm/cpufreq.rst:372-389"}
+  hsmpdoc:     {kind: published, ref: "linux v7.3-rc5 Documentation/arch/x86/amd_hsmp.rst", note: "Fam19h EPYC"}
+  nfd:         {kind: published, ref: "https://kubernetes-sigs.github.io/node-feature-discovery/stable/reference/worker-configuration-reference.html"}
+node:
+  nfd: present
+  labels:
+    cpu:
+      src: "assumed:NFD cpu label set for an AMD host; agent normalizes AMD (normalizeCPUVendor in cmd/agent)"
+      values:
+        feature.node.kubernetes.io/cpu-model.vendor_id: AMD
+        feature.node.kubernetes.io/cpu-model.family: "25"
+        feature.node.kubernetes.io/cpu-model.id: "17"
+        feature.node.kubernetes.io/cpu-model.hypervisor: none
+        kubernetes.io/arch: amd64
+        kubernetes.io/os: linux
+  taints: []
+  capacity:
+    cpu: {v: 384, src: "derived:amd9654#2 x 192 threads"}
+    memoryKi: {v: 1584000000, src: "assumed:placeholder, 1.5 TiB class node"}
+  reserved: {cpu: "2", memory: 1000Mi, src: "measured:nodedesc9654#capacity minus allocatable"}
+pci:
+  - {class: "0x030000", vendor: "0x1a03", src: "assumed:BMC VGA on a typical server board"}
+cpu:
+  vendorID: {v: AuthenticAMD, src: "assumed:x86 vendor string for AMD; kernel source not read"}
+  family: {v: 25, src: "published:hsmpdoc#Fam19h"}
+  model: {v: 17, src: "assumed:Genoa model in Fam19h 0x10-0x1f"}
+  stepping: {v: 1, src: "assumed:placeholder"}
+  modelName: {v: "AMD EPYC 9654 96-Core Processor", src: "assumed:cpuinfo name format; equals the AMD_EPYC_9654 alias of the hardware catalog, so the agent matches it"}
+  sockets: {v: 2, src: "assumed:generic 2S node"}
+  coresPerSocket: {v: 96, src: published:amd9654}
+  threadsPerCore: {v: 2, src: "derived:amd9654#192 threads / 96 cores"}
+  numbering: socket-major-smt-last
+  cpuMHz: {v: 1500.000, src: "assumed:lowest P-state reading"}
+powercap:
+  controlTypes:
+    - name: intel-rapl
+      zones:
+        - repeat: per-package
+          nameFormat: package-%d
+          enabled: {v: 0, src: "derived:raplcommon#1032-1049 PL1 cleared, 279-296 get_enable fails; powercapsys#420-441 prints 0"}
+          energyUnitNJ: {v: 15258, src: "assumed:ESU 16 (AMD PPR not read); formula published:raplcommon"}
+          constraints: {v: [], src: "published:raplcommon#1023-1049 constraints hidden without PL MSRs"}
+          children:
+            - {nameFormat: core, enabled: 0, energyUnitNJ: 15258, constraints: [], src: "published:raplmsr#PP0 status only; enabled per powercapsys"}
+cpufreq:
+  driver: {v: acpi-cpufreq, src: "measured:cpufreq9654#scaling_driver; amdpstate keeps amd-pstate off below family 0x1A (Genoa is 0x19), so acpicf binds"}
+  governor: {v: schedutil, src: measured:cpufreq9654}
+  availableGovernors: {v: "conservative ondemand userspace powersave performance schedutil", src: measured:cpufreq9654}
+  availableKHz: {v: [2400000, 1900000, 1500000], src: measured:cpufreq9654}
+  cpuinfoMaxKHz: {v: 3707812, src: "measured:cpufreq9654#includes boost, above the table"}
+  cpuinfoMinKHz: {v: 1500000, src: measured:cpufreq9654}
+  boost: {v: 1, src: measured:cpufreq9654}
+  policyGrouping: {v: per-cpu, src: "measured:cpufreq9654#related_cpus is the CPU itself"}
+physics:
+  cpu:
+    model: analytic
+    maxPkgW: {v: 360, src: "published:amd9654#Default TDP"}
+    idlePkgW: {v: 40, src: "assumed:bounded by spec01203 Active Idle 128 W for the whole node"}
+    alphaUtil: {v: 1.15, src: "assumed:simulator default SIM_ALPHA_UTIL"}
+    betaFreq: {v: 1.35, src: "assumed:simulator default SIM_BETA_FREQ"}
+    knee: {v: 0.7, src: "assumed:phys default knee of MeasuredCurveCPUModel"}
+    freqRampMS: {v: 500, src: "assumed:simulator default SIM_DVFS_RAMP_MS"}
+    coreFraction: {v: 0.7, src: "assumed:placeholder"}
+  dram: {wattsPerSocket: {v: 8, src: "assumed:placeholder"}}
+  platform: {otherW: {v: 0, src: "assumed:no psys zone"}}
+  rapl: {settleTau: timeWindow, floorW: {v: 0, src: "assumed:no limits on this platform"}}

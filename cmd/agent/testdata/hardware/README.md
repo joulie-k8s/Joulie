@@ -265,22 +265,32 @@ move to a repository of its own without the test being rewritten:
 JOULIE_HARDWARE_CORPUS=/path/to/corpus go test ./cmd/agent/ -run TestHardwareCorpusIsValid
 ```
 
-## The one input the corpus cannot replay
+## Host paths and the variables that redirect them
 
-`detectGPUVendor` stats `/dev/nvidiactl` through a literal path, with no
-variable to redirect the way `procCPUInfoPath` and `dvfs.PowercapRoot` can be
-redirected. On a host that has an NVIDIA driver installed, a machine captured
-without a GPU would be discovered as vendor `nvidia`, so its golden would
-describe the host rather than the fixture. The test skips such a machine on
-such a host and says so. To run or regenerate it there, either use a host
-without an NVIDIA driver, or run the command inside a clean `/dev`:
+Every host path the agent reads is a package variable, so a test points it at
+a capture instead of at the machine the test runs on:
 
-```sh
-bwrap --bind / / --dev /dev --chdir "$PWD" go test ./cmd/agent/ -run Corpus -update
-```
+| Variable | Production value | Redirected by |
+|---|---|---|
+| `dvfs.PowercapRoot` | `/host-sys/class/powercap` | `pointAgentAtFixture`, at a copy of the capture's `powercap/` |
+| `procCPUInfoPath` | `/proc/cpuinfo` | `pointAgentAtFixture`, at the capture's `cpuinfo` |
+| `cpufreqDriverPath` | `/host-sys/devices/system/cpu/cpufreq/policy0/scaling_driver` | `pointAgentAtFixture`, at `cpufreq-driver`, or at an absent path when the capture has none |
+| `nvidiaControlDevicePath` | `/dev/nvidiactl` | `hideHostGPUProbe`, at a marker file when the capture has `nvidia-smi.txt`, otherwise at an absent path |
+| `dvfs.HostSysRoot` | `/host-sys` | nothing in the corpus tests: discovery never reads it |
 
-Making that path a package variable would remove the caveat, and is the only
-non-test change this corpus would need.
+`detectGPUVendor` stats `nvidiaControlDevicePath` to decide whether the NVIDIA
+driver is loaded. Without `hideHostGPUProbe`, a machine captured without a GPU
+would be discovered as vendor `nvidia` on any host with a driver, and its golden
+would describe that host instead of the capture. `TestHardwareFixtureCorpus`
+redirects it for every machine, so the goldens replay and regenerate the same
+way on any host.
+
+`dvfs.HostSysRoot` is the root of the `/host-sys` globs that the DVFS loop
+reads: the cpufreq globs of `dvfs.CPUFreqList` and the
+`devices/virtual/powercap` globs of `dvfs.EnergyFiles`. A capture holds no
+cpufreq tree, so the corpus never sets it. A test that drives the DVFS loop over
+a whole `/sys` tree points it at that tree, and `dvfs.PowercapRoot` at the
+tree's `class/powercap`.
 
 ## The machines
 

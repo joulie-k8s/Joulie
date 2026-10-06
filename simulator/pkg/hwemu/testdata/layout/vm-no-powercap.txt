@@ -1,0 +1,7 @@
+bin R dir 0755
+cpuinfo R file 0444
+state R dir 0755
+state/.tmp R dir 0755
+state/hwemu.json R file 0444
+state/tools.json R file 0444
+sys R dir 0755

@@ -1,0 +1,103 @@
+# Two socket Intel Xeon Gold 6530 host (5th generation Xeon, Emerald Rapids)
+# with RAPL package limits through the MSR interface. The cpufreq values come
+# from a read-only dump of such a host: intel_pstate runs in passive mode, so
+# the policy driver is intel_cpufreq with the generic governors and no
+# frequency table.
+schemaVersion: 1
+name: intel-xeon-6530-2s-rapl
+description: Two socket Xeon Gold 6530, intel_cpufreq (intel_pstate passive), MSR RAPL PL1/PL2, disabled write-rejecting DRAM sub-zones.
+sources:
+  nodedesc6530: {kind: measured, ref: "read-only node description of a node with 2x Xeon Gold 6530, 2026-10", note: "capacity minus allocatable"}
+  cpufreq6530: {kind: measured, ref: "read-only dump of /sys/devices/system/cpu on one bare-metal node with 2x Xeon Gold 6530, 2026-10", note: "policy attributes identical on all 128 policies; intel_pstate/status passive, no_turbo 0; no global cpufreq/boost"}
+  ark6530:     {kind: published, ref: "https://www.intel.com/content/www/us/en/products/sku/237249/intel-xeon-gold-6530-processor-160m-cache-2-10-ghz/specifications.html", note: "32 cores, 64 threads, base 2.1 GHz, max turbo 4 GHz, TDP 270 W, products formerly Emerald Rapids, max CPU configuration 2S (fetched 2026-10-06)"}
+  cpuinfo6530: {kind: published, ref: "https://github.com/spcl/confidential-llms-in-tees/blob/bd3f2f681568268ed82fe64f27686f41b5f24ec0/CPU/sgx/cpuinfo.patch", note: "line 8, py-cpuinfo output of a 6530 host: vendor_id_raw GenuineIntel, brand_raw INTEL(R) XEON(R) GOLD 6530, family 6, model 207, stepping 2, count 128, hz_actual 800.0000 MHz, flags include hwp, hwp_act_window, hwp_epp and hwp_pkg_req"}
+  intelfamily: {kind: published, ref: "linux v7.3-rc5 arch/x86/include/asm/intel-family.h:125", note: "INTEL_EMERALDRAPIDS_X is IFM(6, 0xCF)"}
+  raplmsr:     {kind: published, ref: "linux v7.3-rc5 drivers/powercap/intel_rapl_msr.c:115,356-361,456", note: "INTEL_EMERALDRAPIDS_X takes rapl_defaults_spr_server, which sets no dram_domain_energy_unit; the package adds PL2 to PL1"}
+  raplcommon:  {kind: published, ref: "linux v7.3-rc5 drivers/powercap/intel_rapl_common.c:33,50,117-118,131-132,479-486,521-522,741,744,1016-1017"}
+  pstate:      {kind: published, ref: "linux v7.3-rc5 Documentation/admin-guide/pm/intel_pstate.rst:33-36,38-43,71-74,90-98,205-206", note: "no frequency table; one policy per logical CPU; active mode is the default with HWP and reports intel_pstate; it offers the powersave and performance algorithms and starts powersave unless CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE is set; passive mode is the default only without HWP"}
+  pstatec:     {kind: published, ref: "linux v7.3-rc5 drivers/cpufreq/intel_pstate.c:2682,3046-3048,3069,3690-3694,3788-3823", note: "every CPU with X86_FEATURE_HWP matches hwp_support_ids; with HWP and EPP present the default driver is intel_pstate; the policy falls back to powersave; cpuinfo_max_freq is the turbo frequency unless no_turbo"}
+  cpufreqcore: {kind: published, ref: "linux v7.3-rc5 drivers/cpufreq/cpufreq.c:841-849,1128-1139; drivers/cpufreq/Kconfig:41", note: "a setpolicy driver lists performance powersave; a default governor that is neither falls back to the driver's policy; schedutil is the default governor with X86_INTEL_PSTATE and SMP"}
+  nfdpstate:   {kind: published, ref: "https://github.com/kubernetes-sigs/node-feature-discovery/blob/afb7cded11605e79e10826ea2f07a5c229244ac0/source/cpu/pstate_amd64.go", note: "lines 42-67: status and turbo labels; lines 66-113: scaling_governor in active mode when every policy shares it"}
+  nfd:         {kind: published, ref: "https://kubernetes-sigs.github.io/node-feature-discovery/stable/reference/worker-configuration-reference.html", note: "deviceClassWhitelist [03, 0b40, 12]; deviceLabelFields [class, vendor]"}
+node:
+  nfd: present
+  labels:
+    cpu:
+      src: "assumed:NFD cpu label set of an Intel host; family 6 and id 207 (intelfamily, NFD prints the model in decimal), pstate status passive (measured:cpufreq6530) and turbo per nfdpstate, which publishes scaling_governor only in active mode"
+      values:
+        feature.node.kubernetes.io/cpu-model.vendor_id: Intel
+        feature.node.kubernetes.io/cpu-model.family: "6"
+        feature.node.kubernetes.io/cpu-model.id: "207"
+        feature.node.kubernetes.io/cpu-model.hypervisor: none
+        feature.node.kubernetes.io/cpu-hardware_multithreading: "true"
+        feature.node.kubernetes.io/cpu-pstate.status: passive
+        feature.node.kubernetes.io/cpu-pstate.turbo: "true"
+        kubernetes.io/arch: amd64
+        kubernetes.io/os: linux
+  taints: []
+  capacity:
+    cpu: {v: 128, src: "derived:ark6530#2 sockets x 32 cores x 2 threads"}
+    memoryKi: {v: 1073741824, src: "assumed:placeholder, 1 TiB"}
+  reserved: {cpu: "2", memory: 1000Mi, src: "measured:nodedesc6530#capacity minus allocatable"}
+pci:
+  - {class: "0x030000", vendor: "0x1a03", src: "assumed:BMC VGA on a typical server board"}
+cpu:
+  vendorID: {v: GenuineIntel, src: "published:cpuinfo6530#vendor_id_raw"}
+  family: {v: 6, src: "published:intelfamily#IFM(6, 0xCF)"}
+  model: {v: 207, src: "published:intelfamily#0xCF"}
+  stepping: {v: 2, src: "published:cpuinfo6530#stepping"}
+  modelName: {v: "INTEL(R) XEON(R) GOLD 6530", src: "published:cpuinfo6530#brand_raw; equals the INTEL_XEON_GOLD_6530 alias of the hardware catalog, so the agent matches it"}
+  sockets: {v: 2, src: "assumed:generic 2S node, the largest configuration ark6530 lists"}
+  coresPerSocket: {v: 32, src: published:ark6530}
+  threadsPerCore: {v: 2, src: "derived:ark6530#64 threads / 32 cores"}
+  numbering: socket-major-smt-last
+  cpuMHz: {v: 800.000, src: "published:cpuinfo6530#hz_actual 800.0000 MHz"}
+powercap:
+  controlTypes:
+    - name: intel-rapl
+      zones:
+        - repeat: per-package
+          nameFormat: package-%d
+          enabled: {v: 1, src: "assumed:PL1 enabled by firmware"}
+          energyUnitNJ: {v: 61035, src: "assumed:ESU 14 in MSR_RAPL_POWER_UNIT as on the corpus Xeon capture, not published for this part; unit 1e9>>ESU per raplcommon:741"}
+          powerUnitUW: {v: 125000, src: "assumed:PU 3 in MSR_RAPL_POWER_UNIT as on the corpus Xeon capture, not published for this part; unit 1e6>>PU per raplcommon:744"}
+          constraints:
+            - name: long_term
+              src: "assumed:firmware sets PL1 to the TDP with the corpus Xeon capture's 1 s window, unlocked"
+              powerLimitUW: 270000000
+              maxPowerUW: {v: 270000000, src: "derived:ark6530#TDP 270 W, which PL1 max_power reports as THERMAL_SPEC_POWER (raplcommon:117-118)"}
+              timeWindowUS: 999424
+              rejectWrites: ""
+            - name: short_term
+              src: "assumed:PL2 at 1.2 x TDP and MAX_POWER of MSR_PKG_POWER_INFO at 2.5 x TDP, the ratios of the corpus Xeon capture (198 W and 413 W over 165 W), with its 976 us window; neither is published for this part"
+              powerLimitUW: 324000000
+              maxPowerUW: 675000000
+              timeWindowUS: 976
+              rejectWrites: ""
+          children:
+            - nameFormat: dram
+              enabled: {v: 0, src: "assumed:DRAM limit left disabled by firmware, as on the corpus Xeon capture"}
+              energyUnitNJ: {v: 61035, src: "derived:raplmsr#rapl_defaults_spr_server sets no dram_domain_energy_unit, so DRAM keeps the package unit (raplcommon:1016-1017)"}
+              constraints:
+                - {src: "assumed:DRAM keeps PL1 only (raplcommon:521-522); MSR_DRAM_POWER_INFO is not published, so the corpus Xeon capture's disabled, write-rejecting limit is kept", name: long_term, powerLimitUW: 0, maxPowerUW: 47250000, timeWindowUS: 976, rejectWrites: disabled}
+cpufreq:
+  driver: {v: intel_cpufreq, src: "measured:cpufreq6530#scaling_driver; intel_pstate in passive mode (pstate#205-216)"}
+  governor: {v: schedutil, src: measured:cpufreq6530}
+  availableGovernors: {v: "conservative ondemand userspace powersave performance schedutil", src: measured:cpufreq6530}
+  cpuinfoMaxKHz: {v: 4000000, src: "measured:cpufreq6530#equals the ark6530 Max Turbo Frequency"}
+  cpuinfoMinKHz: {v: 800000, src: measured:cpufreq6530}
+  policyGrouping: {v: per-cpu, src: "measured:cpufreq6530#related_cpus is the CPU itself"}
+physics:
+  cpu:
+    model: analytic
+    maxPkgW: {v: 270, src: published:ark6530}
+    idlePkgW: {v: 50, src: "assumed:no public package idle figure"}
+    alphaUtil: {v: 1.15, src: "assumed:simulator default SIM_ALPHA_UTIL"}
+    betaFreq: {v: 1.35, src: "assumed:simulator default SIM_BETA_FREQ"}
+    knee: {v: 0.7, src: "assumed:phys default knee of MeasuredCurveCPUModel"}
+    freqRampMS: {v: 500, src: "assumed:simulator default SIM_DVFS_RAMP_MS"}
+  dram: {wattsPerSocket: {v: 8, src: "assumed:placeholder, no public DRAM figure"}}
+  platform: {otherW: {v: 0, src: "assumed:no psys zone in this profile; rapl_defaults_spr_server can register one (raplmsr:360-361), depending on firmware"}}
+  rapl:
+    settleTau: timeWindow
+    floorW: {v: 0, src: "assumed:MIN_POWER is not exposed in sysfs (raplcommon:479-486); only the frequency floor applies"}

@@ -1,0 +1,248 @@
+bin R dir 0755
+bin/amd-smi R link 0777 -> /emu/lib/fakesmi
+bin/rocm-smi R link 0777 -> /emu/lib/fakesmi
+cpuinfo R file 0444
+state R dir 0755
+state/.tmp R dir 0755
+state/amdgpu R dir 0755
+state/amdgpu/card1 R dir 0755
+state/amdgpu/card1/gfx_version R file 0444
+state/amdgpu/card2 R dir 0755
+state/amdgpu/card2/gfx_version R file 0444
+state/amdgpu/card3 R dir 0755
+state/amdgpu/card3/gfx_version R file 0444
+state/amdgpu/card4 R dir 0755
+state/amdgpu/card4/gfx_version R file 0444
+state/amdgpu/card5 R dir 0755
+state/amdgpu/card5/gfx_version R file 0444
+state/amdgpu/card6 R dir 0755
+state/amdgpu/card6/gfx_version R file 0444
+state/amdgpu/card7 R dir 0755
+state/amdgpu/card7/gfx_version R file 0444
+state/amdgpu/card8 R dir 0755
+state/amdgpu/card8/gfx_version R file 0444
+state/hwemu.json R file 0444
+state/tools.json R file 0444
+sys R dir 0755
+sys/class R dir 0755
+sys/class/drm R dir 0755
+sys/class/drm/card0 R link 0777 -> ../../devices/pci0000:02/0000:02:00.0/drm/card0
+sys/class/drm/card1 R link 0777 -> ../../devices/pci0000:10/0000:10:00.0/drm/card1
+sys/class/drm/card2 R link 0777 -> ../../devices/pci0000:11/0000:11:00.0/drm/card2
+sys/class/drm/card3 R link 0777 -> ../../devices/pci0000:12/0000:12:00.0/drm/card3
+sys/class/drm/card4 R link 0777 -> ../../devices/pci0000:13/0000:13:00.0/drm/card4
+sys/class/drm/card5 R link 0777 -> ../../devices/pci0000:14/0000:14:00.0/drm/card5
+sys/class/drm/card6 R link 0777 -> ../../devices/pci0000:15/0000:15:00.0/drm/card6
+sys/class/drm/card7 R link 0777 -> ../../devices/pci0000:16/0000:16:00.0/drm/card7
+sys/class/drm/card8 R link 0777 -> ../../devices/pci0000:17/0000:17:00.0/drm/card8
+sys/class/hwmon R dir 0755
+sys/class/hwmon/hwmon2 R link 0777 -> ../../devices/pci0000:10/0000:10:00.0/hwmon/hwmon2
+sys/class/hwmon/hwmon3 R link 0777 -> ../../devices/pci0000:11/0000:11:00.0/hwmon/hwmon3
+sys/class/hwmon/hwmon4 R link 0777 -> ../../devices/pci0000:12/0000:12:00.0/hwmon/hwmon4
+sys/class/hwmon/hwmon5 R link 0777 -> ../../devices/pci0000:13/0000:13:00.0/hwmon/hwmon5
+sys/class/hwmon/hwmon6 R link 0777 -> ../../devices/pci0000:14/0000:14:00.0/hwmon/hwmon6
+sys/class/hwmon/hwmon7 R link 0777 -> ../../devices/pci0000:15/0000:15:00.0/hwmon/hwmon7
+sys/class/hwmon/hwmon8 R link 0777 -> ../../devices/pci0000:16/0000:16:00.0/hwmon/hwmon8
+sys/class/hwmon/hwmon9 R link 0777 -> ../../devices/pci0000:17/0000:17:00.0/hwmon/hwmon9
+sys/class/powercap R dir 0755
+sys/class/powercap/intel-rapl R link 0777 -> ../../devices/virtual/powercap/intel-rapl
+sys/class/powercap/intel-rapl:0 R link 0777 -> ../../devices/virtual/powercap/intel-rapl/intel-rapl:0
+sys/class/powercap/intel-rapl:0:0 R link 0777 -> ../../devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0
+sys/class/powercap/intel-rapl:1 R link 0777 -> ../../devices/virtual/powercap/intel-rapl/intel-rapl:1
+sys/class/powercap/intel-rapl:1:0 R link 0777 -> ../../devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0
+sys/devices R dir 0755
+sys/devices/pci0000:02 R dir 0755
+sys/devices/pci0000:02/0000:02:00.0 R dir 0755
+sys/devices/pci0000:02/0000:02:00.0/class R file 0444
+sys/devices/pci0000:02/0000:02:00.0/drm R dir 0755
+sys/devices/pci0000:02/0000:02:00.0/drm/card0 R dir 0755
+sys/devices/pci0000:02/0000:02:00.0/drm/card0/device R link 0777 -> ../../../0000:02:00.0
+sys/devices/pci0000:02/0000:02:00.0/vendor R file 0444
+sys/devices/pci0000:10 R dir 0755
+sys/devices/pci0000:10/0000:10:00.0 R dir 0755
+sys/devices/pci0000:10/0000:10:00.0/class R file 0444
+sys/devices/pci0000:10/0000:10:00.0/device R file 0444
+sys/devices/pci0000:10/0000:10:00.0/drm R dir 0755
+sys/devices/pci0000:10/0000:10:00.0/drm/card1 R dir 0755
+sys/devices/pci0000:10/0000:10:00.0/drm/card1/device R link 0777 -> ../../../0000:10:00.0
+sys/devices/pci0000:10/0000:10:00.0/hwmon R dir 0755
+sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2 R dir 0755
+sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2/name R file 0444
+sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2/power1_cap A file 0644
+sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2/power1_cap_default R file 0444
+sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2/power1_cap_max R file 0444
+sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2/power1_cap_min R file 0444
+sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2/power1_input S file 0444
+sys/devices/pci0000:10/0000:10:00.0/product_name R file 0444
+sys/devices/pci0000:10/0000:10:00.0/vbios_version R file 0444
+sys/devices/pci0000:10/0000:10:00.0/vendor R file 0444
+sys/devices/pci0000:11 R dir 0755
+sys/devices/pci0000:11/0000:11:00.0 R dir 0755
+sys/devices/pci0000:11/0000:11:00.0/class R file 0444
+sys/devices/pci0000:11/0000:11:00.0/device R file 0444
+sys/devices/pci0000:11/0000:11:00.0/drm R dir 0755
+sys/devices/pci0000:11/0000:11:00.0/drm/card2 R dir 0755
+sys/devices/pci0000:11/0000:11:00.0/drm/card2/device R link 0777 -> ../../../0000:11:00.0
+sys/devices/pci0000:11/0000:11:00.0/hwmon R dir 0755
+sys/devices/pci0000:11/0000:11:00.0/hwmon/hwmon3 R dir 0755
+sys/devices/pci0000:11/0000:11:00.0/hwmon/hwmon3/name R file 0444
+sys/devices/pci0000:11/0000:11:00.0/hwmon/hwmon3/power1_cap A file 0644
+sys/devices/pci0000:11/0000:11:00.0/hwmon/hwmon3/power1_cap_default R file 0444
+sys/devices/pci0000:11/0000:11:00.0/hwmon/hwmon3/power1_cap_max R file 0444
+sys/devices/pci0000:11/0000:11:00.0/hwmon/hwmon3/power1_cap_min R file 0444
+sys/devices/pci0000:11/0000:11:00.0/hwmon/hwmon3/power1_input S file 0444
+sys/devices/pci0000:11/0000:11:00.0/product_name R file 0444
+sys/devices/pci0000:11/0000:11:00.0/vbios_version R file 0444
+sys/devices/pci0000:11/0000:11:00.0/vendor R file 0444
+sys/devices/pci0000:12 R dir 0755
+sys/devices/pci0000:12/0000:12:00.0 R dir 0755
+sys/devices/pci0000:12/0000:12:00.0/class R file 0444
+sys/devices/pci0000:12/0000:12:00.0/device R file 0444
+sys/devices/pci0000:12/0000:12:00.0/drm R dir 0755
+sys/devices/pci0000:12/0000:12:00.0/drm/card3 R dir 0755
+sys/devices/pci0000:12/0000:12:00.0/drm/card3/device R link 0777 -> ../../../0000:12:00.0
+sys/devices/pci0000:12/0000:12:00.0/hwmon R dir 0755
+sys/devices/pci0000:12/0000:12:00.0/hwmon/hwmon4 R dir 0755
+sys/devices/pci0000:12/0000:12:00.0/hwmon/hwmon4/name R file 0444
+sys/devices/pci0000:12/0000:12:00.0/hwmon/hwmon4/power1_cap A file 0644
+sys/devices/pci0000:12/0000:12:00.0/hwmon/hwmon4/power1_cap_default R file 0444
+sys/devices/pci0000:12/0000:12:00.0/hwmon/hwmon4/power1_cap_max R file 0444
+sys/devices/pci0000:12/0000:12:00.0/hwmon/hwmon4/power1_cap_min R file 0444
+sys/devices/pci0000:12/0000:12:00.0/hwmon/hwmon4/power1_input S file 0444
+sys/devices/pci0000:12/0000:12:00.0/product_name R file 0444
+sys/devices/pci0000:12/0000:12:00.0/vbios_version R file 0444
+sys/devices/pci0000:12/0000:12:00.0/vendor R file 0444
+sys/devices/pci0000:13 R dir 0755
+sys/devices/pci0000:13/0000:13:00.0 R dir 0755
+sys/devices/pci0000:13/0000:13:00.0/class R file 0444
+sys/devices/pci0000:13/0000:13:00.0/device R file 0444
+sys/devices/pci0000:13/0000:13:00.0/drm R dir 0755
+sys/devices/pci0000:13/0000:13:00.0/drm/card4 R dir 0755
+sys/devices/pci0000:13/0000:13:00.0/drm/card4/device R link 0777 -> ../../../0000:13:00.0
+sys/devices/pci0000:13/0000:13:00.0/hwmon R dir 0755
+sys/devices/pci0000:13/0000:13:00.0/hwmon/hwmon5 R dir 0755
+sys/devices/pci0000:13/0000:13:00.0/hwmon/hwmon5/name R file 0444
+sys/devices/pci0000:13/0000:13:00.0/hwmon/hwmon5/power1_cap A file 0644
+sys/devices/pci0000:13/0000:13:00.0/hwmon/hwmon5/power1_cap_default R file 0444
+sys/devices/pci0000:13/0000:13:00.0/hwmon/hwmon5/power1_cap_max R file 0444
+sys/devices/pci0000:13/0000:13:00.0/hwmon/hwmon5/power1_cap_min R file 0444
+sys/devices/pci0000:13/0000:13:00.0/hwmon/hwmon5/power1_input S file 0444
+sys/devices/pci0000:13/0000:13:00.0/product_name R file 0444
+sys/devices/pci0000:13/0000:13:00.0/vbios_version R file 0444
+sys/devices/pci0000:13/0000:13:00.0/vendor R file 0444
+sys/devices/pci0000:14 R dir 0755
+sys/devices/pci0000:14/0000:14:00.0 R dir 0755
+sys/devices/pci0000:14/0000:14:00.0/class R file 0444
+sys/devices/pci0000:14/0000:14:00.0/device R file 0444
+sys/devices/pci0000:14/0000:14:00.0/drm R dir 0755
+sys/devices/pci0000:14/0000:14:00.0/drm/card5 R dir 0755
+sys/devices/pci0000:14/0000:14:00.0/drm/card5/device R link 0777 -> ../../../0000:14:00.0
+sys/devices/pci0000:14/0000:14:00.0/hwmon R dir 0755
+sys/devices/pci0000:14/0000:14:00.0/hwmon/hwmon6 R dir 0755
+sys/devices/pci0000:14/0000:14:00.0/hwmon/hwmon6/name R file 0444
+sys/devices/pci0000:14/0000:14:00.0/hwmon/hwmon6/power1_cap A file 0644
+sys/devices/pci0000:14/0000:14:00.0/hwmon/hwmon6/power1_cap_default R file 0444
+sys/devices/pci0000:14/0000:14:00.0/hwmon/hwmon6/power1_cap_max R file 0444
+sys/devices/pci0000:14/0000:14:00.0/hwmon/hwmon6/power1_cap_min R file 0444
+sys/devices/pci0000:14/0000:14:00.0/hwmon/hwmon6/power1_input S file 0444
+sys/devices/pci0000:14/0000:14:00.0/product_name R file 0444
+sys/devices/pci0000:14/0000:14:00.0/vbios_version R file 0444
+sys/devices/pci0000:14/0000:14:00.0/vendor R file 0444
+sys/devices/pci0000:15 R dir 0755
+sys/devices/pci0000:15/0000:15:00.0 R dir 0755
+sys/devices/pci0000:15/0000:15:00.0/class R file 0444
+sys/devices/pci0000:15/0000:15:00.0/device R file 0444
+sys/devices/pci0000:15/0000:15:00.0/drm R dir 0755
+sys/devices/pci0000:15/0000:15:00.0/drm/card6 R dir 0755
+sys/devices/pci0000:15/0000:15:00.0/drm/card6/device R link 0777 -> ../../../0000:15:00.0
+sys/devices/pci0000:15/0000:15:00.0/hwmon R dir 0755
+sys/devices/pci0000:15/0000:15:00.0/hwmon/hwmon7 R dir 0755
+sys/devices/pci0000:15/0000:15:00.0/hwmon/hwmon7/name R file 0444
+sys/devices/pci0000:15/0000:15:00.0/hwmon/hwmon7/power1_cap A file 0644
+sys/devices/pci0000:15/0000:15:00.0/hwmon/hwmon7/power1_cap_default R file 0444
+sys/devices/pci0000:15/0000:15:00.0/hwmon/hwmon7/power1_cap_max R file 0444
+sys/devices/pci0000:15/0000:15:00.0/hwmon/hwmon7/power1_cap_min R file 0444
+sys/devices/pci0000:15/0000:15:00.0/hwmon/hwmon7/power1_input S file 0444
+sys/devices/pci0000:15/0000:15:00.0/product_name R file 0444
+sys/devices/pci0000:15/0000:15:00.0/vbios_version R file 0444
+sys/devices/pci0000:15/0000:15:00.0/vendor R file 0444
+sys/devices/pci0000:16 R dir 0755
+sys/devices/pci0000:16/0000:16:00.0 R dir 0755
+sys/devices/pci0000:16/0000:16:00.0/class R file 0444
+sys/devices/pci0000:16/0000:16:00.0/device R file 0444
+sys/devices/pci0000:16/0000:16:00.0/drm R dir 0755
+sys/devices/pci0000:16/0000:16:00.0/drm/card7 R dir 0755
+sys/devices/pci0000:16/0000:16:00.0/drm/card7/device R link 0777 -> ../../../0000:16:00.0
+sys/devices/pci0000:16/0000:16:00.0/hwmon R dir 0755
+sys/devices/pci0000:16/0000:16:00.0/hwmon/hwmon8 R dir 0755
+sys/devices/pci0000:16/0000:16:00.0/hwmon/hwmon8/name R file 0444
+sys/devices/pci0000:16/0000:16:00.0/hwmon/hwmon8/power1_cap A file 0644
+sys/devices/pci0000:16/0000:16:00.0/hwmon/hwmon8/power1_cap_default R file 0444
+sys/devices/pci0000:16/0000:16:00.0/hwmon/hwmon8/power1_cap_max R file 0444
+sys/devices/pci0000:16/0000:16:00.0/hwmon/hwmon8/power1_cap_min R file 0444
+sys/devices/pci0000:16/0000:16:00.0/hwmon/hwmon8/power1_input S file 0444
+sys/devices/pci0000:16/0000:16:00.0/product_name R file 0444
+sys/devices/pci0000:16/0000:16:00.0/vbios_version R file 0444
+sys/devices/pci0000:16/0000:16:00.0/vendor R file 0444
+sys/devices/pci0000:17 R dir 0755
+sys/devices/pci0000:17/0000:17:00.0 R dir 0755
+sys/devices/pci0000:17/0000:17:00.0/class R file 0444
+sys/devices/pci0000:17/0000:17:00.0/device R file 0444
+sys/devices/pci0000:17/0000:17:00.0/drm R dir 0755
+sys/devices/pci0000:17/0000:17:00.0/drm/card8 R dir 0755
+sys/devices/pci0000:17/0000:17:00.0/drm/card8/device R link 0777 -> ../../../0000:17:00.0
+sys/devices/pci0000:17/0000:17:00.0/hwmon R dir 0755
+sys/devices/pci0000:17/0000:17:00.0/hwmon/hwmon9 R dir 0755
+sys/devices/pci0000:17/0000:17:00.0/hwmon/hwmon9/name R file 0444
+sys/devices/pci0000:17/0000:17:00.0/hwmon/hwmon9/power1_cap A file 0644
+sys/devices/pci0000:17/0000:17:00.0/hwmon/hwmon9/power1_cap_default R file 0444
+sys/devices/pci0000:17/0000:17:00.0/hwmon/hwmon9/power1_cap_max R file 0444
+sys/devices/pci0000:17/0000:17:00.0/hwmon/hwmon9/power1_cap_min R file 0444
+sys/devices/pci0000:17/0000:17:00.0/hwmon/hwmon9/power1_input S file 0444
+sys/devices/pci0000:17/0000:17:00.0/product_name R file 0444
+sys/devices/pci0000:17/0000:17:00.0/vbios_version R file 0444
+sys/devices/pci0000:17/0000:17:00.0/vendor R file 0444
+sys/devices/system R dir 0755
+sys/devices/system/cpu R dir 0755
+sys/devices/system/cpu/cpufreq R dir 0755
+sys/devices/system/cpu/cpufreq/boost A file 0644
+sys/devices/system/cpu/cpufreq/policy{N} R dir 0755 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/affected_cpus R file 0444 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_max_freq R file 0444 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_min_freq R file 0444 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_transition_latency R file 0444 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/related_cpus R file 0444 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_available_frequencies R file 0444 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_available_governors R file 0444 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_cur_freq S file 0444 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_driver R file 0444 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_governor A file 0644 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_max_freq A file 0644 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_min_freq A file 0644 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_setspeed R file 0644 [N=0-383]
+sys/devices/system/cpu/cpu{N} R dir 0755 [N=0-383]
+sys/devices/system/cpu/cpu{N}/cpufreq R link 0777 -> ../cpufreq/policy{N} [N=0-383]
+sys/devices/virtual R dir 0755
+sys/devices/virtual/powercap R dir 0755
+sys/devices/virtual/powercap/intel-rapl R dir 0755
+sys/devices/virtual/powercap/intel-rapl/enabled A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0 R dir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/enabled R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj S file 0400
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0 R dir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/enabled R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/energy_uj S file 0400
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/max_energy_range_uj R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/max_energy_range_uj R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1 R dir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/enabled R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/energy_uj S file 0400
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0 R dir 0755
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/enabled R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/energy_uj S file 0400
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/max_energy_range_uj R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/name R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/max_energy_range_uj R file 0444
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/name R file 0444
