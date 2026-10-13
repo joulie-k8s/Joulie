@@ -211,9 +211,11 @@ assert_count() {
 
 # doc prints the one rendered document of a Kind and name, empty when there is
 # none, so an assertion about a Deployment cannot match a ConfigMap's text.
+# Blank lines at the end of a document are dropped: Helm 4.3 separates
+# documents with them and 4.1 does not, and they are not part of the spec.
 doc() {
 	awk -v want="$2/$3" '
-		function flush() { if (kind "/" name == want) printf "%s", buf; buf=""; kind=""; name=""; inmeta=0 }
+		function flush() { sub(/\n+$/, "\n", buf); if (kind "/" name == want) printf "%s", buf; buf=""; kind=""; name=""; inmeta=0 }
 		/^---[[:space:]]*$/ { flush(); next }
 		{ buf = buf $0 "\n" }
 		/^kind:[[:space:]]/ { kind=$2; inmeta=0; next }

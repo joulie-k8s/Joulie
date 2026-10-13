@@ -112,7 +112,7 @@ In this example:
 
 ## Governor policy
 
-Off by default (`GOVERNOR_CONTROL=off`); see [Governor control]({{< relref "/docs/getting-started/05-configuration-reference.md#governor-control" >}}) for the variables. A governor is its own axis, separate from the caps: one vendor-neutral preset per component, which the agent maps to the node's native settings. The preset follows the profile the node runs at, so a draining node keeps the performance presets, as it keeps the performance caps. Pod classes (`joulie.io/workload-class`) only steer placement.
+A governor decides how eagerly a CPU or GPU raises its clocks. It saves less than a cap and slows work less. Joulie sets one vendor-neutral preset per component, which the agent maps to the node's native settings. The preset follows the profile the node runs at, so a draining node keeps the performance presets, as it keeps the performance caps. Pod classes (`joulie.io/workload-class`) only steer placement. Off by default (`GOVERNOR_CONTROL=off`); see [Governor control]({{< relref "/docs/getting-started/05-configuration-reference.md#governor-control" >}}) for the variables.
 
 | Node state | CPU-only node: `spec.cpu.governor` | GPU node: `spec.cpu.governor` | `spec.gpu.governor` | Why |
 |---|---|---|---|---|
