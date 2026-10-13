@@ -8,8 +8,9 @@ import (
 )
 
 // simulatorAnalyticPower is the analytic branch of cpuPowerWithModel in
-// simulator/cmd/simulator, with the model and node fields as arguments, kept
-// here as the reference for the move.
+// simulator/cmd/simulator as it was before F2, with the model and node fields
+// as arguments. Since F2 the simulator calls AnalyticCPUModel instead, and this
+// copy stays as the reference for the move.
 func simulatorAnalyticPower(baseIdleW, pMaxW, alphaUtil, betaFreq, cpuUtil, freqScale, memoryIntensity, ioIntensity, thermalThrottle float64) float64 {
 	util := clamp01(cpuUtil)
 	freq := clamp01(freqScale)
@@ -28,9 +29,12 @@ func simulatorAnalyticPower(baseIdleW, pMaxW, alphaUtil, betaFreq, cpuUtil, freq
 	return p
 }
 
-// simulatorSolveFreqScaleForCap is the analytic branch of
-// solveFreqScaleForCap in simulator/cmd/simulator, with minFreqScale(model)
-// passed in.
+// simulatorSolveFreqScaleForCap is the analytic branch of the simulator's
+// solveFreqScaleForCap, with minFreqScale(model) passed in. F2 deleted that
+// function, and the simulator now calls SolveFreqScaleForCap; this copy stays
+// as the reference for the closed form. It ignores the activity factor, so
+// the reference passes util x activity as util (FC04 in
+// simulator/cmd/simulator/fxcode_regression_test.go).
 func simulatorSolveFreqScaleForCap(baseIdleW, pMaxW, alphaUtil, betaFreq, util, capW, minFreq float64) float64 {
 	util = clamp01(util)
 	if util <= 0 || pMaxW <= baseIdleW {
@@ -57,7 +61,7 @@ func simulatorSolveFreqScaleForCap(baseIdleW, pMaxW, alphaUtil, betaFreq, util, 
 
 // P01: AnalyticCPUModel.Power is the simulator formula moved verbatim, activity
 // and thermal factors included. A few points are evaluated by hand, the rest
-// of the grid against the formula as main.go writes it.
+// of the grid against the formula as main.go wrote it before F2.
 func TestP01AnalyticPowerIsTheSimulatorFormula(t *testing.T) {
 	m := AnalyticCPUModel{IdleW: 40, MaxW: 165, AlphaUtil: 1.15, BetaFreq: 1.35, Knee: 0.7}
 	byHand := []struct {
@@ -121,9 +125,12 @@ func TestP02FirstOrderTowardIsAClampedEulerStep(t *testing.T) {
 }
 
 // H15: the solver throttles a curve model (D13 in cmd/agent/hwemu_test.go:
-// the simulator's bisection passes CapWatts, the curve clamps to it, so p >
-// capW never holds and the scale stays at 1), and the analytic closed form is
-// the simulator's.
+// the simulator's own bisection passed CapWatts, the curve clamped to it, so
+// p > capW never held and the scale stayed at 1), and the analytic closed form
+// is the one the simulator had before F2 switched it to this solver, with the
+// activity factor in its utilization. At memory intensity 0.4 the old form
+// left it out, so a capped node drew below its cap (FC04); the
+// power at a solved scale of at most 1, for a cap above idle, is now the cap.
 func TestH15SolveFreqScaleForCapThrottlesCurveModels(t *testing.T) {
 	curve := MeasuredCurveCPUModel{
 		Points: []hw.PowerPoint{{LoadPct: 0, PowerW: 100}, {LoadPct: 50, PowerW: 300}, {LoadPct: 100, PowerW: 700}},
@@ -166,10 +173,18 @@ func TestH15SolveFreqScaleForCapThrottlesCurveModels(t *testing.T) {
 	for _, m := range []AnalyticCPUModel{{IdleW: 40, MaxW: 165, AlphaUtil: 1.15, BetaFreq: 1.35}, {IdleW: 80, MaxW: 420}, {IdleW: 50, MaxW: 50}} {
 		for _, util := range []float64{0, 0.25, 0.6, 1} {
 			for _, capW := range []float64{20, 60, 100, 150, 400} {
-				want := simulatorSolveFreqScaleForCap(m.IdleW, m.MaxW, m.AlphaUtil, m.BetaFreq, util, capW, 0.375)
+				const activity = 1 - 0.30*0.4
+				want := simulatorSolveFreqScaleForCap(m.IdleW, m.MaxW, m.AlphaUtil, m.BetaFreq, util*activity, capW, 0.375)
 				s := DeviceState{Utilization: util, FreqScale: 1, MemoryIntensity: 0.4}
-				if got := SolveFreqScaleForCap(m, s, capW, 0.375); got != want {
-					t.Errorf("%+v util %v cap %v: closed form = %v, want main.go's %v", m, util, capW, got, want)
+				got := SolveFreqScaleForCap(m, s, capW, 0.375)
+				if got != want {
+					t.Errorf("%+v util %v cap %v: closed form = %v, want main.go's %v at util x activity", m, util, capW, got, want)
+				}
+				if at := s; util > 0 && capW > m.IdleW && got <= 1 && m.MaxW > m.IdleW {
+					at.FreqScale = got
+					if p := m.Power(at); math.Abs(p-capW) > 1e-9*capW {
+						t.Errorf("%+v util %v memory 0.4: power at the solved scale %v is %v W, want the cap %v W", m, util, got, p, capW)
+					}
 				}
 				if got := SolveFreqScaleForCap(&m, s, capW, 0.375); got != want {
 					t.Errorf("pointer %+v util %v cap %v: closed form = %v, want %v", m, util, capW, got, want)

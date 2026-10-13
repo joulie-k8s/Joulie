@@ -152,6 +152,29 @@ type HSMPSpec struct {
 	CapDefaultUW Fact[int64]  `json:"capDefaultUW"`
 }
 
+// GPUTool is a GPU tool on the node's PATH and the variant of it fakesmi
+// emulates (package smi). Requires lists, in order, the files the real tool
+// needs before it runs; Render copies them to state/tools.json without their
+// sources, and fakesmi checks them under its root file system.
+type GPUTool struct {
+	Name     string               `json:"name"`
+	Variant  string               `json:"variant"`
+	Requires []GPUToolRequirement `json:"requires,omitempty"`
+}
+
+// GPUToolRequirement is one file a real tool needs before it runs, such as
+// the ELF loader of nvidia-smi or the interpreter of rocm-smi's script.
+// Paths are absolute in the agent container, and one of them existing
+// satisfies the requirement. When none exists, the tool prints Stderr, if
+// any, and exits with Exit. Src is the provenance of the whole entry, as a
+// LabelGroup's is, so the entry is kept as written when the profile loads.
+type GPUToolRequirement struct {
+	Paths  []string `json:"paths"`
+	Exit   int      `json:"exit"`
+	Stderr string   `json:"stderr,omitempty"`
+	Src    string   `json:"src"`
+}
+
 // GPUSpec describes the node's GPUs, how Kubernetes sees them and which tool
 // variants report on them.
 type GPUSpec struct {
@@ -178,10 +201,7 @@ type GPUSpec struct {
 	TimesliceReplicas int               `json:"timesliceReplicas"`
 	FieldSupport      map[string]string `json:"fieldSupport"`
 	SecondaryDies     []int             `json:"secondaryDies"`
-	Tools             []struct {
-		Name    string `json:"name"`
-		Variant string `json:"variant"`
-	} `json:"tools"`
+	Tools             []GPUTool         `json:"tools"`
 	// PersistenceMode is PersistenceEnabled or PersistenceDisabled, NVIDIA
 	// only. With persistence off, the driver unloads when no client holds
 	// the GPU, and the power limit goes back to its default.
@@ -292,17 +312,22 @@ type State struct {
 // ComponentState is one component of a node: a CPU package (Type cpu, ID
 // cpu<socket>, Name package-<socket>), its DRAM zone (memory,
 // memory<socket>, dram, Parent cpu<socket>) or a GPU (gpu, gpu<index>, the
-// product name). Index is the socket or the GPU index; SysfsPath is the
-// component's powercap zone or PCI device, relative to sys/.
+// product name). Vendor and Model are set for CPU packages (Intel or AMD,
+// the cpuinfo model name) and GPUs; UUID and PCIBusID are a GPU's as its
+// tool prints them. Index is the socket or the GPU index; SysfsPath is the
+// component's powercap zone or PCI device, relative to sys/, and empty when
+// the tree has none, as for an NVIDIA GPU, whose state is NVML state.
 //
 // EnergyJ integrates PowerW since the Node started; DeviceEnergyJ is the
 // GPU's own counter, total_energy_mj / 1000. LimitW is the limit in effect
 // and RequestedLimitW the one written; both are 0 without a power limit.
 // SpeedHz, SpeedMaxHz and SpeedLimitHz are a package's current, hardware
-// maximum and effective maximum frequency, from cpufreq. Utilization is in
-// 0..1. Measured says a real collector could read the component's energy or
-// power: a package or DRAM zone with energy_uj, an NVIDIA GPU with
-// total_energy_mj, an AMD GPU with power1_average.
+// maximum and effective maximum frequency, from cpufreq: the mean
+// scaling_cur_freq, the cpuinfo_max_freq and the mean resolved
+// scaling_max_freq of its policies. Utilization is in 0..1. Measured says a
+// real collector could read the component's energy or power: a package or
+// DRAM zone with energy_uj, an NVIDIA GPU with total_energy_mj, an AMD GPU
+// with power1_input or power1_average.
 type ComponentState struct {
 	ID              string
 	Type            string
@@ -359,8 +384,9 @@ type GPUState struct {
 }
 
 // Event records what a step did with a file. Kind is one of the Event*
-// kinds. Component is the hw.id of the component the file belongs to, such
-// as cpu1 or gpu3, and empty for a file of the whole node.
+// kinds. Component is the hw.id of the component whose directory holds the
+// file, such as cpu1 for a policy of socket 1 or gpu3 for its NVML state,
+// and empty for any other file (Components in the package doc).
 type Event struct {
 	Time      time.Time `json:"time"`
 	File      string    `json:"file"`

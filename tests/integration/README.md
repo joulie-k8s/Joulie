@@ -43,7 +43,8 @@ Always, whatever the scope:
 |----|-----------------|
 | `IT-BOOT-01` / `IT-HELM-01` | Both expected nodes are Ready and labelled; `helm upgrade --install joulie ./charts/joulie -n joulie-system` succeeds with `agent.mode=pool`, one shard, `RECONCILE_INTERVAL=5s`, `POLICY_TYPE=static_partition`; both CRDs are registered; flipping `STATIC_HP_FRAC` between 0 and 1 splits the two nodes into one `performance` and one `eco`, which the rest of the suite relies on |
 | `IT-SCHED-EXT-01` | The scheduler extender Deployment is available, its Service exposes port 9876, the pod runs the image under test and its `EXTENDER_ADDR` ends in `:9876` |
-| `IT-TP-01` | Telemetry and control over HTTP: the agent is pointed at the in-cluster mock with `TELEMETRY_CPU_SOURCE=http`, `TELEMETRY_CPU_CONTROL=http` (mode `dvfs`) and `TELEMETRY_GPU_CONTROL=http` (mode `powercap`), and the mock's counters must show both reads and control POSTs. Patching the NodeTwin GPU cap must then produce a GPU POST on a GPU node, or a `none`/`blocked`/`error` `controlStatus.gpu.result` on a node without one |
+| `IT-TP-01` | Telemetry and control over HTTP: the agent is pointed at the in-cluster mock with `TELEMETRY_CPU_SOURCE=http` on its OTLP route `/otlp/telemetry/{node}`, `TELEMETRY_CPU_CONTROL=http` (mode `dvfs`) and `TELEMETRY_GPU_CONTROL=http` (mode `powercap`), and the mock's counters must show both OTLP reads and control POSTs. Patching the NodeTwin GPU cap must then produce a GPU POST on a GPU node, or a `none`/`blocked`/`error` `controlStatus.gpu.result` on a node without one |
+| `IT-TWIN-POWER-01` | Measured node power reaches the twin. Under the chart defaults (`NODE_POWER_SOURCE=prometheus`, no Prometheus in CI) `powerMeasurement.source` is `prometheus-no-data`; with `NODE_POWER_SOURCE=http` on the mock's legacy JSON, `/telemetry/{node}?format=legacy` (the route serves OTLP by default, as the simulator's does), both nodes report `source: http` and the mock's 250 W, and the mock counts the controller manager's reads |
 | `IT-TWIN-STATUS-01` | Both nodes get a non-empty `schedulableClass`, the three predicted scores and a `lastUpdated`, and the controller manager's twin status coexists with the agent's `controlStatus` |
 | `IT-HW-01` | `NodeHardware` is published for both nodes with a non-zero `status.cpu.totalCores`, a `capabilities.cpuTelemetry` key and a non-empty `quality.overall` |
 
@@ -123,10 +124,13 @@ and pushes to `main` that touch `ci/`, `cmd/`, `charts/`, `config/`,
   only by the fixture based unit tests in `cmd/agent`.
 - **GPUs.** No node has one. The GPU control assertion falls back to checking
   that the agent degrades gracefully.
-- **The Prometheus node power source.** `NODE_POWER_SOURCE` is never set, so
-  the controller manager runs with the default `static`, meaning 0 W. Note
-  that `TELEMETRY_CPU_SOURCE=http` configures the agent's telemetry, which is
-  a different road into the twin.
+- **The Prometheus node power source.** CI runs no Prometheus, so the chart
+  default `NODE_POWER_SOURCE=prometheus` is checked only to degrade to
+  `prometheus-no-data`; `IT-TWIN-POWER-01` then switches the controller
+  manager to `http`. The PromQL the controller manager sends is evaluated in
+  the Prometheus PromQL engine by `tests/promql` instead.
+  Note that `TELEMETRY_CPU_SOURCE=http` configures the agent's telemetry,
+  which is a different road into the twin.
 - **Leader election.** The controller manager runs one replica and the chart
   is installed with leader election off. No Lease is ever contended. The chart
   side of it, the Role and RoleBinding, is covered by

@@ -1,0 +1,52 @@
+# The weekly comparison: the nightly workload three times, each variant on a
+# fresh cluster. joulie-off runs without Joulie, queue-aware runs the
+# queue_aware_v1 policy on the default OpenTelemetry inputs, and
+# kepler-compat runs the same policy on the Kepler preset, with the simulator
+# serving the Kepler 0.12 format. Joulie should spend no more energy than no
+# Joulie, and its performance jobs should finish at most 10 % later at p95;
+# both are warnings, since one seed is a sample, not a measurement.
+schemaVersion: 1
+name: weekly-compare
+description: The nightly workload with Joulie off, on queue_aware_v1, and on the Kepler inputs, compared.
+cluster: {spec: tests/simcluster/specs/nightly.yaml, timing: production}
+seed: 7
+duration: 60m
+drain: 20m
+abortOnRunStalled: 10m
+workload:
+  namespace: sim-workload
+  placement:
+    tolerations:
+    - {key: kwok.x-k8s.io/node, operator: Equal, value: fake, effect: NoSchedule}
+    - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}
+    - {key: amd.com/gpu, operator: Exists, effect: NoSchedule}
+  generate:
+    workloadgen:
+      jobs: 1200
+      mean-inter-arrival-sec: 14
+      arrival-window-sec: 3300
+      max-duration-sec: 1200
+      gpu-ratio: 0.15
+      amd-gpu-ratio: 0.2
+      perf-ratio: 0.3
+joulie:
+  set:
+    controllerManager.env.POLICY_TYPE: queue_aware_v1
+variants:
+- name: joulie-off
+  description: No Joulie; its objects and labels are removed before the run.
+  joulie: {enabled: false}
+- name: queue-aware
+  description: queue_aware_v1 on the default OpenTelemetry inputs.
+- name: kepler-compat
+  description: queue_aware_v1 on the Kepler preset, fed by the simulator's Kepler 0.12 exporter.
+  joulie: {inputPreset: kepler}
+  simulator: {set: {emulate.exporters: "{kepler-0.12}"}}
+assertions:
+- {name: jobs, type: jobs, expect: {completedFraction: ">= 0.95"}}
+- {name: stall, type: stall, expect: {runStalled: "== 0"}}
+compare:
+- {name: energy-queue-aware, metric: energy.total, variant: queue-aware, reference: joulie-off, expect: "<= 1.0", severity: warn}
+- {name: perf-p95-queue-aware, metric: class.performance.duration.p95, variant: queue-aware, reference: joulie-off, expect: "<= 1.10", severity: warn}
+- {name: energy-kepler-compat, metric: energy.total, variant: kepler-compat, reference: joulie-off, expect: "<= 1.0", severity: warn}
+- {name: perf-p95-kepler-compat, metric: class.performance.duration.p95, variant: kepler-compat, reference: joulie-off, expect: "<= 1.10", severity: warn}

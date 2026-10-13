@@ -18,15 +18,26 @@ Current scope includes CPU and GPU-cap simulation with trace-driven completion s
 
 - `cmd/simulator/main.go`: HTTP simulator server
 - `pkg/hw/profile.go`: hardware profile schema + validation
-- `Dockerfile`: build `joulie-simulator` image
+- `Dockerfile`: build the `joulie-simulator` image, which also ships `fakesmi` at `/usr/local/lib/joulie/fakesmi` for emulate mode
 - `deploy/simulator.yaml`: deployment + service + RBAC
 - `deploy/servicemonitor.yaml`: optional Prometheus scraping
 - `config/node-classes.yaml`: sample class mapping by node labels
 - `cmd/workloadgen`: synthetic trace generator (`distribution -> trace`)
 - `cmd/traceextract`: trace normalizer/extractor helper (`input telemetry/export -> trace schema`)
-- `pkg/hwemu`: bare-metal node emulator for agent tests: hardware profile schema and loader, a renderer that writes a node's sysfs tree, cpuinfo and GPU tool state, and physics that turns the limits the agent writes into power and energy readings; `pkg/hwemu/profiles/` holds the builtin profiles
+- `pkg/hwemu`: bare-metal node emulator for agent tests: hardware profile schema and loader, a renderer that writes a node's sysfs tree, cpuinfo and GPU tool state, and physics that turns the limits the agent writes into power and energy readings; `pkg/hwemu/profiles/` holds the builtin profiles, each with its hardware in the [simulator docs](../website/content/en/docs/simulator/simulator.md#builtin-hardware-profiles):
+  - Intel hosts: `intel-xeon-2s-rapl`, `intel-xeon-6530-2s-rapl`, `intel-xeon-2s-psys`, `intel-xeon-2s-multidie`, `intel-xeon6-2s-no-powercap`, `intel-xeon6-2s-tpmi`
+  - AMD hosts: `amd-epyc-2s-energy-only`, `amd-epyc-9534-2s-energy-only`, `amd-epyc-2s-hsmp`
+  - GPU nodes: `nvidia-h100-nvl-8gpu`, `nvidia-h100-sxm-8gpu`, `nvidia-h100-sxm-4gpu`, `nvidia-l40s-4gpu`, `amd-instinct-mi300x-8gpu`, `amd-radeon-pro-w7900-4gpu` (power cap pinned at 241 W)
+  - a VM: `vm-no-powercap`
 - `pkg/hwemu/smi` and `cmd/fakesmi`: fake `nvidia-smi`, `rocm-smi` and `amd-smi` that read and write an emulated node's state (environment in the [configuration reference](../website/content/en/docs/getting-started/05-configuration-reference.md))
 - `pkg/hwemu/hwemutest`: test helpers that render a builtin profile into a test's temporary directory
+- `pkg/clusterspec` and `cmd/clusterspec`: the cluster spec of emulate mode (`sim.joulie.io/v1alpha1` `ClusterSpec`): schema, validation, expansion into members and Node objects; the command validates a spec, lists its nodes and renders them for `kubectl apply`
+- `pkg/emulate`: emulate mode's engine: one `hwemu` node per spec member, stepped on a fixed tick, energy ledgers that survive restarts, immutable snapshots
+- `pkg/telemetry`: maps snapshots to OpenTelemetry metrics and events (names from `pkg/otel/semconv` at the repository root) and pushes them as OTLP JSON
+- `pkg/compat`: compatibility exporters in the Prometheus formats of Kepler 0.7, Kepler 0.12, dcgm-exporter 4.8.4 and AMD device-metrics-exporter 1.5.2
+- `pkg/facility`: the facility model (ambient temperature, cooling power, PUE) shared by both modes
+- `pkg/workload`: the v1 workload engine's shared parts: label, annotation and environment names, the run API types, the Job builder, GPU and CPU slots, the rate formulas and the energy attribution
+- `pkg/scenario` and `cmd/simscenario`: workload scenarios of the simulated cluster: schema, validation, plan, the runner that drives a run through the API server, assertions and `summary.json`; `scripts/simcluster/scenario.sh` runs them (`make simcluster-scenario`)
 - `waok8s/`: external WAO code reference sandbox
 
 ## Install from release (recommended)
@@ -108,6 +119,20 @@ curl -s localhost:18080/metrics | egrep 'joulie_sim_node_(power_watts|cap_watts|
 curl -s localhost:18080/metrics | egrep 'joulie_sim_controls_total|joulie_sim_requests_total'
 ```
 
+## Emulate mode
+
+In emulate mode the simulator emulates the bare-metal nodes of a cluster spec at the files and GPU tools the agent uses, so an unmodified agent pod discovers and caps them as real nodes, and it pushes their readings as OpenTelemetry metrics:
+
+```bash
+helm upgrade --install joulie-sim charts/joulie-simulator -n joulie-sim --create-namespace \
+  --set emulate.enabled=true \
+  --set-file emulate.clusterSpec=tests/simcluster/specs/smoke.yaml \
+  --set otel.metricsEndpoint=http://prometheus-operated.monitoring:9090/api/v1/otlp/v1/metrics
+curl -s localhost:18080/debug/emulate | jq '.nodes[] | {name, host}'   # after a port-forward
+```
+
+The chart then runs one replica as root with strategy `Recreate`, on the node labelled `joulie.io/hwemu-host=true`, and keeps the node trees under `emulate.root` on that host. Restarting the simulator resumes the trees and keeps every exported counter increasing. The simulator also runs from a workstation with a kubeconfig. See `/docs/simulator/simulator/#emulate-mode` for both, `/docs/simulator/metrics/` for the exported names, and the configuration reference for every variable.
+
 ## Use with Joulie
 
 See:
@@ -140,8 +165,6 @@ classes:
       feature.node.kubernetes.io/cpu-model.vendor_id: Intel
     model:
       baseIdleW: 70
-      podW: 110
-      dvfsDropWPerPct: 1.6
       defaultCapW: 5000
       pMaxW: 420
       alphaUtil: 1.1
@@ -155,7 +178,9 @@ classes:
 
 ### Model parameters
 
-The simulator no longer uses the older "power = baseIdle + runningPods * podW - throttle * k" approximation as its main runtime model.
+The keys `podW`, `dvfsDropWPerPct`, `noiseStddevW` and `gpu.powerModel` and the variables `SIM_POD_W`, `SIM_DVFS_DROP_W_PER_PCT`, `SIM_GPU_ALPHA_UTIL` and `SIM_GPU_BETA_CAP` are removed: nothing read them. A class file or an environment that still sets them works, with one warning per key.
+
+For a node whose labels match the hardware catalogue, five values come from the catalogue unless a node class or a variable sets them: `pMaxW` (sockets x TDP, for a CPU without a measured curve), `cpuSocketCapMaxW` (TDP), `cpuSocketCapMinW` (the low end of the cTDP range, else 0.55 x TDP), `gpu.maxWattsPerGpu` (maximum board power) and `gpu.minCapWattsPerGpu` (minimum board power, else half the maximum). A measured two-socket curve scales by sockets/2. Hardware the catalogue does not know keeps 420, 400, 120, 300 and 80 W.
 
 Today the runtime model combines:
 
@@ -190,12 +215,14 @@ Use the website docs as source of truth for the full model:
 
 ## Trace-Driven Batch Workload
 
-Set `SIM_WORKLOAD_TRACE_PATH` to a JSONL trace file. The simulator will:
+Set `SIM_WORKLOAD_TRACE_PATH` to a JSONL trace file. Outside emulate mode the legacy engine will:
 
 - load `type=job` records,
 - create workload Pods over time,
 - advance per-job progress based on node effective speed,
 - delete Pods when work completes.
+
+In emulate mode the v1 engine runs the trace instead (`SIM_WORKLOAD_MODEL`): one `batch/v1` Job per group, progress at the emulated hardware's throughput, completion through a KWOK Stage, stalls reported rather than completed by force, and results as OTLP JSON Lines under `<SIM_RUNS_DIR>/<runId>/`. A v1 run also starts through the run API, `POST /sim/v1/runs`. The two engines, the run API and their variables are in the [configuration reference](../website/content/en/docs/getting-started/05-configuration-reference.md) ("Simulator workloads and scenarios"); workload scenarios on the simulated cluster in `/docs/simulator/scenarios/`.
 
 The workload generator can also emit `type=workload` metadata records.
 The simulator currently ignores those metadata records and consumes the expanded `type=job`

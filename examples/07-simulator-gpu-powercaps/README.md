@@ -91,11 +91,13 @@ helm upgrade --install joulie ../../charts/joulie \
 
 ```bash
 kubectl -n joulie-system set env daemonset/joulie-agent \
-  JOULIE_TELEMETRY_SOURCE_TYPE=http \
-  JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
-  JOULIE_CONTROL_TYPE=http \
-  JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
-  JOULIE_CONTROL_MODE=dvfs
+  TELEMETRY_CPU_SOURCE=http \
+  TELEMETRY_CPU_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
+  TELEMETRY_CPU_CONTROL=http \
+  TELEMETRY_CPU_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
+  TELEMETRY_CPU_CONTROL_MODE=dvfs \
+  TELEMETRY_GPU_CONTROL=http \
+  TELEMETRY_GPU_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}
 ```
 
 7. Observe control + energy behavior:

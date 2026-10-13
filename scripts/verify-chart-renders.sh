@@ -9,6 +9,11 @@
 # the exact list expected for that case, so a duplicated template (one object
 # too many) and an orphaned one (one missing) both fail.
 #
+# The agent's workloads are also compared byte for byte with goldens under
+# scripts/testdata/chart-renders/. Goldens are written only by
+# --update-goldens, never by hand, so a change to the agent pod spec shows up
+# as a golden diff in review.
+#
 # Requires helm and awk. Exit status 0 when every case passes, 1 otherwise.
 
 set -u -o pipefail
@@ -16,8 +21,10 @@ set -u -o pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHART="${REPO_ROOT}/charts/joulie"
 SIM_CHART="${REPO_ROOT}/charts/joulie-simulator"
+GOLDEN_DIR="${REPO_ROOT}/scripts/testdata/chart-renders"
 RELEASE="joulie"
 VERBOSE=0
+UPDATE_GOLDENS=0
 
 usage() {
 	cat <<'EOF'
@@ -28,8 +35,11 @@ Usage:
   scripts/verify-chart-renders.sh [options]
 
 Options:
-  -h, --help     Show this help and exit.
-  -v, --verbose  Print the rendered Kind/name list for every case.
+  -h, --help        Show this help and exit.
+  -v, --verbose     Print the rendered Kind/name list for every case.
+  --update-goldens  Write the renders the golden cases compare with to
+                    scripts/testdata/chart-renders/ instead of comparing.
+                    Review the diff: an intended change only.
 
 Cases:
   defaults                 chart defaults
@@ -39,10 +49,40 @@ Cases:
   leaderElection.enabled   asserts the Lease Role and RoleBinding appear
   agent.mode=pool          asserts the StatefulSet replaces the DaemonSet
   schedulerExtender        asserts a second Deployment, one per component
-  joulie-simulator         the simulator chart
-  packaged appVersion      packages both charts the way the release does and
+  C01                      the agent DaemonSet equals its goldens: defaults,
+                           values/joulie.yaml, hardwareCatalog.enabled, and
+                           agent.hostNetwork=false,agent.privileged=false
+  C02                      the agent pool StatefulSet equals its golden
+  C03                      the agent tool hooks render and only add lines
+  C04                      agent.mode=emulated renders one Deployment per
+                           node and no other agent; equals its golden
+  C05                      each emulated agent: no host network or
+                           privileges, literal NODE_NAME, PATH, its hwemu
+                           tree mounts, /dev/nvidiactl on NVIDIA only,
+                           Recreate, labels and annotations
+  C06                      agent.mode=none renders no agent
+  C07                      a host network scheduler extender uses Recreate
+  C09                      values/simcluster.yaml pulls only joulie.local
+                           images, IfNotPresent
+  C10                      the agent tolerates the GPU vendor taints by
+                           default
+  joulie-simulator         the simulator chart; asserts its ConfigMap volumes
+                           are optional, so a bare install starts
+  joulie-simulator emulate emulate.enabled with the smoke cluster spec; asserts
+                           Recreate, root, the hostPath tree root, the emulate
+                           and OTEL_* env, the spec ConfigMap and the exporter
+                           endpoints, and that replicas=2 and a missing spec
+                           fail
+  C08 packaged appVersion  packages both charts the way the release does and
                            asserts every image is tagged with the appVersion,
-                           also under values/joulie.yaml, unless a tag is set
+                           also under values/joulie.yaml and for emulated
+                           agents, unless a tag is set
+  OTel inputs              the controller manager reads OTel inputs by
+                           default: NODE_POWER_SOURCE=prometheus, scope
+                           components, a 5m window and FACILITY_PRESET=otel;
+                           no NODE_POWER_PRESET, so a custom query stays
+                           custom; KEPLER_AVAILABLE and
+                           FACILITY_PROMETHEUS_ADDRESS are gone
 
 Every case also asserts that no two documents share a Kind and name.
 
@@ -60,6 +100,10 @@ while [ $# -gt 0 ]; do
 		;;
 	-v | --verbose)
 		VERBOSE=1
+		shift
+		;;
+	--update-goldens)
+		UPDATE_GOLDENS=1
 		shift
 		;;
 	*)
@@ -153,6 +197,174 @@ assert_count() {
 	got="$(objects "${WORKDIR}/${slug}.yaml" | grep -cE "${pattern}")" || true
 	if [ "${got}" != "${want}" ]; then
 		fail "expected ${want} object(s) matching /${pattern}/, got ${got}"
+		return 1
+	fi
+	return 0
+}
+
+# doc prints the one rendered document of a Kind and name, empty when there is
+# none, so an assertion about a Deployment cannot match a ConfigMap's text.
+doc() {
+	awk -v want="$2/$3" '
+		function flush() { if (kind "/" name == want) printf "%s", buf; buf=""; kind=""; name=""; inmeta=0 }
+		/^---[[:space:]]*$/ { flush(); next }
+		{ buf = buf $0 "\n" }
+		/^kind:[[:space:]]/ { kind=$2; inmeta=0; next }
+		/^metadata:[[:space:]]*$/ { inmeta=1; next }
+		/^[^[:space:]#]/ { inmeta=0 }
+		inmeta == 1 && /^  name:[[:space:]]/ { if (name == "") name=$2; next }
+		END { flush() }
+	' "${WORKDIR}/$1.yaml"
+}
+
+# assert_golden compares a file of rendered documents with
+# scripts/testdata/chart-renders/<golden>.golden.yaml, or writes the golden
+# under --update-goldens.
+assert_golden() {
+	local got="$1" golden="${GOLDEN_DIR}/$2.golden.yaml"
+	if [ ! -s "${got}" ]; then
+		fail "golden $2: nothing rendered to compare"
+		return 1
+	fi
+	if [ "${UPDATE_GOLDENS}" -eq 1 ]; then
+		mkdir -p "${GOLDEN_DIR}"
+		cp "${got}" "${golden}"
+		echo "    wrote ${golden#"${REPO_ROOT}/"}"
+		return 0
+	fi
+	if [ ! -f "${golden}" ]; then
+		fail "golden ${golden#"${REPO_ROOT}/"} does not exist; write it with --update-goldens"
+		return 1
+	fi
+	if ! diff -u "${golden}" "${got}" >"${got}.diff"; then
+		fail "render differs from ${golden#"${REPO_ROOT}/"} (- golden, + got)"
+		sed 's/^/    /' "${got}.diff" >&2
+		return 1
+	fi
+	return 0
+}
+
+# assert_golden_doc compares one rendered document of a Kind and name with
+# its golden.
+assert_golden_doc() {
+	local slug="$1" kind="$2" name="$3" golden="$4"
+	doc "${slug}" "${kind}" "${name}" >"${WORKDIR}/${slug}.${kind}.${name}.yaml"
+	assert_golden "${WORKDIR}/${slug}.${kind}.${name}.yaml" "${golden}"
+}
+
+# assert_doc checks that one document holds a line matching an extended regex
+# ("has") or none ("lacks").
+assert_doc() {
+	local slug="$1" want="$2" kind="$3" name="$4" pattern="$5" what="$6"
+	if doc "${slug}" "${kind}" "${name}" | grep -qE -- "${pattern}"; then
+		[ "${want}" = has ] && return 0
+		fail "${kind}/${name}: ${what}: found /${pattern}/"
+	else
+		[ "${want}" = lacks ] && return 0
+		fail "${kind}/${name}: ${what}: no line matches /${pattern}/"
+	fi
+	return 1
+}
+
+# env_of prints the value of one env var of a Deployment's containers, the
+# line after its name with "value:" and quotes stripped.
+env_of() {
+	doc "$1" Deployment "$2" |
+		awk -v var="$3" '
+			$0 ~ "^[[:space:]]+- name: " var "$" { found=1; next }
+			found == 1 { sub(/^[[:space:]]+value:[[:space:]]*/, ""); gsub(/"/, ""); print; exit }
+		'
+}
+
+# assert_env checks one env var of a Deployment's containers: its value, or
+# "-" for an env var that must be absent.
+assert_env() {
+	local slug="$1" deploy="$2" var="$3" want="$4" got
+	got="$(env_of "${slug}" "${deploy}" "${var}")"
+	if [ "${want}" = "-" ]; then
+		if doc "${slug}" Deployment "${deploy}" | grep -qE "^[[:space:]]+- name: ${var}\$"; then
+			fail "Deployment/${deploy}: env ${var} must not be rendered"
+			return 1
+		fi
+		return 0
+	fi
+	if [ "${got}" != "${want}" ]; then
+		fail "Deployment/${deploy}: env ${var}=\"${got}\", want \"${want}\""
+		return 1
+	fi
+	return 0
+}
+
+# assert_optional_volumes checks that each named configMap volume of a
+# Deployment is optional. A pod whose configMap volume is missing and not
+# optional waits in ContainerCreating forever, which is what a bare install of
+# the simulator chart did, since nothing creates those ConfigMaps by default.
+assert_optional_volumes() {
+	local slug="$1" deploy="$2" vol block
+	shift 2
+	for vol in "$@"; do
+		block="$(doc "${slug}" Deployment "${deploy}" |
+			awk -v vol="${vol}" '
+				/^      volumes:/ { invol=1; next }
+				invol == 1 && $0 ~ "^        - name: " vol "$" { pick=1; next }
+				pick == 1 && /^        - / { exit }
+				pick == 1 { print }
+			')"
+		if [ -z "${block}" ]; then
+			fail "Deployment/${deploy}: no volume ${vol}"
+		elif ! printf '%s\n' "${block}" | grep -qE '^[[:space:]]+optional: true$'; then
+			fail "Deployment/${deploy}: volume ${vol} is not optional"
+		fi
+	done
+}
+
+# entry prints one list entry of a Deployment's pod spec: the volume
+# ("volumes") or volume mount ("volumeMounts") of a name, from its "- name:"
+# line to the next entry.
+entry() {
+	local slug="$1" deploy="$2" list="$3" name="$4"
+	doc "${slug}" Deployment "${deploy}" |
+		awk -v list="${list}" -v name="${name}" '
+			$0 ~ "^ +" list ":$" { inlist=1; match($0, /^ +/); depth=RLENGTH; next }
+			inlist == 1 && match($0, /^ +/) && RLENGTH <= depth && $0 !~ /^ +- / { inlist=0 }
+			inlist == 1 && $0 ~ "^ +- name: " name "$" { pick=1; print; next }
+			pick == 1 && /^ +- / { exit }
+			pick == 1 && inlist == 0 { exit }
+			pick == 1 { print }
+		'
+}
+
+# assert_entry checks that the volume or volume mount of a name holds a line
+# matching an extended regex ("has") or none ("lacks").
+assert_entry() {
+	local slug="$1" want="$2" deploy="$3" list="$4" name="$5" pattern="$6" block
+	block="$(entry "${slug}" "${deploy}" "${list}" "${name}")"
+	if [ -z "${block}" ]; then
+		fail "Deployment/${deploy}: no ${list} entry ${name}"
+		return 1
+	fi
+	if printf '%s\n' "${block}" | grep -qE -- "${pattern}"; then
+		[ "${want}" = has ] && return 0
+		fail "Deployment/${deploy}: ${list} ${name}: found /${pattern}/"
+	else
+		[ "${want}" = lacks ] && return 0
+		fail "Deployment/${deploy}: ${list} ${name}: no line matches /${pattern}/"
+	fi
+	return 1
+}
+
+# render_fails asserts that helm template exits non-zero with a message
+# matching an extended regex: a values combination the chart must refuse.
+render_fails() {
+	local slug="$1" chart="$2" message="$3"
+	shift 3
+	if helm template "${RELEASE}" "${chart}" "$@" >"${WORKDIR}/${slug}.yaml" 2>"${WORKDIR}/${slug}.err"; then
+		fail "${slug}: helm template succeeded, want a failure matching /${message}/"
+		return 1
+	fi
+	if ! grep -qE -- "${message}" "${WORKDIR}/${slug}.err"; then
+		fail "${slug}: helm template failed without /${message}/:"
+		sed 's/^/    /' "${WORKDIR}/${slug}.err" >&2
 		return 1
 	fi
 	return 0
@@ -281,13 +493,296 @@ if render scheduler-extender "${CHART}" --set 'schedulerExtender.enabled=true'; 
 fi
 
 # --------------------------------------------------------------------------
+# C01: the agent DaemonSet's pod spec comes from the joulie.agentPodSpec
+# helper, which the emulated agents share. The DaemonSet stays byte for byte
+# its golden under the value combinations that change it.
+# --------------------------------------------------------------------------
+case_start "C01 agent DaemonSet matches its goldens"
+c01() {
+	local golden="$1"
+	shift
+	render "${golden}" "${CHART}" "$@" &&
+		assert_golden_doc "${golden}" DaemonSet joulie-agent "${golden}"
+}
+c01 daemonset-defaults
+c01 daemonset-joulie-values -f "${REPO_ROOT}/values/joulie.yaml"
+c01 daemonset-catalog --set 'hardwareCatalog.enabled=true'
+c01 daemonset-nohost --set 'agent.hostNetwork=false' --set 'agent.privileged=false'
+
+# --------------------------------------------------------------------------
+# C02: the pool StatefulSet does not use the helper and stays its golden.
+# --------------------------------------------------------------------------
+case_start "C02 agent pool StatefulSet matches its golden"
+render statefulset-pool "${CHART}" --set 'agent.mode=pool' &&
+	assert_golden_doc statefulset-pool StatefulSet joulie-agent-pool statefulset-pool
+
+# --------------------------------------------------------------------------
+# C03: the tool hooks (runtimeClassName, extraEnv, extraVolumes,
+# extraVolumeMounts) render where they belong and only add lines: with every
+# hook set, nothing the defaults render changes.
+# --------------------------------------------------------------------------
+case_start "C03 agent tool hooks only add to the DaemonSet"
+HOOKS_VALUES="${GOLDEN_DIR}/hooks-values.yaml"
+if render daemonset-hooks "${CHART}" -f "${HOOKS_VALUES}"; then
+	assert_golden_doc daemonset-hooks DaemonSet joulie-agent daemonset-hooks
+	removed="$(diff "${WORKDIR}/daemonset-defaults.DaemonSet.joulie-agent.yaml" \
+		"${WORKDIR}/daemonset-hooks.DaemonSet.joulie-agent.yaml" | grep -E '^<')" || true
+	if [ -n "${removed}" ]; then
+		fail "DaemonSet/joulie-agent: the hooks changed lines the defaults render:"
+		printf '%s\n' "${removed}" | sed 's/^/    /' >&2
+	fi
+	assert_doc daemonset-hooks has DaemonSet joulie-agent '^      runtimeClassName: nvidia$' "runtimeClassName hook"
+	assert_doc daemonset-hooks has DaemonSet joulie-agent '^            - name: NVIDIA_DRIVER_CAPABILITIES$' "extraEnv hook"
+	assert_doc daemonset-hooks has DaemonSet joulie-agent '^            - mountPath: /opt/joulie-tools$' "extraVolumeMounts hook"
+	assert_doc daemonset-hooks has DaemonSet joulie-agent '^            path: /opt/joulie-tools$' "extraVolumes hook"
+fi
+
+# --------------------------------------------------------------------------
+# C04: agent.mode=emulated renders one Deployment per agent.emulated.nodes
+# entry and no other agent, each the golden pod spec of its node.
+# --------------------------------------------------------------------------
+case_start "C04 agent.mode=emulated renders one Deployment per node"
+EMULATED_VALUES="${GOLDEN_DIR}/emulated-values.yaml"
+EMU_NODES=(epyc-0 mi300x-0 nvl-0)
+if render emulated "${CHART}" --set 'agent.mode=emulated' -f "${EMULATED_VALUES}"; then
+	assert_workloads emulated \
+		"Deployment/joulie-agent-emu-0" \
+		"Deployment/joulie-agent-emu-1" \
+		"Deployment/joulie-agent-emu-2" \
+		"Deployment/joulie-controller-manager"
+	assert_no_duplicates emulated
+	for i in "${!EMU_NODES[@]}"; do
+		doc emulated Deployment "joulie-agent-emu-${i}"
+	done >"${WORKDIR}/emulated.agents.yaml"
+	assert_golden "${WORKDIR}/emulated.agents.yaml" agent-emulated
+fi
+# A name becomes hostPaths under agent.emulated.root, so only a Node name is
+# accepted; a profile is what the simcluster scripts report.
+render_fails emulated-badname "${CHART}" 'is not a Node name' \
+	--set 'agent.mode=emulated' --set-json 'agent.emulated.nodes=[{"name":"../x","profile":"p"}]'
+render_fails emulated-noprofile "${CHART}" 'needs a profile' \
+	--set 'agent.mode=emulated' --set-json 'agent.emulated.nodes=[{"name":"x"}]'
+# Two entries of one name would be two agents writing one hwemu tree.
+render_fails emulated-dupname "${CHART}" '"x" is listed twice' \
+	--set 'agent.mode=emulated' --set-json 'agent.emulated.nodes=[{"name":"x","profile":"p"},{"name":"x","profile":"p"}]'
+
+# --------------------------------------------------------------------------
+# C05: the contract of each emulated agent pod, on the C04 render: no host
+# network and no privileges, a literal NODE_NAME, the emulated tools first
+# on PATH, its node's hwemu tree in place of the host's, /dev/nvidiactl on
+# the NVIDIA node only, Recreate, and the labels and annotations the
+# simcluster scripts select on.
+# --------------------------------------------------------------------------
+case_start "C05 emulated agent pod contract"
+for i in "${!EMU_NODES[@]}"; do
+	d="joulie-agent-emu-${i}"
+	n="${EMU_NODES[$i]}"
+	tree="/var/lib/joulie-hwemu/${n}"
+	if [ -z "$(doc emulated Deployment "${d}")" ]; then
+		fail "no Deployment/${d} for ${n} to check"
+		continue
+	fi
+	assert_doc emulated has Deployment "${d}" '^      hostNetwork: false$' "no host network"
+	assert_doc emulated has Deployment "${d}" '^      dnsPolicy: ClusterFirst$' "cluster DNS"
+	assert_doc emulated has Deployment "${d}" '^            privileged: false$' "not privileged"
+	assert_doc emulated has Deployment "${d}" '^            runAsUser: 0$' "runs as root"
+	assert_doc emulated has Deployment "${d}" '^            runAsGroup: 0$' "runs as root"
+	assert_doc emulated lacks Deployment "${d}" 'fieldPath: spec\.nodeName' "NODE_NAME from the pod's own node"
+	assert_env emulated "${d}" NODE_NAME "${n}"
+	case "$(env_of emulated "${d}" PATH)" in
+	/emu/bin:*) ;;
+	*) fail "Deployment/${d}: PATH=\"$(env_of emulated "${d}" PATH)\" does not start with /emu/bin" ;;
+	esac
+	assert_doc emulated has Deployment "${d}" '^    type: Recreate$' "strategy Recreate"
+	assert_doc emulated has Deployment "${d}" '^        joulie\.io/hwemu-host: "true"$' "runs on the hwemu host"
+	assert_doc emulated has Deployment "${d}" '^    app\.kubernetes\.io/component: emulated$' "component label"
+	assert_doc emulated has Deployment "${d}" "^    sim\\.joulie\\.io/agent-index: \"${i}\"\$" "agent index label"
+	assert_doc emulated has Deployment "${d}" "^    sim\\.joulie\\.io/node: \"${n}\"\$" "node annotation"
+	assert_doc emulated has Deployment "${d}" '^    sim\.joulie\.io/profile: "[a-z0-9-]+"$' "profile annotation"
+	assert_entry emulated has "${d}" volumes host-sys "^ +path: ${tree}/sys\$"
+	assert_entry emulated has "${d}" volumes host-sys '^ +type: Directory$'
+	assert_entry emulated has "${d}" volumes hwemu-cpuinfo "^ +path: ${tree}/cpuinfo\$"
+	assert_entry emulated has "${d}" volumes hwemu-cpuinfo '^ +type: File$'
+	assert_entry emulated has "${d}" volumes hwemu-state "^ +path: ${tree}/state\$"
+	assert_entry emulated has "${d}" volumes hwemu-state '^ +type: Directory$'
+	assert_entry emulated has "${d}" volumes hwemu-bin "^ +path: ${tree}/bin\$"
+	assert_entry emulated has "${d}" volumes hwemu-bin '^ +type: Directory$'
+	assert_entry emulated has "${d}" volumes hwemu-lib '^ +path: /var/lib/joulie-hwemu/lib$'
+	assert_entry emulated has "${d}" volumes hwemu-lib '^ +type: Directory$'
+	assert_entry emulated has "${d}" volumeMounts host-sys '^ +mountPath: /host-sys$'
+	assert_entry emulated lacks "${d}" volumeMounts host-sys 'readOnly'
+	assert_entry emulated has "${d}" volumeMounts hwemu-cpuinfo '^ +mountPath: /proc/cpuinfo$'
+	assert_entry emulated has "${d}" volumeMounts hwemu-cpuinfo '^ +readOnly: true$'
+	assert_entry emulated has "${d}" volumeMounts hwemu-state '^ +mountPath: /emu/state$'
+	assert_entry emulated lacks "${d}" volumeMounts hwemu-state 'readOnly'
+	assert_entry emulated has "${d}" volumeMounts hwemu-bin '^ +mountPath: /emu/bin$'
+	assert_entry emulated has "${d}" volumeMounts hwemu-bin '^ +readOnly: true$'
+	assert_entry emulated has "${d}" volumeMounts hwemu-lib '^ +mountPath: /emu/lib$'
+	assert_entry emulated has "${d}" volumeMounts hwemu-lib '^ +readOnly: true$'
+	if [ "${n}" = nvl-0 ]; then
+		assert_entry emulated has "${d}" volumes hwemu-nvidiactl "^ +path: ${tree}/dev/nvidiactl\$"
+		assert_entry emulated has "${d}" volumes hwemu-nvidiactl '^ +type: File$'
+		assert_entry emulated has "${d}" volumeMounts hwemu-nvidiactl '^ +mountPath: /dev/nvidiactl$'
+		assert_doc emulated has Deployment "${d}" '^              name: driver-stub$' "the node's own extra mount"
+	else
+		assert_doc emulated lacks Deployment "${d}" 'nvidiactl' "/dev/nvidiactl off the NVIDIA node"
+		assert_doc emulated lacks Deployment "${d}" 'driver-stub' "another node's extra mount"
+	fi
+done
+
+# --------------------------------------------------------------------------
+# C06: agent.mode=none renders no agent workload.
+# --------------------------------------------------------------------------
+case_start "C06 agent.mode=none renders no agent"
+if render agent-none "${CHART}" --set 'agent.mode=none'; then
+	assert_workloads agent-none "Deployment/joulie-controller-manager"
+	assert_no_duplicates agent-none
+fi
+
+# --------------------------------------------------------------------------
+# C07: a scheduler extender on the host network rolls out with Recreate, as
+# the old pod holds the host port the new one needs on a single node (D17).
+# Off the host network the rolling update stays.
+# --------------------------------------------------------------------------
+case_start "C07 scheduler extender on the host network uses Recreate"
+if render extender-hostnet "${CHART}" --set 'schedulerExtender.enabled=true' --set 'schedulerExtender.hostNetwork=true'; then
+	assert_doc extender-hostnet has Deployment joulie-scheduler-extender '^    type: Recreate$' "strategy Recreate (D17)"
+	assert_doc extender-hostnet has Deployment joulie-scheduler-extender '^      hostNetwork: true$' "host network"
+fi
+assert_doc scheduler-extender lacks Deployment joulie-scheduler-extender 'type: Recreate' "Recreate off the host network"
+
+# --------------------------------------------------------------------------
+# C09: the simulated cluster's values with emulated agents pull only images
+# built from the working tree and imported, never from a registry.
+# --------------------------------------------------------------------------
+case_start "C09 values/simcluster.yaml pulls only joulie.local images"
+if render simcluster "${CHART}" -f "${REPO_ROOT}/values/simcluster.yaml" -f "${EMULATED_VALUES}"; then
+	assert_workloads simcluster \
+		"Deployment/joulie-agent-emu-0" \
+		"Deployment/joulie-agent-emu-1" \
+		"Deployment/joulie-agent-emu-2" \
+		"Deployment/joulie-controller-manager" \
+		"Deployment/joulie-scheduler-extender"
+	images="$(grep -cE '^[[:space:]]+image:' "${WORKDIR}/simcluster.yaml")" || true
+	local_images="$(grep -cE '^[[:space:]]+image: "?joulie\.local/' "${WORKDIR}/simcluster.yaml")" || true
+	policies="$(grep -cE '^[[:space:]]+imagePullPolicy: IfNotPresent$' "${WORKDIR}/simcluster.yaml")" || true
+	if [ "${images}" != 5 ] || [ "${local_images}" != 5 ] || [ "${policies}" != 5 ]; then
+		fail "want 5 containers, each a joulie.local/ image with IfNotPresent; got ${images} images, ${local_images} from joulie.local/, ${policies} IfNotPresent"
+	fi
+fi
+
+# --------------------------------------------------------------------------
+# C10: the agent tolerates the GPU vendor taints by default (D15), so GPU
+# nodes tainted nvidia.com/gpu or amd.com/gpu:NoSchedule get an agent, and
+# an empty list renders no tolerations.
+# --------------------------------------------------------------------------
+case_start "C10 agent DaemonSet tolerates the GPU taints by default"
+C10_WANT='      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+        - effect: NoSchedule
+          key: amd.com/gpu
+          operator: Exists'
+for slug in daemonset-defaults daemonset-joulie-values; do
+	got="$(doc "${slug}" DaemonSet joulie-agent | awk '/^      tolerations:$/ { on=1; print; next } on == 1 && /^        / { print; next } { on=0 }')"
+	if [ "${got}" != "${C10_WANT}" ]; then
+		fail "DaemonSet/joulie-agent (${slug}): tolerations differ (- want, + got)"
+		diff -u <(printf '%s\n' "${C10_WANT}") <(printf '%s\n' "${got}") | sed 's/^/    /' >&2
+	fi
+done
+if render daemonset-notolerations "${CHART}" --set-json 'agent.tolerations=[]'; then
+	assert_doc daemonset-notolerations lacks DaemonSet joulie-agent 'tolerations:' "no tolerations when the list is empty"
+fi
+
+# --------------------------------------------------------------------------
 # The simulator chart, rendered the way the integration job deploys it.
 # --------------------------------------------------------------------------
+SIM_DEPLOY="joulie-telemetry-sim"
+SIM_LEGACY_VOLUMES=(node-classes workload-trace hardware-catalog)
 case_start "joulie-simulator defaults"
 if render simulator "${SIM_CHART}"; then
-	assert_workloads simulator "Deployment/joulie-telemetry-sim"
+	assert_workloads simulator "Deployment/${SIM_DEPLOY}"
 	assert_no_duplicates simulator
 	assert_image_tags simulator latest
+	assert_optional_volumes simulator "${SIM_DEPLOY}" "${SIM_LEGACY_VOLUMES[@]}"
+	assert_doc simulator has Deployment "${SIM_DEPLOY}" 'fieldPath: metadata\.name$' "POD_NAME from the downward API"
+	assert_doc simulator lacks Deployment "${SIM_DEPLOY}" 'type: Recreate$' "Recreate outside emulate mode"
+	assert_doc simulator lacks Deployment "${SIM_DEPLOY}" 'runAsUser: 0$' "root outside emulate mode"
+	assert_env simulator "${SIM_DEPLOY}" SIM_EMULATE -
+	assert_doc simulator lacks Deployment "${SIM_DEPLOY}" '^ +- name: OTEL_' "OTEL_* outside emulate mode"
+	assert_env simulator "${SIM_DEPLOY}" SIM_WORKLOAD_TRACE_PATH /etc/joulie-sim-trace/trace.jsonl
+fi
+
+# --------------------------------------------------------------------------
+# Emulate mode with the smoke cluster spec, the way simcluster deploys it: one
+# root-owned writer of the hostPath trees, never two pods at once.
+# --------------------------------------------------------------------------
+case_start "joulie-simulator emulate"
+SMOKE_SPEC="${REPO_ROOT}/tests/simcluster/specs/smoke.yaml"
+EMULATE_ARGS=(
+	--set 'emulate.enabled=true'
+	--set-file "emulate.clusterSpec=${SMOKE_SPEC}"
+	--set 'serviceMonitor.enabled=true'
+	--set 'emulate.exporters={kepler-0.7,dcgm-4.8.4,amd-dme-1.5.2}'
+	--set 'otel.metricsEndpoint=http://p:9090/api/v1/otlp/v1/metrics'
+	--set 'otel.logsEndpoint=http://c:4318/v1/logs'
+	--set 'otel.resourceAttributes.a=b'
+	--set 'otel.resourceAttributes.c=d'
+)
+if render simulator-emulate "${SIM_CHART}" "${EMULATE_ARGS[@]}"; then
+	assert_workloads simulator-emulate "Deployment/${SIM_DEPLOY}"
+	assert_no_duplicates simulator-emulate
+	assert_doc simulator-emulate has Deployment "${SIM_DEPLOY}" '^    type: Recreate$' "strategy Recreate"
+	assert_doc simulator-emulate has Deployment "${SIM_DEPLOY}" '^ +runAsUser: 0$' "runs as root"
+	assert_doc simulator-emulate has Deployment "${SIM_DEPLOY}" '^ +runAsNonRoot: false$' "runs as root"
+	assert_doc simulator-emulate has Deployment "${SIM_DEPLOY}" '^ +path: /var/lib/joulie-hwemu$' "hostPath at emulate.root"
+	assert_doc simulator-emulate has Deployment "${SIM_DEPLOY}" '^ +type: DirectoryOrCreate$' "hostPath created by the simulator"
+	assert_doc simulator-emulate has Deployment "${SIM_DEPLOY}" '^ +mountPath: /var/lib/joulie-hwemu$' "tree root mounted at the same path"
+	assert_doc simulator-emulate has Deployment "${SIM_DEPLOY}" '^ +path: /readyz$' "readiness on /readyz"
+	assert_doc simulator-emulate has Deployment "${SIM_DEPLOY}" '^ +joulie\.io/hwemu-host: "true"$' "runs on the hwemu host"
+	assert_env simulator-emulate "${SIM_DEPLOY}" SIM_EMULATE true
+	assert_env simulator-emulate "${SIM_DEPLOY}" SIM_HWEMU_ROOT /var/lib/joulie-hwemu
+	assert_env simulator-emulate "${SIM_DEPLOY}" SIM_CLUSTER_SPEC /etc/joulie-sim-spec/cluster-spec.yaml
+	assert_env simulator-emulate "${SIM_DEPLOY}" SIM_EMULATE_TICK 1s
+	assert_env simulator-emulate "${SIM_DEPLOY}" SIM_EXPORTERS kepler-0.7,dcgm-4.8.4,amd-dme-1.5.2
+	assert_env simulator-emulate "${SIM_DEPLOY}" OTEL_EXPORTER_OTLP_METRICS_ENDPOINT http://p:9090/api/v1/otlp/v1/metrics
+	assert_env simulator-emulate "${SIM_DEPLOY}" OTEL_EXPORTER_OTLP_LOGS_ENDPOINT http://c:4318/v1/logs
+	assert_env simulator-emulate "${SIM_DEPLOY}" OTEL_METRIC_EXPORT_INTERVAL 10000
+	assert_env simulator-emulate "${SIM_DEPLOY}" OTEL_RESOURCE_ATTRIBUTES a=b,c=d
+	assert_env simulator-emulate "${SIM_DEPLOY}" SIM_WORKLOAD_TRACE_PATH -
+	assert_optional_volumes simulator-emulate "${SIM_DEPLOY}" "${SIM_LEGACY_VOLUMES[@]}"
+	assert_count simulator-emulate '^ConfigMap/joulie-simulator-cluster-spec$' 1
+	assert_doc simulator-emulate has ConfigMap joulie-simulator-cluster-spec '^    kind: ClusterSpec$' "holds the cluster spec"
+	assert_doc simulator-emulate has Deployment "${SIM_DEPLOY}" '^ +name: joulie-simulator-cluster-spec$' "spec volume from the chart's ConfigMap"
+	assert_doc simulator-emulate has Deployment "${SIM_DEPLOY}" '^ +checksum/cluster-spec: [0-9a-f]{64}$' "restarts on a changed spec"
+	assert_doc simulator-emulate has ServiceMonitor "${SIM_DEPLOY}" '^ +path: /exporters/kepler-0\.7/metrics$' "scrapes kepler-0.7"
+	assert_doc simulator-emulate has ServiceMonitor "${SIM_DEPLOY}" '^ +path: /exporters/dcgm-4\.8\.4/metrics$' "scrapes dcgm-4.8.4"
+	assert_doc simulator-emulate has ServiceMonitor "${SIM_DEPLOY}" '^ +path: /exporters/amd-dme-1\.5\.2/metrics$' "scrapes amd-dme-1.5.2"
+	if [ "$(doc simulator-emulate ServiceMonitor "${SIM_DEPLOY}" | grep -cE '^ +honorLabels: false$')" != 3 ]; then
+		fail "ServiceMonitor/${SIM_DEPLOY}: want honorLabels: false on all three exporter endpoints"
+	fi
+fi
+render_fails simulator-emulate-replicas "${SIM_CHART}" 'requires replicas: 1' \
+	--set 'emulate.enabled=true' --set 'emulate.clusterSpecConfigMap=existing-spec' --set 'replicas=2'
+render_fails simulator-emulate-nospec "${SIM_CHART}" 'needs a cluster spec' \
+	--set 'emulate.enabled=true'
+render_fails simulator-emulate-twospecs "${SIM_CHART}" 'not both' \
+	--set 'emulate.enabled=true' --set 'emulate.clusterSpecConfigMap=existing-spec' \
+	--set 'emulate.clusterSpec=kind: ClusterSpec'
+
+# --------------------------------------------------------------------------
+# Emulate mode with a spec ConfigMap the user manages: the chart mounts it and
+# renders no ConfigMap of its own, nor a checksum of a spec it does not see.
+# --------------------------------------------------------------------------
+case_start "joulie-simulator emulate, spec in an existing ConfigMap"
+if render simulator-emulate-cm "${SIM_CHART}" \
+	--set 'emulate.enabled=true' --set 'emulate.clusterSpecConfigMap=existing-spec'; then
+	assert_workloads simulator-emulate-cm "Deployment/${SIM_DEPLOY}"
+	assert_count simulator-emulate-cm '^ConfigMap/joulie-simulator-cluster-spec$' 0
+	assert_doc simulator-emulate-cm has Deployment "${SIM_DEPLOY}" '^ +name: existing-spec$' "spec volume from emulate.clusterSpecConfigMap"
+	assert_doc simulator-emulate-cm lacks Deployment "${SIM_DEPLOY}" 'checksum/cluster-spec' "checksum of a spec the chart does not render"
+	assert_env simulator-emulate-cm "${SIM_DEPLOY}" SIM_CLUSTER_SPEC /etc/joulie-sim-spec/cluster-spec.yaml
 fi
 
 # --------------------------------------------------------------------------
@@ -295,7 +790,7 @@ fi
 # pull the images of that version and not ":latest", also with the values file
 # the quickstart installs with. An explicit tag still wins.
 # --------------------------------------------------------------------------
-case_start "packaged charts pull their appVersion"
+case_start "C08 packaged charts pull their appVersion"
 APP_VERSION="9.9.9-rc1"
 if helm package "${CHART}" "${SIM_CHART}" --version "${APP_VERSION}" --app-version "${APP_VERSION}" \
 	--destination "${WORKDIR}/pkg" >"${WORKDIR}/package.err" 2>&1; then
@@ -305,6 +800,10 @@ if helm package "${CHART}" "${SIM_CHART}" --version "${APP_VERSION}" --app-versi
 		assert_image_tags packaged "${APP_VERSION}"
 	render packaged-pool "${PKG}" --set 'agent.mode=pool' &&
 		assert_image_tags packaged-pool "${APP_VERSION}"
+	# C08: the emulated agents too.
+	render packaged-emulated "${PKG}" --set 'agent.mode=emulated' -f "${EMULATED_VALUES}" &&
+		assert_count packaged-emulated '^Deployment/joulie-agent-emu-[0-9]+$' 3 &&
+		assert_image_tags packaged-emulated "${APP_VERSION}"
 	render packaged-values "${PKG}" -f "${REPO_ROOT}/values/joulie.yaml" &&
 		assert_image_tags packaged-values "${APP_VERSION}"
 	render packaged-sim "${SIM_PKG}" &&
@@ -315,6 +814,37 @@ else
 	fail "helm package failed"
 	sed 's/^/    /' "${WORKDIR}/package.err" >&2
 fi
+
+# --------------------------------------------------------------------------
+# The controller manager reads the OpenTelemetry inputs by default: measured
+# node power from Prometheus (cpu and gpu components, 5m rate window) and the
+# otel facility preset. The chart must not set NODE_POWER_PRESET,
+# PROMETHEUS_RESOURCE_ATTRIBUTES or PROMETHEUS_NAME_TRANSLATION: it renders
+# every env key, so a preset there would turn an adopter's
+# NODE_POWER_PROMETHEUS_QUERY into a fatal "preset plus query" error instead of
+# the custom preset. KEPLER_AVAILABLE (read by nothing) and
+# FACILITY_PROMETHEUS_ADDRESS (PROMETHEUS_ADDRESS is its default) are removed.
+# --------------------------------------------------------------------------
+case_start "controller manager reads OTel inputs by default"
+CM_DEPLOY="joulie-controller-manager"
+for otel_case in otel-defaults otel-release-values otel-custom-query; do
+	case "${otel_case}" in
+	otel-defaults) otel_args=() ;;
+	otel-release-values) otel_args=(-f "${REPO_ROOT}/values/joulie.yaml") ;;
+	otel-custom-query) otel_args=(--set 'controllerManager.env.NODE_POWER_PROMETHEUS_QUERY=sum by (node) (power)') ;;
+	esac
+	render "${otel_case}" "${CHART}" ${otel_args[@]+"${otel_args[@]}"} || continue
+	assert_env "${otel_case}" "${CM_DEPLOY}" PROMETHEUS_ADDRESS "http://prometheus-operated.monitoring:9090"
+	assert_env "${otel_case}" "${CM_DEPLOY}" NODE_POWER_SOURCE prometheus
+	assert_env "${otel_case}" "${CM_DEPLOY}" NODE_POWER_SCOPE components
+	assert_env "${otel_case}" "${CM_DEPLOY}" PROMETHEUS_RATE_WINDOW 5m
+	assert_env "${otel_case}" "${CM_DEPLOY}" FACILITY_PRESET otel
+	for absent in NODE_POWER_PRESET PROMETHEUS_RESOURCE_ATTRIBUTES PROMETHEUS_NAME_TRANSLATION \
+		KEPLER_AVAILABLE FACILITY_PROMETHEUS_ADDRESS; do
+		assert_env "${otel_case}" "${CM_DEPLOY}" "${absent}" -
+	done
+done
+assert_env otel-custom-query "${CM_DEPLOY}" NODE_POWER_PROMETHEUS_QUERY "sum by (node) (power)"
 
 echo
 if [ "${FAILURES}" -ne 0 ]; then

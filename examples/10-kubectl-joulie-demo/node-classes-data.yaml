@@ -4,7 +4,6 @@ classes:
       joulie.io/gpu.product: NVIDIA-H100-SXM
     model:
       baseIdleW: 120
-      podW: 80
       pMaxW: 500
       alphaUtil: 1.1
       betaFreq: 1.3
@@ -21,15 +20,11 @@ classes:
         idleWattsPerGpu: 40
         maxWattsPerGpu: 300
         minCapWattsPerGpu: 100
-        powerModel:
-          alphaUtil: 1.0
-          betaCap: 1.0
   - name: amd-mi300x
     matchLabels:
       joulie.io/gpu.product: AMD-Instinct-MI300X
     model:
       baseIdleW: 130
-      podW: 85
       pMaxW: 520
       alphaUtil: 1.2
       betaFreq: 1.35
@@ -46,16 +41,12 @@ classes:
         idleWattsPerGpu: 45
         maxWattsPerGpu: 320
         minCapWattsPerGpu: 100
-        powerModel:
-          alphaUtil: 1.0
-          betaCap: 1.0
   - name: cpu-only-intel
     matchLabels:
       feature.node.kubernetes.io/cpu-model.vendor_id: Intel
       joulie.io/gpu.product: none
     model:
       baseIdleW: 80
-      podW: 90
       pMaxW: 400
       alphaUtil: 1.0
       betaFreq: 1.2
@@ -71,7 +62,6 @@ classes:
       joulie.io/gpu.product: none
     model:
       baseIdleW: 85
-      podW: 90
       pMaxW: 380
       alphaUtil: 1.1
       betaFreq: 1.25

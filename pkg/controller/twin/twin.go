@@ -41,7 +41,12 @@ type Input struct {
 
 	// Facility signals
 	ClusterTotalPowerW float64
-	OutsideTempC       float64 // 0 if unknown
+	// OutsideTempC is the ambient temperature the node breathes, in degrees
+	// Celsius. A positive value is always a reading; set OutsideTempKnown to
+	// mark 0 or a value below 0 as one too. Without the flag, 0 or below
+	// means unknown.
+	OutsideTempC     float64
+	OutsideTempKnown bool
 	// Topology: optional rack/cooling-zone labels from the node.
 	// When set, PSU stress is computed per-rack and cooling stress uses
 	// per-zone ambient temperature instead of the global facility value.
@@ -151,7 +156,7 @@ func Compute(in Input) Output {
 
 	// Cooling stress score: fraction of physical cooling capacity in use,
 	// adjusted for ambient temperature.
-	out.PredictedCoolingStressScore = computeCoolingStress(in.MeasuredNodePowerW, nodeTDP, in.OutsideTempC)
+	out.PredictedCoolingStressScore = computeCoolingStress(in.MeasuredNodePowerW, nodeTDP, in.OutsideTempC, in.OutsideTempKnown || in.OutsideTempC > 0)
 
 	// PSU stress score: proxy based on cluster/rack power load.
 	// Reserved for future rack-topology-aware extensions.
@@ -188,15 +193,16 @@ func computePowerHeadroom(measuredPowerW, nodeCappedPowerW float64) float64 {
 //	coolingStress  = clamp((measuredPower / nodeTDP) * tempMultiplier * 100, 0, 100)
 //
 // If nodeTDP is 0, returns 0 (no hardware info → no stress signal).
-// If ambientTemp <= 0 (unknown), tempMultiplier defaults to 1.0.
-func computeCoolingStress(measuredPowerW, nodeTDPW, ambientTempC float64) float64 {
+// If the ambient temperature is unknown, tempMultiplier defaults to 1.0. A
+// known reading of 0 or below lowers the stress, as any reading under 20 does.
+func computeCoolingStress(measuredPowerW, nodeTDPW, ambientTempC float64, ambientKnown bool) float64 {
 	if nodeTDPW <= 0 {
 		return 0
 	}
 
 	// Temperature multiplier: hotter ambient → harder to cool → higher stress.
 	var tempMultiplier float64
-	if ambientTempC <= 0 {
+	if !ambientKnown {
 		tempMultiplier = 1.0
 	} else {
 		denominator := 1.0 - (ambientTempC-20.0)*0.02

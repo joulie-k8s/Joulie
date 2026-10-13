@@ -56,12 +56,12 @@ The controller manager contains two reconcile-loop controllers and one backgroun
 
 **Reconcile-loop controllers** (run each tick):
 
-- **Twin controller**: ingests per-node telemetry into `NodeTwin.status`. Runs the cooling stress and PSU stress computations. Incorporates facility metrics (ambient temperature, PUE) when available. When nodes carry `joulie.io/rack` or `joulie.io/cooling-zone` labels, the twin computes PSU stress per-rack and cooling stress with per-zone ambient temperature.
+- **Twin controller**: ingests per-node measured power into `NodeTwin.status`, by default from Prometheus as the OpenTelemetry metrics `hw.energy` and `hw.power` (see [Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}})). Runs the cooling stress and PSU stress computations. Incorporates facility metrics (ambient temperature, IT power) when available. When nodes carry `joulie.io/rack` or `joulie.io/cooling-zone` labels, the twin computes PSU stress per rack and cooling stress with the zone's ambient temperature, or the node's own inlet temperature when the facility reads one.
 - **Policy controller**: reads `NodeTwin.status` + pod demand signals, runs the policy algorithm (`pkg/controller/policy/`), writes `NodeTwin.spec` and the `joulie.io/power-profile` node label. The state machine (`pkg/controller/fsm/`) enforces downgrade guards: nodes cannot transition from performance to eco while performance-sensitive pods are still running. Transition state is tracked via `NodeTwin.status.schedulableClass`.
 
 **Background controllers** (run on independent intervals):
 
-- **Facility metrics poller** (`ENABLE_FACILITY_METRICS=false` by default): queries Prometheus for ambient temperature, IT power, and cooling power. Computes PUE for twin and scheduler consumption.
+- **Facility metrics poller** (`ENABLE_FACILITY_METRICS=false` by default): queries Prometheus for the outdoor ambient temperature, IT and cooling power, and the ambient temperature of each cooling zone, the power of each rack and the inlet temperature of each node, by default as the `joulie.facility.*`, `joulie.cooling_zone.*`, `joulie.rack.*` and `hw.host.ambient_temperature` metrics. Logs PUE from IT and cooling power and exports the readings as `joulie_twin_facility_*`.
 
 ### Agent
 

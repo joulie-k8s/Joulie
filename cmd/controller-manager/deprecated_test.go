@@ -25,27 +25,53 @@ func resetDeprecatedEnvWarnings() {
 	deprecatedEnvWarnMu.Unlock()
 }
 
+// Every alias of both groups is read when its replacement is unset, and its
+// one warning names the replacement and the group's own removal release.
 func TestEnvOrDeprecatedFallsBackToLegacyNameWithWarning(t *testing.T) {
-	for newKey, oldKey := range legacyEnvAliases {
-		t.Run(newKey, func(t *testing.T) {
-			resetDeprecatedEnvWarnings()
-			buf := captureLog(t)
-			t.Setenv(newKey, "")
-			t.Setenv(oldKey, "legacy-value")
+	groups := []struct {
+		aliases   map[string]string
+		removedIn string
+	}{
+		{legacyEnvAliases, legacyEnvAliasesRemovedIn},
+		{inputEnvAliases, inputAliasesRemovedIn},
+	}
+	for _, g := range groups {
+		for newKey, oldKey := range g.aliases {
+			newKey, oldKey, removedIn := newKey, oldKey, g.removedIn
+			t.Run(newKey, func(t *testing.T) {
+				resetDeprecatedEnvWarnings()
+				buf := captureLog(t)
+				t.Setenv(newKey, "")
+				t.Setenv(oldKey, "legacy-value")
 
-			if got := envOrDeprecated(newKey, "default"); got != "legacy-value" {
-				t.Fatalf("envOrDeprecated(%s) = %q, want legacy value", newKey, got)
+				if got := envOrDeprecated(newKey, "default"); got != "legacy-value" {
+					t.Fatalf("envOrDeprecated(%s) = %q, want legacy value", newKey, got)
+				}
+				out := buf.String()
+				if !strings.Contains(out, "warning") || !strings.Contains(out, oldKey) || !strings.Contains(out, newKey) || !strings.Contains(out, removedIn) {
+					t.Fatalf("expected one warning naming %s, %s and %q, got %q", oldKey, newKey, removedIn, out)
+				}
+				buf.Reset()
+				envOrDeprecated(newKey, "default")
+				if buf.Len() != 0 {
+					t.Fatalf("expected the warning once per variable, got second log %q", buf.String())
+				}
+			})
+		}
+	}
+}
+
+// A name in both groups would make the warning name the wrong release.
+func TestDeprecatedEnvAliasGroupsAreDisjoint(t *testing.T) {
+	for k, v := range inputEnvAliases {
+		if _, ok := legacyEnvAliases[k]; ok {
+			t.Errorf("%s is aliased in both groups", k)
+		}
+		for lk, lv := range legacyEnvAliases {
+			if v == lv || v == lk {
+				t.Errorf("old name %s of %s is also in legacyEnvAliases", v, k)
 			}
-			out := buf.String()
-			if !strings.Contains(out, "warning") || !strings.Contains(out, oldKey) || !strings.Contains(out, newKey) {
-				t.Fatalf("expected one warning naming %s and %s, got %q", oldKey, newKey, out)
-			}
-			buf.Reset()
-			envOrDeprecated(newKey, "default")
-			if buf.Len() != 0 {
-				t.Fatalf("expected the warning once per variable, got second log %q", buf.String())
-			}
-		})
+		}
 	}
 }
 

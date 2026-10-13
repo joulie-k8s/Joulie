@@ -1,0 +1,30 @@
+# A gang that can never run whole: 2 pods of 8 GPUs each, both pinned by
+# kubernetes.io/hostname to nvl-0, which has 8 GPUs. One pod runs, the other
+# stays Unschedulable, and the running one makes no progress without its
+# gang. The v1 engine must report the stall (joulie.sim.run.stalled) and
+# complete nothing; the legacy engine force-completed such a job after 120 s,
+# which hid the deadlock.
+schemaVersion: 1
+name: deadlock-visible
+description: A gang larger than its only node stalls the run visibly instead of completing.
+cluster: {spec: tests/simcluster/specs/smoke.yaml, timing: dev}
+seed: 1
+duration: 5m
+abortOnRunStalled: 2m
+workload:
+  namespace: sim-workload
+  stallReport: 1m
+  jobs:
+  - name: gang
+    class: standard
+    pods: 2
+    gang: true
+    requests: {cpu: "8", memory: 64Gi}
+    gpus: {resource: nvidia.com/gpu, count: 8}
+    runtime: 2m
+    workClass: {cpu: cpu.compute_bound, gpu: gpu.compute_bound}
+    nodeSelector: {kubernetes.io/hostname: nvl-0}
+    tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+assertions:
+- {name: stall, type: stall, expect: {runStalled: ">= 1", gangIncomplete: ">= 1"}}
+- {name: gang, type: jobs, workload: gang, expect: {completed: "== 0"}}

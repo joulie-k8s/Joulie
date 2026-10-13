@@ -1,0 +1,29 @@
+# Smoke cluster: 8 Nodes, one per hardware family below plus one tainted
+# Node, all on full background load so every power reading moves. 7 are bare
+# metal; vm-0 is a VM with no power telemetry. The pools are chosen for
+# coverage, not to mirror any deployment. sxm-nopm has GPU persistence off:
+# whenever its GPUs go idle, their power limits fall back to the default.
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: smoke}
+spec:
+  defaults:
+    kwok: true
+    labels: {joulie.io/managed: "true"}
+    baseLoad: {cpuUtil: 1.0, gpuUtil: 1.0, memoryIntensity: 0.2, cpuClass: cpu.compute_bound, gpuClass: gpu.compute_bound}
+  facility: {ambientC: 20, amplitudeC: 5, periodH: 24, coolingZones: [{name: zone-a, offsetC: 0}, {name: zone-b, offsetC: 3}]}
+  pools:
+  - {name: intel,         profile: intel-xeon-2s-rapl,       count: 1, rack: rack-1, coolingZone: zone-a}
+  - {name: epyc,          profile: amd-epyc-2s-energy-only,  count: 1, rack: rack-1, coolingZone: zone-a}
+  - {name: hsmp,          profile: amd-epyc-2s-hsmp,         count: 1, rack: rack-1, coolingZone: zone-a}
+  - {name: nvl,           profile: nvidia-h100-nvl-8gpu,     count: 1, rack: rack-2, coolingZone: zone-b}
+  - {name: sxm-nopm,      profile: nvidia-h100-sxm-8gpu,     count: 1, rack: rack-2, coolingZone: zone-b, overrides: {gpus: {persistenceMode: disabled}}}
+  - {name: mi300x,        profile: amd-instinct-mi300x-8gpu, count: 1, rack: rack-2, coolingZone: zone-b}
+  - {name: vm,            profile: vm-no-powercap,           count: 1}
+  - name: intel-tainted   # a managed node the agent DaemonSet cannot reach (D15)
+    profile: intel-xeon-2s-rapl
+    count: 1
+    rack: rack-1
+    coolingZone: zone-a
+    taints: [{key: example.com/dedicated, value: batch, effect: NoSchedule}]
+  harness: {pools: {}}

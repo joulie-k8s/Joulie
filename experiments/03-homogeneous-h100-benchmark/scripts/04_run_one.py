@@ -126,6 +126,7 @@ def generate_trace(trace_path: pathlib.Path, seed: int, jobs: int, mean_inter_ar
     )
     run([
         "go", "run", "./simulator/cmd/workloadgen",
+        "--schema-version", "v2",
         "--jobs", str(jobs),
         "--seed", str(seed),
         "--out", str(trace_path),

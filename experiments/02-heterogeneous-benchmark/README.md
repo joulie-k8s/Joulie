@@ -2,10 +2,12 @@
 
 This experiment packages the heterogeneous-cluster inventory and the asset-generation path used by the new hardware-aware control model.
 
+> **Note (2026-10-09):** `REPORT.md` and `REPORT-standalone.md` were produced with an older simulator model and have not been rerun. Runs made now read the hardware catalog embedded in the simulator, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Model changes](../../website/content/en/docs/simulator/model-changes.md) lists each change and how far it moves `configs/benchmark-debug.yaml`.
+
 It is centered on four things:
 
 - a checked-in heterogeneous cluster description in YAML,
-- generation of KWOK nodes and simulator catalog assets from that description,
+- generation of KWOK nodes and simulator node classes from that description,
 - a quick end-to-end smoke validation path that exercises the heterogeneous GPU example on the generated assets.
 - a full sweep/collect/plot benchmark harness comparable to `experiments/01-cpu-only-benchmark`, but targeting the heterogeneous inventory.
 
@@ -23,7 +25,7 @@ The workflow:
 - `configs/cluster.yaml`
   - experiment-level config reference
 - `scripts/00_generate_assets.sh`
-  - generates manifests and simulator catalog artifacts from the YAML cluster description
+  - generates node manifests and simulator node classes from the YAML cluster description
 - `configs/benchmark.yaml`
   - heterogeneous benchmark run configuration
 - `scripts/10_setup_cluster.sh`
@@ -69,7 +71,10 @@ and refreshes:
 
 - `examples/07-simulator-gpu-powercaps/manifests/00-kwok-nodes.yaml`
 - `examples/07-simulator-gpu-powercaps/manifests/10-node-classes.yaml`
-- `simulator/catalog/hardware.generated.yaml`
+
+No hardware catalog is generated: the simulator matches each node's CPU and GPU
+against the catalog embedded in `pkg/hwinv/assets/hardware.yaml`, and the
+installer clears `SIM_HARDWARE_CATALOG_PATH` so that catalog is the one used.
 
 You can also pass a different YAML/CSV/XLSX inventory file as the first argument.
 
@@ -377,7 +382,7 @@ long cooldown tail as the last few pods drain), the benchmark enforces a fixed t
 - Energy metrics during the tail are dominated by idle-cluster power, which dilutes the
   effect of energy-aware scheduling.
 - By truncating at timeout, we capture the steady-state window where the cluster is under
-  sustained load — exactly the regime where Joulie's power-capping policies matter most.
+  sustained load, exactly the regime where Joulie's power-capping policies matter most.
 
 **Consequences for analysis:**
 
@@ -473,7 +478,7 @@ sudo tcpdump -i eth0 port 53 -nn
 # If you see queries like:
 #   joulie-scheduler-extender.joulie-system.svc.cluster.local
 #   joulie-scheduler-extender.joulie-system.svc.cluster.local.cern.ch
-# then the iptables DNS redirect is not working — recreate the cluster.
+# then the iptables DNS redirect is not working; recreate the cluster.
 ```
 
 If DNS leaks are observed, delete and recreate the cluster:

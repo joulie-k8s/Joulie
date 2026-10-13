@@ -7,9 +7,15 @@ package control
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/matbun/joulie/pkg/otel/otlpjson"
+	"github.com/matbun/joulie/pkg/otel/semconv"
 )
 
 // HTTPControlClient sends power cap control commands to an external endpoint.
@@ -20,13 +26,55 @@ type HTTPControlClient struct {
 }
 
 // HTTPPowerReader reads power telemetry from an external HTTP endpoint.
+//
+// The endpoint answers with one OTLP JSON ExportMetricsServiceRequest, such
+// as the simulator's /otlp/telemetry/{node}, and the reader returns the power
+// of the node's CPU packages (hw.type=cpu): the RAPL path it stands in for
+// measures packages only, so GPU power never enters it. A body without a
+// top-level resourceMetrics key is the legacy {"packagePowerWatts": ...}
+// JSON, read until v0.4.0 with one deprecation warning per endpoint and node.
+//
+// The agent builds a new reader on every reconcile, so what must outlive one
+// read, the previous energy points and the warning, is kept per Endpoint and
+// NodeName for the life of the process: readers with the same two fields
+// share it.
 type HTTPPowerReader struct {
 	Endpoint string
 	NodeName string
 	Client   *http.Client
 }
 
-// ReadPowerWatts fetches the current CPU package power from the telemetry endpoint.
+// httpPowerKey identifies the readers that share an httpPowerState.
+type httpPowerKey struct{ endpoint, node string }
+
+// httpPowerState is what the readers of one endpoint and node keep between
+// reads.
+type httpPowerState struct {
+	otlp       otlpjson.PowerReader // keeps the previous energy points
+	legacyWarn sync.Once
+}
+
+// httpPowerStates holds an *httpPowerState per httpPowerKey. An agent reads
+// one node from the endpoint of its telemetry profile, so it holds one entry
+// per endpoint the profile has named.
+var httpPowerStates sync.Map
+
+func (h *HTTPPowerReader) state() *httpPowerState {
+	k := httpPowerKey{endpoint: h.Endpoint, node: h.NodeName}
+	if st, ok := httpPowerStates.Load(k); ok {
+		return st.(*httpPowerState)
+	}
+	st, _ := httpPowerStates.LoadOrStore(k, &httpPowerState{})
+	return st.(*httpPowerState)
+}
+
+// maxTelemetryBody bounds the body the reader decodes. One node's export is
+// a few kilobytes.
+const maxTelemetryBody = 8 << 20
+
+// ReadPowerWatts fetches the current CPU package power from the telemetry
+// endpoint. With an OTLP body it is not ok while a CPU energy series without
+// a power gauge warms up (otlpjson.PowerReader.Watts).
 func (h *HTTPPowerReader) ReadPowerWatts() (float64, bool, error) {
 	url := strings.ReplaceAll(h.Endpoint, "{node}", h.NodeName)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -41,10 +89,26 @@ func (h *HTTPPowerReader) ReadPowerWatts() (float64, bool, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return 0, false, fmt.Errorf("telemetry endpoint status=%d", resp.StatusCode)
 	}
-	var payload map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTelemetryBody))
+	if err != nil {
 		return 0, false, err
 	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return 0, false, err
+	}
+	if _, ok := payload["resourceMetrics"]; ok {
+		var md otlpjson.MetricsData
+		if err := json.Unmarshal(body, &md); err != nil {
+			return 0, false, fmt.Errorf("telemetry endpoint OTLP body: %w", err)
+		}
+		w, ok := h.state().otlp.Watts(md, otlpjson.Selector{Node: h.NodeName, HwTypes: []string{semconv.HwTypeCPU}})
+		return w, ok, nil
+	}
+	h.state().legacyWarn.Do(func() {
+		log.Printf("warning: telemetry endpoint %s answered with the legacy packagePowerWatts JSON, which is deprecated and read until v0.4.0; serve an OTLP JSON metrics export with %s or %s points of %s=%s instead",
+			h.Endpoint, semconv.HwEnergy.Name, semconv.HwPower.Name, semconv.AttrHwType, semconv.HwTypeCPU)
+	})
 	if v, ok := extractFloat(payload, "packagePowerWatts"); ok {
 		return v, true, nil
 	}

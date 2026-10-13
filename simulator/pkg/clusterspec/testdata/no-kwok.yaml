@@ -1,0 +1,8 @@
+# Nodes for a cluster with real kubelets: no KWOK annotation or taint (CS12).
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: no-kwok}
+spec:
+  defaults: {kwok: false}
+  pools:
+  - {name: vm, profile: vm-no-powercap, count: 2}

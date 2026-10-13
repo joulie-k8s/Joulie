@@ -165,11 +165,11 @@ func renderParseFile(b []byte) (map[string]any, error) {
 
 // renderResolve turns every value below x into a renderLeaf. A mapping-level
 // src covers every value below it; {v: X, src: Y} sets the source of X, and
-// when X holds mappings, Y covers the values inside them. Label groups are
-// kept as written: their src is a field of the group, not a provenance to
-// spread over the label values.
+// when X holds mappings, Y covers the values inside them. Label groups and
+// GPU tools are kept as written: the src of a group or of a tool
+// requirement is a field of it, not a provenance to spread over its values.
 func renderResolve(x any, src, at string) (any, error) {
-	if at == "node.labels" {
+	if at == "node.labels" || at == "gpus.tools" {
 		return x, nil
 	}
 	switch t := x.(type) {
@@ -836,6 +836,15 @@ func renderValidateGPUs(p *Profile) []error {
 	if !renderPPT1Modes[g.PPT1.V] {
 		fail("ppt1 %q is not absent or present", g.PPT1.V)
 	}
+	switch g.PersistenceMode.V {
+	case "":
+	case PersistenceEnabled, PersistenceDisabled:
+		if g.Vendor != "nvidia" {
+			fail("persistenceMode applies to NVIDIA GPUs only")
+		}
+	default:
+		fail("persistenceMode %q is not %s or %s", g.PersistenceMode.V, PersistenceEnabled, PersistenceDisabled)
+	}
 	for field := range g.FieldSupport {
 		if g.Vendor != "nvidia" {
 			fail("fieldSupport applies to nvidia-smi only")
@@ -864,6 +873,25 @@ func renderValidateGPUs(p *Profile) []error {
 			fail("tools[%d] %s is listed twice", i, t.Name)
 		}
 		names[t.Name] = true
+		for j, r := range t.Requires {
+			at := fmt.Sprintf("tools[%d].requires[%d]", i, j)
+			if len(r.Paths) == 0 {
+				fail("%s has no paths", at)
+			}
+			for _, rp := range r.Paths {
+				if !path.IsAbs(rp) || path.Clean(rp) != rp {
+					fail("%s path %q is not a clean absolute path", at, rp)
+				}
+			}
+			if r.Exit < 1 || r.Exit > 255 {
+				fail("%s exit %d is not in [1, 255]", at, r.Exit)
+			}
+			if r.Src == "" {
+				fail("%s has no src", at)
+			} else if err := renderCheckSrc(r.Src, p.Sources); err != nil {
+				fail("%s: %v", at, err)
+			}
+		}
 	}
 	return errs
 }

@@ -1,0 +1,48 @@
+{
+  "capabilities": {
+    "cpuControl": true,
+    "cpuTelemetry": true,
+    "gpuControl": false,
+    "gpuTelemetry": false
+  },
+  "cpu": {
+    "controlAvailable": true,
+    "coresPerSocket": 172,
+    "driverFamily": "intel_pstate",
+    "model": "",
+    "rawModel": "Intel(R) Xeon(R) 6787P",
+    "sockets": 2,
+    "telemetryAvailable": true,
+    "totalCores": 344,
+    "vendor": "GenuineIntel",
+    "warnings": [
+      "cpu model not recognized"
+    ]
+  },
+  "gpu": {
+    "controlAvailable": false,
+    "count": 0,
+    "currentCapWatts": 0,
+    "model": "",
+    "rawModel": "",
+    "telemetryAvailable": false,
+    "vendor": "none",
+    "warnings": null
+  },
+  "inventoryResolution": {
+    "exactness": {
+      "cpu": "proxy",
+      "gpu": "generic"
+    },
+    "hardwareCatalogKey": {
+      "cpu": "",
+      "gpu": ""
+    }
+  },
+  "quality": {
+    "overall": "heuristic",
+    "warnings": [
+      "cpu model not recognized"
+    ]
+  }
+}

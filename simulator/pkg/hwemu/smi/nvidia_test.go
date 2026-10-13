@@ -1,6 +1,7 @@
 package smi
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,5 +166,70 @@ func TestS14MissingStateFileFailsTheCall(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// S16: -pm 0 writes Disabled to persistence_mode of every GPU, in place, and
+// prints one line per GPU and All done, exit 0; -i limits it to the GPUs
+// named; a value other than 0 or 1 is an invalid argument, exit 2, with
+// nothing written; the persistence_mode query field prints what is stored.
+func TestS16PersistenceModeSetAndQuery(t *testing.T) {
+	t.Parallel()
+	n := newNVLNode(t)
+	for i := 0; i < 8; i++ {
+		n.write(nvmlRel(i, "persistence_mode"), "Enabled", 0o644)
+	}
+	before, err := os.Stat(filepath.Join(n.root, nvmlRel(5, "persistence_mode")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := n.main("", "nvidia-smi", "-pm", "0")
+	var want strings.Builder
+	for i := 0; i < 8; i++ {
+		fmt.Fprintf(&want, "Disabled persistence mode for GPU 00000000:%02x:00.0.\n", 0x10+i)
+	}
+	want.WriteString("All done.\n")
+	if code != 0 || stdout != want.String() || stderr != "" {
+		t.Fatalf("-pm 0: exit %d, stdout %q, stderr %q; want 0, %q, nothing", code, stdout, stderr, want.String())
+	}
+	for i := 0; i < 8; i++ {
+		if got := n.read(nvmlRel(i, "persistence_mode")); got != "Disabled" {
+			t.Errorf("gpu%d persistence_mode = %q, want Disabled", i, got)
+		}
+	}
+	after, err := os.Stat(filepath.Join(n.root, nvmlRel(5, "persistence_mode")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Error("-pm replaced persistence_mode; the emulator reads agent-owned files back in place")
+	}
+
+	out, err := n.run("nvidia-smi", "-i", "2", "--persistence-mode=1")
+	if err != nil || string(out) != "Enabled persistence mode for GPU 00000000:12:00.0.\nAll done.\n" {
+		t.Fatalf("-i 2 --persistence-mode=1: %v, %q", err, out)
+	}
+	out, err = n.run("nvidia-smi", "--query-gpu=index,persistence_mode", "--format=csv,noheader")
+	if err != nil {
+		t.Fatalf("query: %v (%q)", err, out)
+	}
+	if want := "0, Disabled\n1, Disabled\n2, Enabled\n3, Disabled\n4, Disabled\n5, Disabled\n6, Disabled\n7, Disabled\n"; string(out) != want {
+		t.Errorf("query output %q, want %q", out, want)
+	}
+
+	for _, v := range []string{"2", "on", ""} {
+		code, stdout, _ := n.main("", "nvidia-smi", "-pm", v)
+		if code != 2 || stdout != "" {
+			t.Errorf("-pm %q: exit %d, stdout %q; want 2 and nothing", v, code, stdout)
+		}
+	}
+	if got := n.read(nvmlRel(2, "persistence_mode")); got != "Enabled" {
+		t.Errorf("gpu2 persistence_mode = %q after rejected calls, want Enabled", got)
+	}
+
+	n.remove(nvmlRel(7, "persistence_mode"))
+	code, stdout, _ = n.main("", "nvidia-smi", "-pm", "0")
+	if code != 255 || stdout != "" || n.read(nvmlRel(2, "persistence_mode")) != "Enabled" {
+		t.Errorf("-pm 0 with gpu7's file missing: exit %d, stdout %q, gpu2 %q; want 255, nothing printed or written", code, stdout, n.read(nvmlRel(2, "persistence_mode")))
 	}
 }

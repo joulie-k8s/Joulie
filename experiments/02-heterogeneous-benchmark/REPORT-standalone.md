@@ -6,6 +6,8 @@ This page reports results from the standalone simulator benchmark on a heterogen
 
 > **Note:** These results were produced with the standalone simulator before Joulie v0.2.2. That simulator chose the performance nodes as one node per hardware family, then filled the remaining slots in node-name order. Joulie v0.2.2 splits the performance slots across hardware families in proportion to family size. These results have not been rerun with that split, and the exact configuration of the published runs is not recorded in the repository. On this cluster that order put 995 of the 1,000 static performance slots on CPU nodes; see section 7.1. Its `queue_aware_v1` demand also counted only running performance jobs, not jobs waiting for a node; that changed after v0.2.2.
 
+> **Note (2026-10-09):** Sections 1.2, 1.3, 1.4, 1.6 and 2.1 do not describe the model these runs used. With the scripts in this repository, from the commit that added this report to v0.2.3, the standalone sweep gave the simulator a hardware catalog generated from the inventory, which gives every CPU a 300 W TDP and no measured curve, and loaded no node classes. Every CPU therefore ran the analytic fallback model (80 W idle, 420 W at full load), not a SPECpower curve, and every GPU the same generic 300 W board (30 W idle, `ComputeGamma` 1) whatever its family, so the eco GPU cap was the same share of 300 W for all five families. Eco set a CPU frequency scale (`cpu_eco_pct_of_max`), never a RAPL cap, so no CPU ran at 220 W. Thermal throttling was on by default (CPU 85 to 97 °C, GPU 82 to 92 °C) and is opt-in now, and the savings include a cut of idle CPU power on eco nodes (up to 50 % below 20 % utilization) that the simulator no longer models. These results have not been rerun with the current model. [Model changes](../../website/content/en/docs/simulator/model-changes.md) lists every change since v0.2.3 and how far it moves this experiment's `configs/benchmark-debug.yaml`: on that configuration the saving of C against A is 31.8 % with v0.2.3 and the generated catalog these runs read, and 30.5 % now.
+
 ## Scope
 
 The benchmark compares three baselines on a **heterogeneous GPU cluster** mixing 5 distinct GPU hardware families plus CPU-only nodes, using the **Go standalone simulator** (`joulie-simulator`) rather than Kind+KWOK. There is no Kubernetes control plane involved; all scheduling, power capping, and job lifecycle management happen via direct in-memory simulation with scoring-based job placement.
@@ -383,7 +385,7 @@ Joulie delivers a **double win**:
 - **C uses 20.1% less total energy** than A while completing **4.8× more jobs**.
 - **Energy per completed job drops by 83%**: from 741 kWh/job (A) to 125 kWh/job (B/C).
 
-This is not a trade-off — Joulie strictly dominates unmanaged Kubernetes on both axes. The HP/eco partitioning enables better bin-packing and workload concentration, which simultaneously reduces energy waste and increases scheduling throughput.
+This is not a trade-off: Joulie strictly dominates unmanaged Kubernetes on both axes. The HP/eco partitioning enables better bin-packing and workload concentration, which simultaneously reduces energy waste and increases scheduling throughput.
 
 ### 9.2 Total energy saved (60 sim-hours, mean of 2 seeds)
 
@@ -406,16 +408,16 @@ Extrapolating from the 60 sim-hour window to a full year of continuous operation
 #### Assumptions
 
 - **Annualization factor**: 8,760 h / 60 h = 146×. Assumes the 60-hour workload pattern (2.5 diurnal cycles) is representative of year-round operation.
-- **Electricity cost**: $0.10/kWh — typical US commercial/industrial datacenter rate.
-- **CO₂ intensity**: 0.385 kg CO₂/kWh — 2024 EPA US national grid average. European grids (0.25–0.30 kg/kWh) would yield proportionally lower CO₂ figures.
+- **Electricity cost**: $0.10/kWh, a typical US commercial/industrial datacenter rate.
+- **CO₂ intensity**: 0.385 kg CO₂/kWh, the 2024 EPA US national grid average. European grids (0.25 to 0.30 kg/kWh) would yield proportionally lower CO₂ figures.
 - **US household**: 10,500 kWh/year average annual electricity consumption (EIA).
 
 ### 9.4 Context
 
-This heterogeneous GPU cluster (5 GPU families, 22,760 GPUs) represents a realistic mixed-vendor AI training facility. Joulie saves **$933K/year** in electricity costs and avoids **3,592 tonnes of CO₂** — equivalent to:
+This heterogeneous GPU cluster (5 GPU families, 22,760 GPUs) represents a realistic mixed-vendor AI training facility. Joulie saves **$933K/year** in electricity costs and avoids **3,592 tonnes of CO₂**, equivalent to:
 
 - **780 passenger cars** removed from the road for a year (EPA: 4.6 tonnes CO₂/car/year).
-- **1,460 transatlantic flights** (London–New York round trip, ~2.46 tonnes CO₂/flight).
+- **1,460 transatlantic flights** (London to New York round trip, ~2.46 tonnes CO₂/flight).
 - Powering **889 average US homes** for an entire year.
 
 The heterogeneous fleet introduces GPU placement constraints that limit savings compared to a homogeneous cluster (see Experiment 03, which achieves 30% savings). Even so, the 21% facility energy reduction with simultaneous 4.6× throughput improvement demonstrates that Joulie is effective across diverse hardware configurations.

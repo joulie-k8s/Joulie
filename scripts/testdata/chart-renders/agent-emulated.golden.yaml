@@ -1,0 +1,322 @@
+# Source: joulie/templates/agent-emulated.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: joulie-agent-emu-0
+  namespace: default
+  labels:
+    app.kubernetes.io/name: joulie-agent
+    app.kubernetes.io/component: emulated
+    sim.joulie.io/agent-index: "0"
+  annotations:
+    sim.joulie.io/node: "epyc-0"
+    sim.joulie.io/profile: "amd-epyc-2s-energy-only"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: joulie-agent
+      app.kubernetes.io/component: emulated
+      sim.joulie.io/agent-index: "0"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: joulie-agent
+        app.kubernetes.io/component: emulated
+        sim.joulie.io/agent-index: "0"
+      annotations:
+        sim.joulie.io/node: "epyc-0"
+        sim.joulie.io/profile: "amd-epyc-2s-energy-only"
+    spec:
+      serviceAccountName: joulie-agent
+      hostNetwork: false
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        joulie.io/hwemu-host: "true"
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+        - effect: NoSchedule
+          key: amd.com/gpu
+          operator: Exists
+      containers:
+        - name: agent
+          image: "registry.cern.ch/joulie/joulie-agent:latest"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: NODE_NAME
+              value: "epyc-0"
+            - name: PATH
+              value: "/emu/bin:/usr/local/bin:/usr/bin:/bin"
+            - name: METRICS_ADDR
+              value: ":8080"
+            - name: RECONCILE_INTERVAL
+              value: "20s"
+            - name: SIMULATE_ONLY
+              value: "false"
+          securityContext:
+            privileged: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: true
+          volumeMounts:
+            - name: host-sys
+              mountPath: /host-sys
+            - name: hwemu-cpuinfo
+              mountPath: /proc/cpuinfo
+              readOnly: true
+            - name: hwemu-state
+              mountPath: /emu/state
+            - name: hwemu-bin
+              mountPath: /emu/bin
+              readOnly: true
+            - name: hwemu-lib
+              mountPath: /emu/lib
+              readOnly: true
+      volumes:
+        - name: host-sys
+          hostPath:
+            path: /var/lib/joulie-hwemu/epyc-0/sys
+            type: Directory
+        - name: hwemu-cpuinfo
+          hostPath:
+            path: /var/lib/joulie-hwemu/epyc-0/cpuinfo
+            type: File
+        - name: hwemu-state
+          hostPath:
+            path: /var/lib/joulie-hwemu/epyc-0/state
+            type: Directory
+        - name: hwemu-bin
+          hostPath:
+            path: /var/lib/joulie-hwemu/epyc-0/bin
+            type: Directory
+        - name: hwemu-lib
+          hostPath:
+            path: /var/lib/joulie-hwemu/lib
+            type: Directory
+# Source: joulie/templates/agent-emulated.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: joulie-agent-emu-1
+  namespace: default
+  labels:
+    app.kubernetes.io/name: joulie-agent
+    app.kubernetes.io/component: emulated
+    sim.joulie.io/agent-index: "1"
+  annotations:
+    sim.joulie.io/node: "mi300x-0"
+    sim.joulie.io/profile: "amd-instinct-mi300x-8gpu"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: joulie-agent
+      app.kubernetes.io/component: emulated
+      sim.joulie.io/agent-index: "1"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: joulie-agent
+        app.kubernetes.io/component: emulated
+        sim.joulie.io/agent-index: "1"
+      annotations:
+        sim.joulie.io/node: "mi300x-0"
+        sim.joulie.io/profile: "amd-instinct-mi300x-8gpu"
+    spec:
+      serviceAccountName: joulie-agent
+      hostNetwork: false
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        joulie.io/hwemu-host: "true"
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+        - effect: NoSchedule
+          key: amd.com/gpu
+          operator: Exists
+      containers:
+        - name: agent
+          image: "registry.cern.ch/joulie/joulie-agent:latest"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: NODE_NAME
+              value: "mi300x-0"
+            - name: PATH
+              value: "/emu/bin:/usr/local/bin:/usr/bin:/bin"
+            - name: METRICS_ADDR
+              value: ":8080"
+            - name: RECONCILE_INTERVAL
+              value: "20s"
+            - name: SIMULATE_ONLY
+              value: "false"
+          securityContext:
+            privileged: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: true
+          volumeMounts:
+            - name: host-sys
+              mountPath: /host-sys
+            - name: hwemu-cpuinfo
+              mountPath: /proc/cpuinfo
+              readOnly: true
+            - name: hwemu-state
+              mountPath: /emu/state
+            - name: hwemu-bin
+              mountPath: /emu/bin
+              readOnly: true
+            - name: hwemu-lib
+              mountPath: /emu/lib
+              readOnly: true
+      volumes:
+        - name: host-sys
+          hostPath:
+            path: /var/lib/joulie-hwemu/mi300x-0/sys
+            type: Directory
+        - name: hwemu-cpuinfo
+          hostPath:
+            path: /var/lib/joulie-hwemu/mi300x-0/cpuinfo
+            type: File
+        - name: hwemu-state
+          hostPath:
+            path: /var/lib/joulie-hwemu/mi300x-0/state
+            type: Directory
+        - name: hwemu-bin
+          hostPath:
+            path: /var/lib/joulie-hwemu/mi300x-0/bin
+            type: Directory
+        - name: hwemu-lib
+          hostPath:
+            path: /var/lib/joulie-hwemu/lib
+            type: Directory
+# Source: joulie/templates/agent-emulated.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: joulie-agent-emu-2
+  namespace: default
+  labels:
+    app.kubernetes.io/name: joulie-agent
+    app.kubernetes.io/component: emulated
+    sim.joulie.io/agent-index: "2"
+  annotations:
+    sim.joulie.io/node: "nvl-0"
+    sim.joulie.io/profile: "nvidia-h100-nvl-8gpu"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: joulie-agent
+      app.kubernetes.io/component: emulated
+      sim.joulie.io/agent-index: "2"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: joulie-agent
+        app.kubernetes.io/component: emulated
+        sim.joulie.io/agent-index: "2"
+      annotations:
+        sim.joulie.io/node: "nvl-0"
+        sim.joulie.io/profile: "nvidia-h100-nvl-8gpu"
+    spec:
+      serviceAccountName: joulie-agent
+      hostNetwork: false
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        joulie.io/hwemu-host: "true"
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+        - effect: NoSchedule
+          key: amd.com/gpu
+          operator: Exists
+      containers:
+        - name: agent
+          image: "registry.cern.ch/joulie/joulie-agent:latest"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: NODE_NAME
+              value: "nvl-0"
+            - name: PATH
+              value: "/emu/bin:/usr/local/bin:/usr/bin:/bin"
+            - name: METRICS_ADDR
+              value: ":8080"
+            - name: RECONCILE_INTERVAL
+              value: "20s"
+            - name: SIMULATE_ONLY
+              value: "false"
+          securityContext:
+            privileged: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: true
+          volumeMounts:
+            - name: host-sys
+              mountPath: /host-sys
+            - name: hwemu-cpuinfo
+              mountPath: /proc/cpuinfo
+              readOnly: true
+            - name: hwemu-state
+              mountPath: /emu/state
+            - name: hwemu-bin
+              mountPath: /emu/bin
+              readOnly: true
+            - name: hwemu-lib
+              mountPath: /emu/lib
+              readOnly: true
+            - name: hwemu-nvidiactl
+              mountPath: /dev/nvidiactl
+            - mountPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1
+              name: driver-stub
+              readOnly: true
+      volumes:
+        - name: host-sys
+          hostPath:
+            path: /var/lib/joulie-hwemu/nvl-0/sys
+            type: Directory
+        - name: hwemu-cpuinfo
+          hostPath:
+            path: /var/lib/joulie-hwemu/nvl-0/cpuinfo
+            type: File
+        - name: hwemu-state
+          hostPath:
+            path: /var/lib/joulie-hwemu/nvl-0/state
+            type: Directory
+        - name: hwemu-bin
+          hostPath:
+            path: /var/lib/joulie-hwemu/nvl-0/bin
+            type: Directory
+        - name: hwemu-lib
+          hostPath:
+            path: /var/lib/joulie-hwemu/lib
+            type: Directory
+        - name: hwemu-nvidiactl
+          hostPath:
+            path: /var/lib/joulie-hwemu/nvl-0/dev/nvidiactl
+            type: File
+        - hostPath:
+            path: /var/lib/joulie-hwemu/lib/driver-stub
+            type: File
+          name: driver-stub

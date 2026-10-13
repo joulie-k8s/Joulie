@@ -1,5 +1,7 @@
 # KWOK Benchmark Experiment
 
+> **Note (2026-10-09):** `REPORT.md` and `REPORT-standalone.md` were produced with an older simulator model and have not been rerun. Runs made now read the hardware catalog embedded in the simulator, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Model changes](../../website/content/en/docs/simulator/model-changes.md) lists each change and how far it moves `configs/benchmark-debug.yaml`.
+
 This experiment harness measures throughput/latency vs energy-control behavior in a mixed real+fake setup:
 
 - real scheduler/API server,
@@ -196,7 +198,7 @@ sudo tcpdump -i eth0 port 53 -nn
 # If you see queries like:
 #   joulie-scheduler-extender.joulie-system.svc.cluster.local
 #   joulie-scheduler-extender.joulie-system.svc.cluster.local.cern.ch
-# then the iptables DNS redirect is not working — recreate the cluster.
+# then the iptables DNS redirect is not working: recreate the cluster.
 ```
 
 If DNS leaks are observed, delete and recreate the cluster:
@@ -220,7 +222,7 @@ long cooldown tail as the last few pods drain), the benchmark enforces a fixed t
 - Energy metrics during the tail are dominated by idle-cluster power, which dilutes the
   effect of energy-aware scheduling.
 - By truncating at timeout, we capture the steady-state window where the cluster is under
-  sustained load — exactly the regime where Joulie's power-capping policies matter most.
+  sustained load, exactly the regime where Joulie's power-capping policies matter most.
 
 **Consequences for analysis:**
 

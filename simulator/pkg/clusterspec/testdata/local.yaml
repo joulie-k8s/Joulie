@@ -1,0 +1,9 @@
+# A pool of a local profile next to a pool of a builtin one (CS07); run
+# with lab-vm-4cpu.yaml copied into a profiles directory.
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: local}
+spec:
+  pools:
+  - {name: lab, profile: lab-vm-4cpu, count: 2}
+  - {name: vm, profile: vm-no-powercap, count: 1}

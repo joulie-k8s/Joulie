@@ -4,21 +4,27 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
-	"github.com/matbun/joulie/pkg/hwinv"
+	"github.com/matbun/joulie/simulator/pkg/compat"
+	"github.com/matbun/joulie/simulator/pkg/facility"
 	"github.com/matbun/joulie/simulator/pkg/hw"
 	"github.com/matbun/joulie/simulator/pkg/phys"
+	"github.com/matbun/joulie/simulator/pkg/workload"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
@@ -28,7 +34,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 )
 
 var podListFunc = listRunningPodsByNode
@@ -67,6 +72,9 @@ type nodeState struct {
 	GPUCapacityDevices      float64          `json:"gpuCapacityDevices"`
 	CPUSockets              []cpuSocketState `json:"cpuSockets,omitempty"`
 	GPUDevices              []gpuDeviceState `json:"gpuDevices,omitempty"`
+	// SimTime is the simulated time the node's physics has reached: only
+	// stepNode moves it, by the time it steps.
+	SimTime time.Time `json:"simTime"`
 }
 
 type cpuSocketState struct {
@@ -86,6 +94,21 @@ type gpuDeviceState struct {
 	TemperatureC       float64 `json:"temperatureC"`
 	ThermalThrottle    float64 `json:"thermalThrottle"`
 	SettledAtTimestamp string  `json:"settledAt,omitempty"`
+}
+
+// clone is a copy of st that shares nothing with it, for a reader that
+// uses it after releasing s.mu while the physics tick writes st.
+func (st *nodeState) clone() nodeState {
+	cp := *st
+	cp.CPUSockets = append([]cpuSocketState(nil), st.CPUSockets...)
+	cp.GPUDevices = append([]gpuDeviceState(nil), st.GPUDevices...)
+	if st.ByIntentClass != nil {
+		cp.ByIntentClass = make(map[string]int, len(st.ByIntentClass))
+		for k, v := range st.ByIntentClass {
+			cp.ByIntentClass[k] = v
+		}
+	}
+	return cp
 }
 
 type simModel = hw.Profile
@@ -108,40 +131,51 @@ type runningPodInfo struct {
 }
 
 type simJob struct {
-	JobID             string
-	WorkloadID        string
-	WorkloadType      string
-	PodRole           string
-	Gang              bool
-	Class             string
-	Namespace         string
-	SubmitOffsetSec   float64
+	JobID              string
+	WorkloadID         string
+	WorkloadType       string
+	PodRole            string
+	Gang               bool
+	Class              string
+	Namespace          string
+	SubmitOffsetSec    float64
 	RequestedCPUCores  float64
 	RequestedMemoryMiB float64 // 0 means use default (64Mi)
 	CPUUnitsTotal      float64
-	CPUUnitsRemaining float64
-	SensitivityCPU    float64
-	CPUWorkClass      string
-	CPUUtilTarget     float64
-	RequestedGPUs     float64
-	GPUResourceName   string
-	GPUUnitsTotal     float64
-	GPUUnitsRemaining float64
-	SensitivityGPU    float64
-	GPUWorkClass      string
-	GPUUtilTarget     float64
-	MemoryIntensity   float64
-	IOIntensity       float64
-	CPUFeedIntensity  float64
-	Submitted         bool
-	Completed         bool
-	SubmitAt          time.Time
-	SubmittedAt       time.Time
-	CompletedAt       time.Time
-	LastProgressAt    time.Time
-	DeleteRequestedAt time.Time
-	PodName           string
-	NodeName          string
+	CPUUnitsRemaining  float64
+	SensitivityCPU     float64
+	CPUWorkClass       string
+	CPUUtilTarget      float64
+	RequestedGPUs      float64
+	GPUResourceName    string
+	GPUUnitsTotal      float64
+	GPUUnitsRemaining  float64
+	SensitivityGPU     float64
+	GPUWorkClass       string
+	GPUUtilTarget      float64
+	MemoryIntensity    float64
+	IOIntensity        float64
+	CPUFeedIntensity   float64
+	Submitted          bool
+	Completed          bool
+	SubmitAt           time.Time
+	SubmittedAt        time.Time
+	CompletedAt        time.Time
+	LastProgressAt     time.Time
+	DeleteRequestedAt  time.Time
+	PodName            string
+	NodeName           string
+
+	// Read from the trace for the v1 engine. SchemaVersion is the record's
+	// schemaVersion. Affinity, NodeSelector and Tolerations are the
+	// podTemplate's placement, read from v3 records only; legacy pods never
+	// carry them. SensitivitySet is whether the record gave sensitivity.cpu
+	// or sensitivity.gpu; without either both are 1.
+	SchemaVersion  string
+	Affinity       *corev1.Affinity
+	NodeSelector   map[string]string
+	Tolerations    []corev1.Toleration
+	SensitivitySet bool
 }
 
 type workloadEngine struct {
@@ -150,10 +184,13 @@ type workloadEngine struct {
 	jobs           []*simJob
 	jobByID        map[string]*simJob
 	jobsByWorkload map[string][]*simJob
+	// opts are the engine's settings; the zero value is the legacy engine.
+	opts workloadOptions
 }
 
 type simulator struct {
 	mu            sync.RWMutex
+	startTime     time.Time
 	state         map[string]*nodeState
 	model         simModel
 	nodeModels    map[string]simModel
@@ -172,6 +209,10 @@ type simulator struct {
 	tsFile        *os.File
 	tsWriter      *bufio.Writer
 	tsPath        string
+	// energyJByHwType is the modelled nodes' energy by hw.type (cpu, gpu),
+	// as stepNode returns it; an emulated node's energy is its host's.
+	// addEnergyLocked creates it.
+	energyJByHwType map[string]float64
 
 	requestsTotal   *prometheus.CounterVec
 	requestDuration *prometheus.HistogramVec
@@ -190,23 +231,43 @@ type simulator struct {
 	controlResult   *prometheus.CounterVec
 
 	workload *workloadEngine
+	// run is the v1 workload run that is active, or the last one; nil
+	// before the first. The run API stores it, the emulator's callbacks
+	// read it.
+	run atomic.Pointer[workloadRun]
+	// emu is emulate mode, nil without SIM_EMULATE. It is set before the
+	// server starts and never changes.
+	emu *emulateRuntime
 
 	// Facility ambient temperature parameters.
 	facilityBaseAmbientTempC float64
 	facilityTempAmplitudeC   float64
 	facilityTempPeriodH      float64
-	facilityPeakITPowerW     float64
+	// facilityMu guards facilityPeakITPowerW, which the workload loop and
+	// the emulator's facility callback both update.
+	facilityMu           sync.Mutex
+	facilityPeakITPowerW float64
 
 	// Facility Prometheus gauges.
-	facilityAmbientTemp  prometheus.Gauge
-	facilityPUE          prometheus.Gauge
-	facilityITPowerW     prometheus.Gauge
+	facilityAmbientTemp   prometheus.Gauge
+	facilityPUE           prometheus.Gauge
+	facilityITPowerW      prometheus.Gauge
 	facilityCoolingPowerW prometheus.Gauge
 }
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[joulie-simulator] ")
+	if err := checkModes(os.Getenv); err != nil {
+		log.Fatal(err)
+	}
+	workloadOpts, warnings, err := loadWorkloadOptions(os.Getenv, boolEnv(envEmulate, false))
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, w := range warnings {
+		log.Printf("warning: %s", w)
+	}
 
 	baseModel := defaultBaseModelFromEnv()
 	if err := hw.ValidateProfile(baseModel); err != nil {
@@ -244,9 +305,11 @@ func main() {
 	s.catalog = catalog
 	s.configurePersistence(strings.TrimSpace(envOrDefault("SIM_DEBUG_PERSIST_DIR", "/tmp/joulie-simulator-debug")))
 
+	// A legacy trace loads into the legacy engine here; a v1 trace starts
+	// an implicit run once emulate mode is up.
 	tracePath := strings.TrimSpace(os.Getenv("SIM_WORKLOAD_TRACE_PATH"))
-	if tracePath != "" {
-		if err := s.initWorkloadEngineFromTrace(tracePath); err != nil {
+	if tracePath != "" && workloadOpts.model() == workload.ModelLegacy {
+		if err := s.initWorkloadEngineWithOptions(tracePath, workloadOpts); err != nil {
 			log.Printf("warning: workload trace disabled: %v", err)
 		}
 	}
@@ -264,19 +327,62 @@ func main() {
 		return
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if boolEnv(envEmulate, false) {
+		if err := s.startEmulate(ctx); err != nil {
+			log.Fatalf("emulate mode: %v", err)
+		}
+	} else {
+		// Without emulate mode the physics tick steps the modelled nodes;
+		// in emulate mode the emulator's tick does (stepLegacyNodes).
+		go s.runPhysicsLoop(ctx, durationEnv(envPhysicsTick, defaultPhysicsTick))
+	}
+
 	if boolEnv("SIM_K8S_POD_WATCH", true) {
-		go s.startPodPolling(durationEnv("SIM_POLL_INTERVAL", 15*time.Second))
+		go s.startPodPolling(durationEnv("SIM_POLL_INTERVAL", defaultPollInterval))
 	}
 	if s.workload != nil {
-		go s.startWorkloadLoop(durationEnv("SIM_WORKLOAD_TICK", time.Second))
+		go s.startWorkloadLoop(durationEnv(workload.EnvTick, defaultWorkloadTick))
 	}
 	go s.startDebugSnapshotLoop(durationEnv("SIM_DEBUG_SNAPSHOT_INTERVAL", 5*time.Second))
 
+	mux := s.newMux()
+	runs := s.registerRunHandlers(mux, workloadOpts)
+	if tracePath != "" && workloadOpts.model() == workload.ModelV1 {
+		runs.startImplicitRun(tracePath)
+	}
+
 	addr := envOrDefault("SIM_ADDR", ":18080")
+	srv := &http.Server{Addr: addr, Handler: mux}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	log.Printf("listening on %s", addr)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("server failed: %v", err)
+	}
+	s.stopEmulate()
+	// A run still active when the simulator stops ends aborted, so its
+	// files close with their last records.
+	if r := s.run.Load(); r != nil && r.active() {
+		r.finish(false)
+	}
+}
+
+// newMux routes the simulator's HTTP API. Emulate mode adds the
+// compatibility exporters, /debug/emulate and /readyz, and has no fake
+// Prometheus: its facility goes out as OpenTelemetry metrics.
+func (s *simulator) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/telemetry/", s.handleTelemetry)
+	mux.HandleFunc("/otlp/telemetry/", s.handleOTLPTelemetry)
 	mux.HandleFunc("/control/", s.handleControl)
 	mux.HandleFunc("/state/", s.handleState)
 	mux.HandleFunc("/debug/nodes", s.handleDebugNodes)
@@ -284,12 +390,14 @@ func main() {
 	mux.HandleFunc("/debug/events", s.handleDebugEvents)
 	mux.HandleFunc("/debug/energy", s.handleDebugEnergy)
 	mux.HandleFunc("/debug/timeseries", s.handleDebugTimeseries)
-	mux.HandleFunc("/api/v1/query", s.handleFakePrometheusQuery)
-
-	log.Printf("listening on %s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatalf("server failed: %v", err)
+	if s.emu != nil {
+		mux.Handle(compat.PathPrefix, s.emu.compat.Handler())
+		mux.HandleFunc("/debug/emulate", s.handleDebugEmulate)
+		mux.HandleFunc("/readyz", s.handleReadyz)
+	} else {
+		mux.HandleFunc("/api/v1/query", s.handleFakePrometheusQuery)
 	}
+	return mux
 }
 
 func newSimulator(model simModel, selector labels.Selector, classes []simNodeClass, eventMax int) *simulator {
@@ -301,6 +409,7 @@ func newSimulatorWithRegisterer(model simModel, selector labels.Selector, classe
 		eventMax = 0
 	}
 	s := &simulator{
+		startTime:     time.Now().UTC(),
 		state:         map[string]*nodeState{},
 		model:         model,
 		nodeModels:    map[string]simModel{},
@@ -459,6 +568,7 @@ func (s *simulator) getNode(node string) *nodeState {
 			LastAction:              "none",
 			LastResult:              "none",
 			LastUpdate:              time.Now().UTC(),
+			SimTime:                 time.Now().UTC(),
 			ByIntentClass:           map[string]int{},
 			GPUCapWattsPerGpu:       model.GPU.MaxWattsPerGPU,
 			GPUTargetCapWattsPerGpu: model.GPU.MaxWattsPerGPU,
@@ -494,210 +604,22 @@ func (s *simulator) getNode(node string) *nodeState {
 				})
 			}
 		}
+		// A step of 0 s brings the readings up to date with the
+		// targets; it advances nothing.
+		stepNode(st, model, 0, physMaxSubstep)
 		s.state[node] = st
 	}
 	return st
 }
-
-func (s *simulator) modelForNode(node string) simModel {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if m, ok := s.nodeModels[node]; ok {
-		return m
-	}
-	return s.model
-}
-
-
-func (s *simulator) nodePowerWithModel(st *nodeState, model simModel) float64 {
-	s.updateNodeDynamicsWithModel(st, model)
-	cpuInstant := cpuPowerWithModel(st, model)
-	gpuInstant := gpuPowerWithModel(st, model)
-	st.CPUInstantPowerWatts = cpuInstant
-	st.GPUPowerWatts = gpuInstant
-	if st.TotalAvgPowerWatts > 0 {
-		return math.Round(st.TotalAvgPowerWatts*100) / 100
-	}
-	return math.Round((cpuInstant+gpuInstant)*100) / 100
-}
-
-func gpuPowerWithModel(st *nodeState, model simModel) float64 {
-	if model.GPU.Count <= 0 || model.GPU.MaxWattsPerGPU <= 0 {
-		return 0
-	}
-	if len(st.GPUDevices) == 0 {
-		for i := 0; i < model.GPU.Count; i++ {
-			st.GPUDevices = append(st.GPUDevices, gpuDeviceState{
-				Index:          i,
-				CapWatts:       model.GPU.MaxWattsPerGPU,
-				TargetCapWatts: model.GPU.MaxWattsPerGPU,
-			})
-		}
-	}
-	gpuModel := phys.CappedBoardGPUModel{
-		IdleW:         model.GPU.IdleWattsPerGPU,
-		MaxW:          model.GPU.MaxWattsPerGPU,
-		ComputeGamma:  model.GPU.ComputeGamma,
-		MemoryEpsilon: model.GPU.MemoryEpsilon,
-		MemoryGamma:   model.GPU.MemoryGamma,
-	}
-	total := 0.0
-	perfMul := 0.0
-	class := strings.TrimSpace(st.GPUWorkClass)
-	if class == "" {
-		class = "gpu.mixed"
-	}
-
-	// Distribute node-average GPU utilization across individual devices.
-	// Instead of assigning the same average util to every device, estimate
-	// how many GPUs are actively occupied and give those full utilization
-	// while the rest sit idle (util = 0). This correctly models per-device
-	// idle power management: idle GPUs on managed nodes can enter deep
-	// sleep states, while active GPUs run at their true utilization.
-	nDevices := float64(len(st.GPUDevices))
-	avgUtil := clamp01(st.GPUUtil)
-	activeDevices := int(math.Ceil(avgUtil * nDevices))
-	if activeDevices > len(st.GPUDevices) {
-		activeDevices = len(st.GPUDevices)
-	}
-	activeUtil := 0.0
-	if activeDevices > 0 {
-		activeUtil = clamp01(avgUtil * nDevices / float64(activeDevices))
-	}
-
-	for i := range st.GPUDevices {
-		d := &st.GPUDevices[i]
-		deviceUtil := 0.0
-		if i < activeDevices {
-			deviceUtil = activeUtil
-		}
-		deviceState := phys.DeviceState{
-			Utilization:      deviceUtil,
-			CapWatts:         d.CapWatts,
-			MaxCapWatts:      model.GPU.MaxWattsPerGPU,
-			IdlePowerWatts:   model.GPU.IdleWattsPerGPU,
-			MemoryIntensity:  st.MemoryIntensity,
-			CPUFeedIntensity: st.CPUFeedIntensity,
-			TemperatureC:     d.TemperatureC,
-			ThermalThrottle:  d.ThermalThrottle,
-			Class:            class,
-		}
-		p := gpuModel.Power(deviceState)
-		t := gpuModel.ThroughputMultiplier(deviceState, class)
-		d.PowerWatts = p
-		d.PerfMultiplier = t
-		total += p
-		perfMul += t
-	}
-	if len(st.GPUDevices) > 0 {
-		st.GPUPerfMultiplier = perfMul / float64(len(st.GPUDevices))
-	} else {
-		st.GPUPerfMultiplier = 1.0
-	}
-	return math.Round(total*100) / 100
-}
-
-func cpuPowerWithModel(st *nodeState, model simModel) float64 {
-	util := clamp01(st.CPUUtil)
-	freq := clamp01(st.FreqScale)
-	cpuClass := strings.TrimSpace(st.CPUWorkClass)
-	if cpuClass == "" {
-		cpuClass = "cpu.mixed"
-	}
-	capW := st.CapWatts
-	if capW < model.RaplCapMinW {
-		capW = model.RaplCapMinW
-	}
-	if model.RaplCapMaxW > 0 && capW > model.RaplCapMaxW {
-		capW = model.RaplCapMaxW
-	}
-	minFreq := minFreqScale(model)
-	cpuState := phys.DeviceState{
-		Utilization:     util,
-		FreqScale:       freq,
-		CapWatts:        capW,
-		MemoryIntensity: st.MemoryIntensity,
-		IOIntensity:     st.IOIntensity,
-		TemperatureC:    st.CPUTemperatureC,
-		ThermalThrottle: st.CPUThermalThrottle,
-		Class:           cpuClass,
-	}
-
-	p := 0.0
-	if len(model.CPUPowerCurve) > 0 {
-		cpuModel := phys.MeasuredCurveCPUModel{
-			Points: model.CPUPowerCurve,
-			Knee:   cpuKneeFromModel(model),
-		}
-		p = cpuModel.Power(cpuState)
-	} else {
-		alpha := model.AlphaUtil
-		if alpha <= 0 {
-			alpha = 1
-		}
-		beta := model.BetaFreq
-		if beta <= 0 {
-			beta = 1
-		}
-		activity := 1.0 - 0.30*clamp01(st.MemoryIntensity) - 0.45*clamp01(st.IOIntensity)
-		activity = math.Max(0.35, math.Min(1.0, activity))
-		p = model.BaseIdleW + (model.PMaxW-model.BaseIdleW)*math.Pow(clamp01(util*activity), alpha)*math.Pow(freq, beta)
-		p *= 1.0 - 0.35*clamp01(st.CPUThermalThrottle)
-	}
-	p = math.Max(20, p)
-
-	// CPU idle power management: when the node is managed (throttle > 0,
-	// indicating Joulie agent has set a DVFS policy) and CPU utilization
-	// is low, model aggressive C-state entry (C6/C10) that reduces idle
-	// power by up to 50%. The reduction scales with idle fraction.
-	// Threshold at 20% util captures partially-idle nodes where cores
-	// can enter deep sleep. Unmanaged nodes (baseline A, throttle == 0)
-	// stay at full idle power.
-	if st.TargetThrottlePct > 0 && util < 0.20 {
-		idleFrac := 1.0 - util/0.20 // 1.0 at util=0, 0.0 at util=0.20
-		cstateReduction := 0.50 * idleFrac
-		p = p * (1.0 - cstateReduction)
-		p = math.Max(20, p)
-	}
-
-	alpha := model.AlphaUtil
-	if alpha <= 0 {
-		alpha = 1
-	}
-	beta := model.BetaFreq
-	if beta <= 0 {
-		beta = 1
-	}
-	activity := 1.0 - 0.30*clamp01(st.MemoryIntensity) - 0.45*clamp01(st.IOIntensity)
-	activity = math.Max(0.35, math.Min(1.0, activity))
-	minPower := model.BaseIdleW + (model.PMaxW-model.BaseIdleW)*math.Pow(clamp01(util*activity), alpha)*math.Pow(minFreq, beta)
-	st.CapSaturated = false
-	if p > capW {
-		st.CapSaturated = minPower > capW
-		targetFreq := solveFreqScaleForCap(model, util, capW, cpuClass)
-		st.FreqScale = math.Max(minFreq, math.Min(st.FreqScale, targetFreq))
-		freq = clamp01(st.FreqScale)
-		cpuState.FreqScale = freq
-		if len(model.CPUPowerCurve) > 0 {
-			cpuModel := phys.MeasuredCurveCPUModel{
-				Points: model.CPUPowerCurve,
-				Knee:   cpuKneeFromModel(model),
-			}
-			p = cpuModel.Power(cpuState)
-		} else {
-			p = model.BaseIdleW + (model.PMaxW-model.BaseIdleW)*math.Pow(clamp01(util*activity), alpha)*math.Pow(freq, beta)
-			p *= 1.0 - 0.35*clamp01(st.CPUThermalThrottle)
-		}
-	}
-	return math.Min(p, capW+model.RaplHeadW)
-}
-
 
 func (s *simulator) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
 
+// handleTelemetry serves /telemetry/{node}: by default the OTLP JSON of
+// /otlp/telemetry/{node}, and with ?format=legacy the legacy JSON,
+// deprecated until legacyTelemetryRemovedIn (telemetry_route.go).
 func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	status := http.StatusOK
@@ -713,68 +635,26 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing node", status)
 		return
 	}
-	st := s.getNode(node)
-	modelForTelemetry := s.modelForNode(node)
-
-	// Snapshot state under lock, then build response outside lock to minimize
-	// contention with the workload loop and pod polling goroutines.
-	s.mu.Lock()
-	power := s.nodePowerWithModel(st, modelForTelemetry)
-	snap := struct {
-		capW, throttlePct, cpuUtil, freqScale, cpuAvgPower, cpuInstantPower float64
-		cpuWorkClass, gpuWorkClass                                          string
-		capSaturated                                                        bool
-		podsRunning                                                         int
-		gpuPowerW, gpuCapPerGpu, gpuTargetCapPerGpu, gpuUtil                float64
-		gpuPerfMul, memIntensity, ioIntensity, cpuFeedIntensity             float64
-		cpuThermalThrottle, cpuTempC, targetCapW                            float64
-		byIntentClass                                                       map[string]int
-	}{
-		capW: st.CapWatts, throttlePct: float64(st.ThrottlePct),
-		cpuUtil: st.CPUUtil, freqScale: st.FreqScale,
-		cpuAvgPower: st.CPUAvgPowerWatts, cpuInstantPower: st.CPUInstantPowerWatts,
-		cpuWorkClass: st.CPUWorkClass, gpuWorkClass: st.GPUWorkClass,
-		capSaturated: st.CapSaturated, podsRunning: st.PodsRunning,
-		gpuPowerW: st.GPUPowerWatts, gpuCapPerGpu: st.GPUCapWattsPerGpu,
-		gpuTargetCapPerGpu: st.GPUTargetCapWattsPerGpu, gpuUtil: st.GPUUtil,
-		gpuPerfMul: st.GPUPerfMultiplier, memIntensity: st.MemoryIntensity,
-		ioIntensity: st.IOIntensity, cpuFeedIntensity: st.CPUFeedIntensity,
-		cpuThermalThrottle: st.CPUThermalThrottle, cpuTempC: st.CPUTemperatureC,
-		targetCapW: st.TargetCapWatts, byIntentClass: st.ByIntentClass,
+	format, err := parseTelemetryFormat(r)
+	if err != nil {
+		status = http.StatusBadRequest
+		http.Error(w, err.Error(), status)
+		return
 	}
-	gpuAvgPowerVal := gpuAvgPower(st)
-	s.mu.Unlock()
-
-	// Prometheus metric updates are thread-safe, no lock needed.
-	s.nodeCapW.WithLabelValues(node).Set(snap.capW)
-	s.nodeThrottlePct.WithLabelValues(node).Set(snap.throttlePct)
-	s.nodePowerW.WithLabelValues(node).Set(power)
-	s.nodePods.WithLabelValues(node).Set(float64(snap.podsRunning))
-	s.nodeUtilCPU.WithLabelValues(node).Set(snap.cpuUtil)
-	s.nodeFreqScale.WithLabelValues(node).Set(snap.freqScale)
-	s.nodeRaplCapW.WithLabelValues(node).Set(snap.capW)
-	eventPayload := map[string]any{
-		"packagePowerWatts":        power,
-		"instantPackagePowerWatts": snap.cpuInstantPower + snap.gpuPowerW,
-		"capWatts":                 snap.capW,
-		"throttlePct":              snap.throttlePct,
-		"freqScale":                snap.freqScale,
-		"cpuUtil":                  snap.cpuUtil,
-		"cpuWorkClass":             snap.cpuWorkClass,
-		"capSaturated":             snap.capSaturated,
-		"podsRunning":              snap.podsRunning,
-		"gpuPowerWatts":            snap.gpuPowerW,
-		"gpuCapWattsPerGpu":        snap.gpuCapPerGpu,
-		"gpuUtil":                  snap.gpuUtil,
-		"gpuWorkClass":             snap.gpuWorkClass,
-		"gpuPerfMultiplier":        snap.gpuPerfMul,
-		"memoryIntensity":          snap.memIntensity,
-		"ioIntensity":              snap.ioIntensity,
-		"cpuFeedIntensity":         snap.cpuFeedIntensity,
+	if format == telemetryFormatOTLP {
+		s.serveOTLPTelemetry(w, node, &status)
+		return
 	}
+	warnLegacyTelemetry()
+	if s.emulated(node) {
+		s.handleEmulatedTelemetry(w, node, &status)
+		return
+	}
+	snap := s.telemetrySample(node)
+	modelForTelemetry := snap.model
 	resp := map[string]any{
 		"node":                     node,
-		"packagePowerWatts":        power,
+		"packagePowerWatts":        snap.power,
 		"instantPackagePowerWatts": math.Round((snap.cpuInstantPower+snap.gpuPowerW)*100) / 100,
 		"cpu": map[string]any{
 			"packagePowerWatts":  snap.cpuAvgPower,
@@ -798,7 +678,7 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 			"product":               modelForTelemetry.GPU.Product,
 			"count":                 modelForTelemetry.GPU.Count,
 			"powerWattsTotal":       snap.gpuPowerW,
-			"avgPowerWattsTotal":    gpuAvgPowerVal,
+			"avgPowerWattsTotal":    snap.gpuAvgPower,
 			"capWattsPerGpuApplied": snap.gpuCapPerGpu,
 			"capWattsPerGpuTarget":  snap.gpuTargetCapPerGpu,
 			"utilization":           snap.gpuUtil,
@@ -820,10 +700,6 @@ func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		},
 		"ts": time.Now().UTC().Format(time.RFC3339),
 	}
-	logMsg := fmt.Sprintf("telemetry node=%s powerW=%.2f capW=%.2f throttlePct=%.0f pods=%d", node, power, snap.capW, snap.throttlePct, snap.podsRunning)
-
-	s.recordEvent("telemetry", node, eventPayload)
-	log.Print(logMsg)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -841,6 +717,15 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 	if node == "" {
 		status = http.StatusBadRequest
 		http.Error(w, "missing node", status)
+		return
+	}
+	if s.emulated(node) {
+		// An emulated node is capped as real hardware is: through the
+		// files of its tree, which the next tick reads back.
+		status = http.StatusConflict
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "result": "conflict", "message": node + " is emulated; write its files"})
 		return
 	}
 
@@ -923,20 +808,21 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 	st.LastResult = result
 	st.LastUpdate = time.Now().UTC()
 
-	// Compute power and snapshot state, then release lock quickly.
-	power := s.nodePowerWithModel(st, model)
+	// The control sets targets only; the next physics step moves toward
+	// them. Snapshot the state, then release the lock quickly.
+	power := observe(st).powerW
 	ctrlSnap := struct {
-		capW, targetCapW, freqScale, cpuUtil         float64
-		throttlePct, targetThrottlePct                int
-		podsRunning                                   int
-		gpuCapPerGpu, gpuTargetCapPerGpu              float64
-		lastAction, lastResult                        string
-		lastUpdate                                    string
+		capW, targetCapW, freqScale, cpuUtil float64
+		throttlePct, targetThrottlePct       int
+		podsRunning                          int
+		gpuCapPerGpu, gpuTargetCapPerGpu     float64
+		lastAction, lastResult               string
+		lastUpdate                           string
 	}{
 		capW: st.CapWatts, targetCapW: st.TargetCapWatts,
 		freqScale: st.FreqScale, cpuUtil: st.CPUUtil,
 		throttlePct: st.ThrottlePct, targetThrottlePct: st.TargetThrottlePct,
-		podsRunning: st.PodsRunning,
+		podsRunning:  st.PodsRunning,
 		gpuCapPerGpu: st.GPUCapWattsPerGpu, gpuTargetCapPerGpu: st.GPUTargetCapWattsPerGpu,
 		lastAction: st.LastAction, lastResult: st.LastResult,
 		lastUpdate: st.LastUpdate.Format(time.RFC3339),
@@ -1006,10 +892,13 @@ func (s *simulator) handleState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing node", status)
 		return
 	}
-	model := s.modelForNode(node)
+	if s.emulated(node) {
+		s.handleEmulatedState(w, node)
+		return
+	}
 	st := s.getNode(node)
 	s.mu.Lock()
-	power := s.nodePowerWithModel(st, model)
+	power := observe(st).powerW
 	s.nodeCapW.WithLabelValues(node).Set(st.CapWatts)
 	s.nodeThrottlePct.WithLabelValues(node).Set(float64(st.ThrottlePct))
 	s.nodePowerW.WithLabelValues(node).Set(power)
@@ -1017,8 +906,15 @@ func (s *simulator) handleState(w http.ResponseWriter, r *http.Request) {
 	s.nodeUtilCPU.WithLabelValues(node).Set(st.CPUUtil)
 	s.nodeFreqScale.WithLabelValues(node).Set(st.FreqScale)
 	s.nodeRaplCapW.WithLabelValues(node).Set(st.CapWatts)
+	// Encoded under the lock: the physics tick writes st.
+	body, err := json.Marshal(map[string]any{"node": node, "state": st})
 	s.mu.Unlock()
-	_ = json.NewEncoder(w).Encode(map[string]any{"node": node, "state": st})
+	if err != nil {
+		status = http.StatusInternalServerError
+		http.Error(w, err.Error(), status)
+		return
+	}
+	_, _ = w.Write(append(body, '\n'))
 }
 
 func (s *simulator) handleDebugNodes(w http.ResponseWriter, r *http.Request) {
@@ -1106,46 +1002,10 @@ func (s *simulator) observeRequest(route, method string, status *int, start time
 	s.requestDuration.WithLabelValues(route, method).Observe(time.Since(start).Seconds())
 }
 
-func (s *simulator) accumulateEnergy(dt float64) {
-	if dt <= 0 {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for node, st := range s.state {
-		if st == nil {
-			continue
-		}
-		model := s.model
-		if m, ok := s.nodeModels[node]; ok {
-			model = m
-		}
-		p := s.nodePowerWithModel(st, model)
-		e := p * dt
-		if e <= 0 {
-			continue
-		}
-		s.energyJByNode[node] += e
-		s.energyTotalJ += e
-	}
-	s.energyLastTs = time.Now().UTC()
-}
-
-// updateFacilityMetrics computes time-varying ambient temperature and PUE,
-// then updates the corresponding Prometheus gauges. The ambient temperature
-// follows a sinusoidal curve and the PUE is modelled as a linear function
-// of ambient temperature (higher temperature requires more cooling energy).
+// updateFacilityMetrics computes the facility (package facility: a
+// sinusoidal ambient temperature, and a PUE that grows with it and with the
+// IT load) over every node's power and sets the facility gauges.
 func (s *simulator) updateFacilityMetrics(now time.Time) {
-	periodSec := s.facilityTempPeriodH * 3600.0
-	if periodSec <= 0 {
-		periodSec = 24.0 * 3600.0
-	}
-	elapsed := now.Sub(s.workload.startTime).Seconds()
-	ambientTemp := s.facilityBaseAmbientTempC +
-		s.facilityTempAmplitudeC*math.Sin(2*math.Pi*elapsed/periodSec)
-	s.facilityAmbientTemp.Set(ambientTemp)
-
-	// Compute total IT power from all node states.
 	var itPowerW float64
 	s.mu.RLock()
 	for _, st := range s.state {
@@ -1154,43 +1014,39 @@ func (s *simulator) updateFacilityMetrics(now time.Time) {
 		}
 	}
 	s.mu.RUnlock()
-	s.facilityITPowerW.Set(math.Round(itPowerW*100) / 100)
-
-	// PUE model: depends on both ambient temperature and IT load.
-	// Base PUE at 15C is 1.08, increases with temperature and IT load fraction.
-	// Higher IT load → cooling systems work harder → higher PUE, especially at high temps.
-	//
-	// Estimate IT load fraction from total IT power vs design capacity.
-	// Design capacity approximated as max observed IT power (tracked via peak).
-	if itPowerW > s.facilityPeakITPowerW {
-		s.facilityPeakITPowerW = itPowerW
+	params := facility.Params{
+		BaseAmbientC: s.facilityBaseAmbientTempC,
+		AmplitudeC:   s.facilityTempAmplitudeC,
+		PeriodH:      s.facilityTempPeriodH,
 	}
-	loadFrac := 0.0
-	if s.facilityPeakITPowerW > 0 {
-		loadFrac = itPowerW / s.facilityPeakITPowerW
-	}
+	s.facilityMu.Lock()
+	v, peak := facility.Compute(params, now.Sub(s.facilityStart()), itPowerW, s.facilityPeakITPowerW)
+	s.facilityPeakITPowerW = peak
+	s.facilityMu.Unlock()
+	s.setFacilityGauges(v)
+}
 
-	// PUE = basePUE + tempEffect + loadEffect + interaction(temp×load)
-	basePUE := 1.08
-	tempEffect := 0.006 * (ambientTemp - 15.0)        // +0.006 per degree above 15C
-	loadEffect := 0.04 * loadFrac                      // +0.04 at full load
-	interaction := 0.015 * loadFrac * (ambientTemp - 15.0) / 15.0 // temp×load interaction
-	pue := basePUE + tempEffect + loadEffect + interaction
-	if pue < 1.0 {
-		pue = 1.0
-	} else if pue > 3.0 {
-		pue = 3.0
+// facilityStart is the start of the ambient temperature cycle: the
+// workload start with a trace, else the simulator start.
+func (s *simulator) facilityStart() time.Time {
+	if s.workload != nil {
+		return s.workload.startTime
 	}
-	s.facilityPUE.Set(math.Round(pue*1000) / 1000)
+	return s.startTime
+}
 
-	// Cooling power = total facility power - IT power = IT * (PUE - 1).
-	coolingPowerW := itPowerW * (pue - 1.0)
-	s.facilityCoolingPowerW.Set(math.Round(coolingPowerW*100) / 100)
+// setFacilityGauges sets the facility gauges from v, rounded for display:
+// powers to 0.01 W and the PUE to 0.001.
+func (s *simulator) setFacilityGauges(v facility.Values) {
+	s.facilityAmbientTemp.Set(v.AmbientC)
+	s.facilityITPowerW.Set(math.Round(v.ITPowerW*100) / 100)
+	s.facilityPUE.Set(math.Round(v.PUE*1000) / 1000)
+	s.facilityCoolingPowerW.Set(math.Round(v.CoolingPowerW*100) / 100)
 }
 
 // appendTimeseriesRow writes one CSV row to the time-series file with the
 // current cluster power state. Called once per workload tick from the
-// workload loop, after accumulateEnergy and updateFacilityMetrics.
+// workload loop, after updateFacilityMetrics.
 func (s *simulator) appendTimeseriesRow(now time.Time) {
 	if s.tsWriter == nil {
 		return
@@ -1229,10 +1085,9 @@ func (s *simulator) appendTimeseriesRow(now time.Time) {
 		clusterGPUUtil = gpuUtilSum / float64(nodesActive)
 	}
 
-	var elapsed float64
-	if s.workload != nil {
-		elapsed = now.Sub(s.workload.startTime).Seconds()
-	}
+	// Since the workload start with a trace, else since the simulator
+	// start, which emulate mode writes rows from.
+	elapsed := now.Sub(s.facilityStart()).Seconds()
 
 	s.persistMu.Lock()
 	_, _ = fmt.Fprintf(s.tsWriter,
@@ -1271,71 +1126,6 @@ func readGaugeValue(g prometheus.Gauge) float64 {
 		return *m.Gauge.Value
 	}
 	return 0
-}
-
-// handleFakePrometheusQuery serves a minimal /api/v1/query endpoint that
-// returns facility metrics in the Prometheus instant-query response format.
-// This allows the controller manager's facility metrics poller to query the simulator
-// directly, without needing a real Prometheus instance in simulation.
-func (s *simulator) handleFakePrometheusQuery(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("query")
-	if query == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "missing query parameter"})
-		return
-	}
-
-	val, ok := s.facilityMetricValue(query)
-	if !ok {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"status": "success",
-			"data": map[string]any{
-				"resultType": "vector",
-				"result":     []any{},
-			},
-		})
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"status": "success",
-		"data": map[string]any{
-			"resultType": "vector",
-			"result": []any{
-				map[string]any{
-					"metric": map[string]string{},
-					"value":  []any{float64(time.Now().Unix()), strconv.FormatFloat(val, 'f', -1, 64)},
-				},
-			},
-		},
-	})
-}
-
-// facilityMetricValue resolves a query string to the current facility metric value.
-func (s *simulator) facilityMetricValue(query string) (float64, bool) {
-	// Strip surrounding whitespace for robustness.
-	q := strings.TrimSpace(query)
-	switch {
-	case strings.Contains(q, "ambient") && strings.Contains(q, "temp"),
-		q == "datacenter_ambient_temperature_celsius",
-		q == "joulie_sim_facility_ambient_temp_celsius":
-		return gaugeValue(s.facilityAmbientTemp), true
-	case strings.Contains(q, "it_power") || strings.Contains(q, "it_power_watts"),
-		q == "datacenter_total_it_power_watts",
-		q == "joulie_sim_facility_it_power_watts":
-		return gaugeValue(s.facilityITPowerW), true
-	case strings.Contains(q, "cooling") && strings.Contains(q, "power"),
-		q == "datacenter_cooling_power_watts",
-		q == "joulie_sim_facility_cooling_power_watts":
-		return gaugeValue(s.facilityCoolingPowerW), true
-	case strings.Contains(q, "pue"),
-		q == "joulie_sim_facility_pue":
-		return gaugeValue(s.facilityPUE), true
-	default:
-		return 0, false
-	}
 }
 
 // gaugeValue reads the current value from a Prometheus gauge.
@@ -1379,7 +1169,7 @@ func (s *simulator) debugNodesPayload() map[string]any {
 		}
 		var stCopy *nodeState
 		if st, ok := s.state[n]; ok {
-			cp := *st
+			cp := st.clone()
 			stCopy = &cp
 		}
 		out = append(out, debugNode{
@@ -1547,18 +1337,20 @@ func (s *simulator) persistEventJournal(e simEvent) {
 	}
 }
 
+// defaultPollInterval is the period of the pod poll when SIM_POLL_INTERVAL is
+// unset or not positive.
+const defaultPollInterval = 15 * time.Second
+
+// startPodPolling lists pods and nodes every interval. An interval of 0 or
+// less, which time.NewTicker rejects with a panic, takes the default.
 func (s *simulator) startPodPolling(interval time.Duration) {
-	cfg, err := rest.InClusterConfig()
-	if err != nil {
-		log.Printf("warning: pod polling disabled (no in-cluster config): %v", err)
-		return
+	if interval <= 0 {
+		log.Printf("warning: SIM_POLL_INTERVAL=%s is not positive, using %s", interval, defaultPollInterval)
+		interval = defaultPollInterval
 	}
-	cfg.Timeout = 8 * time.Second
-	cfg.QPS = 20
-	cfg.Burst = 40
-	kube, err := kubernetes.NewForConfig(cfg)
+	kube, err := kubeClientFactory(20, 40, 8*time.Second)
 	if err != nil {
-		log.Printf("warning: pod polling disabled (kube client): %v", err)
+		log.Printf("warning: pod polling disabled: %v", err)
 		return
 	}
 	log.Printf("pod polling enabled interval=%s", interval)
@@ -1592,28 +1384,24 @@ func (s *simulator) startPodPolling(interval time.Duration) {
 		// Compute power for all selected nodes in a single lock hold to
 		// reduce lock acquisition overhead.
 		type pollSnap struct {
-			node                   string
-			power, capW, cpuUtil   float64
-			throttlePct            int
-			podsRunning            int
-			freqScale              float64
+			node                 string
+			power, capW, cpuUtil float64
+			throttlePct          int
+			podsRunning          int
+			freqScale            float64
 		}
 		var pollSnaps []pollSnap
 		s.mu.Lock()
 		for node, labels := range nodes {
-			if !s.nodeSelected(labels) {
+			// An emulated node's power comes from its snapshot.
+			if !s.nodeSelected(labels) || s.emulated(node) {
 				continue
-			}
-			// Access nodeModels directly since we already hold the write lock.
-			model := s.model
-			if m, ok := s.nodeModels[node]; ok {
-				model = m
 			}
 			st := s.state[node]
 			if st == nil {
 				continue
 			}
-			power := s.nodePowerWithModel(st, model)
+			power := observe(st).powerW
 			pollSnaps = append(pollSnaps, pollSnap{
 				node: node, power: power, capW: st.CapWatts,
 				cpuUtil: st.CPUUtil, throttlePct: st.ThrottlePct,
@@ -1629,6 +1417,11 @@ func (s *simulator) startPodPolling(interval time.Duration) {
 			s.nodeUtilCPU.WithLabelValues(ps.node).Set(ps.cpuUtil)
 			s.nodeFreqScale.WithLabelValues(ps.node).Set(ps.freqScale)
 			s.nodeRaplCapW.WithLabelValues(ps.node).Set(ps.capW)
+		}
+		if s.emu != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			s.checkEmulatedNodes(ctx, kube)
+			cancel()
 		}
 		<-ticker.C
 	}
@@ -1657,6 +1450,19 @@ func (s *simulator) refreshNodeStateFromKubeData(counts map[string]int, pods []r
 		intentByNode[p.Node][intent]++
 	}
 	for node, labels := range nodeLabels {
+		// A spec node is emulated whatever SIM_NODE_SELECTOR and its labels
+		// say, with its profile's capacity.
+		if s.emulated(node) {
+			selected[node] = true
+			m, _ := s.emu.emu.Member(node)
+			st, ok := s.state[node]
+			if !ok {
+				st = newEmulatedNodeState(m, s.emu.simNow())
+				s.state[node] = st
+			}
+			st.CPUCapacityCores, st.GPUCapacityDevices = emulatedCapacity(m)
+			continue
+		}
 		if !s.nodeSelected(labels) {
 			if prevClass := s.nodeClass[node]; prevClass != "" {
 				s.nodeClassInfo.WithLabelValues(node, prevClass).Set(0)
@@ -1692,6 +1498,7 @@ func (s *simulator) refreshNodeStateFromKubeData(counts map[string]int, pods []r
 				LastAction:              "none",
 				LastResult:              "none",
 				LastUpdate:              time.Now().UTC(),
+				SimTime:                 time.Now().UTC(),
 				ByIntentClass:           map[string]int{},
 				TargetThrottlePct:       0,
 				GPUCapWattsPerGpu:       model.GPU.MaxWattsPerGPU,
@@ -1719,6 +1526,7 @@ func (s *simulator) refreshNodeStateFromKubeData(counts map[string]int, pods []r
 					})
 				}
 			}
+			stepNode(st, model, 0, physMaxSubstep)
 			s.state[node] = st
 		}
 		st.CPUCapacityCores = cpuCapacity
@@ -1726,6 +1534,17 @@ func (s *simulator) refreshNodeStateFromKubeData(counts map[string]int, pods []r
 	}
 
 	for node, st := range s.state {
+		if s.emulated(node) {
+			// The pods do not set an emulated node's load; its
+			// utilization is its snapshot's (applyEmulateSnapshot), 0
+			// before the first.
+			st.PodsRunning = counts[node]
+			st.ByIntentClass = intentByNode[node]
+			if st.ByIntentClass == nil {
+				st.ByIntentClass = map[string]int{}
+			}
+			continue
+		}
 		if !selected[node] {
 			st.PodsRunning = 0
 			st.ByIntentClass = map[string]int{}
@@ -1754,98 +1573,6 @@ func (s *simulator) nodeSelected(nodeLabels map[string]string) bool {
 		return true
 	}
 	return s.selector.Matches(labels.Set(nodeLabels))
-}
-
-func (s *simulator) resolveModelForNode(nodeLabels map[string]string) (simModel, string) {
-	model := s.model
-	className := "default"
-	for _, c := range s.classes {
-		if !matchLabels(nodeLabels, c.MatchLabels) {
-			continue
-		}
-		className = c.Name
-		model = applyModelOverrides(model, c.Model)
-		break
-	}
-	model, catalogClass := s.applyCatalogModelDefaults(model, nodeLabels)
-	if catalogClass != "" {
-		return model, catalogClass
-	}
-	return model, className
-}
-
-func (s *simulator) applyCatalogModelDefaults(model simModel, nodeLabels map[string]string) (simModel, string) {
-	if s.catalog == nil {
-		return model, ""
-	}
-	desc := hwinv.NodeDescriptor{
-		CPUModelRaw: firstNonEmpty(
-			nodeLabels["joulie.io/hw.cpu-model"],
-			nodeLabels["feature.node.kubernetes.io/cpu-model.name"],
-		),
-		CPUSockets: hwinv.ParseIntString(nodeLabels["joulie.io/hw.cpu-sockets"]),
-		GPUModelRaw: firstNonEmpty(
-			nodeLabels["joulie.io/hw.gpu-model"],
-			nodeLabels["joulie.io/gpu.product"],
-			nodeLabels["nvidia.com/gpu.product"],
-			nodeLabels["amd.com/gpu.product"],
-			nodeLabels["amd.com/gpu.family"],
-		),
-		GPUCount: hwinv.ParseIntString(nodeLabels["joulie.io/hw.gpu-count"]),
-	}
-	match := s.catalog.MatchNode(desc)
-	if match.CPUSpec != nil {
-		cpuSpec := *match.CPUSpec
-		model.CPUModel = match.CPUKey
-		model.CPUProvenance = cpuSpec.Provenance
-		if desc.CPUSockets > 0 {
-			model.CPUSockets = desc.CPUSockets
-		}
-		model.CPUDriverFamily = cpuSpec.Official.DriverFamily
-		if cpuSpec.MeasuredCurves != nil && cpuSpec.MeasuredCurves.Node2S != nil && len(model.CPUPowerCurve) == 0 {
-			points := make([]hw.PowerPoint, 0, len(cpuSpec.MeasuredCurves.Node2S.Points))
-			for _, p := range cpuSpec.MeasuredCurves.Node2S.Points {
-				points = append(points, hw.PowerPoint{LoadPct: p.LoadPct, PowerW: p.PowerW})
-			}
-			model.CPUPowerCurve = append([]hw.PowerPoint(nil), points...)
-			model.CPUCurveSource = cpuSpec.MeasuredCurves.Node2S.Source
-		}
-		if cpuSpec.ProxyFrom != nil {
-			model.CPUProxyFrom = cpuSpec.ProxyFrom.Family
-		}
-		if model.CPUSocketCapMaxW <= 0 && cpuSpec.Official.TDPW > 0 {
-			model.CPUSocketCapMaxW = cpuSpec.Official.TDPW
-		}
-		if model.CPUSocketCapMinW <= 0 && cpuSpec.Official.TDPW > 0 {
-			model.CPUSocketCapMinW = cpuSpec.Official.TDPW * 0.55
-		}
-	}
-	if match.GPUSpec != nil {
-		gpuSpec := *match.GPUSpec
-		model.GPU.Provenance = gpuSpec.Provenance
-		model.GPU.Vendor = gpuSpec.Official.Vendor
-		model.GPU.Product = match.GPUKey
-		if desc.GPUCount > 0 {
-			model.GPU.Count = desc.GPUCount
-		}
-		if model.GPU.MaxWattsPerGPU <= 0 {
-			model.GPU.MaxWattsPerGPU = gpuSpec.Official.MaxBoardPowerW
-		}
-		if model.GPU.MinCapWattsPerGPU <= 0 {
-			model.GPU.MinCapWattsPerGPU = gpuSpec.Official.MinBoardPowerW
-			if model.GPU.MinCapWattsPerGPU <= 0 {
-				model.GPU.MinCapWattsPerGPU = model.GPU.MaxWattsPerGPU * 0.5
-			}
-		}
-	}
-	nameParts := []string{"default"}
-	if match.CPUKey != "" {
-		nameParts = append(nameParts, strings.ToLower(strings.ReplaceAll(match.CPUKey, "_", "-")))
-	}
-	if match.GPUKey != "" {
-		nameParts = append(nameParts, strings.ToLower(strings.ReplaceAll(match.GPUKey, "_", "-")))
-	}
-	return model, strings.Join(nameParts, "+")
 }
 
 func listRunningPodsByNode(ctx context.Context, kube kubernetes.Interface) (map[string]int, error) {
@@ -1912,24 +1639,6 @@ func listNodeLabels(ctx context.Context, kube kubernetes.Interface) (map[string]
 	return out, nil
 }
 
-func loadNodeClasses(path string) ([]simNodeClass, error) {
-	base := defaultBaseModelFromEnv()
-	return hw.LoadClasses(path, base)
-}
-
-func matchLabels(nodeLabels, required map[string]string) bool {
-	for k, v := range required {
-		if nodeLabels[k] != v {
-			return false
-		}
-	}
-	return true
-}
-
-func applyModelOverrides(base simModel, o simModelOverrides) simModel {
-	return hw.ApplyOverrides(base, o)
-}
-
 func (s *simulator) recordEvent(kind, node string, payload map[string]any) {
 	ev := simEvent{
 		Timestamp: time.Now().UTC(),
@@ -1967,339 +1676,90 @@ func parsePositiveFloatString(raw string) float64 {
 	return v
 }
 
-func firstOrderToward(current, target, dt, tauSec float64) float64 {
-	if tauSec <= 0 {
-		return target
-	}
-	if dt <= 0 {
-		return current
-	}
-	step := dt / tauSec
-	if step > 1 {
-		step = 1
-	}
-	return current + (target-current)*step
-}
-
-func thermalTarget(ambientC, powerW, wattsPerDeltaC float64) float64 {
-	if wattsPerDeltaC <= 0 {
-		return ambientC
-	}
-	return ambientC + powerW/wattsPerDeltaC
-}
-
-func thermalThrottleFraction(tempC, startC, fullC float64) float64 {
-	if fullC <= 0 || fullC <= startC {
-		return 0
-	}
-	if tempC <= startC {
-		return 0
-	}
-	if tempC >= fullC {
-		return 1
-	}
-	return clamp01((tempC - startC) / (fullC - startC))
-}
-
-func gpuAvgPower(st *nodeState) float64 {
-	total := 0.0
-	for _, d := range st.GPUDevices {
-		total += d.AvgPowerWatts
-	}
-	return total
-}
-
-func firstDeviceThermalThrottle(st *nodeState) float64 {
-	if st == nil || len(st.GPUDevices) == 0 {
-		return 0
-	}
-	return st.GPUDevices[0].ThermalThrottle
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v)
-		}
-	}
-	return ""
-}
-
-func cpuKneeFromModel(model simModel) float64 {
-	if model.CPULowestNonlinearFreqMHz > 0 && model.FMaxMHz > 0 {
-		return clamp01(model.CPULowestNonlinearFreqMHz / model.FMaxMHz)
-	}
-	return 0.7
-}
-
-func cpuThroughputMultiplier(freqScale float64, workloadClass string, model simModel, memoryIntensity, ioIntensity, thermalThrottle float64) float64 {
-	m := phys.MeasuredCurveCPUModel{
-		Points: model.CPUPowerCurve,
-		Knee:   cpuKneeFromModel(model),
-	}
-	return m.ThroughputMultiplier(phys.DeviceState{
-		FreqScale:       freqScale,
-		MemoryIntensity: memoryIntensity,
-		IOIntensity:     ioIntensity,
-		ThermalThrottle: thermalThrottle,
-		Class:           workloadClass,
-	}, workloadClass)
-}
-
-func minFreqScale(model simModel) float64 {
-	if model.FMaxMHz <= 0 || model.FMinMHz <= 0 {
-		return 0.35
-	}
-	return clamp01(model.FMinMHz / model.FMaxMHz)
-}
-
-func solveFreqScaleForCap(model simModel, util, capW float64, workloadClass string) float64 {
-	util = clamp01(util)
-	if util <= 0 || model.PMaxW <= model.BaseIdleW {
-		return 1
-	}
-	if len(model.CPUPowerCurve) > 0 {
-		lo := minFreqScale(model)
-		hi := 1.0
-		curve := phys.MeasuredCurveCPUModel{
-			Points: model.CPUPowerCurve,
-			Knee:   cpuKneeFromModel(model),
-		}
-		for i := 0; i < 22; i++ {
-			mid := (lo + hi) / 2.0
-			p := curve.Power(phys.DeviceState{
-				Utilization: util,
-				FreqScale:   mid,
-				CapWatts:    capW,
-				Class:       workloadClass,
-			})
-			if p > capW {
-				hi = mid
-			} else {
-				lo = mid
-			}
-		}
-		return clamp01(lo)
-	}
-	alpha := model.AlphaUtil
-	if alpha <= 0 {
-		alpha = 1
-	}
-	beta := model.BetaFreq
-	if beta <= 0 {
-		beta = 1
-	}
-	den := (model.PMaxW - model.BaseIdleW) * math.Pow(util, alpha)
-	if den <= 0 {
-		return 1
-	}
-	x := (capW - model.BaseIdleW) / den
-	if x <= 0 {
-		return minFreqScale(model)
-	}
-	return math.Pow(x, 1.0/beta)
-}
-
-func (s *simulator) updateNodeDynamics(node string, st *nodeState) {
-	model := s.modelForNode(node)
-	s.updateNodeDynamicsWithModel(st, model)
-}
-
-func (s *simulator) updateNodeDynamicsWithModel(st *nodeState, model simModel) {
-	targetScale := 1.0 - clamp01(float64(st.TargetThrottlePct)/100.0)
-	now := time.Now().UTC()
-	last := st.LastUpdate
-	if last.IsZero() {
-		st.LastUpdate = now
-		last = now
-	}
-	dt := now.Sub(last).Seconds()
-	if dt < 0 {
-		dt = 0
-	}
-	rampSec := math.Max(0.05, float64(model.DvfsRampMS)/1000.0)
-	if st.FreqScale == 0 {
-		st.FreqScale = 1
-	}
-	maxStep := dt / rampSec
-	if maxStep > 1 {
-		maxStep = 1
-	}
-	st.FreqScale = st.FreqScale + (targetScale-st.FreqScale)*maxStep
-	st.FreqScale = math.Max(minFreqScale(model), clamp01(st.FreqScale))
-	st.ThrottlePct = int(math.Round((1.0 - st.FreqScale) * 100.0))
-
-	cpuCapTauMs := model.CPUCapApplyTauMS
-	if cpuCapTauMs <= 0 {
-		cpuCapTauMs = 250
-	}
-	if st.TargetCapWatts <= 0 {
-		st.TargetCapWatts = model.DefaultCapW
-	}
-	if st.CapWatts <= 0 {
-		st.CapWatts = st.TargetCapWatts
-	}
-	cpuCapTauSec := math.Max(0.01, float64(cpuCapTauMs)/1000.0)
-	cpuCapStep := dt / cpuCapTauSec
-	if cpuCapStep > 1 {
-		cpuCapStep = 1
-	}
-	st.CapWatts = st.CapWatts + (st.TargetCapWatts-st.CapWatts)*cpuCapStep
-
-	if len(st.CPUSockets) == 0 {
-		sockets := model.CPUSockets
-		if sockets <= 0 {
-			sockets = 2
-		}
-		st.CPUSockets = make([]cpuSocketState, 0, sockets)
-		for i := 0; i < sockets; i++ {
-			st.CPUSockets = append(st.CPUSockets, cpuSocketState{Index: i})
-		}
-	}
-	perSocketUtil := st.CPUUtil / float64(maxIntInt(1, len(st.CPUSockets)))
-	cpuClass := strings.TrimSpace(st.CPUWorkClass)
-	if cpuClass == "" {
-		cpuClass = "cpu.mixed"
-	}
-	for i := range st.CPUSockets {
-		st.CPUSockets[i].Utilization = clamp01(perSocketUtil)
-		st.CPUSockets[i].PerfMultiplier = cpuThroughputMultiplier(st.FreqScale, cpuClass, model, st.MemoryIntensity, st.IOIntensity, st.CPUThermalThrottle)
-		if len(st.CPUSockets) > 0 {
-			st.CPUSockets[i].CapWatts = st.CapWatts / float64(len(st.CPUSockets))
-		}
-		if model.CPUSocketCapMinW > 0 && st.CPUSockets[i].CapWatts < model.CPUSocketCapMinW {
-			st.CPUSockets[i].CapWatts = model.CPUSocketCapMinW
-		}
-		if model.CPUSocketCapMaxW > 0 && st.CPUSockets[i].CapWatts > model.CPUSocketCapMaxW {
-			st.CPUSockets[i].CapWatts = model.CPUSocketCapMaxW
-		}
-	}
-
-	tauMs := model.GPU.CapApplyTauMS
-	if tauMs <= 0 {
-		tauMs = 150
-		if strings.EqualFold(model.GPU.Product, "AMD_Instinct_MI300X") || strings.Contains(strings.ToLower(model.GPU.Product), "mi300x") {
-			tauMs = 350
-		}
-	}
-	if model.GPU.Count > 0 && len(st.GPUDevices) == 0 {
-		st.GPUDevices = make([]gpuDeviceState, 0, model.GPU.Count)
-		for i := 0; i < model.GPU.Count; i++ {
-			c := model.GPU.MaxWattsPerGPU
-			st.GPUDevices = append(st.GPUDevices, gpuDeviceState{Index: i, CapWatts: c, TargetCapWatts: c})
-		}
-	}
-	if st.GPUTargetCapWattsPerGpu <= 0 {
-		st.GPUTargetCapWattsPerGpu = st.GPUCapWattsPerGpu
-	}
-	tauSec := math.Max(0.01, float64(tauMs)/1000.0)
-	gpuStep := dt / tauSec
-	if gpuStep > 1 {
-		gpuStep = 1
-	}
-	for i := range st.GPUDevices {
-		d := &st.GPUDevices[i]
-		target := st.GPUTargetCapWattsPerGpu
-		if target <= 0 {
-			target = model.GPU.MaxWattsPerGPU
-		}
-		if model.GPU.MinCapWattsPerGPU > 0 && target < model.GPU.MinCapWattsPerGPU {
-			target = model.GPU.MinCapWattsPerGPU
-		}
-		if model.GPU.MaxWattsPerGPU > 0 && target > model.GPU.MaxWattsPerGPU {
-			target = model.GPU.MaxWattsPerGPU
-		}
-		d.TargetCapWatts = target
-		if d.CapWatts <= 0 {
-			d.CapWatts = target
-		}
-		d.CapWatts = d.CapWatts + (target-d.CapWatts)*gpuStep
-		st.GPUCapWattsPerGpu = d.CapWatts
-		d.SettledAtTimestamp = now.Format(time.RFC3339Nano)
-	}
-
-	cpuInstant := cpuPowerWithModel(st, model)
-	cpuTempTarget := thermalTarget(model.CPUAmbientTempC, cpuInstant, model.CPUWattsPerDeltaC)
-	st.CPUTemperatureC = firstOrderToward(st.CPUTemperatureC, cpuTempTarget, dt, float64(maxIntInt(1, model.CPUThermalTauMS))/1000.0)
-	st.CPUThermalThrottle = thermalThrottleFraction(st.CPUTemperatureC, model.CPUThermalThrottleStartC, model.CPUThermalThrottleFullC)
-	cpuInstant = cpuPowerWithModel(st, model)
-	st.CPUInstantPowerWatts = cpuInstant
-	st.CPUAvgPowerWatts = firstOrderToward(st.CPUAvgPowerWatts, cpuInstant, dt, float64(maxIntInt(1, model.CPUTelemetryWindowMS))/1000.0)
-
-	gpuInstantTotal := 0.0
-	// Per-device utilization distribution (same logic as gpuPowerWithModel).
-	telNDevices := float64(len(st.GPUDevices))
-	telAvgUtil := clamp01(st.GPUUtil)
-	telActiveDevices := int(math.Ceil(telAvgUtil * telNDevices))
-	if telActiveDevices > len(st.GPUDevices) {
-		telActiveDevices = len(st.GPUDevices)
-	}
-	telActiveUtil := 0.0
-	if telActiveDevices > 0 {
-		telActiveUtil = clamp01(telAvgUtil * telNDevices / float64(telActiveDevices))
-	}
-	for i := range st.GPUDevices {
-		d := &st.GPUDevices[i]
-		deviceUtil := 0.0
-		if i < telActiveDevices {
-			deviceUtil = telActiveUtil
-		}
-		deviceState := phys.DeviceState{
-			Utilization:      deviceUtil,
-			CapWatts:         d.CapWatts,
-			MaxCapWatts:      model.GPU.MaxWattsPerGPU,
-			IdlePowerWatts:   model.GPU.IdleWattsPerGPU,
-			MemoryIntensity:  st.MemoryIntensity,
-			CPUFeedIntensity: st.CPUFeedIntensity,
-			TemperatureC:     d.TemperatureC,
-			ThermalThrottle:  d.ThermalThrottle,
-			Class:            st.GPUWorkClass,
-		}
-		gpuModel := phys.CappedBoardGPUModel{
-			IdleW:         model.GPU.IdleWattsPerGPU,
-			MaxW:          model.GPU.MaxWattsPerGPU,
-			ComputeGamma:  model.GPU.ComputeGamma,
-			MemoryEpsilon: model.GPU.MemoryEpsilon,
-			MemoryGamma:   model.GPU.MemoryGamma,
-		}
-		instant := gpuModel.Power(deviceState)
-		targetTemp := thermalTarget(model.GPU.AmbientTempC, instant, model.GPU.WattsPerDeltaC)
-		d.TemperatureC = firstOrderToward(d.TemperatureC, targetTemp, dt, float64(maxIntInt(1, model.GPU.ThermalTauMS))/1000.0)
-		d.ThermalThrottle = thermalThrottleFraction(d.TemperatureC, model.GPU.ThermalThrottleStartC, model.GPU.ThermalThrottleFullC)
-		deviceState.TemperatureC = d.TemperatureC
-		deviceState.ThermalThrottle = d.ThermalThrottle
-		instant = gpuModel.Power(deviceState)
-		d.PowerWatts = instant
-		d.AvgPowerWatts = firstOrderToward(d.AvgPowerWatts, instant, dt, float64(maxIntInt(1, model.GPU.TelemetryWindowMS))/1000.0)
-		gpuInstantTotal += instant
-	}
-	st.GPUPowerWatts = gpuInstantTotal
-	st.TotalAvgPowerWatts = st.CPUAvgPowerWatts + gpuAvgPower(st)
-}
-
+// initWorkloadEngineFromTrace loads the trace at path into a legacy engine
+// with the legacy defaults.
 func (s *simulator) initWorkloadEngineFromTrace(path string) error {
+	return s.initWorkloadEngineWithOptions(path, workloadOptions{})
+}
+
+// initWorkloadEngineWithOptions loads the trace at path, a file or a
+// directory of .jsonl parts, into the simulator's engine with opts.
+func (s *simulator) initWorkloadEngineWithOptions(path string, opts workloadOptions) error {
+	engine, parts, err := newWorkloadEngineFromTrace(path, opts)
+	if err != nil {
+		return err
+	}
+	s.workload = engine
+	log.Printf("workload trace loaded jobs=%d parts=%d path=%s model=%s", len(engine.jobs), parts, path, opts.model())
+	return nil
+}
+
+// newWorkloadEngineFromTrace returns an engine holding the jobs of the trace
+// at path in submit order, and the number of files read. Legacy sorts with
+// sort.Slice, as it always has, so the order of jobs due at the same offset
+// stays what the experiments ran; v1 sorts stably and keeps them in trace
+// order. Legacy names each pod after its jobId, and a name two jobs share in
+// one namespace gets a suffix (suffixCollidingPodNames).
+func newWorkloadEngineFromTrace(path string, opts workloadOptions) (*workloadEngine, int, error) {
 	engine := &workloadEngine{
 		startTime:      time.Now().UTC(),
 		baseSpeedCore:  floatEnv("SIM_BASE_SPEED_PER_CORE", 1.0),
 		jobs:           []*simJob{},
 		jobByID:        map[string]*simJob{},
 		jobsByWorkload: map[string][]*simJob{},
+		opts:           opts,
 	}
 	tracePaths, err := resolveTracePaths(path)
 	if err != nil {
-		return err
+		return nil, 0, err
 	}
 	lineNum := 0
 	for _, tracePath := range tracePaths {
 		if err := loadTraceFileIntoEngine(tracePath, engine, &lineNum); err != nil {
-			return err
+			return nil, 0, err
 		}
 	}
-	sort.Slice(engine.jobs, func(i, j int) bool { return engine.jobs[i].SubmitOffsetSec < engine.jobs[j].SubmitOffsetSec })
+	bySubmit := func(i, j int) bool { return engine.jobs[i].SubmitOffsetSec < engine.jobs[j].SubmitOffsetSec }
+	if opts.model() == workload.ModelV1 {
+		sort.SliceStable(engine.jobs, bySubmit)
+	} else {
+		suffixCollidingPodNames(engine.jobs)
+		sort.Slice(engine.jobs, bySubmit)
+	}
+	return engine, len(tracePaths), nil
+}
 
-	s.workload = engine
-	log.Printf("workload trace loaded jobs=%d parts=%d path=%s", len(engine.jobs), len(tracePaths), path)
-	return nil
+// suffixCollidingPodNames gives each legacy job its own pod name. Pods are
+// named sim-<sanitized jobId>, cut to 50 characters, so distinct jobIds such
+// as a_b and a.b, or two long ids with a common prefix, can share a name in
+// one namespace. Before this fix the second create failed with
+// AlreadyExists, the job counted as submitted with no pod of its own, and it
+// was completed by force after the stall timeout. In trace order, the first
+// job keeps the name and each later one gets the lowest -<n> suffix, from 2,
+// that no other job's name uses.
+func suffixCollidingPodNames(jobs []*simJob) {
+	key := func(ns, name string) string { return ns + "/" + name }
+	natural := make(map[string]bool, len(jobs))
+	for _, j := range jobs {
+		natural[key(j.Namespace, j.PodName)] = true
+	}
+	taken := make(map[string]bool, len(jobs))
+	for _, j := range jobs {
+		k := key(j.Namespace, j.PodName)
+		if !taken[k] {
+			taken[k] = true
+			continue
+		}
+		for n := 2; ; n++ {
+			name := fmt.Sprintf("%s-%d", j.PodName, n)
+			if c := key(j.Namespace, name); !taken[c] && !natural[c] {
+				log.Printf("warning: trace job %s shares pod name %s/%s with an earlier job; its pod is %s", j.JobID, j.Namespace, j.PodName, name)
+				j.PodName = name
+				taken[c] = true
+				break
+			}
+		}
+	}
 }
 
 func resolveTracePaths(path string) ([]string, error) {
@@ -2331,6 +1791,48 @@ func resolveTracePaths(path string) ([]string, error) {
 	return paths, nil
 }
 
+// maxTraceLineBytes is the longest trace line the loader reads. bufio's
+// default of 64 KiB failed whole traces on one job with a long podTemplate.
+const maxTraceLineBytes = 16 << 20
+
+// traceGPUKey is a requests key the loader reads as a GPU request, and the
+// extended resource the pod then requests.
+type traceGPUKey struct {
+	key         string
+	resourceKey string
+}
+
+// legacyTraceGPUKeys are the GPU requests keys of every trace, in order of
+// precedence: the first one present is the job's GPU request.
+var legacyTraceGPUKeys = []traceGPUKey{
+	{key: "nvidia.com/gpu", resourceKey: "nvidia.com/gpu"},
+	{key: "amd.com/gpu", resourceKey: "amd.com/gpu"},
+	{key: "gpu", resourceKey: "nvidia.com/gpu"},
+}
+
+// traceGPUKeys are the GPU requests keys of one record of requests req. A v3
+// record adds the other resources a device plugin advertises for a shared
+// GPU (nvidia.com/gpu.shared) and for MIG slices (nvidia.com/mig-<profile>,
+// in name order), after the legacy keys, so a v2 record reads as before.
+func traceGPUKeys(req map[string]any, v3 bool) []traceGPUKey {
+	if !v3 {
+		return legacyTraceGPUKeys
+	}
+	keys := append([]traceGPUKey{}, legacyTraceGPUKeys...)
+	keys = append(keys, traceGPUKey{key: "nvidia.com/gpu.shared", resourceKey: "nvidia.com/gpu.shared"})
+	var mig []string
+	for k := range req {
+		if strings.HasPrefix(k, "nvidia.com/mig-") {
+			mig = append(mig, k)
+		}
+	}
+	sort.Strings(mig)
+	for _, k := range mig {
+		keys = append(keys, traceGPUKey{key: k, resourceKey: k})
+	}
+	return keys
+}
+
 func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -2338,6 +1840,7 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), maxTraceLineBytes)
 	for sc.Scan() {
 		*lineNum++
 		line := strings.TrimSpace(sc.Text())
@@ -2356,6 +1859,8 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 		if jobID == "" {
 			continue
 		}
+		schemaVersion, _ := rec["schemaVersion"].(string)
+		v3 := schemaVersion == workload.TraceSchemaV3
 		workloadID, _ := rec["workloadId"].(string)
 		workloadType, _ := rec["workloadType"].(string)
 		podRole, _ := rec["podRole"].(string)
@@ -2380,15 +1885,7 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 				if memRaw, ok := reqRaw["memory"].(string); ok {
 					requestedMemoryMiB = parseMemoryRequestMiB(memRaw)
 				}
-				gpuReqOrder := []struct {
-					key         string
-					resourceKey string
-				}{
-					{key: "nvidia.com/gpu", resourceKey: "nvidia.com/gpu"},
-					{key: "amd.com/gpu", resourceKey: "amd.com/gpu"},
-					{key: "gpu", resourceKey: "nvidia.com/gpu"},
-				}
-				for _, gpuReq := range gpuReqOrder {
+				for _, gpuReq := range traceGPUKeys(reqRaw, v3) {
 					raw, ok := reqRaw[gpuReq.key]
 					if !ok {
 						continue
@@ -2428,13 +1925,24 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 		memoryIntensity := defaultMemoryIntensity(cpuWorkClass, gpuWorkClass)
 		ioIntensity := defaultIOIntensity(cpuWorkClass)
 		cpuFeedIntensity := 0.0
+		sensitivitySet := false
 		if sensRaw, ok := rec["sensitivity"].(map[string]any); ok {
 			if v, ok := sensRaw["cpu"].(float64); ok {
 				sensCPU = clamp01(v)
+				sensitivitySet = true
 			}
 			if v, ok := sensRaw["gpu"].(float64); ok {
 				sensGPU = clamp01(v)
+				sensitivitySet = true
 			}
+		}
+		var placement workload.Placement
+		if podTpl, ok := rec["podTemplate"].(map[string]any); ok && v3 {
+			p, err := workload.ParsePlacement(podTpl)
+			if err != nil {
+				return fmt.Errorf("trace line %d file=%s job=%s: %w", *lineNum, path, jobID, err)
+			}
+			placement = p
 		}
 		if wcRaw, ok := rec["workloadClass"].(map[string]any); ok {
 			if v, ok := wcRaw["cpu"].(string); ok && strings.TrimSpace(v) != "" {
@@ -2475,32 +1983,37 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 			namespace = ns
 		}
 		job := &simJob{
-			JobID:             jobID,
-			WorkloadID:        workloadID,
-			WorkloadType:      workloadType,
-			PodRole:           podRole,
-			Gang:              gang,
-			Class:             class,
-			Namespace:         namespace,
-			SubmitOffsetSec:   submitOffset,
+			JobID:              jobID,
+			WorkloadID:         workloadID,
+			WorkloadType:       workloadType,
+			PodRole:            podRole,
+			Gang:               gang,
+			Class:              class,
+			Namespace:          namespace,
+			SubmitOffsetSec:    submitOffset,
 			RequestedCPUCores:  requestedCPU,
 			RequestedMemoryMiB: requestedMemoryMiB,
 			CPUUnitsTotal:      cpuUnits,
-			CPUUnitsRemaining: cpuUnits,
-			SensitivityCPU:    sensCPU,
-			CPUWorkClass:      cpuWorkClass,
-			CPUUtilTarget:     cpuUtilTarget,
-			RequestedGPUs:     requestedGPUs,
-			GPUResourceName:   gpuResourceName,
-			GPUUnitsTotal:     gpuUnits,
-			GPUUnitsRemaining: gpuUnits,
-			SensitivityGPU:    sensGPU,
-			GPUWorkClass:      gpuWorkClass,
-			GPUUtilTarget:     gpuUtilTarget,
-			MemoryIntensity:   memoryIntensity,
-			IOIntensity:       ioIntensity,
-			CPUFeedIntensity:  cpuFeedIntensity,
-			PodName:           fmt.Sprintf("sim-%s", sanitizeK8sName(jobID)),
+			CPUUnitsRemaining:  cpuUnits,
+			SensitivityCPU:     sensCPU,
+			CPUWorkClass:       cpuWorkClass,
+			CPUUtilTarget:      cpuUtilTarget,
+			RequestedGPUs:      requestedGPUs,
+			GPUResourceName:    gpuResourceName,
+			GPUUnitsTotal:      gpuUnits,
+			GPUUnitsRemaining:  gpuUnits,
+			SensitivityGPU:     sensGPU,
+			GPUWorkClass:       gpuWorkClass,
+			GPUUtilTarget:      gpuUtilTarget,
+			MemoryIntensity:    memoryIntensity,
+			IOIntensity:        ioIntensity,
+			CPUFeedIntensity:   cpuFeedIntensity,
+			PodName:            fmt.Sprintf("sim-%s", sanitizeK8sName(jobID)),
+			SchemaVersion:      schemaVersion,
+			Affinity:           placement.Affinity,
+			NodeSelector:       placement.NodeSelector,
+			Tolerations:        placement.Tolerations,
+			SensitivitySet:     sensitivitySet,
 		}
 		engine.jobs = append(engine.jobs, job)
 		engine.jobByID[jobID] = job
@@ -2509,23 +2022,29 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 		}
 	}
 	if err := sc.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return fmt.Errorf("trace line %d file=%s is longer than %d bytes: %w", *lineNum+1, path, maxTraceLineBytes, err)
+		}
 		return err
 	}
 	return nil
 }
 
+// defaultWorkloadTick is the period of the legacy workload loop when
+// SIM_WORKLOAD_TICK is unset or not positive.
+const defaultWorkloadTick = time.Second
+
+// startWorkloadLoop runs the legacy workload engine every interval of wall
+// time. An interval of 0 or less, which time.NewTicker rejects with a panic,
+// takes the default, as SIM_PHYSICS_TICK does (runPhysicsLoop).
 func (s *simulator) startWorkloadLoop(interval time.Duration) {
-	cfg, err := rest.InClusterConfig()
-	if err != nil {
-		log.Printf("warning: workload loop disabled (no in-cluster config): %v", err)
-		return
+	if interval <= 0 {
+		log.Printf("warning: %s=%s is not positive, using %s", workload.EnvTick, interval, defaultWorkloadTick)
+		interval = defaultWorkloadTick
 	}
-	cfg.Timeout = 8 * time.Second
-	cfg.QPS = 30
-	cfg.Burst = 50
-	kube, err := kubernetes.NewForConfig(cfg)
+	kube, err := kubeClientFactory(s.workload.opts.kubeQPS(), s.workload.opts.kubeBurst(), 8*time.Second)
 	if err != nil {
-		log.Printf("warning: workload loop disabled (kube client): %v", err)
+		log.Printf("warning: workload loop disabled: %v", err)
 		return
 	}
 	log.Printf("workload loop enabled interval=%s", interval)
@@ -2544,9 +2063,12 @@ func (s *simulator) startWorkloadLoop(interval time.Duration) {
 		if tickCount <= 5 || tickCount%30 == 0 {
 			log.Printf("workload tick %d dt=%.2fs jobs=%d", tickCount, dt, len(s.workload.jobs))
 		}
-		s.accumulateEnergy(dt)
-		s.updateFacilityMetrics(now)
-		s.appendTimeseriesRow(now)
+		// In emulate mode the emulator's publish callback does these,
+		// once per tick. The physics tick books the energy.
+		if s.emu == nil {
+			s.updateFacilityMetrics(now)
+			s.appendTimeseriesRow(now)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		s.injectTraceJobs(ctx, kube, now)
 		if ctx.Err() == nil {
@@ -2561,12 +2083,13 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 	if s.workload == nil {
 		return
 	}
-	// Rate-limit pod injection to avoid overwhelming the K8s API server.
-	// At most 20 pods per tick; remaining jobs will be injected on the next tick.
-	const maxInjectPerTick = 20
+	// Rate-limit pod injection to avoid overwhelming the K8s API server: at
+	// most SIM_WORKLOAD_MAX_CREATES_PER_TICK pods per tick (20 by default);
+	// the remaining jobs are injected on the next tick.
+	maxInjectPerTick := s.workload.opts.maxCreatesPerTick()
 	injected := 0
 	for _, j := range s.workload.jobs {
-		if injected >= maxInjectPerTick {
+		if !underCap(injected, maxInjectPerTick) {
 			break
 		}
 		if j.Submitted {
@@ -2583,14 +2106,14 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 					"app.kubernetes.io/part-of": "joulie-sim-workload",
 				},
 				Annotations: map[string]string{
-					"sim.joulie.io/jobId":        j.JobID,
-					"sim.joulie.io/workloadId":   j.WorkloadID,
-					"sim.joulie.io/workloadType": j.WorkloadType,
-					"sim.joulie.io/podRole":      j.PodRole,
+					"sim.joulie.io/jobId":               j.JobID,
+					"sim.joulie.io/workloadId":          j.WorkloadID,
+					"sim.joulie.io/workloadType":        j.WorkloadType,
+					"sim.joulie.io/podRole":             j.PodRole,
 					"sim.joulie.io/cpu-util-pct":        strconv.FormatFloat(j.CPUUtilTarget*100, 'f', 1, 64),
-				"sim.joulie.io/gpu-util-pct":        strconv.FormatFloat(j.GPUUtilTarget*100, 'f', 1, 64),
-				"sim.joulie.io/memory-pressure-pct": strconv.FormatFloat(j.MemoryIntensity*100, 'f', 1, 64),
-				"sim.joulie.io/io-intensity":        strconv.FormatFloat(j.IOIntensity, 'f', 2, 64),
+					"sim.joulie.io/gpu-util-pct":        strconv.FormatFloat(j.GPUUtilTarget*100, 'f', 1, 64),
+					"sim.joulie.io/memory-pressure-pct": strconv.FormatFloat(j.MemoryIntensity*100, 'f', 1, 64),
+					"sim.joulie.io/io-intensity":        strconv.FormatFloat(j.IOIntensity, 'f', 2, 64),
 				},
 			},
 			Spec: corev1.PodSpec{
@@ -2798,11 +2321,12 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			runningByWorkload[j.WorkloadID]++
 		}
 	}
-	// Clean up pods for completed jobs, rate-limited to avoid blocking the loop.
+	// Clean up pods for completed jobs, rate-limited to avoid blocking the
+	// loop: at most SIM_WORKLOAD_MAX_DELETES_PER_TICK (10 by default).
 	deletesThisTick := 0
-	const maxDeletesPerTick = 10
+	maxDeletesPerTick := s.workload.opts.maxDeletesPerTick()
 	for _, j := range s.workload.jobs {
-		if deletesThisTick >= maxDeletesPerTick || ctx.Err() != nil {
+		if !underCap(deletesThisTick, maxDeletesPerTick) || ctx.Err() != nil {
 			break
 		}
 		if !j.Completed {
@@ -2829,17 +2353,11 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			model = m
 		}
 		freqScale := 1.0
-		gpuCapFactor := 1.0
 		gpuCount := 0.0
 		if st != nil {
 			freqScale = st.FreqScale
 			if model.GPU.Count > 0 && model.GPU.MaxWattsPerGPU > 0 {
 				gpuCount = float64(model.GPU.Count)
-				cap := st.GPUCapWattsPerGpu
-				if cap <= 0 {
-					cap = model.GPU.MaxWattsPerGPU
-				}
-				gpuCapFactor = clamp01(cap / model.GPU.MaxWattsPerGPU)
 			}
 		}
 		s.mu.RUnlock()
@@ -2961,7 +2479,6 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 				}
 			}
 			if j.GPUUnitsRemaining > 0 {
-				gpuBase := math.Max(0.1, j.RequestedGPUs) * s.workload.baseSpeedCore
 				gpuModel := phys.CappedBoardGPUModel{
 					IdleW:         model.GPU.IdleWattsPerGPU,
 					MaxW:          model.GPU.MaxWattsPerGPU,
@@ -2978,12 +2495,7 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 					ThermalThrottle:  snapThermalThrottle,
 					Class:            j.GPUWorkClass,
 				}, j.GPUWorkClass)
-				cpuFeedFactor := cpuFeedThrottleFactor(jobCPUMul, j)
-				gpuCapImpact := 1.0 - (1.0-gpuCapFactor)*j.SensitivityGPU
-				gpuSpeed := gpuBase * gpuMul * cpuFeedFactor * gpuCapImpact * gpuShareFactor
-				if gpuSpeed < 0 {
-					gpuSpeed = 0
-				}
+				_, gpuSpeed := workload.Rates(workload.ModelLegacy, legacyRateInputs(j, s.workload.baseSpeedCore, jobCPUMul, gpuMul, cpuShareFactor, gpuShareFactor))
 				prev := j.GPUUnitsRemaining
 				j.GPUUnitsRemaining -= gpuSpeed * dt
 				if j.GPUUnitsRemaining < prev {
@@ -3006,15 +2518,34 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 
 }
 
+// legacyRateInputs are the workload.RateInputs of legacy job j on a node
+// whose CPUs and GPUs run at cpuMul and gpuMul of full speed, for
+// workload.Rates(workload.ModelLegacy, ...). It leaves GPUCapFactor unset:
+// gpuMul already holds what a GPU cap costs.
+func legacyRateInputs(j *simJob, baseSpeed, cpuMul, gpuMul, cpuShare, gpuShare float64) workload.RateInputs {
+	return workload.RateInputs{
+		BaseSpeed: baseSpeed, CPURequest: j.RequestedCPUCores, GPURequest: j.RequestedGPUs,
+		CPUUtil: j.CPUUtilTarget, MemoryIntensity: j.MemoryIntensity, IOIntensity: j.IOIntensity,
+		CPUFeedIntensity: j.CPUFeedIntensity, SensitivityCPU: j.SensitivityCPU, SensitivityGPU: j.SensitivityGPU,
+		CPUMul: cpuMul, GPUMul: gpuMul,
+		CPUShare: cpuShare, GPUShare: gpuShare,
+	}
+}
+
 // detectStalledJobs force-completes jobs that haven't made progress for
-// 120 wall-clock seconds. This prevents individual stuck jobs (e.g.,
-// gang scheduling deadlocks, unschedulable pods) from blocking the
-// entire benchmark run. Called via defer so it runs even if pod listing fails.
+// SIM_WORKLOAD_STALL_FORCE_COMPLETE of wall-clock time (120 s by default; -1
+// disables it). This prevents individual stuck jobs (e.g., gang scheduling
+// deadlocks, unschedulable pods) from blocking the entire benchmark run.
+// Called via defer so it runs even if pod listing fails.
 func (s *simulator) detectStalledJobs(kube kubernetes.Interface, now time.Time) {
 	if s.workload == nil {
 		return
 	}
-	const stallTimeoutSec = 120.0
+	stallTimeout, enabled := s.workload.opts.stallForceComplete()
+	if !enabled {
+		return
+	}
+	stallTimeoutSec := stallTimeout.Seconds()
 	for _, j := range s.workload.jobs {
 		if j.Completed || !j.Submitted {
 			continue
@@ -3263,78 +2794,11 @@ func dominantWorkClass(weights map[string]float64, def string) string {
 	return bestClass
 }
 
-func cpuThrottleImpactFactor(cpuMul float64, j *simJob) float64 {
-	baseImpact := clamp01(0.60*clamp01(j.CPUUtilTarget) + 0.25*(1.0-clamp01(j.MemoryIntensity)) + 0.15*(1.0-clamp01(j.IOIntensity)))
-	effective := 1.0 - baseImpact*(1.0-clamp01(cpuMul))
-	effective = 1.0 - j.SensitivityCPU*(1.0-effective)
-	return clamp01(effective)
-}
-
-func cpuFeedThrottleFactor(cpuMul float64, j *simJob) float64 {
-	feed := clamp01(j.CPUFeedIntensity)
-	if feed <= 0 {
-		return 1
-	}
-	return clamp01(1.0 - (1.0-clamp01(cpuMul))*feed*j.SensitivityCPU)
-}
-
 func envOrDefault(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
 	}
 	return def
-}
-
-func defaultBaseModelFromEnv() simModel {
-	return simModel{
-		BaseIdleW:                 floatEnv("SIM_BASE_IDLE_W", 80),
-		PodW:                      floatEnv("SIM_POD_W", 120),
-		DvfsDropW:                 floatEnv("SIM_DVFS_DROP_W_PER_PCT", 1.8),
-		RaplHeadW:                 floatEnv("SIM_RAPL_HEADROOM_W", 5),
-		DefaultCapW:               floatEnv("SIM_DEFAULT_CAP_W", 5000),
-		PMaxW:                     floatEnv("SIM_P_MAX_W", 420),
-		AlphaUtil:                 floatEnv("SIM_ALPHA_UTIL", 1.15),
-		BetaFreq:                  floatEnv("SIM_BETA_FREQ", 1.35),
-		FMinMHz:                   floatEnv("SIM_F_MIN_MHZ", 1200),
-		FMaxMHz:                   floatEnv("SIM_F_MAX_MHZ", 3200),
-		RaplCapMinW:               floatEnv("SIM_RAPL_CAP_MIN_W", 80),
-		RaplCapMaxW:               floatEnv("SIM_RAPL_CAP_MAX_W", 5000),
-		DvfsRampMS:                int(floatEnv("SIM_DVFS_RAMP_MS", 500)),
-		CPUCapApplyTauMS:          int(floatEnv("SIM_CPU_CAP_APPLY_TAU_MS", 250)),
-		CPUTelemetryWindowMS:      int(floatEnv("SIM_CPU_TELEMETRY_WINDOW_MS", 250)),
-		CPUAmbientTempC:           floatEnv("SIM_CPU_AMBIENT_TEMP_C", 24),
-		CPUThermalTauMS:           int(floatEnv("SIM_CPU_THERMAL_TAU_MS", 4000)),
-		CPUWattsPerDeltaC:         floatEnv("SIM_CPU_WATTS_PER_DELTA_C", 8.0),
-		CPUThermalThrottleStartC:  floatEnv("SIM_CPU_THERMAL_THROTTLE_START_C", 85),
-		CPUThermalThrottleFullC:   floatEnv("SIM_CPU_THERMAL_THROTTLE_FULL_C", 97),
-		CPUDriverFamily:           strings.TrimSpace(envOrDefault("SIM_CPU_DRIVER_FAMILY", "amd-pstate")),
-		CPULowestNonlinearFreqMHz: floatEnv("SIM_CPU_LOWEST_NONLINEAR_FREQ_MHZ", 1800),
-		CPUSockets:                int(floatEnv("SIM_CPU_SOCKETS", 2)),
-		CPUSocketCapMinW:          floatEnv("SIM_CPU_SOCKET_CAP_MIN_W", 120),
-		CPUSocketCapMaxW:          floatEnv("SIM_CPU_SOCKET_CAP_MAX_W", 400),
-		GPU: hw.GPUProfile{
-			Vendor:                strings.TrimSpace(envOrDefault("SIM_GPU_VENDOR", "")),
-			Product:               strings.TrimSpace(envOrDefault("SIM_GPU_PRODUCT", "")),
-			Count:                 int(floatEnv("SIM_GPU_COUNT", 0)),
-			IdleWattsPerGPU:       floatEnv("SIM_GPU_IDLE_WATTS_PER_GPU", 30),
-			MaxWattsPerGPU:        floatEnv("SIM_GPU_MAX_WATTS_PER_GPU", 300),
-			MinCapWattsPerGPU:     floatEnv("SIM_GPU_MIN_CAP_WATTS_PER_GPU", 80),
-			CapApplyTauMS:         int(floatEnv("SIM_GPU_CAP_APPLY_TAU_MS", 150)),
-			TelemetryWindowMS:     int(floatEnv("SIM_GPU_TELEMETRY_WINDOW_MS", 1000)),
-			AmbientTempC:          floatEnv("SIM_GPU_AMBIENT_TEMP_C", 24),
-			ThermalTauMS:          int(floatEnv("SIM_GPU_THERMAL_TAU_MS", 2500)),
-			WattsPerDeltaC:        floatEnv("SIM_GPU_WATTS_PER_DELTA_C", 12.0),
-			ThermalThrottleStartC: floatEnv("SIM_GPU_THERMAL_THROTTLE_START_C", 82),
-			ThermalThrottleFullC:  floatEnv("SIM_GPU_THERMAL_THROTTLE_FULL_C", 92),
-			ComputeGamma:          floatEnv("SIM_GPU_COMPUTE_GAMMA", 1.0),
-			MemoryEpsilon:         floatEnv("SIM_GPU_MEMORY_EPSILON", 0.2),
-			MemoryGamma:           floatEnv("SIM_GPU_MEMORY_GAMMA", 1.2),
-			PowerModel: hw.GPUPowerModel{
-				AlphaUtil: floatEnv("SIM_GPU_ALPHA_UTIL", 1.0),
-				BetaCap:   floatEnv("SIM_GPU_BETA_CAP", 1.0),
-			},
-		},
-	}
 }
 
 func floatEnv(key string, def float64) float64 {

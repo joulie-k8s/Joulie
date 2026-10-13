@@ -17,4 +17,14 @@ spec:
     - port: http
       path: /metrics
       interval: {{ .Values.serviceMonitor.interval }}
+    {{- /* honorLabels false: an exporter's own instance label, such as Kepler
+    0.7's node name, is kept as exported_instance, as with the real exporter. */}}
+    {{- if .Values.emulate.enabled }}
+    {{- range .Values.emulate.exporters }}
+    - port: http
+      path: /exporters/{{ . }}/metrics
+      interval: {{ $.Values.serviceMonitor.interval }}
+      honorLabels: false
+    {{- end }}
+    {{- end }}
 {{- end }}

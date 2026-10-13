@@ -47,11 +47,13 @@ The controller manager resolves `measuredNodePowerW` before calling the twin. `N
 
 | `NODE_POWER_SOURCE` | Behaviour | `source` written |
 |---------------------|-----------|------------------|
-| `prometheus` | Runs `NODE_POWER_PROMETHEUS_QUERY` against `NODE_POWER_PROMETHEUS_ADDRESS`, substituting `{node}` with the node name. The query must return watts, so a Kepler joules counter has to be wrapped in `rate()`. | `prometheus`, or `prometheus-no-data` when the query is unset, errors, or returns 0 |
-| `http` | GETs `NODE_POWER_HTTP_ENDPOINT` (with `{node}` substituted) and reads `packagePowerWatts`, or `cpu.packagePowerWatts`. This is how the simulator feeds the twin. | `http`, `http-error`, or `http-no-endpoint` |
-| `static` (default) | Returns 0 watts. | `static` |
+| `prometheus` (chart default) | Runs one grouped query per reconcile against `NODE_POWER_PROMETHEUS_ADDRESS` (default `PROMETHEUS_ADDRESS`) and reads every node from the answer. The default preset `otel` reads the OpenTelemetry metrics `hw.energy` (as a rate) and `hw.power` of the CPU packages and GPUs, keyed by `k8s.node.name`; `NODE_POWER_PRESET` selects Kepler or a custom query instead. See [Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}}). | `prometheus`, or `prometheus-no-data` when there is no address, the query fails, or the answer has no positive reading for the node |
+| `http` | GETs `NODE_POWER_HTTP_ENDPOINT` (with `{node}` substituted) and reads one OTLP JSON document with the same rules, such as the simulator's `/otlp/telemetry/{node}`. The legacy `packagePowerWatts` JSON is read until v0.4.0. | `http`, `http-error`, or `http-no-endpoint` |
+| `static` (code default) | Returns 0 watts. | `static` |
 
-Because the default is `static`, an unconfigured cluster reports 0 watts for every node: headroom reads 100 and cooling stress reads 0 everywhere. Configure a source before treating the scores as a ranking signal.
+`NODE_POWER_SCOPE` sets what the reading covers. The default, `components`, is the CPU packages plus the GPUs: the same boundary as `nodeTdpW` (CPU TDP plus GPU TDP), so headroom and cooling stress compare like with like. `host` reads the whole host's wall power instead, which includes memory, fans and the platform and exceeds `nodeTdpW` under load.
+
+Without the chart, the code default is `static`, and an unconfigured controller manager reports 0 watts for every node: headroom reads 100 and cooling stress reads 0 everywhere. Configure a source before treating the scores as a ranking signal.
 
 `kepler` and `utilization` are reserved source values; no component writes them yet. When a reading exceeds twice the node's TDP the controller manager logs a one-shot warning, because that is the signature of a cumulative joules counter being read as watts.
 
@@ -101,13 +103,13 @@ Stress is normalized against **uncapped TDP**, not against the capped budget, be
 | `(ambientTempC - 20) * 0.02` | Each degree above a 20C baseline shrinks the denominator by 0.02, so warm air makes the same watts cost more cooling effort. Below 20C the denominator grows and the multiplier drops below 1. |
 | `max(0.5, ...)` | Floors the denominator, capping the multiplier at 2.0. The cap is reached at 45C ambient and holds for anything hotter. |
 
-If `nodeTdp` is 0 (no hardware information) the score is 0: the twin emits no stress signal rather than a fabricated one. If the ambient temperature is 0 or below it is treated as **unknown** and the multiplier is 1.0. Facility metrics are off by default (`ENABLE_FACILITY_METRICS=false`), so an unknown ambient is the common case, and a genuine sub-zero ambient reads the same as no reading at all.
+If `nodeTdp` is 0 (no hardware information) the score is 0: the twin emits no stress signal rather than a fabricated one. The ambient temperature is the most local one the facility inputs read: the node's inlet, then its cooling zone's, then the outdoor ambient (see [Facility metrics]({{< relref "/docs/getting-started/05-configuration-reference.md#facility-metrics" >}})). Any reading counts, 0C and below included. With no reading the ambient is **unknown** and the multiplier is 1.0. Facility metrics are off by default (`ENABLE_FACILITY_METRICS=false`), so an unknown ambient is the common case.
 
 The multiplier at a few ambient temperatures:
 
 | Ambient | Multiplier |
 |---------|------------|
-| unknown (0C or below) | 1.000 |
+| unknown (no reading) | 1.000 |
 | 15C | 0.909 |
 | 20C | 1.000 |
 | 25C | 1.111 |

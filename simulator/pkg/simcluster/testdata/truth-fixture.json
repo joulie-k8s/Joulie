@@ -1,0 +1,60 @@
+{
+  "seq": 120,
+  "cluster": "truth-fixture",
+  "time": "2026-10-07T10:02:00Z",
+  "nodes": [
+    {
+      "name": "intel-0", "pool": "intel", "profile": "intel-xeon-2s-rapl", "root": "/var/lib/joulie-hwemu/intel-0",
+      "startTime": "2026-10-07T10:00:00Z",
+      "host": {"measured": true, "powerW": 362, "energyJ": 43440, "otherW": 50, "inletC": 22},
+      "components": [
+        {"id": "cpu1", "type": "cpu", "name": "package-1", "vendor": "Intel", "index": 1, "measured": true, "powerW": 140, "energyJ": 16800, "limitW": 165, "requestedLimitW": 165, "utilization": 1},
+        {"id": "cpu0", "type": "cpu", "name": "package-0", "vendor": "Intel", "index": 0, "measured": true, "powerW": 150, "energyJ": 18000, "limitW": 132, "requestedLimitW": 132, "utilization": 1},
+        {"id": "memory0", "type": "memory", "name": "dram", "parent": "cpu0", "index": 0, "measured": true, "powerW": 10, "energyJ": 1200, "utilization": 0},
+        {"id": "memory1", "type": "memory", "name": "dram", "parent": "cpu1", "index": 1, "measured": false, "powerW": 12, "energyJ": 1440, "utilization": 0}
+      ]
+    },
+    {
+      "name": "nvl-0", "pool": "nvl", "profile": "nvidia-h100-nvl-8gpu", "root": "/var/lib/joulie-hwemu/nvl-0",
+      "startTime": "2026-10-07T10:00:00Z",
+      "host": {"measured": true, "powerW": 900, "energyJ": 108000, "otherW": 80, "inletC": 25},
+      "components": [
+        {"id": "cpu0", "type": "cpu", "name": "package-0", "vendor": "AMD", "index": 0, "measured": true, "powerW": 100, "energyJ": 12000, "utilization": 1},
+        {"id": "cpu1", "type": "cpu", "name": "package-1", "vendor": "AMD", "index": 1, "measured": true, "powerW": 90, "energyJ": 10800, "utilization": 1},
+        {"id": "memory0", "type": "memory", "name": "dram", "parent": "cpu0", "index": 0, "measured": false, "powerW": 10, "energyJ": 1200, "utilization": 0},
+        {"id": "memory1", "type": "memory", "name": "dram", "parent": "cpu1", "index": 1, "measured": false, "powerW": 10, "energyJ": 1200, "utilization": 0},
+        {"id": "gpu1", "type": "gpu", "name": "NVIDIA H100 NVL", "vendor": "NVIDIA", "index": 1, "measured": true, "powerW": 310, "energyJ": 37200, "limitW": 320, "requestedLimitW": 320, "utilization": 1},
+        {"id": "gpu0", "type": "gpu", "name": "NVIDIA H100 NVL", "vendor": "NVIDIA", "index": 0, "measured": true, "powerW": 300, "energyJ": 36000, "limitW": 320, "requestedLimitW": 320, "utilization": 1}
+      ]
+    },
+    {
+      "name": "mi300x-0", "pool": "mi300x", "profile": "amd-instinct-mi300x-8gpu", "root": "/var/lib/joulie-hwemu/mi300x-0",
+      "startTime": "2026-10-07T10:00:00Z",
+      "host": {"measured": true, "powerW": 1600, "energyJ": 192000, "otherW": 120, "inletC": 25},
+      "components": [
+        {"id": "cpu0", "type": "cpu", "name": "package-0", "vendor": "AMD", "index": 0, "measured": true, "powerW": 120, "energyJ": 14400, "utilization": 1},
+        {"id": "cpu1", "type": "cpu", "name": "package-1", "vendor": "AMD", "index": 1, "measured": true, "powerW": 110, "energyJ": 13200, "utilization": 1},
+        {"id": "gpu0", "type": "gpu", "name": "AMD Instinct MI300X", "vendor": "AMD", "index": 0, "measured": true, "powerW": 600, "energyJ": 72000, "limitW": 750, "utilization": 1},
+        {"id": "gpu1", "type": "gpu", "name": "AMD Instinct MI300X", "vendor": "AMD", "index": 1, "measured": true, "powerW": 650, "energyJ": 78000, "limitW": 750, "utilization": 1}
+      ]
+    },
+    {
+      "name": "nopowercap-0", "pool": "nopowercap", "profile": "intel-xeon6-2s-no-powercap", "root": "/var/lib/joulie-hwemu/nopowercap-0",
+      "startTime": "2026-10-07T10:00:00Z",
+      "host": {"measured": true, "powerW": 300, "energyJ": 36000, "otherW": 40, "inletC": 22},
+      "components": [
+        {"id": "cpu0", "type": "cpu", "name": "package-0", "vendor": "Intel", "index": 0, "measured": false, "powerW": 130, "energyJ": 15600, "utilization": 1},
+        {"id": "cpu1", "type": "cpu", "name": "package-1", "vendor": "Intel", "index": 1, "measured": false, "powerW": 130, "energyJ": 15600, "utilization": 1}
+      ]
+    },
+    {
+      "name": "vm-0", "pool": "vm", "profile": "vm-no-powercap", "root": "/var/lib/joulie-hwemu/vm-0",
+      "startTime": "2026-10-07T10:00:00Z",
+      "host": {"measured": false, "powerW": 60, "energyJ": 7200, "otherW": 10, "inletC": 20},
+      "components": [
+        {"id": "cpu0", "type": "cpu", "name": "package-0", "vendor": "Intel", "index": 0, "measured": false, "powerW": 50, "energyJ": 6000, "utilization": 1}
+      ]
+    }
+  ],
+  "facility": {"startTime": "2026-10-07T10:00:00Z", "ambientC": 21.5, "itPowerW": 3222, "itEnergyJ": 386640, "pue": 1.3, "coolingPowerW": 966.6, "coolingEnergyJ": 115992}
+}

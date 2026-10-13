@@ -1,0 +1,48 @@
+{
+  "capabilities": {
+    "cpuControl": true,
+    "cpuTelemetry": true,
+    "gpuControl": false,
+    "gpuTelemetry": true
+  },
+  "cpu": {
+    "controlAvailable": true,
+    "coresPerSocket": 128,
+    "driverFamily": "acpi-cpufreq",
+    "model": "AMD_EPYC_9534",
+    "rawModel": "AMD EPYC 9534 64-Core Processor",
+    "sockets": 2,
+    "telemetryAvailable": true,
+    "totalCores": 256,
+    "vendor": "AuthenticAMD",
+    "warnings": null
+  },
+  "gpu": {
+    "controlAvailable": false,
+    "count": 4,
+    "currentCapWatts": 0,
+    "model": "",
+    "rawModel": "GC_11_0_0",
+    "telemetryAvailable": true,
+    "vendor": "amd",
+    "warnings": [
+      "gpu model not recognized"
+    ]
+  },
+  "inventoryResolution": {
+    "exactness": {
+      "cpu": "exact",
+      "gpu": "proxy"
+    },
+    "hardwareCatalogKey": {
+      "cpu": "AMD_EPYC_9534",
+      "gpu": ""
+    }
+  },
+  "quality": {
+    "overall": "heuristic",
+    "warnings": [
+      "gpu model not recognized"
+    ]
+  }
+}

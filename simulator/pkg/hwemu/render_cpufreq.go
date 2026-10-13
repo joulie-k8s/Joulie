@@ -138,14 +138,21 @@ func renderPolicyEntries(f *CPUFreqSpec, pol renderPolicy) []renderEntry {
 		cur = f.CPUInfoMaxKHz.V
 	}
 	cpuList := renderCPUList(pol.CPUs)
+	// The kernel resolves policy->min and policy->max to the frequency table
+	// on every policy update, the first one at boot included
+	// (cpufreq.c:2668-2681), so a table driver whose cpuinfo_max_freq
+	// includes boost above the table shows its top entry. The node's readback
+	// applies the same rule (nodePolicy.freqHandler), so the rendered values
+	// are what the first step reads back and no write is seen.
+	boot := &nodePolicy{minKHz: f.CPUInfoMinKHz.V, maxKHz: f.CPUInfoMaxKHz.V, table: f.AvailableKHz.V, reqMinKHz: f.CPUInfoMinKHz.V, reqMaxKHz: f.CPUInfoMaxKHz.V}
 	entries := []renderEntry{
 		{name: "scaling_available_governors", content: available, owner: layout.OwnerRender, mode: 0o444},
 		{name: "scaling_governor", content: f.Governor.V + "\n", owner: layout.OwnerAgent, mode: 0o644},
 		{name: "cpuinfo_min_freq", content: renderUint(f.CPUInfoMinKHz.V), owner: layout.OwnerRender, mode: 0o444},
 		{name: "cpuinfo_max_freq", content: renderUint(f.CPUInfoMaxKHz.V), owner: layout.OwnerRender, mode: 0o444},
 		{name: "cpuinfo_transition_latency", content: renderUint(renderTransitionLatencyNS[f.Driver.V]), owner: layout.OwnerRender, mode: 0o444},
-		{name: "scaling_min_freq", content: renderUint(f.CPUInfoMinKHz.V), owner: layout.OwnerAgent, mode: 0o644},
-		{name: "scaling_max_freq", content: renderUint(f.CPUInfoMaxKHz.V), owner: layout.OwnerAgent, mode: 0o644},
+		{name: "scaling_min_freq", content: renderUint(boot.effMinKHz()), owner: layout.OwnerAgent, mode: 0o644},
+		{name: "scaling_max_freq", content: renderUint(boot.effMaxKHz()), owner: layout.OwnerAgent, mode: 0o644},
 		{name: "scaling_cur_freq", content: renderUint(cur), owner: layout.OwnerEmulator, mode: 0o444},
 		{name: "scaling_setspeed", content: "<unsupported>\n", owner: layout.OwnerRender, mode: 0o644},
 		{name: "affected_cpus", content: cpuList, owner: layout.OwnerRender, mode: 0o444},

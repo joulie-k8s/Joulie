@@ -11,7 +11,7 @@ Before installing Joulie, understand the control model.
 
 Joulie is a Kubernetes-native energy management system that uses **per-node digital twins** to optimize data center power consumption.
 
-It continuously ingests telemetry from every node (CPU/GPU power draw via RAPL and NVML/DCGM, per-pod resource utilization via cAdvisor, and optional energy counters from [Kepler](https://github.com/sustainable-computing-io/kepler)) to maintain an up-to-date model of each node's thermal and power state.
+It continuously ingests telemetry from every node (CPU/GPU power draw via RAPL and NVML/DCGM, read from Prometheus as the OpenTelemetry hardware metrics `hw.energy` and `hw.power` or as [Kepler](https://github.com/sustainable-computing-io/kepler) energy counters, and per-pod resource utilization via cAdvisor) to maintain an up-to-date model of each node's thermal and power state.
 
 These per-node digital twins drive two outcomes:
 
@@ -101,7 +101,7 @@ For the formulas and the inputs they read, see [Digital Twin]({{< relref "/docs/
 ## Digital twin feedback loop
 
 ```
-telemetry (RAPL/NVML/cAdvisor/Kepler)
+telemetry (RAPL/NVML as OTel hw.* metrics, or Kepler; cAdvisor)
   → twin update (NodeTwin.status: headroom, coolingStress, psuStress)
     → cap decisions (NodeTwin.spec)
     → pod placement steering (scheduler extender)

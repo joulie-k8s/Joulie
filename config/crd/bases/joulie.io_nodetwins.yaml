@@ -202,7 +202,9 @@ spec:
                     description: GPU thermal design power (uncapped hardware maximum)
                     type: number
                   measuredNodePowerW:
-                    description: Measured total node power draw in watts
+                    description: |-
+                      Measured node power draw in watts: the CPU packages plus the GPUs, or
+                      the whole host with NODE_POWER_SCOPE=host
                     type: number
                   nodeCappedPowerW:
                     description: Total node power budget (cpuCappedPowerW + gpuCappedPowerW)

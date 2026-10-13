@@ -30,6 +30,7 @@ Use simulator docs after you are familiar with the core controller manager/agent
 7. [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}}) -- node-level power draw and thermal response modeling
 8. [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) -- CPU/GPU power curves used by the simulator
 9. [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}}) -- Prometheus metrics exported by simulated nodes
+10. [Model Changes]({{< relref "/docs/simulator/model-changes.md" >}}) -- every change that moves the numbers the simulator produces, and how far; read it before comparing with results from an older simulator
 
 ## Simulator architecture diagram
 

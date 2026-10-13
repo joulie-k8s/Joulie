@@ -1,0 +1,103 @@
+# Four Radeon PRO W7900 boards on the two socket EPYC 9534 energy-only host,
+# the shape of the measured node. The boards are display controllers (PCI
+# class 0x030000), unlike the MI300X's processing accelerators, so NFD
+# publishes pci-0300_1002 and the agent takes the AMD vendor from that label.
+# Their power cap is pinned: the driver and both tools report minimum,
+# maximum, default and current at 241 W on every board, so any other value is
+# refused. The published 295 W is the total board power; 241 W is the package
+# power limit (PPT0) the driver enforces and reports.
+schemaVersion: 1
+name: amd-radeon-pro-w7900-4gpu
+extends: amd-epyc-9534-2s-energy-only
+description: 4x Radeon PRO W7900 on the two socket EPYC 9534 energy-only host; amdgpu hwmon with the cap pinned at 241 W, current rocm-smi (no --showpowercap) and amd-smi 7.2.
+sources:
+  w7900smi:    {kind: measured, ref: "read-only rocm-smi, amd-smi and amdgpu hwmon output of a node with 2x EPYC 9534 and 4x Radeon PRO W7900, 2026-10", note: "rocm-smi 4.0.0 (library 7.8.0) and amd-smi 26.2.2 of ROCm 7.2.4, amdgpu 6.16.13. Every board: power1_cap, _min, _max and _default 241000000; rocm-smi --showmaxpower 241.0; amd-smi static --limit ppt0 min, max and socket power 241 W, ppt1 N/A; rocm-smi --showpowercap rejected as an unrecognized argument; rocm-smi --showpower prints Average Graphics Package Power, 7 to 15 W idle; PCI class 0x030000; amdgpu hwmon on cards 1 to 4. A 60 s sample of one power file per board read 6 to 16 W, mean 10.8 W"}
+  amdlabelsw7900: {kind: measured, ref: "read-only node description of a node with 4x Radeon PRO W7900, 2026-10", note: "AMD node labeller label set: every value under both label prefixes except the product name and the driver version, which have the amd prefix only; NFD pci-0300_1002 and pci-0300_1a03; 4 amd.com/gpu and 792215556Ki of memory in capacity; capacity minus allocatable is 2 CPUs and 1000Mi"}
+  w7900:       {kind: published, ref: "https://www.amd.com/en/products/graphics/workstations/radeon-pro/w7900.html", note: "Total Board Power (TBP) 295W; Dedicated Memory Size 48 GB, GDDR6; 96 compute units, 6144 stream processors; PCIe 4.0 x16 add-in card (fetched 2026-10-10)"}
+  pciids:      {kind: published, ref: "https://pci-ids.ucw.cz/read/PC/1002/7448", note: "1002:7448 Navi 31 [Radeon Pro W7900] (pci.ids 2026.10.09)"}
+  llvmamdgpu:  {kind: published, ref: "https://llvm.org/docs/AMDGPUUsage.html", note: "processor table: gfx1100 lists Radeon PRO W7900"}
+  amdgpupm:    {kind: published, ref: "linux v7.3-rc5 drivers/gpu/drm/amd/pm/amdgpu_pm.c:3469-3496,3591-3600,3664-3674,3827-3834"}
+  amdgpudrv:   {kind: published, ref: "linux v7.3-rc5 drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c:2193-2206", note: "binds VGA, display-other and accelerator-processing classes"}
+  rocmsmi:     {kind: published, ref: "https://github.com/ROCm/rocm_smi_lib/blob/323ab1105dce/python_smi_tools/rocm_smi.py", note: "head of the develop branch; line 1 is #!/usr/bin/env python3, and rocm_smi/CMakeLists.txt:117-122 installs the rocm-smi command as a symlink to this script"}
+  amdsmicli:   {kind: published, ref: "https://github.com/ROCm/amdsmi/blob/rocm-7.2.0/amdsmi_cli/amdsmi_cli.py", note: "line 1 is #!/usr/bin/env python3, and amdsmi_cli/CMakeLists.txt:68-75 installs the amd-smi command as a symlink to this script"}
+  amdlabeller: {kind: published, ref: "https://github.com/ROCm/k8s-device-plugin/blob/3b9a79fe1ed1/cmd/k8s-node-labeller/main.go", note: "lines 38-39, 84, 209-238"}
+node:
+  labels:
+    amdgpu:
+      src: "measured:amdlabelsw7900#each value under both label prefixes, plus a per-value key whose value is the GPU count; the product name and the driver version under the amd prefix only"
+      values:
+        amd.com/gpu.cu-count: "96"
+        amd.com/gpu.device-id: "7448"
+        amd.com/gpu.driver-version: "6.16.13"
+        amd.com/gpu.family: "GC_11_0_0"
+        amd.com/gpu.product-name: "AMD_Radeon_PRO_W7900"
+        amd.com/gpu.simd-count: "192"
+        amd.com/gpu.vram: "48G"
+        beta.amd.com/gpu.cu-count: "96"
+        beta.amd.com/gpu.cu-count.96: "4"
+        beta.amd.com/gpu.device-id: "7448"
+        beta.amd.com/gpu.device-id.7448: "4"
+        beta.amd.com/gpu.family: "GC_11_0_0"
+        beta.amd.com/gpu.family.GC_11_0_0: "4"
+        beta.amd.com/gpu.simd-count: "192"
+        beta.amd.com/gpu.simd-count.192: "4"
+        beta.amd.com/gpu.vram: "48G"
+        beta.amd.com/gpu.vram.48G: "4"
+  capacity:
+    memoryKi: {v: 792215556, src: "measured:amdlabelsw7900#memory capacity"}
+  # The measured node carries this taint; the AMD device plugin tolerates it.
+  taints: [{key: amd.com/gpu, effect: NoSchedule}]
+pci:
+  - {class: "0x030000", vendor: "0x1a03", drm: true, src: "measured:amdlabelsw7900#pci-0300_1a03 next to pci-0300_1002; w7900smi finds the amdgpu hwmon devices on cards 1 to 4, so the BMC VGA is card0"}
+gpus:
+  vendor: amd
+  count: {v: 4, src: "measured:amdlabelsw7900#4 amd.com/gpu in capacity; w7900smi lists four boards"}
+  product: {v: "AMD Radeon Pro W7900", src: "measured:w7900smi#rocm-smi Card Series; matches the AMD_RADEON_PRO_W7900 alias of the hardware catalog, which ignores case"}
+  pci:
+    vendor: {v: "0x1002", src: "published:pciids#1002"}
+    device: {v: "0x7448", src: "published:pciids#1002:7448; w7900smi Card Model 0x7448 and the labeller's device-id 7448 agree"}
+    class: {v: "0x030000", src: "measured:w7900smi#class of all four boards, a VGA compatible controller, one of the classes amdgpudrv binds"}
+  exposure: {v: whole, src: "measured:amdlabelsw7900#amd.com/gpu resource, AMD device plugin"}
+  labeller: {v: listed, src: published:amdlabeller}
+  vbiosVersion: {v: "113-D7070100-100", src: "assumed:synthetic; its middle segment is the measured Card SKU D7070100 (w7900smi), which rocm-smi takes from vbios_version (rocmsmi showProduct, lines 2756-2761)"}
+  gfxVersion: {v: gfx1100, src: "measured:w7900smi#GFX Version; llvmamdgpu lists gfx1100 for Radeon PRO W7900"}
+  # Pinned: the driver reports the same value for all four, so there is no
+  # range to cap within.
+  limits:
+    minW: {v: 241, src: "measured:w7900smi#power1_cap_min and amd-smi min_power_limit, every board"}
+    maxW: {v: 241, src: "measured:w7900smi#power1_cap_max and amd-smi max_power_limit, every board; the 295 W that w7900 publishes is total board power, a different quantity (assumed)"}
+    defaultW: {v: 241, src: "measured:w7900smi#power1_cap_default, every board"}
+  powerSensor: {v: average, src: "measured:w7900smi#rocm-smi --showpower prints Average Graphics Package Power, and each board has one power file (amdgpupm:3827-3834)"}
+  ppt1: {v: absent, src: "measured:w7900smi#amd-smi static --limit prints ppt1 as N/A"}
+  # rocm-smi and amd-smi are Python scripts run through /usr/bin/env;
+  # fakesmi checks the interpreter chain, in this order, under HWEMU_ROOTFS.
+  tools:
+    - name: rocm-smi
+      variant: current
+      requires:
+        - paths: [/usr/bin/env]
+          exit: 127
+          src: "published:rocmsmi#line 1, #!/usr/bin/env python3; without /usr/bin/env exec fails with ENOENT, which a shell reports as exit 127 (assumed)"
+        - paths: [/usr/bin/python3, /usr/local/bin/python3]
+          exit: 127
+          stderr: "/usr/bin/env: 'python3': No such file or directory"
+          src: "assumed:GNU env exits 127 with this message when python3 is on no PATH directory; the directories searched are assumed"
+    - name: amd-smi
+      variant: "7.2"
+      requires:
+        - paths: [/usr/bin/env]
+          exit: 127
+          src: "published:amdsmicli#line 1, #!/usr/bin/env python3; without /usr/bin/env exec fails with ENOENT, which a shell reports as exit 127 (assumed)"
+        - paths: [/usr/bin/python3, /usr/local/bin/python3]
+          exit: 127
+          stderr: "/usr/bin/env: 'python3': No such file or directory"
+          src: "assumed:GNU env exits 127 with this message when python3 is on no PATH directory; the directories searched are assumed"
+physics:
+  gpu:
+    idleW: {v: 10.8, src: "measured:w7900smi#mean of the 60 s sample, four idle boards"}
+    naturalMaxW: {v: 241, src: "measured:w7900smi#the package limit in force; the reported package power cannot exceed it, so the boards run at full speed up to it"}
+    computeGamma: {v: 1.0, src: "assumed:simulator default SIM_GPU_COMPUTE_GAMMA; throughput only"}
+    memoryEpsilon: {v: 0.2, src: "assumed:simulator default SIM_GPU_MEMORY_EPSILON; throughput only"}
+    memoryGamma: {v: 1.2, src: "assumed:simulator default SIM_GPU_MEMORY_GAMMA; throughput only"}
+    capSettleTauMS: {v: 350, src: "assumed:no public settling data; the MI300X profile's value"}
+    telemetryWindowMS: {v: 1000, src: "assumed:no public averaging window for power1_average"}

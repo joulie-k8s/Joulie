@@ -81,6 +81,8 @@ type call struct {
 // filepath.Base(argv[0]), or argv[1] when argv[0] is fakesmi itself, so one
 // binary serves every bin/<tool> link. A tool that tools.json does not list
 // exits 127 with "fakesmi: <tool> is not installed on this emulated node".
+// A listed tool whose requirements are not met under env.RootFS fails as
+// the real one would (checkRequires), before it reads any GPU state.
 func Main(argv []string, env Env, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(argv) == 0 {
 		fmt.Fprintln(stderr, "fakesmi: no program name")
@@ -103,6 +105,9 @@ func Main(argv []string, env Env, stdin io.Reader, stdout, stderr io.Writer) int
 	if !ok {
 		fmt.Fprintf(stderr, "fakesmi: %s is not installed on this emulated node\n", tool)
 		return exitNotInstalled
+	}
+	if code, ok := checkRequires(entry, env, stderr); !ok {
+		return code
 	}
 	c := &call{tool: tool, variant: entry.Variant, args: args, env: env, stdin: stdin, stdout: stdout, stderr: stderr}
 	switch tool {
@@ -134,6 +139,38 @@ func readManifest(env Env) (layout.ToolsManifest, error) {
 		return m, fmt.Errorf("tools manifest %s: schemaVersion %d, want 1", p, m.SchemaVersion)
 	}
 	return m, nil
+}
+
+// checkRequires checks the requirements of a tools.json entry in order,
+// under env.RootFS. The first one none of whose paths exists prints its
+// Stderr, if any, and gives its Exit, as exec or the real tool does when
+// the loader, a library or an interpreter is missing; ok is false then. An
+// empty RootFS checks nothing.
+func checkRequires(entry layout.ToolEntry, env Env, stderr io.Writer) (code int, ok bool) {
+	if env.RootFS == "" {
+		return 0, true
+	}
+	for _, r := range entry.Requires {
+		if requirementMet(r, env.RootFS) {
+			continue
+		}
+		if r.Stderr != "" {
+			fmt.Fprintln(stderr, r.Stderr)
+		}
+		return r.Exit, false
+	}
+	return 0, true
+}
+
+// requirementMet reports whether one of r's paths exists under rootFS. It
+// follows symlinks, as the loader does, so a dangling link is absent.
+func requirementMet(r layout.ToolRequirement, rootFS string) bool {
+	for _, p := range r.Paths {
+		if _, err := os.Stat(filepath.Join(rootFS, filepath.FromSlash(p))); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // unknownVariant rejects a variant tools.json names but fakesmi does not

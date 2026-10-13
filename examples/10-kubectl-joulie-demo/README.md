@@ -47,7 +47,7 @@ through an interactive presentation.
 
 ### Phase 2: Interactive demo (guided)
 
-**Step 1 — Show idle cluster:**
+**Step 1: show the idle cluster**
 
 ```
 kubectl get nodes -L nvidia.com/gpu.product,amd.com/gpu.product,joulie.io/power-profile
@@ -56,21 +56,21 @@ kubectl joulie status
 
 All nodes visible, energy state shows idle power levels, 0% resource allocation.
 
-**Step 2 — Launch workload:**
+**Step 2: launch the workload**
 
 The script loads the trace into the simulator and restarts it. ~100 AI workload
 pods appear across the cluster with realistic CPU, memory, and GPU requests.
 
-**Step 3 — Watch live energy state:**
+**Step 3: watch the live energy state**
 
 ```
 kubectl joulie status -W
 ```
 
-Watch mode refreshes every 2 seconds — headroom drops, cooling stress rises,
+Watch mode refreshes every 2 seconds: headroom drops, cooling stress rises,
 caps get applied. Open Grafana to see the "Joulie Overview" dashboard.
 
-**Step 4 — Reset:**
+**Step 4: reset**
 
 Stops the simulator, deletes all workload pods, and shows the cluster returning
 to idle.
@@ -81,7 +81,7 @@ to idle.
 |--------|---------|
 | CLASS | Controller-manager-assigned power profile (eco / performance / draining) |
 | HEADROOM | % of capped power budget remaining unused |
-| COOLING | Thermal stress — fraction of physical cooling capacity in use |
+| COOLING | Thermal stress: fraction of physical cooling capacity in use |
 | CPU% | CPU cores requested vs allocatable |
 | MEM% | Memory requested vs allocatable |
 | GPU% | GPUs requested vs allocatable (`-` for CPU-only nodes) |
@@ -94,7 +94,7 @@ to idle.
 ```
                   ┌──────────────────────────────────────────────┐
                   │              Simulator                       │
-                  │  GET /telemetry/{node} → packagePowerWatts   │
+                  │  GET /otlp/telemetry/{node} → OTLP hw.*      │
                   │  GET /api/v1/query     → facility metrics    │
                   │  GET /metrics          → Prometheus metrics  │
                   └──────┬──────────┬────────────┬──────────────┘

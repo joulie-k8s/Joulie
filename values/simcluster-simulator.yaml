@@ -1,0 +1,20 @@
+# Simulator values for the simulated cluster (scripts/simcluster/deploy.sh).
+#
+# The simulator runs in emulate mode on the infra Node: it keeps one hwemu
+# tree per spec Node under emulate.root on that Node, where the emulated
+# agents mount them. deploy.sh passes the cluster spec
+# (--set-file emulate.clusterSpec), the telemetry values of the mode and
+# timing, and the image tag (dev-<sha>). The image is built from the working
+# tree and imported into the cluster, so it is never pulled. In emulate mode
+# the chart leaves out the legacy workload trace and adds emulate.nodeSelector
+# (joulie.io/hwemu-host), which the infra Node also carries.
+image:
+  repository: joulie.local/joulie-simulator
+  pullPolicy: IfNotPresent
+
+nodeSelector:
+  joulie.io/infra: "true"
+
+emulate:
+  enabled: true
+  root: /var/lib/joulie-hwemu

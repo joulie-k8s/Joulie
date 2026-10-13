@@ -1,0 +1,4 @@
+{"type":"workload","schemaVersion":"v3","workloadId":"w0","submitTimeOffsetSec":0}
+{"type":"job","schemaVersion":"v3","jobId":"j0","workloadId":"w0","submitTimeOffsetSec":0,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"2","nvidia.com/gpu":"1"}},"work":{"cpuUnits":240,"gpuUnits":120}}
+{"type":"job","schemaVersion":"v3","jobId":"j1","submitTimeOffsetSec":90,"namespace":"default","intentClass":"performance","podTemplate":{"requests":{"cpu":"1"}},"work":{"cpuUnits":60,"gpuUnits":0}}
+{"type":"job","schemaVersion":"v3","jobId":"j2","submitTimeOffsetSec":600,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"1"}},"work":{"cpuUnits":60,"gpuUnits":0}}

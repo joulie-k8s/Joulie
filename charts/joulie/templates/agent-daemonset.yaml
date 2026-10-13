@@ -13,55 +13,5 @@ spec:
       labels:
         app.kubernetes.io/name: joulie-agent
     spec:
-      serviceAccountName: joulie-agent
-      hostNetwork: {{ .Values.agent.hostNetwork }}
-      dnsPolicy: {{ if .Values.agent.hostNetwork }}ClusterFirstWithHostNet{{ else }}ClusterFirst{{ end }}
-      {{- with .Values.agent.daemonset.nodeSelector }}
-      nodeSelector:
-{{ toYaml . | indent 8 }}
-      {{- end }}
-      containers:
-        - name: agent
-          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
-          ports:
-            - name: metrics
-              containerPort: {{ .Values.agent.service.port }}
-              protocol: TCP
-          env:
-            - name: NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-            {{- range $k, $v := .Values.agent.env }}
-            - name: {{ $k }}
-              value: {{ $v | quote }}
-            {{- end }}
-            {{- if .Values.hardwareCatalog.enabled }}
-            - name: HARDWARE_CATALOG_PATH
-              value: "{{ .Values.hardwareCatalog.mountPath }}/{{ .Values.hardwareCatalog.key }}"
-            {{- end }}
-          securityContext:
-            privileged: {{ .Values.agent.privileged }}
-            runAsUser: 0
-            runAsGroup: 0
-            allowPrivilegeEscalation: true
-          volumeMounts:
-            - name: host-sys
-              mountPath: /host-sys
-            {{- if .Values.hardwareCatalog.enabled }}
-            - name: hardware-catalog
-              mountPath: {{ .Values.hardwareCatalog.mountPath }}
-              readOnly: true
-            {{- end }}
-      volumes:
-        - name: host-sys
-          hostPath:
-            path: /sys
-            type: Directory
-        {{- if .Values.hardwareCatalog.enabled }}
-        - name: hardware-catalog
-          configMap:
-            name: {{ .Values.hardwareCatalog.configMapName }}
-        {{- end }}
+      {{- include "joulie.agentPodSpec" (dict "root" $ "mode" "daemonset") | nindent 6 }}
 {{- end }}

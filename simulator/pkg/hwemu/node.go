@@ -1,6 +1,7 @@
 package hwemu
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/matbun/joulie/pkg/otel/semconv"
 	"github.com/matbun/joulie/simulator/pkg/hw"
 	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 	"github.com/matbun/joulie/simulator/pkg/phys"
@@ -53,6 +55,10 @@ type Node struct {
 	substepD  time.Duration
 	frozen    bool
 	leases    bool // A-file rewrites run under a lease (nodeLeasesWork)
+
+	driverVersion string        // NVML driver_version, read once
+	renderEvery   time.Duration // Options.RenderCheckInterval
+	renderNext    time.Time     // when R files are next checked, with renderEvery
 
 	now  time.Time // the node's clock
 	grid time.Time // last substep boundary: the physics state holds there
@@ -96,9 +102,11 @@ func (t nodeTopology) cpus() int { return t.sockets * t.cores * t.threads }
 func (t nodeTopology) socketOf(cpu int) int { return (cpu % (t.sockets * t.cores)) / t.cores }
 
 // NewNode builds the physics of tree t, rendered from profile p. Counters,
-// limits, frequencies and NVML state are seeded from the files on disk rather
-// than from the profile, so a Node created over a live tree continues where
-// the last one stopped and an energy counter never reads as a reset.
+// limits, frequencies, persistence modes and NVML state are seeded from the
+// files on disk rather than from the profile, so a Node created over a live
+// tree, such as one Ensure resumed, continues where the last one stopped and
+// an energy counter never reads as a reset. The node name, when t has none,
+// and the GPU identities and driver version are read from the tree once.
 // There is no randomness: the same tree, options, loads and steps give the
 // same files. A zero o.Start means time.Now(). A Frozen node reads back and
 // restores files but advances no reading, which keeps a captured tree as
@@ -107,16 +115,18 @@ func NewNode(p *Profile, t *Tree, o Options) (*Node, error) {
 	if p == nil || t == nil || t.Root == "" {
 		return nil, errors.New("hwemu: NewNode needs a profile and a rendered tree")
 	}
+	tree := *t
 	n := &Node{
-		profile:   p,
-		tree:      t,
-		root:      t.Root,
-		realRoot:  t.Root,
-		sysRoot:   t.SysRoot,
-		stateRoot: t.StateRoot,
-		owners:    map[string]layout.FileSpec{},
-		substepD:  o.Substep,
-		frozen:    o.Frozen,
+		profile:     p,
+		tree:        &tree,
+		root:        t.Root,
+		realRoot:    t.Root,
+		sysRoot:     t.SysRoot,
+		stateRoot:   t.StateRoot,
+		owners:      map[string]layout.FileSpec{},
+		substepD:    o.Substep,
+		frozen:      o.Frozen,
+		renderEvery: o.RenderCheckInterval,
 	}
 	if r, err := filepath.EvalSymlinks(t.Root); err == nil {
 		n.realRoot = r
@@ -140,8 +150,18 @@ func NewNode(p *Profile, t *Tree, o Options) (*Node, error) {
 		start = time.Now()
 	}
 	n.now, n.grid, n.segT = start, start, start
+	n.renderNext = start.Add(n.renderEvery)
 	for _, f := range t.Files {
 		n.owners[f.Rel] = f
+	}
+	if tree.NodeName == "" {
+		var meta renderMeta
+		if b, err := os.ReadFile(n.rootPath(ensureMetaFile)); err == nil && json.Unmarshal(b, &meta) == nil {
+			tree.NodeName = meta.Node
+		}
+	}
+	if v, ok := nodeReadString(filepath.Join(n.stateRoot, layout.NVMLDir, "driver_version")); ok {
+		n.driverVersion = v
 	}
 
 	steps := []func() error{n.buildTopology, n.buildModels, n.buildPowercap, n.buildCPUFreq, n.buildHSMP, n.buildGPUs, n.snapshotRenderFiles}
@@ -229,7 +249,7 @@ func (n *Node) AdvanceTo(t time.Time) error {
 
 func (n *Node) step(end time.Time) error {
 	n.events = nil
-	err := n.readback()
+	err := errors.Join(n.readback(n.renderCheckDue(end)), n.persistReset())
 	if n.frozen {
 		n.now, n.grid, n.segT = end, end, end
 		return err
@@ -241,14 +261,29 @@ func (n *Node) step(end time.Time) error {
 	return errors.Join(err, n.writeOutputs())
 }
 
+// renderCheckDue reports whether the step to end checks the R files: every
+// step without a RenderCheckInterval, otherwise the first step that reaches
+// the interval after the last check, NewNode counting as one.
+func (n *Node) renderCheckDue(end time.Time) bool {
+	if n.renderEvery <= 0 {
+		return true
+	}
+	if end.Before(n.renderNext) {
+		return false
+	}
+	n.renderNext = end.Add(n.renderEvery)
+	return true
+}
+
 // State returns a snapshot after the last step, with that step's events.
 // PackageState.EnergyUJ is the package zone's energy_uj without its wrap: the
-// value on disk when the Node started plus the energy since.
+// value on disk when the Node started plus the energy since. Components and
+// Host integrate energy since the Node started, up to the node's time.
 func (n *Node) State() State {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	dt := n.now.Sub(n.segT).Seconds()
-	s := State{Time: n.now, Events: append([]Event(nil), n.events...)}
+	s := State{Time: n.now, Events: append([]Event(nil), n.events...), DriverVersion: n.driverVersion}
 	for _, pk := range n.pkgs {
 		s.Packages = append(s.Packages, PackageState{
 			Socket:        pk.socket,
@@ -262,7 +297,139 @@ func (n *Node) State() State {
 	for _, g := range n.gpus {
 		s.GPUs = append(s.GPUs, GPUState{Index: g.index, PowerW: g.pwr.W, AvgPowerW: g.avgW, LimitW: g.limitW(), EnforcedLimitW: g.settledW})
 	}
+	s.Components, s.Host = n.stateComponents(dt)
 	return s
+}
+
+// stateComponents is State's Components and Host: every CPU package, then
+// every DRAM zone, then every GPU, as section 1.5 of the telemetry contract
+// names them, with energy integrated up to the node's time, dt seconds into
+// the current segment. Measured follows the files a collector reads: a
+// package or DRAM zone with energy_uj, an NVIDIA GPU with total_energy_mj,
+// an AMD GPU with power1_input or power1_average, and a host that is not a
+// hypervisor guest.
+func (n *Node) stateComponents(dt float64) ([]ComponentState, HostState) {
+	host := HostState{Measured: !n.profile.CPU.Hypervisor, OtherW: n.other.W, PowerW: n.other.W, EnergyJ: n.other.J + n.other.W*dt}
+	var cpus, mems, gpus []ComponentState
+	vendor, model := stateCPUVendor(n.profile.CPU.VendorID.V), n.profile.CPU.ModelName.V
+	for _, pk := range n.pkgs {
+		cpu := ComponentState{
+			ID: stateID(semconv.HwTypeCPU, pk.socket), Type: semconv.HwTypeCPU, Name: fmt.Sprintf("package-%d", pk.socket),
+			Vendor: vendor, Model: model, Index: pk.socket,
+			PowerW: pk.pwr.W, EnergyJ: pk.pwr.J + pk.pwr.W*dt, LimitW: pk.capW, RequestedLimitW: pk.requestedW, Utilization: pk.util,
+		}
+		mem := ComponentState{
+			ID: stateID(semconv.HwTypeMemory, pk.socket), Type: semconv.HwTypeMemory, Name: "dram", Parent: cpu.ID, Index: pk.socket,
+			PowerW: pk.dram.W, EnergyJ: pk.dram.J + pk.dram.W*dt,
+		}
+		var diePath string
+		for _, z := range n.zones {
+			if z.socket != pk.socket {
+				continue
+			}
+			switch z.role {
+			case nodeRolePackage:
+				if cpu.SysfsPath == "" {
+					cpu.SysfsPath = z.rel
+				}
+				cpu.Measured = cpu.Measured || z.energy != nil
+			case nodeRoleDie:
+				if diePath == "" {
+					diePath = z.rel
+				}
+				cpu.Measured = cpu.Measured || z.energy != nil
+			case nodeRoleDRAM:
+				if mem.SysfsPath == "" {
+					mem.SysfsPath = z.rel
+				}
+				mem.Measured = mem.Measured || z.energy != nil
+			}
+		}
+		if cpu.SysfsPath == "" {
+			cpu.SysfsPath = diePath
+		}
+		// The policies of the package, as scaling_cur_freq, cpuinfo_max_freq
+		// and the resolved scaling_max_freq show them, in kHz.
+		var curKHz, limKHz float64
+		var maxKHz int64
+		k := 0
+		for _, pol := range n.policies {
+			if pol.socket == pk.socket {
+				curKHz += math.Round(pol.shownKHz)
+				limKHz += float64(pol.effMaxKHz())
+				maxKHz = max(maxKHz, pol.maxKHz)
+				k++
+			}
+		}
+		if k > 0 {
+			cpu.SpeedHz = curKHz / float64(k) * 1000
+			cpu.SpeedLimitHz = limKHz / float64(k) * 1000
+			cpu.SpeedMaxHz = float64(maxKHz) * 1000
+		}
+		cpus = append(cpus, cpu)
+		mems = append(mems, mem)
+		host.PowerW += cpu.PowerW + mem.PowerW
+		host.EnergyJ += cpu.EnergyJ + mem.EnergyJ
+	}
+	if gs := n.profile.GPUs; gs != nil {
+		for _, g := range n.gpus {
+			c := ComponentState{
+				ID: g.id(), Type: semconv.HwTypeGPU, Name: gs.Product.V, Vendor: stateGPUVendor(gs.Vendor), Model: gs.Product.V,
+				UUID: g.uuid, PCIBusID: g.pciBusID, SysfsPath: g.sysfsPath, Index: g.index,
+				PowerW: g.pwr.W, EnergyJ: g.pwr.J + g.pwr.W*dt, LimitW: g.settledW, RequestedLimitW: g.limitW(), Utilization: n.gpuUtil(g.index),
+			}
+			if g.nvml {
+				c.Measured = g.energy != nil
+				c.DeviceEnergyJ = float64(nodeMilliJoules(g.seedMJ, c.EnergyJ)) / 1000
+			} else {
+				c.Measured = g.input != nil || g.average != nil
+			}
+			gpus = append(gpus, c)
+			host.PowerW += c.PowerW
+			host.EnergyJ += c.EnergyJ
+		}
+	}
+	return append(append(cpus, mems...), gpus...), host
+}
+
+// stateID is a component's hw.id: its type and index, such as cpu1 or gpu3.
+func stateID(typ string, i int) string { return typ + strconv.Itoa(i) }
+
+// stateZoneComponent is the hw.id the files of zone z belong to: a DRAM zone
+// is its socket's memory, psys and any other top-level zone the whole node
+// (""), and a package or die zone, or a core or other child such as uncore,
+// its socket's CPU package.
+func stateZoneComponent(z *nodeZone) string {
+	switch {
+	case z.role == nodeRoleDRAM:
+		return stateID(semconv.HwTypeMemory, z.socket)
+	case z.role == nodeRolePsys, z.role == nodeRoleOther && z.parent == nil:
+		return ""
+	}
+	return stateID(semconv.HwTypeCPU, z.socket)
+}
+
+// stateCPUVendor is hw.vendor of a CPU from its cpuinfo vendor_id: Intel or
+// AMD, or the vendor_id itself for any other vendor.
+func stateCPUVendor(vendorID string) string {
+	switch vendorID {
+	case "GenuineIntel":
+		return "Intel"
+	case "AuthenticAMD":
+		return "AMD"
+	}
+	return vendorID
+}
+
+// stateGPUVendor is hw.vendor of a GPU from the profile's gpus.vendor.
+func stateGPUVendor(vendor string) string {
+	switch vendor {
+	case "nvidia":
+		return "NVIDIA"
+	case "amd":
+		return "AMD"
+	}
+	return vendor
 }
 
 func (n *Node) relPath(abs string) string {
@@ -315,8 +482,8 @@ func (n *Node) buildModels() error {
 	default:
 		return fmt.Errorf("hwemu: profile %s: unknown cpu model %q", n.profile.Name, ph.CPU.Model)
 	}
-	// MaxCapWatts stays 0, so the 90 % idle floor of
-	// CappedBoardGPUModel.Power never fires.
+	// MaxCapWatts stays 0: without a cap the board's natural maximum bounds
+	// CappedBoardGPUModel.Power, and its idle power is the only floor.
 	n.gpuModel = phys.CappedBoardGPUModel{IdleW: ph.GPU.IdleW.V, MaxW: ph.GPU.NaturalMaxW.V, ComputeGamma: ph.GPU.ComputeGamma.V, MemoryEpsilon: ph.GPU.MemoryEpsilon.V, MemoryGamma: ph.GPU.MemoryGamma.V}
 	n.floorW = ph.RAPL.FloorW.V
 	n.coreFraction = ph.CPU.CoreFraction.V
@@ -370,7 +537,7 @@ func (n *Node) buildPowercap() error {
 	for _, ct := range pc.ControlTypes {
 		ctEnabled := 1
 		h, cur := nodeBoolHandler(&ctEnabled) // read back only: a control type's enabled is not modelled (assumed)
-		n.addAFile(filepath.Join(n.sysPath(layout.PowercapControlDir(ct.Name)), "enabled"), h, cur)
+		n.addAFile(filepath.Join(n.sysPath(layout.PowercapControlDir(ct.Name)), "enabled"), "", h, cur)
 
 		var zones []*nodeZone
 		idx := 0
@@ -495,11 +662,12 @@ func (n *Node) buildZone(ct string, idx []int, parent *nodeZone, zs ZoneSpec, ro
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("hwemu: profile %s: zone %s (%s) is not in the tree", n.profile.Name, rel, name)
 	}
-	z := &nodeZone{role: role, socket: socket, parent: parent, enabled: zs.Enabled.V, powerUnitUW: zs.PowerUnitUW.V}
+	z := &nodeZone{rel: rel, role: role, socket: socket, parent: parent, enabled: zs.Enabled.V, powerUnitUW: zs.PowerUnitUW.V}
+	z.component = stateZoneComponent(z)
 	*out = append(*out, z)
 
 	enabled := filepath.Join(dir, "enabled")
-	if h, cur := nodeBoolHandler(&z.enabled); !n.addAFile(enabled, h, cur) {
+	if h, cur := nodeBoolHandler(&z.enabled); n.addAFile(enabled, z.component, h, cur) == nil {
 		if v, ok := nodeReadInt(enabled); ok {
 			z.enabled = int(v)
 		}
@@ -526,12 +694,12 @@ func (n *Node) buildZone(ct string, idx []int, parent *nodeZone, zs ZoneSpec, ro
 			c.maxUW = v
 		}
 		// A rejecting constraint is a directory: its limit stays the profile's.
-		if h, cur := c.limitHandler(z.powerUnitUW); !n.addAFile(prefix+"power_limit_uw", h, cur) {
+		if h, cur := c.limitHandler(z.powerUnitUW); n.addAFile(prefix+"power_limit_uw", z.component, h, cur) == nil {
 			if v, ok := nodeReadInt(prefix + "power_limit_uw"); ok {
 				c.limitUW = v
 			}
 		}
-		if h, cur := c.windowHandler(); !n.addAFile(prefix+"time_window_us", h, cur) {
+		if h, cur := c.windowHandler(); n.addAFile(prefix+"time_window_us", z.component, h, cur) == nil {
 			if v, ok := nodeReadInt(prefix + "time_window_us"); ok && v > 0 {
 				c.windowUS = v
 			}
@@ -566,7 +734,7 @@ func (n *Node) buildCPUFreq() error {
 	}
 	boost := cf.Boost.V
 	h, cur := nodeBoolHandler(&boost)
-	n.addAFile(filepath.Join(cpufreqDir, "boost"), h, cur) // read by nodePolicy.ceilingKHz
+	n.addAFile(filepath.Join(cpufreqDir, "boost"), "", h, cur) // read by nodePolicy.ceilingKHz
 	var indices []int
 	for _, e := range entries {
 		if k, err := strconv.Atoi(strings.TrimPrefix(e.Name(), "policy")); err == nil && strings.HasPrefix(e.Name(), "policy") && e.IsDir() {
@@ -618,17 +786,18 @@ func (n *Node) buildCPUFreq() error {
 				n.cpuPolicy[c] = p
 			}
 		}
+		cpu := stateID(semconv.HwTypeCPU, p.socket)
 		h, cur = p.freqHandler(true)
-		n.addAFile(file("scaling_max_freq"), h, cur)
+		n.addAFile(file("scaling_max_freq"), cpu, h, cur)
 		h, cur = p.freqHandler(false)
-		n.addAFile(file("scaling_min_freq"), h, cur)
+		n.addAFile(file("scaling_min_freq"), cpu, h, cur)
 		h, cur = nodeEnumHandler(&p.governor, p.governors)
-		n.addAFile(file("scaling_governor"), h, cur)
+		n.addAFile(file("scaling_governor"), cpu, h, cur)
 		h, cur = nodeSetspeedHandler()
-		n.addAFile(file("scaling_setspeed"), h, cur)
+		n.addAFile(file("scaling_setspeed"), cpu, h, cur)
 		if s, ok := nodeReadString(file("energy_performance_available_preferences")); ok {
 			h, cur = nodeEnumHandler(&p.epp, strings.Fields(s))
-			n.addAFile(file("energy_performance_preference"), h, cur) // no effect on power (assumed)
+			n.addAFile(file("energy_performance_preference"), cpu, h, cur) // no effect on power (assumed)
 		}
 		if p.cur = n.sfile(file("scaling_cur_freq")); p.cur != nil {
 			if v, ok := nodeParseInt(strings.TrimSpace(p.cur.last)); ok {
@@ -673,7 +842,7 @@ func (n *Node) buildHSMP() error {
 			h.capMaxUW = v
 		}
 		hh, cur := h.capHandler()
-		n.addAFile(filepath.Join(dir, "power1_cap"), hh, cur)
+		n.addAFile(filepath.Join(dir, "power1_cap"), stateID(semconv.HwTypeCPU, pk.socket), hh, cur)
 		h.settledW = h.targetW()
 		h.input = n.sfile(filepath.Join(dir, "power1_input"))
 		pk.hsmp = h
@@ -701,6 +870,8 @@ func (n *Node) buildGPUs() error {
 		case "nvidia":
 			g.nvml = true
 			g.limitRaw = int64(math.Round(gs.Limits.DefaultW.V * 1000))
+			g.defaultMW = g.limitRaw
+			g.persistence = persistModeText(gs.PersistenceMode.V)
 			dir := filepath.Join(n.stateRoot, filepath.FromSlash(layout.NVMLGPUDir(i)))
 			file := func(name string) string { return filepath.Join(dir, name) }
 			if v, ok := nodeReadInt(file("power_min_limit_mw")); ok {
@@ -709,8 +880,15 @@ func (n *Node) buildGPUs() error {
 			if v, ok := nodeReadInt(file("power_max_limit_mw")); ok {
 				g.maxW = float64(v) / 1000
 			}
+			if v, ok := nodeReadInt(file("power_default_limit_mw")); ok {
+				g.defaultMW = v
+			}
+			g.uuid, _ = nodeReadString(file("uuid"))
+			g.pciBusID, _ = nodeReadString(file("pci_bus_id"))
 			h, cur := g.nvmlLimitHandler()
-			n.addAFile(file("power_limit_mw"), h, cur)
+			g.limitFile = n.addAFile(file("power_limit_mw"), g.id(), h, cur)
+			h, cur = nodeEnumHandler(&g.persistence, []string{persistTextEnabled, persistTextDisabled})
+			n.addAFile(file(layout.NVMLPersistenceModeFile), g.id(), h, cur)
 			g.settledW = g.targetW()
 			if g.enforced = n.sfile(file("enforced_power_limit_mw")); g.enforced != nil {
 				if v, ok := nodeParseInt(strings.TrimSpace(g.enforced.last)); ok {
@@ -736,8 +914,12 @@ func (n *Node) buildGPUs() error {
 				if v, ok := nodeReadInt(file("power1_cap_max")); ok {
 					g.maxW = float64(v) / 1e6
 				}
+				// hwmon/hwmon<N> sits in the PCI device's directory.
+				dev := filepath.Dir(filepath.Dir(amd[i]))
+				g.pciBusID = filepath.Base(dev)
+				g.sysfsPath = strings.TrimPrefix(n.relPath(dev), layout.SysDir+"/")
 				h, cur := g.amdgpuCapHandler()
-				n.addAFile(file("power1_cap"), h, cur)
+				n.addAFile(file("power1_cap"), g.id(), h, cur)
 				g.input = n.sfile(file("power1_input"))
 				if g.average = n.sfile(file("power1_average")); g.average != nil {
 					if v, ok := nodeParseInt(strings.TrimSpace(g.average.last)); ok {

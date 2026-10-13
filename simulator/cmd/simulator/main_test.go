@@ -52,7 +52,7 @@ func TestListRunningPodsByNode(t *testing.T) {
 
 func TestHandleControlAndTelemetry(t *testing.T) {
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 100, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000, RaplCapMinW: 80, RaplCapMaxW: 5000, CPUCapApplyTauMS: 2000},
+		simModel{BaseIdleW: 100, RaplHeadW: 5, DefaultCapW: 5000, RaplCapMinW: 80, RaplCapMaxW: 5000, CPUCapApplyTauMS: 2000},
 		nil,
 		nil,
 		200,
@@ -66,8 +66,10 @@ func TestHandleControlAndTelemetry(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("control status=%d", w.Code)
 	}
+	// A read never advances the physics: the tick does (stepNode).
+	stepFor(s, "node-a", 0.5)
 
-	req2 := httptest.NewRequest(http.MethodGet, "/telemetry/node-a", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/telemetry/node-a?format=legacy", nil)
 	w2 := httptest.NewRecorder()
 	s.handleTelemetry(w2, req2)
 	if w2.Code != http.StatusOK {
@@ -81,8 +83,8 @@ func TestHandleControlAndTelemetry(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing cpu payload")
 	}
-	if cpu["capWatts"].(float64) <= 120 {
-		t.Fatalf("expected applied cap to be settling above target, got %v", cpu["capWatts"])
+	if c := cpu["capWatts"].(float64); c <= 120 || c >= 5000 {
+		t.Fatalf("expected applied cap to be settling between the target and the default, got %v", c)
 	}
 	if cpu["targetCapWatts"].(float64) != 120 {
 		t.Fatalf("expected targetCapWatts=120 got %v", cpu["targetCapWatts"])
@@ -93,8 +95,6 @@ func TestCPUCapSettlingIsNotInstant(t *testing.T) {
 	s := newSimulatorWithRegisterer(
 		simModel{
 			BaseIdleW:        100,
-			PodW:             100,
-			DvfsDropW:        1,
 			RaplHeadW:        5,
 			DefaultCapW:      500,
 			RaplCapMinW:      100,
@@ -116,6 +116,7 @@ func TestCPUCapSettlingIsNotInstant(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("control status=%d", w.Code)
 	}
+	stepFor(s, "node-a", 0.5)
 	st := s.getNode("node-a")
 	if st.TargetCapWatts != 200 {
 		t.Fatalf("target cap=%v want=200", st.TargetCapWatts)
@@ -129,8 +130,6 @@ func TestCPUCapSettlesTowardTargetOverTime(t *testing.T) {
 	s := newSimulatorWithRegisterer(
 		simModel{
 			BaseIdleW:        100,
-			PodW:             100,
-			DvfsDropW:        1,
 			RaplHeadW:        5,
 			DefaultCapW:      500,
 			RaplCapMinW:      100,
@@ -147,9 +146,8 @@ func TestCPUCapSettlesTowardTargetOverTime(t *testing.T) {
 	st := s.getNode("node-a")
 	st.TargetCapWatts = 200
 	st.CapWatts = 500
-	st.LastUpdate = time.Now().Add(-time.Second)
 
-	s.updateNodeDynamicsWithModel(st, s.model)
+	stepNode(st, s.model, 1, physMaxSubstep)
 
 	if math.Abs(st.CapWatts-200) > 1 {
 		t.Fatalf("expected cap to converge near target, got=%v", st.CapWatts)
@@ -166,8 +164,6 @@ func TestThermalTelemetryTracksHeatingAndAveraging(t *testing.T) {
 	s := newSimulatorWithRegisterer(
 		simModel{
 			BaseIdleW:                100,
-			PodW:                     100,
-			DvfsDropW:                1,
 			RaplHeadW:                5,
 			DefaultCapW:              500,
 			PMaxW:                    700,
@@ -192,10 +188,10 @@ func TestThermalTelemetryTracksHeatingAndAveraging(t *testing.T) {
 	st.CPUUtil = 1.0
 	st.MemoryIntensity = 0.05
 	st.IOIntensity = 0.02
-	st.LastUpdate = time.Now().Add(-2 * time.Second)
 
 	model := s.modelForNode("node-hot")
-	power := s.nodePowerWithModel(st, model)
+	stepNode(st, model, 2, physMaxSubstep)
+	power := observe(st).powerW
 	if power <= 0 {
 		t.Fatalf("expected positive power")
 	}
@@ -212,8 +208,6 @@ func TestWorkloadAggregationCarriesIntensityIntoNodeState(t *testing.T) {
 	s := newSimulatorWithRegisterer(
 		simModel{
 			BaseIdleW:   80,
-			PodW:        100,
-			DvfsDropW:   1,
 			RaplHeadW:   5,
 			DefaultCapW: 5000,
 			GPU: hw.GPUProfile{
@@ -233,7 +227,6 @@ func TestWorkloadAggregationCarriesIntensityIntoNodeState(t *testing.T) {
 				ComputeGamma:          1.0,
 				MemoryEpsilon:         0.2,
 				MemoryGamma:           1.2,
-				PowerModel:            hw.GPUPowerModel{AlphaUtil: 1.0, BetaCap: 1.0},
 			},
 		},
 		nil,
@@ -241,6 +234,10 @@ func TestWorkloadAggregationCarriesIntensityIntoNodeState(t *testing.T) {
 		200,
 		prometheus.NewRegistry(),
 	)
+	// The engines these tests build leave opts at its zero value, which is
+	// the legacy engine (workloadOptions): 20 creates and 10 deletes per
+	// tick and a 120 s force-complete, as before those became settings.
+	// TestLegacyDefaultsUnchanged pins that, so these literals stay valid.
 	s.workload = &workloadEngine{
 		startTime:     now,
 		baseSpeedCore: 1.0,
@@ -282,7 +279,7 @@ func TestWorkloadAggregationCarriesIntensityIntoNodeState(t *testing.T) {
 
 func TestWorkloadProgressUsesNodeCapacityInsteadOfJobCount(t *testing.T) {
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 40, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil,
 		nil,
 		10,
@@ -322,7 +319,7 @@ func TestWorkloadProgressUsesNodeCapacityInsteadOfJobCount(t *testing.T) {
 
 func TestGangJobCanFinishAfterPeerCompletes(t *testing.T) {
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 40, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil,
 		nil,
 		10,
@@ -376,7 +373,7 @@ func TestGangJobCanFinishAfterPeerCompletes(t *testing.T) {
 
 func TestCompletedJobDeletionIsRetriedUntilPodDisappears(t *testing.T) {
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 40, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil,
 		nil,
 		10,
@@ -433,8 +430,6 @@ func TestHandleGPUControlAndTelemetry(t *testing.T) {
 	s := newSimulatorWithRegisterer(
 		simModel{
 			BaseIdleW:   90,
-			PodW:        80,
-			DvfsDropW:   1,
 			RaplHeadW:   5,
 			DefaultCapW: 5000,
 			GPU: hw.GPUProfile{
@@ -448,10 +443,6 @@ func TestHandleGPUControlAndTelemetry(t *testing.T) {
 				ComputeGamma:      1.0,
 				MemoryEpsilon:     0.2,
 				MemoryGamma:       1.2,
-				PowerModel: hw.GPUPowerModel{
-					AlphaUtil: 1.0,
-					BetaCap:   1.0,
-				},
 			},
 		},
 		nil,
@@ -467,8 +458,9 @@ func TestHandleGPUControlAndTelemetry(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("control status=%d", w.Code)
 	}
+	stepFor(s, "node-gpu", 0.1)
 
-	req2 := httptest.NewRequest(http.MethodGet, "/telemetry/node-gpu", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/telemetry/node-gpu?format=legacy", nil)
 	w2 := httptest.NewRecorder()
 	s.handleTelemetry(w2, req2)
 	if w2.Code != http.StatusOK {
@@ -489,7 +481,7 @@ func TestHandleGPUControlAndTelemetry(t *testing.T) {
 		t.Fatalf("unexpected gpu target cap: %v", gpu["capWattsPerGpuTarget"])
 	}
 	applied := gpu["capWattsPerGpuApplied"].(float64)
-	if applied < 220 || applied > 350 {
+	if applied <= 220 || applied >= 350 {
 		t.Fatalf("unexpected gpu applied cap after settling start: %v", applied)
 	}
 }
@@ -498,8 +490,6 @@ func TestGPUCapSettlingIsNotInstant(t *testing.T) {
 	s := newSimulatorWithRegisterer(
 		simModel{
 			BaseIdleW:   90,
-			PodW:        80,
-			DvfsDropW:   1,
 			RaplHeadW:   5,
 			DefaultCapW: 5000,
 			GPU: hw.GPUProfile{
@@ -513,7 +503,6 @@ func TestGPUCapSettlingIsNotInstant(t *testing.T) {
 				ComputeGamma:      1.0,
 				MemoryEpsilon:     0.2,
 				MemoryGamma:       1.2,
-				PowerModel:        hw.GPUPowerModel{AlphaUtil: 1.0, BetaCap: 1.0},
 			},
 		},
 		nil,
@@ -529,11 +518,12 @@ func TestGPUCapSettlingIsNotInstant(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("control status=%d", w.Code)
 	}
+	stepFor(s, "node-gpu", 0.5)
 	st := s.getNode("node-gpu")
 	if st.GPUTargetCapWattsPerGpu != 220 {
 		t.Fatalf("target cap=%v", st.GPUTargetCapWattsPerGpu)
 	}
-	if st.GPUCapWattsPerGpu <= 220 {
+	if st.GPUCapWattsPerGpu <= 220 || st.GPUCapWattsPerGpu >= 350 {
 		t.Fatalf("expected applied cap to settle gradually, got=%v", st.GPUCapWattsPerGpu)
 	}
 }
@@ -541,7 +531,7 @@ func TestGPUCapSettlingIsNotInstant(t *testing.T) {
 func TestInjectTraceJobsSetsExtendedResourceLimits(t *testing.T) {
 	now := time.Now()
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil,
 		nil,
 		200,
@@ -581,7 +571,7 @@ func TestInjectTraceJobsSetsExtendedResourceLimits(t *testing.T) {
 func TestInjectTraceJobsUsesAMDResourceAndSelector(t *testing.T) {
 	now := time.Now()
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil,
 		nil,
 		200,
@@ -625,7 +615,7 @@ func TestInjectTraceJobsUsesAMDResourceAndSelector(t *testing.T) {
 func TestInjectTraceJobsAddsKWOKToleration(t *testing.T) {
 	now := time.Now()
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil,
 		nil,
 		200,
@@ -676,7 +666,7 @@ func TestInitWorkloadEngineFromTraceParsesGPUResourceKey(t *testing.T) {
 	}
 
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil,
 		nil,
 		200,
@@ -719,7 +709,7 @@ func TestInitWorkloadEngineFromTraceReadsDirectoryOfParts(t *testing.T) {
 	}
 
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil,
 		nil,
 		200,
@@ -744,7 +734,7 @@ func TestInitWorkloadEngineFromTraceRejectsNonIntegerGPURequest(t *testing.T) {
 	}
 
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil,
 		nil,
 		200,
@@ -772,7 +762,7 @@ func TestInitWorkloadEngineFromTraceParsesWorkloadProfile(t *testing.T) {
 		t.Fatalf("write trace: %v", err)
 	}
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil,
 		nil,
 		200,
@@ -824,7 +814,7 @@ func TestEnvHelpers(t *testing.T) {
 }
 
 func TestRefreshNodeStateRespectsSelectorAndClass(t *testing.T) {
-	base := simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000}
+	base := simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000}
 	selector, err := labels.Parse("joulie.io/managed=true")
 	if err != nil {
 		t.Fatalf("parse selector: %v", err)
@@ -874,7 +864,7 @@ func TestRefreshNodeStateRespectsSelectorAndClass(t *testing.T) {
 
 func TestDebugEventsRingBuffer(t *testing.T) {
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 100, PodW: 10, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 100, RaplHeadW: 5, DefaultCapW: 5000},
 		nil,
 		nil,
 		2,
@@ -900,7 +890,7 @@ func TestDebugEventsRingBuffer(t *testing.T) {
 }
 
 func TestHandleDebugNodesIncludesClassAndSelection(t *testing.T) {
-	base := simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000}
+	base := simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000}
 	selector, err := labels.Parse("joulie.io/managed=true")
 	if err != nil {
 		t.Fatalf("parse selector: %v", err)
@@ -998,7 +988,7 @@ func TestHandleDebugNodesIncludesClassAndSelection(t *testing.T) {
 
 func TestDebugEndpointsMethodNotAllowed(t *testing.T) {
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 100, PodW: 10, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 100, RaplHeadW: 5, DefaultCapW: 5000},
 		nil,
 		nil,
 		10,
@@ -1029,7 +1019,7 @@ classes:
     matchLabels:
       feature.node.kubernetes.io/cpu-model.vendor_id: AMD
     model:
-      podW: 200
+      baseIdleW: 90
       defaultCapW: 4500
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -1042,8 +1032,8 @@ classes:
 	if len(classes) != 1 || classes[0].Name != "amd-fast" {
 		t.Fatalf("unexpected classes: %#v", classes)
 	}
-	if classes[0].Model.PodW == nil || *classes[0].Model.PodW != 200 {
-		t.Fatalf("podW override missing: %#v", classes[0].Model.PodW)
+	if classes[0].Model.BaseIdleW == nil || *classes[0].Model.BaseIdleW != 90 {
+		t.Fatalf("baseIdleW override missing: %#v", classes[0].Model.BaseIdleW)
 	}
 	if classes[0].Model.DefaultCapW == nil || *classes[0].Model.DefaultCapW != 4500 {
 		t.Fatalf("defaultCapW override missing: %#v", classes[0].Model.DefaultCapW)
@@ -1145,7 +1135,7 @@ func TestLoadTraceReadsExplicitIntentClass(t *testing.T) {
 		t.Fatalf("write trace: %v", err)
 	}
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil, nil, 200, prometheus.NewRegistry(),
 	)
 	if err := s.initWorkloadEngineFromTrace(path); err != nil {
@@ -1167,7 +1157,7 @@ func TestLoadTraceInfersIntentFromAffinityWhenNoExplicitField(t *testing.T) {
 		t.Fatalf("write trace: %v", err)
 	}
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil, nil, 200, prometheus.NewRegistry(),
 	)
 	if err := s.initWorkloadEngineFromTrace(path); err != nil {
@@ -1185,7 +1175,7 @@ func TestLoadTraceDefaultsToStandardWithNoAffinityNoField(t *testing.T) {
 		t.Fatalf("write trace: %v", err)
 	}
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil, nil, 200, prometheus.NewRegistry(),
 	)
 	if err := s.initWorkloadEngineFromTrace(path); err != nil {
@@ -1209,7 +1199,7 @@ func TestLoadTraceNeverProducesStaleClassNames(t *testing.T) {
 		t.Fatalf("write trace: %v", err)
 	}
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil, nil, 200, prometheus.NewRegistry(),
 	)
 	if err := s.initWorkloadEngineFromTrace(path); err != nil {
@@ -1231,7 +1221,7 @@ func TestLoadTraceNeverProducesStaleClassNames(t *testing.T) {
 func newTestSimulatorWithJobs(jobs []*simJob) (*simulator, kubernetes.Interface) {
 	now := time.Now()
 	s := newSimulatorWithRegisterer(
-		simModel{BaseIdleW: 80, PodW: 100, DvfsDropW: 1, RaplHeadW: 5, DefaultCapW: 5000},
+		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil, nil, 200, prometheus.NewRegistry(),
 	)
 	s.workload = &workloadEngine{

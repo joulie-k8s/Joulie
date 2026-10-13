@@ -6,6 +6,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/matbun/joulie/pkg/otel/semconv"
 	"github.com/matbun/joulie/simulator/pkg/phys"
 )
 
@@ -64,8 +65,11 @@ func (c *nodeConstraint) enforcedUW() int64 {
 
 func (c *nodeConstraint) targetW() float64 { return float64(c.enforcedUW()) / 1e6 }
 
-// nodeZone is one powercap zone of the tree.
+// nodeZone is one powercap zone of the tree. rel is its directory relative
+// to sys/, and component the hw.id its files belong to (stateZoneComponent).
 type nodeZone struct {
+	rel         string
+	component   string
 	role        int
 	socket      int
 	dies        int       // die zones of this zone's package in its control type
@@ -221,7 +225,10 @@ type nodePackage struct {
 }
 
 // nodeGPU is one GPU. limitRaw is the limit file's value: mW in NVML state, uW
-// in amdgpu hwmon.
+// in amdgpu hwmon. defaultMW is the NVML default limit, where persistReset
+// puts the limit back while persistence, the persistence_mode word, is
+// Disabled. uuid and pciBusID are the GPU's identity as its tools print it,
+// and sysfsPath its PCI device relative to sys/, when the tree has one.
 type nodeGPU struct {
 	index    int
 	nvml     bool
@@ -235,6 +242,13 @@ type nodeGPU struct {
 	pwr      nodeChannel
 	next     float64
 
+	defaultMW   int64
+	persistence string
+	limitFile   *nodeAFile
+	uuid        string
+	pciBusID    string
+	sysfsPath   string
+
 	// NVML only: the energy of each substep of the last telemetry window, a
 	// ring starting at winAt, and the channel energy at the last boundary.
 	win   []float64
@@ -244,6 +258,9 @@ type nodeGPU struct {
 	input, average                   *nodeSFile // amdgpu hwmon
 	draw, enforced, energy, utilFile *nodeSFile // NVML state
 }
+
+// id is the GPU's hw.id, gpu<index>.
+func (g *nodeGPU) id() string { return stateID(semconv.HwTypeGPU, g.index) }
 
 // limitW is the limit as set, in W.
 func (g *nodeGPU) limitW() float64 {

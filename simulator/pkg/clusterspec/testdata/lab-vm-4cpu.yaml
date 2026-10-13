@@ -1,0 +1,33 @@
+# A local hardware profile for the clusterspec tests, not a cluster spec: a
+# small KVM guest with the default kvm64 CPU model, no powercap and no
+# cpufreq. A profiles directory holds only profiles, so the tests copy this
+# file into one of its own, editing it for the cases that need a variant.
+# Every value is a test fixture, not a description of a real machine.
+schemaVersion: 1
+name: lab-vm-4cpu
+description: Test fixture, a 4 vCPU KVM guest with no powercap and no cpufreq.
+sources: {}
+node:
+  nfd: present
+  labels:
+    cpu:
+      src: "assumed:clusterspec test fixture"
+      values: {feature.node.kubernetes.io/cpu-model.vendor_id: Intel, feature.node.kubernetes.io/cpu-model.hypervisor: KVM, kubernetes.io/arch: amd64, kubernetes.io/os: linux}
+  taints: []
+  capacity: {cpu: {v: 4, src: "assumed:clusterspec test fixture"}, memoryKi: {v: 8000000, src: "assumed:clusterspec test fixture"}}
+  reserved: {cpu: 100m, memory: 256Mi, src: "assumed:clusterspec test fixture"}
+pci: []
+cpu:
+  src: "assumed:clusterspec test fixture, the QEMU kvm64 CPU model"
+  vendorID: GenuineIntel
+  family: 15
+  model: 6
+  stepping: 1
+  modelName: "Common KVM processor"
+  sockets: 4
+  coresPerSocket: 1
+  threadsPerCore: 1
+  oneSocketPerVCPU: true
+  hypervisor: true
+  cpuMHz: 2100
+physics: {cpu: {model: analytic, maxPkgW: {v: 0, src: "assumed:clusterspec test fixture, no powercap zone"}}}

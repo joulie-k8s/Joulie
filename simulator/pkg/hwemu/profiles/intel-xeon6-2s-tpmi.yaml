@@ -1,0 +1,87 @@
+# The Xeon 6 host of intel-xeon6-2s-no-powercap on a kernel with the TPMI
+# RAPL driver. TPMI registers the intel-rapl control type (rapltpmi#152) and
+# one zone per physical package, named package-%d (rapltpmi#401-409,
+# raplcommon#1797), with DRAM from the memory domain as its child
+# (rapltpmi#255-256). Only the domain root package enumerates psys
+# (rapltpmi#190-192, 245-256); this profile takes package 0 as root, so psys
+# registers, top level, right after package-0 (raplcommon#899-935;
+# powercapsys#513-522): intel-rapl:0 package-0, intel-rapl:1 psys,
+# intel-rapl:2 package-1. PL1, PL2 and PL4 exist only when the firmware flags
+# their registers (rapltpmi#277-287), so each is assumed. The root-only psys
+# rule came with commit 903eb9fb85e3 (tpmiroot), first in v6.9-rc1; on v6.8
+# every package with a system domain registers its own psys, so the node
+# labels name a 6.12 kernel.
+schemaVersion: 1
+name: intel-xeon6-2s-tpmi
+extends: intel-xeon6-2s-no-powercap
+description: Two socket Xeon 6787P (Granite Rapids) on a kernel with TPMI RAPL, intel-rapl package-%d zones with PL1, PL2 and PL4, energy-only DRAM children, a psys zone from the root package at intel-rapl:1.
+sources:
+  rapltpmi:    {kind: published, ref: "linux v7.3-rc5 drivers/powercap/intel_rapl_tpmi.c:152,190-192,245-256,277-287,329-330,344-349,401-409"}
+  raplcommon:  {kind: published, ref: "linux v7.3-rc5 drivers/powercap/intel_rapl_common.c:33,50,105-151,215,455-473,479-486,509-516,521,640,741,846-847,899-935,1046-1047,1797", note: "PL4 has no time window primitive; PL4 max_power_uw is twice MAX_POWER"}
+  powercapsys: {kind: published, ref: "linux v7.3-rc5 drivers/powercap/powercap_sys.c:420-441,513-522", note: "enabled prints 0 when get_enable fails; a top-level zone takes the lowest free index of its control type"}
+  tpmiroot:    {kind: published, ref: "https://github.com/torvalds/linux/commit/903eb9fb85e3", note: "powercap: intel_rapl_tpmi: Fix System Domain probing; only domain root packages enumerate the System (Psys) domain; first in v6.9-rc1, absent from v6.8 (no TPMI_RAPL_DOMAIN_ROOT)"}
+  spec01576:   {kind: published, ref: "https://www.spec.org/power_ssj2008/results/res2026q2/power_ssj2008-20260615-01576.txt", note: "2x Xeon 6787P, 512 GB: Active Idle 162 W, 100% 698 W"}
+node:
+  labels:
+    kernel:
+      src: "assumed:a 6.12 LTS kernel, so with the TPMI RAPL driver (tpmikernel, v6.5) and psys from the domain root package only (tpmiroot, v6.9-rc1)"
+      values:
+        feature.node.kubernetes.io/kernel-version.major: "6"
+        feature.node.kubernetes.io/kernel-version.minor: "12"
+powercap:
+  controlTypes:
+    - name: intel-rapl
+      zones:
+        - repeat: once
+          nameFormat: package-0
+          enabled: {v: 1, src: "assumed:firmware enables PL1"}
+          energyUnitNJ: {v: 61035, src: "assumed:ESU 14 in the TPMI unit register; formula rapltpmi#329-330"}
+          powerUnitUW: {v: 125000, src: "assumed:PU 3 in the TPMI unit register"}
+          # The kernel also creates constraint_2_time_window_us for PL4, but
+          # reading it fails: PL4 has no time window primitive
+          # (raplcommon#137-147). A file whose read fails cannot be rendered,
+          # so peak_power has no timeWindowUS.
+          constraints: &pkgconstraints
+            - name: long_term
+              powerLimitUW: {v: 350000000, src: "assumed:firmware default PL1 at the ark6787p TDP of 350 W; PL1 flagged (rapltpmi#277-279)"}
+              maxPowerUW: {v: 350000000, src: "derived:ark6787p#TDP 350 W as THERMAL_SPEC_POWER, which max_power_uw of PL1 reads (raplcommon#105-119)"}
+              timeWindowUS: {v: 999424, src: "assumed:the PL1 window of the Cascade Lake corpus capture"}
+              rejectWrites: {v: "", src: "assumed:PL1 not locked by firmware"}
+            - name: short_term
+              powerLimitUW: {v: 420000000, src: "assumed:1.2 x PL1, the Cascade Lake corpus PL2/PL1 ratio 198/165; PL2 flagged (rapltpmi#281-283)"}
+              maxPowerUW: {v: 875000000, src: "assumed:2.5 x TDP, the Cascade Lake corpus MAX_POWER/TDP ratio 413/165"}
+              timeWindowUS: {v: 976, src: "assumed:the PL2 window of the Cascade Lake corpus capture"}
+              rejectWrites: {v: "", src: "assumed:PL2 not locked by firmware"}
+            - name: peak_power
+              powerLimitUW: {v: 840000000, src: "assumed:2 x PL2, as raplcommon#141 and 470 take PL4 to be about twice PL2; PL4 flagged (rapltpmi#285-287)"}
+              maxPowerUW: {v: 1750000000, src: "derived:raplcommon#455-473 max_power_uw of PL4 is twice MAX_POWER, the assumed 875 W"}
+              rejectWrites: {v: "", src: "assumed:PL4 not locked by firmware"}
+          children: &dram
+            - nameFormat: dram
+              enabled: {v: 0, src: "derived:powercapsys#420-441 prints 0 when get_enable fails, as it does without a PL1 register (raplcommon#640)"}
+              energyUnitNJ: {v: 61035, src: "assumed:ESU 14 in the memory domain's unit register; defaults_tpmi sets no fixed DRAM unit (rapltpmi#344-349)"}
+              constraints: {v: [], src: "assumed:the memory domain flags no PL register, so rapl_detect_powerlimit drops the default PL1 and the kernel shows no constraints (raplcommon#521, 640, 1046-1047)"}
+        # As on intel-xeon-2s-psys, constraint_N_max_power_uw of psys is
+        # left out: the system domain is assumed to flag no POWER_INFO
+        # register, so its read fails (raplcommon#640).
+        - repeat: once
+          nameFormat: psys
+          enabled: {v: 0, src: "assumed:firmware leaves the platform power limit at 0, so PL1 enable reads 0"}
+          energyUnitNJ: {v: 61035, src: "assumed:ESU 14 in the system domain's unit register; defaults_tpmi sets no fixed psys unit (rapltpmi#344-349)"}
+          powerUnitUW: {v: 125000, src: "assumed:PU 3 in the system domain's unit register"}
+          constraints:
+            - {src: "derived:raplcommon#846-847 a zero limit register reads limit 0 and one time unit, 976 us at the assumed TU 10; PL1 assumed flagged", name: long_term, powerLimitUW: 0, timeWindowUS: 976, rejectWrites: ""}
+            - {src: "derived:raplcommon#846-847 a zero limit register reads limit 0 and one time unit, 976 us at the assumed TU 10; PL2 assumed flagged", name: short_term, powerLimitUW: 0, timeWindowUS: 976, rejectWrites: ""}
+        - repeat: once
+          nameFormat: package-1
+          enabled: {v: 1, src: "assumed:firmware enables PL1"}
+          energyUnitNJ: {v: 61035, src: "assumed:ESU 14 in the TPMI unit register; formula rapltpmi#329-330"}
+          powerUnitUW: {v: 125000, src: "assumed:PU 3 in the TPMI unit register"}
+          constraints: *pkgconstraints
+          children: *dram
+physics:
+  platform:
+    otherW: {v: 20, src: "assumed:bounded by spec01503, spec01504 and spec01576: Active Idle 157 to 164 W for a whole 2S node less 2 x idlePkgW 50 and 2 x DRAM 8 leaves at most 41 W for the platform and PSU losses"}
+  rapl:
+    settleTau: timeWindow
+    floorW: {v: 0, src: "assumed:MIN_POWER is not exposed in sysfs (raplcommon#479-486); only the frequency floor applies"}

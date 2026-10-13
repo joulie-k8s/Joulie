@@ -12,6 +12,7 @@ state/nvml/gpu0 R dir 0755
 state/nvml/gpu0/enforced_power_limit_mw S file 0444
 state/nvml/gpu0/name R file 0444
 state/nvml/gpu0/pci_bus_id R file 0444
+state/nvml/gpu0/persistence_mode A file 0644
 state/nvml/gpu0/power_default_limit_mw R file 0444
 state/nvml/gpu0/power_draw_mw S file 0444
 state/nvml/gpu0/power_limit_mw A file 0644
@@ -24,6 +25,7 @@ state/nvml/gpu1 R dir 0755
 state/nvml/gpu1/enforced_power_limit_mw S file 0444
 state/nvml/gpu1/name R file 0444
 state/nvml/gpu1/pci_bus_id R file 0444
+state/nvml/gpu1/persistence_mode A file 0644
 state/nvml/gpu1/power_default_limit_mw R file 0444
 state/nvml/gpu1/power_draw_mw S file 0444
 state/nvml/gpu1/power_limit_mw A file 0644
@@ -36,6 +38,7 @@ state/nvml/gpu2 R dir 0755
 state/nvml/gpu2/enforced_power_limit_mw S file 0444
 state/nvml/gpu2/name R file 0444
 state/nvml/gpu2/pci_bus_id R file 0444
+state/nvml/gpu2/persistence_mode A file 0644
 state/nvml/gpu2/power_default_limit_mw R file 0444
 state/nvml/gpu2/power_draw_mw S file 0444
 state/nvml/gpu2/power_limit_mw A file 0644
@@ -48,6 +51,7 @@ state/nvml/gpu3 R dir 0755
 state/nvml/gpu3/enforced_power_limit_mw S file 0444
 state/nvml/gpu3/name R file 0444
 state/nvml/gpu3/pci_bus_id R file 0444
+state/nvml/gpu3/persistence_mode A file 0644
 state/nvml/gpu3/power_default_limit_mw R file 0444
 state/nvml/gpu3/power_draw_mw S file 0444
 state/nvml/gpu3/power_limit_mw A file 0644

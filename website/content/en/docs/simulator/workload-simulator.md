@@ -34,6 +34,28 @@ Helper tools:
 - `simulator/cmd/workloadgen` (synthetic traces)
 - `simulator/cmd/traceextract` (normalize/extract traces)
 
+## Two engines: legacy and v1
+
+`SIM_WORKLOAD_MODEL` selects the engine that runs a trace.
+
+| | legacy (outside emulate mode) | v1 (emulate mode) |
+|---|---|---|
+| Kubernetes objects | one bare pod per job | one `batch/v1` Job per group (`workloadId`, `podRole`, submit offset), Indexed when larger than one, `backoffLimit: 0`, deleted `SIM_WORKLOAD_JOB_TTL` after it finishes |
+| Class | inferred from the pod's affinity | declared by the annotation `joulie.io/workload-class` (`SIM_WORKLOAD_INTENT`) |
+| Placement | `type=kwok` and the KWOK toleration | the trace's placement, plus the selector `sim.joulie.io/cluster=<spec>` and the KWOK toleration |
+| Completion | the pod is deleted | the pod is annotated `sim.joulie.io/complete: "true"` and KWOK's `pod-complete` Stage moves it to `Succeeded` |
+| A job that cannot progress | completed by force after `SIM_WORKLOAD_STALL_FORCE_COMPLETE` (120 s) | reported as stalled (`joulie.sim.job.stalled`, `joulie.sim.run.stalled`), never completed |
+| Creates per tick | 20 | no cap |
+| Speed | the node model's frequency scale and GPU cap ratio | the throughput of the emulated hardware the job runs on, under the limits the agent wrote |
+| Energy | node and cluster totals at `/debug/energy` | each node's energy ledger delta, attributed per job and class by the jobs' requests; the unrequested share of idle package power is class `idle` |
+| Results | `joulie_sim_job_*` counters at `/metrics` | OTLP JSON Lines in the run directory, plus the run API's status |
+
+The v1 engine needs the emulated nodes, so `v1` without emulate mode, and `legacy` with it, stop the start. The legacy engine keeps the behaviour experiments 01 to 03 were measured with, except two loader fixes: trace lines longer than 64 KiB load, and jobs whose pod names collide get a suffix instead of a failed create. The variables and their defaults are in [Simulator workloads and scenarios]({{< relref "/docs/getting-started/05-configuration-reference.md#simulator-workloads-and-scenarios" >}}).
+
+**Trace schema v3.** `workloadgen` writes schema v3 by default: a job carries no sensitivity unless one is given (the simulator then uses 1), no power-profile affinity (the class is `intentClass`, rendered by `SIM_WORKLOAD_INTENT`), and its work is sized so that its ideal runtime equals `durationSec` at `-base-speed-per-core` (default 1, the simulator's `SIM_BASE_SPEED_PER_CORE`). `-arrival-window-sec` compresses the submit offsets and `-max-duration-sec` clamps durations. `-schema-version v2` writes the previous schema byte for byte, which the experiments' scripts pin.
+
+[Workload Scenarios]({{< relref "/docs/simulator/scenarios.md" >}}) run v1 workloads on the simulated cluster and check their completion, placement, slowdown and energy.
+
 ## Synthetic profile generation
 
 When traces are generated with `simulator/cmd/workloadgen`, the simulator-side workload profile is not left empty.
@@ -171,9 +193,12 @@ GPU work progression combines:
 
 At a high level:
 
-`gpuSpeed ~= G_req * BaseSpeedPerGPU * gpuCapImpact * gpuClassImpact * cpuFeedImpact`
+`gpuSpeed ~= G_req * BaseSpeedPerGPU * gpuThroughput * cpuFeedImpact`
 
-where CPU throttling can also slow GPU jobs when CPU-side feeding is part of the bottleneck.
+where `gpuThroughput` is the share of its throughput a GPU keeps under its cap for the job's workload class and utilization: 1 while the cap is above what the job draws.
+The cap is counted once, through `gpuThroughput`, so `S_gpu` does not change the legacy GPU speed; the legacy model used to multiply by `1 - (1 - cap/max) * S_gpu` as well, which charged the cap twice.
+Under `SIM_WORKLOAD_MODEL=v1` the cap costs `1 - S_gpu * (1 - gpuThroughput)`.
+CPU throttling can also slow GPU jobs when CPU-side feeding is part of the bottleneck.
 
 State update:
 
@@ -280,12 +305,12 @@ The heterogeneous benchmark (`experiments/02-heterogeneous-benchmark/`) exercise
 
 ## Scheduling class inference
 
-Workload class is inferred from pod scheduling constraints:
+The legacy engine infers the workload class from pod scheduling constraints:
 
 - `performance` (avoids eco nodes via affinity)
 - `standard` (unconstrained)
 
-This is used for workload counters and class-based completion metrics.
+This is used for workload counters and class-based completion metrics. The v1 engine takes the class from the trace's `intentClass` and declares it on the pod with the `joulie.io/workload-class` annotation, the declaration Joulie reads.
 
 ## Why this model
 

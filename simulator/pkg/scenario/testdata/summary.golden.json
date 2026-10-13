@@ -1,0 +1,269 @@
+{
+  "schema": "joulie.simcluster.summary/v1",
+  "test.suite.name": "fixture",
+  "test.suite.run.status": "success",
+  "exitCode": 0,
+  "failures": [],
+  "warnings": [
+    "slow-warn: observed 79, want < 10s (duration quantile 0.95 over 3 completed jobs)"
+  ],
+  "knownDefects": [],
+  "assertions": [
+    {
+      "test.case.name": "all.completedFraction",
+      "test.case.result.status": "pass",
+      "type": "jobs",
+      "severity": "fail",
+      "observed": 0.6,
+      "expected": ">= 0.5",
+      "message": "3 of 5 due jobs completed (1 not due)"
+    },
+    {
+      "test.case.name": "all.failed",
+      "test.case.result.status": "pass",
+      "type": "jobs",
+      "severity": "fail",
+      "observed": 1,
+      "expected": "== 1",
+      "message": "5 due jobs (1 not due): 3 completed, 1 failed, 1 incomplete"
+    },
+    {
+      "test.case.name": "perf-done.completed",
+      "test.case.result.status": "pass",
+      "type": "jobs",
+      "severity": "fail",
+      "observed": 2,
+      "expected": "== 2",
+      "message": "2 due jobs (0 not due): 2 completed, 0 failed, 0 incomplete"
+    },
+    {
+      "test.case.name": "perf-slowdown",
+      "test.case.result.status": "pass",
+      "type": "latency",
+      "severity": "fail",
+      "observed": 1.15,
+      "expected": "<= 1.2",
+      "message": "slowdown quantile 0.5 over 2 completed jobs"
+    },
+    {
+      "test.case.name": "perf-vs-std",
+      "test.case.result.status": "pass",
+      "type": "latency",
+      "severity": "fail",
+      "observed": 1.2307692307692308,
+      "expected": "> 1",
+      "message": "duration quantile max: 80 over 2 jobs against 65 over 1 reference jobs"
+    },
+    {
+      "test.case.name": "slow-warn",
+      "test.case.result.status": "fail",
+      "type": "latency",
+      "severity": "warn",
+      "observed": 79,
+      "expected": "< 10s",
+      "message": "duration quantile 0.95 over 3 completed jobs"
+    },
+    {
+      "test.case.name": "stalls.noProgress",
+      "test.case.result.status": "pass",
+      "type": "stall",
+      "severity": "fail",
+      "observed": 1,
+      "expected": "== 1",
+      "message": "0 gang_incomplete, 1 no_progress job stalls; 1 run stalls"
+    },
+    {
+      "test.case.name": "stalls.runStalled",
+      "test.case.result.status": "pass",
+      "type": "stall",
+      "severity": "fail",
+      "observed": 1,
+      "expected": "== 1",
+      "message": "0 gang_incomplete, 1 no_progress job stalls; 1 run stalls"
+    },
+    {
+      "test.case.name": "isolation",
+      "test.case.result.status": "pass",
+      "type": "placement",
+      "severity": "fail",
+      "observed": 0,
+      "expected": "== 0",
+      "message": "0 of 2 performance binds on a forbidden class held for at least 40s; 1 more within the grace"
+    },
+    {
+      "test.case.name": "energy",
+      "test.case.result.status": "pass",
+      "type": "energy",
+      "severity": "fail",
+      "observed": 144000,
+      "expected": "> 0 J",
+      "message": "144000 J over 5 series"
+    },
+    {
+      "test.case.name": "perf-energy",
+      "test.case.result.status": "pass",
+      "type": "energy",
+      "severity": "fail",
+      "observed": 13500,
+      "expected": "<= 50 kJ",
+      "message": "27000 J over 2 completed jobs"
+    },
+    {
+      "test.case.name": "perf-completions",
+      "test.case.result.status": "pass",
+      "type": "events",
+      "severity": "fail",
+      "observed": 2,
+      "expected": "== 2",
+      "message": "2 joulie.sim.job.completed records match"
+    },
+    {
+      "test.case.name": "clean.jobsNotComplete",
+      "test.case.result.status": "pass",
+      "type": "objects",
+      "severity": "fail",
+      "observed": 1,
+      "expected": "== 1",
+      "message": "end snapshot: 1 workload Jobs not complete, 1 stray workload pods on fake Nodes, 2 NodeHardwares, 1 NodeTwins with a blocked component"
+    },
+    {
+      "test.case.name": "clean.strayPodsOnFakeNodes",
+      "test.case.result.status": "pass",
+      "type": "objects",
+      "severity": "fail",
+      "observed": 1,
+      "expected": "== 1",
+      "message": "end snapshot: 1 workload Jobs not complete, 1 stray workload pods on fake Nodes, 2 NodeHardwares, 1 NodeTwins with a blocked component"
+    },
+    {
+      "test.case.name": "clean.nodeHardwares",
+      "test.case.result.status": "pass",
+      "type": "objects",
+      "severity": "fail",
+      "observed": 2,
+      "expected": "== 2",
+      "message": "end snapshot: 1 workload Jobs not complete, 1 stray workload pods on fake Nodes, 2 NodeHardwares, 1 NodeTwins with a blocked component"
+    },
+    {
+      "test.case.name": "clean.controlBlocked",
+      "test.case.result.status": "pass",
+      "type": "objects",
+      "severity": "fail",
+      "observed": 1,
+      "expected": "== 1",
+      "message": "end snapshot: 1 workload Jobs not complete, 1 stray workload pods on fake Nodes, 2 NodeHardwares, 1 NodeTwins with a blocked component"
+    },
+    {
+      "test.case.name": "twin",
+      "test.case.result.status": "pass",
+      "type": "twinPower",
+      "severity": "fail",
+      "observed": 0.05,
+      "expected": "<= 0.1",
+      "message": "relative error quantile 0.95 over 4 samples after 2m0s; worst 0.05 on intel-0; 2 above the tolerance 0.02"
+    },
+    {
+      "test.case.name": "targets",
+      "test.case.result.status": "pass",
+      "type": "promql",
+      "severity": "fail",
+      "observed": 3,
+      "expected": ">= 3",
+      "message": "query count(up) at the end of the run"
+    }
+  ],
+  "spec": "tests/simcluster/specs/smoke.yaml",
+  "telemetryMode": "otel",
+  "powerScope": "components",
+  "timing": "dev",
+  "git": {
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "dirty": false
+  },
+  "semconvSchemaUrl": "https://opentelemetry.io/schemas/1.44.0",
+  "durationsSeconds": {
+    "run": 200
+  },
+  "scenario": "fixture",
+  "runId": "20261004T200000Z-fixture-0123456789ab",
+  "startTime": "2026-10-04T20:00:00Z",
+  "endTime": "2026-10-04T20:03:20Z",
+  "jobs": {
+    "total": 6,
+    "notDue": 1,
+    "completed": 3,
+    "failed": 1,
+    "incomplete": 1,
+    "stalledEver": 1,
+    "neverScheduled": 0
+  },
+  "classes": {
+    "performance": {
+      "jobs": 2,
+      "completed": 2,
+      "throughputJobsPerHour": 36,
+      "workUnits": {
+        "cpu": 480,
+        "gpu": 0
+      },
+      "energyJoules": {
+        "cpu": 27000,
+        "gpu": 0,
+        "total": 27000
+      },
+      "energyPerJobJoules": 13500,
+      "duration": {
+        "p50": 75,
+        "p95": 79.5,
+        "max": 80
+      },
+      "queueWait": {
+        "p50": 1.5,
+        "p95": 1.95,
+        "max": 2
+      },
+      "slowdown": {
+        "p50": 1.15,
+        "p95": 1.1949999999999998,
+        "max": 1.2
+      }
+    },
+    "standard": {
+      "jobs": 3,
+      "completed": 1,
+      "throughputJobsPerHour": 18,
+      "workUnits": {
+        "cpu": 240,
+        "gpu": 0
+      },
+      "energyJoules": {
+        "cpu": 18000,
+        "gpu": 72000,
+        "total": 90000
+      },
+      "energyPerJobJoules": 90000,
+      "duration": {
+        "p50": 65,
+        "p95": 65,
+        "max": 65
+      },
+      "queueWait": {
+        "p50": 3,
+        "p95": 3,
+        "max": 3
+      },
+      "slowdown": {
+        "p50": 1.05,
+        "p95": 1.05,
+        "max": 1.05
+      }
+    }
+  },
+  "energy": {
+    "attributedJoules": 117000,
+    "idleJoules": 27000,
+    "totalJoules": 144000,
+    "boundary": "cpu packages + gpus",
+    "idleSplit": "requested-cpu share"
+  }
+}

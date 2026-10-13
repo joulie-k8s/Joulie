@@ -284,8 +284,7 @@ NODES_CFG
 python3 "$REPO_ROOT/scripts/generate_heterogeneous_assets.py" \
   --input "$WORK_DIR/cluster-nodes.yaml" \
   --out-nodes "$WORK_DIR/00-kwok-nodes.yaml" \
-  --out-classes "$WORK_DIR/10-node-classes.yaml" \
-  --out-catalog "$WORK_DIR/hardware.generated.yaml" >&2
+  --out-classes "$WORK_DIR/10-node-classes.yaml" >&2
 log "registering ${NODES} fake nodes"
 kubectl apply -f "$WORK_DIR/00-kwok-nodes.yaml" >/dev/null
 log "waiting for the fake nodes to go Ready"

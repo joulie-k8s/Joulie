@@ -83,20 +83,36 @@ The workload metadata is still useful for inspection, debugging, and future cali
 
 In benchmark experiments, there can also be a post-generation retargeting step. For example, experiment 02 keeps the canonical logical trace produced by `workloadgen`, then rewrites only the pod-level placement constraints so the runnable jobs land on concrete heterogeneous KWOK nodes present in the benchmark cluster. That retargeting does not change the logical workload shape, work units, or submission timing; it only makes the generated jobs hardware-aware for that specific cluster instance.
 
+### Schema versions
+
+`--schema-version` selects the trace schema. Every record carries it as `schemaVersion`.
+
+| | `v3` (default) | `v2` |
+|---|---|---|
+| `sensitivity` on job records | absent, so the simulator reads 1 (a cap slows the job in full); `--cpu-sensitivity` and `--gpu-sensitivity` write the keys they name on every job | always present: `{"cpu":0,"gpu":0}` in default mode, `0.5` on performance jobs in diurnal mode |
+| power-profile affinity | none; the class is declared only by `intentClass`, which the simulator turns into its placement intent: a `NotIn [eco]` affinity on `joulie.io/power-profile` in the legacy workload model, the `joulie.io/workload-class` annotation in `v1` | performance jobs carry `NotIn [eco]` on `joulie.io/power-profile` |
+| work units | every pod's ideal runtime equals its workload's `durationSec` (see [How work units are derived](#how-work-units-are-derived)) | scaled by utilisation, role and rate flags |
+| diurnal GPU class | `gpu.compute_bound`, which the physics model knows | `gpu.compute`, which the physics model treats as `gpu.mixed` |
+| `--arrival-window-sec`, `--max-duration-sec` | available | rejected |
+
+`v2` is the schema experiments 01 to 03 were measured with. With `--schema-version v2` the output is byte for byte what the generator wrote before `v3`, and every legacy caller pins it: the experiment scripts `04_run_one.py` and `05_sweep.py`, `scripts/standalone_sweep.py` and example 10. A contract test (`TestWorkloadgenCallersPinSchemaVersion`) fails when one of these callers runs workloadgen without `--schema-version v2` as the first flag after the package. Other callers may build or install workloadgen and rely on the default `v3`. Golden traces in `simulator/cmd/workloadgen/testdata`, and the SHA-256 of the traces written with the legacy callers' flags, guard the `v2` bytes in both modes.
+
+Each schema rejects the flags that only shape the other: `v2` rejects `--cpu-sensitivity`, `--gpu-sensitivity`, `--arrival-window-sec` and `--max-duration-sec`; `v3` rejects `--cpu-work-rate-per-core`, `--gpu-work-rate-per-gpu` and `--work-scale`, which would break its ideal runtime.
+
 ### Logical workload record
 
 Example:
 
 ```json
-{"type":"workload","schemaVersion":"v2","workloadId":"workload-000001","submitTimeOffsetSec":12.4,"namespace":"default","workloadType":"distributed_training","gang":true,"durationSec":14400,"workloadClass":{"cpu":"cpu.mixed","gpu":"gpu.compute_bound"},"sharedIntensityProfile":{"cpuUtilization":0.28,"gpuUtilization":0.47,"memoryIntensity":0.58,"ioIntensity":0.08,"cpuFeedIntensityGpu":0.56},"pods":[{"role":"launcher","replicas":1,"requests":{"cpu":"2","memory":"4Gi"},"gang":true},{"role":"worker","replicas":4,"requests":{"cpu":"4","memory":"12Gi","nvidia.com/gpu":"1"},"gang":true}]}
+{"type":"workload","schemaVersion":"v3","workloadId":"workload-000001","submitTimeOffsetSec":12.4,"namespace":"default","workloadType":"distributed_training","gang":true,"durationSec":14400,"workloadClass":{"cpu":"cpu.mixed","gpu":"gpu.compute_bound"},"sharedIntensityProfile":{"cpuUtilization":0.28,"gpuUtilization":0.47,"memoryIntensity":0.58,"ioIntensity":0.08,"cpuFeedIntensityGpu":0.56},"pods":[{"role":"launcher","replicas":1,"requests":{"cpu":"2","memory":"4Gi"},"gang":true},{"role":"worker","replicas":4,"requests":{"cpu":"4","memory":"12Gi","nvidia.com/gpu":"1"},"gang":true}]}
 ```
 
 ### Pod-expanded job record
 
-Example:
+Example (`v3`, base speed 1.0: the worker runs for the workload's 14400 s on its 4 cores and its GPU):
 
 ```json
-{"type":"job","schemaVersion":"v2","jobId":"workload-000001-worker-01","workloadId":"workload-000001","workloadType":"distributed_training","podRole":"worker","gang":true,"submitTimeOffsetSec":12.4,"namespace":"default","podTemplate":{"requests":{"cpu":"4","memory":"12Gi","nvidia.com/gpu":"1"}},"work":{"cpuUnits":1024,"gpuUnits":6800},"sensitivity":{"cpu":0.65,"gpu":0.90},"workloadClass":{"cpu":"cpu.mixed","gpu":"gpu.compute_bound"},"workloadProfile":{"cpuUtilization":0.28,"gpuUtilization":0.47,"memoryIntensity":0.58,"ioIntensity":0.08,"cpuFeedIntensityGpu":0.56}}
+{"type":"job","schemaVersion":"v3","jobId":"workload-000001-worker-01","workloadId":"workload-000001","workloadType":"distributed_training","podRole":"worker","gang":true,"submitTimeOffsetSec":12.4,"namespace":"default","intentClass":"performance","podTemplate":{"requests":{"cpu":"4","memory":"12Gi","nvidia.com/gpu":"1"}},"work":{"cpuUnits":57600,"gpuUnits":14400},"workloadClass":{"cpu":"cpu.mixed","gpu":"gpu.compute_bound"},"workloadProfile":{"cpuUtilization":0.28,"gpuUtilization":0.47,"memoryIntensity":0.58,"ioIntensity":0.08,"cpuFeedIntensityGpu":0.56}}
 ```
 
 ## Statistical model
@@ -303,24 +319,38 @@ This is a good fit for the report requirement that a single logical workload may
 
 ## How work units are derived
 
-The simulator still runs on abstract work units, so the generator maps duration and utilization into work.
+The simulator still runs on abstract work units, so the generator maps duration into work.
 
-Current mapping:
+In `v3`, in both modes, every pod of a workload gets:
 
 ```text
-CPUUnits ~= duration_sec * cpu_request * cpu_utilization * cpu_work_rate_per_core
-GPUUnits ~= duration_sec * gpu_request * gpu_utilization * gpu_work_rate_per_gpu
+CPUUnits = duration_sec * cpu_request * base_speed_per_core
+GPUUnits = duration_sec * gpu_request * base_speed_per_core
 ```
 
-with small role-specific scaling factors for:
+At full speed the simulator does `request * base_speed_per_core` units per second (`SIM_BASE_SPEED_PER_CORE`, default 1.0), so a pod's ideal runtime, with no cap and no contention, is exactly its workload's `durationSec`. `--base-speed-per-core` defaults to 1.0 in `v3`; a trace generated with another value must run on a simulator set to the same speed. The CPU request is taken as written to the trace (two decimals), so the simulator reads back the request the units were sized with. Utilisation and intensity stay in the profile, where they drive power and slowdown, not the amount of work.
 
-- launchers,
-- controllers,
-- parameter servers,
-- workers,
-- trials.
+`v2` keeps the earlier mapping:
 
-This is not a trace-replay of exact instruction counts. It is a practical way to make requested duration, requested resources, and throttling sensitivity line up inside the simulator.
+```text
+default mode: CPUUnits ~= duration_sec * cpu_request * cpu_utilization * cpu_work_rate_per_core
+              GPUUnits ~= duration_sec * gpu_request * gpu_utilization * gpu_work_rate_per_gpu
+diurnal mode: CPUUnits ~= duration_sec * cpu_request * cpu_utilization * base_speed_per_core * work_scale
+              GPUUnits ~= duration_sec * gpu_request * gpu_utilization * base_speed_per_core * work_scale
+```
+
+with utilisation floored at 0.10, `--base-speed-per-core` defaulting to 2.0, and, in default mode, small role-specific scaling factors for launchers, controllers, parameter servers, workers and trials.
+
+This is not a trace-replay of exact instruction counts. It is a practical way to make requested duration, requested resources, and throttling line up inside the simulator.
+
+## Fitting a trace into a run
+
+Two `v3` flags shape a trace for a run of fixed length:
+
+- `--arrival-window-sec S` scales every submit offset linearly so the last arrival is at `S` seconds. The arrival pattern keeps its shape; a window past the last arrival changes nothing.
+- `--max-duration-sec D` clamps each workload's `durationSec` to `D` before its work is sized, so no pod's ideal runtime exceeds `D`.
+
+Both default to 0, which keeps the sampled offsets and durations.
 
 ## Gang semantics in the simulator
 
@@ -337,20 +367,25 @@ The main generator remains:
 go run ./simulator/cmd/workloadgen --out trace.jsonl
 ```
 
+This writes a `v3` trace. A script that depends on the earlier traces passes `--schema-version v2`.
+
 Useful knobs:
 
+- `--schema-version` (`v3` or `v2`)
+- `--mode` (`default` or `diurnal`)
 - `--jobs`
 - `--mean-inter-arrival-sec`
 - `--seed`
 - `--gpu-ratio`
 - `--perf-ratio`
-- `--eco-ratio`
 - `--burst-day-probability`
 - `--burst-multiplier`
 - `--burst-mean-jobs`
 - `--emit-workload-records`
-- `--cpu-work-rate-per-core`
-- `--gpu-work-rate-per-gpu`
+- `--base-speed-per-core` (both modes in `v3`, default 1.0; diurnal mode only in `v2`, default 2.0)
+- `--cpu-sensitivity`, `--gpu-sensitivity` (`v3` only)
+- `--arrival-window-sec`, `--max-duration-sec` (`v3` only)
+- `--cpu-work-rate-per-core`, `--gpu-work-rate-per-gpu`, `--work-scale` (`v2` only)
 
 ## What is still intentionally simplified
 

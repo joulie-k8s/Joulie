@@ -10,10 +10,15 @@
 // (layout.Kind):
 //
 //   - R (layout.OwnerRender): written once by Render. A write to it is
-//     reverted at the next Step, with a restored event.
+//     reverted at the next Step, with a restored event; with
+//     Options.RenderCheckInterval, at the first Step that reaches the
+//     interval after the last check.
 //   - S (layout.OwnerEmulator): emulator-owned, such as energy_uj and
-//     scaling_cur_freq. Rewritten by temp file and rename, only when its
-//     content changes. Temp files live in state/.tmp, never next to an
+//     scaling_cur_freq. Rewritten only when its content changes: in place,
+//     in one write, under a write lease that proves nobody has the file
+//     open, when the new value is at least as long as the file; otherwise
+//     by temp file and rename. Either way a reader sees the old value or
+//     the new one, whole. Temp files live in state/.tmp, never next to an
 //     attribute, because filepath.Glob("*") matches dotfiles.
 //   - A (layout.OwnerAgent): writable by the agent or a tool, such as a RAPL
 //     limit or scaling_max_freq. Written in place, read back every Step,
@@ -30,12 +35,45 @@
 // root, so a non-root test gets EACCES on 0444 and 0400 files and must not
 // depend on writing them.
 //
+// # Resuming a tree
+//
+// Render writes only into an absent or empty root. Ensure renders such a
+// root too, and resumes any other: state/hwemu.json must name the same
+// profile, node and digest of the profile's values (provenance and zero
+// values excluded), or it returns ErrProfileChanged; every entry a fresh
+// render has and the root lacks is moved in from that render, made in
+// state/.tmp/ensure-*; an entry of another kind is ErrTreeConflict. Nothing
+// the root has is replaced, so a simulator restart keeps every limit the
+// agent wrote and every inode a pod has mounted, and a NewNode over the
+// resumed tree continues its counters. With no agent mounting the node,
+// removing its root recovers from either error.
+//
+// # Components
+//
+// State reports the node as telemetry names it: cpu<s> per package
+// (package-<s>), memory<s> per DRAM channel (dram, parent cpu<s>), gpu<i> per
+// GPU (its product), and the host, whose power is their sum plus the
+// platform's otherW. Measured follows what a collector on the node could
+// read: a package or DRAM zone with energy_uj, an NVIDIA GPU with
+// total_energy_mj, an AMD GPU with power1_input or power1_average, a host
+// that is not a hypervisor guest. Every event, a restored one too, names the
+// component whose directory holds its file: a powercap zone, a cpufreq
+// policy, an HSMP or amdgpu hwmon device, a GPU's PCI device or its NVML
+// state. Any other file, such as cpuinfo or a control type's enabled, names
+// none.
+//
 // # fakesmi
 //
 // A fake GPU tool writes nothing to stderr on a success path, because the
 // agent parses stdout and stderr combined (OSCommandRunner.Run in
 // cmd/agent). Every call returns well within the agent's 3 s command timeout
 // (runCommand in cmd/agent).
+//
+// NVIDIA persistence mode lives in state/nvml/gpu<i>/persistence_mode (A),
+// Enabled or Disabled, from gpus.persistenceMode and set by nvidia-smi -pm.
+// While it is Disabled and the GPU has no load, which stands for no client
+// holding it (assumed), each Step puts power_limit_mw back to the default,
+// as a driver that unloads does, with a reset-persistence-off event.
 //
 // # Sources
 //

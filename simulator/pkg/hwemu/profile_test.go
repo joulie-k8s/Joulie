@@ -31,8 +31,13 @@ var renderBuiltinNames = []string{
 	"amd-epyc-2s-hsmp",
 	"amd-epyc-9534-2s-energy-only",
 	"amd-instinct-mi300x-8gpu",
+	"amd-radeon-pro-w7900-4gpu",
+	"intel-xeon-2s-multidie",
+	"intel-xeon-2s-psys",
 	"intel-xeon-2s-rapl",
 	"intel-xeon-6530-2s-rapl",
+	"intel-xeon6-2s-no-powercap",
+	"intel-xeon6-2s-tpmi",
 	"nvidia-h100-nvl-8gpu",
 	"nvidia-h100-sxm-4gpu",
 	"nvidia-h100-sxm-8gpu",
@@ -164,7 +169,7 @@ func TestH01BuiltinProfilesLoadWithProvenance(t *testing.T) {
 	// The 9534 host keeps the energy-only zones, the driver and the sockets
 	// of the 9654 host with their sources, and replaces what follows from the
 	// core count, the clocks and the TDP.
-	for _, name := range []string{"amd-epyc-9534-2s-energy-only", "nvidia-l40s-4gpu"} {
+	for _, name := range []string{"amd-epyc-9534-2s-energy-only", "nvidia-l40s-4gpu", "amd-radeon-pro-w7900-4gpu"} {
 		p := profiles[name]
 		if p.CPU.ModelName.V != "AMD EPYC 9534 64-Core Processor" || p.CPU.CoresPerSocket.V != 64 || p.Node.Capacity.CPU.V != 256 {
 			t.Errorf("%s: cpu %q with %d cores per socket and capacity %d, want the 9534 with 64 and 256", name, p.CPU.ModelName.V, p.CPU.CoresPerSocket.V, p.Node.Capacity.CPU.V)
@@ -180,6 +185,10 @@ func TestH01BuiltinProfilesLoadWithProvenance(t *testing.T) {
 				t.Errorf("%s: %s cites the 9654 (%q)", name, at, src)
 			}
 		}
+	}
+	w7900 := profiles["amd-radeon-pro-w7900-4gpu"]
+	if g := w7900.GPUs; g.Count.V != 4 || g.Limits.MinW.V != 241 || g.Limits.MaxW.V != 241 || g.Limits.DefaultW.V != 241 || g.PCI.Device.V != "0x7448" || g.PCI.Class.V != "0x030000" {
+		t.Errorf("w7900: count %d, limits %+v, pci %+v; want 4 boards pinned at 241 W, device 0x7448, display class", g.Count.V, g.Limits, g.PCI)
 	}
 	l40s := profiles["nvidia-l40s-4gpu"]
 	if g := l40s.GPUs; g.Count.V != 4 || g.Limits.MinW.V != 100 || g.Limits.MaxW.V != 350 || g.Limits.DefaultW.V != 350 || g.PCI.Device.V != "0x26b9" || g.PCI.Class.V != "0x030200" || g.Product.V != "NVIDIA L40S" {

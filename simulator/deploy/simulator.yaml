@@ -16,8 +16,6 @@ data:
           feature.node.kubernetes.io/cpu-model.vendor_id: Intel
         model:
           baseIdleW: 70
-          podW: 110
-          dvfsDropWPerPct: 1.6
           raplHeadW: 5
           defaultCapW: 5000
       - name: amd-default
@@ -25,8 +23,6 @@ data:
           feature.node.kubernetes.io/cpu-model.vendor_id: AMD
         model:
           baseIdleW: 80
-          podW: 120
-          dvfsDropWPerPct: 1.8
           raplHeadW: 5
           defaultCapW: 5000
 ---
@@ -93,10 +89,6 @@ spec:
               value: "/etc/joulie-sim/node-classes.yaml"
             - name: SIM_BASE_IDLE_W
               value: "80"
-            - name: SIM_POD_W
-              value: "120"
-            - name: SIM_DVFS_DROP_W_PER_PCT
-              value: "1.8"
             - name: SIM_RAPL_HEADROOM_W
               value: "5"
             - name: SIM_DEFAULT_CAP_W

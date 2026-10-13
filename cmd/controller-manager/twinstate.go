@@ -4,10 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -34,33 +31,69 @@ var (
 	twinHardwareCatalog *hwinv.Catalog
 )
 
-// nodeTopology holds the physical topology context for a node.
+// nodeTopology holds the physical topology context for a node, and the
+// facility readings that apply to it alone.
 type nodeTopology struct {
 	rack            string
 	coolingZone     string
 	rackTotalPowerW float64
-	zoneAmbientC    float64 // per-zone ambient; 0 = use global
+	// zoneAmbientC is the ambient temperature of the node's cooling zone,
+	// a reading when zoneAmbientKnown, which 0 or below may be.
+	zoneAmbientC     float64
+	zoneAmbientKnown bool
+	// inletC is the node's own inlet temperature, a reading when inletKnown.
+	inletC     float64
+	inletKnown bool
+}
+
+// nodeTopologyFor returns the topology of nodeName from its rack and
+// cooling-zone labels and the facility readings, or nil when there is none.
+// The rack's power is the facility's measured reading, or the sum of the
+// estimates of its nodes (rackPowerEstimates) when the facility has none.
+func nodeTopologyFor(nodeName, rack, zone string, rackPowerEstimates map[string]float64, facility facilitySnapshot) *nodeTopology {
+	topo := nodeTopology{rack: rack, coolingZone: zone}
+	if rack != "" {
+		topo.rackTotalPowerW = rackPowerEstimates[rack]
+		if w, ok := facility.rackPowerW[rack]; ok {
+			topo.rackTotalPowerW = w
+		}
+	}
+	if zone != "" {
+		topo.zoneAmbientC, topo.zoneAmbientKnown = facility.zoneAmbientC[zone]
+	}
+	topo.inletC, topo.inletKnown = facility.nodeInletC[nodeName]
+	if rack == "" && zone == "" && !topo.inletKnown {
+		return nil
+	}
+	return &topo
 }
 
 // reconcileNodeTwin computes and publishes NodeTwin status for one node.
 // Reads go through the cache; the status write goes through dynClient.
+//
+// The ambient temperature of the twin is the most local one known: the
+// node's inlet, then its cooling zone's, then the facility's outdoor
+// ambient. Each may be 0 or below once known.
 func reconcileNodeTwin(ctx context.Context, reader kube.Reader, dynClient dynamic.Interface, nodeName, profile string, cpuCapPct, gpuCapPct float64, draining bool, topo *nodeTopology) error {
 	hw := fetchNodeHardware(ctx, reader, nodeName)
 
-	outsideTempC := facilityAmbientTempC
+	facility := currentTwinFacility()
+	outsideTempC, outsideKnown := facility.ambientC, facility.ambientKnown
 	var rack, coolingZone string
 	var rackPowerW float64
 	if topo != nil {
 		rack = topo.rack
 		coolingZone = topo.coolingZone
 		rackPowerW = topo.rackTotalPowerW
-		if topo.zoneAmbientC > 0 {
-			outsideTempC = topo.zoneAmbientC
+		switch {
+		case topo.inletKnown:
+			outsideTempC, outsideKnown = topo.inletC, true
+		case topo.zoneAmbientKnown:
+			outsideTempC, outsideKnown = topo.zoneAmbientC, true
 		}
 	}
 
-	// Resolve measured node power. For now, use static estimation (tier 3).
-	// Future: add Kepler (tier 1) and utilization-based (tier 2) sources.
+	// Resolve measured node power from NODE_POWER_SOURCE (nodepower.go).
 	measuredPower, source := resolveNodePower(ctx, dynClient, nodeName, hw)
 
 	// Compute power trend from rolling window.
@@ -73,8 +106,9 @@ func reconcileNodeTwin(ctx context.Context, reader kube.Reader, dynClient dynami
 		CPUCapPct:          cpuCapPct,
 		GPUCapPct:          gpuCapPct,
 		Draining:           draining,
-		ClusterTotalPowerW: facilityClusterPowerW,
+		ClusterTotalPowerW: facility.itPowerW,
 		OutsideTempC:       outsideTempC,
+		OutsideTempKnown:   outsideKnown,
 		Rack:               rack,
 		CoolingZone:        coolingZone,
 		RackTotalPowerW:    rackPowerW,
@@ -394,29 +428,7 @@ func nodeTwinStatusToMap(status joulie.NodeTwinStatus) map[string]interface{} {
 	return m
 }
 
-// --- Measured power resolution ---
-
-// nodePowerConfig holds the controller manager's per-node power source configuration.
-// Configured via NODE_POWER_SOURCE env var.
-//
-// Sources (tried in priority order based on config):
-//   - "prometheus": PromQL query for direct node power (e.g. Kepler RAPL/DCMI).
-//     Uses {node} substitution in the query template.
-//     Falls back to utilization-based estimation if the direct query returns 0.
-//   - "http": queries an HTTP telemetry endpoint (e.g. simulator /telemetry/{node}).
-//   - "static" (default): returns 0.
-var (
-	nodePowerSource       string // "prometheus", "http", or "static"
-	nodePowerHTTPEndpoint string // e.g. "http://sim:18080/telemetry/{node}"
-	nodePowerHTTPClient   = &http.Client{Timeout: 5 * time.Second}
-
-	// Prometheus node power config
-	nodePowerPromAddress string // e.g. "http://prometheus:9090"
-	// nodePowerPromQuery must return watts, not a joules counter, e.g.
-	// "rate(kepler_node_platform_joules_total{node=\"{node}\"}[5m])".
-	// {node} is substituted with the node name.
-	nodePowerPromQuery string
-)
+// --- Measured power trend ---
 
 // nodePowerSamples stores recent power measurements for trend computation.
 var (
@@ -430,86 +442,6 @@ type powerSample struct {
 }
 
 const powerTrendWindow = 5 * time.Minute
-
-// resolveNodePower returns the best available measured power for a node.
-//
-// The source is selected via NODE_POWER_SOURCE:
-//   - "prometheus": queries Prometheus for direct node power (e.g. Kepler).
-//   - "http": queries an HTTP telemetry endpoint (e.g. simulator).
-//   - "static" (default): returns 0.
-func resolveNodePower(ctx context.Context, _ dynamic.Interface, nodeName string, hw joulie.NodeHardware) (float64, string) {
-	switch nodePowerSource {
-	case "prometheus":
-		if nodePowerPromAddress != "" && nodePowerPromQuery != "" {
-			query := strings.ReplaceAll(nodePowerPromQuery, "{node}", nodeName)
-			power, err := queryPrometheusScalar(ctx, nodePowerHTTPClient, nodePowerPromAddress, query)
-			if err != nil {
-				log.Printf("[twin] prometheus node power for %s: %v", nodeName, err)
-			} else if power > 0 {
-				return power, "prometheus"
-			}
-		}
-		// Fallback: utilization-based estimation is not yet implemented.
-		// When available, it will query CPU/GPU utilization metrics from
-		// Prometheus and estimate power using the hardware TDP curve.
-		return 0, joulie.PowerSourcePrometheusNoData
-
-	case "http":
-		if nodePowerHTTPEndpoint != "" {
-			power, err := queryNodePowerHTTP(ctx, nodeName)
-			if err != nil {
-				log.Printf("[twin] http node power for %s: %v", nodeName, err)
-				return 0, joulie.PowerSourceHTTPError
-			}
-			return power, joulie.PowerSourceHTTP
-		}
-		return 0, joulie.PowerSourceHTTPNoEndpoint
-
-	default:
-		return 0, joulie.PowerSourceStatic
-	}
-}
-
-// queryNodePowerHTTP fetches per-node power from an HTTP telemetry endpoint.
-// Supports the same JSON format as the simulator: top-level "packagePowerWatts"
-// or nested "cpu.packagePowerWatts".
-func queryNodePowerHTTP(ctx context.Context, nodeName string) (float64, error) {
-	url := strings.ReplaceAll(nodePowerHTTPEndpoint, "{node}", nodeName)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return 0, err
-	}
-	resp, err := nodePowerHTTPClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, err
-	}
-
-	var data map[string]interface{}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return 0, err
-	}
-
-	// Try top-level packagePowerWatts first, then nested cpu.packagePowerWatts.
-	if v, ok := data["packagePowerWatts"].(float64); ok && v > 0 {
-		return v, nil
-	}
-	if cpu, ok := data["cpu"].(map[string]interface{}); ok {
-		if v, ok := cpu["packagePowerWatts"].(float64); ok && v > 0 {
-			return v, nil
-		}
-	}
-	return 0, nil
-}
 
 // nodePowerTrend computes the power trend (watts/min) for a node from a
 // rolling window of power samples.

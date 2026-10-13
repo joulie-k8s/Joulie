@@ -20,7 +20,7 @@ CHART_CRD_DIR ?= charts/joulie/crds
 # Image names must follow joulie-<component>, where <component> matches cmd/<component>.
 IMAGES ?= joulie-agent joulie-controller-manager joulie-scheduler
 
-.PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-experiments test-all test-examples controller-gen generate manifests verify-manifests kubectl-plugin kubectl-plugin-install kubectl-plugin-push kubectl-plugin-build-push simulator-build simulator-push simulator-build-push simulator-install simulator-uninstall simulator-build-push-deploy simulator-logs docs-serve
+.PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-promql test-experiments test-all test-examples controller-gen generate manifests verify-manifests kubectl-plugin kubectl-plugin-install kubectl-plugin-push kubectl-plugin-build-push simulator-build simulator-push simulator-build-push simulator-install simulator-uninstall simulator-build-push-deploy simulator-logs docs-serve simcluster-up simcluster-images simcluster-deploy simcluster-reload simcluster-status simcluster-tree simcluster-logs simcluster-smoke simcluster-scenario simcluster-down
 
 help:
 	@echo "Targets:"
@@ -39,6 +39,7 @@ help:
 	@echo "  make kubectl-plugin-build-push TAG=<tag> Build and push kubectl-joulie to Harbor"
 	@echo "  make test                             Run unit tests"
 	@echo "  make test-envtest                     Run the CRD suite against a real API server (downloads control-plane binaries)"
+	@echo "  make test-promql                      Evaluate the controller's input queries in the Prometheus PromQL engine (tests/promql)"
 	@echo "  make test-examples                    Validate example YAML manifests (kubectl dry-run client)"
 	@echo "  make ci-local                         Run every check a pull request runs, then print a summary"
 	@echo "  make generate                         Regenerate DeepCopy code for api/"
@@ -51,6 +52,16 @@ help:
 	@echo "  make simulator-uninstall              Helm uninstall simulator"
 	@echo "  make simulator-build-push-deploy TAG=<tag> Build/push/deploy simulator"
 	@echo "  make simulator-logs                   Tail simulator logs"
+	@echo "  make simcluster-up                    Create the simulated cluster (k3s in Docker, KWOK Nodes from SIMCLUSTER_SPEC)"
+	@echo "  make simcluster-images                Build the images from the working tree and import them into it"
+	@echo "  make simcluster-deploy                Install the simulator and Joulie with emulated agents, wait until they report"
+	@echo "  make simcluster-reload C=<component>  Rebuild and roll out agent, controller-manager, scheduler, simulator or all"
+	@echo "  make simcluster-status                Print the cluster's Nodes and power, exit 1 when a check fails"
+	@echo "  make simcluster-tree [NODE=<node>]    Show the hwemu tree of an emulated Node"
+	@echo "  make simcluster-logs C=<component> [NODE=<node>] Print a component's logs"
+	@echo "  make simcluster-smoke                 Create a cluster from the smoke spec, deploy, run TestSimclusterE2E, delete it unless SIMCLUSTER_KEEP=1"
+	@echo "  make simcluster-scenario SCENARIO=<file> Run and evaluate a workload scenario (tests/simcluster/scenarios), keep the cluster"
+	@echo "  make simcluster-down                  Delete the simulated cluster (keeps images/ and runs/)"
 	@echo "  make docs-serve                       Start Hugo docs server (website/)"
 	@echo "  make build IMAGE=<name> TAG=<tag>     Build a single image"
 	@echo "  make push IMAGE=<name> TAG=<tag>      Push a single image"
@@ -135,6 +146,14 @@ kubectl-plugin-build-push: kubectl-plugin kubectl-plugin-push
 test:
 	go test ./...
 
+# tests/promql is a module of its own (go 1.26, Prometheus v0.315.0), so
+# `go test ./...` at the root skips it. It evaluates every query of
+# pkg/controller/inputs in the PromQL engine of Prometheus v3.15.0 and checks
+# pkg/otel/promname against otlptranslator. An older local Go fetches the
+# toolchain that go.mod asks for, unless GOTOOLCHAIN=local.
+test-promql:
+	cd tests/promql && go test ./...
+
 # tests/envtest starts a real etcd and kube-apiserver so the generated CRDs
 # and the server-side apply field managers are checked by the API server and
 # not by a test's idea of it. The `envtest` build tag keeps the control-plane
@@ -212,7 +231,8 @@ test-examples:
 # earlier one failed, because the useful answer is the whole list of what is
 # broken; the summary at the end names every step and the target exits
 # non-zero if any of them failed. The envtest step downloads control plane
-# binaries into bin/ the first time, so the first run needs network access.
+# binaries into bin/ and the promql step its module dependencies the first
+# time, so the first run needs network access.
 ci-local:
 	@set -u; \
 	failed=""; results=""; \
@@ -231,6 +251,7 @@ ci-local:
 	run "go vet ./..." go vet ./...; \
 	run "go test ./..." go test ./...; \
 	run "make test-envtest" $(MAKE) --no-print-directory test-envtest; \
+	run "make test-promql" $(MAKE) --no-print-directory test-promql; \
 	run "scripts/verify-chart-renders.sh" bash scripts/verify-chart-renders.sh; \
 	run "helm lint" helm lint charts/joulie charts/joulie-simulator; \
 	run "make test-experiments" $(MAKE) --no-print-directory test-experiments; \
@@ -268,3 +289,49 @@ simulator-logs:
 
 docs-serve:
 	cd website && hugo server --disableFastRender --ignoreCache --noHTTPCache
+
+# The simulated cluster (scripts/simcluster): one k3s server in Docker, KWOK
+# Nodes from a cluster spec, the simulator in emulate mode and one emulated
+# Joulie agent per Node the agent DaemonSet would reach. Each target runs one
+# script and nothing else, so `make -n` shows what will run. The settings are
+# the SIMCLUSTER_* variables the scripts document, given on the command line
+# or in the environment, for example
+#   make simcluster-smoke SIMCLUSTER_TELEMETRY=kepler SIMCLUSTER_KEEP=1
+# The export below passes on only the ones that are set, so a script's own
+# default applies to the others. COMPONENT (or C), NODE and SCENARIO are
+# passed as arguments.
+SIMCLUSTER_VARS := SIMCLUSTER_NAME SIMCLUSTER_DIR SIMCLUSTER_SPEC SIMCLUSTER_NODES SIMCLUSTER_SCALE_PROFILE \
+	SIMCLUSTER_TELEMETRY SIMCLUSTER_POWER_SCOPE SIMCLUSTER_TIMING SIMCLUSTER_PROFILES_DIR SIMCLUSTER_KEEP \
+	SIMCLUSTER_AIRGAP SIMCLUSTER_FORCE_RELOAD SIMCLUSTER_EXTRA_VALUES SIMCLUSTER_SCENARIOS \
+	SIMCLUSTER_VALIDATE_OTLP SCENARIO_VARIANTS SCENARIO_RUN_DIR
+export $(foreach v,$(SIMCLUSTER_VARS),$(if $(filter undefined,$(origin $(v))),,$(v)))
+
+simcluster-up:
+	bash scripts/simcluster/up.sh
+
+simcluster-images:
+	bash scripts/simcluster/images.sh
+
+simcluster-deploy:
+	bash scripts/simcluster/deploy.sh
+
+simcluster-reload:
+	bash scripts/simcluster/reload.sh $(or $(COMPONENT),$(C))
+
+simcluster-status:
+	bash scripts/simcluster/status.sh
+
+simcluster-tree:
+	bash scripts/simcluster/tree.sh $(NODE)
+
+simcluster-logs:
+	bash scripts/simcluster/logs.sh $(or $(COMPONENT),$(C)) $(NODE)
+
+simcluster-smoke:
+	bash scripts/simcluster/smoke.sh
+
+simcluster-scenario:
+	bash scripts/simcluster/scenario.sh $(SCENARIO)
+
+simcluster-down:
+	bash scripts/simcluster/down.sh

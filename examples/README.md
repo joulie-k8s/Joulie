@@ -12,3 +12,4 @@ This directory contains runnable Joulie examples, ordered by setup complexity.
 - [08-fmu-cooling-pue](./08-fmu-cooling-pue/README.md): FMU-based cooling and PUE simulation.
 - [09-scheduler-steering](./09-scheduler-steering/README.md): energy-aware scheduler extender steering workloads to optimal nodes.
 - [10-kubectl-joulie-demo](./10-kubectl-joulie-demo/README.md): end-to-end demo with `kubectl joulie status` plugin on a 6-node heterogeneous KWOK cluster.
+- [11-otel-collector-bridge](./11-otel-collector-bridge/README.md): OpenTelemetry Collector config that turns Kepler, dcgm-exporter and AMD device-metrics-exporter series into the `hw.*` metrics the default node power preset reads.

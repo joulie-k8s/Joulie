@@ -1,0 +1,131 @@
+assertions:
+- expect:
+    completedFraction: '>= 0.5'
+    failed: == 1
+  name: all
+  severity: fail
+  type: jobs
+- class: performance
+  expect:
+    completed: == 2
+  name: perf-done
+  severity: fail
+  type: jobs
+- class: performance
+  expect: <= 1.2
+  metric: slowdown
+  name: perf-slowdown
+  quantile: "0.5"
+  severity: fail
+  type: latency
+- class: performance
+  expect: '> 1'
+  metric: duration
+  name: perf-vs-std
+  quantile: max
+  reference:
+    class: standard
+  severity: fail
+  type: latency
+- expect: < 10s
+  metric: duration
+  name: slow-warn
+  quantile: "0.95"
+  severity: warn
+  type: latency
+- expect:
+    noProgress: == 1
+    runStalled: == 1
+  name: stalls
+  severity: fail
+  type: stall
+- class: performance
+  expect: == 0
+  forbidden:
+  - eco
+  name: isolation
+  severity: fail
+  type: placement
+- expect: '> 0 J'
+  name: energy
+  scope: total
+  severity: fail
+  type: energy
+- expect: <= 50 kJ
+  name: perf-energy
+  perJob: true
+  scope: class:performance
+  severity: fail
+  type: energy
+- event: joulie.sim.job.completed
+  expect: == 2
+  name: perf-completions
+  severity: fail
+  type: events
+  where:
+    joulie.workload.class: performance
+- expect:
+    controlBlocked: == 1
+    jobsNotComplete: == 1
+    nodeHardwares: == 2
+    strayPodsOnFakeNodes: == 1
+  name: clean
+  severity: fail
+  type: objects
+- expect: <= 0.1
+  name: twin
+  quantile: 0.95
+  severity: fail
+  tolerance: 0.02
+  type: twinPower
+- expect: '>= 3'
+  name: targets
+  query: count(up)
+  severity: fail
+  type: promql
+capture:
+  interval: 15s
+cluster:
+  spec: tests/simcluster/specs/smoke.yaml
+  timing: dev
+drain: 2m0s
+duration: 4m0s
+isolation: reuse
+joulie:
+  enabled: true
+name: fixture
+schemaVersion: 1
+simulator: {}
+workload:
+  baseSpeedPerCore: 1
+  jobs:
+  - class: performance
+    count: 2
+    every: 30s
+    name: perf
+    pods: 1
+    profile: {}
+    requests:
+      cpu: "4"
+    runtime: 1m0s
+    workClass: {}
+  - class: standard
+    count: 2
+    every: 1m0s
+    name: std
+    pods: 1
+    profile: {}
+    requests:
+      cpu: "2"
+    runtime: 1m0s
+    workClass: {}
+  - class: standard
+    count: 2
+    every: 3m30s
+    name: late
+    pods: 1
+    profile: {}
+    requests:
+      cpu: "1"
+    runtime: 1m0s
+    workClass: {}

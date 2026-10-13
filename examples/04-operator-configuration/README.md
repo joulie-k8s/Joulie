@@ -87,10 +87,10 @@ curl -s localhost:18080/metrics | grep '^joulie_' | head -n 30
 
 ```bash
 # open Prometheus and Grafana locally (adjust service names if needed)
-kubectl port-forward svc/telemetry-kube-prometheus-prometheus 9090:9090 1>/dev/null &
-kubectl port-forward svc/telemetry-grafana 5000:80 1>/dev/null &
+kubectl -n monitoring port-forward svc/telemetry-kube-prometheus-prometheus 9090:9090 1>/dev/null &
+kubectl -n monitoring port-forward svc/telemetry-grafana 5000:80 1>/dev/null &
 # Get Grafana 'admin' user password by running:
-kubectl --namespace default get secrets telemetry-grafana -o jsonpath="{.data.admin-password}" | base64 -d ; echo
+kubectl --namespace monitoring get secrets telemetry-grafana -o jsonpath="{.data.admin-password}" | base64 -d ; echo
 # then browse:
 # http://localhost:9090/targets
 # http://localhost:9090/graph

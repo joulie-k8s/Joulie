@@ -1,0 +1,123 @@
+# Two socket Emerald Rapids host whose firmware reports platform energy, so
+# intel-rapl carries a psys zone next to the packages. Only one package, the
+# Psys master, reads the platform counter (psysmaster); this profile takes
+# package 0 as master, so the kernel names the zone psys (raplcommon#509-516)
+# and registers it, top level, right after package-0 (raplcommon#899-935,
+# 1806-1810; powercapsys#513-522): intel-rapl:0 package-0, intel-rapl:1 psys,
+# intel-rapl:2 package-1. The packages are therefore listed once each.
+schemaVersion: 1
+name: intel-xeon-2s-psys
+description: Two socket Xeon Gold 6530 (Emerald Rapids), intel_pstate, MSR RAPL with SPR server units, a psys zone of 1 J units at intel-rapl:1 between the packages, disabled write-rejecting DRAM sub-zones.
+sources:
+  ark6530:     {kind: published, ref: "https://www.intel.com/content/www/us/en/products/sku/237249/intel-xeon-gold-6530-processor-160m-cache-2-10-ghz/specifications.html", note: "32 cores, 64 threads, base 2.1 GHz, max turbo 4 GHz, TDP 270 W, 8 memory channels, 2S, Emerald Rapids"}
+  cpuinfo6530: {kind: published, ref: "https://github.com/spcl/confidential-llms-in-tees/blob/bd3f2f681568268ed82fe64f27686f41b5f24ec0/CPU/sgx/cpuinfo.patch", note: "line 8, py-cpuinfo output of a 6530 host: vendor_id_raw GenuineIntel, brand_raw INTEL(R) XEON(R) GOLD 6530, family 6, model 207, stepping 2, count 128, hz_actual 800.0000 MHz"}
+  intelfamily: {kind: published, ref: "linux v7.3-rc5 arch/x86/include/asm/intel-family.h:125", note: "INTEL_EMERALDRAPIDS_X IFM(6, 0xCF)"}
+  raplmsr:     {kind: published, ref: "linux v7.3-rc5 drivers/powercap/intel_rapl_msr.c:112-116,356-362,455-456", note: "EMERALDRAPIDS_X uses rapl_defaults_spr_server: psys_domain_energy_unit = NANOJOULE_PER_JOULE, no dram_domain_energy_unit; psys has LIMIT and STATUS registers, no POWER_INFO"}
+  raplcommon:  {kind: published, ref: "linux v7.3-rc5 drivers/powercap/intel_rapl_common.c:33,50,105-151,215,479-486,509-516,521,640,741,846-847,899-935,978-983,994-1019,1806-1810"}
+  powercapsys: {kind: published, ref: "linux v7.3-rc5 drivers/powercap/powercap_sys.c:420-441,513-522", note: "a top-level zone takes the lowest free index of its control type when it registers"}
+  psysmaster:  {kind: published, ref: "https://lkml.rescloud.iu.edu/2102.0/05797.html", note: "one Psys master package; the slave package reads 0; the master does not have to be package 0; BIOS can disable the counter (commit f1e8d7560d30)"}
+  pstate:      {kind: published, ref: "linux v7.3-rc5 Documentation/admin-guide/pm/intel_pstate.rst:39-41,90-91", note: "one policy per logical CPU; active mode offers powersave and performance"}
+  spec01396:   {kind: published, ref: "https://www.spec.org/power_ssj2008/results/res2024q2/power_ssj2008-20240408-01396.txt", note: "2x Xeon Gold 6548Y (32-core Emerald Rapids, TDP 250 W): Active Idle 125 W, 100% 602 W"}
+  spec01397:   {kind: published, ref: "https://www.spec.org/power_ssj2008/results/res2024q2/power_ssj2008-20240408-01397.txt", note: "2x Xeon Gold 6538Y+ (32-core Emerald Rapids, TDP 225 W): Active Idle 118 W, 100% 583 W"}
+  nfd:         {kind: published, ref: "https://kubernetes-sigs.github.io/node-feature-discovery/stable/reference/worker-configuration-reference.html", note: "deviceClassWhitelist [03, 0b40, 12]; deviceLabelFields [class, vendor]"}
+node:
+  nfd: present
+  labels:
+    cpu:
+      src: "assumed:NFD cpu labels for this cpu block (family 6, model 207) with intel_pstate active"
+      values:
+        feature.node.kubernetes.io/cpu-model.vendor_id: Intel
+        feature.node.kubernetes.io/cpu-model.family: "6"
+        feature.node.kubernetes.io/cpu-model.id: "207"
+        feature.node.kubernetes.io/cpu-model.hypervisor: none
+        feature.node.kubernetes.io/cpu-hardware_multithreading: "true"
+        feature.node.kubernetes.io/cpu-pstate.status: active
+        feature.node.kubernetes.io/cpu-pstate.scaling_governor: powersave
+        feature.node.kubernetes.io/cpu-pstate.turbo: "true"
+        kubernetes.io/arch: amd64
+        kubernetes.io/os: linux
+  taints: []
+  capacity:
+    cpu: {v: 128, src: "derived:ark6530#2 sockets x 32 cores x 2 threads"}
+    memoryKi: {v: 528000000, src: "assumed:a 512 GiB node, 16 x 32 GiB DDR5, less firmware reservations"}
+  reserved: {cpu: "1", memory: 4Gi, src: "assumed:typical kubelet reservation"}
+pci:
+  - {class: "0x030000", vendor: "0x1a03", src: "assumed:BMC VGA on a typical server board"}
+cpu:
+  vendorID: {v: GenuineIntel, src: "published:cpuinfo6530#vendor_id_raw"}
+  family: {v: 6, src: "published:intelfamily#125"}
+  model: {v: 207, src: "derived:intelfamily#125 0xCF"}
+  stepping: {v: 2, src: "published:cpuinfo6530#stepping"}
+  modelName: {v: "INTEL(R) XEON(R) GOLD 6530", src: "published:cpuinfo6530#brand_raw; equals the INTEL_XEON_GOLD_6530 alias of the hardware catalog"}
+  sockets: {v: 2, src: "derived:ark6530#Scalability 2S, the largest configuration"}
+  coresPerSocket: {v: 32, src: published:ark6530}
+  threadsPerCore: {v: 2, src: "derived:ark6530#64 threads / 32 cores"}
+  numbering: socket-major-smt-last
+  cpuMHz: {v: 800.000, src: "published:cpuinfo6530#hz_actual 800.0000 MHz"}
+powercap:
+  controlTypes:
+    - name: intel-rapl
+      zones:
+        - repeat: once
+          nameFormat: package-0
+          enabled: {v: 1, src: "assumed:BIOS enables PL1, as on the Cascade Lake corpus capture"}
+          energyUnitNJ: {v: 61035, src: "assumed:ESU 14 in MSR_RAPL_POWER_UNIT, as on the Cascade Lake corpus capture; formula raplcommon#741"}
+          powerUnitUW: {v: 125000, src: "assumed:PU 3, as on the Cascade Lake corpus capture"}
+          constraints: &pkgconstraints
+            - name: long_term
+              powerLimitUW: {v: 270000000, src: "assumed:BIOS default PL1 at the ark6530 TDP of 270 W, as the Cascade Lake corpus PL1 equals the 8260's TDP"}
+              maxPowerUW: {v: 270000000, src: "derived:ark6530#TDP 270 W as THERMAL_SPEC_POWER, which max_power_uw of PL1 reads (raplcommon#105-119)"}
+              timeWindowUS: {v: 999424, src: "assumed:the PL1 window of the Cascade Lake corpus capture"}
+              rejectWrites: {v: "", src: "assumed:PL1 not locked by BIOS"}
+            - name: short_term
+              powerLimitUW: {v: 324000000, src: "assumed:1.2 x PL1, the Cascade Lake corpus PL2/PL1 ratio 198/165"}
+              maxPowerUW: {v: 675000000, src: "assumed:2.5 x TDP, the Cascade Lake corpus MAX_POWER/TDP ratio 413/165"}
+              timeWindowUS: {v: 976, src: "assumed:the PL2 window of the Cascade Lake corpus capture"}
+              rejectWrites: {v: "", src: "assumed:PL2 not locked by BIOS"}
+          children: &dram
+            - nameFormat: dram
+              enabled: {v: 0, src: "assumed:DRAM limiting left disabled by BIOS, as on the Cascade Lake corpus capture"}
+              energyUnitNJ: {v: 61035, src: "derived:raplmsr#356-362 rapl_defaults_spr_server sets no dram_domain_energy_unit, so DRAM takes the package ESU (raplcommon#1016-1019)"}
+              constraints:
+                - {src: "assumed:a disabled DRAM limit rejects writes, as on the Cascade Lake corpus capture (machine.yaml writeRejectingZones)", name: long_term, powerLimitUW: 0, maxPowerUW: 47250000, timeWindowUS: 976, rejectWrites: disabled}
+        # The kernel also creates constraint_N_max_power_uw for psys, but
+        # reading it fails with EINVAL: psys has no POWER_INFO register
+        # (raplmsr#112-116, raplcommon#640). A file whose read fails cannot be
+        # rendered, so maxPowerUW is left out.
+        - repeat: once
+          nameFormat: psys
+          enabled: {v: 0, src: "assumed:BIOS leaves MSR_PLATFORM_POWER_LIMIT at 0, so PL1 enable reads 0"}
+          energyUnitNJ: {v: 1000000000, src: "published:raplmsr#356-362 psys_domain_energy_unit = NANOJOULE_PER_JOULE"}
+          powerUnitUW: {v: 125000, src: "assumed:psys uses the package unit register (raplcommon#994-1019), PU 3 as above"}
+          constraints:
+            - {src: "derived:raplcommon#846-847 a zero MSR_PLATFORM_POWER_LIMIT reads limit 0 and one time unit, 976 us at the assumed TU 10", name: long_term, powerLimitUW: 0, timeWindowUS: 976, rejectWrites: ""}
+            - {src: "derived:raplcommon#846-847 a zero MSR_PLATFORM_POWER_LIMIT reads limit 0 and one time unit, 976 us at the assumed TU 10", name: short_term, powerLimitUW: 0, timeWindowUS: 976, rejectWrites: ""}
+        - repeat: once
+          nameFormat: package-1
+          enabled: {v: 1, src: "assumed:BIOS enables PL1, as on the Cascade Lake corpus capture"}
+          energyUnitNJ: {v: 61035, src: "assumed:ESU 14 in MSR_RAPL_POWER_UNIT, as on the Cascade Lake corpus capture; formula raplcommon#741"}
+          powerUnitUW: {v: 125000, src: "assumed:PU 3, as on the Cascade Lake corpus capture"}
+          constraints: *pkgconstraints
+          children: *dram
+cpufreq:
+  driver: {v: intel_pstate, src: "assumed:intel_pstate binds Intel CPUs with HWP by default (pstate)"}
+  governor: {v: powersave, src: "assumed:intel_pstate active mode default"}
+  availableGovernors: {v: "performance powersave", src: "published:pstate#90-91"}
+  cpuinfoMaxKHz: {v: 4000000, src: "published:ark6530#Max Turbo Frequency 4 GHz"}
+  cpuinfoMinKHz: {v: 800000, src: "assumed:lowest P-state not published; matches the idle 800 MHz reading of cpuinfo6530"}
+  policyGrouping: {v: per-cpu, src: "published:pstate#39-41"}
+physics:
+  cpu:
+    model: analytic
+    maxPkgW: {v: 270, src: "published:ark6530#TDP"}
+    idlePkgW: {v: 40, src: "assumed:bounded by spec01396 and spec01397, Active Idle 125 and 118 W for a whole 2S 32-core Emerald Rapids node"}
+    alphaUtil: {v: 1.15, src: "assumed:simulator default SIM_ALPHA_UTIL"}
+    betaFreq: {v: 1.35, src: "assumed:simulator default SIM_BETA_FREQ"}
+    knee: {v: 0.7, src: "assumed:phys default knee of MeasuredCurveCPUModel"}
+    freqRampMS: {v: 500, src: "assumed:simulator default SIM_DVFS_RAMP_MS"}
+  dram: {wattsPerSocket: {v: 8, src: "assumed:placeholder, no public DRAM figure"}}
+  platform:
+    otherW: {v: 15, src: "assumed:bounded by spec01396 and spec01397: Active Idle 125 and 118 W less 2 x idlePkgW 40 and 2 x DRAM 8 leaves at most 22 W for the platform and PSU losses; 100% load 602 and 583 W less 2 x TDP 250 and 225 W leaves 102 and 133 W for DRAM, platform and PSU losses"}
+  rapl:
+    settleTau: timeWindow
+    floorW: {v: 0, src: "assumed:MIN_POWER is not exposed in sysfs (raplcommon#479-486); only the frequency floor applies"}

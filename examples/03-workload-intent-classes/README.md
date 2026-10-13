@@ -22,7 +22,8 @@ kubectl label node <node-b> joulie.io/managed=true --overwrite
 ```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update
-helm install telemetry prometheus-community/kube-prometheus-stack -f values/prometheus-grafana.yaml
+helm install telemetry prometheus-community/kube-prometheus-stack \
+  -n monitoring --create-namespace -f values/prometheus-grafana.yaml
 ```
 
 - controller manager reconcile interval configured (example `2m`):
@@ -96,8 +97,8 @@ Import dashboard JSON:
 Suggested local access:
 
 ```bash
-kubectl port-forward svc/telemetry-kube-prometheus-prometheus 9090:9090 1>/dev/null &
-kubectl port-forward svc/telemetry-grafana 5000:80 1>/dev/null &
+kubectl -n monitoring port-forward svc/telemetry-kube-prometheus-prometheus 9090:9090 1>/dev/null &
+kubectl -n monitoring port-forward svc/telemetry-grafana 5000:80 1>/dev/null &
 ```
 
 Dashboard highlights:

@@ -515,10 +515,7 @@ func renderCorpusNvidia(p *Profile, text string, labels, gpu map[string]string, 
 	g.Limits.MinW = Fact[float64]{V: first.min, Src: file}
 	g.Limits.MaxW = Fact[float64]{V: first.max, Src: file}
 	g.Limits.DefaultW = Fact[float64]{V: first.limit, Src: "assumed:the capture has no default limit; the current power.limit stands for it"}
-	g.Tools = append(g.Tools, struct {
-		Name    string `json:"name"`
-		Variant string `json:"variant"`
-	}{Name: "nvidia-smi", Variant: "default"})
+	g.Tools = append(g.Tools, GPUTool{Name: "nvidia-smi", Variant: "default"})
 	p.GPUs = g
 	p.Physics.GPU.IdleW = Fact[float64]{V: first.draw, Src: src("nvidia-smi.txt power.draw of GPU 0")}
 	return nil
@@ -608,10 +605,7 @@ func renderCorpusRocm(p *Profile, text string, labels, gpu map[string]string, sr
 	g.Limits.MinW = Fact[float64]{V: minW, Src: file}
 	g.Limits.MaxW = Fact[float64]{V: maxW, Src: file}
 	g.Limits.DefaultW = Fact[float64]{V: capW, Src: "assumed:the capture has no default cap; the current cap stands for it"}
-	g.Tools = append(g.Tools, struct {
-		Name    string `json:"name"`
-		Variant string `json:"variant"`
-	}{Name: "rocm-smi", Variant: "legacy-agent-contract"})
+	g.Tools = append(g.Tools, GPUTool{Name: "rocm-smi", Variant: "legacy-agent-contract"})
 	p.GPUs = g
 	if avg, err := watts(first, avgKey); err == nil {
 		p.Physics.GPU.IdleW = Fact[float64]{V: avg, Src: src("rocm-smi.txt " + avgKey + " of card0")}

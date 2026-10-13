@@ -45,10 +45,13 @@ package main
 //     full socket cap.
 //   - D12: the controller manager's node power query keeps the first series
 //     only, while Kepler returns several per node.
-//   - D13: the simulator's curve-model cap solver never throttles, because
-//     the curve's power is clamped to the cap.
-//   - D14: some hardware catalog curves and minimum power limits match no
-//     public source.
+//   - D13: the simulator's curve-model cap solver never throttled, because
+//     the curve's power was clamped to the cap. Fixed by F2; its regression
+//     tests are in simulator/cmd/simulator/cpupower_regression_test.go.
+//   - D14: some hardware catalog curves and minimum power limits matched no
+//     public source. Fixed in pkg/hwinv/assets/hardware.yaml, which now names
+//     the source of each value or says that none is published; its regression
+//     tests are in pkg/hwinv/catalog_test.go.
 //   - D15: the agent DaemonSet has no tolerations and an amd64-only image, so
 //     a tainted or arm64 node runs no agent.
 //   - D16: listNvidiaDevices parses nvidia-smi's [N/A] limits as 0 W, so the
@@ -172,6 +175,13 @@ type a02Path struct {
 	// gpuVendorFrom names what decided the GPU vendor: an NFD label, or the
 	// command whose success did.
 	gpuVendorFrom string
+	// energyZones names the powercap zones whose counters dvfs.EnergyFiles
+	// sums as CPU energy, and capZones the zones a CPU cap writes through
+	// dvfs.RAPLCapFiles, each in the order the agent lists them; nil when
+	// there are none. Today psys counts as package energy and every
+	// package-X-die-Y zone takes the full socket cap (D11).
+	energyZones []string
+	capZones    []string
 }
 
 const (
@@ -182,53 +192,96 @@ const (
 	nvidiaQueryAgent   = "nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits"
 	amdAcceleratorNFD  = "feature.node.kubernetes.io/pci-1200_1002.present"
 	amdLabellerProduct = "amd.com/gpu.product-name"
+	amdDisplayNFD      = "feature.node.kubernetes.io/pci-0300_1002.present"
+)
+
+// The powercap zone lists of a02Paths, in the order the agent lists them.
+var (
+	a02Packages        = []string{"package-0", "package-1"}
+	a02PackagesAndPsys = []string{"package-0", "psys", "package-1"}
+	a02Dies            = []string{"package-0-die-0", "package-0-die-1", "package-1-die-0", "package-1-die-1"}
 )
 
 // a02Paths is the road each generic profile takes. Each GPU profile runs on
 // one of the CPU hosts, so it publishes that host's CPU block next to its
 // GPU block: the 8-GPU H100 profiles on the Xeon 8260 RAPL host, the 4-GPU
-// SXM profile on the Xeon 6530 RAPL host, the L40S on the energy-only EPYC
-// 9534 host and the MI300X on the energy-only EPYC 9654 host.
+// SXM profile on the Xeon 6530 RAPL host, the L40S and the W7900 on the
+// energy-only EPYC 9534 host and the MI300X on the energy-only EPYC 9654
+// host.
 var a02Paths = map[string]a02Path{
 	"intel-xeon-2s-rapl": {
 		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 165, cpuDriverFamily: "intel_pstate", cpuControl: true, cpuModel: "INTEL_XEON_PLATINUM_8260",
-		gpuVendor: "none",
+		gpuVendor:   "none",
+		energyZones: a02Packages, capZones: a02Packages,
 	},
 	"intel-xeon-6530-2s-rapl": {
 		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 270, cpuDriverFamily: "intel_cpufreq", cpuControl: true, cpuModel: "INTEL_XEON_GOLD_6530",
+		gpuVendor:   "none",
+		energyZones: a02Packages, capZones: a02Packages,
+	},
+	"intel-xeon-2s-psys": {
+		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 270, cpuDriverFamily: "intel_pstate", cpuControl: true, cpuModel: "INTEL_XEON_GOLD_6530",
+		gpuVendor:   "none",
+		energyZones: a02PackagesAndPsys, capZones: a02Packages,
+	},
+	"intel-xeon-2s-multidie": {
+		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 200, cpuDriverFamily: "intel_pstate", cpuControl: true,
+		gpuVendor:   "none",
+		energyZones: a02Dies, capZones: a02Dies,
+	},
+	"intel-xeon6-2s-no-powercap": {
+		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuDriverFamily: "intel_pstate", cpuControl: true,
 		gpuVendor: "none",
+	},
+	"intel-xeon6-2s-tpmi": {
+		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 350, cpuDriverFamily: "intel_pstate", cpuControl: true,
+		gpuVendor:   "none",
+		energyZones: a02PackagesAndPsys, capZones: a02Packages,
 	},
 	"amd-epyc-2s-energy-only": {
 		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9654",
-		gpuVendor: "none",
+		gpuVendor:   "none",
+		energyZones: a02Packages,
 	},
 	"amd-epyc-9534-2s-energy-only": {
 		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9534",
-		gpuVendor: "none",
+		gpuVendor:   "none",
+		energyZones: a02Packages,
 	},
 	"amd-epyc-2s-hsmp": {
 		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "amd-pstate-epp", cpuControl: true, cpuModel: "AMD_EPYC_9655",
-		gpuVendor: "none",
+		gpuVendor:   "none",
+		energyZones: a02Packages,
 	},
 	"nvidia-h100-nvl-8gpu": {
 		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 165, cpuDriverFamily: "intel_pstate", cpuControl: true, cpuModel: "INTEL_XEON_PLATINUM_8260",
 		gpuVendor: "nvidia", gpuCount: 8, gpuCapMinW: 200, gpuCapMaxW: 400, gpuControl: true, gpuModel: "NVIDIA_H100_NVL", gpuVendorFrom: nvidiaPCILabel,
+		energyZones: a02Packages, capZones: a02Packages,
 	},
 	"nvidia-h100-sxm-8gpu": {
 		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 165, cpuDriverFamily: "intel_pstate", cpuControl: true, cpuModel: "INTEL_XEON_PLATINUM_8260",
 		gpuVendor: "nvidia", gpuCount: 8, gpuCapMinW: 200, gpuCapMaxW: 700, gpuControl: true, gpuModel: "NVIDIA_H100_SXM", gpuVendorFrom: nvidiaPCILabel,
+		energyZones: a02Packages, capZones: a02Packages,
 	},
 	"nvidia-h100-sxm-4gpu": {
 		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 270, cpuDriverFamily: "intel_cpufreq", cpuControl: true, cpuModel: "INTEL_XEON_GOLD_6530",
 		gpuVendor: "nvidia", gpuCount: 4, gpuCapMinW: 200, gpuCapMaxW: 700, gpuControl: true, gpuModel: "NVIDIA_H100_SXM", gpuVendorFrom: nvidiaPCILabel,
+		energyZones: a02Packages, capZones: a02Packages,
 	},
 	"nvidia-l40s-4gpu": {
 		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9534",
 		gpuVendor: "nvidia", gpuCount: 4, gpuCapMinW: 100, gpuCapMaxW: 350, gpuControl: true, gpuModel: "NVIDIA_L40S", gpuVendorFrom: nvidiaPCILabel,
+		energyZones: a02Packages,
 	},
 	"amd-instinct-mi300x-8gpu": {
 		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9654",
 		gpuVendor: "amd", gpuCount: 8, gpuVendorFrom: rocmProductProbe,
+		energyZones: a02Packages,
+	},
+	"amd-radeon-pro-w7900-4gpu": {
+		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9534",
+		gpuVendor: "amd", gpuCount: 4, gpuVendorFrom: amdDisplayNFD,
+		energyZones: a02Packages,
 	},
 	"vm-no-powercap": {
 		cpuVendor: "GenuineIntel", cpuSockets: 8,
@@ -238,15 +291,23 @@ var a02Paths = map[string]a02Path{
 
 // A02: each generic profile publishes the NodeHardware status pinned in
 // testdata/hwemu/<profile>.json, and takes its family's road: Intel RAPL
-// gives a capRange of the package TDP (165 W on the 8260, 270 W on the 6530;
-// min 0, since RAPL has no min file) and controls through intel_pstate; the
-// energy-only and HSMP EPYC hosts give no capRange and control through the
-// cpufreq driver; H100 NVL and SXM and L40S give their per-GPU range, with
-// the vendor from the NFD 0302 label; MI300X counts its GPUs from
-// allocatable, has no GPU control and gets its vendor from rocm-smi
-// --showproductname; the VM reads one socket per vCPU and has no control.
-// Every CPU and GPU model string matches its hardware catalog entry, except
-// the VM's CPU and the MI300X, whose inventory fails (D1).
+// gives a capRange of the package TDP (165 W on the 8260, 270 W on the 6530
+// with or without psys, 350 W on the Xeon 6787P through TPMI; min 0, since
+// RAPL has no min file) and controls through intel_pstate or intel_cpufreq;
+// psys, where present, is summed as package energy (D11); the two-die 9282
+// publishes its 200 W per-die PL1 maximum as the per-socket maximum, and a
+// cap writes all of it to each die (D11); the 6787P without powercap gives
+// no capRange and controls through cpufreq (DVFS); the energy-only and HSMP
+// EPYC hosts give no capRange and control through the cpufreq driver; H100
+// NVL and SXM and L40S give their per-GPU range, with the vendor from the
+// NFD 0302 label; MI300X counts its GPUs from allocatable, has no GPU
+// control and gets its vendor from rocm-smi --showproductname; the W7900
+// gets its vendor from the NFD display-class label pci-0300_1002 and, like
+// the MI300X, counts from allocatable with no GPU control; the VM reads one
+// socket per vCPU and has no control. Every CPU and GPU model string matches
+// its hardware catalog entry, except the VM's CPU, the 9282 and the 6787P,
+// which the catalog does not list, and the MI300X and the W7900, whose
+// inventory fails (D1).
 func TestHwemuA02GenericProfilesTakeTheirFamilyPath(t *testing.T) {
 	profiles, err := hwemu.BuiltinProfiles()
 	if err != nil {
@@ -300,11 +361,20 @@ func checkA02Path(t *testing.T, e *emulatedNode, node *corev1.Node, hw HardwareI
 		t.Errorf("cpu vendor=%q sockets=%d driverFamily=%q control=%v, want %q %d %q %v",
 			hw.CPUVendor, hw.CPUSockets, hw.CPUDriverFamily, hw.CPUControl, want.cpuVendor, want.cpuSockets, want.cpuDriverFamily, want.cpuControl)
 	}
+	// The D11 notes below apply only to the rows D11 shapes: a psys zone
+	// among the energy zones, die zones among the cap zones.
+	var psysNote, diesNote string
+	if slices.Contains(want.energyZones, "psys") {
+		psysNote = " (today a top-level psys zone counts as package energy, D11)"
+	}
+	if slices.ContainsFunc(want.capZones, func(z string) bool { return strings.Contains(z, "-die-") }) {
+		diesNote = " (today every package-X-die-Y zone takes the full per-socket cap and publishes its per-die maximum as the per-socket one, D11)"
+	}
 	switch {
 	case want.cpuCapMaxW == 0 && hw.CPUCapKnown:
 		t.Errorf("cpu capRange %v to %v W, want none", hw.CPUCapMinWatts, hw.CPUCapMaxWatts)
 	case want.cpuCapMaxW > 0 && (!hw.CPUCapKnown || hw.CPUCapMaxWatts != want.cpuCapMaxW || hw.CPUCapMinWatts != 0):
-		t.Errorf("cpu capRange known=%v %v to %v W, want 0 to %v W", hw.CPUCapKnown, hw.CPUCapMinWatts, hw.CPUCapMaxWatts, want.cpuCapMaxW)
+		t.Errorf("cpu capRange known=%v %v to %v W, want 0 to %v W%s", hw.CPUCapKnown, hw.CPUCapMinWatts, hw.CPUCapMaxWatts, want.cpuCapMaxW, diesNote)
 	}
 	if hw.CPUModel != want.cpuModel || hw.GPUModel != want.gpuModel {
 		t.Errorf("catalog keys cpu=%q (raw %q) gpu=%q (raw %q), want %q and %q",
@@ -318,6 +388,35 @@ func checkA02Path(t *testing.T, e *emulatedNode, node *corev1.Node, hw HardwareI
 		t.Errorf("gpu capRangePerGpu %v to %v W, want none", hw.GPUCapMinWatts, hw.GPUCapMaxWatts)
 	case want.gpuCapMaxW > 0 && (!hw.GPUCapKnown || hw.GPUCapMinWatts != want.gpuCapMinW || hw.GPUCapMaxWatts != want.gpuCapMaxW):
 		t.Errorf("gpu capRangePerGpu known=%v %v to %v W, want %v to %v W", hw.GPUCapKnown, hw.GPUCapMinWatts, hw.GPUCapMaxWatts, want.gpuCapMinW, want.gpuCapMaxW)
+	}
+
+	energy, err := dvfs.EnergyFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	caps, err := dvfs.RAPLCapFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := zoneNames(t, energy); !slices.Equal(got, want.energyZones) {
+		t.Errorf("dvfs.EnergyFiles sums zones %v, want %v%s", got, want.energyZones, psysNote)
+	}
+	if got := zoneNames(t, caps); !slices.Equal(got, want.capZones) {
+		t.Errorf("a CPU cap writes zones %v, want %v%s", got, want.capZones, diesNote)
+	}
+	// Each of those zones takes the whole per-socket cap: on two dies per
+	// package that is twice the cap per socket (D11). The golden is built
+	// from hw, so the write does not change it.
+	if len(caps) > 0 {
+		const capW = 120.0
+		if _, n, err := applyRAPLPackageCap(hw, capW); err != nil || n != len(caps) {
+			t.Errorf("a %v W cap wrote %d of the %d zones: %v", capW, n, len(caps), err)
+		}
+		for _, f := range caps {
+			if got := readTrimmed(t, f); got != "120000000" {
+				t.Errorf("%s PL1 = %s after a %v W cap, want 120000000%s", filepath.Base(filepath.Dir(f)), got, capW, diesNote)
+			}
+		}
 	}
 
 	switch want.gpuVendorFrom {
@@ -349,6 +448,24 @@ func checkA02Path(t *testing.T, e *emulatedNode, node *corev1.Node, hw HardwareI
 			t.Errorf("without dev/nvidiactl %s ran, so the agent did not take the vendor from %s; commands: %v",
 				nvidiaListProbe, nvidiaPCILabel, e.runner.commands())
 		}
+	case amdDisplayNFD:
+		// The display-class label answers detectGPUVendor before any probe
+		// runs; the inventory still fails (D1), so the count comes from
+		// allocatable.
+		if node.Labels[amdDisplayNFD] != "true" {
+			t.Errorf("node has no %s label: %v", amdDisplayNFD, node.Labels)
+		}
+		for _, probe := range []string{nvidiaListProbe, rocmProductProbe} {
+			if ran, _ := e.runner.ran(probe); ran {
+				t.Errorf("%s ran, so the vendor did not come from %s; commands: %v", probe, amdDisplayNFD, e.runner.commands())
+			}
+		}
+		if _, ok := e.runner.ran(amdInventoryAgent); ok {
+			t.Errorf("%s succeeded, so the count may not come from allocatable", amdInventoryAgent)
+		}
+		if got := allocatableGPUCount(node); got != int64(want.gpuCount) {
+			t.Errorf("allocatable GPUs %d, want %d", got, want.gpuCount)
+		}
 	case rocmProductProbe:
 		ranList, listOK := e.runner.ran(nvidiaListProbe)
 		ranProbe, probeOK := e.runner.ran(rocmProductProbe)
@@ -363,6 +480,17 @@ func checkA02Path(t *testing.T, e *emulatedNode, node *corev1.Node, hw HardwareI
 			t.Errorf("allocatable GPUs %d, want %d", got, want.gpuCount)
 		}
 	}
+}
+
+// zoneNames reads the name file of the powercap zone each of files lies in;
+// nil for no files.
+func zoneNames(t *testing.T, files []string) []string {
+	t.Helper()
+	var names []string
+	for _, f := range files {
+		names = append(names, readTrimmed(t, filepath.Join(filepath.Dir(f), "name")))
+	}
+	return names
 }
 
 // A03: on the two socket Intel host at full load, a 120 W CPU cap writes
@@ -473,6 +601,13 @@ func TestHwemuA03RAPLCapsEachPackage(t *testing.T) {
 // the agent reconcile, which reads the energy files last. The loop asks for a
 // reading every 25 ms and gets one as often as the node keeps up; a slow
 // machine gets as many readings, later.
+//
+// How far ahead it steps (the lead) follows the time the last step took,
+// down as well as up. A lead that only doubled stayed at its 2 s ceiling
+// after one slow step under a loaded full-suite run, so every later reading
+// took 2 s and the 30 settle readings used up the old one-minute limit. The
+// limit is the read count's backstop, not a timing assertion: the settle and
+// hold conditions count readings and simulated time.
 func TestHwemuA04DVFSHoldsTheEnergyOnlyHostAtItsCap(t *testing.T) {
 	n, tree, p := hwemutest.NewNode(t, "amd-epyc-2s-energy-only", func(p *hwemu.Profile) {
 		p.Physics.CPU.FreqRampMS = intFact(50)
@@ -502,7 +637,7 @@ func TestHwemuA04DVFSHoldsTheEnergyOnlyHostAtItsCap(t *testing.T) {
 		tick                   = 25 * time.Millisecond
 		settleFor, holdFor     = 3 * time.Second, time.Second
 		settleReads, holdReads = 30, 10
-		maxLead, giveUp        = 2 * time.Second, time.Minute
+		maxLead, giveUp        = 2 * time.Second, 5 * time.Minute
 	)
 	lead := tick
 	start := time.Now()
@@ -518,13 +653,22 @@ func TestHwemuA04DVFSHoldsTheEnergyOnlyHostAtItsCap(t *testing.T) {
 		if next.Sub(start) > giveUp {
 			t.Fatalf("the controller read %d times in %v; the node cannot keep up", reads, giveUp)
 		}
+		stepStart := time.Now()
 		if err := n.AdvanceTo(next); err != nil {
 			t.Fatal(err)
 		}
-		if time.Now().After(next) {
+		// Step twice as far ahead as this step took, at least one tick
+		// and at most maxLead: up when the machine is loaded, back down
+		// when the load passes.
+		took := time.Since(stepStart)
+		late := time.Now().After(next)
+		if late {
+			took = max(took, lead)
+		}
+		lead = min(max(2*took, tick), maxLead)
+		if late {
 			// The step ended after the moment it stands for: give the
 			// next one more time instead of letting the agent read late.
-			lead = min(2*lead, maxLead)
 			continue
 		}
 		time.Sleep(time.Until(next))
@@ -1179,6 +1323,99 @@ func TestHwemuA16UnsupportedNvidiaLimitsBlockAPercentCap(t *testing.T) {
 	if s := controlStatus(t, dyn, e.name, "gpu"); s["result"] != "blocked" || s["message"] != want {
 		t.Fatalf("gpu control status %v; today a percent cap is blocked with %q (D16)", s, want)
 	}
+}
+
+// A19: on the Radeon PRO W7900 node, whose driver pins every board's cap at
+// 241 W (minimum, maximum, default and current), the agent takes the AMD
+// vendor from the NFD display-class label pci-0300_1002 and runs no probe.
+// Its inventory call fails as on the MI300X (D1), so NodeHardware counts 4
+// GPUs from allocatable, has no capRangePerGpu and no GPU control, and takes
+// the raw model from amd.com/gpu.family with a gpu model not recognized
+// warning (D8), while the labeller's amd.com/gpu.product-name matches the
+// catalog's AMD_RADEON_PRO_W7900. A 200 W cap ends in backend none, result
+// error. With the legacy rocm-smi standing in for an inventory that works,
+// the agent publishes the pinned range, 241 to 241 W, with control available
+// and the Card SKU as the model (D4), and blocks the 200 W cap below the
+// minimum. In both cases every power1_cap stays at 241 W.
+func TestHwemuA19W7900PinnedCapIsNeverWritten(t *testing.T) {
+	const capUW = "241000000"
+	checkCaps := func(t *testing.T, e *emulatedNode, count int) {
+		t.Helper()
+		hwmons := amdgpuHwmonDirs(t, e)
+		if len(hwmons) != count {
+			t.Fatalf("%d amdgpu devices, want %d", len(hwmons), count)
+		}
+		for i, dir := range hwmons {
+			if got := readTrimmed(t, filepath.Join(dir, "power1_cap")); got != capUW {
+				t.Errorf("device %d power1_cap = %s, want it pinned at %s", i, got, capUW)
+			}
+		}
+	}
+
+	t.Run("current rocm-smi", func(t *testing.T) {
+		_, tree, p := hwemutest.NewNode(t, "amd-radeon-pro-w7900-4gpu", nil)
+		e := useEmulatedNode(t, tree, nil)
+		node := e.nodeObject(p)
+		if node.Labels[amdDisplayNFD] != "true" || node.Labels[amdAcceleratorNFD] != "" {
+			t.Fatalf("labels %v: want %s and not %s, or this test proves nothing about the display class", node.Labels, amdDisplayNFD, amdAcceleratorNFD)
+		}
+		hw := discoverHardware(context.Background(), node)
+		for _, probe := range []string{nvidiaListProbe, rocmProductProbe} {
+			if ran, _ := e.runner.ran(probe); ran {
+				t.Errorf("%s ran, so the vendor did not come from %s; commands: %v", probe, amdDisplayNFD, e.runner.commands())
+			}
+		}
+		status := publishedStatusMap(t, node.Name, hw)
+		gpu, _ := status["gpu"].(map[string]any)
+		family := node.Labels["amd.com/gpu.family"]
+		if _, ranged := gpu["capRangePerGpu"]; ranged || gpu["vendor"] != "amd" || gpu["count"] != float64(4) || gpu["controlAvailable"] != false ||
+			gpu["rawModel"] != family || !containsAny(gpu["warnings"], "gpu model not recognized") {
+			t.Fatalf("NodeHardware gpu %v; today inventory fails (D1), so count 4 comes from allocatable with no capRangePerGpu and no control, "+
+				"and rawModel is the amd.com/gpu.family value %q with a gpu model not recognized warning (D8)", gpu, family)
+		}
+		if key, _, ok := loadHardwareCatalog().MatchGPU(node.Labels[amdLabellerProduct]); !ok || key != "AMD_RADEON_PRO_W7900" {
+			t.Errorf("the labeller's %s %q matches catalog key %q (%v), want AMD_RADEON_PRO_W7900: reading it would name the board (D8)",
+				amdLabellerProduct, node.Labels[amdLabellerProduct], key, ok)
+		}
+
+		dyn, err := reconcileEmulated(t, e.controller(t), node, nodeTwinWithGPUCap(e.name, float64Ptr(200), nil))
+		if err != nil {
+			t.Fatalf("reconcileOnce: %v", err)
+		}
+		s := controlStatus(t, dyn, e.name, "gpu")
+		msg, _ := s["message"].(string)
+		if s["backend"] != "none" || s["result"] != "error" || !strings.Contains(msg, "unrecognized arguments: --showpowercap") {
+			t.Fatalf("gpu control status %v; today the inventory call fails argparse on every rocm-smi release (D1)", s)
+		}
+		checkCaps(t, e, p.GPUs.Count.V)
+	})
+
+	t.Run("legacy rocm-smi", func(t *testing.T) {
+		_, tree, p := hwemutest.NewNode(t, "amd-radeon-pro-w7900-4gpu", withLegacyRocmSMI)
+		e := useEmulatedNode(t, tree, nil)
+		node := e.nodeObject(p)
+		hw := discoverHardware(context.Background(), node)
+		sku := strings.Split(p.GPUs.VBIOSVersion.V, "-")[1]
+		if hw.GPUCount != 4 || !hw.GPUCapKnown || hw.GPUCapMinWatts != 241 || hw.GPUCapMaxWatts != 241 || !hw.GPUControl || hw.GPURawModel != sku {
+			t.Fatalf("gpu count %d, cap known %v, %v to %v W, control %v, rawModel %q; want 4 GPUs pinned at 241 to 241 W with control, "+
+				"and today the Card SKU %q as the model (D4)", hw.GPUCount, hw.GPUCapKnown, hw.GPUCapMinWatts, hw.GPUCapMaxWatts, hw.GPUControl, hw.GPURawModel, sku)
+		}
+		dyn, err := reconcileEmulated(t, e.controller(t), node, nodeTwinWithGPUCap(e.name, float64Ptr(200), nil))
+		if err != nil {
+			t.Fatalf("reconcileOnce: %v", err)
+		}
+		s := controlStatus(t, dyn, e.name, "gpu")
+		msg, _ := s["message"].(string)
+		if s["result"] != "blocked" || !strings.Contains(msg, "requested cap 200.0W below min 241.0W") {
+			t.Fatalf("gpu control status %v, want a 200 W cap blocked below the 241 W minimum", s)
+		}
+		for _, c := range e.runner.commands() {
+			if strings.Contains(c, "--setpoweroverdrive") {
+				t.Errorf("the agent ran %q for a blocked cap", c)
+			}
+		}
+		checkCaps(t, e, p.GPUs.Count.V)
+	})
 }
 
 // publishedStatusMap is publishedNodeHardwareStatus decoded.

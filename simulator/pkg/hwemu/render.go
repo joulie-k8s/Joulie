@@ -19,12 +19,14 @@ import (
 // default, since Render does not know the Options a Node will run with.
 const renderSubstep = "100ms"
 
-// renderMeta is state/hwemu.json.
+// renderMeta is state/hwemu.json. ProfileDigest is ensureProfileDigest of
+// the profile, which Ensure compares before it resumes the tree.
 type renderMeta struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Profile       string `json:"profile"`
 	Node          string `json:"node"`
 	Substep       string `json:"substep"`
+	ProfileDigest string `json:"profileDigest"`
 }
 
 // Render writes the tree of one node of profile p under root: sys/ (mounted
@@ -74,6 +76,7 @@ func Render(p *Profile, root string, o RenderOptions) (*Tree, error) {
 	sort.Slice(b.files, func(i, j int) bool { return b.files[i].Rel < b.files[j].Rel })
 	return &Tree{
 		Root:        abs,
+		NodeName:    o.NodeName,
 		SysRoot:     filepath.Join(abs, layout.SysDir),
 		CPUInfoPath: filepath.Join(abs, layout.CPUInfoFile),
 		StateRoot:   filepath.Join(abs, layout.StateDir),
@@ -114,7 +117,11 @@ func renderBase(b *renderBuilder, p *Profile, o RenderOptions) error {
 	if err := b.file(layout.CPUInfoFile, renderCPUInfo(p), layout.OwnerRender, 0o444); err != nil {
 		return err
 	}
-	meta, err := json.Marshal(renderMeta{SchemaVersion: 1, Profile: p.Name, Node: o.NodeName, Substep: renderSubstep})
+	digest, err := ensureProfileDigest(p)
+	if err != nil {
+		return err
+	}
+	meta, err := json.Marshal(renderMeta{SchemaVersion: 1, Profile: p.Name, Node: o.NodeName, Substep: renderSubstep, ProfileDigest: digest})
 	if err != nil {
 		return err
 	}

@@ -2,15 +2,23 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/matbun/joulie/simulator/pkg/workload"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // ---------------------------------------------------------------------------
@@ -284,9 +292,12 @@ func TestExpandedJobRecordsHaveIntentClass(t *testing.T) {
 	}
 }
 
+// v2 renders a performance job's class as a NotIn-eco affinity; v3 writes
+// none (TestWorkloadgenV3HasNoPowerProfileAffinity).
 func TestExpandedJobRecordsHaveConsistentIntentAndAffinity(t *testing.T) {
 	rng := rand.New(rand.NewSource(99))
 	cfg := defaultTestConfig()
+	cfg.SchemaVersion = workload.TraceSchemaV2
 	for i := 0; i < 50; i++ {
 		wl := sampleLogicalWorkload(rng, i+1, float64(i*10), cfg)
 		ord := 0
@@ -322,7 +333,7 @@ func TestWorkloadRecordHasIntentClass(t *testing.T) {
 				Role: "worker", Replicas: 1, CPURequest: 2, MemoryGiB: 4,
 			}},
 		}
-		rec := workloadToRecord(wl)
+		rec := workloadToRecord(wl, generatorConfig{})
 		if rec.IntentClass != cls {
 			t.Fatalf("expected intentClass=%q, got %q", cls, rec.IntentClass)
 		}
@@ -542,8 +553,8 @@ func TestGenerateTraceJobRecordsHaveRequiredFields(t *testing.T) {
 				t.Errorf("job record %d missing required field %q", i, field)
 			}
 		}
-		if r["schemaVersion"] != "v2" {
-			t.Errorf("job record %d: expected schemaVersion=v2, got %v", i, r["schemaVersion"])
+		if r["schemaVersion"] != workload.TraceSchemaV3 {
+			t.Errorf("job record %d: expected schemaVersion=v3, the default, got %v", i, r["schemaVersion"])
 		}
 	}
 }
@@ -1063,7 +1074,7 @@ func TestWorkloadRecordPodsHaveRequests(t *testing.T) {
 	cfg := defaultTestConfig()
 	for i := 0; i < 30; i++ {
 		wl := sampleLogicalWorkload(rng, i+1, float64(i*5), cfg)
-		rec := workloadToRecord(wl)
+		rec := workloadToRecord(wl, cfg)
 		if len(rec.Pods) == 0 {
 			t.Fatalf("workload record for %s has no pods", wl.Type)
 		}
@@ -1309,6 +1320,381 @@ func TestMaxInt(t *testing.T) {
 		got := maxInt(tc.a, tc.b)
 		if got != tc.want {
 			t.Errorf("maxInt(%d, %d) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Trace schema v3, and v2 for the legacy callers
+// ---------------------------------------------------------------------------
+
+// traceModes are both generator modes, with flags that keep a trace small.
+var traceModes = []struct {
+	name string
+	args []string
+}{
+	{"default", []string{"-seed", "42", "-jobs", "60"}},
+	{"diurnal", []string{"-mode", "diurnal", "-seed", "42", "-sim-hours", "2", "-diurnal-peak-rate", "4", "-diurnal-burst-min", "2", "-diurnal-burst-max", "5"}},
+}
+
+// runWorkloadgen runs the command line args, with -out in a temp dir, and
+// returns the trace.
+func runWorkloadgen(t *testing.T, args ...string) []byte {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "trace.jsonl")
+	if err := run(append(append([]string{}, args...), "-out", out)); err != nil {
+		t.Fatalf("workloadgen %s: %v", strings.Join(args, " "), err)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// traceRecords decodes a trace into one map per record, in file order.
+func traceRecords(t *testing.T, trace []byte) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for i, line := range strings.Split(strings.TrimSpace(string(trace)), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("line %d: %v", i+1, err)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// jobsOf returns the trace's type=job records.
+func jobsOf(records []map[string]any) []map[string]any {
+	var jobs []map[string]any
+	for _, r := range records {
+		if r["type"] == workload.TraceRecordJob {
+			jobs = append(jobs, r)
+		}
+	}
+	return jobs
+}
+
+// The goldens were written by workloadgen before v3 existed, with these flags
+// and no -schema-version. Experiments 01 to 03, the standalone sweep and
+// example 10 pin v2, so their traces must not move by a byte.
+func TestWorkloadgenSchemaV2ByteIdentical(t *testing.T) {
+	for _, tc := range []struct {
+		golden string
+		args   []string
+	}{
+		{"legacy-v2-seed42-jobs50.jsonl", []string{"-seed", "42", "-jobs", "50"}},
+		{"legacy-v2-diurnal-seed42-hours1.jsonl", []string{"-mode", "diurnal", "-seed", "42", "-sim-hours", "1", "-diurnal-peak-rate", "4", "-diurnal-burst-min", "2", "-diurnal-burst-max", "5", "-work-scale", "1.5"}},
+	} {
+		t.Run(tc.golden, func(t *testing.T) {
+			want, err := os.ReadFile(filepath.Join("testdata", tc.golden))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := runWorkloadgen(t, append([]string{"-schema-version", workload.TraceSchemaV2}, tc.args...)...)
+			if bytes.Equal(got, want) {
+				return
+			}
+			gotLines, wantLines := strings.Split(string(got), "\n"), strings.Split(string(want), "\n")
+			for i := 0; i < len(gotLines) && i < len(wantLines); i++ {
+				if gotLines[i] != wantLines[i] {
+					t.Fatalf("line %d differs from the golden:\n got  %s\n want %s", i+1, gotLines[i], wantLines[i])
+				}
+			}
+			t.Fatalf("%d lines, golden has %d", len(gotLines), len(wantLines))
+		})
+	}
+	// The flags the legacy callers pass, which the goldens leave at their
+	// defaults, checked by the SHA-256 of the trace the a94f345 binary wrote
+	// with them: example 10, the exp01 sweep, the exp02 and exp03 sweeps, the
+	// v2 rate flags without affinity, the standalone diurnal sweep, diurnal
+	// without affinity or workload records, and the standalone default sweep.
+	for i, tc := range []struct {
+		args   string
+		sha256 string
+	}{
+		{"-jobs 60 -gpu-ratio 0.85 -amd-gpu-ratio 0.35 -mean-inter-arrival-sec 0.08 -min-gpu-request 2 -namespace demo -seed 42 -emit-workload-records=false", "e152e84d775ad65ecde13a41e923967507173188a3b0a55d6e932b53c3e9f67a"},
+		{"-jobs 40 -seed 7 -mean-inter-arrival-sec 3 -perf-ratio 0.2 -compute-bound-perf-boost 2 -gpu-ratio 0 -burst-day-probability 0.5 -burst-mean-jobs 6 -burst-multiplier 3", "172481fb419282347a7a966c2b528ae3729a20c9a1322f426c7ac199c65b4938"},
+		{"-jobs 40 -seed 11 -mean-inter-arrival-sec 4 -perf-ratio 0.4 -compute-bound-perf-boost 1.5 -gpu-ratio 0.7 -gpu-request 2 -burst-day-probability 0.3", "f741470e93595142de45c633a34c14cb435c4e4129bac990d631183cf8521485"},
+		{"-jobs 30 -seed 5 -cpu-work-rate-per-core 2 -gpu-work-rate-per-gpu 3 -no-affinity-only", "c417d086b93d96a57830ea8c8435a8bad0ec092f26787240683403b56975aca0"},
+		{"-mode diurnal -seed 3 -sim-hours 1 -gpu-ratio 0.6 -work-scale 2 -time-scale 30 -base-speed-per-core 1.5 -emit-workload-records=true -diurnal-burst-min 2 -diurnal-burst-max 6 -diurnal-peak-rate 6", "5aa7a5fac9a668a13ebcc3dda853a2ed22e22193a582bb19672ce84ecfa2b8a7"},
+		{"-mode diurnal -seed 9 -sim-hours 1 -no-affinity-only -emit-workload-records=false -min-gpu-request 2 -diurnal-peak-rate 6 -diurnal-burst-min 2 -diurnal-burst-max 5", "922c06b28da7d066b0483260cf6b73bd67aa87a59d4abe728ab3539fc694bfbb"},
+		{"-jobs 40 -seed 13 -mean-inter-arrival-sec 60 -perf-ratio 0.3 -compute-bound-perf-boost 2 -gpu-ratio 0.5 -burst-day-probability 0.5 -burst-mean-jobs 4 -burst-multiplier 2 -dip-day-probability 1 -dip-multiplier 0.2 -emit-workload-records=false -time-scale 60", "2afc3548f5d28131384a2ac4caa17241338390307ff227611881ec2a94c6d92a"},
+	} {
+		t.Run(fmt.Sprintf("callers/%d", i+1), func(t *testing.T) {
+			sum := sha256.Sum256(runWorkloadgen(t, append([]string{"-schema-version", workload.TraceSchemaV2}, strings.Fields(tc.args)...)...))
+			if got := hex.EncodeToString(sum[:]); got != tc.sha256 {
+				t.Fatalf("%s: trace SHA-256 %s, the a94f345 binary wrote %s", tc.args, got, tc.sha256)
+			}
+		})
+	}
+}
+
+// v3 omits sensitivity, so the simulator reads 1: a job that does not say how
+// much a cap slows it is slowed in full. The flags write only the keys given.
+func TestWorkloadgenV3OmitsSensitivity(t *testing.T) {
+	for _, mode := range traceModes {
+		t.Run(mode.name, func(t *testing.T) {
+			trace := runWorkloadgen(t, mode.args...)
+			if bytes.Contains(trace, []byte(`"sensitivity"`)) {
+				t.Fatal(`v3 trace has a "sensitivity" key; it must be absent, not {}`)
+			}
+			for _, tc := range []struct {
+				flags []string
+				want  map[string]any
+			}{
+				{[]string{"-cpu-sensitivity", "0.25"}, map[string]any{"cpu": 0.25}},
+				{[]string{"-gpu-sensitivity", "0"}, map[string]any{"gpu": 0.0}},
+				{[]string{"-cpu-sensitivity", "0.25", "-gpu-sensitivity", "0.75"}, map[string]any{"cpu": 0.25, "gpu": 0.75}},
+			} {
+				jobs := jobsOf(traceRecords(t, runWorkloadgen(t, append(tc.flags, mode.args...)...)))
+				if len(jobs) == 0 {
+					t.Fatal("no job records")
+				}
+				for _, j := range jobs {
+					if got := j["sensitivity"]; !reflect.DeepEqual(got, tc.want) {
+						t.Fatalf("%v: job %v sensitivity = %v, want %v", tc.flags, j["jobId"], got, tc.want)
+					}
+				}
+			}
+		})
+	}
+}
+
+// Every record, job and workload, carries its schema, and a scenario accepts
+// only a v3 trace.
+func TestWorkloadgenV3StampsEveryRecord(t *testing.T) {
+	for _, mode := range traceModes {
+		t.Run(mode.name, func(t *testing.T) {
+			seen := map[any]int{}
+			for i, r := range traceRecords(t, runWorkloadgen(t, mode.args...)) {
+				if r["schemaVersion"] != workload.TraceSchemaV3 {
+					t.Fatalf("record %d (%v): schemaVersion %v, want %s", i+1, r["type"], r["schemaVersion"], workload.TraceSchemaV3)
+				}
+				seen[r["type"]]++
+			}
+			if seen[workload.TraceRecordJob] == 0 || seen[workload.TraceRecordWorkload] == 0 {
+				t.Fatalf("record types %v; want both %s and %s", seen, workload.TraceRecordJob, workload.TraceRecordWorkload)
+			}
+		})
+	}
+}
+
+// loadedJob is what the simulator's loader (loadTraceFileIntoEngine in
+// simulator/cmd/simulator/main.go) takes from a job record, with its
+// defaults: 1 core when the CPU request is missing or not a positive
+// quantity, 1000 CPU units and 0 GPU units when work is missing or not
+// positive, and GPUs from the first of nvidia.com/gpu, amd.com/gpu and gpu.
+type loadedJob struct {
+	cpuCores, gpus     float64
+	cpuUnits, gpuUnits float64
+}
+
+func loadLikeSimulator(t *testing.T, rec map[string]any) loadedJob {
+	t.Helper()
+	j := loadedJob{cpuCores: 1, cpuUnits: 1000}
+	tpl, _ := rec["podTemplate"].(map[string]any)
+	req, _ := tpl["requests"].(map[string]any)
+	if s, ok := req["cpu"].(string); ok {
+		if q, err := resource.ParseQuantity(s); err == nil && q.AsApproximateFloat64() > 0 {
+			j.cpuCores = q.AsApproximateFloat64()
+		}
+	}
+	for _, key := range []string{"nvidia.com/gpu", "amd.com/gpu", "gpu"} {
+		s, ok := req[key].(string)
+		if !ok {
+			continue
+		}
+		q, err := resource.ParseQuantity(s)
+		if n, isInt := q.AsInt64(); err != nil || !isInt || n <= 0 {
+			t.Fatalf("job %v: %s request %q is not a positive integer", rec["jobId"], key, s)
+		} else {
+			j.gpus = float64(n)
+		}
+		break
+	}
+	work, _ := rec["work"].(map[string]any)
+	if v, ok := work["cpuUnits"].(float64); ok && v > 0 {
+		j.cpuUnits = v
+	}
+	if v, ok := work["gpuUnits"].(float64); ok && v > 0 {
+		j.gpuUnits = v
+	}
+	return j
+}
+
+// fullSpeedRates is the simulator's progress rate with no cap, throttle or
+// sharing (advanceJobProgress in simulator/cmd/simulator/main.go): requested
+// cores times base speed for CPU work, max(0.1, GPUs) times base speed for
+// GPU work.
+func fullSpeedRates(j loadedJob, baseSpeed float64) (cpuRate, gpuRate float64) {
+	return j.cpuCores * baseSpeed, math.Max(0.1, j.gpus) * baseSpeed
+}
+
+// checkIdealRuntimes checks that every pod of every workload, CPU and GPU
+// work alike, finishes at full speed after exactly its workload's
+// durationSec, and returns the number of CPU and GPU pods it checked.
+func checkIdealRuntimes(t *testing.T, records []map[string]any, baseSpeed float64) (cpuPods, gpuPods int) {
+	t.Helper()
+	duration := map[string]float64{}
+	for _, r := range records {
+		if r["type"] == workload.TraceRecordWorkload {
+			duration[r["workloadId"].(string)] = r["durationSec"].(float64)
+		}
+	}
+	near := func(a, b float64) bool { return math.Abs(a-b) <= 1e-9*math.Max(1, math.Abs(b)) }
+	for _, rec := range jobsOf(records) {
+		want, ok := duration[rec["workloadId"].(string)]
+		if !ok {
+			t.Fatalf("job %v: no workload record", rec["jobId"])
+		}
+		j := loadLikeSimulator(t, rec)
+		cpuRate, gpuRate := fullSpeedRates(j, baseSpeed)
+		if got := j.cpuUnits / cpuRate; !near(got, want) {
+			t.Errorf("job %v: CPU ideal runtime %v s, durationSec %v s", rec["jobId"], got, want)
+		}
+		cpuPods++
+		if j.gpus == 0 {
+			if j.gpuUnits != 0 {
+				t.Errorf("job %v: GPU units %v without a GPU request", rec["jobId"], j.gpuUnits)
+			}
+			continue
+		}
+		if got := j.gpuUnits / gpuRate; !near(got, want) {
+			t.Errorf("job %v: GPU ideal runtime %v s, durationSec %v s", rec["jobId"], got, want)
+		}
+		gpuPods++
+	}
+	return cpuPods, gpuPods
+}
+
+func TestWorkloadgenV3IdealRuntimeEqualsDuration(t *testing.T) {
+	for _, mode := range traceModes {
+		for _, tc := range []struct {
+			flags     []string
+			baseSpeed float64
+		}{
+			// Unset, the speed is the simulator's SIM_BASE_SPEED_PER_CORE
+			// default, 1.0.
+			{nil, 1.0},
+			{[]string{"-base-speed-per-core", "2.5"}, 2.5},
+		} {
+			t.Run(fmt.Sprintf("%s/base%v", mode.name, tc.baseSpeed), func(t *testing.T) {
+				records := traceRecords(t, runWorkloadgen(t, append(tc.flags, mode.args...)...))
+				cpuPods, gpuPods := checkIdealRuntimes(t, records, tc.baseSpeed)
+				if cpuPods == 0 || gpuPods == 0 {
+					t.Fatalf("checked %d CPU and %d GPU pods; want both", cpuPods, gpuPods)
+				}
+			})
+		}
+	}
+}
+
+// v3 declares the class only as intentClass, which the simulator turns into
+// its placement intent (a NotIn eco affinity in the legacy workload model, the
+// workload-class annotation in v1), so a trace never pins a power profile.
+func TestWorkloadgenV3HasNoPowerProfileAffinity(t *testing.T) {
+	for _, mode := range traceModes {
+		t.Run(mode.name, func(t *testing.T) {
+			trace := runWorkloadgen(t, mode.args...)
+			if bytes.Contains(trace, []byte("joulie.io/power-profile")) {
+				t.Fatal("v3 trace names joulie.io/power-profile")
+			}
+			performance := 0
+			for _, j := range jobsOf(traceRecords(t, trace)) {
+				if j["intentClass"] == workload.ClassPerformance {
+					performance++
+				}
+				if tpl, _ := j["podTemplate"].(map[string]any); tpl["affinity"] != nil {
+					t.Fatalf("job %v has affinity %v", j["jobId"], tpl["affinity"])
+				}
+			}
+			if performance == 0 {
+				t.Fatal("no performance job, so the check proves nothing")
+			}
+		})
+	}
+}
+
+func TestWorkloadgenArrivalWindowAndMaxDuration(t *testing.T) {
+	const maxDuration = 600.0
+	for _, mode := range traceModes {
+		t.Run(mode.name, func(t *testing.T) {
+			base := traceRecords(t, runWorkloadgen(t, mode.args...))
+			last, longest := 0.0, 0.0
+			for _, r := range base {
+				last = math.Max(last, r["submitTimeOffsetSec"].(float64))
+				if r["type"] == workload.TraceRecordWorkload {
+					longest = math.Max(longest, r["durationSec"].(float64))
+				}
+			}
+			window := last / 4
+			if longest <= maxDuration {
+				t.Fatalf("longest durationSec %v; the clamp at %v would prove nothing", longest, maxDuration)
+			}
+
+			got := traceRecords(t, runWorkloadgen(t, append([]string{
+				"-arrival-window-sec", strconv.FormatFloat(window, 'g', -1, 64),
+				"-max-duration-sec", strconv.FormatFloat(maxDuration, 'g', -1, 64),
+			}, mode.args...)...))
+			if len(got) != len(base) {
+				t.Fatalf("%d records, %d without the flags", len(got), len(base))
+			}
+			for i, r := range got {
+				off, baseOff := r["submitTimeOffsetSec"].(float64), base[i]["submitTimeOffsetSec"].(float64)
+				if off > window || math.Abs(off-baseOff*window/last) > 1e-9*window {
+					t.Fatalf("record %d: offset %v, want %v scaled by %v/%v and at most %v", i, off, baseOff, window, last, window)
+				}
+				if r["type"] != workload.TraceRecordWorkload {
+					continue
+				}
+				if d, want := r["durationSec"].(float64), math.Min(base[i]["durationSec"].(float64), maxDuration); d != want {
+					t.Fatalf("record %d: durationSec %v, want %v", i, d, want)
+				}
+			}
+			if off := got[len(got)-1]["submitTimeOffsetSec"].(float64); math.Abs(off-window) > 1e-9*window {
+				t.Fatalf("last arrival at %v, want the window %v", off, window)
+			}
+			// Work is sized from the clamped duration.
+			checkIdealRuntimes(t, got, 1.0)
+
+			// A window past the last arrival keeps the offsets.
+			wide := traceRecords(t, runWorkloadgen(t, append([]string{"-arrival-window-sec", strconv.FormatFloat(4*last, 'g', -1, 64)}, mode.args...)...))
+			for i, r := range wide {
+				if r["submitTimeOffsetSec"] != base[i]["submitTimeOffsetSec"] {
+					t.Fatalf("record %d: offset %v moved from %v under a wide window", i, r["submitTimeOffsetSec"], base[i]["submitTimeOffsetSec"])
+				}
+			}
+		})
+	}
+}
+
+// A flag that shapes only one schema is an error with the other, so a v2 pin
+// never changes output and a v3 trace never loses its ideal runtime.
+func TestWorkloadgenRejectsFlagsOfTheOtherSchema(t *testing.T) {
+	for _, args := range [][]string{
+		{"-schema-version", "v4"},
+		{"-schema-version", "v2", "-cpu-sensitivity", "0.5"},
+		{"-schema-version", "v2", "-gpu-sensitivity", "0.5"},
+		{"-schema-version", "v2", "-arrival-window-sec", "60"},
+		{"-schema-version", "v2", "-max-duration-sec", "60"},
+		{"-cpu-work-rate-per-core", "2"},
+		{"-gpu-work-rate-per-gpu", "2"},
+		{"-work-scale", "2"},
+		{"-base-speed-per-core", "0"},
+		{"-cpu-sensitivity", "1.5"},
+		{"-gpu-sensitivity", "-0.1"},
+		{"-arrival-window-sec", "-1"},
+		{"-max-duration-sec", "-1"},
+	} {
+		out := filepath.Join(t.TempDir(), "trace.jsonl")
+		if err := run(append(args, "-jobs", "1", "-out", out)); err == nil {
+			t.Errorf("%v: no error", args)
+		}
+		if _, err := os.Stat(out); err == nil {
+			t.Errorf("%v: wrote a trace", args)
 		}
 	}
 }

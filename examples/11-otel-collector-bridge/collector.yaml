@@ -1,0 +1,140 @@
+# OpenTelemetry Collector bridge: Kepler v0.12, dcgm-exporter 4.8.4 and ROCm
+# device-metrics-exporter v1.5.2 to the hw.* metrics Joulie's otel node power
+# preset reads.
+#
+# Verified with otel/opentelemetry-collector-contrib:0.162.0 and
+# prom/prometheus:v3.15.0; see README.md for the Prometheus settings and the
+# local check. It needs the contrib distribution: the core one has no
+# transform or groupbyattrs processor.
+
+receivers:
+  prometheus:
+    config:
+      scrape_configs:
+        # Kepler v0.12 DaemonSet from its Helm chart: container port "http"
+        # (28282). Only the RAPL package zone is kept; Kepler sums it over
+        # sockets. Kepler's GPU series are dropped: the GPUs come from
+        # dcgm-exporter and the AMD exporter, and reading both would count
+        # each GPU twice.
+        - job_name: kepler
+          scrape_interval: 15s
+          kubernetes_sd_configs:
+            - role: pod
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name, __meta_kubernetes_pod_container_port_name]
+              regex: kepler;http
+              action: keep
+          metric_relabel_configs:
+            - source_labels: [__name__, zone]
+              regex: kepler_node_cpu_(joules_total|watts);package
+              action: keep
+        # dcgm-exporter 4.8.4 DaemonSet from its Helm chart: container port
+        # "metrics" (9400). Energy is in mJ, power in W.
+        - job_name: dcgm-exporter
+          scrape_interval: 15s
+          kubernetes_sd_configs:
+            - role: pod
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name, __meta_kubernetes_pod_container_port_name]
+              regex: dcgm-exporter;metrics
+              action: keep
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: DCGM_FI_DEV_(TOTAL_ENERGY_CONSUMPTION|POWER_USAGE)
+              action: keep
+        # ROCm device-metrics-exporter v1.5.2 DaemonSet from its Helm chart:
+        # pod label app.kubernetes.io/name=metrics-exporter, container port
+        # 5000, which the chart leaves unnamed. Energy is in uJ and typed as
+        # a gauge; power is in W. gpu_power_usage exists on MI2xx and MI3xx,
+        # gpu_package_power on MI3xx only.
+        - job_name: amd-device-metrics-exporter
+          scrape_interval: 15s
+          kubernetes_sd_configs:
+            - role: pod
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name, __meta_kubernetes_pod_container_port_number]
+              regex: metrics-exporter;5000
+              action: keep
+          metric_relabel_configs:
+            - source_labels: [__name__]
+              regex: gpu_(energy_consumed|power_usage)
+              action: keep
+
+processors:
+  transform/hw:
+    error_mode: ignore
+    metric_statements:
+      # The node: node_name (Kepler), hostname (dcgm-exporter 4.8.3 and
+      # later, and the AMD exporter) or Hostname (dcgm-exporter up to 4.8.2).
+      - statements:
+          - set(datapoint.attributes["k8s.node.name"], datapoint.attributes["node_name"]) where datapoint.attributes["node_name"] != nil
+          - set(datapoint.attributes["k8s.node.name"], datapoint.attributes["hostname"]) where datapoint.attributes["hostname"] != nil
+          - set(datapoint.attributes["k8s.node.name"], datapoint.attributes["Hostname"]) where datapoint.attributes["Hostname"] != nil
+      # One cpu component per node: Kepler reports the package zone summed
+      # over sockets, so there is no per-socket hw.id.
+      - conditions:
+          - IsMatch(metric.name, "^kepler_node_cpu_")
+        statements:
+          - set(datapoint.attributes["hw.type"], "cpu")
+          - set(datapoint.attributes["hw.id"], "cpu")
+          - set(datapoint.attributes["hw.name"], "package")
+      # One gpu component per GPU index, named after the product.
+      - conditions:
+          - IsMatch(metric.name, "^DCGM_FI_DEV_")
+        statements:
+          - set(datapoint.attributes["hw.type"], "gpu")
+          - set(datapoint.attributes["hw.id"], Concat(["gpu", datapoint.attributes["gpu"]], ""))
+          - set(datapoint.attributes["hw.name"], datapoint.attributes["modelName"])
+      # The same for AMD GPUs, by the exporter's gpu_id and card_model.
+      - conditions:
+          - IsMatch(metric.name, "^gpu_(energy_consumed|power_usage)$")
+        statements:
+          - set(datapoint.attributes["hw.type"], "gpu")
+          - set(datapoint.attributes["hw.id"], Concat(["gpu", datapoint.attributes["gpu_id"]], ""))
+          - set(datapoint.attributes["hw.name"], datapoint.attributes["card_model"])
+      # hw.energy and hw.power carry only the hw.* attributes semconv
+      # defines for them; the node moves to the resource below.
+      - statements:
+          - keep_keys(datapoint.attributes, ["k8s.node.name", "hw.id", "hw.type", "hw.name"])
+      # The AMD energy gauge becomes the cumulative, monotonic sum hw.energy
+      # is; the device accumulator only grows.
+      - statements:
+          - convert_gauge_to_sum("cumulative", true) where metric.name == "gpu_energy_consumed"
+          - scale_metric(0.001, "J") where metric.name == "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION"
+          - scale_metric(0.000001, "J") where metric.name == "gpu_energy_consumed"
+          - set(metric.unit, "J") where metric.name == "kepler_node_cpu_joules_total"
+          - set(metric.unit, "W") where metric.name == "kepler_node_cpu_watts" or metric.name == "DCGM_FI_DEV_POWER_USAGE" or metric.name == "gpu_power_usage"
+          - set(metric.name, "hw.energy") where metric.name == "kepler_node_cpu_joules_total" or metric.name == "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION" or metric.name == "gpu_energy_consumed"
+          - set(metric.name, "hw.power") where metric.name == "kepler_node_cpu_watts" or metric.name == "DCGM_FI_DEV_POWER_USAGE" or metric.name == "gpu_power_usage"
+          - set(metric.description, "Energy consumed by the component.") where metric.name == "hw.energy"
+          - set(metric.description, "Instantaneous power consumed by the component.") where metric.name == "hw.power"
+
+  # Drops the receiver's own scrape series (up, scrape_*).
+  filter/hw:
+    error_mode: ignore
+    metric_conditions:
+      - not IsMatch(metric.name, "^hw\\.")
+
+  # One resource per node, carrying k8s.node.name.
+  groupbyattrs/node:
+    keys: [k8s.node.name]
+
+  # service.instance.id becomes the node, so job and instance stay unique per
+  # node even when one exporter reports many nodes (the Joulie simulator
+  # does). Prometheus needs that unique pair to join target_info.
+  transform/instance:
+    error_mode: ignore
+    metric_statements:
+      - set(resource.attributes["service.instance.id"], resource.attributes["k8s.node.name"]) where resource.attributes["k8s.node.name"] != nil
+
+exporters:
+  # Prometheus v3 OTLP receiver (--web.enable-otlp-receiver).
+  otlp_http/prometheus:
+    metrics_endpoint: http://prometheus-operated.monitoring:9090/api/v1/otlp/v1/metrics
+
+service:
+  pipelines:
+    metrics:
+      receivers: [prometheus]
+      processors: [transform/hw, filter/hw, groupbyattrs/node, transform/instance]
+      exporters: [otlp_http/prometheus]

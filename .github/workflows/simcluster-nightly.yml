@@ -1,0 +1,250 @@
+name: simcluster-nightly
+
+# The workload scenarios of the simulated cluster (tests/simcluster/scenarios,
+# scripts/simcluster/scenario.sh). Monday to Saturday: nightly-mixed, one hour
+# of mixed arrivals on the 50-Node nightly spec, and deadlock-visible, a gang
+# that must stall visibly. Sunday: weekly-compare, the nightly workload with
+# Joulie off, on queue_aware_v1 and on the Kepler inputs, one variant per
+# runner on a fresh cluster, then one job that compares them. Each job
+# uploads its run directory (summary.json, the OTLP files, the objects and
+# the logs), kept 14 days.
+#
+# workflow_dispatch works only once this file is on the default branch.
+on:
+  schedule:
+    # 03:17 UTC, off the hour and off simcluster.yml's 03:23.
+    - cron: "17 3 * * 1-6"
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: "Which scenarios to run"
+        type: choice
+        default: nightly
+        options:
+          - nightly
+          - weekly
+
+permissions:
+  contents: read
+
+# One run at a time; a run in progress is never cancelled, so a late nightly
+# still reports.
+concurrency:
+  group: simcluster-nightly
+  cancel-in-progress: false
+
+env:
+  SIMCLUSTER_AIRGAP: "1"
+
+jobs:
+  nightly-mixed:
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '17 3 * * 1-6') ||
+      (github.event_name == 'workflow_dispatch' && inputs.scenarios == 'nightly')
+    runs-on: ubuntu-latest
+    # 60 minutes of arrivals and 20 of drain, plus the cluster and the images.
+    timeout-minutes: 130
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Outside the workspace, as the scripts want it; the runner context is
+      # not available in a job's env, hence GITHUB_ENV.
+      - name: Set the state directory
+        run: echo "SIMCLUSTER_DIR=$RUNNER_TEMP/simcluster/joulie-sim" >>"$GITHUB_ENV"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Read the pinned Helm version
+        id: versions
+        run: echo "helm=$(sed -n 's/^HELM_VERSION=//p' scripts/simcluster/versions.env)" >>"$GITHUB_OUTPUT"
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ steps.versions.outputs.helm }}
+
+      - name: Cache the image tarballs
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/simcluster/*/images
+          key: simcluster-images-${{ hashFiles('scripts/simcluster/versions.env') }}
+
+      - name: nightly-mixed
+        run: make simcluster-scenario SCENARIO=tests/simcluster/scenarios/nightly-mixed.yaml SIMCLUSTER_DIR=$SIMCLUSTER_DIR
+
+      - name: Upload the run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simcluster-nightly-mixed
+          path: ${{ env.SIMCLUSTER_DIR }}/runs/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  deadlock-visible:
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '17 3 * * 1-6') ||
+      (github.event_name == 'workflow_dispatch' && inputs.scenarios == 'nightly')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set the state directory
+        run: echo "SIMCLUSTER_DIR=$RUNNER_TEMP/simcluster/joulie-sim" >>"$GITHUB_ENV"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Read the pinned Helm version
+        id: versions
+        run: echo "helm=$(sed -n 's/^HELM_VERSION=//p' scripts/simcluster/versions.env)" >>"$GITHUB_OUTPUT"
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ steps.versions.outputs.helm }}
+
+      - name: Cache the image tarballs
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/simcluster/*/images
+          key: simcluster-images-${{ hashFiles('scripts/simcluster/versions.env') }}
+
+      # The OTLP check also posts every line of the run to a Collector.
+      - name: deadlock-visible
+        run: make simcluster-scenario SCENARIO=tests/simcluster/scenarios/deadlock-visible.yaml SIMCLUSTER_DIR=$SIMCLUSTER_DIR SIMCLUSTER_VALIDATE_OTLP=1
+
+      - name: Upload the run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simcluster-deadlock-visible
+          path: ${{ env.SIMCLUSTER_DIR }}/runs/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # The weekly run directory is shared by the variant jobs and the
+  # comparison: its name is fixed once, here.
+  weekly-plan:
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '17 3 * * 0') ||
+      (github.event_name == 'workflow_dispatch' && inputs.scenarios == 'weekly')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.name.outputs.run }}
+    steps:
+      - name: Name the run directory
+        id: name
+        run: echo "run=$(date -u +%Y%m%dT%H%M%SZ)-weekly-compare-${GITHUB_SHA::12}" >>"$GITHUB_OUTPUT"
+
+  weekly-compare:
+    needs: weekly-plan
+    runs-on: ubuntu-latest
+    # 60 minutes of arrivals and 20 of drain on a fresh cluster per variant.
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [joulie-off, queue-aware, kepler-compat]
+    name: weekly-compare (${{ matrix.variant }})
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set the state and run directories
+        run: |
+          echo "SIMCLUSTER_DIR=$RUNNER_TEMP/simcluster/joulie-sim" >>"$GITHUB_ENV"
+          echo "SCENARIO_RUN_DIR=$RUNNER_TEMP/simcluster/joulie-sim/runs/${{ needs.weekly-plan.outputs.run }}" >>"$GITHUB_ENV"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Read the pinned Helm version
+        id: versions
+        run: echo "helm=$(sed -n 's/^HELM_VERSION=//p' scripts/simcluster/versions.env)" >>"$GITHUB_OUTPUT"
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ steps.versions.outputs.helm }}
+
+      - name: Cache the image tarballs
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/simcluster/*/images
+          key: simcluster-images-${{ hashFiles('scripts/simcluster/versions.env') }}
+
+      - name: weekly-compare (${{ matrix.variant }})
+        run: >-
+          make simcluster-scenario SCENARIO=tests/simcluster/scenarios/weekly-compare.yaml
+          SIMCLUSTER_DIR=$SIMCLUSTER_DIR SCENARIO_RUN_DIR=$SCENARIO_RUN_DIR
+          SCENARIO_VARIANTS=${{ matrix.variant }}
+
+      # Only this variant's directory: the plan's files at the top are the
+      # same in every variant job, and the comparison job writes its own.
+      - name: Upload the variant
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simcluster-weekly-compare-${{ matrix.variant }}
+          path: ${{ env.SCENARIO_RUN_DIR }}/${{ matrix.variant }}/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  weekly-summarize:
+    needs: [weekly-plan, weekly-compare]
+    if: always() && needs.weekly-plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set the run directory
+        run: echo "RUN_DIR=$RUNNER_TEMP/runs/${{ needs.weekly-plan.outputs.run }}" >>"$GITHUB_ENV"
+
+      # Each variant's artifact into its directory; a variant whose job
+      # failed early has none, and summarize reports it.
+      - name: Download the variants
+        uses: actions/download-artifact@v4
+        with:
+          pattern: simcluster-weekly-compare-*
+          path: ${{ runner.temp }}/variants
+
+      - name: Plan and compare
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          go build -o "$RUNNER_TEMP/bin/" ./simulator/cmd/simscenario ./simulator/cmd/workloadgen
+          "$RUNNER_TEMP/bin/simscenario" plan tests/simcluster/scenarios/weekly-compare.yaml \
+            -out "$RUN_DIR" -workloadgen "$RUNNER_TEMP/bin/workloadgen"
+          for v in joulie-off queue-aware kepler-compat; do
+            src=$RUNNER_TEMP/variants/simcluster-weekly-compare-$v
+            if [ -d "$src" ]; then cp -a "$src/." "$RUN_DIR/$v/"; fi
+          done
+          "$RUNNER_TEMP/bin/simscenario" summarize "$RUN_DIR"
+
+      - name: Upload the comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simcluster-weekly-compare
+          path: ${{ env.RUN_DIR }}/
+          retention-days: 14
+          if-no-files-found: ignore

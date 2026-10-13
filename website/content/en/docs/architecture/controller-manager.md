@@ -34,13 +34,16 @@ All reads (nodes, pods, `NodeHardware`, `NodeTwin`) come from an informer cache 
 
 The reconcile loop and the facility poller run as manager runnables: they start once the cache has synced and, with `LEADER_ELECT=true` (Helm `controllerManager.leaderElection.enabled`), only on the holder of the `joulie-controller-manager` lease. Leader election is off by default, which matches the single replica the chart deploys.
 
-## Facility metrics
+## Measured inputs
 
-The facility metrics poller (`cmd/controller-manager/facility.go`) queries Prometheus for data-center-level signals: ambient temperature, total IT power, and cooling power. These feed into the twin computation for PUE estimation and cooling stress refinement.
+The controller manager is the only component that queries Prometheus. It reads two measured inputs, both as OpenTelemetry metrics that producers push to Prometheus' OTLP receiver ([Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}})):
 
-Disabled by default (`ENABLE_FACILITY_METRICS=false`). When enabled, the poller runs every `FACILITY_POLL_INTERVAL` (default 30s) and computes PUE as `(IT power + cooling power) / IT power`. The ambient temperature is passed to the twin, which uses it to scale cooling stress: the warmer the air, the harder the same watts are to remove. See [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}) for the multiplier.
+- **Node power** (`cmd/controller-manager/nodepower.go`), with `NODE_POWER_SOURCE=prometheus`, the chart default: one grouped query per reconcile, `hw.energy` as a rate or `hw.power`, of the CPU packages and GPUs of every node, keyed by `k8s.node.name`. Each node's sum becomes `NodeTwin.status.powerMeasurement.measuredNodePowerW`.
+- **Facility metrics** (`cmd/controller-manager/facility.go`): the outdoor ambient temperature, IT power and cooling power, and the ambient temperature of each cooling zone, the power of each rack and the inlet temperature of each node. Disabled by default (`ENABLE_FACILITY_METRICS=false`). When enabled, the poller reads them at start and then every `FACILITY_POLL_INTERVAL` (default 30s), and logs PUE as `(IT power + cooling power) / IT power`. The twin uses the most local ambient temperature known to scale cooling stress, since the warmer the air, the harder the same watts are to remove (see [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}) for the multiplier), and the IT or rack power for PSU stress.
 
-See [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md" >}}) for the full list of facility env vars.
+Package `pkg/controller/inputs` builds every query from a preset (`otel` by default; `kepler`, `kepler-legacy`, `legacy` and `custom` for other sources) under the receiver's name translation strategy. At start the controller manager logs one line per input with its query, and `joulie_twin_input_queries_total{input,result}` counts how each query ended.
+
+See [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md#measured-node-power" >}}) for the variables.
 
 ## Control boundary with the agent
 

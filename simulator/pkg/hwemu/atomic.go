@@ -30,9 +30,9 @@ func nodeLeasesWork(dir string) bool {
 	return ok
 }
 
-// nodeSFile is one emulator-owned file (S). It is rewritten by temp file and
-// rename, only when its content changes, so a reader never sees it empty or
-// half written.
+// nodeSFile is one emulator-owned file (S). It is rewritten only when its
+// content changes, in place under a write lease or by temp file and rename
+// (writeS), so a reader never sees it empty or half written.
 type nodeSFile struct {
 	rel  string
 	path string
@@ -179,18 +179,6 @@ func (n *Node) sfile(abs string) *nodeSFile {
 		return nil
 	}
 	return &nodeSFile{rel: n.relPath(abs), path: abs, mode: fi.Mode().Perm(), last: string(b)}
-}
-
-// writeS writes content to f when it differs from what f last held.
-func (n *Node) writeS(f *nodeSFile, content string) error {
-	if f == nil || content == f.last {
-		return nil
-	}
-	if err := nodeWriteAtomic(n.tmpDir, f.path, []byte(content), f.mode); err != nil {
-		return err
-	}
-	f.last = content
-	return nil
 }
 
 // nodeReadWithMTime reads path and the modification time it had before the

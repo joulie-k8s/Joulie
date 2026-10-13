@@ -25,7 +25,8 @@ type Owner int
 const (
 	// OwnerRender files are written once by Render; a later write is reverted.
 	OwnerRender Owner = iota
-	// OwnerEmulator files are rewritten by temp file and rename.
+	// OwnerEmulator files are rewritten by the emulator, in place under a
+	// write lease or by temp file and rename, so a reader never sees one torn.
 	OwnerEmulator
 	// OwnerAgent files are written in place by the agent or a tool and read
 	// back on every step.
@@ -162,9 +163,24 @@ type ToolsManifest struct {
 	Tools         map[string]ToolEntry `json:"tools"`
 }
 
-// ToolEntry is one tool of a ToolsManifest.
+// ToolEntry is one tool of a ToolsManifest. Requires lists, in order, the
+// files the real tool needs before it runs; fakesmi checks them under
+// Env.RootFS (package smi). A tool without requirements marshals without the
+// key, as before requirements existed (L03, L06).
 type ToolEntry struct {
-	Variant string `json:"variant"`
+	Variant  string            `json:"variant"`
+	Requires []ToolRequirement `json:"requires,omitempty"`
+}
+
+// ToolRequirement is one file a real tool needs before it runs, such as the
+// ELF loader of a dynamically linked binary or the interpreter of a script.
+// Paths are absolute in the container; one of them existing satisfies the
+// requirement. When none exists, the tool prints Stderr, if any, and exits
+// with Exit, as the real tool or the kernel's exec would make it.
+type ToolRequirement struct {
+	Paths  []string `json:"paths"`
+	Exit   int      `json:"exit"`
+	Stderr string   `json:"stderr,omitempty"`
 }
 
 func hwmonDir(devDir string, h int) string {

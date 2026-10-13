@@ -1,0 +1,77 @@
+# Two socket Xeon 6 (Granite Rapids) host on a kernel without TPMI RAPL.
+# The MSR driver has no Granite Rapids entry (raplmsr#414-484, 576-578), and
+# the TPMI driver arrived in v6.5 (tpmikernel), so on an older kernel, or one
+# built without it, there is no class/powercap at all and the agent can only
+# throttle through cpufreq. intel-xeon6-2s-tpmi is the same host with it.
+schemaVersion: 1
+name: intel-xeon6-2s-no-powercap
+description: Two socket Xeon 6787P (Granite Rapids), intel_pstate, no powercap (no MSR RAPL match, kernel without the TPMI RAPL driver), so CPU control goes through cpufreq only.
+sources:
+  ark6787p:    {kind: published, ref: "https://www.intel.com/content/www/us/en/products/sku/241844/intel-xeon-6787p-processor-336m-cache-2-00-ghz/specifications.html", note: "86 cores, 172 threads, base 2 GHz, max turbo 3.8 GHz, all core turbo 3.2 GHz, TDP 350 W, 8 memory channels, 2S, Granite Rapids"}
+  hostref:     {kind: published, ref: "https://github.com/skyp0714/prefetchit/blob/1d8f56e78fbff686c86cce8a62161b33e7b99f97/llvm_prefetchit/migration/HOST_REFERENCE.md", note: "CPU: Intel Xeon 6787P, family 6 model 173 stepping 1"}
+  intelfamily: {kind: published, ref: "linux v7.3-rc5 arch/x86/include/asm/intel-family.h:127", note: "INTEL_GRANITERAPIDS_X IFM(6, 0xAD)"}
+  llamabench:  {kind: published, ref: "https://github.com/eunomia-bpf/schedcp/blob/765cdef4d687ff666cbc9f9704f3f5c93ab7a5eb/workloads/llama.cpp/results/llama_scheduler_results.json", note: "line 11, cpu_info \"Intel(R) Xeon(R) 6787P\"; llama.cpp fills cpu_info from the model name line of /proc/cpuinfo (ggml/src/ggml-cpu/ggml-cpu.cpp:300-312 at 90c908d06d82)"}
+  raplmsr:     {kind: published, ref: "linux v7.3-rc5 drivers/powercap/intel_rapl_msr.c:414-484,576-578", note: "no GRANITERAPIDS entry in rapl_ids; without a match no MSR RAPL platform device is registered"}
+  tpmikernel:  {kind: published, ref: "https://github.com/torvalds/linux/commit/9eef7f9da928", note: "drivers/powercap/intel_rapl_tpmi.c is absent at v6.4 and present at v6.5"}
+  pstate:      {kind: published, ref: "linux v7.3-rc5 Documentation/admin-guide/pm/intel_pstate.rst:39-41,90-91", note: "one policy per logical CPU; active mode offers powersave and performance"}
+  perfspect:   {kind: published, ref: "https://github.com/intel/PerfSpect/blob/2a3699e51fb0e9a2b16f8de9bd58b41a2144de6d/cmd/benchmark/benchmark.go", note: "line 399, Reference (Intel 2S Xeon 6787P): total package power MaxPower 679 W, idle MinPower 248.49 W"}
+  spec01503:   {kind: published, ref: "https://www.spec.org/power_ssj2008/results/res2025q1/power_ssj2008-20250310-01503.txt", note: "2x Xeon 6787P, 512 GB: Active Idle 164 W, 100% 960 W"}
+  spec01504:   {kind: published, ref: "https://www.spec.org/power_ssj2008/results/res2025q1/power_ssj2008-20250310-01504.txt", note: "2x Xeon 6787P, 256 GB: Active Idle 157 W, 100% 943 W"}
+  nfd:         {kind: published, ref: "https://kubernetes-sigs.github.io/node-feature-discovery/stable/reference/worker-configuration-reference.html", note: "deviceClassWhitelist [03, 0b40, 12]; deviceLabelFields [class, vendor]"}
+node:
+  nfd: present
+  labels:
+    cpu:
+      src: "assumed:NFD cpu labels for this cpu block (family 6, model 173) with intel_pstate active"
+      values:
+        feature.node.kubernetes.io/cpu-model.vendor_id: Intel
+        feature.node.kubernetes.io/cpu-model.family: "6"
+        feature.node.kubernetes.io/cpu-model.id: "173"
+        feature.node.kubernetes.io/cpu-model.hypervisor: none
+        feature.node.kubernetes.io/cpu-hardware_multithreading: "true"
+        feature.node.kubernetes.io/cpu-pstate.status: active
+        feature.node.kubernetes.io/cpu-pstate.scaling_governor: powersave
+        feature.node.kubernetes.io/cpu-pstate.turbo: "true"
+        kubernetes.io/arch: amd64
+        kubernetes.io/os: linux
+    kernel:
+      src: "assumed:a 6.1 LTS kernel, older than v6.5, so without the TPMI RAPL driver (tpmikernel)"
+      values:
+        feature.node.kubernetes.io/kernel-version.major: "6"
+        feature.node.kubernetes.io/kernel-version.minor: "1"
+  taints: []
+  capacity:
+    cpu: {v: 344, src: "derived:ark6787p#2 sockets x 86 cores x 2 threads"}
+    memoryKi: {v: 1056000000, src: "assumed:a 1 TiB node, 16 x 64 GiB DDR5, less firmware reservations"}
+  reserved: {cpu: "2", memory: 8Gi, src: "assumed:typical kubelet reservation"}
+pci:
+  - {class: "0x030000", vendor: "0x1a03", src: "assumed:BMC VGA on a typical server board"}
+cpu:
+  vendorID: {v: GenuineIntel, src: "assumed:CPUID vendor string of every Intel x86 CPU"}
+  family: {v: 6, src: "published:hostref#family 6"}
+  model: {v: 173, src: "published:hostref#model 173, INTEL_GRANITERAPIDS_X 0xAD in intelfamily"}
+  stepping: {v: 1, src: "published:hostref#stepping 1"}
+  modelName: {v: "Intel(R) Xeon(R) 6787P", src: "published:llamabench#cpu_info"}
+  sockets: {v: 2, src: "derived:ark6787p#Scalability 2S, the largest configuration"}
+  coresPerSocket: {v: 86, src: published:ark6787p}
+  threadsPerCore: {v: 2, src: "derived:ark6787p#172 threads / 86 cores"}
+  numbering: socket-major-smt-last
+  cpuMHz: {v: 800.000, src: "assumed:idle reading at the assumed cpuinfo_min_freq"}
+cpufreq:
+  driver: {v: intel_pstate, src: "assumed:intel_pstate binds Intel CPUs with HWP by default (pstate)"}
+  governor: {v: powersave, src: "assumed:intel_pstate active mode default"}
+  availableGovernors: {v: "performance powersave", src: "published:pstate#90-91"}
+  cpuinfoMaxKHz: {v: 3800000, src: "published:ark6787p#Max Turbo Frequency 3.8 GHz"}
+  cpuinfoMinKHz: {v: 800000, src: "assumed:lowest frequency not published"}
+  policyGrouping: {v: per-cpu, src: "published:pstate#39-41"}
+physics:
+  cpu:
+    model: analytic
+    maxPkgW: {v: 350, src: "published:ark6787p#TDP; perfspect's loaded 679 W over two packages is 340 W each"}
+    idlePkgW: {v: 50, src: "assumed:bounded by spec01503 and spec01504, Active Idle 164 and 157 W for a whole 2S node; perfspect's 248.49 W package idle over two packages (124 W each) cannot fit there and reflects a shallower idle"}
+    alphaUtil: {v: 1.15, src: "assumed:simulator default SIM_ALPHA_UTIL"}
+    betaFreq: {v: 1.35, src: "assumed:simulator default SIM_BETA_FREQ"}
+    knee: {v: 0.7, src: "assumed:phys default knee of MeasuredCurveCPUModel"}
+    freqRampMS: {v: 500, src: "assumed:simulator default SIM_DVFS_RAMP_MS"}
+  dram: {wattsPerSocket: {v: 8, src: "assumed:placeholder, no public DRAM figure"}}
+  platform: {otherW: {v: 0, src: "assumed:no psys zone in this profile"}}

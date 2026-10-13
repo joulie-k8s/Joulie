@@ -2,119 +2,155 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"net/url"
-	"strconv"
 	"sync"
 	"time"
+
+	"github.com/matbun/joulie/pkg/controller/inputs"
 )
 
-// facilityMetrics holds data-center-level metrics fetched from Prometheus.
-// These feed into the twin computation for PUE estimation and cooling stress.
-// When topology is enabled, per-zone ambient temperatures and per-rack power
-// draws are also tracked.
+// facilitySnapshot is one poll's facility readings: the outdoor ambient
+// temperature, IT and cooling power, and the ambient temperature of each
+// cooling zone, the power of each rack and the inlet temperature of each
+// node. A reading the poll could not get is unknown (a false flag, or no map
+// entry), never the value of an earlier poll.
+type facilitySnapshot struct {
+	ambientC      float64
+	ambientKnown  bool
+	itPowerW      float64
+	itKnown       bool
+	coolingPowerW float64
+	coolingKnown  bool
+	zoneAmbientC  map[string]float64 // joulie.io/cooling-zone value -> ambient temp
+	rackPowerW    map[string]float64 // joulie.io/rack value -> measured power draw
+	nodeInletC    map[string]float64 // node name -> inlet temp
+}
+
+// clone copies the maps, so a reconcile never shares them with the poller.
+func (s facilitySnapshot) clone() facilitySnapshot {
+	s.zoneAmbientC = cloneFloatMap(s.zoneAmbientC)
+	s.rackPowerW = cloneFloatMap(s.rackPowerW)
+	s.nodeInletC = cloneFloatMap(s.nodeInletC)
+	return s
+}
+
+func cloneFloatMap(m map[string]float64) map[string]float64 {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]float64, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// facilityMetrics holds the readings of the last facility poll. They feed
+// the twin: the ambient temperatures its cooling stress, the IT and rack
+// power its PSU stress.
 type facilityMetrics struct {
-	mu                sync.RWMutex
-	ambientTempC      float64
-	totalITPowerW     float64
-	coolingPowerW     float64
-	zoneAmbientTempC  map[string]float64 // cooling-zone -> ambient temp
-	rackPowerW        map[string]float64 // rack -> total power draw
-	lastUpdated       time.Time
+	mu          sync.RWMutex
+	readings    facilitySnapshot
+	lastUpdated time.Time
 }
 
 func (f *facilityMetrics) get() (ambientC, itPowerW, coolingW float64) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	return f.ambientTempC, f.totalITPowerW, f.coolingPowerW
+	return f.readings.ambientC, f.readings.itPowerW, f.readings.coolingPowerW
 }
 
+// set stores the three cluster-wide readings, all known.
 func (f *facilityMetrics) set(ambientC, itPowerW, coolingW float64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.ambientTempC = ambientC
-	f.totalITPowerW = itPowerW
-	f.coolingPowerW = coolingW
+	f.readings.ambientC, f.readings.ambientKnown = ambientC, true
+	f.readings.itPowerW, f.readings.itKnown = itPowerW, true
+	f.readings.coolingPowerW, f.readings.coolingKnown = coolingW, true
 	f.lastUpdated = time.Now()
 }
 
-// getZoneAmbient returns the ambient temperature for a specific cooling zone.
-// Falls back to the global ambient if per-zone data is not available.
-func (f *facilityMetrics) getZoneAmbient(zone string) float64 {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	if zone != "" {
-		if v, ok := f.zoneAmbientTempC[zone]; ok {
-			return v
-		}
-	}
-	return f.ambientTempC
-}
-
-// getRackPower returns the total power draw for a specific rack.
-// Returns 0 if per-rack data is not available (caller falls back to cluster-wide).
-func (f *facilityMetrics) getRackPower(rack string) float64 {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	if rack != "" {
-		if v, ok := f.rackPowerW[rack]; ok {
-			return v
-		}
-	}
-	return 0
-}
-
-// setTopology stores per-zone and per-rack metrics.
+// setTopology stores per-zone ambient temperatures and per-rack power.
 func (f *facilityMetrics) setTopology(zoneTemps map[string]float64, rackPower map[string]float64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.zoneAmbientTempC = zoneTemps
-	f.rackPowerW = rackPower
+	f.readings.zoneAmbientC = cloneFloatMap(zoneTemps)
+	f.readings.rackPowerW = cloneFloatMap(rackPower)
 }
 
+// store replaces every reading with those of one poll.
+func (f *facilityMetrics) store(s facilitySnapshot) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.readings = s.clone()
+	f.lastUpdated = time.Now()
+}
+
+// snapshot returns a copy of the readings.
+func (f *facilityMetrics) snapshot() facilitySnapshot {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.readings.clone()
+}
+
+// twinFacility is the facility snapshot the twin reads during a reconcile.
+// reconcileWithCatalogAndFacility stores it before every reconcile.
+var (
+	twinFacilityMu sync.RWMutex
+	twinFacility   facilitySnapshot
+)
+
+func setTwinFacility(s facilitySnapshot) {
+	twinFacilityMu.Lock()
+	defer twinFacilityMu.Unlock()
+	twinFacility = s
+}
+
+func currentTwinFacility() facilitySnapshot {
+	twinFacilityMu.RLock()
+	defer twinFacilityMu.RUnlock()
+	return twinFacility
+}
+
+// facilityConfig is the facility input: ENABLE_FACILITY_METRICS,
+// FACILITY_PROMETHEUS_ADDRESS, FACILITY_POLL_INTERVAL and the queries of
+// FACILITY_PRESET with the FACILITY_*_QUERY overrides.
 type facilityConfig struct {
 	enabled           bool
 	prometheusAddress string
 	pollInterval      time.Duration
-	// Configurable metric names for different Prometheus setups.
-	ambientTempMetric  string
-	itPowerMetric      string
-	coolingPowerMetric string
-	// Topology-aware metric templates. Use %s as placeholder for the
-	// zone or rack label value. Empty = topology metrics disabled.
-	zoneAmbientMetricTemplate string // e.g. datacenter_ambient_temperature_celsius{zone="%s"}
-	rackPowerMetricTemplate   string // e.g. datacenter_rack_power_watts{rack="%s"}
-	// Known zones and racks to query. Populated by the controller manager from node labels.
-	knownZones []string
-	knownRacks []string
+	spec              inputs.FacilitySpec
 }
 
+// defaultFacilityConfig is the configuration with no variable set.
 func defaultFacilityConfig() facilityConfig {
 	return facilityConfig{
-		enabled:            false,
-		prometheusAddress:  "http://prometheus-operated.monitoring:9090",
-		pollInterval:       30 * time.Second,
-		ambientTempMetric:  "datacenter_ambient_temperature_celsius",
-		itPowerMetric:      "datacenter_total_it_power_watts",
-		coolingPowerMetric: "datacenter_cooling_power_watts",
+		enabled:           false,
+		prometheusAddress: defaultFacilityPrometheusAddress,
+		pollInterval:      30 * time.Second,
+		spec:              inputs.FacilitySpec{Preset: inputs.FacilityPresetOTel, Window: inputs.DefaultWindow},
 	}
 }
 
-// facilityMetricsLoop polls Prometheus for data-center-level metrics.
+// defaultFacilityPrometheusAddress is FACILITY_PROMETHEUS_ADDRESS when
+// neither it nor PROMETHEUS_ADDRESS is set.
+const defaultFacilityPrometheusAddress = "http://prometheus-operated.monitoring:9090"
+
+// facilityMetricsLoop polls Prometheus for data-center-level metrics: once
+// at start, so the first reconciles already see them, then every
+// pollInterval.
 //
 // These metrics enable the twin to compute PUE from real facility data
 // rather than heuristic estimates. The scheduler then uses PUE to weight
 // marginal power costs: a pod on a node with PUE 1.8 costs more than
 // one with PUE 1.2.
 //
-// Supported metrics (configurable via env vars):
-//   - datacenter_ambient_temperature_celsius: outside air temp
-//   - datacenter_total_it_power_watts: sum of all IT equipment power
-//   - datacenter_cooling_power_watts: cooling infrastructure power
+// The default preset, otel, reads Joulie's facility, cooling zone and rack
+// metrics and the host ambient temperature (package inputs builds the
+// queries); FACILITY_*_QUERY overrides one input.
 //
 // PUE = (IT power + cooling power) / IT power
 //
@@ -128,7 +164,8 @@ func facilityMetricsLoop(ctx context.Context, fm *facilityMetrics, cfg facilityC
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	log.Printf("[facility] started: interval=%s prometheus=%s", cfg.pollInterval, cfg.prometheusAddress)
+	log.Printf("[facility] started: interval=%s prometheus=%s preset=%s", cfg.pollInterval, cfg.prometheusAddress, facilityPresetName(cfg.spec))
+	fetchFacilityMetrics(ctx, client, fm, cfg)
 
 	ticker := time.NewTicker(cfg.pollInterval)
 	defer ticker.Stop()
@@ -143,99 +180,156 @@ func facilityMetricsLoop(ctx context.Context, fm *facilityMetrics, cfg facilityC
 	}
 }
 
+// facilityPresetName is the preset label of the facility gauges.
+func facilityPresetName(spec inputs.FacilitySpec) string {
+	if spec.Preset == "" {
+		return string(inputs.FacilityPresetOTel)
+	}
+	return string(spec.Preset)
+}
+
+// fetchFacilityMetrics runs one grouped query per facility input and stores
+// what they read in fm, replacing the previous poll. An input whose query
+// fails is unknown until a later poll reads it.
 func fetchFacilityMetrics(ctx context.Context, client *http.Client, fm *facilityMetrics, cfg facilityConfig) {
-	ambientC, err := queryPrometheusScalar(ctx, client, cfg.prometheusAddress, cfg.ambientTempMetric)
+	queries, err := cfg.spec.Queries()
 	if err != nil {
-		log.Printf("[facility] ambient temp query failed: %v", err)
-		ambientC = 0
+		log.Printf("[facility] %v", err)
+		return
+	}
+	preset := facilityPresetName(cfg.spec)
+	c := inputs.Client{Address: cfg.prometheusAddress, HTTP: client}
+
+	var s facilitySnapshot
+	for _, input := range inputs.FacilityInputs() {
+		q, ok := queries[input]
+		if !ok {
+			continue
+		}
+		if q.GroupLabel == "" {
+			v, err := queryPrometheusScalar(ctx, client, cfg.prometheusAddress, q.PromQL)
+			known, result := err == nil, facilitySingleResult(err)
+			recordInputQuery(string(input), result)
+			noteFacilityResult(input, preset, q, result, err)
+			switch input {
+			case inputs.FacilityInputAmbientTemp:
+				s.ambientC, s.ambientKnown = v, known
+			case inputs.FacilityInputITPower:
+				s.itPowerW, s.itKnown = v, known
+			case inputs.FacilityInputCoolingPower:
+				s.coolingPowerW, s.coolingKnown = v, known
+			default:
+				// An override of a keyed input without its key label lands
+				// here; Queries always gives keyed inputs a GroupLabel.
+			}
+			continue
+		}
+		res, err := c.Query(ctx, q.PromQL)
+		m, result, err := readFacilityKeyed(res, err, q.GroupLabel)
+		recordInputQuery(string(input), result)
+		noteFacilityResult(input, preset, q, result, err)
+		switch input {
+		case inputs.FacilityInputZoneAmbientTemp:
+			s.zoneAmbientC = m
+		case inputs.FacilityInputRackPower:
+			s.rackPowerW = m
+		case inputs.FacilityInputNodeInletTemp:
+			s.nodeInletC = m
+		}
 	}
 
-	itPowerW, err := queryPrometheusScalar(ctx, client, cfg.prometheusAddress, cfg.itPowerMetric)
-	if err != nil {
-		log.Printf("[facility] IT power query failed: %v", err)
-		itPowerW = 0
-	}
+	fm.store(s)
+	setFacilityGauge(twinFacilityAmbientTemp, preset, s.ambientC, s.ambientKnown)
+	setFacilityGauge(twinFacilityITPower, preset, s.itPowerW, s.itKnown)
+	setFacilityGauge(twinFacilityCoolingPower, preset, s.coolingPowerW, s.coolingKnown)
 
-	coolingW, err := queryPrometheusScalar(ctx, client, cfg.prometheusAddress, cfg.coolingPowerMetric)
-	if err != nil {
-		log.Printf("[facility] cooling power query failed: %v", err)
-		coolingW = 0
-	}
-
-	fm.set(ambientC, itPowerW, coolingW)
-
-	if itPowerW > 0 {
-		pue := (itPowerW + coolingW) / itPowerW
+	if s.itKnown && s.coolingKnown && s.itPowerW > 0 {
+		pue := (s.itPowerW + s.coolingPowerW) / s.itPowerW
 		log.Printf("[facility] ambient=%.1fC itPower=%.0fW cooling=%.0fW pue=%.3f",
-			ambientC, itPowerW, coolingW, pue)
+			s.ambientC, s.itPowerW, s.coolingPowerW, pue)
 	}
-
-	// Per-zone ambient temperature
-	if cfg.zoneAmbientMetricTemplate != "" && len(cfg.knownZones) > 0 {
-		zoneTemps := make(map[string]float64, len(cfg.knownZones))
-		for _, zone := range cfg.knownZones {
-			query := fmt.Sprintf(cfg.zoneAmbientMetricTemplate, zone)
-			v, err := queryPrometheusScalar(ctx, client, cfg.prometheusAddress, query)
-			if err == nil && v > 0 {
-				zoneTemps[zone] = v
-			}
-		}
-		// Per-rack power
-		rackPower := make(map[string]float64, len(cfg.knownRacks))
-		if cfg.rackPowerMetricTemplate != "" {
-			for _, rack := range cfg.knownRacks {
-				query := fmt.Sprintf(cfg.rackPowerMetricTemplate, rack)
-				v, err := queryPrometheusScalar(ctx, client, cfg.prometheusAddress, query)
-				if err == nil && v > 0 {
-					rackPower[rack] = v
-				}
-			}
-		}
-		fm.setTopology(zoneTemps, rackPower)
-		if len(zoneTemps) > 0 || len(rackPower) > 0 {
-			log.Printf("[facility] topology: zones=%d racks=%d", len(zoneTemps), len(rackPower))
-		}
+	if len(s.zoneAmbientC) > 0 || len(s.rackPowerW) > 0 || len(s.nodeInletC) > 0 {
+		log.Printf("[facility] topology: zones=%d racks=%d inlets=%d", len(s.zoneAmbientC), len(s.rackPowerW), len(s.nodeInletC))
 	}
 }
 
-// queryPrometheusScalar executes a PromQL instant query and returns the scalar result.
+// facilitySingleResult is the result label of a single-value read by
+// queryPrometheusScalar.
+func facilitySingleResult(err error) string {
+	switch {
+	case err == nil:
+		return inputResultSuccess
+	case errors.Is(err, inputs.ErrNoData):
+		return inputResultNoData
+	}
+	return inputResultError
+}
+
+// readFacilityKeyed reads a keyed input: one series per key label value.
+func readFacilityKeyed(res inputs.Result, err error, label string) (map[string]float64, string, error) {
+	if err != nil {
+		return nil, inputResultError, err
+	}
+	m, iss, err := res.ByLabel(label)
+	switch {
+	case err != nil:
+		return nil, inputResultError, err
+	case len(m) == 0:
+		if iss.Series > 0 {
+			return nil, inputResultNoData, fmt.Errorf("%d series, none with a finite value and the label %q", iss.Series, label)
+		}
+		return nil, inputResultNoData, inputs.ErrNoData
+	case iss.MissingLabel > 0 || iss.NonFinite > 0:
+		return m, inputResultPartial, fmt.Errorf("skipped %d series without the label %q and %d not finite", iss.MissingLabel, label, iss.NonFinite)
+	}
+	return m, inputResultSuccess, nil
+}
+
+var (
+	facilityResultMu   sync.Mutex
+	facilityLastResult = map[inputs.FacilityInput]string{}
+)
+
+// noteFacilityResult logs an input whose result changed since the previous
+// poll, so a facility without zone sensors logs that once and not every 30
+// seconds. The first poll counts as following a success.
+func noteFacilityResult(input inputs.FacilityInput, preset string, q inputs.Query, result string, err error) {
+	facilityResultMu.Lock()
+	prev, seen := facilityLastResult[input]
+	facilityLastResult[input] = result
+	facilityResultMu.Unlock()
+	if !seen {
+		prev = inputResultSuccess
+	}
+	if result == prev {
+		return
+	}
+	if result == inputResultSuccess {
+		log.Printf("[facility] %s: reading again", input)
+		return
+	}
+	log.Printf("[facility] %s: %s from %q: %v%s", input, result, q.PromQL, err, facilityHint(input, preset, err))
+}
+
+// facilityHint is a hint for a failed facility query, naming the variable
+// that overrides it.
+func facilityHint(input inputs.FacilityInput, preset string, err error) string {
+	env := facilityQueryEnv(input)
+	if errors.Is(err, inputs.ErrNoData) && preset == string(inputs.FacilityPresetOTel) {
+		return fmt.Sprintf(" (producers that push OTLP need Prometheus' --web.enable-otlp-receiver, and PROMETHEUS_NAME_TRANSLATION must equal its otlp.translation_strategy; %s overrides the query)", env)
+	}
+	return fmt.Sprintf(" (%s overrides the query)", env)
+}
+
+// queryPrometheusScalar runs an instant query that must return exactly one
+// series with a finite value, or a scalar. No series is inputs.ErrNoData;
+// several series, a value that is not finite, or a failed query (an
+// *inputs.Error carrying Prometheus' errorType and message) are errors.
+// fetchFacilityMetrics reads every single-value input through it.
 func queryPrometheusScalar(ctx context.Context, client *http.Client, address, query string) (float64, error) {
-	u := fmt.Sprintf("%s/api/v1/query?query=%s", address, url.QueryEscape(query))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	res, err := inputs.Client{Address: address, HTTP: client}.Query(ctx, query)
 	if err != nil {
 		return 0, err
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, err
-	}
-
-	var result struct {
-		Status string `json:"status"`
-		Data   struct {
-			Result []struct {
-				Value []interface{} `json:"value"`
-			} `json:"result"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return 0, err
-	}
-	if result.Status != "success" || len(result.Data.Result) == 0 {
-		return 0, fmt.Errorf("no data for query %q", query)
-	}
-	if len(result.Data.Result[0].Value) < 2 {
-		return 0, fmt.Errorf("unexpected value format for %q", query)
-	}
-	valStr, ok := result.Data.Result[0].Value[1].(string)
-	if !ok {
-		return 0, fmt.Errorf("value not a string for %q", query)
-	}
-	return strconv.ParseFloat(valStr, 64)
+	return res.Single()
 }

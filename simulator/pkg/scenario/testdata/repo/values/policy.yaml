@@ -1,0 +1,3 @@
+controllerManager:
+  env:
+    POLICY_TYPE: queue_aware_v1

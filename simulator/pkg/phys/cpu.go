@@ -22,9 +22,7 @@ func (m AnalyticCPUModel) Power(s DeviceState) float64 {
 	util := clamp01(s.Utilization)
 	freq := clamp01(s.FreqScale)
 	alpha, beta := m.exponents()
-	activity := 1.0 - 0.30*clamp01(s.MemoryIntensity) - 0.45*clamp01(s.IOIntensity)
-	activity = math.Max(0.35, math.Min(1.0, activity))
-	p := m.IdleW + (m.MaxW-m.IdleW)*math.Pow(clamp01(util*activity), alpha)*math.Pow(freq, beta)
+	p := m.IdleW + (m.MaxW-m.IdleW)*math.Pow(clamp01(util*analyticActivity(s)), alpha)*math.Pow(freq, beta)
 	p *= 1.0 - 0.35*clamp01(s.ThermalThrottle)
 	return p
 }
@@ -33,6 +31,13 @@ func (m AnalyticCPUModel) Power(s DeviceState) float64 {
 // depends on the frequency scale and the workload class, never on the curve.
 func (m AnalyticCPUModel) ThroughputMultiplier(s DeviceState, workloadClass string) float64 {
 	return MeasuredCurveCPUModel{Knee: m.Knee}.ThroughputMultiplier(s, workloadClass)
+}
+
+// analyticActivity is the activity factor of Power: memory and IO intensity
+// lower it, never below 0.35.
+func analyticActivity(s DeviceState) float64 {
+	activity := 1.0 - 0.30*clamp01(s.MemoryIntensity) - 0.45*clamp01(s.IOIntensity)
+	return math.Max(0.35, math.Min(1.0, activity))
 }
 
 func (m AnalyticCPUModel) exponents() (alpha, beta float64) {
@@ -46,16 +51,17 @@ func (m AnalyticCPUModel) exponents() (alpha, beta float64) {
 	return alpha, beta
 }
 
-// solveFreqScaleForCap is the closed form of the analytic branch of the
-// simulator's solveFreqScaleForCap. It inverts the formula without the
-// activity and thermal factors, and the result is not clamped: callers clamp
-// it to [minScale, current scale].
-func (m AnalyticCPUModel) solveFreqScaleForCap(util, capW, minScale float64) float64 {
+// solveFreqScaleForCap is the closed form of Power for the frequency scale:
+// it inverts the formula with the memory and IO activity factor of s, so a
+// node with memory traffic lands on its cap rather than below it, and
+// without the thermal factor. The result is not clamped: callers clamp it to
+// [minScale, current scale].
+func (m AnalyticCPUModel) solveFreqScaleForCap(s DeviceState, util, capW, minScale float64) float64 {
 	if m.MaxW <= m.IdleW {
 		return 1
 	}
 	alpha, beta := m.exponents()
-	den := (m.MaxW - m.IdleW) * math.Pow(util, alpha)
+	den := (m.MaxW - m.IdleW) * math.Pow(clamp01(util*analyticActivity(s)), alpha)
 	if den <= 0 {
 		return 1
 	}
@@ -82,10 +88,10 @@ func SolveFreqScaleForCap(m PowerModel, s DeviceState, capW, minScale float64) f
 	minScale = clamp01(minScale)
 	switch a := m.(type) {
 	case AnalyticCPUModel:
-		return a.solveFreqScaleForCap(util, capW, minScale)
+		return a.solveFreqScaleForCap(s, util, capW, minScale)
 	case *AnalyticCPUModel:
 		if a != nil {
-			return a.solveFreqScaleForCap(util, capW, minScale)
+			return a.solveFreqScaleForCap(s, util, capW, minScale)
 		}
 	}
 	probe := s

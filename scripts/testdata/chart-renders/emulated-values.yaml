@@ -1,0 +1,22 @@
+# Three emulated agents, in the shape "simcluster agents" writes them, for
+# cases C04, C05, C08 and C09 of scripts/verify-chart-renders.sh. Only the
+# NVIDIA node has a /dev/nvidiactl and an extra mount of its own.
+agent:
+  emulated:
+    nodes:
+      - name: epyc-0
+        profile: amd-epyc-2s-energy-only
+      - name: mi300x-0
+        profile: amd-instinct-mi300x-8gpu
+      - name: nvl-0
+        profile: nvidia-h100-nvl-8gpu
+        devNvidiactl: true
+        extraVolumes:
+          - name: driver-stub
+            hostPath:
+              path: /var/lib/joulie-hwemu/lib/driver-stub
+              type: File
+        extraVolumeMounts:
+          - name: driver-stub
+            mountPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1
+            readOnly: true

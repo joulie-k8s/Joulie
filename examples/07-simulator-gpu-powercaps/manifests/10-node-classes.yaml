@@ -10,9 +10,6 @@ classes:
         idleWattsPerGpu: 60
         maxWattsPerGpu: 400
         minCapWattsPerGpu: 200
-        powerModel:
-          alphaUtil: 1.0
-          betaCap: 1.0
         computeGamma: 1.5
         memoryEpsilon: 0.15
         memoryGamma: 0.9

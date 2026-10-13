@@ -1,0 +1,22 @@
+# Nightly cluster: 50 Nodes for the long workload scenarios
+# (tests/simcluster/scenarios/nightly-mixed.yaml, weekly-compare.yaml), which
+# run in production timing. Every builtin hardware family the smoke spec
+# covers, at a size where the policy has a choice within each family, and
+# two VMs with no power telemetry. No baseLoad: a Node idles until a run's
+# jobs load it. The pools are chosen for coverage, not to mirror any
+# deployment.
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: nightly}
+spec:
+  defaults:
+    labels: {joulie.io/managed: "true"}
+  pools:
+  - {name: intel,  profile: intel-xeon-2s-rapl,       count: 16}
+  - {name: epyc,   profile: amd-epyc-2s-energy-only,  count: 12}
+  - {name: hsmp,   profile: amd-epyc-2s-hsmp,         count: 4}
+  - {name: nvl,    profile: nvidia-h100-nvl-8gpu,     count: 8}
+  - {name: sxm,    profile: nvidia-h100-sxm-8gpu,     count: 4}
+  - {name: mi300x, profile: amd-instinct-mi300x-8gpu, count: 4}
+  - {name: vm,     profile: vm-no-powercap,           count: 2}
+  harness: {pools: {}}

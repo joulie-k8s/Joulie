@@ -1,0 +1,145 @@
+# Prometheus for the simulated cluster: the store Joulie reads and the
+# simulator writes into through the OTLP receiver
+# (POST /api/v1/otlp/v1/metrics, Content-Type application/json).
+#
+# The image is referenced by the tag in versions.env (PROMETHEUS_IMAGE).
+# images.sh pulls it by digest, checks the digest and imports it into the k3s
+# containerd by tag, so IfNotPresent never pulls.
+#
+# The configuration is not in this file. up.sh generates it with
+# `simcluster telemetry --part prom-config` for the telemetry mode and timing
+# in use, and applies it as ConfigMap prometheus-config, key prometheus.yml.
+# A ConfigMap here would overwrite the generated one on every apply. The pod
+# starts once that ConfigMap exists; after a change, POST /-/reload
+# (--web.enable-lifecycle) or restart the Deployment.
+#
+# Clients go through the API service proxy:
+# /api/v1/namespaces/monitoring/services/prometheus-operated:9090/proxy/
+# The Service keeps the name prometheus-operator gives it, so the Joulie
+# chart's PROMETHEUS_ADDRESS (http://prometheus-operated.monitoring:9090)
+# resolves here as on a kube-prometheus-stack install.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/part-of: joulie-simcluster
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: joulie-simcluster
+---
+# Read access for kubernetes_sd_configs: the generated configuration
+# discovers the simulator's compatibility exporters and the Joulie Services
+# that carry prometheus.io/scrape.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: joulie-simcluster-prometheus
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: joulie-simcluster
+rules:
+  - apiGroups: [""]
+    resources: [nodes, services, endpoints, pods]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: joulie-simcluster-prometheus
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: joulie-simcluster
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: joulie-simcluster-prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: monitoring
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: joulie-simcluster
+spec:
+  replicas: 1
+  # The TSDB is an emptyDir: two pods would split the samples between two
+  # stores, so the old pod goes before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus
+        app.kubernetes.io/part-of: joulie-simcluster
+    spec:
+      serviceAccountName: prometheus
+      # The infra node is the k3s server, the only Node with a real kubelet.
+      nodeSelector:
+        joulie.io/infra: "true"
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.15.0
+          imagePullPolicy: IfNotPresent
+          # Setting args replaces the image's default command, so the config
+          # and storage paths are repeated here.
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=12h
+            - --web.enable-otlp-receiver
+            - --web.enable-lifecycle
+          ports:
+            - name: web
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: web
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+              readOnly: true
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-operated
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: joulie-simcluster
+spec:
+  selector:
+    app.kubernetes.io/name: prometheus
+  ports:
+    - name: web
+      port: 9090
+      targetPort: web

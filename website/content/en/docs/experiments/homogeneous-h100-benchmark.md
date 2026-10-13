@@ -6,6 +6,8 @@ This page reports results from the homogeneous H100 NVL cluster benchmark experi
 
 - [`experiments/03-homogeneous-h100-benchmark/`](https://github.com/joulie-k8s/Joulie/tree/main/experiments/03-homogeneous-h100-benchmark)
 
+> **Note (2026-10-09):** The results on this page, like the experiment's `REPORT.md` and `REPORT-standalone.md`, were produced with an older simulator model and have not been rerun. Runs made now read the hardware catalog embedded in the simulator, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Model changes]({{< relref "/docs/simulator/model-changes.md" >}}) lists each change and how far it moves the experiment's `configs/benchmark-debug.yaml`.
+
 ## Scope
 
 The benchmark compares three baselines on a **homogeneous GPU cluster** with 33 identical NVIDIA H100 NVL nodes plus 8 CPU-only nodes, running on a real Kind+KWOK Kubernetes cluster:
@@ -32,9 +34,9 @@ Joulie performs better on a homogeneous cluster because every GPU node can accep
 
 | Node prefix | Count | GPU model | GPUs/node | GPU cap range | Host CPU | CPU cores/node |
 |---|---:|---|---:|---|---|---:|
-| kwok-h100-nvl | **33** | NVIDIA H100 NVL | 8 | 200–400 W | AMD EPYC 9654 | 192 |
+| kwok-h100-nvl | **33** | NVIDIA H100 NVL | 8 | 200 to 400 W | AMD EPYC 9654 | 192 |
 
-All 33 GPU nodes are identical — any GPU job can be scheduled on any GPU node without hardware-family constraints.
+All 33 GPU nodes are identical: any GPU job can be scheduled on any GPU node without hardware-family constraints.
 
 #### CPU-only nodes (8 total)
 
@@ -69,7 +71,7 @@ PUE is computed using the **DXCooledAirsideEconomizer** Functional Mock-up Unit 
 The model captures:
 - **Three cooling modes**: free cooling (airside economizer), partial mechanical (economizer + DX compressor), full mechanical (DX only)
 - **Variable-speed DX compressor** with temperature-dependent COP (nominal 3.0)
-- **Airside economizer** with 5–100% outdoor air fraction
+- **Airside economizer** with 5 to 100% outdoor air fraction
 - **Fan affinity laws**: power scales with speed cubed
 - **Room thermal mass**: 50×40×3 m data center room
 
@@ -98,13 +100,13 @@ All baselines run the same workload trace (8,272 jobs) over a fixed ~22 sim-hour
 
 | Baseline | Jobs Completed | Δ vs A | Total Work Done | Δ vs A |
 |---|---:|---:|---:|---:|
-| A (no mgmt) | 88/103 (85%) | — | 71.2% | — |
+| A (no mgmt) | 88/103 (85%) | n/a | 71.2% | n/a |
 | B (static) | 91/103 (88%) | **+3.4%** | 77.6% | **+9.0%** |
 | C (queue-aware) | 94/103 (91%) | **+6.8%** | 83.2% | **+16.9%** |
 
 | Baseline | Avg Concurrent Pods | Max Concurrent Pods | Δ Avg Pods vs A |
 |---|---:|---:|---:|
-| A (no mgmt) | 23.5 | 44 | — |
+| A (no mgmt) | 23.5 | 44 | n/a |
 | B (static) | 13.5 | 15 | **−42.6%** |
 | C (queue-aware) | 10.8 | 12 | **−54.0%** |
 

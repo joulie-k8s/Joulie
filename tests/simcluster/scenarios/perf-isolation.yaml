@@ -1,0 +1,48 @@
+# Performance pods never land on an eco Node. static_partition with
+# STATIC_HP_FRAC=0.5 on the policy spec keeps intel-2, epyc-1 and nvl-1 in
+# eco (tests/simcluster/specs/policy.yaml). Standard jobs run beside the
+# performance ones, and one standard job is pinned to intel-2, so the check
+# is not vacuous: an eco Node existed, ran work and drew energy while the
+# performance pods were placed.
+schemaVersion: 1
+name: perf-isolation
+description: Performance pods avoid eco Nodes while standard work runs on them.
+cluster: {spec: tests/simcluster/specs/policy.yaml, timing: dev}
+seed: 1
+duration: 4m
+drain: 3m
+abortOnRunStalled: 3m
+workload:
+  namespace: sim-workload
+  jobs:
+  - name: perf-cpu
+    class: performance
+    count: 8
+    every: 20s
+    requests: {cpu: "24", memory: 16Gi}
+    runtime: 2m
+    workClass: {cpu: cpu.compute_bound}
+  - name: std-cpu
+    class: standard
+    count: 8
+    every: 20s
+    requests: {cpu: "48", memory: 16Gi}
+    runtime: 2m
+    workClass: {cpu: cpu.compute_bound}
+  - name: std-eco
+    class: standard
+    count: 2
+    every: 60s
+    requests: {cpu: "32", memory: 16Gi}
+    runtime: 2m
+    workClass: {cpu: cpu.compute_bound}
+    nodeSelector: {kubernetes.io/hostname: intel-2}
+joulie:
+  set:
+    controllerManager.env.POLICY_TYPE: static_partition
+    controllerManager.env.STATIC_HP_FRAC: "0.5"
+assertions:
+- {name: placement, type: placement, class: performance, forbidden: [eco], expect: "== 0"}
+- {name: ran-on-eco, type: jobs, class: standard, nodeProfile: eco, expect: {completed: ">= 1"}}
+- {name: eco-energy, type: energy, scope: "node:intel-2", hwType: cpu, expect: "> 0 J"}
+- {name: jobs, type: jobs, expect: {completedFraction: "== 1"}}

@@ -129,11 +129,14 @@ In the codebase, the shared inventory shape lives in:
 
 All three binaries read that embedded copy unless `HARDWARE_CATALOG_PATH`
 (or `SIM_HARDWARE_CATALOG_PATH` for the simulator) points at a file that
-replaces it, which is how the experiments feed in a generated catalog.
+replaces it. The experiments read the embedded copy too: a model their
+inventories name needs an entry, with an alias for each spelling the
+simulator sees (the raw name and its label-safe form), or it falls back to
+the generic model described in section 3.1.
 
 Matching is alias-based and normalization-based:
 
-- raw model names discovered by the agent or provided by simulator labels are normalized,
+- raw model names discovered by the agent or provided by simulator labels are normalized: lower case, `(R)` and `(TM)` dropped in both their raw and label-safe spellings, and a trailing clock such as `CPU @ 2.40GHz` dropped,
 - then matched against canonical CPU/GPU inventory keys and aliases,
 - and unresolved subsystems fall back independently to generic modeling or no-throttle behavior, depending on what capability exists.
 
@@ -165,12 +168,24 @@ Today, hardware is resolved in this order:
 4. apply any explicit simulator overrides from `SIM_NODE_CLASS_CONFIG`,
 5. enrich with measured or proxy catalog data where available.
 
+In the simulator, five hardware facts follow a fixed precedence: the node class key, else the environment variable, else the catalog entry the node matches, else a built-in constant. A value of 0 or less counts as unset.
+
+| Field (class key) | Variable | From the catalog | Constant |
+|---|---|---|---|
+| GPU maximum per GPU (`gpu.maxWattsPerGpu`) | `SIM_GPU_MAX_WATTS_PER_GPU` | `maxBoardPowerW` | 300 W |
+| GPU minimum cap per GPU (`gpu.minCapWattsPerGpu`) | `SIM_GPU_MIN_CAP_WATTS_PER_GPU` | `minBoardPowerW`, else half the maximum | 80 W |
+| CPU socket cap maximum (`cpuSocketCapMaxW`) | `SIM_CPU_SOCKET_CAP_MAX_W` | `tdpW` | 400 W |
+| CPU socket cap minimum (`cpuSocketCapMinW`) | `SIM_CPU_SOCKET_CAP_MIN_W` | the low end of `cTdpRangeW`, else 0.55 x `tdpW` | 120 W |
+| Peak CPU power of the generic model (`pMaxW`) | `SIM_P_MAX_W` | sockets x `tdpW`, for a CPU without a measured curve (assumed: a package draws its TDP at full load) | 420 W |
+
+A catalog minimum above a maximum set by a class or a variable is lowered to that maximum. A measured `node2S` curve was taken on a two-socket server; on another socket count the simulator scales the whole curve, idle included, by sockets/2 (assumed: no public curve of such a node exists). A curve from a node class is used as given.
+
 If the platform is not in the inventory described on this page, the system still works.
 What changes is the level of realism and how much hardware-specific information is available:
 
 - no catalog-backed exact CPU curve,
 - no catalog-backed official/proxy provenance for that platform,
-- no catalog-backed GPU board-power metadata,
+- no catalog-backed GPU board-power metadata, so the simulator caps such a GPU between 80 and 300 W unless a class or a variable says otherwise,
 - therefore more reliance on the generic fallback model and any explicit overrides you provide.
 
 So an unknown platform is treated as a **generic or manually overridden platform**, not as a calibrated inventory entry.
@@ -193,11 +208,13 @@ This is an important design choice: unknown hardware should degrade realism, not
 - **Intel Xeon Gold 6530**: 32 cores, base 2.1 GHz, max turbo 4.0 GHz, TDP 270 W.
 
 ### 4.2 GPUs
-- **NVIDIA H100 NVL**: max TDP 400 W.
-- **NVIDIA H100 SXM**: up to 700 W configurable.
-- **NVIDIA L40S**: max power consumption 350 W.
-- **AMD Instinct MI300X**: maximum TBP 750 W.
-- **AMD Radeon Pro W7900**: total board power 295 W.
+- **NVIDIA H100 NVL**: max TDP 400 W. Minimum cap 200 W: no minimum is published for the NVL, so the catalog uses the 200 W minimum of the [H100 PCIe product brief](https://www.nvidia.com/content/dam/en-zz/Solutions/gtcs22/data-center/h100/PB-11133-001_v01.pdf).
+- **NVIDIA H100 SXM**: up to 700 W configurable. Minimum cap 300 W: the lowest limit NVIDIA set itself, in the DGX-H100 MaxQ configurations of its [MLPerf Inference v4.0 submission](https://github.com/mlcommons/inference_results_v4.0/tree/main/closed/NVIDIA) (`power_limit = 300`). It is not a datasheet minimum.
+- **NVIDIA L40S**: max power consumption 350 W. Minimum cap 200 W, with no public source: the [L40S product brief](https://www.pny.com/File%20Library/Company/Support/product-briefs/data-center-gpus/NVIDIA-L40S-Product-Brief.pdf) gives the minimum as "TBD".
+- **AMD Instinct MI300X**: maximum TBP 750 W. Minimum cap 400 W: [a public study](https://arxiv.org/html/2603.16164v1) found that limits below 400 W were not reliably enforced, and the GPUs drew more power than configured.
+- **AMD Radeon Pro W7900**: total board power 295 W. Minimum cap 200 W, with no public source: AMD publishes no cap range.
+
+The minimum cap is `minBoardPowerW` in the catalog. When a node reports no GPU cap range, the controller manager takes the range from the catalog: the NodeTwin's GPU cap range starts at this minimum, and a percent cap turned into watts is raised to it.
 
 ## 5. CPU physical model
 
@@ -209,9 +226,12 @@ At the CPU side, Joulie combines three layers:
 
 ## 5.1 Exact measured node curves where available
 
-For these catalog-backed platforms, Joulie uses public SPECpower measurements directly as the default node-level CPU power curve:
+For these catalog-backed platforms, Joulie uses public SPECpower_ssj2008 measurements directly as the default node-level CPU power curve. Each curve gives the result it comes from, the test sponsor, the overall ssj_ops/watt that SPEC requires next to any figure taken from a result, and the tuning that sets it apart from a typical Kubernetes node. The results were retrieved on 2026-10-07; section 12.2 links them.
 
 ### 2x AMD EPYC 9654
+
+SPECpower_ssj2008 result 01203 [R18]: ASUSTeK Computer Inc. RS720A-E12-RS12, tested Nov 23 2022, 30,064 overall ssj_ops/watt. The BIOS ran in Efficiency Mode with memory at DDR3600.
+
 - idle: 128 W
 - 10%: 257 W
 - 20%: 300 W
@@ -225,19 +245,27 @@ For these catalog-backed platforms, Joulie uses public SPECpower measurements di
 - 100%: 817 W
 
 ### 2x AMD EPYC 9655
-- idle: 138 W
-- 10%: 297 W
-- 20%: 367 W
-- 30%: 438 W
-- 40%: 515 W
-- 50%: 593 W
-- 60%: 661 W
-- 70%: 710 W
-- 80%: 771 W
-- 90%: 812 W
-- 100%: 861 W
+
+SPECpower_ssj2008 result 01457 [R19]: Lenovo Global Technology ThinkSystem SR645 V3, tested Sep 18 2024, 34,402 overall ssj_ops/watt. The BIOS capped boost at 2.75 GHz (`BoostFmax:2750`), so full load draws less than on a node that boosts to 4.5 GHz.
+
+- idle: 126 W
+- 10%: 273 W
+- 20%: 329 W
+- 30%: 383 W
+- 40%: 433 W
+- 50%: 482 W
+- 60%: 531 W
+- 70%: 579 W
+- 80%: 625 W
+- 90%: 675 W
+- 100%: 751 W
+
+Before this correction the catalog carried result 01464 for this CPU, which is a 2x AMD EPYC 9965 run. The catalog names `AMD_EPYC_9655` as the `proxyFrom` family of the EPYC 9375F, but the simulator builds no proxy curve from it today (`cpuProxyFrom` is only a telemetry label), so this correction leaves 9375F nodes unchanged.
 
 ### 2x AMD EPYC 9965
+
+SPECpower_ssj2008 result 01522 [R20]: ASUSTeK Computer Inc. RS720A-E13-RS8U, tested Apr 7 2025, 44,168 overall ssj_ops/watt. Windows ran the Power Saver power plan.
+
 - idle: 157 W
 - 10%: 265 W
 - 20%: 314 W
@@ -260,6 +288,8 @@ For CPU SKUs without exact public full curves, Joulie uses explicit family-level
 - **Xeon Gold 6530** <- Intel Emerald Rapids proxy derived from official specs and a family-level curve
 
 Proxy entries remain easy to replace once direct measurements become available.
+
+The simulator does not borrow the proxy family's curve: a proxy entry has no curve of its own, so its nodes run the generic model of section 5.6 with a peak of sockets x TDP (assumed: a package draws its TDP at full load). Two EPYC 9534 sockets peak at 560 W, where the generic default is 420 W.
 
 ## 5.3 DVFS and power-cap semantics
 
@@ -303,12 +333,24 @@ This means the same DVFS/RAPL action can produce different throughput changes de
 
 Joulie now treats CPU control as a **time-dependent loop**, not as an instantaneous jump from one idealized state to another.
 
+### How the model advances in time
+
+The model of a node outside emulate mode advances only in a physics step, by a stretch of simulated time `dt`, and nothing else moves it:
+
+- In Kubernetes mode a physics tick steps every modelled node by the wall time since the last tick: every `SIM_PHYSICS_TICK` (default 1s), or on the emulator's tick in emulate mode.
+- In standalone mode each tick steps every node by `SIM_SA_DT` seconds of virtual time.
+- A read (`/telemetry/`, `/otlp/telemetry/`, `/state/`, the gauges) reports the node as the last step left it. A control (`/control/`) only sets the targets that the next step moves toward. How often a node is read therefore never changes what it does.
+
+A step splits `dt` into equal substeps `h` of at most 100 ms in Kubernetes mode, or of at most `SIM_SA_SUBSTEP` (default `SIM_SA_DT`) in standalone mode. Each substep runs, in order: the frequency ramp, the CPU cap lag, the GPU cap lag (section 6.5), the CPU power with the frequency solved down to the cap, the CPU temperature, the GPU power and temperature (section 6.6), the telemetry averages, and the energy. Every lag below is one clamped Euler step per substep: a substep as long as the time constant reaches the target at once, so a short substep is what keeps a long tick from snapping a lag.
+
+The energy a node books is the integral of its **instantaneous** power over the substeps, the CPU and the GPUs apart, not the averaged telemetry signal times `dt`.
+
 ### Cap application dynamics
 
-Requested CPU package caps settle toward their target with a first-order time constant:
+Requested CPU package caps settle toward their target with a first-order time constant, one step per substep `h`:
 
 ```text
-Cap_applied(t + dt) = Cap_applied(t) + (Cap_target - Cap_applied) * dt / tau_cap
+Cap_applied(t + h) = Cap_applied(t) + (Cap_target - Cap_applied(t)) * min(1, h / tau_cap)
 ```
 
 where `tau_cap` is configured by `cpuCapApplyTauMs`.
@@ -338,7 +380,7 @@ CPU temperature is modeled as a first-order lag toward a power-dependent equilib
 
 ```text
 T_target = T_ambient + P_cpu / K_cpu
-T(t + dt) = T(t) + (T_target - T(t)) * dt / tau_thermal
+T(t + h) = T(t) + (T_target - T(t)) * min(1, h / tau_thermal)
 ```
 
 where:
@@ -346,14 +388,19 @@ where:
 - `K_cpu` is represented by `cpuWattsPerDeltaC`
 - `tau_thermal` is represented by `cpuThermalTauMs`
 
-Once temperature crosses the configured thermal thresholds:
+Thermal throttling is opt-in. Two thresholds turn it on, as profile keys or as environment variables:
 
-- `cpuThermalThrottleStartC`
-- `cpuThermalThrottleFullC`
+- `cpuThermalThrottleStartC` (`SIM_CPU_THERMAL_THROTTLE_START_C`)
+- `cpuThermalThrottleFullC` (`SIM_CPU_THERMAL_THROTTLE_FULL_C`)
 
-the simulator applies a thermal-throttle fraction that reduces the effective throughput multiplier.
+Both default to 0, which means off: temperature is still modeled and reported in the telemetry response, but it never reduces throughput. With both set, the throttle fraction rises linearly from 0 at the start temperature to 1 at the full temperature and scales the throughput multiplier down by that fraction. On a measured curve the lower throughput moves the operating point down the curve; the generic fallback model (section 5.6) also lowers power by up to 35%. Set both thresholds, the full one above the start. As environment variables, one is enough: the other takes its former default (85 °C start, 97 °C full), as before throttling became opt-in. As node class keys, a threshold the class leaves unset comes from the base profile, which is 0 unless the environment sets the pair. Setting only one in a class is therefore a known sharp edge:
 
-This gives a more realistic distinction between:
+- A full threshold alone is accepted and throttles linearly from 0 °C. With `cpuThermalThrottleFullC: 97`, an idle 2x AMD EPYC 9654 node on its measured curve (128 W, so 24 + 128 / 8 = 40 °C) already has a throttle fraction of 40 / 97 = 0.41.
+- A start threshold with no full threshold puts the start above the full threshold, which validation rejects: every class in `SIM_NODE_CLASS_CONFIG` is ignored, with only a warning in the log, and all nodes run on the base profile.
+
+Throttling is off by default because the thermal constants are not calibrated per platform. With the default 24 °C ambient and 8 W/°C, a 2x AMD EPYC 9654 node at full load on its measured curve (817 W, section 5.1) heads for 24 + 817 / 8 = 126.1 °C. With the former defaults of 85 and 97 °C it throttled fully: throughput fell to 0 and power to 141 W, the node cooled, recovered and heated again. That limit cycle came from the model, not from the hardware.
+
+When enabled, throttling distinguishes between:
 
 - short capped bursts,
 - long steady capped runs,
@@ -376,9 +423,11 @@ where:
 - `util` is normalized CPU utilization in `[0, 1]`
 - `freqScale` is normalized effective frequency/performance state in `[0, 1]`
 - `BaseIdleW` is idle node CPU power
-- `PMaxW` is uncapped max CPU power
+- `PMaxW` is uncapped max CPU power: sockets x TDP for a catalog CPU without a measured curve, otherwise `SIM_P_MAX_W` (default 420 W); a node class `pMaxW` or the variable wins over the catalog (section 3.1)
 - `AlphaUtil` controls how aggressively power rises with utilization
 - `BetaFreq` controls how aggressively power rises with frequency/performance state
+
+Power never depends on whether Joulie manages the node: at the same utilization and frequency, a node with a throttle target draws what a node without one draws, idle included.
 
 This is the baseline physical model used for generic hardware.
 In practice, it is most visible in the simulator, but it also captures the same high-level assumption the agent relies on: lower effective performance state generally means lower power and lower throughput.
@@ -391,6 +440,14 @@ If simulated package power exceeds the requested CPU cap:
 2. clamps that frequency to the minimum modeled frequency ratio,
 3. recomputes power with the reduced `freqScale`,
 4. marks the node as cap-saturated when even minimum frequency cannot respect the requested cap.
+
+The reported power is the recomputed power, clipped to the cap plus a small headroom (`SIM_RAPL_HEADROOM_W`, default 5 W) but never below the power at the minimum frequency:
+
+```text
+P_reported = min(P, max(cap + headroom, P_at_minimum_frequency))
+```
+
+A cap below that floor cannot pull the package any lower, so a cap-saturated node reports, and books as energy, what it draws at its lowest frequency. With the default model (80 W idle, 420 W maximum, minimum frequency ratio 1200/3200), util 1 under a 100 W cap reports 170.5 W, not 105 W. A measured curve floors the same way, at the curve's own power at the minimum frequency.
 
 So CPU caps reduce power mainly by reducing the effective frequency/performance state.
 
@@ -419,24 +476,6 @@ So in the fallback model:
 - lower `freqScale` lowers power,
 - and lower `freqScale` also reduces throughput according to workload class.
 
-## 5.7 CPU idle power management (C-states)
-
-On managed nodes (where the agent has set a DVFS throttle), the simulator models aggressive CPU C-state entry (C6/C10) at low utilization.
-
-When a managed node has CPU utilization below 20%, the simulator reduces idle power by up to 50%, scaling linearly with the idle fraction:
-
-```text
-if throttlePct > 0 and util < 0.20:
-    idleFrac = 1 - util / 0.20
-    cstateReduction = 0.50 * idleFrac
-    P_cpu = P_cpu * (1 - cstateReduction)
-    P_cpu = max(20, P_cpu)
-```
-
-This models the real hardware behavior where cores on lightly-loaded nodes can enter deep sleep states (C6, C10) that significantly reduce package power. The key distinction is that only Joulie-managed nodes benefit from this: the agent's DVFS policy enables the OS to aggressively enter deep C-states, while unmanaged nodes (baseline without Joulie) remain at full idle power because their power governor is not optimized for idle efficiency.
-
-The 20W floor prevents unrealistically low power values. In practice, even in the deepest sleep state, platform power (memory controllers, PCH, fans) prevents the package from reaching zero.
-
 ## 6. GPU physical model
 
 At the GPU side, Joulie models both:
@@ -449,6 +488,8 @@ Joulie models GPUs **per physical GPU device** on the node.
 A node-level "GPU profile" is implemented by applying the same per-device power cap to every GPU on the node.
 
 This is the simplest robust strategy for heterogeneous clusters and matches the underlying vendor APIs well.
+
+The simulator distributes the node-average GPU utilization across the devices rather than giving every device the average: as many devices as the average needs run at the utilization that gives it, and the rest sit at zero. A device never draws less than its idle power, whatever its cap: a power limit caps the active draw, and the model has no deeper idle state for capped devices.
 
 ## 6.2 Vendor APIs used by the real agent
 
@@ -517,33 +558,19 @@ and a thermal state with:
 - `gpu.thermalThrottleStartC`
 - `gpu.thermalThrottleFullC`
 
-Temperature evolves toward a power-dependent equilibrium, and once the modeled GPU temperature crosses the configured thresholds the simulator applies an additional thermal-throttle factor to throughput.
+Temperature evolves toward a power-dependent equilibrium. Thermal throttling is opt-in, as for CPUs (section 5.5): `gpu.thermalThrottleStartC` and `gpu.thermalThrottleFullC` (`SIM_GPU_THERMAL_THROTTLE_START_C`, `SIM_GPU_THERMAL_THROTTLE_FULL_C`) default to 0, which means off. With the default 24 °C ambient and 12 W/°C, a 750 W board running compute-bound work draws about 720 W and heads for 24 + 720 / 12 = 84 °C, above the former 82 °C default start.
 
-This keeps the simulator honest about two things that often get confused in experiments:
+Set both thresholds, as for CPUs. As environment variables one is enough, and the other takes its former default (82 °C start, 92 °C full). As node class keys, a threshold the class leaves unset comes from the base profile. A class full threshold alone then throttles linearly from 0 °C (an idle 30 W board at 26.5 °C has a fraction of 26.5 / 92 = 0.29 with `gpu.thermalThrottleFullC: 92`). A class start threshold alone is rejected as section 5.5 describes, but only for a profile with GPUs, because validation checks the GPU keys only when `gpu.count` is above 0: a class whose profile ends up with GPUs, from its own `gpu.count` or from `SIM_GPU_COUNT`, makes every class in `SIM_NODE_CLASS_CONFIG` ignored. With no GPU count the start threshold is accepted and throttling stays off.
 
-- a device can be *within cap* and still lose performance because of thermal pressure
-- a telemetry trace can look smoother and slower-moving than the underlying internal power changes because exported power is averaged
+With both thresholds set, the throttle fraction rises linearly between them and scales down the throughput a device reports (the GPU `perfMultiplier` of the telemetry response) when its cap binds. A device running below its cap keeps its full throughput whatever its temperature, because the throughput model returns 1 before it applies the thermal factor. Job progress does not use the GPU fraction yet: the workload engine passes the node's CPU throttle fraction to the GPU throughput model, so GPU thresholds alone never slow a GPU job, and CPU thresholds slow the GPU jobs whose cap binds.
 
-## 6.7 GPU idle power management (D3cold)
+The telemetry window keeps the simulator honest about something that often gets confused in experiments: a telemetry trace can look smoother and slower-moving than the underlying internal power changes because exported power is averaged.
 
-On managed eco-profile nodes, the simulator models GPU deep idle power states (D3cold via NVML).
-
-When a GPU device is managed (power cap set below maximum) and has no active work (utilization near zero), the simulator reduces idle power by 90%:
-
-```text
-if capWatts < maxCapWatts * 0.99 and utilization < 0.01:
-    idleFloor = idleWattsPerGPU * 0.10
-```
-
-This models the real hardware behavior where the agent can activate D3cold or similar deep power states on GPUs that have no active work. On a multi-GPU node where only some GPUs are active, the idle GPUs can enter deep sleep while the active ones continue at full power.
-
-The simulator also distributes node-average GPU utilization across individual devices rather than applying a uniform average to all GPUs. Active GPUs run at their true utilization while idle GPUs sit at zero. This correctly models per-device idle power management and prevents the average-utilization approach from underestimating the savings on nodes with mixed active/idle GPUs.
-
-Unmanaged GPUs (cap equal to maximum, i.e., no Joulie control) remain at their full idle power level.
-
-## 6.8 Generic fallback GPU model
+## 6.7 Generic fallback GPU model
 
 When a GPU platform is not represented by a catalog entry, Joulie falls back to the generic GPU model configured through the base profile.
+
+Its board power range is `SIM_GPU_MIN_CAP_WATTS_PER_GPU` to `SIM_GPU_MAX_WATTS_PER_GPU`, 80 to 300 W by default. A catalog GPU uses the same equations with its own board power range from the catalog, unless a node class or a variable sets it (section 3.1). The former `gpu.powerModel` parameters (`alphaUtil`, `betaCap`) are removed: no equation below read them.
 
 ### Natural power envelope
 
@@ -567,13 +594,13 @@ This captures the idea that memory-bound GPU jobs may draw well below max board 
 
 ### Cap to power
 
-Requested GPU power cap is then applied as a ceiling:
+Requested GPU power cap is then applied as a ceiling, and the board's idle power as a floor:
 
 ```text
-P_gpu = min(P_nat, capWattsPerGpu)
+P_gpu = max(IdleW, min(P_nat, capWattsPerGpu))
 ```
 
-with clamping to modeled minimum/maximum device limits.
+A requested cap is first clamped to the board power range (`SIM_GPU_MIN_CAP_WATTS_PER_GPU` to `SIM_GPU_MAX_WATTS_PER_GPU`, or the catalog range). The idle floor is the only floor: a power limit caps the active draw and has no deeper idle state, so a board never draws less than `IdleW`, whatever its cap.
 
 ### Cap to slowdown
 
@@ -768,13 +795,13 @@ The list is intentionally grouped by role:
 - [R18] SPECpower result for 2x AMD EPYC 9654.  
   <https://www.spec.org/power_ssj2008/results/res2022q4/power_ssj2008-20221204-01203.html>
 - [R19] SPECpower result for 2x AMD EPYC 9655.  
-  <https://www.spec.org/power_ssj2008/results/res2024q4/power_ssj2008-20241007-01464.html>
+  <https://www.spec.org/power_ssj2008/results/res2024q4/power_ssj2008-20240923-01457.html>
 - [R20] SPECpower result for 2x AMD EPYC 9965.  
   <https://www.spec.org/power_ssj2008/results/res2025q2/power_ssj2008-20250407-01522.html>
 - [R21] SPECpower_ssj2008 results repository index.  
   <https://www.spec.org/power_ssj2008/results/>
 
-These SPECpower pages provide the detailed load-to-power points used for the measured node-level CPU curves currently encoded in the simulator catalog.
+These SPECpower pages provide the detailed load-to-power points used for the measured node-level CPU curves currently encoded in the simulator catalog. Each page links the full disclosure (`.txt`), which holds the BIOS and operating system tuning quoted in section 5.1. All three were retrieved on 2026-10-07.
 
 ### 12.3 Public GPU power/performance and measurement literature
 

@@ -1,0 +1,14 @@
+# Joulie values the smoke run adds on top of values/simcluster.yaml.
+#
+# Every Node runs in performance (STATIC_HP_FRAC=1) with CPU and GPU
+# performance caps at 80 % of the maximum, so every managed Node has a cap
+# planned from the first reconcile; the run then upgrades both to 50 % in one
+# helm upgrade and checks that the caps and the measured power follow. On GPU
+# Nodes the controller sets no CPU percent cap, only the GPU one
+# (cmd/controller-manager/main.go, "Skip CPU cap on GPU nodes").
+controllerManager:
+  env:
+    POLICY_TYPE: static_partition
+    STATIC_HP_FRAC: "1"
+    CPU_PERFORMANCE_CAP_PCT_OF_MAX: "80"
+    GPU_PERFORMANCE_CAP_PCT_OF_MAX: "80"

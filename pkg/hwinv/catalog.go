@@ -243,8 +243,25 @@ func normalizeName(raw string) string {
 		"/", " ",
 		",", " ",
 	).Replace(s)
-	s = whitespaceRE.ReplaceAllString(s, " ")
-	return strings.TrimSpace(s)
+	// A label-safe spelling turns "(R)" and "(TM)" into "-R-" and "-TM-", which
+	// leave lone "r" and "tm" tokens; drop them so that spelling matches too.
+	tokens := strings.Fields(s)
+	kept := tokens[:0]
+	for _, tok := range tokens {
+		if tok != "r" && tok != "tm" {
+			kept = append(kept, tok)
+		}
+	}
+	// It also turns " CPU @ 2.40GHz" into "-CPU---2.40GHz", which the
+	// suffix pattern above, anchored on "@", misses: drop a trailing clock
+	// token and the "cpu" before it.
+	if n := len(kept); n > 0 && cpuClockTokenRE.MatchString(kept[n-1]) {
+		kept = kept[:n-1]
+		if n := len(kept); n > 0 && kept[n-1] == "cpu" {
+			kept = kept[:n-1]
+		}
+	}
+	return strings.Join(kept, " ")
 }
 
 var whitespaceRE = regexp.MustCompile(`\s+`)
@@ -252,6 +269,9 @@ var whitespaceRE = regexp.MustCompile(`\s+`)
 // cpuClockSuffixRE matches a trailing " cpu @ 2.10ghz", with or without the
 // "cpu" word.
 var cpuClockSuffixRE = regexp.MustCompile(`(?:\s+cpu)?\s+@\s*[0-9.]+\s*[gm]hz\s*$`)
+
+// cpuClockTokenRE matches a clock speed token such as "2.40ghz".
+var cpuClockTokenRE = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?[gm]hz$`)
 
 func ParseIntString(raw string) int {
 	n, _ := strconv.Atoi(strings.TrimSpace(raw))

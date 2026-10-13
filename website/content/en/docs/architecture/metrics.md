@@ -108,6 +108,27 @@ These two gauges are new in v0.2.2 and have no `joulie_operator_*` alias. Both a
 
 `joulie_policy_node_compute_density{node,component}` and its alias `joulie_operator_node_compute_density` were removed in v0.2.2, together with the compute-density ordering that used them. The density values had no defined meaning and ranked many-core CPU-only nodes above GPU nodes; performance slots are now split across hardware families instead.
 
+## Twin input metrics
+
+Exported by the controller manager, new in v0.3.0, with no `joulie_operator_*` alias. They show whether the measured inputs (see [Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}})) are read. Each name is the default Prometheus spelling of an OpenTelemetry name (`joulie.twin.input.queries`, unit `{query}`; the facility gauges with units `Cel` and `W`), so a dashboard reads them the same way whether Prometheus scrapes them or receives them over OTLP.
+
+- `joulie_twin_input_queries_total{input,result}` (counter)
+  - one increment per Prometheus query of a measured input
+  - `input`: `node_power`, or the facility input: `ambient_temp`, `it_power`, `cooling_power`, `zone_ambient_temp`, `rack_power`, `node_inlet_temp`
+  - `result`:
+    - `success`: every series was read
+    - `partial`: some series were skipped, for a missing key label or a value that is not finite
+    - `no_data`: no usable series
+    - `error`: Prometheus failed the query or could not be reached, or the answer was refused (duplicate keys, several series for a single value)
+- `joulie_twin_facility_ambient_temperature_celsius{preset}` (gauge)
+  - outdoor ambient temperature the facility input last read, in degrees Celsius
+- `joulie_twin_facility_it_power_watts{preset}` (gauge)
+  - IT power the facility input last read, in watts
+- `joulie_twin_facility_cooling_power_watts{preset}` (gauge)
+  - cooling power the facility input last read, in watts
+
+`preset` is `FACILITY_PRESET` (`otel`, `legacy` or `custom`). A facility gauge is absent while its input is unknown, so a stale reading never outlives the poll that lost it. PUE is `(it_power + cooling_power) / it_power`; the overview dashboard's "Twin inputs" row plots it.
+
 ## Scheduler extender metrics
 
 ### Request counters

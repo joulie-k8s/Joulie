@@ -11,6 +11,11 @@ cpuModels:
       cTdpRangeW: [320, 400]
       driverFamily: amd-pstate
     measuredCurves:
+      # SPECpower_ssj2008 result 01203: ASUSTeK Computer Inc. RS720A-E12-RS12,
+      # 2x AMD EPYC 9654, tested Nov 23 2022, published Dec 21 2022, 30,064
+      # overall ssj_ops/watt. BIOS Efficiency Mode, memory at DDR3600.
+      # Retrieved 2026-10-07 from
+      # https://www.spec.org/power_ssj2008/results/res2022q4/power_ssj2008-20221204-01203.txt
       node2S:
         source: specpower
         points:
@@ -36,20 +41,26 @@ cpuModels:
       cTdpRangeW: [320, 400]
       driverFamily: amd-pstate
     measuredCurves:
+      # SPECpower_ssj2008 result 01457: Lenovo Global Technology ThinkSystem
+      # SR645 V3, 2x AMD EPYC 9655, tested Sep 18 2024, published Oct 10 2024,
+      # 34,402 overall ssj_ops/watt. Boost capped in BIOS (BoostFmax:2750), so
+      # full load draws less than a node boosting to 4.5 GHz. Retrieved
+      # 2026-10-07 from
+      # https://www.spec.org/power_ssj2008/results/res2024q4/power_ssj2008-20240923-01457.txt
       node2S:
         source: specpower
         points:
-          - {loadPct: 0, powerW: 138}
-          - {loadPct: 10, powerW: 297}
-          - {loadPct: 20, powerW: 367}
-          - {loadPct: 30, powerW: 438}
-          - {loadPct: 40, powerW: 515}
-          - {loadPct: 50, powerW: 593}
-          - {loadPct: 60, powerW: 661}
-          - {loadPct: 70, powerW: 710}
-          - {loadPct: 80, powerW: 771}
-          - {loadPct: 90, powerW: 812}
-          - {loadPct: 100, powerW: 861}
+          - {loadPct: 0, powerW: 126}
+          - {loadPct: 10, powerW: 273}
+          - {loadPct: 20, powerW: 329}
+          - {loadPct: 30, powerW: 383}
+          - {loadPct: 40, powerW: 433}
+          - {loadPct: 50, powerW: 482}
+          - {loadPct: 60, powerW: 531}
+          - {loadPct: 70, powerW: 579}
+          - {loadPct: 80, powerW: 625}
+          - {loadPct: 90, powerW: 675}
+          - {loadPct: 100, powerW: 751}
   AMD_EPYC_9965:
     aliases: ["AMD EPYC 9965 192-Core Processor", "AMD EPYC 9965"]
     provenance: exact+official
@@ -61,6 +72,11 @@ cpuModels:
       cTdpRangeW: [450, 500]
       driverFamily: amd-pstate
     measuredCurves:
+      # SPECpower_ssj2008 result 01522: ASUSTeK Computer Inc. RS720A-E13-RS8U,
+      # 2x AMD EPYC 9965, tested Apr 7 2025, published May 6 2025, 44,168
+      # overall ssj_ops/watt. Windows power plan Power Saver. Retrieved
+      # 2026-10-07 from
+      # https://www.spec.org/power_ssj2008/results/res2025q2/power_ssj2008-20250407-01522.txt
       node2S:
         source: specpower
         points:
@@ -130,6 +146,8 @@ gpuModels:
     official:
       vendor: nvidia
       maxBoardPowerW: 400
+      # No public minimum for the NVL; 200 W is the H100 PCIe product brief's
+      # minimum (PB-11133-001_v01).
       minBoardPowerW: 200
   NVIDIA_H100_SXM:
     aliases: ["NVIDIA-H100-80GB-HBM3", "NVIDIA H100 80GB HBM3", "H100 SXM"]
@@ -137,13 +155,16 @@ gpuModels:
     official:
       vendor: nvidia
       maxBoardPowerW: 700
-      minBoardPowerW: 350
+      # The lowest vendor-set limit, not a datasheet minimum: NVIDIA's MLPerf
+      # Inference v4.0 DGX-H100 MaxQ configs set power_limit = 300.
+      minBoardPowerW: 300
   NVIDIA_L40S:
     aliases: ["NVIDIA-L40S", "NVIDIA L40S", "L40S"]
     provenance: official+runtime+literature
     official:
       vendor: nvidia
       maxBoardPowerW: 350
+      # No public minimum: the L40S product brief (PB-11470-001_v02) says "TBD".
       minBoardPowerW: 200
   AMD_INSTINCT_MI300X:
     aliases: ["AMD_Instinct_MI300X", "AMD Instinct MI300X", "MI300X"]
@@ -151,11 +172,14 @@ gpuModels:
     official:
       vendor: amd
       maxBoardPowerW: 750
-      minBoardPowerW: 350
+      # The lowest limit a public study saw enforced: below 400 W the GPUs drew
+      # more than configured (arXiv 2603.16164).
+      minBoardPowerW: 400
   AMD_RADEON_PRO_W7900:
     aliases: ["AMD_Radeon_PRO_W7900", "AMD Radeon PRO W7900", "W7900"]
     provenance: official+runtime+literature
     official:
       vendor: amd
       maxBoardPowerW: 295
+      # No public minimum: AMD publishes only the 295 W total board power.
       minBoardPowerW: 200

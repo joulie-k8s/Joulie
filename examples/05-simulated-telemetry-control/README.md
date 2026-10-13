@@ -2,7 +2,7 @@
 
 This example shows Joulie using HTTP for both:
 
-- telemetry input (`cpu.packagePowerWatts`), and
+- telemetry input (the CPU's `hw.power` gauge in the OTLP JSON of `/telemetry/{node}`), and
 - control output (`rapl.set_power_cap_watts`, `dvfs.set_throttle_pct`).
 
 It is useful on virtual clusters where host `/sys` power interfaces are unavailable.
@@ -22,11 +22,11 @@ Why this is practical:
 
 ## What this demonstrates
 
-- Agent env var `JOULIE_TELEMETRY_SOURCE_TYPE=http`: agent reads observed power from HTTP.
-- Agent env var `JOULIE_CONTROL_TYPE=http`: agent sends control intents to HTTP.
+- Agent env var `TELEMETRY_CPU_SOURCE=http`: agent reads observed power from HTTP.
+- Agent env var `TELEMETRY_CPU_CONTROL=http`: agent sends control intents to HTTP.
 - Two control modes:
-  - `JOULIE_CONTROL_MODE=rapl` -> agent sends RAPL-like cap command over HTTP.
-  - `JOULIE_CONTROL_MODE=dvfs` -> agent uses DVFS loop and sends throttle percentage over HTTP.
+  - `TELEMETRY_CPU_CONTROL_MODE=rapl` -> agent sends RAPL-like cap command over HTTP.
+  - `TELEMETRY_CPU_CONTROL_MODE=dvfs` -> agent uses DVFS loop and sends throttle percentage over HTTP.
 - Same setup can be applied to all managed worker nodes (not just one node).
 
 ## Prerequisites
@@ -51,8 +51,8 @@ In this example:
 
 - `NodeTwin` sets low cap (`120W`) per managed node.
 - Agent env vars configure for each managed node:
-  - input power reads to simulator HTTP (`JOULIE_TELEMETRY_HTTP_ENDPOINT`),
-  - control writes to simulator HTTP (`JOULIE_CONTROL_HTTP_ENDPOINT`).
+  - input power reads to simulator HTTP (`TELEMETRY_CPU_HTTP_ENDPOINT`),
+  - control writes to simulator HTTP (`TELEMETRY_CPU_CONTROL_HTTP_ENDPOINT`).
 
 Agent usage:
 
@@ -118,11 +118,11 @@ Set agent env vars on the DaemonSet to route telemetry and control to the simula
 
 ```bash
 kubectl -n joulie-system set env daemonset/joulie-agent \
-  JOULIE_TELEMETRY_SOURCE_TYPE=http \
-  JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
-  JOULIE_CONTROL_TYPE=http \
-  JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
-  JOULIE_CONTROL_MODE=rapl
+  TELEMETRY_CPU_SOURCE=http \
+  TELEMETRY_CPU_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
+  TELEMETRY_CPU_CONTROL=http \
+  TELEMETRY_CPU_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
+  TELEMETRY_CPU_CONTROL_MODE=rapl
 ```
 
 Watch agent logs across nodes:
@@ -148,8 +148,8 @@ curl -s localhost:18080/debug/events | jq
 Optional: Grafana/Prometheus access shortcuts:
 
 ```bash
-kubectl port-forward svc/telemetry-kube-prometheus-prometheus 9090:9090 1>/dev/null &
-kubectl port-forward svc/telemetry-grafana 5000:80 1>/dev/null &
+kubectl -n monitoring port-forward svc/telemetry-kube-prometheus-prometheus 9090:9090 1>/dev/null &
+kubectl -n monitoring port-forward svc/telemetry-grafana 5000:80 1>/dev/null &
 ```
 
 You should see lines like:
@@ -160,7 +160,7 @@ You should see lines like:
 ## 6. Switch all managed nodes to DVFS mode
 
 ```bash
-kubectl -n joulie-system set env daemonset/joulie-agent JOULIE_CONTROL_MODE=dvfs
+kubectl -n joulie-system set env daemonset/joulie-agent TELEMETRY_CPU_CONTROL_MODE=dvfs
 ```
 
 In simulator logs you should now see `dvfs.set_throttle_pct` POSTs for nodes that are in constrained state.

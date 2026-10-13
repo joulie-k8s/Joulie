@@ -11,8 +11,9 @@ Visit the docs at [joulie-k8s.github.io/Joulie](https://joulie-k8s.github.io/Jou
 
 Joulie uses per-node digital twins to model your Kubernetes cluster's energy state in real time.
 It continuously ingests telemetry (CPU/GPU power draw via RAPL and NVML/DCGM,
-per-pod resource utilization via cAdvisor, and optional energy counters from
-[Kepler](https://github.com/sustainable-computing-io/kepler)) to maintain an
+read from Prometheus as the OpenTelemetry hardware metrics `hw.energy` and
+`hw.power` or as [Kepler](https://github.com/sustainable-computing-io/kepler)
+energy counters, and per-pod resource utilization via cAdvisor) to maintain an
 up-to-date model of every node's thermal and power state.
 
 These per-node digital twins drive two things:
@@ -100,12 +101,15 @@ pkg/controller/fsm/     Node state machine (downgrade guards, pod classification
 pkg/controller/twin/    Digital twin model (power headroom, cooling stress, PSU stress)
 pkg/hwinv/              Hardware catalog: fills the facts a node cannot report about itself
 pkg/kube/               Scheme, caches and manager wiring shared by the components
+pkg/otel/semconv/       The OpenTelemetry names Joulie writes and reads, each spelled once
+pkg/otel/promname/      Prometheus spelling of those names under each OTLP translation strategy
+pkg/otel/otlpjson/      OTLP JSON encoding, decoding and HTTP export, with no OpenTelemetry SDK
 pkg/scheduler/          Marginal power estimation for a pod on a node
 simulator/              Workload and power simulator for offline experiments
 charts/joulie/          Helm chart (includes Grafana dashboard)
 config/crd/             Generated CRD manifests
-scripts/                Helper scripts: fixture capture, chart render matrix, KWOK scale run
-tests/                  Contract, envtest and integration suites
+scripts/                Helper scripts: fixture capture, chart render matrix, KWOK scale run, simulated cluster (simcluster/)
+tests/                  Contract, envtest and integration suites; simulated cluster specs and end-to-end test (simcluster/)
 ci/                     Dagger pipeline that runs the integration suite
 values/                 Helm values files used by the docs and the experiments
 experiments/            Benchmark experiments

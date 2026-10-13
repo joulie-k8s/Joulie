@@ -213,30 +213,15 @@ func main() {
 		log.Fatalf("index pods by node: %v", err)
 	}
 
-	// --- Node power source (per-node telemetry) ---
-	nodePowerSource = strings.ToLower(envOrDeprecated("NODE_POWER_SOURCE", "static"))
-	nodePowerHTTPEndpoint = envOrDeprecated("NODE_POWER_HTTP_ENDPOINT", "")
-	nodePowerPromAddress = envOrDeprecated("NODE_POWER_PROMETHEUS_ADDRESS", "")
-	nodePowerPromQuery = envOrDeprecated("NODE_POWER_PROMETHEUS_QUERY", "")
-	switch nodePowerSource {
-	case "http":
-		log.Printf("node power source: http endpoint=%s", nodePowerHTTPEndpoint)
-	case "prometheus":
-		log.Printf("node power source: prometheus address=%s query=%s", nodePowerPromAddress, nodePowerPromQuery)
-	default:
-		log.Printf("node power source: static (no measured power)")
+	// --- Measured inputs: node power and facility metrics ---
+	inputCfg, err := loadInputConfig()
+	if err != nil {
+		log.Fatalf("invalid input configuration: %v", err)
 	}
-
-	// --- Facility metrics (data-center level) ---
+	inputCfg.install()
+	inputCfg.logSummary()
 	fm := &facilityMetrics{}
-	facCfg := facilityConfig{
-		enabled:            boolEnv("ENABLE_FACILITY_METRICS", false),
-		prometheusAddress:  envOrDefault("FACILITY_PROMETHEUS_ADDRESS", "http://prometheus-operated.monitoring:9090"),
-		pollInterval:       durationEnv("FACILITY_POLL_INTERVAL", 30*time.Second),
-		ambientTempMetric:  envOrDefault("FACILITY_AMBIENT_TEMP_METRIC", "datacenter_ambient_temperature_celsius"),
-		itPowerMetric:      envOrDefault("FACILITY_IT_POWER_METRIC", "datacenter_total_it_power_watts"),
-		coolingPowerMetric: envOrDefault("FACILITY_COOLING_POWER_METRIC", "datacenter_cooling_power_watts"),
-	}
+	facCfg := inputCfg.facility
 	// Both loops are manager runnables: they start once the cache has synced
 	// and, with LEADER_ELECT, only on the leader.
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
@@ -284,12 +269,13 @@ func reconcileLoop(ctx context.Context, interval time.Duration, run func(context
 }
 
 // registerMetrics registers every policy metric, current and deprecated name,
-// with reg.
+// and every input metric with reg.
 func registerMetrics(reg prometheus.Registerer) {
 	reg.MustRegister(policyNodeState.collectors()...)
 	reg.MustRegister(policyNodeProfileLabel.collectors()...)
 	reg.MustRegister(policyStateTransitions.collectors()...)
 	reg.MustRegister(policyFamilyNodes, policyFamilyPerformanceNodes)
+	reg.MustRegister(inputMetricCollectors()...)
 }
 
 func startMetricsServer(addr string) {
@@ -470,8 +456,15 @@ func reconcileWithCatalog(
 	}
 	recordFamilySplit(plan, nodeHardwareByName)
 
+	// Every node of this reconcile reads one answer to the grouped node
+	// power query, and the same facility snapshot.
+	ctx = withNodePowerRound(ctx)
+	facility := currentTwinFacility()
+
 	// Build per-rack estimated power for topology-aware PSU stress.
 	// Sum each node's estimated power (CPU + GPU at current cap %) per rack.
+	// A rack the facility input measures uses its reading instead
+	// (nodeTopologyFor).
 	rackPowerEstimates := make(map[string]float64)
 	nodeRack := make(map[string]string)
 	nodeZone := make(map[string]string)
@@ -511,16 +504,7 @@ func reconcileWithCatalog(
 		if a.GPU != nil && a.GPU.CapPctOfMax != nil {
 			gpuPct = *a.GPU.CapPctOfMax
 		}
-		var topo *nodeTopology
-		rack := nodeRack[a.NodeName]
-		zone := nodeZone[a.NodeName]
-		if rack != "" || zone != "" {
-			topo = &nodeTopology{
-				rack:            rack,
-				coolingZone:     zone,
-				rackTotalPowerW: rackPowerEstimates[rack],
-			}
-		}
+		topo := nodeTopologyFor(a.NodeName, nodeRack[a.NodeName], nodeZone[a.NodeName], rackPowerEstimates, facility)
 		if err := reconcileNodeTwin(ctx, reader, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo); err != nil {
 			log.Printf("warning: reconcileNodeTwin %s: %v", a.NodeName, err)
 		}
@@ -534,8 +518,8 @@ func reconcileWithCatalog(
 }
 
 // reconcileWithCatalogAndFacility wraps reconcileWithCatalog and passes facility metrics
-// to the twin computation via reconcileNodeTwin. This enables PUE estimation from
-// real data-center metrics (ambient temperature, IT power, cooling power).
+// to the twin computation via reconcileNodeTwin: the outdoor, cooling zone and node
+// inlet temperatures for cooling stress, and the IT and rack power for PSU stress.
 func reconcileWithCatalogAndFacility(
 	ctx context.Context,
 	reader kube.Reader,
@@ -564,11 +548,10 @@ func reconcileWithCatalogAndFacility(
 	hardwareCatalog *hwinv.Catalog,
 	fm *facilityMetrics,
 ) error {
-	// Store facility metrics in package-level vars for use by reconcileNodeTwin.
+	// The reconcile reads this snapshot, not fm, so a poll that lands
+	// mid-reconcile cannot give two nodes different readings.
 	if fm != nil {
-		ambientC, itPowerW, _ := fm.get()
-		facilityAmbientTempC = ambientC
-		facilityClusterPowerW = itPowerW
+		setTwinFacility(fm.snapshot())
 	}
 	return reconcileWithCatalog(
 		ctx, reader, kubeClient, dyn, selector, reservedLabel, profileLabel, interval,
@@ -577,13 +560,6 @@ func reconcileWithCatalogAndFacility(
 		gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, hardwareCatalog,
 	)
 }
-
-// facilityAmbientTempC and facilityClusterPowerW are set by reconcileWithCatalogAndFacility
-// and read by reconcileNodeTwin to pass to the twin computation.
-var (
-	facilityAmbientTempC  float64
-	facilityClusterPowerW float64
-)
 
 // Delegate to fsm package.
 var (

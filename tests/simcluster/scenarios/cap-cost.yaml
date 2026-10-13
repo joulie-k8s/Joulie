@@ -1,0 +1,54 @@
+# What the eco profile costs in run time. CPU jobs are pinned to the intel
+# pool (2 performance Nodes, intel-2 in eco under a 60 % CPU cap) and load a
+# Node almost fully, so the cap binds: their median slowdown on eco must
+# exceed the median on performance by more than 5 %. GPU jobs are pinned to
+# the nvl pool with a CPU feed intensity of 0: the controller never caps the
+# CPU of a GPU Node, and GPU_ECO_CAP_PCT_OF_MAX=100 leaves the eco GPUs
+# uncapped too, so their median slowdown must stay within 2 % of the ideal.
+schemaVersion: 1
+name: cap-cost
+description: The eco CPU cap slows CPU jobs by more than 5 % and leaves GPU jobs without CPU feed at their ideal speed.
+cluster: {spec: tests/simcluster/specs/policy.yaml, timing: dev}
+seed: 1
+duration: 6m
+drain: 4m
+abortOnRunStalled: 3m
+workload:
+  namespace: sim-workload
+  jobs:
+  - name: cpu
+    class: standard
+    count: 9
+    every: 30s
+    requests: {cpu: "88", memory: 32Gi}
+    runtime: 2m
+    workClass: {cpu: cpu.compute_bound}
+    profile: {cpuUtilization: 1, memoryIntensity: 0.1, ioIntensity: 0}
+    nodeSelector: {sim.joulie.io/pool: intel}
+  - name: gpu
+    class: standard
+    count: 6
+    every: 45s
+    requests: {cpu: "8", memory: 64Gi}
+    gpus: {resource: nvidia.com/gpu, count: 4}
+    runtime: 2m
+    workClass: {cpu: cpu.compute_bound, gpu: gpu.compute_bound}
+    profile: {gpuUtilization: 1, cpuFeedIntensityGpu: 0}
+    nodeSelector: {sim.joulie.io/pool: nvl}
+    tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+joulie:
+  set:
+    controllerManager.env.POLICY_TYPE: static_partition
+    controllerManager.env.STATIC_HP_FRAC: "0.5"
+    controllerManager.env.GPU_ECO_CAP_PCT_OF_MAX: "100"
+assertions:
+- name: cpu-cap-cost
+  type: latency
+  workload: cpu
+  nodeProfile: eco
+  metric: slowdown
+  quantile: 0.5
+  reference: {workload: cpu, nodeProfile: performance}
+  expect: "> 1.05"
+- {name: gpu-cap-cost, type: latency, workload: gpu, metric: slowdown, quantile: 0.5, expect: "<= 1.02"}
+- {name: jobs, type: jobs, expect: {completedFraction: "== 1"}}

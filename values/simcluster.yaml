@@ -1,0 +1,36 @@
+# Joulie values for the simulated cluster (scripts/simcluster/deploy.sh).
+#
+# Use it alone: never combine it with values/joulie.yaml, which targets a real
+# cluster and pulls the release images. deploy.sh adds, in this order, the
+# emulated agents (one per Node the agent DaemonSet would reach), the
+# telemetry settings of the mode and timing, then any -f file and
+# SIMCLUSTER_EXTRA_VALUES; it sets the image tags (dev-<sha>) itself.
+#
+# Every Joulie pod runs on the infra Node, the k3s server's own kubelet: the
+# fake Nodes have no kubelet. The images are built from the working tree and
+# imported into the cluster, so they are never pulled.
+agent:
+  # One Deployment per eligible Node, mounting that Node's hwemu tree.
+  mode: emulated
+  image:
+    repository: joulie.local/joulie-agent
+    pullPolicy: IfNotPresent
+
+controllerManager:
+  nodeSelector:
+    joulie.io/infra: "true"
+  image:
+    repository: joulie.local/joulie-controller-manager
+    pullPolicy: IfNotPresent
+
+schedulerExtender:
+  enabled: true
+  # The k3s scheduler reaches the extender on 127.0.0.1:9876
+  # (scripts/simcluster/manifests/scheduler-config.yaml), so the extender
+  # shares the infra Node's network.
+  hostNetwork: true
+  nodeSelector:
+    joulie.io/infra: "true"
+  image:
+    repository: joulie.local/joulie-scheduler
+    pullPolicy: IfNotPresent

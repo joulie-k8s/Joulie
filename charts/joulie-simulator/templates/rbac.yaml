@@ -8,6 +8,21 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "nodes"]
     verbs: ["get", "list", "watch", "create", "delete"]
+  # A v1 workload run marks a finished pod complete with an annotation,
+  # which the KWOK Stage pod-complete selects.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+  # A v1 workload run creates one Job object per group of trace jobs and
+  # deletes them on a finish with cleanup.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # A v1 workload run observes the NodeTwins' schedulable class; it never
+  # writes them.
+  - apiGroups: ["joulie.io"]
+    resources: ["nodetwins"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

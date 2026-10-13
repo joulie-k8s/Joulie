@@ -17,6 +17,11 @@ metadata:
     app.kubernetes.io/component: scheduler-extender
 spec:
   replicas: {{ .Values.schedulerExtender.replicas }}
+  {{- if .Values.schedulerExtender.hostNetwork }}
+  # The host port cannot be held by an old and a new pod on one node.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/component: scheduler-extender

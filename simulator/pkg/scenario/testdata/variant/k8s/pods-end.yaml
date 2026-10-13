@@ -1,0 +1,32 @@
+# snapshot time: 2026-10-04T20:03:20Z
+apiVersion: v1
+items:
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    creationTimestamp: null
+    labels:
+      app.kubernetes.io/part-of: joulie-sim-workload
+      sim.joulie.io/run-id: cde2659ac0
+    name: sim-perf-0-x
+    namespace: default
+  spec:
+    containers: null
+    nodeName: intel-0
+  status:
+    phase: Succeeded
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    creationTimestamp: null
+    labels:
+      app.kubernetes.io/part-of: joulie-sim-workload
+      sim.joulie.io/run-id: cde2659ac0
+    name: sim-late-0-x
+    namespace: default
+  spec:
+    containers: null
+    nodeName: intel-0
+  status:
+    phase: Running
+kind: List

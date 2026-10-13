@@ -86,7 +86,8 @@ type PowerMeasurement struct {
 	// Measurement source: kepler, utilization, or static
 	// +kubebuilder:validation:Enum=kepler;utilization;static;http;http-error;http-no-endpoint;prometheus;prometheus-no-data
 	Source string `json:"source,omitempty"`
-	// Measured total node power draw in watts
+	// Measured node power draw in watts: the CPU packages plus the GPUs, or
+	// the whole host with NODE_POWER_SCOPE=host
 	MeasuredNodePowerW float64 `json:"measuredNodePowerW,omitempty"`
 	// CPU power budget based on TDP and cap percentage
 	CPUCappedPowerW float64 `json:"cpuCappedPowerW,omitempty"`

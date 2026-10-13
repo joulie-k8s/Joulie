@@ -398,7 +398,11 @@ func TestH02CommonEntriesOfEveryFamily(t *testing.T) {
 	for _, name := range renderBuiltinNames {
 		t.Run(name, func(t *testing.T) {
 			p, tree := renderSharedBuiltin(t, name)
-			if got := renderReadFile(t, tree, "state/hwemu.json"); got != `{"schemaVersion":1,"profile":"`+name+`","node":"hwemu-test-node","substep":"100ms"}`+"\n" {
+			digest, derr := ensureProfileDigest(p)
+			if derr != nil {
+				t.Fatal(derr)
+			}
+			if got := renderReadFile(t, tree, "state/hwemu.json"); got != `{"schemaVersion":1,"profile":"`+name+`","node":"hwemu-test-node","substep":"100ms","profileDigest":"`+digest+`"}`+"\n" {
 				t.Errorf("hwemu.json = %s", got)
 			}
 			tools := renderReadFile(t, tree, "state/tools.json")
@@ -409,7 +413,7 @@ func TestH02CommonEntriesOfEveryFamily(t *testing.T) {
 			if p.GPUs != nil {
 				for _, tool := range p.GPUs.Tools {
 					want = append(want, tool.Name)
-					if !strings.Contains(tools, `"`+tool.Name+`":{"variant":"`+tool.Variant+`"}`) {
+					if !strings.Contains(tools, `"`+tool.Name+`":{"variant":"`+tool.Variant+`"`) {
 						t.Errorf("tools.json = %s lacks %s %s", tools, tool.Name, tool.Variant)
 					}
 				}

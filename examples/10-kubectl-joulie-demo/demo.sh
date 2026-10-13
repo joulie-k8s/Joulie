@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Joulie kubectl plugin demo — full setup + guided presentation
+# Joulie kubectl plugin demo: full setup + guided presentation
 # Usage: ./examples/10-kubectl-joulie-demo/demo.sh <kind-cluster-name>
 #
 # Assumes:
@@ -16,7 +16,7 @@ DEMO_NS="demo"
 # Generate trace if missing (gitignored)
 if [ ! -f "$DEMO_DIR/trace.jsonl" ]; then
   echo "=== Generating workload trace ==="
-  go run ./simulator/cmd/workloadgen \
+  go run ./simulator/cmd/workloadgen --schema-version v2 \
     --jobs 60 --gpu-ratio 0.85 --amd-gpu-ratio 0.35 \
     --mean-inter-arrival-sec 0.08 --min-gpu-request 2 \
     --namespace demo --seed 42 --emit-workload-records=false \
@@ -68,7 +68,7 @@ kubectl create configmap joulie-simulator-node-classes \
   --from-file=node-classes.yaml="$DEMO_DIR/node-classes-data.yaml" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# Empty trace — simulator starts idle
+# Empty trace: simulator starts idle
 kubectl create configmap joulie-simulator-workload-trace \
   -n joulie-system \
   --from-literal=trace.jsonl="" \
@@ -123,7 +123,7 @@ fi
 
 echo ""
 echo "============================================"
-echo "  SETUP COMPLETE — STARTING DEMO"
+echo "  SETUP COMPLETE: STARTING DEMO"
 echo "============================================"
 
 # ─────────────────────────────────────────────────────────
@@ -142,7 +142,7 @@ kubectl joulie status
 pause
 
 echo ""
-echo ">>> Step 2: Launch workload — loading trace into simulator..."
+echo ">>> Step 2: Launch workload: loading trace into simulator..."
 echo ""
 
 # Load real trace and restart simulator to pick it up
@@ -166,7 +166,7 @@ echo ""
 pause
 
 echo ""
-echo ">>> Step 4: Reset — kill all workloads"
+echo ">>> Step 4: Reset: kill all workloads"
 echo ""
 
 # Load empty trace first so simulator stops creating new pods

@@ -36,7 +36,7 @@ When a new pod is created in the cluster, the following sequence occurs:
 7. Pod is bound to the highest-scoring node
 ```
 
-The extender participates in steps 4 and 5 only. It does not replace the Kubernetes scheduler — it extends it with energy-aware filter and scoring logic.
+The extender participates in steps 4 and 5 only. It does not replace the Kubernetes scheduler; it extends it with energy-aware filter and scoring logic.
 
 ### What the extender reads
 
@@ -98,15 +98,15 @@ After filtering, the extender scores remaining nodes. Each node receives a score
 For each candidate node, the extender gathers:
 
 1. **Power measurement** from `NodeTwin.status.powerMeasurement`:
-   - `measuredNodePowerW` — actual node power draw (from Kepler, utilization model, or static estimate)
-   - `nodeCappedPowerW` — the node's current power budget (sum of CPU + GPU caps)
-   - `nodeTdpW` — thermal design power (maximum possible draw)
-   - `powerTrendWPerMin` — rolling derivative of power draw (watts/minute, positive = rising)
+   - `measuredNodePowerW`: measured node power draw, the CPU packages plus the GPUs by default, which the controller manager reads from Prometheus (OpenTelemetry `hw.*` metrics or Kepler) or an HTTP endpoint, or 0 with `NODE_POWER_SOURCE=static` (see [Digital Twin]({{< relref "/docs/architecture/digital-twin.md#where-the-power-reading-comes-from" >}}))
+   - `nodeCappedPowerW`: the node's current power budget (sum of CPU + GPU caps)
+   - `nodeTdpW`: thermal design power (maximum possible draw)
+   - `powerTrendWPerMin`: rolling derivative of power draw (watts/minute, positive = rising)
 
 2. **Twin-computed scores** from `NodeTwin.status`:
-   - `predictedPowerHeadroomScore` — fallback headroom if no power measurement is available
-   - `predictedCoolingStressScore` — thermal stress (0 = cool, 100 = at cooling limit)
-   - `schedulableClass` — `performance`, `eco`, or `draining`
+   - `predictedPowerHeadroomScore`: fallback headroom if no power measurement is available
+   - `predictedCoolingStressScore`: thermal stress (0 = cool, 100 = at cooling limit)
+   - `schedulableClass`: `performance`, `eco`, or `draining`
 
 3. **Pod resource demand** extracted from the pod's container specs:
    - CPU cores requested (summed across all containers)
@@ -118,7 +118,7 @@ For each candidate node, the extender gathers:
 
 ### Marginal power estimation
 
-Before scoring, the extender estimates how many additional watts this specific pod will add to the node. This makes the score **pod-specific** — the same node scores differently for a lightweight 2-core pod vs. an 8-GPU training pod.
+Before scoring, the extender estimates how many additional watts this specific pod will add to the node. This makes the score **pod-specific**: the same node scores differently for a lightweight 2-core pod vs. an 8-GPU training pod.
 
 The estimation uses `powerest.EstimateMarginalImpact`:
 
@@ -150,7 +150,7 @@ Each component explained:
 
 | Component | Weight | Range | What it does |
 |-----------|--------|-------|--------------|
-| `headroomScore * 0.7` | 70% | can go negative to +70 | Favors nodes with room in their power budget after this pod is placed. Can go negative if the pod would exceed the budget — the node is penalized, not just zeroed. |
+| `headroomScore * 0.7` | 70% | can go negative to +70 | Favors nodes with room in their power budget after this pod is placed. Can go negative if the pod would exceed the budget, so the node is penalized, not just zeroed. |
 | `(100 - coolingStress) * 0.15` | 15% | 0 to +15 | Penalizes thermally stressed nodes. At coolingStress=0 (cool), contributes 15 points. At coolingStress=100, contributes 0. |
 | `trendBonus` | ±25 pts | -25 to +25 | Rewards nodes whose power draw is falling (trend < 0), penalizes nodes whose power is rising (trend > 0). Uses adaptive scaling: trendScale=6.0 at steady state (amplifies signal), trendScale=2.0 during cluster-wide bursts (\|clusterTrend\| > 500 W/min). |
 | `profileBonus` | +10 pts | 0 or +10 | Standard pods on eco nodes get +10, steering non-critical work toward energy-saving nodes. |
@@ -179,7 +179,7 @@ This means:
 
 - **Eco nodes** (capped at, say, 60%) have a lower `cappedPower`, so they run out of headroom sooner and are naturally deprioritized for heavy workloads.
 - **GPU-heavy pods** consume more marginal watts, so nodes near their cap are penalized more for GPU pods than CPU-only pods.
-- **headroomScore can go negative** — if the pod would push the node over its cap, the score goes below zero. After the formula is applied and clamped to [0, 100], such nodes get score 0 and are effectively last-choice.
+- **headroomScore can go negative**: if the pod would push the node over its cap, the score goes below zero. After the formula is applied and clamped to [0, 100], such nodes get score 0 and are effectively last-choice.
 
 If power measurement data is unavailable (no `powerMeasurement` in NodeTwin status), the extender falls back to the twin-computed `predictedPowerHeadroomScore`.
 
@@ -214,20 +214,9 @@ The scoring formula was validated in [Experiment 04: Scoring Formula Validation]
 
 All scores are clamped to `[0, 100]` before being returned to kube-scheduler.
 
-### PUE-weighted marginal power estimation
+### PUE
 
-When facility metrics are enabled (`ENABLE_FACILITY_METRICS=true`), the controller manager computes PUE from real data-center metrics and writes `NodeTwin.status.estimatedPUE`. The scheduler extender uses this to weight marginal power estimates:
-
-```
-if estimatedPUE > 1.0:
-    deltaCPUWatts  *= estimatedPUE
-    deltaGPUWatts  *= estimatedPUE
-    deltaTotalWatts *= estimatedPUE
-```
-
-This means a pod placed on a node with PUE 1.6 is treated as costing 60% more energy than one with PUE 1.0. The effect is that the scheduler prefers nodes in more efficiently cooled parts of the facility, reducing total energy consumption including cooling overhead.
-
-Without facility metrics, PUE defaults to 1.0 and the multiplier has no effect.
+The scheduler extender does not weight marginal power by PUE. `NodeTwin.status.estimatedPUE` is derived from the node's predicted cooling stress (1.05 at no stress, 1.40 at full stress), is reserved for future use, and no score reads it. Facility metrics (`ENABLE_FACILITY_METRICS=true` on the controller manager) reach the score through the cooling stress term instead: the twin scales cooling stress with the most local ambient temperature it reads, so a node in a warm zone scores lower for the same power. The measured PUE, `(IT power + cooling power) / IT power`, is logged by the controller manager and can be plotted from `joulie_twin_facility_*`.
 
 ## Summary
 
@@ -254,7 +243,6 @@ Without facility metrics, PUE defaults to 1.0 and the multiplier has no effect.
 | `MARGINAL_CPU_UTIL_COEFF` | (from `powerest.DefaultCoefficients`) | CPU marginal power coefficient |
 | `MARGINAL_GPU_UTIL_COEFF_STANDARD` | (from `powerest.DefaultCoefficients`) | GPU marginal power coefficient for standard pods |
 | `MARGINAL_GPU_UTIL_COEFF_PERFORMANCE` | (from `powerest.DefaultCoefficients`) | GPU marginal power coefficient for performance pods |
-| `ENABLE_FACILITY_METRICS` | `false` | Enable PUE-weighted marginal scoring |
 
 ## Debug endpoint
 

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 )
 
 // nvidia-smi exit codes, from the RETURN VALUE section of the nvidia-smi
@@ -39,10 +41,10 @@ type nvField struct {
 }
 
 // nvFields are the query fields fakesmi answers: the agent's six
-// (listNvidiaDevices in cmd/agent) plus the limits, identity and use that
-// NVML state holds. Field names are the nvidia-smi documentation's. A field
-// the device does not support (gpus.fieldSupport) holds its token in this
-// file.
+// (listNvidiaDevices in cmd/agent) plus the limits, identity, use and
+// persistence mode that NVML state holds. Field names are the nvidia-smi
+// documentation's. A field the device does not support (gpus.fieldSupport)
+// holds its token in this file.
 var nvFields = map[string]nvField{
 	"index":                {kind: nvIndex},
 	"name":                 {file: "name", kind: nvText},
@@ -55,17 +57,22 @@ var nvFields = map[string]nvField{
 	"power.min_limit":      {file: "power_min_limit_mw", kind: nvWatts},
 	"power.max_limit":      {file: "power_max_limit_mw", kind: nvWatts},
 	"utilization.gpu":      {file: "utilization_gpu_pct", kind: nvPercent},
+	"persistence_mode":     {file: layout.NVMLPersistenceModeFile, kind: nvText},
 }
 
-// runNvidiaSMI emulates nvidia-smi -L, --query-gpu and -pl, optionally
+// nvPersistenceWords are the persistence_mode contents -pm writes, by the
+// value it takes: 0 disables persistence mode, 1 enables it.
+var nvPersistenceWords = map[string]string{"0": "Disabled", "1": "Enabled"}
+
+// runNvidiaSMI emulates nvidia-smi -L, --query-gpu, -pl and -pm, optionally
 // restricted by -i. Anything else is an invalid combination, exit 2.
 func runNvidiaSMI(c *call) int {
 	if c.variant != nvVariantDefault {
 		return c.unknownVariant()
 	}
 	var (
-		help, list, hasIDs, hasQuery, hasFormat, hasLimit bool
-		ids, query, format, limit                         string
+		help, list, hasIDs, hasQuery, hasFormat, hasLimit, hasPM bool
+		ids, query, format, limit, pm                            string
 	)
 	for i := 0; i < len(c.args); i++ {
 		arg := c.args[i]
@@ -98,6 +105,8 @@ func runNvidiaSMI(c *call) int {
 			ok = takeValue(&format, &hasFormat)
 		case "-pl", "--power-limit":
 			ok = takeValue(&limit, &hasLimit)
+		case "-pm", "--persistence-mode":
+			ok = takeValue(&pm, &hasPM)
 		default:
 			ok = false
 		}
@@ -106,17 +115,17 @@ func runNvidiaSMI(c *call) int {
 		}
 	}
 	if help {
-		fmt.Fprint(c.stdout, "nvidia-smi emulated by fakesmi. Options: -L, --query-gpu=FIELDS --format=csv[,noheader][,nounits], -pl WATTS, -i ID\n")
+		fmt.Fprint(c.stdout, "nvidia-smi emulated by fakesmi. Options: -L, --query-gpu=FIELDS --format=csv[,noheader][,nounits], -pl WATTS, -pm 0|1, -i ID\n")
 		return 0
 	}
 	actions := 0
-	for _, a := range []bool{list, hasQuery, hasLimit} {
+	for _, a := range []bool{list, hasQuery, hasLimit, hasPM} {
 		if a {
 			actions++
 		}
 	}
 	if actions == 0 && !hasFormat {
-		return c.notEmulated("without -L, --query-gpu or -pl")
+		return c.notEmulated("without -L, --query-gpu, -pl or -pm")
 	}
 	if actions != 1 || hasQuery != hasFormat {
 		return nvInvalidArguments(c)
@@ -158,6 +167,10 @@ func runNvidiaSMI(c *call) int {
 		}
 		watts = w
 	}
+	pmWord, pmOK := nvPersistenceWords[pm]
+	if hasPM && !pmOK {
+		return nvInvalidArguments(c)
+	}
 
 	gpus, err := nvmlGPUs(c.env)
 	if errors.Is(err, errNoNVML) {
@@ -197,6 +210,8 @@ func runNvidiaSMI(c *call) int {
 		return 0
 	case hasQuery:
 		return nvQuery(c, gpus, fields, header, units)
+	case hasPM:
+		return nvSetPersistenceMode(c, gpus, pmWord)
 	}
 	return nvSetPowerLimit(c, gpus, watts)
 }
@@ -313,8 +328,9 @@ func nvQuery(c *call, gpus []nvGPU, fields []string, header, units bool) int {
 // nvSetPowerLimit is -pl: it writes power_limit_mw = round(W*1000) for every
 // selected GPU. The value is checked against each GPU's range first, and
 // nothing is written unless every GPU accepts it. The limit does not persist
-// across driver reloads on hardware, and persistence mode is not modelled.
-// Message text is assumed.
+// across driver reloads on hardware: with persistence mode Disabled, the
+// emulator puts it back to the default while no client holds the GPU
+// (package hwemu, persistReset). Message text is assumed.
 func nvSetPowerLimit(c *call, gpus []nvGPU, watts float64) int {
 	mw := math.Round(watts * 1000)
 	limits := make([]nvLimits, len(gpus))
@@ -370,4 +386,34 @@ func (g nvGPU) limits() (nvLimits, error) {
 		*f.dst, l.supported = v, l.supported && ok
 	}
 	return l, nil
+}
+
+// nvSetPersistenceMode is -pm: it writes word, Enabled or Disabled, to
+// persistence_mode of every selected GPU, in place, and prints one line per
+// GPU and All done. Every GPU's state is read before anything is written, so
+// a GPU without persistence_mode fails the call with nothing changed.
+// Message text is assumed.
+func nvSetPersistenceMode(c *call, gpus []nvGPU, word string) int {
+	buses := make([]string, len(gpus))
+	for i, g := range gpus {
+		bus, err := g.field("pci_bus_id")
+		if err != nil {
+			return nvStateError(c, err)
+		}
+		if _, err := g.field(layout.NVMLPersistenceModeFile); err != nil {
+			return nvStateError(c, err)
+		}
+		buses[i] = bus
+	}
+	var out strings.Builder
+	for i, g := range gpus {
+		if err := writeAttr(filepath.Join(g.Dir, layout.NVMLPersistenceModeFile), word+"\n"); err != nil {
+			fmt.Fprintf(c.stderr, "fakesmi: set persistence mode for GPU %s: %v\n", buses[i], err)
+			return nvExitOther
+		}
+		fmt.Fprintf(&out, "%s persistence mode for GPU %s.\n", word, buses[i])
+	}
+	fmt.Fprintln(&out, "All done.")
+	io.WriteString(c.stdout, out.String())
+	return 0
 }

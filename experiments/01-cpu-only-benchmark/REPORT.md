@@ -4,6 +4,8 @@ This page reports results from the CPU-only KWOK benchmark experiment:
 
 - [`experiments/01-cpu-only-benchmark/`](.)
 
+> **Note (2026-10-09):** Section 1.3 does not describe the CPU model these runs used. With the scripts in this repository, from the commit that added this report to v0.2.3, the installer pointed the simulator at a hardware catalog generated from the inventory, which holds no measured curves, so every CPU ran the analytic fallback model, not a SPECpower curve; the RAPL caps the agent wrote were enforced on that model by lowering the frequency. Thermal throttling was on by default (85 to 97 °C) and is opt-in now. These results have not been rerun with the current model; [Model changes](../../website/content/en/docs/simulator/model-changes.md) lists every change to the simulated numbers since v0.2.3 and how far each one moves this experiment's `configs/benchmark-debug.yaml`.
+
 ## Scope
 
 The benchmark compares three baselines on a **CPU-only cluster** with 40 KWOK nodes across 3 hardware families, running on a real Kind+KWOK Kubernetes cluster:
@@ -74,7 +76,7 @@ The 220 W eco cap triggers on nodes drawing > 220 W (approximately > 40% CPU uti
 
 ### 1.6 Baselines
 
-- **A**: No power management — all nodes run uncapped at full power. Performance-profile affinity stripped from pods.
+- **A**: No power management: all nodes run uncapped at full power. Performance-profile affinity stripped from pods.
 - **B**: Static partition policy (`hp_frac=0.30`): 12 performance nodes at 420 W cap, 28 eco nodes at 220 W cap.
 - **C**: Queue-aware dynamic policy (`hp_base_frac=0.30`, `hp_min=1`, `hp_max=30`, `perf_per_hp_node=20`): dynamically adjusts performance/eco split based on running workload.
 
@@ -114,10 +116,10 @@ Dynamically adjusts performance node count based on running performance-sensitiv
 The workload generator uses a **Non-Homogeneous Poisson Process (NHPP)** with:
 
 1. **Cosine diurnal cycle**: trough at 4 AM sim-time, peak at 4 PM sim-time, with Ornstein-Uhlenbeck rate noise for slow-varying rate fluctuations.
-2. **Mega-burst overlay**: 4–8 burst events per simulated day, scaled by cluster size (`burst_scale = n_nodes / 5000`).
-3. **Maintenance dip windows**: 0–1 per day, 20–60 min sim-time, arrivals drop to 2% of normal.
-4. **Surge windows**: 1–2 per day, 1–3 sim-hours at 2–3× normal rate.
-5. **Micro-bursts**: 3% chance per inter-arrival of a small burst (2–5 simultaneous jobs).
+2. **Mega-burst overlay**: 4 to 8 burst events per simulated day, scaled by cluster size (`burst_scale = n_nodes / 5000`).
+3. **Maintenance dip windows**: 0 to 1 per day, 20 to 60 min sim-time, arrivals drop to 2% of normal.
+4. **Surge windows**: 1 to 2 per day, 1 to 3 sim-hours at 2 to 3× normal rate.
+5. **Micro-bursts**: 3% chance per inter-arrival of a small burst (2 to 5 simultaneous jobs).
 
 The trace covers ~22 sim-hours (~1 diurnal cycle) of arrivals.
 
@@ -135,7 +137,7 @@ The model captures:
 
 - **Three cooling modes**: free cooling (full airside economizer when outdoor temp < 13°C), partial mechanical (economizer + DX compressor), and full mechanical (DX only when outdoor temp > 18°C).
 - **Variable-speed DX compressor** with temperature-dependent COP (nominal 3.0), degrading at high outdoor temperatures.
-- **Airside economizer** with 5–100% outdoor air fraction based on temperature.
+- **Airside economizer** with 5 to 100% outdoor air fraction based on temperature.
 - **Fan affinity laws**: power scales with speed cubed (P proportional to speed^3).
 - **Room thermal mass**: 50x40x3 m data center room with ~5 MJ/K effective thermal capacitance.
 
@@ -145,7 +147,7 @@ Inputs per timestep: IT power (W) and ambient temperature (K). Outputs: cooling 
 PUE = (IT Power + Cooling Power) / IT Power
 ```
 
-PUE ranges from ~1.13 (cool night, low load — economizer handles most cooling) to ~1.15 (hot afternoon, DX compressor required).
+PUE ranges from ~1.13 (cool night, low load; the economizer handles most cooling) to ~1.15 (hot afternoon, DX compressor required).
 
 ---
 
@@ -166,7 +168,7 @@ PUE ranges from ~1.13 (cool night, low load — economizer handles most cooling)
 | B (static) | −847 W | **−21.4%** |
 | C (queue-aware) | −1,153 W | **−29.1%** |
 
-Both managed baselines achieve significant power savings with zero throughput penalty — all baselines process the same workload trace.
+Both managed baselines achieve significant power savings with zero throughput penalty: all baselines process the same workload trace.
 
 ### 4.3 Throughput and makespan
 
@@ -174,11 +176,11 @@ All baselines run the same workload trace over a fixed ~22 sim-hour window (660 
 
 | Baseline | Avg Concurrent Pods | Max Concurrent Pods | Δ Avg Pods vs A |
 |---|---:|---:|---:|
-| A (no mgmt) | 23.4 | 44 | — |
+| A (no mgmt) | 23.4 | 44 | n/a |
 | B (static) | 12.6 | 15 | **−46.2%** |
 | C (queue-aware) | 9.5 | 11 | **−59.4%** |
 
-Managed baselines run fewer concurrent pods because the scheduler extender concentrates work onto performance nodes. Despite fewer concurrent pods, **no jobs are dropped** — B and C process the same trace as A. The reduced concurrency reflects better scheduling efficiency: fewer nodes are actively loaded at any time, enabling deeper eco capping on idle nodes.
+Managed baselines run fewer concurrent pods because the scheduler extender concentrates work onto performance nodes. Despite fewer concurrent pods, **no jobs are dropped**: B and C process the same trace as A. The reduced concurrency reflects better scheduling efficiency: fewer nodes are actively loaded at any time, enabling deeper eco capping on idle nodes.
 
 ---
 
@@ -214,7 +216,7 @@ CPU utilization histograms per baseline. A's distribution is concentrated at hig
 
 ![PUE Analysis](./img/kwok/pue_analysis.png)
 
-Three-panel stacked timeseries showing IT equipment power (kW), cooling system power (kW), and PUE over simulated time. Cooling power is computed by the DXCooledAirsideEconomizer FMU — a physics-based Modelica model that captures economizer free-cooling, DX compressor dynamics, and fan affinity laws. Managed baselines achieve lower IT power, which reduces cooling demand and marginally improves PUE.
+Three-panel stacked timeseries showing IT equipment power (kW), cooling system power (kW), and PUE over simulated time. Cooling power is computed by the DXCooledAirsideEconomizer FMU, a physics-based Modelica model that captures economizer free-cooling, DX compressor dynamics, and fan affinity laws. Managed baselines achieve lower IT power, which reduces cooling demand and marginally improves PUE.
 
 ### 5.6 Facility power breakdown
 
@@ -242,7 +244,7 @@ The queue-aware policy dynamically adjusts the performance/eco node ratio:
 - During low-demand periods, nearly all nodes run at eco caps.
 - During burst events, performance nodes are provisioned on demand.
 - The static partition keeps 30% at full power regardless of actual demand.
-- On a 40-node cluster, the difference between 12 fixed performance nodes (B) and dynamic allocation from 1–30 (C) is proportionally large.
+- On a 40-node cluster, the difference between 12 fixed performance nodes (B) and dynamic allocation from 1 to 30 (C) is proportionally large.
 
 ---
 
@@ -250,9 +252,9 @@ The queue-aware policy dynamically adjusts the performance/eco node ratio:
 
 PUE is derived from the **DXCooledAirsideEconomizer FMU** (see Section 3.3), which models the three cooling regimes of a modern data center:
 
-- **Free cooling** (outdoor temp < 13°C): The airside economizer provides all cooling using outdoor air. PUE approaches ~1.05–1.10. This mode dominates during nighttime.
-- **Partial mechanical** (13–18°C): Economizer supplements DX compressor. PUE ~1.10–1.15.
-- **Full mechanical** (outdoor temp > 18°C): DX compressor provides all cooling. PUE ~1.15–1.20 depending on load.
+- **Free cooling** (outdoor temp < 13°C): The airside economizer provides all cooling using outdoor air. PUE approaches ~1.05 to 1.10. This mode dominates during nighttime.
+- **Partial mechanical** (13 to 18°C): Economizer supplements DX compressor. PUE ~1.10 to 1.15.
+- **Full mechanical** (outdoor temp > 18°C): DX compressor provides all cooling. PUE ~1.15 to 1.20 depending on load.
 
 Observed PUE variation in this experiment:
 
@@ -312,6 +314,6 @@ Extrapolating from the measured per-baseline power savings to a full year of con
 
 ### 9.3 Context
 
-This is a **CPU-only** cluster (no GPUs), where idle power constitutes a larger fraction of total draw and the savings from RAPL capping are inherently smaller than in GPU-heavy environments. Even so, Joulie's queue-aware policy saves **$126K/year** and avoids **486 tonnes of CO₂** — equivalent to taking **106 passenger cars off the road** for a year (EPA: 4.6 tonnes CO₂/car/year).
+This is a **CPU-only** cluster (no GPUs), where idle power constitutes a larger fraction of total draw and the savings from RAPL capping are inherently smaller than in GPU-heavy environments. Even so, Joulie's queue-aware policy saves **$126K/year** and avoids **486 tonnes of CO₂**, equivalent to taking **106 passenger cars off the road** for a year (EPA: 4.6 tonnes CO₂/car/year).
 
 For GPU-heavy clusters, see Experiments 02 and 03 where GPU power capping provides additional savings leverage.

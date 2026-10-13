@@ -34,7 +34,19 @@ gpus:
     defaultW: {v: 310, src: "measured:nvsmiqnvl#Default Power Limit"}
     currentW: {v: 400, src: "measured:nvsmiqnvl#Current and Requested Power Limit, raised to the maximum"}
   persistenceMode: {v: enabled, src: measured:nvsmiqnvl}
-  tools: [{name: nvidia-smi, variant: default}]
+  # A real nvidia-smi runs only with its ELF loader and the NVML library
+  # present; fakesmi checks both, in this order, under HWEMU_ROOTFS.
+  tools:
+    - name: nvidia-smi
+      variant: default
+      requires:
+        - paths: [/lib64/ld-linux-x86-64.so.2]
+          exit: 127
+          src: "assumed:nvidia-smi is a dynamically linked x86-64 ELF with this interpreter (check with file $(command -v nvidia-smi)); without it exec fails with ENOENT, which a shell reports as exit 127"
+        - paths: [/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1, /usr/lib64/libnvidia-ml.so.1]
+          exit: 12
+          stderr: "NVIDIA-SMI couldn't find libnvidia-ml.so library in your system. Please make sure that the NVIDIA Display Driver is properly installed and present in your system.\nPlease also try adding directory that contains libnvidia-ml.so to your system PATH."
+          src: "published:nvsmi#RETURN VALUE, Return code 12 - NVML Shared Library couldn't be found or loaded; the library paths (Debian and RHEL layouts) and the stderr text are assumed"
 physics:
   gpu:
     idleW: {v: 58.6, src: "measured:nvsmiqnvl#an idle GPU's Average Power Draw"}
