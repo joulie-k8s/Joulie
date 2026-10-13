@@ -28,4 +28,10 @@ cpu:
   oneSocketPerVCPU: true
   hypervisor: true
   cpuMHz: 2099.926
-physics: {cpu: {model: analytic, maxPkgW: {v: 0, src: "derived:corpusvm#no powercap zone in the capture, so no package power is exposed"}}}
+physics:
+  cpu:
+    model: analytic
+    maxPkgW: {v: 0, src: "derived:corpusvm#no powercap zone in the capture, so no package power is exposed"}
+    idleGovernorDeltaW: {v: 0, src: "assumed:no idle cost of a governor that holds the top frequency; a guest without cpufreq has no governor to hold it"}
+    eppGain: {v: 1.0, src: "assumed:EPP 0 reaches the maximum frequency at half load under the HWP powersave algorithm; to sweep from 0.5 to 2"}
+    eppCeilingDrop: {v: 0.2, src: "assumed:EPP 128 lowers the full-load frequency by 0.2 of the range, between 1 - 1/1.25 and 1 - 1/1.32, the published full-load gaps of EPP 128 to performance and to EPP 32; to sweep from 0 to 0.25"}

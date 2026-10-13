@@ -1006,6 +1006,81 @@ func TestNodeTwinSchemaAcceptsEveryPowerSourceValue(t *testing.T) {
 	}
 }
 
+// GV02: every governor enum in the CRDs accepts every value pkg/api lists
+// for it, so no value a component writes is rejected by the API server, and
+// the preset enums reject native words (powersave, schedutil, high, ...): a
+// preset is the vendor-neutral word, and only pkg/governor turns it into a
+// native one.
+func TestGV02GovernorEnumsAcceptEveryPkgAPIValue(t *testing.T) {
+	schemaOf := func(file string) map[string]any {
+		raw, err := os.ReadFile(filepath.Join(repoRoot(t), "config", "crd", "bases", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var crd map[string]any
+		if err := yaml.Unmarshal(raw, &crd); err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+		versions := crd["spec"].(map[string]any)["versions"].([]any)
+		return versions[0].(map[string]any)["schema"].(map[string]any)["openAPIV3Schema"].(map[string]any)
+	}
+	twin, hw := schemaOf("joulie.io_nodetwins.yaml"), schemaOf("joulie.io_nodehardwares.yaml")
+	prop := func(path string) []string {
+		var out []string
+		for _, p := range strings.Split(path, ".") {
+			if p == "[]" {
+				out = append(out, "items")
+				continue
+			}
+			out = append(out, "properties", p)
+		}
+		return out
+	}
+	natives := []string{"powersave", "schedutil", "ondemand", "conservative", "userspace", "high", "manual", "profile_peak", "profile_standard", "perf_determinism", "balance_power"}
+	for _, tc := range []struct {
+		schema  map[string]any
+		path    string
+		values  []string
+		natives bool
+	}{
+		{twin, "spec.cpu.governor.preset", joulie.CPUGovernorPresetValues, true},
+		{twin, "spec.cpu.governor.boost", joulie.CPUGovernorBoostValues, false},
+		{twin, "spec.gpu.governor.preset", joulie.GPUGovernorPresetValues, true},
+		{hw, "status.cpu.governor.boost.state", joulie.CPUGovernorBoostValues, false},
+		{hw, "status.cpu.governor.boost.scope", joulie.CPUBoostScopeValues, false},
+		{hw, "status.cpu.governor.presets.[].result", joulie.GovernorPresetSupportResultValues, false},
+		{hw, "status.cpu.governor.baseline.groups.[].boost", joulie.CPUGovernorBoostValues, false},
+		{hw, "status.gpu.governor.mechanism", joulie.GPUGovernorMechanismValues, false},
+		{hw, "status.gpu.governor.presets.[].result", joulie.GovernorPresetSupportResultValues, false},
+	} {
+		field := dig(tc.schema, prop(tc.path)...)
+		if field == nil {
+			t.Errorf("%s missing from the schema", tc.path)
+			continue
+		}
+		enum, _ := field["enum"].([]any)
+		allowed := map[string]bool{}
+		for _, v := range enum {
+			allowed[v.(string)] = true
+		}
+		if len(tc.values) == 0 {
+			t.Errorf("%s: the pkg/api list is empty, nothing would be proven", tc.path)
+		}
+		for _, v := range tc.values {
+			if !allowed[v] {
+				t.Errorf("%s: pkg/api lists %q but the CRD enum %v rejects it", tc.path, v, enum)
+			}
+		}
+		if tc.natives {
+			for _, v := range natives {
+				if allowed[v] {
+					t.Errorf("%s: the CRD enum accepts the native word %q; a preset field takes presets only", tc.path, v)
+				}
+			}
+		}
+	}
+}
+
 func dig(m map[string]any, path ...string) map[string]any {
 	cur := m
 	for _, p := range path {
@@ -1016,4 +1091,94 @@ func dig(m map[string]any, path ...string) map[string]any {
 		cur = next
 	}
 	return cur
+}
+
+// TestWorkloadgenPeerTransferIntensityReachesTheSimulator: workloadgen
+// -peer-transfer-intensity writes workloadProfile.peerTransferIntensity, the
+// key the simulator's trace loader (loadTraceFileIntoEngine) and the
+// scenario schema (simulator/pkg/scenario Profile) read, on the jobs that
+// request two or more GPUs and on no other; without the flag no job carries
+// it, and a v2 pin refuses the flag, so legacy traces never move.
+func TestWorkloadgenPeerTransferIntensityReachesTheSimulator(t *testing.T) {
+	const key = "peerTransferIntensity"
+	root := repoRoot(t)
+	for _, src := range []string{"simulator/cmd/simulator/main.go", "simulator/pkg/scenario/schema.go"} {
+		b, err := os.ReadFile(filepath.Join(root, src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), `"`+key) {
+			t.Errorf("%s does not read %q", src, key)
+		}
+	}
+	// gen runs workloadgen with flags and returns its job records, or its
+	// output when it fails.
+	gen := func(flags ...string) ([]map[string]any, string) {
+		out := filepath.Join(t.TempDir(), "trace.jsonl")
+		args := append([]string{"run", "./simulator/cmd/workloadgen"}, flags...)
+		cmd := exec.Command("go", append(args, "-jobs", "40", "-seed", "7", "-gpu-ratio", "1", "-out", out)...)
+		cmd.Dir = root
+		if b, err := cmd.CombinedOutput(); err != nil {
+			return nil, err.Error() + ": " + string(b)
+		}
+		b, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var jobs []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				t.Fatal(err)
+			}
+			if rec["type"] == "job" {
+				jobs = append(jobs, rec)
+			}
+		}
+		return jobs, ""
+	}
+	gpusOf := func(rec map[string]any) int {
+		tpl, _ := rec["podTemplate"].(map[string]any)
+		req, _ := tpl["requests"].(map[string]any)
+		for _, k := range []string{"nvidia.com/gpu", "amd.com/gpu"} {
+			if s, ok := req[k].(string); ok {
+				var n int
+				_ = json.Unmarshal([]byte(s), &n)
+				return n
+			}
+		}
+		return 0
+	}
+
+	jobs, failed := gen("-schema-version", "v3", "-peer-transfer-intensity", "0.3")
+	if failed != "" {
+		t.Fatalf("workloadgen: %s", failed)
+	}
+	multi := 0
+	for _, j := range jobs {
+		prof, _ := j["workloadProfile"].(map[string]any)
+		v, has := prof[key]
+		if gpusOf(j) >= 2 {
+			multi++
+			if v != 0.3 {
+				t.Errorf("job %v requests %d GPUs: %s = %v, want 0.3", j["jobId"], gpusOf(j), key, v)
+			}
+		} else if has {
+			t.Errorf("job %v requests %d GPUs and carries %s = %v", j["jobId"], gpusOf(j), key, v)
+		}
+	}
+	if multi == 0 {
+		t.Fatal("no job requests two or more GPUs; the contract went unchecked")
+	}
+	if jobs, failed = gen("-schema-version", "v3"); failed != "" {
+		t.Fatalf("workloadgen: %s", failed)
+	}
+	for _, j := range jobs {
+		if prof, _ := j["workloadProfile"].(map[string]any); prof[key] != nil {
+			t.Fatalf("job %v carries %s without the flag", j["jobId"], key)
+		}
+	}
+	if _, failed := gen("-schema-version", "v2", "-peer-transfer-intensity", "0.3"); failed == "" {
+		t.Error("workloadgen -schema-version v2 accepted -peer-transfer-intensity")
+	}
 }

@@ -22,6 +22,7 @@ If you want the short version before the details:
 - When public measured curves exist, Joulie uses them directly.
 - When they do not, Joulie falls back to explicit generic or proxy models.
 - CPU and GPU throttling are modeled as **time-dependent control loops**, not instantaneous jumps.
+- Frequency governors are a control dimension of their own, next to power caps: one vendor-neutral preset per component, which the agent maps to the node's cpufreq driver or GPU family (see [Governor presets](#69-governor-presets)).
 - Slowdown depends on workload regime:
   - compute-bound workloads are more sensitive to throttling,
   - memory-/bandwidth-bound workloads are often less sensitive,
@@ -77,8 +78,8 @@ Examples:
 - CPU base and boost frequencies
 - CPU TDP / cTDP
 - GPU board/TDP/TBP values
-- min/max/default power-cap ranges queried at runtime
-- supported clocks or performance landmarks exposed by the driver
+- min/max power-cap ranges queried at runtime
+- CPU frequency landmarks (`cpuinfo_min_freq`, `cpuinfo_max_freq`, `base_frequency`) and GPU clock ranges (the lowest and highest levels of the amdgpu `pp_dpm_*` tables; `nvidia-smi -q -d SUPPORTED_CLOCKS` and the `clocks.max.*` fields of the clock query), which the agent reads at discovery for the governor presets and publishes in `NodeHardware` (`status.cpu.landmarks`, `status.gpu.governor.clockRangesMHz`). They are facts about the hardware, not telemetry: no component reads a running clock as an input to the twin or the policy.
 
 ### 2.2 Public measured
 Examples:
@@ -493,17 +494,15 @@ The simulator distributes the node-average GPU utilization across the devices ra
 
 ## 6.2 Vendor APIs used by the real agent
 
+The agent calls the vendor command-line tools and reads sysfs; it links no vendor library. Measured GPU power reaches the twin through Prometheus (`hw.power`, `hw.energy`), never through these calls.
+
 ### NVIDIA
-Joulie uses NVML semantics for:
-- querying min/max/default power limits,
-- applying a new per-device power limit,
-- reading current power and (optionally) clocks.
+- Caps: `nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name` for the cap range and the current limit, and `nvidia-smi -i <index> -pl <W>` to set a per-device limit.
+- Governors: `nvidia-smi --query-gpu=pci.bus_id,clocks.sm,clocks.mem,clocks.max.sm,clocks.max.mem,pstate,clocks_event_reasons.active` and `nvidia-smi -q -d SUPPORTED_CLOCKS` for discovery, and `nvidia-smi -i <pci bus id>` with `-lgc`, `-lmc`, `-rgc` or `-rmc` to set or reset clock locks. A lock has no getter, so the clock query is also how the agent sees a lock in use (see [Governor control]({{< relref "/docs/architecture/agent.md#governor-control" >}})).
 
 ### AMD
-Joulie uses ROCm SMI / AMD SMI semantics for:
-- querying power-cap ranges,
-- applying per-device power caps,
-- reading current power and related telemetry.
+- Caps: `rocm-smi --showpowercap --showproductname --json` for the cap range and the current cap, and `rocm-smi -d <index> --setpoweroverdrive <W>` to set a per-device cap.
+- Governors: amdgpu sysfs under `/sys/bus/pci/devices/<pci bus id>/`, as root, each write read back: `power_dpm_force_performance_level`, the `pp_dpm_sclk`, `pp_dpm_mclk` and `pp_dpm_fclk` tables for the clock ranges, and `pp_od_clk_voltage` for a compute clock ceiling. `rocm-smi` and `amd-smi` are never used to set a governor.
 
 ## 6.3 Natural power envelope
 For GPU workloads, Joulie uses the concept of a **natural power envelope**:
@@ -622,6 +621,90 @@ So the generic fallback GPU model preserves the same core behavior as the richer
 - compute-bound workloads are sensitive to caps earlier,
 - memory-bound workloads often remain insensitive until caps fall below their natural draw.
 
+## 6.8 Emulated nodes: governor and clock physics
+
+An emulated node (`simulator/pkg/hwemu`, emulate mode) runs the CPU and GPU governors its profile describes. The rules below apply to a profile with the governor facts, which every builtin profile has; a profile without them keeps the frequency rule of earlier releases (performance at the maximum, generic powersave at the minimum, any other governor linear in load). The standalone and Kubernetes-mode models of the rest of this page keep the implied performance governor.
+
+### CPU governors
+
+At every 100 ms substep each cpufreq policy's governor sets a frequency (`phys.GovernorStep`, Linux v6.12 rules):
+
+- `performance` holds `scaling_max_freq`; generic `powersave` holds `scaling_min_freq`.
+- `schedutil` asks 1.25 x the demand in kHz and takes the lowest table entry at or above it; on a three-entry acpi-cpufreq table a light load sits at the lowest entry.
+- `ondemand` jumps to the maximum above `up_threshold`, else runs in proportion to the load; `conservative` steps by `freq_step` per sampling period between `down_threshold` and `up_threshold`; `userspace` holds `scaling_setspeed`.
+- `powersave` on intel_pstate with HWP and on amd-pstate-epp is the hardware's own algorithm, shaped by EPP (assumed): `f = min + (max - min) x c(epp) x min(1, u x (1 + eppGain x (255 - epp) / 255))` with a full-load ceiling `c(epp) = max(0.5, 1 - eppCeilingDrop x epp / 128)`. At the shipped EPP 128 a fully loaded CPU runs at 0.8 of its range; EPP 0 reaches the maximum. Without an EPP file it is intel_pstate's own rule, 1.25 x the maximum x the busy share.
+- A table driver with boost runs above its top entry, up to `cpuinfo_max_freq`, only when the governor sets that entry.
+
+The governor reads the busy share of the substep that ended, measured at the frequency the CPU ran at, so it reacts one substep late, which stands in for `rate_limit_us`. A new load moves it at once; the running frequency then ramps toward its choice with `freqRampMS`.
+
+**Work in cycles.** A load's CPU utilization is the share of time the work keeps a CPU busy at the frequency performance would run it at under the present limits. At a lower frequency the same work keeps the CPU busy longer: `u_eff = min(1, u x f_performance / f_governor)`. Package power uses `u_eff` in place of `u` (`P = idle + (max - idle) x (u_eff x act)^alpha x f^beta`), State reports it as the package utilization, and the governor sees it, so schedutil at a demand of 0.3 on a 2x EPYC 9654 runs at 1.5 GHz with the CPUs 74 % busy. Under performance `u_eff = u`. A binding RAPL or HSMP cap is solved as before and wins over every governor's choice.
+
+**Throughput reference.** A CPU job's speed is `S(f_eff) / S(f_ref)` for its class, where `S` is the knee model of section 5.4, `f_eff` the frequency `scaling_cur_freq` shows (governor, boost and cap included) and `f_ref` what performance runs at with `scaling_max_freq` at `cpuinfo_max_freq` and the profile's boost, whatever the governor. Performance uncapped gives 1; generic powersave at full load on the 9654 gives `S(1.5 GHz) / S(3.7 GHz)`. A governor that runs slower draws less power for longer, so its energy per unit of work can go either way. Whether a fixed job uses less energy under performance (race to idle) depends on the idle share of the power; on the shipped 2x Xeon 8260 profile (idle 40 of 165 W per package, `betaFreq` 1.35) EPP 255 uses about 2 % less energy than performance for a compute-bound job, and with a package idle of 140 W performance wins.
+
+**Idle cost.** `physics.cpu.idleGovernorDeltaW` is added to an idle package (`u_eff` below 0.05) whose governor holds the top frequency; it is 0 in every builtin profile, so idle power is the same under every governor.
+
+### GPU clocks
+
+The AMD and NVIDIA lanes keep each GPU's clock state: the compute ceiling a level, an overdrive range or an `-lgc` lock sets, the data-path level (AMD fclk, socclk and uclk, NVIDIA memory clock) and whether idle gating is off (AMD `profile_*` levels). The physics turns it into power and speed through one clock scale shared with the cap (`phys.GPUPowerWithClock`, `phys.GPUThroughputWithClock`).
+
+The cap and the governor are two limits on one clock. The cap implies a compute clock, the compute scale of the capped board model of section 6.4, `(cap / P_natural)^computeGamma`; the GPU runs at the lower of that clock and the governor's, never at their product. Lowering either limit never raises the power or the throughput of any workload class (`TestGP13LoweringTheCapOrTheClockNeverRaisesPowerOrThroughput`).
+
+- Below the clock the cap allows, dynamic power scales with `(f_c / f_c,max)^clockBeta`; compute-bound work runs at `f_c / f_c,max`, memory-bound work keeps its speed above `memoryKneeFrac` of the maximum clock and slows as `(f_c / knee)^memoryKneeGamma` below it. A data path forced to its lowest level costs memory-bound work `dataPathGamma` of its speed. On NVIDIA the scale is taken against the sustained maximum, so a lock above it changes nothing.
+- An idle GPU (utilization below 0.05) draws `dataPathHoldW` more while its data path is at its maximum, and `gatingOffIdleW` more with idle gating off. Under `auto` the data path rises while the GPU's own memory-active work runs and holds `autoHoldS` after it; the GPU's own work always meets it raised.
+- Power is never more than the governor's clock draws without a cap, `idle + (P_natural - idle) x (f_c / f_c,max)^clockBeta`. The two exponents describe one clock when `computeGamma x clockBeta x (1 - idle / max)` is at most 1: then this bound never binds, a lock at the cap-implied clock draws the cap and a lock above it changes nothing (`TestGP09LockAndCapActThroughOneClock`). Beyond that the board's cap response would draw more at a clock than the clock curve does, and this bound decides, so a cap never raises the power of a locked GPU (`TestGP14LoweringTheCapNeverRaisesALockedGPU`).
+- The memory share of the throughput is the lower of two limits, the capped board's memory scale and the memory knee at the governor's clock; the compute share is the run clock.
+- At the maximum clock, with the data path at its maximum and gating on, power and speed are those of the board model of sections 6.3 and 6.4 (`TestGP07ClockAtMaxEqualsTheCappedBoardModel`).
+
+### Peer transfers
+
+GPU to GPU copies of a load share each receiver's `gpus.transfer.peerLinkGBps`; State counts the bytes each GPU received and sent. Copies from a NIC or from host memory, and copies to the host, take their demand. A family can have a receiver gate (`gpus.transfer.receiverGate`), which bounds inbound copies by the receiver's data-path state: a receiver forced to its lowest level, or idle under `auto`, lets through only a fraction of the link, in total over all its sources, whatever the sources do. It is off in every builtin profile; `hwemu.Options.ReceiverGate` can force it on or off.
+
+### Parameters
+
+Every value is assumed and to be calibrated; the sweep ranges are the ones experiments should cover before trusting a sign.
+
+| Fact | Builtin value | Sweep |
+|---|---|---|
+| `physics.cpu.idleGovernorDeltaW` | 0 W | 0 to 5 % of idle |
+| `physics.cpu.eppGain` | 1.0 | 0.5 to 2 |
+| `physics.cpu.eppCeilingDrop` | 0.2 | 0 to 0.25 |
+| `physics.gpu.clockBeta` | 1.5 | 1.0 to 2.5 |
+| `physics.gpu.memoryKneeFrac` | 0.65 | 0.4 to 0.87 |
+| `physics.gpu.memoryKneeGamma` | 1.0 | |
+| `physics.gpu.dataPathHoldW` | 10 W; 0 W on the H100 profiles, whose HBM runs at one clock at idle | 1 to 50 W |
+| `physics.gpu.gatingOffIdleW` | 20 W on AMD, 0 W on NVIDIA, where no preset turns gating off | 5 to 50 W |
+| `physics.gpu.dataPathGamma` | 0.3 | |
+
+## 6.9 Governor presets
+
+A frequency governor is a control dimension of its own, next to the power cap. A cap bounds the power a CPU package or a GPU may draw; a governor chooses the frequency the hardware runs at below that bound, from the load it sees. Both act on one clock: the hardware runs at the lower of what the cap allows and what the governor chooses (section 6.8 gives the simulator's form for GPUs, and a binding RAPL cap wins over every CPU governor's choice).
+
+Joulie expresses a governor as one vendor-neutral preset per component in `NodeTwin.spec`, because the native words mean different things on different drivers: `powersave` under `intel_pstate` in active mode is the driver's own P-state algorithm, not the generic governor that holds the minimum frequency, and an NVIDIA GPU has no performance level file at all, only clock locks. `pkg/governor` is the only place a preset becomes a native setting; every other component speaks presets. The mapping per driver is in [CPU support]({{< relref "/docs/hardware/cpus.md#governors" >}}), per GPU family in [GPU support]({{< relref "/docs/hardware/gpus.md#governors" >}}).
+
+| Component | Preset | Intent |
+|---|---|---|
+| CPU | `performance` | highest frequency within `scaling_max_freq` at any load: race to idle |
+| CPU | `balanced` | demand-driven, quick ramp |
+| CPU | `efficiency` | demand-driven with an energy bias |
+| CPU | `boost` `on` or `off` | frequency boost (turbo), changed only when the spec names it |
+| GPU | `auto` | the vendor default |
+| GPU | `sustained` | data-path clocks (memory, fabric) at their maximum, idle gating kept, the compute clock free to idle |
+| GPU | `efficient` | the compute clock under a ceiling, `computeClockCeilingPctOfMax` of its maximum (80 % by default), the data path dynamic |
+| GPU | `low` | every clock at its minimum; for experiments |
+| GPU | `peak` | every clock at its maximum, idle gating off on AMD; for experiments |
+
+A demand-driven GPU governor raises the clocks for the device's own kernels. Data another device writes into its memory runs no kernel on it, so the governor can leave the data-path clocks low while the copy runs; `sustained` holds them up and keeps idle gating, at some idle power. Whether those clocks bound a transfer depends on the family, so no default selects `sustained`: an operator opts a GPU model in once a measurement on that model shows the gain.
+
+What Joulie writes, and what it leaves alone:
+
+- CPU: each policy's `scaling_governor`, then `energy_performance_preference` where the driver has one (never under `performance`, where the kernel rejects it), then boost when the spec names it. Never the driver mode (switching it resets every setting), `scaling_min_freq`, `scaling_max_freq` (the DVFS fallback owns it), governor tunables, idle states, the uncore clock, EPB or HSMP.
+- AMD GPU: sysfs as root, each write read back, because a tool's exit code proves nothing; `rocm-smi` and `amd-smi` are never used to set a governor.
+- NVIDIA GPU: `nvidia-smi -i <pci bus id>` clock locks, and a reset only of a lock the agent set itself; never application clocks (`-ac`, `-rac`) or `--auto-boost-default`.
+- GPUs are keyed by PCI bus id, never by a tool's index, because tools enumerate GPUs in different orders.
+- A GPU node gets no CPU governor by default (`CPU_GOVERNOR_ON_GPU_NODES`), the rule the CPU cap follows.
+
+Governor control is off by default behind two gates, the controller manager's `GOVERNOR_CONTROL` and the agent's `GOVERNOR_WRITES`; discovery is always on. The agent records the state it found before its first write and restores it when a preset disappears, when writes are turned off, and on exit ([Governor control]({{< relref "/docs/architecture/agent.md#governor-control" >}})). With control on, the defaults are provisional: performance nodes get the CPU `performance` preset and no GPU preset; eco nodes get the CPU `efficiency` preset and the GPU `efficient` preset at 80 %. The values that decide their energy effect (section 6.8, "Parameters") are assumed until a clock sweep on each family measures them; the [governor exploration]({{< relref "/docs/experiments/governor-exploration.md" >}}) studies them in the simulator.
+
 ## 7. Workload-boundness and slowdown semantics
 
 The simulator is now explicit about the signals that decide whether a workload behaves like a compute-bound, memory-bound, or IO-/feed-limited regime.
@@ -725,6 +808,7 @@ There are a few caveats we want readers to keep in mind when interpreting simula
 - **CPU package power limits are windowed averages, not hard instantaneous clamps.** The effective result depends on time windows, scheduler callbacks, and platform-specific control loops.
 - **Cap dynamics depend on workload and platform generation.** Public RAPL studies show that settling times and frequency/uncore responses differ across systems and between CPU-bound and memory-bound workloads (see [R28] in References).
 - **Thermal throttling is workload- and environment-dependent.** The current thermal model is intentionally first-order and useful for cluster-control realism, but it is not a CFD model of the chassis.
+- **Emulated overdrive accepts a combined write.** The emulated `pp_od_clk_voltage` takes `s 1 <MHz>` and `c` in one write, one command per line; the kernel takes one command per write and fails that combined write with `EINVAL`. The agent writes each command on its own and waits for the file to print its table again before `c`, so it works on both.
 - **Unknown hardware falls back gracefully, but with less realism.** The system still works, but predictions are less trustworthy when the platform is not represented by measured or proxy catalog data.
 
 For this reason, Joulie should be read as:
@@ -740,6 +824,7 @@ For this reason, Joulie should be read as:
 - Vendor APIs expose min/max cap ranges, but exact internal PMU behavior can still depend on firmware and board design.
 - The current thermal model is still a first-order approximation; it does not attempt to model fan curves, hotspot sensors, package-to-package coupling, or chassis airflow in detail.
 - The current workload-boundness model is still a mixture-of-experts approximation; it is not yet calibrated from per-application traces for every workload family.
+- The governor and clock physics of emulated nodes (section 6.8) uses assumed parameters; no governor or clock sweep has been measured on hardware yet, so the governor presets' energy effects are directions to test, not results.
 
 The implementation is designed so that any proxy can later be replaced with measured curves from bare-metal runs.
 

@@ -16,6 +16,9 @@ import (
 //     any other file (a frequency bound, a governor, a time window);
 //   - reverted-out-of-range, parse-error and restored are write.rejected
 //     with error.type reverted_out_of_range, parse_error and restored;
+//   - rejected, a value the real driver refuses with an errno, is
+//     write.rejected with error.type the errno in lower case (einval,
+//     eopnotsupp, ebusy);
 //   - reset-persistence-off is cap.reset.
 //
 // An unknown kind gives the zero Event, which callers skip.
@@ -32,10 +35,27 @@ func Classify(e hwemu.Event) (semconv.Event, string) {
 		return semconv.EventSimWriteRejected, semconv.ErrorTypeParseError
 	case hwemu.EventRestored:
 		return semconv.EventSimWriteRejected, semconv.ErrorTypeRestored
+	case hwemu.EventRejected:
+		return semconv.EventSimWriteRejected, classifyErrno(e.Errno)
 	case hwemu.EventResetPersistenceOff:
 		return semconv.EventSimCapReset, ""
 	}
 	return semconv.Event{}, ""
+}
+
+// classifyErrno is the error.type of a rejected write: the semconv value of
+// each errno hwemu names, and any other errno in lower case, the style of
+// the other values.
+func classifyErrno(errno string) string {
+	switch errno {
+	case hwemu.ErrnoEINVAL:
+		return semconv.ErrorTypeEINVAL
+	case hwemu.ErrnoEOPNOTSUPP:
+		return semconv.ErrorTypeEOPNOTSUPP
+	case hwemu.ErrnoEBUSY:
+		return semconv.ErrorTypeEBUSY
+	}
+	return strings.ToLower(errno)
 }
 
 // classifyLimitFile reports whether file sets a power limit: a powercap

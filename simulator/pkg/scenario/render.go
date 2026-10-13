@@ -419,7 +419,7 @@ var WorkloadgenFlags = []string{
 	"compute-bound-perf-boost", "cpu-sensitivity", "dip-day-probability", "dip-multiplier",
 	"diurnal-burst-max", "diurnal-burst-min", "diurnal-peak-rate", "emit-workload-records",
 	"gpu-ratio", "gpu-request", "gpu-sensitivity", "jobs", "max-duration-sec", "mean-inter-arrival-sec",
-	"min-gpu-request", "mode", "namespace", "perf-ratio", "sim-hours", "time-scale", "work-scale",
+	"min-gpu-request", "mode", "namespace", "peer-transfer-intensity", "perf-ratio", "sim-hours", "time-scale", "work-scale",
 }
 
 // RefusedWorkloadgenFlags are the binary's flags a scenario may not set,

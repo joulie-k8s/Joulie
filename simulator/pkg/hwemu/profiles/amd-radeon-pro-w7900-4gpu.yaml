@@ -21,6 +21,11 @@ sources:
   rocmsmi:     {kind: published, ref: "https://github.com/ROCm/rocm_smi_lib/blob/323ab1105dce/python_smi_tools/rocm_smi.py", note: "head of the develop branch; line 1 is #!/usr/bin/env python3, and rocm_smi/CMakeLists.txt:117-122 installs the rocm-smi command as a symlink to this script"}
   amdsmicli:   {kind: published, ref: "https://github.com/ROCm/amdsmi/blob/rocm-7.2.0/amdsmi_cli/amdsmi_cli.py", note: "line 1 is #!/usr/bin/env python3, and amdsmi_cli/CMakeLists.txt:68-75 installs the amd-smi command as a symlink to this script"}
   amdlabeller: {kind: published, ref: "https://github.com/ROCm/k8s-device-plugin/blob/3b9a79fe1ed1/cmd/k8s-node-labeller/main.go", note: "lines 38-39, 84, 209-238"}
+  w7900dpm:    {kind: measured, ref: "pp_dpm_* readback under each performance level, and rocm-smi --setperflevel without root, on a node with 4x Radeon PRO W7900, 2026-10", note: "starred levels read under auto idle, auto with a kernel running, low, high, profile_standard, profile_min_mclk and profile_peak; pp_dpm_pcie read at level 2, 16.0GT/s, x16 623Mhz, in every state; after a kernel stops, the data-path levels under auto hold about 10.5 s and then fall; peer copies between two boards peak at 28.0 GB/s with both data paths raised; an unprivileged rocm-smi --setperflevel changes nothing and exits 0"}
+  amdgpupm617: {kind: published, ref: "https://github.com/torvalds/linux/blob/v6.17/drivers/gpu/drm/amd/pm/amdgpu_pm.c", note: "power_dpm_force_performance_level parses its words by prefix and fails any word the firmware refuses with -EINVAL (365-398); pp_power_profile_mode takes the first character as the mode (1381-1386)"}
+  smuv13:      {kind: published, ref: "https://github.com/torvalds/linux/blob/v6.17/drivers/gpu/drm/amd/pm/swsmu/smu13/smu_v13_0.c", note: "smu_v13_0_set_performance_level (1582-1665): high and low pin every domain to the table maximum or minimum; profile_standard and profile_peak to the pstate clocks; profile_min_sclk and profile_min_mclk pin one domain; manual and profile_exit change nothing; any other level is -EINVAL"}
+  smuv1300:    {kind: published, ref: "https://github.com/torvalds/linux/blob/v6.17/drivers/gpu/drm/amd/pm/swsmu/smu13/smu_v13_0_0_ppt.c", note: "workload map (267-276); fine-grained sclk printed as two levels, or three around a current clock (1253-1280); pp_power_profile_mode format (2483-2532); umd pstate clocks: uclk standard and peak the table maximum, fclk and socclk standard the table minimum, peak the maximum, gfxclk standard BaseClockAc and peak GameClockAc (2301-2358)"}
+  amdgpusmu:   {kind: published, ref: "https://github.com/torvalds/linux/blob/v6.17/drivers/gpu/drm/amd/pm/swsmu/amdgpu_smu.c", note: "entering a profile_* level saves the level and turns deep sleep, GFX ULV and GPO off; leaving it turns them back on (2279-2315)"}
 node:
   labels:
     amdgpu:
@@ -69,6 +74,51 @@ gpus:
     defaultW: {v: 241, src: "measured:w7900smi#power1_cap_default, every board"}
   powerSensor: {v: average, src: "measured:w7900smi#rocm-smi --showpower prints Average Graphics Package Power, and each board has one power file (amdgpupm:3827-3834)"}
   ppt1: {v: absent, src: "measured:w7900smi#amd-smi static --limit prints ppt1 as N/A"}
+  # The amdgpu performance level and clock tables, SMU 13.0.0. Every level
+  # but perf_determinism is taken; high holds the data-path clocks at their
+  # maximum and keeps idle gating, the profile_* levels turn it off.
+  dpm:
+    levels:
+      accept: {v: [auto, low, high, manual, profile_exit, profile_standard, profile_min_sclk, profile_min_mclk, profile_peak], src: "published:smuv13#smu_v13_0_set_performance_level handles each of these levels, profile_exit through amdgpusmu"}
+      reject:
+        perf_determinism: {v: EINVAL, src: "published:smuv13#the default case returns -EINVAL; amdgpupm617 returns -EINVAL for any refusal"}
+    default: {v: auto, src: "measured:w7900dpm#auto on every board before and after the sweep"}
+    tables:
+      sclk:
+        fine: {v: true, src: "published:smuv1300#gfxclk is printed as a fine-grained range"}
+        minMHz: {v: 500, src: "assumed:the minimum of the fine-grained range was not read"}
+        maxMHz: {v: 3000, src: "assumed:at least the 2962 MHz read under load (w7900dpm); the maximum of the range was not read"}
+      mclk: {v: [96, 456, 772, 1124], src: "measured:w7900dpm#pp_dpm_mclk levels"}
+      fclk: {v: [601, 1000, 1200, 1801, 2301], src: "measured:w7900dpm#pp_dpm_fclk levels"}
+      socclk: {v: [500, 600, 750, 1200], src: "measured:w7900dpm#pp_dpm_socclk levels"}
+      pcie: {v: ["2.5GT/s, x1 97Mhz", "8.0GT/s, x16 400Mhz", "16.0GT/s, x16 623Mhz"], src: "measured:w7900dpm#level 2 as read; levels 0 and 1 are assumed"}
+    pstate:
+      standard:
+        sclkMHz: {v: 975, src: "measured:w7900dpm#sclk read under profile_standard, the pinned BaseClockAc of smuv1300"}
+        mclkMHz: {v: 1124, src: "published:smuv1300#uclk standard is the table maximum"}
+        fclkMHz: {v: 601, src: "published:smuv1300#fclk standard is the table minimum"}
+        socclkMHz: {v: 500, src: "published:smuv1300#socclk standard is the table minimum"}
+      peak:
+        sclkMHz: {v: 1779, src: "measured:w7900dpm#sclk read under profile_peak, the pinned GameClockAc of smuv1300"}
+        mclkMHz: {v: 1124, src: "published:smuv1300#uclk peak is the table maximum"}
+        fclkMHz: {v: 2301, src: "published:smuv1300#fclk peak is the table maximum"}
+        socclkMHz: {v: 1200, src: "published:smuv1300#socclk peak is the table maximum"}
+    od:
+      enabled: {v: false, src: "assumed:pp_od_clk_voltage exists only with bit 14 of amdgpu.ppfeaturemask, off by default"}
+    powerProfiles:
+      modes: {v: [BOOTUP_DEFAULT, 3D_FULL_SCREEN, POWER_SAVING, VIDEO, VR, COMPUTE, CUSTOM, WINDOW_3D], src: "published:smuv1300#workload map, in index order"}
+      default: {v: BOOTUP_DEFAULT, src: "assumed:the boot profile"}
+    autoHoldS: {v: 10.5, src: "measured:w7900dpm#hold of the data-path levels under auto after a kernel stops"}
+    unprivilegedSetIsNoop: {v: true, src: "measured:w7900dpm#unprivileged rocm-smi --setperflevel"}
+  # The peer link between two boards. The receiver gate stays off in the
+  # repository; its fractions here are neutral.
+  transfer:
+    peerLinkGBps: {v: 28.0, src: "measured:w7900dpm#peak of a peer copy with both data paths raised"}
+    receiverGate:
+      enabled: {v: false, src: "assumed:off in every repository profile"}
+      slowFraction: {v: 1.0, src: "assumed:neutral, no gate"}
+      midFraction: {v: 1.0, src: "assumed:neutral, no gate"}
+      midPairFraction: {v: 0.0, src: "assumed:neutral, no gate"}
   # rocm-smi and amd-smi are Python scripts run through /usr/bin/env;
   # fakesmi checks the interpreter chain, in this order, under HWEMU_ROOTFS.
   tools:
@@ -101,3 +151,9 @@ physics:
     memoryGamma: {v: 1.2, src: "assumed:simulator default SIM_GPU_MEMORY_GAMMA; throughput only"}
     capSettleTauMS: {v: 350, src: "assumed:no public settling data; the MI300X profile's value"}
     telemetryWindowMS: {v: 1000, src: "assumed:no public averaging window for power1_average"}
+    clockBeta: {v: 1.5, src: "assumed:dynamic power falls faster than the compute clock, as the voltage falls with it; to sweep from 1.0 to 2.5"}
+    memoryKneeFrac: {v: 0.65, src: "assumed:memory-bound work keeps its speed down to 0.65 of the maximum compute clock, between the 0.41 and 0.87 where published memory-bound clock sweeps stop being flat"}
+    memoryKneeGamma: {v: 1.0, src: "assumed:below the knee memory-bound work slows in proportion to the clock"}
+    dataPathHoldW: {v: 10.0, src: "assumed:no public idle cost of data-path clocks held at their maximum; to sweep from 1 to 50 W per GPU"}
+    gatingOffIdleW: {v: 20.0, src: "assumed:no public idle cost of deep sleep, ULV and GPO turned off under a profile level; to sweep from 5 to 50 W"}
+    dataPathGamma: {v: 0.3, src: "assumed:memory-bound work loses 0.3 of its speed with the data path at its lowest level"}

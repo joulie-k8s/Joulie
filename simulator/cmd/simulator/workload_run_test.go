@@ -218,12 +218,35 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// runUnderPerformance writes performance into the scaling_governor of every
+// cpufreq policy of node, as an agent would, before the first tick. The
+// tests that call it are about the workload engine and caps, not governors:
+// the shipped Intel profile runs intel_pstate powersave with EPP 128, below
+// the reference frequency, and the emulator counts work in cycles (design
+// D10), so a 0.6 load would read about 0.705 and a job would run at about
+// 0.88 of its ideal rate. Under performance the work runs at the reference
+// and the load reads as set.
+func runUnderPerformance(t *testing.T, et *emulateTest, node string) {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(et.root, node, layout.SysDir, filepath.FromSlash(layout.CPUFreqDir()), "policy*", "scaling_governor"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("%s has no cpufreq policies: %v", node, err)
+	}
+	for _, f := range files {
+		if err := os.WriteFile(f, []byte("performance\n"), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // TestV1BaseLoadSuppressedDuringRun: the spec's base load drives the nodes
 // until a run starts; while it is active only its jobs load them, and the
-// base load returns once it ends (X9).
+// base load returns once it ends (X9). The host runs performance
+// (runUnderPerformance), so its utilization is the load.
 func TestV1BaseLoadSuppressedDuringRun(t *testing.T) {
 	et := newEmulateTest(t, emulateTestConfig{})
 	intel := et.node(t, "intel")
+	runUnderPerformance(t, et, intel)
 	snap := et.tick(t, emulateTestStart.Add(time.Second))
 	if u := cpuUtil(t, snap, intel); math.Abs(u-0.6) > 1e-6 {
 		t.Fatalf("before the run, %s runs at %v, want the 0.6 base load", intel, u)
@@ -256,10 +279,13 @@ func v1CPUJob(id string) string {
 // TestV1CPUCapSlowsCPUJob: two identical jobs on two identical hosts; a
 // package power limit written into one host's powercap tree, as the agent
 // writes it, slows the job on that host and only that one. The job on the
-// uncapped host runs at its ideal rate.
+// uncapped host runs at its ideal rate. Both hosts run performance
+// (runUnderPerformance), so the ideal rate is the reference.
 func TestV1CPUCapSlowsCPUJob(t *testing.T) {
 	et := newEmulateTest(t, emulateTestConfig{spec: v1TwoNodeSpec})
 	a, b := et.node(t, "a"), et.node(t, "b")
+	runUnderPerformance(t, et, a)
+	runUnderPerformance(t, et, b)
 	h := newV1Harness(t, et.s, nil, et, []string{v1CPUJob("ja"), v1CPUJob("jb")}, workload.RunOptions{})
 	h.step(0)
 	h.step(1)

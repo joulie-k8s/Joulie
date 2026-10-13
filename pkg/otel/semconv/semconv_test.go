@@ -103,6 +103,8 @@ var semconvDefinitions = map[string]struct {
 	"hw.cpu.speed.limit":          {Gauge, "Hz", Int, []string{"hw.id", "hw.name", "hw.parent", "hw.model", "hw.vendor", "hw.limit_type"}},
 	"hw.gpu.utilization": {Gauge, "1", Double, []string{"hw.id", "hw.name", "hw.parent", "hw.driver_version", "hw.firmware_version",
 		"hw.model", "hw.serial_number", "hw.vendor", "hw.gpu.task"}},
+	"hw.gpu.io": {Counter, "By", Int, []string{"hw.id", "hw.name", "hw.parent", "hw.driver_version", "hw.firmware_version",
+		"hw.model", "hw.serial_number", "hw.vendor", "network.io.direction"}},
 }
 
 func sortedCopy(s []string) []string {
@@ -323,7 +325,7 @@ func TestSV02HostMetricsHaveNoTypeAndComponentMetricsFollowSemconv(t *testing.T)
 			continue // SV04 reports it
 		}
 		allowed := map[string]bool{}
-		for _, a := range def.attrs {
+		for _, a := range append(append([]string(nil), def.attrs...), joulieExtensions[m.Name]...) {
 			allowed[a] = true
 		}
 		for _, a := range m.Attributes {
@@ -379,14 +381,14 @@ func TestSV03JoulieNamesUseTheApplicationPrefix(t *testing.T) {
 // the instrument, unit and value type of its v1.44.0 definition, so host
 // energy and both CPU speeds are Int.
 func TestSV04UnitsSuffixesAndValueTypes(t *testing.T) {
-	units := map[string]bool{"J": true, "W": true, "Cel": true, "Hz": true, "1": true, "s": true}
+	units := map[string]bool{"J": true, "W": true, "Cel": true, "Hz": true, "1": true, "s": true, "By": true}
 	annotation := regexp.MustCompile(`^\{[a-z][a-z0-9_.]*\}$`)
 	for _, m := range Metrics() {
 		if strings.HasSuffix(m.Name, "_total") {
 			t.Errorf("metric %q ends in _total; Prometheus adds the suffix to counters itself", m.Name)
 		}
 		if !units[m.Unit] && !annotation.MatchString(m.Unit) {
-			t.Errorf("metric %q has unit %q, want one of J, W, Cel, Hz, 1, s or an annotation {...}", m.Name, m.Unit)
+			t.Errorf("metric %q has unit %q, want one of J, W, Cel, Hz, 1, s, By or an annotation {...}", m.Name, m.Unit)
 		}
 		if !strings.HasPrefix(m.Name, "hw.") {
 			continue

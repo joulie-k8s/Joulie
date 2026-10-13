@@ -107,6 +107,123 @@ spec:
                     type: integer
                   driverFamily:
                     type: string
+                  governor:
+                    description: Governor is the CPU frequency governor state the
+                      agent discovered.
+                    properties:
+                      available:
+                        description: Available is scaling_available_governors.
+                        items:
+                          type: string
+                        type: array
+                      baseline:
+                        description: |-
+                          Baseline is the state found before the agent's first write, which the
+                          agent restores.
+                        properties:
+                          groups:
+                            items:
+                              description: CPUGovernorState is the governor state
+                                of a group of cpufreq policies.
+                              properties:
+                                boost:
+                                  enum:
+                                  - "on"
+                                  - "off"
+                                  type: string
+                                epp:
+                                  type: string
+                                governor:
+                                  type: string
+                                policies:
+                                  description: |-
+                                    Policies lists the policy numbers in the kernel's list form, such as
+                                    0-63 or 0,2,4.
+                                  type: string
+                              type: object
+                            type: array
+                          recordedAt:
+                            description: RecordedAt is the RFC3339 time the baseline
+                              was recorded.
+                            type: string
+                        type: object
+                      boost:
+                        description: Boost is the frequency boost (turbo) state, when
+                          the driver has one.
+                        properties:
+                          scope:
+                            enum:
+                            - global
+                            - per-cpu
+                            - no-turbo
+                            type: string
+                          state:
+                            enum:
+                            - "on"
+                            - "off"
+                            type: string
+                        type: object
+                      current:
+                        description: |-
+                          Current is scaling_governor when every policy has the same one, else
+                          mixed.
+                        type: string
+                      driver:
+                        description: |-
+                          Driver is scaling_driver, such as acpi-cpufreq, intel_pstate or
+                          amd-pstate-epp.
+                        type: string
+                      driverMode:
+                        description: |-
+                          DriverMode is active, passive or guided, from intel_pstate/status or
+                          amd_pstate/status; empty for a driver without modes.
+                        type: string
+                      epp:
+                        description: EPP is the energy-performance preference, when
+                          the driver has one.
+                        properties:
+                          available:
+                            description: |-
+                              Available is the preferences the policies accept under some governor:
+                              energy_performance_available_preferences, except on amd-pstate-epp
+                              under the performance governor, where that file lists only performance
+                              and the driver's own set is published instead.
+                            items:
+                              type: string
+                            type: array
+                          current:
+                            description: Current is energy_performance_preference.
+                            type: string
+                        type: object
+                      presets:
+                        description: |-
+                          Presets lists every preset the node accepts with the result it gives;
+                          a preset the node cannot express is left out.
+                        items:
+                          description: |-
+                            GovernorPresetSupport is one preset a node accepts. Result is applied when
+                            the preset changes the hardware state, equivalent when it maps to a state
+                            the node already expresses another way; Native is the native setting it
+                            maps to, in the driver's own words.
+                          properties:
+                            native:
+                              type: string
+                            preset:
+                              type: string
+                            result:
+                              enum:
+                              - applied
+                              - equivalent
+                              type: string
+                          required:
+                          - preset
+                          type: object
+                        type: array
+                      writable:
+                        description: Writable is true when the agent can write the
+                          governor files.
+                        type: boolean
+                    type: object
                   landmarks:
                     description: CPULandmarks holds the characteristic frequencies
                       of the CPU.
@@ -157,6 +274,116 @@ spec:
                     type: integer
                   currentCapWatts:
                     type: number
+                  governor:
+                    description: Governor is the GPU clock governor state the agent
+                      discovered.
+                    properties:
+                      baseline:
+                        description: |-
+                          Baseline is the state found before the agent's first write, which the
+                          agent restores.
+                        properties:
+                          devices:
+                            items:
+                              description: |-
+                                GPUGovernorDeviceState is the governor state of one GPU, keyed by its PCI
+                                bus id (domain:bus:device.function), never by a tool's index, since tools
+                                enumerate GPUs in different orders.
+                              properties:
+                                busId:
+                                  type: string
+                                level:
+                                  description: |-
+                                    Level is the amdgpu performance level, or unknown on NVIDIA, where a
+                                    clock lock cannot be read back.
+                                  type: string
+                              required:
+                              - busId
+                              type: object
+                            type: array
+                          recordedAt:
+                            description: RecordedAt is the RFC3339 time the baseline
+                              was recorded.
+                            type: string
+                        type: object
+                      clockRangesMHz:
+                        description: ClockRangesMHz is the minimum and maximum of
+                          each clock domain.
+                        properties:
+                          fabric:
+                            description: ClockRangeMHz is the lowest and highest clock
+                              of a domain, in MHz.
+                            properties:
+                              max:
+                                type: number
+                              min:
+                                type: number
+                            type: object
+                          graphics:
+                            description: ClockRangeMHz is the lowest and highest clock
+                              of a domain, in MHz.
+                            properties:
+                              max:
+                                type: number
+                              min:
+                                type: number
+                            type: object
+                          memory:
+                            description: ClockRangeMHz is the lowest and highest clock
+                              of a domain, in MHz.
+                            properties:
+                              max:
+                                type: number
+                              min:
+                                type: number
+                            type: object
+                        type: object
+                      current:
+                        description: |-
+                          Current is the native state: the amdgpu performance level, or on
+                          NVIDIA the agent's own record of its locks, unknown without one (a
+                          clock lock cannot be read back).
+                        type: string
+                      mechanism:
+                        description: |-
+                          Mechanism is how the agent reads and sets the governor: amdgpu-sysfs
+                          or nvidia-smi.
+                        enum:
+                        - amdgpu-sysfs
+                        - nvidia-smi
+                        type: string
+                      presets:
+                        description: |-
+                          Presets lists every preset the GPUs accept with the result it gives;
+                          a preset the family cannot express is left out.
+                        items:
+                          description: |-
+                            GovernorPresetSupport is one preset a node accepts. Result is applied when
+                            the preset changes the hardware state, equivalent when it maps to a state
+                            the node already expresses another way; Native is the native setting it
+                            maps to, in the driver's own words.
+                          properties:
+                            native:
+                              type: string
+                            preset:
+                              type: string
+                            result:
+                              enum:
+                              - applied
+                              - equivalent
+                              type: string
+                          required:
+                          - preset
+                          type: object
+                        type: array
+                      uniform:
+                        description: Uniform is true when every GPU of the node is
+                          in the same state.
+                        type: boolean
+                      writable:
+                        description: Writable is true when the agent can set the governor.
+                        type: boolean
+                    type: object
                   model:
                     type: string
                   present:

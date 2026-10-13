@@ -176,6 +176,12 @@ type simJob struct {
 	NodeSelector   map[string]string
 	Tolerations    []corev1.Toleration
 	SensitivitySet bool
+
+	// PeerTransferIntensity is workloadProfile.peerTransferIntensity, the
+	// share of the job's GPU time spent moving data between its GPUs on
+	// one node: 0, no transfers, unless the record gives it. Only the v1
+	// engine reads it.
+	PeerTransferIntensity float64
 }
 
 type workloadEngine struct {
@@ -1925,6 +1931,7 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 		memoryIntensity := defaultMemoryIntensity(cpuWorkClass, gpuWorkClass)
 		ioIntensity := defaultIOIntensity(cpuWorkClass)
 		cpuFeedIntensity := 0.0
+		peerTransferIntensity := 0.0
 		sensitivitySet := false
 		if sensRaw, ok := rec["sensitivity"].(map[string]any); ok {
 			if v, ok := sensRaw["cpu"].(float64); ok {
@@ -1973,6 +1980,9 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 			if v, ok := profRaw["cpuFeedIntensityGpu"].(float64); ok {
 				cpuFeedIntensity = clamp01(v)
 			}
+			if v, ok := profRaw["peerTransferIntensity"].(float64); ok {
+				peerTransferIntensity = clamp01(v)
+			}
 		}
 		submitOffset := 0.0
 		if v, ok := rec["submitTimeOffsetSec"].(float64); ok {
@@ -2015,6 +2025,7 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 			Tolerations:        placement.Tolerations,
 			SensitivitySet:     sensitivitySet,
 		}
+		job.PeerTransferIntensity = peerTransferIntensity
 		engine.jobs = append(engine.jobs, job)
 		engine.jobByID[jobID] = job
 		if workloadID != "" {

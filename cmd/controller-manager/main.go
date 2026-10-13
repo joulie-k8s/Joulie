@@ -96,6 +96,13 @@ type NodeHardware struct {
 	CPUControlAvailable bool
 	GPUControlAvailable bool
 	Warnings            []string
+	// CPUGovernorPresets and GPUGovernorPresets are the governor presets the
+	// agent found the node accepts (status.{cpu,gpu}.governor.presets); the
+	// controller manager writes no other. CPUBoostAvailable is true when the
+	// agent found a boost control (status.cpu.governor.boost).
+	CPUGovernorPresets []string
+	GPUGovernorPresets []string
+	CPUBoostAvailable  bool
 }
 
 var (
@@ -136,6 +143,13 @@ var (
 	}, []string{"family"})
 )
 
+// defaultGPUProductLabelKeys are the node labels GPU_PRODUCT_LABEL_KEYS reads
+// by default, first match wins. The AMD node labeller names the board in
+// gpu.product-name (under both of its prefixes); amd.com/gpu.product is the
+// older key, and the family code (GC_11_0_0, AI), read last, names no board.
+const defaultGPUProductLabelKeys = "joulie.io/gpu.product,nvidia.com/gpu.product," +
+	"amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,amd.com/gpu.family"
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[joulie-controller-manager] ")
@@ -161,10 +175,7 @@ func main() {
 	gpuEcoCapPct := floatEnv("GPU_ECO_CAP_PCT_OF_MAX", 60)
 	gpuWriteAbsolute := boolEnv("GPU_WRITE_ABSOLUTE_CAPS", false)
 	gpuModelCaps := parseGPUModelCaps(envOrDefault("GPU_MODEL_CAPS_JSON", "{}"))
-	gpuProductLabelKeys := parseCSVList(envOrDefault(
-		"GPU_PRODUCT_LABEL_KEYS",
-		"joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product,amd.com/gpu.family",
-	))
+	gpuProductLabelKeys := parseCSVList(envOrDefault("GPU_PRODUCT_LABEL_KEYS", defaultGPUProductLabelKeys))
 	hardwareCatalog := loadHardwareCatalog()
 	twinHardwareCatalog = hardwareCatalog // share with fetchNodeHardware in twinstate.go
 
@@ -220,6 +231,9 @@ func main() {
 	}
 	inputCfg.install()
 	inputCfg.logSummary()
+	governorCfg := loadGovernorConfig()
+	governorCfg.install()
+	governorCfg.logSummary()
 	fm := &facilityMetrics{}
 	facCfg := inputCfg.facility
 	// Both loops are manager runnables: they start once the cache has synced
@@ -405,18 +419,11 @@ func reconcileWithCatalog(
 	// runs performance pods, which keep performance caps until they finish
 	// (fsm.StateDrainingPerformance). Only the label and the scheduler see eco.
 	applyDowngradeGuards(ctx, reader, plan, nodesByName)
+	govCfg := currentGovernorConfig()
 	for i := range plan {
 		capProfile := plan[i].Profile
 		if plan[i].Draining {
 			capProfile = profilePerformance
-		}
-		// The policy set CapWatts from the planned profile; reset it from the
-		// profile the node runs at, which the spec writes whenever no percent
-		// cap is set (GPU nodes, and the absolute path below when it cannot
-		// resolve the hardware).
-		plan[i].CapWatts = ecoCap
-		if capProfile == profilePerformance {
-			plan[i].CapWatts = perfCap
 		}
 		// Skip CPU cap on GPU nodes: CPU is ~6% of GPU node power; capping it
 		// saves ~1.2% but slows GPU data feed by ~4.5%, costing 3.8x more energy
@@ -424,6 +431,16 @@ func reconcileWithCatalog(
 		hasGPU := false
 		if n := nodeObjs[plan[i].NodeName]; n != nil {
 			hasGPU = discoverGPUCount(*n) > 0
+		}
+		// The policy set CapWatts from the planned profile; reset it from the
+		// profile the node runs at. The spec writes it whenever no percent cap
+		// is set: on GPU nodes, and on the absolute path below when it cannot
+		// resolve the hardware. A GPU node's CPU gets the performance cap
+		// whatever its profile, so an eco GPU node is not CPU capped at
+		// ECO_CAP_WATTS, and a CPU an earlier release capped there is lifted.
+		plan[i].CapWatts = ecoCap
+		if capProfile == profilePerformance || hasGPU {
+			plan[i].CapWatts = perfCap
 		}
 		if !hasGPU {
 			if cpuWriteAbsolute {
@@ -453,6 +470,13 @@ func reconcileWithCatalog(
 				warnNoGPUIntentOnce(plan[i].NodeName, capProfile, reason)
 			}
 		}
+		// The governors follow the profile the node runs at, like the caps.
+		gpuProduct := ""
+		if n := nodeObjs[plan[i].NodeName]; n != nil {
+			gpuProduct = resolveGPUProduct(n.Labels, gpuProductLabelKeys)
+		}
+		plan[i].CPUGovernor, plan[i].GPUGovernor = govCfg.governorIntents(
+			plan[i].NodeName, capProfile, hasGPU, nodeHardwareByName[plan[i].NodeName], gpuProduct)
 	}
 	recordFamilySplit(plan, nodeHardwareByName)
 
@@ -1008,6 +1032,10 @@ func parseNodeHardware(obj *v1alpha1.NodeHardware) NodeHardware {
 			nh.CPUCapKnown = true
 		}
 		nh.CPUControlAvailable = cpu.ControlAvailable
+		if g := cpu.Governor; g != nil {
+			nh.CPUGovernorPresets = governorPresetNames(g.Presets)
+			nh.CPUBoostAvailable = g.Boost != nil
+		}
 	}
 	if gpu := obj.Status.GPU; gpu != nil {
 		nh.GPUModel = gpu.Model
@@ -1019,11 +1047,25 @@ func parseNodeHardware(obj *v1alpha1.NodeHardware) NodeHardware {
 			nh.GPUCapKnown = true
 		}
 		nh.GPUControlAvailable = gpu.ControlAvailable
+		if g := gpu.Governor; g != nil {
+			nh.GPUGovernorPresets = governorPresetNames(g.Presets)
+		}
 	}
 	if q := obj.Status.Quality; q != nil {
 		nh.Warnings = append(nh.Warnings, q.Warnings...)
 	}
 	return nh
+}
+
+// governorPresetNames lists the presets of a NodeHardware presets list.
+func governorPresetNames(presets []v1alpha1.GovernorPresetSupport) []string {
+	out := make([]string, 0, len(presets))
+	for _, p := range presets {
+		if p.Preset != "" {
+			out = append(out, p.Preset)
+		}
+	}
+	return out
 }
 
 func nodeHardwareFromLabels(node corev1.Node, catalog *hwinv.Catalog, gpuProductLabelKeys []string) NodeHardware {

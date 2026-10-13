@@ -144,12 +144,13 @@ func generateSweep(t testing.TB, spec sweepSpec) sweep {
 			if err := node.AdvanceTo(now); err != nil {
 				t.Fatalf("advance to %v: %v", now, err)
 			}
-			md := fixtureSample(t, node.State(), res, now)
+			state := node.State()
+			md := fixtureSample(t, state, res, now)
 			md.ResourceMetrics[0].ScopeMetrics = append(md.ResourceMetrics[0].ScopeMetrics, otlpjson.ScopeMetrics{
 				Scope:     scope,
 				SchemaURL: semconv.SchemaURL,
 				Metrics: []otlpjson.Metric{
-					otlpjson.GaugeMetric(semconv.SystemCPUUtilization, utilizationPoints(now, st, spec.perCPU, cpus)...),
+					otlpjson.GaugeMetric(semconv.SystemCPUUtilization, utilizationPoints(now, stateCPUUtil(state), spec.perCPU, cpus)...),
 					otlpjson.GaugeMetric(semconv.JoulieCalibrationSetpoint, setpointPoints(now, st)...),
 				},
 			})
@@ -180,10 +181,27 @@ func fixtureSample(t testing.TB, st hwemu.State, res telemetry.Resource, at time
 	return md
 }
 
-// utilizationPoints are the idle shares of the CPUs: one point per logical
-// CPU with cpu.logical_number, or one for the whole host.
-func utilizationPoints(at time.Time, st sweepStep, perCPU bool, cpus int) []otlpjson.NumberDataPoint {
-	u := st.knobs[semconv.KnobCPUUtilization]
+// stateCPUUtil is the busy share a collector reads on the node: the mean
+// Utilization of its CPU packages in State. It is the load setpoint under
+// performance, and more under a governor that runs the work slower, which
+// counts it in cycles (design D10), as /proc/stat counts busy time.
+func stateCPUUtil(st hwemu.State) float64 {
+	sum, n := 0.0, 0
+	for _, c := range st.Components {
+		if c.Type == semconv.HwTypeCPU {
+			sum += c.Utilization
+			n++
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return sum / float64(n)
+}
+
+// utilizationPoints are the idle shares of the CPUs at busy share u: one
+// point per logical CPU with cpu.logical_number, or one for the whole host.
+func utilizationPoints(at time.Time, u float64, perCPU bool, cpus int) []otlpjson.NumberDataPoint {
 	idle := otlpjson.String(semconv.AttrCPUMode, semconv.CPUModeIdle)
 	if !perCPU {
 		return []otlpjson.NumberDataPoint{otlpjson.DoublePoint(time.Time{}, at, 1-u, idle)}

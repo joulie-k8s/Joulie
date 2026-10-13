@@ -224,6 +224,12 @@ D17 is fixed: a scheduler extender on the host network could not roll out on a s
 | E15 | `status.sh` exits 0 |
 | E16 | the facility inputs reach the NodeTwin gauges and the cooling stress |
 | MD01 to MD04 | medium spec only: D18; no NFD labels caps through DVFS; no driver tools leaves the GPUs alone; an unmanaged pool has series and nothing else |
+| GS01 | governor control on only: each agent's `NodeHardware` lists the governor presets its profile accepts, with the result each gives |
+| GS02 | governor control on only: each `NodeTwin` asks for the preset its profile and node state (performance or eco) call for, and the agent's result for it is the one its profile predicts |
+| GS03 | governor control on only: the emulated files hold the native words of every applied or equivalent result |
+| GS04 | governor control on only, and last: after one `helm upgrade` to `GOVERNOR_CONTROL=off`, every governor result is restored or gone, and every file (governor, EPP, boost, AMD level and overdrive table, NVIDIA locks) is back at the baseline `NodeHardware` recorded |
+
+GS01 to GS04 skip unless the deployed controller manager runs with `GOVERNOR_CONTROL` not `off`. `experiments/05-governor-exploration/scripts/run_tier_b.sh` deploys `tests/simcluster/specs/governor.yaml`, one pool per CPU frequency driver and per GPU family, with governor control on, and runs them (see [Governor exploration]({{< relref "/docs/experiments/governor-exploration.md" >}})). GS04 changes the release, so the cluster needs a fresh deploy afterwards.
 
 ## Run results
 

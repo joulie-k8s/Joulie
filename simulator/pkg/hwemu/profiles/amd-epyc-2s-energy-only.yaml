@@ -16,6 +16,7 @@ sources:
   cpufreqcore: {kind: published, ref: "linux v7.3-rc5 drivers/cpufreq/cpufreq.c:956-970,2668-2681; Documentation/admin-guide/pm/cpufreq.rst:372-389"}
   hsmpdoc:     {kind: published, ref: "linux v7.3-rc5 Documentation/arch/x86/amd_hsmp.rst", note: "Fam19h EPYC"}
   nfd:         {kind: published, ref: "https://kubernetes-sigs.github.io/node-feature-discovery/stable/reference/worker-configuration-reference.html"}
+  govkernel:   {kind: published, ref: "linux v6.12 drivers/cpufreq/cpufreq.c:570-583; drivers/cpufreq/cpufreq_governor.c:22,449-451; drivers/cpufreq/cpufreq_ondemand.c:24-26,365-374; drivers/cpufreq/cpufreq_conservative.c:31-33,293-295; kernel/sched/cpufreq_schedutil.c:775", note: "governor tunables at boot: schedutil rate_limit_us is the policy's transition delay (1000 us without one and with a zero transition latency); sampling_rate is the larger of two ticks and that delay; ondemand up_threshold 95 with idle micro accounting; conservative freq_step 5, up_threshold 80, down_threshold 20"}
 node:
   nfd: present
   labels:
@@ -64,8 +65,20 @@ cpufreq:
   availableKHz: {v: [2400000, 1900000, 1500000], src: measured:cpufreq9654}
   cpuinfoMaxKHz: {v: 3707812, src: "measured:cpufreq9654#includes boost, above the table"}
   cpuinfoMinKHz: {v: 1500000, src: measured:cpufreq9654}
+  baseKHz: {v: 2400000, src: "published:amd9654#base 2.4 GHz, the top availableKHz entry"}
   boost: {v: 1, src: measured:cpufreq9654}
   policyGrouping: {v: per-cpu, src: "measured:cpufreq9654#related_cpus is the CPU itself"}
+  boostScope: {v: global, src: "measured:cpufreq9654#global cpufreq/boost"}
+  tunables:
+    schedutil:
+      rate_limit_us: {v: 1000, src: "derived:govkernel#cpufreq.c:582, acpi-cpufreq sets no transition delay and the measured cpuinfo_transition_latency is 0"}
+    ondemand:
+      up_threshold: {v: 95, src: "published:govkernel#cpufreq_ondemand.c:24,368-371, with idle micro accounting (NO_HZ)"}
+      sampling_rate: {v: 2000, src: "derived:govkernel#cpufreq_governor.c:22,449-451, two ticks at CONFIG_HZ=1000 (assumed) above the 1000 us delay"}
+    conservative:
+      freq_step: {v: 5, src: "published:govkernel#cpufreq_conservative.c:33,294"}
+      up_threshold: {v: 80, src: "published:govkernel#cpufreq_conservative.c:31,295"}
+      down_threshold: {v: 20, src: "published:govkernel#cpufreq_conservative.c:32,293"}
 physics:
   cpu:
     model: analytic
@@ -75,6 +88,9 @@ physics:
     betaFreq: {v: 1.35, src: "assumed:simulator default SIM_BETA_FREQ"}
     knee: {v: 0.7, src: "assumed:phys default knee of MeasuredCurveCPUModel"}
     freqRampMS: {v: 500, src: "assumed:simulator default SIM_DVFS_RAMP_MS"}
+    idleGovernorDeltaW: {v: 0, src: "assumed:no idle cost of a governor that holds the top frequency until one is measured; to sweep from 0 to 5 % of the idle power"}
+    eppGain: {v: 1.0, src: "assumed:EPP 0 reaches the maximum frequency at half load under the HWP powersave algorithm; to sweep from 0.5 to 2"}
+    eppCeilingDrop: {v: 0.2, src: "assumed:EPP 128 lowers the full-load frequency by 0.2 of the range, between 1 - 1/1.25 and 1 - 1/1.32, the published full-load gaps of EPP 128 to performance and to EPP 32; to sweep from 0 to 0.25"}
     coreFraction: {v: 0.7, src: "assumed:placeholder"}
   dram: {wattsPerSocket: {v: 8, src: "assumed:placeholder"}}
   platform: {otherW: {v: 0, src: "assumed:no psys zone"}}

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 
+	"github.com/matbun/joulie/pkg/otel/semconv"
 	"github.com/matbun/joulie/simulator/pkg/clusterspec"
 	"github.com/matbun/joulie/simulator/pkg/facility"
 	"github.com/matbun/joulie/simulator/pkg/hwemu"
@@ -110,7 +112,8 @@ func (e *Emulator) stepMember(m *member, now time.Time, l hwemu.Load) {
 }
 
 // accrue adds the increase of the runner's counters since the last tick to
-// the member's ledger.
+// the member's ledger: the energy of the host and of each component, and the
+// peer bytes of each GPU.
 func (m *member) accrue(st hwemu.State, logf func(string, ...any)) {
 	if ledgerAccrue(&m.ledger.HostJ, &m.hostBase, st.Host.EnergyJ) {
 		logf("emulate: node %s: host energy went back to %g J; counted as no increase", m.spec.Name, st.Host.EnergyJ)
@@ -121,11 +124,16 @@ func (m *member) accrue(st hwemu.State, logf func(string, ...any)) {
 			logf("emulate: node %s: %s energy went back to %g J; counted as no increase", m.spec.Name, c.ID, c.EnergyJ)
 		}
 		m.ledger.ComponentsJ[c.ID], m.compBase[c.ID] = total, base
+		if c.Type == semconv.HwTypeGPU && m.ledger.accrueGPUIO(c.ID, c.PeerRxBytes, c.PeerTxBytes) {
+			logf("emulate: node %s: %s peer bytes went back to %d received and %d sent; counted as no increase",
+				m.spec.Name, c.ID, c.PeerRxBytes, c.PeerTxBytes)
+		}
 	}
 }
 
-// reading is the member's snapshot for state st, with the ledger's energy.
-// The facility fills Host.InletC.
+// reading is the member's snapshot for state st, with the ledger's energy
+// and GPU bytes, and the governor states the components left. The facility
+// fills Host.InletC.
 func (m *member) reading(st hwemu.State) NodeSnapshot {
 	r := m.last
 	r.Started, r.Fresh, r.Added, r.Events, r.Err = false, false, nil, nil, ""
@@ -140,9 +148,40 @@ func (m *member) reading(st hwemu.State) NodeSnapshot {
 	for i, c := range st.Components {
 		cr := ComponentReading(c)
 		cr.EnergyJ = m.ledger.ComponentsJ[c.ID]
+		io := m.ledger.GPUIO[c.ID]
+		cr.PeerRxBytes, cr.PeerTxBytes = io.PeerRxBytes, io.PeerTxBytes
 		r.Components[i] = cr
 	}
+	r.PreviousGovernors = readingPreviousGovernors(m.last, r.Components)
 	return r
+}
+
+// readingPreviousGovernors is PreviousGovernors of a reading with comps after
+// the last good reading last. A component whose governor state changed since
+// last left the state last shows, when it had one; any other keeps the
+// state last says it left. A state equal to the current one is no state left.
+// The map is new, since a published snapshot is never changed, and nil when
+// it would be empty.
+func readingPreviousGovernors(last NodeSnapshot, comps []ComponentReading) map[string]GovernorState {
+	was := make(map[string]GovernorState, len(last.Components))
+	for _, c := range last.Components {
+		was[c.ID] = c.Governor()
+	}
+	var out map[string]GovernorState
+	for _, c := range comps {
+		now := c.Governor()
+		left, ok := last.PreviousGovernors[c.ID]
+		if prev := was[c.ID]; prev != now && prev != (GovernorState{}) {
+			left, ok = prev, true
+		}
+		if ok && left != now {
+			if out == nil {
+				out = map[string]GovernorState{}
+			}
+			out[c.ID] = left
+		}
+	}
+	return out
 }
 
 // tickFacility computes the facility after the members stepped, fills each
@@ -237,7 +276,9 @@ func (e *Emulator) tickFacility(now time.Time, nodes []NodeSnapshot, fac Facilit
 // so it is added to every element, and a job vector shorter than the
 // packages or the GPUs is first padded with idle entries, so the base
 // reaches every package and every GPU. A job's classes and memory intensity
-// win over the base's when set.
+// win over the base's when set. The job's peer transfers pass as they are,
+// in order, since the rates the node gives back follow that order; the base
+// makes none, and a node without GPUs gets none.
 func emulatorLoad(job hwemu.Load, hasJob bool, base clusterspec.Load, applyBase bool, sockets, gpus int) hwemu.Load {
 	if !hasJob {
 		job = hwemu.Load{}
@@ -266,6 +307,8 @@ func emulatorLoad(job hwemu.Load, hasJob bool, base clusterspec.Load, applyBase 
 	}
 	if gpus == 0 {
 		l.GPUUtil = nil
+	} else if len(job.PeerTransfers) > 0 {
+		l.PeerTransfers = append([]hwemu.PeerTransfer(nil), job.PeerTransfers...)
 	}
 	return l
 }
@@ -308,9 +351,12 @@ func emulatorClamp(v float64) float64 {
 	return 0
 }
 
+// emulatorLoadEqual reports whether a and b are the same load, peer
+// transfers included, so a member's runner gets every change of load.
 func emulatorLoadEqual(a, b hwemu.Load) bool {
 	return a.CPUClass == b.CPUClass && a.GPUClass == b.GPUClass && a.MemoryIntensity == b.MemoryIntensity &&
-		emulatorFloatsEqual(a.CPUUtil, b.CPUUtil) && emulatorFloatsEqual(a.GPUUtil, b.GPUUtil)
+		emulatorFloatsEqual(a.CPUUtil, b.CPUUtil) && emulatorFloatsEqual(a.GPUUtil, b.GPUUtil) &&
+		slices.Equal(a.PeerTransfers, b.PeerTransfers)
 }
 
 func emulatorFloatsEqual(a, b []float64) bool {

@@ -332,7 +332,15 @@ func upsertNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, a NodeAssign
 	}
 	// If both CPUCapPctOfMax is nil and CapWatts is 0, no CPU cap is written.
 	// The agent will leave the current cap unchanged.
+	if g := a.CPUGovernor; g != nil {
+		governor := map[string]any{"preset": g.Preset}
+		if g.Boost != "" {
+			governor["boost"] = g.Boost
+		}
+		cpu["governor"] = governor
+	}
 	spec["cpu"] = cpu
+	gpu := map[string]any{}
 	if a.GPU != nil {
 		powerCap := map[string]any{
 			"scope": "perGpu",
@@ -343,10 +351,21 @@ func upsertNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, a NodeAssign
 		if a.GPU.CapPctOfMax != nil {
 			powerCap["capPctOfMax"] = *a.GPU.CapPctOfMax
 		}
-		spec["gpu"] = map[string]any{
-			"powerCap": powerCap,
-		}
+		gpu["powerCap"] = powerCap
 	}
+	if g := a.GPUGovernor; g != nil {
+		governor := map[string]any{"preset": g.Preset}
+		if g.ComputeClockCeilingPctOfMax != nil {
+			governor["computeClockCeilingPctOfMax"] = *g.ComputeClockCeilingPctOfMax
+		}
+		gpu["governor"] = governor
+	}
+	if len(gpu) > 0 {
+		spec["gpu"] = gpu
+	}
+	// The whole spec is replaced below, so a governor the assignment no
+	// longer carries (GOVERNOR_CONTROL turned off, a preset the node stopped
+	// listing) leaves the object in the same write.
 
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "joulie.io/v1alpha1",

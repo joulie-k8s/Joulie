@@ -14,6 +14,61 @@
     "controlAvailable": true,
     "coresPerSocket": 112,
     "driverFamily": "intel_pstate",
+    "governor": {
+      "available": [
+        "performance",
+        "powersave"
+      ],
+      "baseline": {
+        "groups": [
+          {
+            "boost": "on",
+            "epp": "balance_performance",
+            "governor": "powersave",
+            "policies": "0-223"
+          }
+        ]
+      },
+      "boost": {
+        "scope": "no-turbo",
+        "state": "on"
+      },
+      "current": "powersave",
+      "driver": "intel_pstate",
+      "driverMode": "active",
+      "epp": {
+        "available": [
+          "default",
+          "performance",
+          "balance_performance",
+          "balance_power",
+          "power"
+        ],
+        "current": "balance_performance"
+      },
+      "presets": [
+        {
+          "native": "performance",
+          "preset": "performance",
+          "result": "applied"
+        },
+        {
+          "native": "powersave epp=balance_performance",
+          "preset": "balanced",
+          "result": "applied"
+        },
+        {
+          "native": "powersave epp=balance_power",
+          "preset": "efficiency",
+          "result": "applied"
+        }
+      ],
+      "writable": true
+    },
+    "landmarks": {
+      "maxBoostMHz": 3800,
+      "minFreqMHz": 1000
+    },
     "model": "",
     "rawModel": "Intel(R) Xeon(R) Platinum 9282 CPU @ 2.60GHz",
     "sockets": 2,

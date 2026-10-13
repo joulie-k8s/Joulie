@@ -1,0 +1,25 @@
+# The governor fields of a NodeTwin spec: what the controller manager writes
+# with values.yaml for the eco MI300X Node of cluster-spec.yaml, plus a CPU
+# governor, which it writes on a GPU node only with
+# CPU_GOVERNOR_ON_GPU_NODES=true. The agent maps each preset to native
+# settings; the presets a node accepts are in its NodeHardware,
+# status.cpu.governor.presets and status.gpu.governor.presets.
+#
+# The controller manager writes its whole spec back at every reconcile that
+# finds the object different from its decision, so apply this by hand only
+# with the controller manager scaled to zero (README, "Try a preset by
+# hand").
+apiVersion: joulie.io/v1alpha1
+kind: NodeTwin
+metadata:
+  name: mi300x-1
+spec:
+  nodeName: mi300x-1
+  profile: eco
+  cpu:
+    governor:
+      preset: efficiency       # performance, balanced or efficiency
+  gpu:
+    governor:
+      preset: efficient        # auto, sustained, efficient, low or peak
+      computeClockCeilingPctOfMax: 80

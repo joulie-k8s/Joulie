@@ -21,7 +21,8 @@ Pre-releases (a GitHub pre-release, or a version such as `0.2.0-rc0`) are publis
 | `NODE_NAME` | (required in daemonset mode) | Name of the node this agent manages |
 | `RECONCILE_INTERVAL` | `20s` | How often the agent reconciles desired state |
 | `METRICS_ADDR` | `:8080` | Address for the Prometheus metrics endpoint |
-| `SIMULATE_ONLY` | `false` | If `true`, agent discovers hardware but does not apply power caps |
+| `SPEC_READ_TIMEOUT` | `5m` | How long the agent tolerates failed reads of its `NodeTwin` spec, leaving the node as it is. Past it the agent relaxes every cap and puts the governor baseline back, as when the spec is gone, until a read succeeds. A Go duration such as `90s`; a value it cannot parse keeps `5m` |
+| `SIMULATE_ONLY` | `false` | If `true`, agent discovers hardware but does not apply power caps or governors (governor result `disabled`) |
 | `HARDWARE_CATALOG_PATH` | (empty: the catalog embedded in the binary) | Path to a hardware inventory catalog YAML that replaces the embedded one |
 | `KUBE_CLIENT_QPS` | `50` | Queries per second the agent's Kubernetes client may send |
 | `KUBE_CLIENT_BURST` | `100` | Burst above `KUBE_CLIENT_QPS` the agent's Kubernetes client may send |
@@ -45,6 +46,25 @@ Pre-releases (a GitHub pre-release, or a version such as `0.2.0-rc0`) are publis
 | `DVFS_COOLDOWN` | `20s` | Minimum duration between DVFS adjustments |
 | `DVFS_TRIP_COUNT` | `2` | Consecutive samples outside margin before acting |
 | `DVFS_MIN_FREQ_KHZ` | `1500000` | Floor frequency for DVFS throttling (kHz) |
+
+### Agent governor control
+
+The agent always discovers the CPU and GPU governors of its node and publishes them in `NodeHardware` (see [Governor discovery]({{< relref "/docs/architecture/agent.md#governor-discovery" >}})). It writes the presets of its `NodeTwin`, `spec.cpu.governor` and `spec.gpu.governor`, only with `GOVERNOR_WRITES` `true`; the controller manager writes those fields only with its own `GOVERNOR_CONTROL` on (see "Governor control" under Controller manager). Before its first write the agent records the baseline in `NodeHardware`, and it puts it back when a field disappears or `GOVERNOR_WRITES` is turned off.
+
+| Variable | Default | Chart | Description |
+|----------|---------|-------|-------------|
+| `GOVERNOR_WRITES` | `false` | `false` | Write the governor presets. `false` reports `disabled` for a preset and writes no preset. An agent started with `false` after an earlier run changed the node puts the baseline back once (result `restored`), its only write, and then reports `disabled`. |
+| `GOVERNOR_RESTORE_ON_EXIT` | `true` | `true` | On SIGTERM or SIGINT, put the baseline back before the agent exits, for every component it changed. A rolling update of the agent therefore restores the baseline and the new agent applies the preset again. SIGKILL and OOM kills restore nothing. |
+
+- Writes use the agent's existing `/host-sys` mount, root user and privileges, the ones the DVFS fallback uses; the pod spec does not change. Without them the result is `refused` and `NodeHardware` shows `writable: false`.
+- NVIDIA presets run `nvidia-smi -i <pci bus id> -lgc` or `-lmc`, so they need `nvidia-smi` in the agent (see "Agent GPU tools"); without it the result is `error`, as for caps.
+- In the HTTP control mode (`TELEMETRY_CPU_CONTROL` or `TELEMETRY_GPU_CONTROL` `http`) and in pool mode the agent writes no governor and reports `unsupported`.
+- What each preset becomes on each CPU driver and GPU family is in [CPU support]({{< relref "/docs/hardware/cpus.md#governors" >}}) and [GPU support]({{< relref "/docs/hardware/gpus.md#governors" >}}).
+- The results, their retries and the restore rules are in [Governor control]({{< relref "/docs/architecture/agent.md#governor-control" >}}). Check them with:
+
+```bash
+kubectl get nodetwins -o custom-columns=NODE:.spec.nodeName,CPU-GOV:.status.controlStatus.cpuGovernor.result,CPU-NATIVE:.status.controlStatus.cpuGovernor.applied,GPU-GOV:.status.controlStatus.gpuGovernor.result,GPU-NATIVE:.status.controlStatus.gpuGovernor.applied
+```
 
 ### Agent telemetry and control backends
 
@@ -81,7 +101,7 @@ Emulated agents are what the [simulated cluster]({{< relref "/docs/simulator/sim
 
 ### Agent GPU tools
 
-The agent reads and caps GPUs by running `nvidia-smi`, `rocm-smi` or `amd-smi` from its `PATH`. The agent image (`gcr.io/distroless/static`) ships none of them, and has no C library, no ELF loader and no Python, so mounting the host's tool alone is not enough: `nvidia-smi` is dynamically linked (`file $(command -v nvidia-smi)` on a GPU node shows it) and also needs the loader and the NVML library (`libnvidia-ml.so.1`), and `rocm-smi` and `amd-smi` are Python scripts that need `/usr/bin/env` and `python3`. The hooks above are where these come in: `agent.runtimeClassName` for a container runtime that injects the driver's tools and libraries, such as the NVIDIA one, or `agent.extraVolumes` and `agent.extraVolumeMounts` for a host directory, with `agent.extraEnv`.
+The agent reads and caps GPUs by running `nvidia-smi` or `rocm-smi` from its `PATH`; it never runs `amd-smi`. The agent image (`gcr.io/distroless/static`) ships neither, and has no C library, no ELF loader and no Python, so mounting the host's tool alone is not enough: `nvidia-smi` is dynamically linked (`file $(command -v nvidia-smi)` on a GPU node shows it) and also needs the loader and the NVML library (`libnvidia-ml.so.1`), and `rocm-smi` is a Python script that needs `/usr/bin/env` and `python3`. The hooks above are where these come in: `agent.runtimeClassName` for a container runtime that injects the driver's tools and libraries, such as the NVIDIA one, or `agent.extraVolumes` and `agent.extraVolumeMounts` for a host directory, with `agent.extraEnv`.
 
 Which combination works on a real GPU node is an open question: no recipe has been verified yet. After installing, check the GPU control status of every GPU node:
 
@@ -155,8 +175,8 @@ when a reading exceeds twice the node's TDP.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PERFORMANCE_CAP_WATTS` | `5000` | Absolute CPU power cap for performance nodes (watts) |
-| `ECO_CAP_WATTS` | `120` | Absolute CPU power cap for eco nodes (watts) |
+| `PERFORMANCE_CAP_WATTS` | `5000` | Absolute CPU power cap for performance nodes (watts). The CPU of a GPU node gets it whatever the node's profile. |
+| `ECO_CAP_WATTS` | `120` | Absolute CPU power cap for eco CPU-only nodes (watts). A GPU node never gets it: capping the CPU of a GPU node slows the GPU data feed by more than it saves. Earlier releases wrote it on eco GPU nodes too. |
 | `CPU_PERFORMANCE_CAP_PCT_OF_MAX` | `100` | CPU cap as percentage of max for performance nodes |
 | `CPU_ECO_CAP_PCT_OF_MAX` | `60` | CPU cap as percentage of max for eco nodes |
 | `CPU_WRITE_ABSOLUTE_CAPS` | `false` | If `true`, write absolute watts instead of percentage |
@@ -164,7 +184,7 @@ when a reading exceeds twice the node's TDP.
 | `GPU_ECO_CAP_PCT_OF_MAX` | `60` | GPU cap as percentage of max for eco nodes |
 | `GPU_WRITE_ABSOLUTE_CAPS` | `false` | If `true`, write absolute GPU watts instead of percentage |
 | `GPU_MODEL_CAPS_JSON` | `{}` | JSON map of GPU model name to `{"minCapWatts": N, "maxCapWatts": M}` |
-| `GPU_PRODUCT_LABEL_KEYS` | `joulie.io/gpu.product,...` | Comma-separated node label keys to read GPU product name |
+| `GPU_PRODUCT_LABEL_KEYS` | `joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,amd.com/gpu.family` | Comma-separated node label keys to read the GPU product name from, first match wins. The AMD node labeller names the board in `amd.com/gpu.product-name` (and `beta.amd.com/gpu.product-name`); `amd.com/gpu.product` is the older key, and the family code in `amd.com/gpu.family` (for example `GC_11_0_0`) names no board, so it comes last. When its GPU inventory fails, the agent reads these default labels, in this order; it does not read this variable. |
 
 ### Policy configuration
 
@@ -178,6 +198,33 @@ when a reading exceeds twice the node's TDP.
 | `QUEUE_PERF_PER_HP_NODE` | `10` | Running or pending performance pods per performance node in `queue_aware_v1` |
 
 The controller manager exports the split as `joulie_policy_family_nodes{family}` and `joulie_policy_family_performance_nodes{family}`, where `family` is `gpu:<model>` or `cpu:<model>`. See [Metrics]({{< relref "/docs/architecture/metrics.md" >}}).
+
+### Governor control
+
+Off by default. With `GOVERNOR_CONTROL` on, the controller manager writes a vendor-neutral governor preset into each managed node's `NodeTwin`, `spec.cpu.governor` and `spec.gpu.governor`, chosen by the profile the node runs at: a draining node keeps the performance presets until its performance pods finish, as it keeps the performance caps. The agent maps a preset to the node's native governor, energy-performance preference, performance level or clock locks, and writes no preset unless its own `GOVERNOR_WRITES` is `true` (see "Agent governor control").
+
+- A node gets only a preset its agent lists in `NodeHardware` `status.cpu.governor.presets` or `status.gpu.governor.presets`. Any other preset is not written and nothing replaces it, `auto` included, so a setting the node's operator chose stays; the controller manager logs one warning per node. A node whose agent does not discover governors lists none and gets none.
+- A GPU node gets no CPU governor unless `CPU_GOVERNOR_ON_GPU_NODES` is `true`, the rule the CPU cap follows. Only GPU nodes get a GPU governor.
+- An empty preset writes none for that profile.
+- Turning control off, for one component or both, removes the field in the next spec write; the agent then puts back the state it recorded before its first write.
+- Nothing changes on a node until its agent also runs with `GOVERNOR_WRITES` `true` (see "Agent governor control").
+- A value the controller manager cannot use logs a warning and keeps the default; an unknown `GOVERNOR_CONTROL` means `off`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GOVERNOR_CONTROL` | `off` | `off`, `cpu` (CPU governors only), `gpu` (GPU governors only) or `all`. |
+| `CPU_GOVERNOR_PERFORMANCE_PRESET` | `performance` | CPU preset of performance nodes: `performance` (highest frequency at any load), `balanced` (demand-driven, quick ramp) or `efficiency` (demand-driven with an energy bias). |
+| `CPU_GOVERNOR_ECO_PRESET` | `efficiency` | CPU preset of eco nodes. |
+| `CPU_GOVERNOR_ECO_BOOST` | empty | `on` or `off`: frequency boost (turbo) with the eco preset, on nodes whose agent found a boost control (`status.cpu.governor.boost`). Empty leaves boost alone. |
+| `CPU_GOVERNOR_ON_GPU_NODES` | `false` | Write the CPU governor on GPU nodes too. |
+| `GPU_GOVERNOR_PERFORMANCE_PRESET` | empty | GPU preset of performance nodes: `auto`, `sustained`, `efficient`, `low`, `peak`, or empty for none. |
+| `GPU_GOVERNOR_ECO_PRESET` | `efficient` | GPU preset of eco nodes; set it to an empty value to write none. |
+| `GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX` | `80` | Compute clock ceiling of the `efficient` preset, in percent of the GPU's maximum compute clock, in (0, 100]. Written only with `efficient`; a value out of range gives 80. The default is provisional: in the simulator's governor exploration 75 slowed eco work past the eco class's 20 % p95 limit and 80 did not (see [Model changes]({{< relref "/docs/simulator/model-changes.md" >}})). |
+| `GPU_GOVERNOR_MODEL_PRESETS_JSON` | `{}` | Presets per GPU model: `{"<model>": {"performance": "<preset>", "eco": "<preset>", "ecoCeilingPctOfMax": <pct>}}`. Keyed like `GPU_MODEL_CAPS_JSON`, by the GPU product label value, and also matched against the GPU model the agent reports. A field left out keeps the default above, `""` writes none for that model, and an invalid field is dropped with a warning. |
+
+GPU presets: `auto` is the vendor default. `sustained` holds the data-path clocks (memory, fabric) at their maximum and keeps idle gating, leaving the compute clock free to idle; a demand-driven governor sees only a GPU's own kernels, so a GPU that receives a peer transfer can stay at low data-path clocks, and on families where those clocks bound the transfer, `sustained` removes that limit at some idle power. No default selects it: opt a model in through `GPU_GOVERNOR_MODEL_PRESETS_JSON` once a measurement on that model shows the gain. `efficient` puts the compute clock under the ceiling and leaves the data path dynamic. `low` and `peak` are for experiments; `peak` turns idle gating off on AMD GPUs. These defaults are provisional until measured. [Hardware modeling]({{< relref "/docs/hardware/hardware-modeling.md#69-governor-presets" >}}) says what each preset means, and the [controller manager]({{< relref "/docs/architecture/controller-manager.md#governor-presets" >}}) page which node gets which.
+
+The overview dashboard's "Agent: Governors" row plots the presets in effect (`joulie_agent_governor_state`) and the writes per result (`joulie_agent_governor_writes_total`).
 
 ### Facility metrics
 
@@ -283,6 +330,7 @@ The simulator (`simulator/cmd/simulator`) advances the model of a node outside t
 | `HWEMU_SYS_ROOT` | `/host-sys` | The emulated node's `sys/` directory, where the amdgpu PCI and hwmon attributes live. The default is where an emulated agent pod mounts it. |
 | `HWEMU_STATE_ROOT` | `/emu/state` | The emulated node's `state/` directory: `tools.json`, which lists the tools the node has and the variant each one emulates, the NVML state of NVIDIA GPUs, and the per-card AMD values sysfs has no text attribute for (`amdgpu/card<N>/`). The default is where an emulated agent pod mounts it. |
 | `HWEMU_ROOTFS` | `/` | The file system the real tool would run in, where `fakesmi` looks for what the tool needs before it runs (below). The default is the agent container's own root. |
+| `HWEMU_UNPRIVILEGED` | `false` | Run the tools as a user without root would: `1`, `true` or another word Go's `strconv.ParseBool` reads as true; anything else, unset included, means root. A set then changes nothing: `nvidia-smi -pl`, `-pm`, `-lgc`, `-lmc`, `-rgc` and `-rmc` exit 4 with `Insufficient Permissions`; `amd-smi set` and `reset` fail with `PermissionError: Command requires elevation`; a `rocm-smi` set exits 0 with the failure only at `--loglevel debug`, and prints nothing at all on a family whose profile sets `gpus.dpm.unprivilegedSetIsNoop`. Reads work as with root. |
 
 A tool that `tools.json` does not list exits 127 with `fakesmi: <tool> is not installed on this emulated node`.
 
@@ -307,6 +355,7 @@ In emulate mode the simulator (`simulator/cmd/simulator`) emulates the bare-meta
 | `SIM_CLUSTER_SPEC` | (empty) | Path of the cluster spec, a `sim.joulie.io/v1alpha1` `ClusterSpec` such as `tests/simcluster/specs/smoke.yaml`. It names each node, its hardware profile, pool, rack and cooling zone, and the facility. |
 | `SIM_HWEMU_ROOT` | `/var/lib/joulie-hwemu` | Directory of the emulated trees: one `<node>/` per spec node, `lib/fakesmi` and `facility-ledger.json`. One simulator holds it at a time; a second one fails to start. |
 | `SIM_EMULATE_TICK` | `1s` | Physics tick: every spec node advances to wall time once per tick. A tick that runs late is counted and the next one catches up. The nodes outside the spec are stepped on the same tick (see "Simulator physics step"). |
+| `SIM_GPU_RECEIVER_GATE` | `profile` | The receiver gate of the peer links between the GPUs of a node, which bounds the copies into a GPU by that GPU's data-path state: `profile` follows each hardware profile's `gpus.transfer.receiverGate.enabled`, off in every builtin profile; `off` disables it everywhere; `on` enables it on every GPU profile with the profile's fractions, for what-if runs (a profile that leaves a fraction unset lets the whole link through). Any other value logs a warning naming the variable and takes `profile`. A gated copy slows the v1 job that makes it (see [peer transfers]({{< relref "/docs/simulator/workload-simulator.md#peer-transfers" >}})). |
 | `SIM_EMULATE_WORKERS` | `0` | Nodes stepped in parallel; `0` means `GOMAXPROCS`, at most 12. A step is mostly system calls on the node's files, which contend past about 12 workers (see [Tick cost]({{< relref "/docs/simulator/simulator.md#tick-cost" >}})); a set value is used as given. |
 | `SIM_FAKESMI_SOURCE` | `/usr/local/lib/joulie/fakesmi` | The `fakesmi` binary to install as `SIM_HWEMU_ROOT/lib/fakesmi`, where every node's `bin/nvidia-smi`, `bin/rocm-smi` and `bin/amd-smi` link points. It is replaced by rename, and only when its sha256 changed. The simulator image ships it at the default path. Empty skips the copy, for a run outside the image. |
 | `KUBECONFIG` | client-go loading rules | The cluster the simulator watches, so it can also run on a workstation. Without a kubeconfig it uses the in-cluster configuration. The simulator logs the API server it uses. |
@@ -324,6 +373,7 @@ Helm values of `charts/joulie-simulator`:
 | `emulate.enabled` | `false` | Sets `SIM_EMULATE`. Also runs the pod as root with strategy `Recreate`, adds a readiness probe on `/readyz` (ready once every tree exists), and leaves out `SIM_WORKLOAD_TRACE_PATH`: a run starts through the run API instead. The chart fails unless `replicas` is 1. |
 | `emulate.root` | `/var/lib/joulie-hwemu` | `SIM_HWEMU_ROOT`, and a `DirectoryOrCreate` hostPath mounted at the same path. |
 | `emulate.tick` | `1s` | `SIM_EMULATE_TICK`. |
+| `emulate.receiverGate` | `profile` | `SIM_GPU_RECEIVER_GATE`. An unquoted `on` or `off`, which YAML reads as a boolean, is passed as the word. |
 | `emulate.clusterSpec` | `""` | The spec as text, usually `--set-file emulate.clusterSpec=<spec.yaml>`. The chart stores it in the ConfigMap `joulie-simulator-cluster-spec`, mounts it at `/etc/joulie-sim-spec` and points `SIM_CLUSTER_SPEC` at it. A changed spec restarts the pod. |
 | `emulate.clusterSpecConfigMap` | `""` | Instead, an existing ConfigMap holding the spec under the key `cluster-spec.yaml`. Set exactly one of the two. |
 | `emulate.exporters` | `[]` | `SIM_EXPORTERS`, and one ServiceMonitor endpoint per exporter, with `honorLabels: false`. |

@@ -16,6 +16,13 @@ sys/devices R dir 0755
 sys/devices/system R dir 0755
 sys/devices/system/cpu R dir 0755
 sys/devices/system/cpu/cpufreq R dir 0755
+sys/devices/system/cpu/cpufreq/conservative R dir 0755
+sys/devices/system/cpu/cpufreq/conservative/down_threshold A file 0644
+sys/devices/system/cpu/cpufreq/conservative/freq_step A file 0644
+sys/devices/system/cpu/cpufreq/conservative/up_threshold A file 0644
+sys/devices/system/cpu/cpufreq/ondemand R dir 0755
+sys/devices/system/cpu/cpufreq/ondemand/sampling_rate A file 0644
+sys/devices/system/cpu/cpufreq/ondemand/up_threshold A file 0644
 sys/devices/system/cpu/cpufreq/policy{N} R dir 0755 [N=0-127]
 sys/devices/system/cpu/cpufreq/policy{N}/affected_cpus R file 0444 [N=0-127]
 sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_max_freq R file 0444 [N=0-127]
@@ -28,9 +35,18 @@ sys/devices/system/cpu/cpufreq/policy{N}/scaling_driver R file 0444 [N=0-127]
 sys/devices/system/cpu/cpufreq/policy{N}/scaling_governor A file 0644 [N=0-127]
 sys/devices/system/cpu/cpufreq/policy{N}/scaling_max_freq A file 0644 [N=0-127]
 sys/devices/system/cpu/cpufreq/policy{N}/scaling_min_freq A file 0644 [N=0-127]
-sys/devices/system/cpu/cpufreq/policy{N}/scaling_setspeed R file 0644 [N=0-127]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_setspeed A file 0644 [N=0-127]
+sys/devices/system/cpu/cpufreq/schedutil R dir 0755
+sys/devices/system/cpu/cpufreq/schedutil/rate_limit_us A file 0644
 sys/devices/system/cpu/cpu{N} R dir 0755 [N=0-127]
 sys/devices/system/cpu/cpu{N}/cpufreq R link 0777 -> ../cpufreq/policy{N} [N=0-127]
+sys/devices/system/cpu/intel_pstate R dir 0755
+sys/devices/system/cpu/intel_pstate/max_perf_pct A file 0644
+sys/devices/system/cpu/intel_pstate/min_perf_pct A file 0644
+sys/devices/system/cpu/intel_pstate/no_turbo A file 0644
+sys/devices/system/cpu/intel_pstate/num_pstates R file 0444
+sys/devices/system/cpu/intel_pstate/status R file 0644
+sys/devices/system/cpu/intel_pstate/turbo_pct R file 0444
 sys/devices/virtual R dir 0755
 sys/devices/virtual/powercap R dir 0755
 sys/devices/virtual/powercap/intel-rapl R dir 0755

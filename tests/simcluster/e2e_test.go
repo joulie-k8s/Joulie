@@ -5,11 +5,13 @@ package simcluster_test
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -22,9 +24,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/matbun/joulie/api/v1alpha1"
+	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/otel/semconv"
 	"github.com/matbun/joulie/simulator/pkg/clusterspec"
 	"github.com/matbun/joulie/simulator/pkg/emulate"
+	"github.com/matbun/joulie/simulator/pkg/hwemu"
 	"github.com/matbun/joulie/simulator/pkg/scenario"
 	"github.com/matbun/joulie/simulator/pkg/simcluster"
 	"github.com/matbun/joulie/simulator/pkg/telemetry"
@@ -90,6 +94,16 @@ func TestSimclusterE2E(t *testing.T) {
 
 	env.check(t, "E14", "a forced extender reload rolls out, an unchanged agent reload does nothing", e2eE14ReloadRollsOrDoesNothing)
 	env.check(t, "E15", "status.sh exits 0", e2eE15StatusIsClean)
+
+	// GS01 to GS04: the governor presets, end to end. They run only when
+	// the deployment turns governor control on (GOVERNOR_CONTROL not off),
+	// as experiment 05's Tier B deploys tests/simcluster/specs/governor.yaml
+	// (experiments/05-governor-exploration/scripts/run_tier_b.sh). GS04
+	// upgrades the release to GOVERNOR_CONTROL=off, so it runs last.
+	env.check(t, "GS01", "each agent's NodeHardware lists its profile's governor presets", e2eGS01PresetsPerProfile)
+	env.check(t, "GS02", "each NodeTwin's governor result is the one its profile and node state predict", e2eGS02ResultPerProfile)
+	env.check(t, "GS03", "the emulated files hold the native word of the result", e2eGS03FilesHoldTheNativeWord)
+	env.check(t, "GS04", "with governor control off every file is back at its baseline and the result is restored", e2eGS04RestoredWhenOff)
 }
 
 // E01: every spec Node exists and is Ready, and its labels, taints,
@@ -502,8 +516,10 @@ func e2eE05HardwareMatchesTheGoldens(c *e2eCase) {
 }
 
 // goldenDiff compares a NodeHardware status with the golden of profile,
-// both decoded into the typed status with updatedAt and currentCapWatts
-// cleared, and returns the two as JSON when they differ.
+// both decoded into the typed status with updatedAt, currentCapWatts and
+// the governor baselines' recordedAt cleared (a live agent stamps the time
+// it recorded a baseline; the golden replay never writes), and returns the
+// two as JSON when they differ.
 func (e *e2eEnv) goldenDiff(profile string, got v1alpha1.NodeHardwareStatus) (string, error) {
 	path := filepath.Join(e.Repo, "cmd", "agent", "testdata", "hwemu", profile+".json")
 	b, err := os.ReadFile(path)
@@ -517,8 +533,14 @@ func (e *e2eEnv) goldenDiff(profile string, got v1alpha1.NodeHardwareStatus) (st
 	got = *got.DeepCopy()
 	for _, s := range []*v1alpha1.NodeHardwareStatus{&got, &want} {
 		s.UpdatedAt = ""
+		if s.CPU != nil && s.CPU.Governor != nil && s.CPU.Governor.Baseline != nil {
+			s.CPU.Governor.Baseline.RecordedAt = ""
+		}
 		if s.GPU != nil {
 			s.GPU.CurrentCapWatts = 0
+			if s.GPU.Governor != nil && s.GPU.Governor.Baseline != nil {
+				s.GPU.Governor.Baseline.RecordedAt = ""
+			}
 		}
 	}
 	if reflect.DeepEqual(got, want) {
@@ -1590,4 +1612,671 @@ func e2eE15StatusIsClean(c *e2eCase) {
 	if err != nil {
 		c.Errorf("status.sh: %v\n%s", err, e2eTail(out, 40))
 	}
+}
+
+// e2eGovernorPresets are the presets each profile's agent lists, with the
+// result each gives, as sections 1.4, 1.5 and 3.1 of the governor design map
+// them: on acpi-cpufreq and intel_cpufreq every CPU preset is its own
+// governor (schedutil, conservative); on intel_pstate with HWP balanced and
+// efficiency are powersave with an energy-performance preference, and so on
+// amd-pstate-epp, where the agent takes the driver's full preference set
+// although the kernel lists only performance under the boot governor
+// performance, so the results do not change once eco writes powersave.
+// GPUs: the W7900 has no overdrive (efficient unsupported), the MI300X
+// accepts only auto and the overdrive ceiling, Hopper memory cannot be
+// locked at run time (sustained equivalent), and an NVIDIA GPU with no lock
+// of the agent's own is already at auto (equivalent).
+var e2eGovernorPresets = map[string]struct{ cpu, gpu map[string]string }{
+	"amd-epyc-9534-2s-energy-only": {cpu: e2eCPUPresetsApplied},
+	"intel-xeon-6530-2s-rapl":      {cpu: e2eCPUPresetsApplied},
+	"intel-xeon-2s-rapl":           {cpu: e2eCPUPresetsApplied},
+	"amd-epyc-2s-hsmp":             {cpu: e2eCPUPresetsApplied},
+	"amd-radeon-pro-w7900-4gpu": {cpu: e2eCPUPresetsApplied,
+		gpu: map[string]string{"auto": "applied", "sustained": "applied", "low": "applied", "peak": "applied"}},
+	"amd-instinct-mi300x-8gpu": {cpu: e2eCPUPresetsApplied,
+		gpu: map[string]string{"auto": "applied", "efficient": "applied"}},
+	"nvidia-h100-nvl-8gpu": {cpu: e2eCPUPresetsApplied,
+		gpu: map[string]string{"auto": "equivalent", "sustained": "equivalent", "efficient": "applied", "low": "applied", "peak": "applied"}},
+	"nvidia-l40s-4gpu": {cpu: e2eCPUPresetsApplied,
+		gpu: map[string]string{"auto": "equivalent", "sustained": "applied", "efficient": "applied", "low": "applied", "peak": "applied"}},
+}
+
+var e2eCPUPresetsApplied = map[string]string{"performance": "applied", "balanced": "applied", "efficiency": "applied"}
+
+// e2eGovernorSettings is what the deployment turns on: the controller
+// manager's GOVERNOR_CONTROL and the presets it writes, and whether the
+// agents write (GOVERNOR_WRITES). Unset variables take the chart defaults.
+type e2eGovernorSettings struct {
+	control                    string
+	cpuPerf, cpuEco            string
+	gpuPerf, gpuEco            string
+	cpuOnGPU, modelMap, writes bool
+}
+
+func (e *e2eEnv) governorSettings(c *e2eCase) e2eGovernorSettings {
+	c.Helper()
+	ctx, cancel := e.ctx()
+	defer cancel()
+	var d appsv1.Deployment
+	if err := e.Client.Get(ctx, client.ObjectKey{Namespace: scenario.NamespaceJoulie, Name: e2eDeployController}, &d); err != nil {
+		c.Fatalf("the controller manager Deployment: %v", err)
+	}
+	env := map[string]string{}
+	for _, ct := range d.Spec.Template.Spec.Containers {
+		for _, v := range ct.Env {
+			env[v.Name] = v.Value
+		}
+	}
+	or := func(k, def string) string {
+		if v, ok := env[k]; ok {
+			return v
+		}
+		return def
+	}
+	s := e2eGovernorSettings{
+		control: or("GOVERNOR_CONTROL", "off"),
+		cpuPerf: or("CPU_GOVERNOR_PERFORMANCE_PRESET", "performance"), cpuEco: or("CPU_GOVERNOR_ECO_PRESET", "efficiency"),
+		gpuPerf: or("GPU_GOVERNOR_PERFORMANCE_PRESET", ""), gpuEco: or("GPU_GOVERNOR_ECO_PRESET", "efficient"),
+		cpuOnGPU: or("CPU_GOVERNOR_ON_GPU_NODES", "false") == "true",
+		modelMap: strings.TrimSpace(or("GPU_GOVERNOR_MODEL_PRESETS_JSON", "{}")) != "{}",
+	}
+	agents, err := e.agentDeployments()
+	if err != nil {
+		c.Fatalf("the emulated agents: %v", err)
+	}
+	s.writes = len(agents) > 0
+	for _, a := range agents {
+		w := "false"
+		for _, ct := range a.Spec.Template.Spec.Containers {
+			for _, v := range ct.Env {
+				if v.Name == "GOVERNOR_WRITES" {
+					w = v.Value
+				}
+			}
+		}
+		s.writes = s.writes && w == "true"
+	}
+	return s
+}
+
+// governorChecks returns the deployment's governor settings and the Nodes
+// with an agent and a profile e2eGovernorPresets knows; it skips the check
+// when governor control is off.
+func (e *e2eEnv) governorChecks(c *e2eCase) (e2eGovernorSettings, []e2eNode) {
+	c.Helper()
+	s := e.governorSettings(c)
+	if s.control == "" || s.control == "off" {
+		c.Skipf("GOVERNOR_CONTROL is off: the governor checks run on a deployment that turns it on, such as experiments/05-governor-exploration/scripts/run_tier_b.sh all")
+	}
+	all, err := e.nodes()
+	if err != nil {
+		c.Fatalf("spec Nodes: %v", err)
+	}
+	var out []e2eNode
+	for _, n := range all {
+		if _, known := e2eGovernorPresets[n.Profile.Name]; n.Agent && n.Managed && known {
+			out = append(out, n)
+		}
+	}
+	if len(out) == 0 {
+		c.Skipf("no Node with an agent runs a profile the governor checks know")
+	}
+	return s, out
+}
+
+// e2ePresetResults is a preset list as preset -> result.
+func e2ePresetResults(ps []v1alpha1.GovernorPresetSupport) map[string]string {
+	out := map[string]string{}
+	for _, p := range ps {
+		out[p.Preset] = p.Result
+	}
+	return out
+}
+
+// GS01: the presets and results each agent publishes are those of
+// e2eGovernorPresets for its profile.
+func e2eGS01PresetsPerProfile(c *e2eCase) {
+	e := c.env
+	_, nodes := e.governorChecks(c)
+	var problems []string
+	err := e2eEventually(e.agentSettle(), func() error {
+		problems = problems[:0]
+		hws, err := e.hardware()
+		if err != nil {
+			return err
+		}
+		for _, n := range nodes {
+			want := e2eGovernorPresets[n.Profile.Name]
+			h, ok := hws[n.Name]
+			if !ok {
+				problems = append(problems, fmt.Sprintf("node %s has no NodeHardware", n.Name))
+				continue
+			}
+			var cpu, gpu map[string]string
+			if st := h.Status.CPU; st != nil && st.Governor != nil {
+				cpu = e2ePresetResults(st.Governor.Presets)
+			}
+			if st := h.Status.GPU; st != nil && st.Governor != nil {
+				gpu = e2ePresetResults(st.Governor.Presets)
+			}
+			if !reflect.DeepEqual(cpu, want.cpu) {
+				problems = append(problems, fmt.Sprintf("node %s (%s): CPU presets %v, want %v", n.Name, n.Profile.Name, cpu, want.cpu))
+			}
+			if len(gpu) > 0 || len(want.gpu) > 0 {
+				if !reflect.DeepEqual(gpu, want.gpu) {
+					problems = append(problems, fmt.Sprintf("node %s (%s): GPU presets %v, want %v", n.Name, n.Profile.Name, gpu, want.gpu))
+				}
+			}
+		}
+		if len(problems) > 0 {
+			return fmt.Errorf("%d nodes off", len(problems))
+		}
+		return nil
+	})
+	if err != nil {
+		for _, p := range problems {
+			c.Errorf("%s", p)
+		}
+		c.Errorf("%v", err)
+	}
+}
+
+// e2eWantPreset is the preset the controller manager writes for a
+// component of node n in profile state (performance or eco), "" for none:
+// only under GOVERNOR_CONTROL for that component, never a CPU preset on a
+// GPU Node unless CPU_GOVERNOR_ON_GPU_NODES, and only a preset the Node
+// lists. ok is false when the check cannot predict it (a GPU model map).
+func e2eWantPreset(s e2eGovernorSettings, n e2eNode, gpu bool, state string) (preset string, ok bool) {
+	want := e2eGovernorPresets[n.Profile.Name]
+	hasGPU := n.Profile.GPUs != nil && n.Profile.GPUs.Count.V > 0
+	if gpu {
+		if !hasGPU || (s.control != "gpu" && s.control != "all") {
+			return "", true
+		}
+		if s.modelMap {
+			return "", false
+		}
+		preset = s.gpuPerf
+		if state == "eco" {
+			preset = s.gpuEco
+		}
+		if _, listed := want.gpu[preset]; !listed {
+			return "", true
+		}
+		return preset, true
+	}
+	if (s.control != "cpu" && s.control != "all") || (hasGPU && !s.cpuOnGPU) {
+		return "", true
+	}
+	preset = s.cpuPerf
+	if state == "eco" {
+		preset = s.cpuEco
+	}
+	if _, listed := want.cpu[preset]; !listed {
+		return "", true
+	}
+	return preset, true
+}
+
+// e2eResultMatches reports whether an agent's result is the predicted one:
+// an NVIDIA lock is applied-unverified until busy samples confirm it.
+func e2eResultMatches(got *v1alpha1.ControlResult, want string) bool {
+	if got == nil {
+		return false
+	}
+	if got.Result == want {
+		return true
+	}
+	return want == joulie.GovernorResultApplied && got.Result == joulie.GovernorResultAppliedUnverified && got.Backend == joulie.GovernorBackendNvidiaSMI
+}
+
+// GS02: every NodeTwin asks for the preset its profile state calls for
+// (performance or eco), and the agent's result for it is the one
+// e2eGovernorPresets gives for the Node's profile. A component the
+// controller writes no preset for has no governor result, or a restored
+// one. Every preset the settings write in a state (performance or eco), on
+// a profile that lists it, must be asked for by at least one Node in that
+// state, so a deployment that leaves every Node in one state cannot pass
+// with the other state's preset never checked.
+func e2eGS02ResultPerProfile(c *e2eCase) {
+	e := c.env
+	s, nodes := e.governorChecks(c)
+	if !s.writes {
+		c.Skipf("the agents do not write governors (GOVERNOR_WRITES is not true on every emulated agent)")
+	}
+	var problems []string
+	err := e2eEventually(e.agentSettle()+e.twinFollow(), func() error {
+		problems = problems[:0]
+		// expected holds every "<component> <state> <preset>" the settings
+		// write on some Node's profile, seen those a Node in that state asks for.
+		expected, seen := map[string]bool{}, map[string]bool{}
+		twins, err := e.twins()
+		if err != nil {
+			return err
+		}
+		for _, n := range nodes {
+			tw, ok := twins[n.Name]
+			if !ok {
+				problems = append(problems, fmt.Sprintf("node %s has no NodeTwin", n.Name))
+				continue
+			}
+			state := tw.Spec.Profile
+			var cs v1alpha1.ControlStatus
+			if tw.Status.ControlStatus != nil {
+				cs = *tw.Status.ControlStatus
+			}
+			for _, comp := range []struct {
+				gpu    bool
+				asked  string
+				result *v1alpha1.ControlResult
+				table  map[string]string
+			}{
+				{false, e2eCPUPresetOf(tw), cs.CPUGovernor, e2eGovernorPresets[n.Profile.Name].cpu},
+				{true, e2eGPUPresetOf(tw), cs.GPUGovernor, e2eGovernorPresets[n.Profile.Name].gpu},
+			} {
+				what := "CPU"
+				if comp.gpu {
+					what = "GPU"
+				}
+				for _, st := range []string{"performance", "eco"} {
+					if p, ok := e2eWantPreset(s, n, comp.gpu, st); ok && p != "" {
+						expected[what+" "+st+" "+p] = true
+					}
+				}
+				want, predictable := e2eWantPreset(s, n, comp.gpu, state)
+				if predictable && want != "" && comp.asked == want {
+					seen[what+" "+state+" "+want] = true
+				}
+				if predictable && comp.asked != want {
+					problems = append(problems, fmt.Sprintf("node %s (%s, %s): the NodeTwin asks for %s preset %q, want %q", n.Name, n.Profile.Name, state, what, comp.asked, want))
+					continue
+				}
+				if comp.asked == "" {
+					if r := comp.result; r != nil && r.Result != joulie.GovernorResultRestored {
+						problems = append(problems, fmt.Sprintf("node %s (%s): no %s preset asked, but the result is %s", n.Name, n.Profile.Name, what, e2eStatus(r)))
+					}
+					continue
+				}
+				if !e2eResultMatches(comp.result, comp.table[comp.asked]) {
+					problems = append(problems, fmt.Sprintf("node %s (%s, %s): %s preset %s gives %s, want %s", n.Name, n.Profile.Name, state, what, comp.asked, e2eStatus(comp.result), comp.table[comp.asked]))
+				}
+			}
+		}
+		for _, k := range e2eKeys(expected) {
+			if !seen[k] {
+				problems = append(problems, fmt.Sprintf("no Node asks for %s (component, state, preset): no Node of a profile that lists the preset is in that state", k))
+			}
+		}
+		if len(problems) > 0 {
+			return fmt.Errorf("%d components off", len(problems))
+		}
+		return nil
+	})
+	if err != nil {
+		for _, p := range problems {
+			c.Errorf("%s", p)
+		}
+		c.Errorf("%v", err)
+	}
+}
+
+func e2eCPUPresetOf(tw v1alpha1.NodeTwin) string {
+	if tw.Spec.CPU != nil && tw.Spec.CPU.Governor != nil {
+		return tw.Spec.CPU.Governor.Preset
+	}
+	return ""
+}
+
+func e2eGPUPresetOf(tw v1alpha1.NodeTwin) string {
+	if tw.Spec.GPU != nil && tw.Spec.GPU.Governor != nil {
+		return tw.Spec.GPU.Governor.Preset
+	}
+	return ""
+}
+
+// e2eTreeFiles reads every file of a Node's hwemu tree, first line only,
+// through scripts/simcluster/tree.sh, keyed by the path in the tree.
+func (e *e2eEnv) treeFiles(node string) (map[string]string, error) {
+	out, err := e.script("tree", nil, node)
+	if err != nil {
+		return nil, fmt.Errorf("tree.sh %s: %v\n%s", node, err, e2eTail(out, 10))
+	}
+	files := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(line, " = "); ok {
+			files[k] = strings.TrimSpace(v)
+		}
+	}
+	return files, nil
+}
+
+// e2eFilesLike returns the values of the tree files whose path matches re.
+func e2eFilesLike(files map[string]string, re *regexp.Regexp) map[string]string {
+	out := map[string]string{}
+	for k, v := range files {
+		if re.MatchString(k) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+var (
+	e2eGovernorFileRE = regexp.MustCompile(`^sys/devices/system/cpu/cpufreq/policy[0-9]+/scaling_governor$`)
+	e2eEPPFileRE      = regexp.MustCompile(`^sys/devices/system/cpu/cpufreq/policy[0-9]+/energy_performance_preference$`)
+	e2eLevelFileRE    = regexp.MustCompile(`/power_dpm_force_performance_level$`)
+	e2eGPULockFileRE  = regexp.MustCompile(`^state/nvml/gpu[0-9]+/locked_gpu_clocks$`)
+	e2eMemLockFileRE  = regexp.MustCompile(`^state/nvml/gpu[0-9]+/locked_mem_clocks$`)
+)
+
+// e2eNativeFiles is what the native words of a governor result say the
+// tree's files hold: for cpufreq every policy's governor and, with epp=,
+// preference; for amdgpu every device's level; for nvidia-smi every GPU's
+// graphics and memory lock as "<min>,<max>", or none for a domain the
+// native words leave unlocked.
+func e2eNativeFiles(r *v1alpha1.ControlResult) map[*regexp.Regexp]string {
+	words := strings.Fields(r.Applied)
+	if len(words) == 0 {
+		return nil
+	}
+	out := map[*regexp.Regexp]string{}
+	switch r.Backend {
+	case joulie.GovernorBackendCPUFreq:
+		out[e2eGovernorFileRE] = words[0]
+		for _, w := range words[1:] {
+			if v, ok := strings.CutPrefix(w, "epp="); ok {
+				out[e2eEPPFileRE] = v
+			}
+		}
+	case joulie.GovernorBackendAMDGPUSysfs:
+		out[e2eLevelFileRE] = words[0]
+	case joulie.GovernorBackendNvidiaSMI:
+		out[e2eGPULockFileRE], out[e2eMemLockFileRE] = e2eUnlocked, e2eUnlocked
+		for i := 0; i+1 < len(words); i++ {
+			switch words[i] {
+			case "-lgc":
+				out[e2eGPULockFileRE] = words[i+1]
+			case "-lmc":
+				out[e2eMemLockFileRE] = words[i+1]
+			}
+		}
+	}
+	return out
+}
+
+// e2eBoostFileRE matches the boost files of the tree: the global
+// cpufreq/boost, each policy's boost and the inverted intel_pstate/no_turbo;
+// e2eODFileRE an amdgpu overdrive table.
+var (
+	e2eBoostFileRE = regexp.MustCompile(`^sys/devices/system/cpu/(cpufreq/(policy[0-9]+/)?boost|intel_pstate/no_turbo)$`)
+	e2eODFileRE    = regexp.MustCompile(`/pp_od_clk_voltage$`)
+)
+
+// e2eBootFiles renders profile p for node into a scratch directory, as the
+// simulator renders the Node's tree, and returns the boost files and the
+// overdrive tables it holds at boot, by their path in the tree.
+func e2eBootFiles(p *hwemu.Profile, node string) (map[string]string, error) {
+	dir, err := os.MkdirTemp("", "gs04-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	root := filepath.Join(dir, node)
+	if _, err := hwemu.Render(p, root, hwemu.RenderOptions{NodeName: node}); err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if !e2eBoostFileRE.MatchString(rel) && !e2eODFileRE.MatchString(rel) {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		out[rel] = string(b)
+		return nil
+	})
+	return out, err
+}
+
+// e2eBootBoost is the boost state of boot files, on or off, from
+// cpufreq/boost or the inverted intel_pstate/no_turbo; empty without
+// either.
+func e2eBootBoost(files map[string]string) string {
+	if v, ok := files["sys/devices/system/cpu/cpufreq/boost"]; ok {
+		return map[string]string{"1": "on", "0": "off"}[strings.TrimSpace(v)]
+	}
+	if v, ok := files["sys/devices/system/cpu/intel_pstate/no_turbo"]; ok {
+		return map[string]string{"0": "on", "1": "off"}[strings.TrimSpace(v)]
+	}
+	return ""
+}
+
+// e2eUnlocked is what a lock file of the fake nvidia-smi holds with no
+// lock; e2eNotLockable what the memory lock file of a GPU whose memory
+// clock cannot be locked at run time holds (Hopper), also no lock.
+const (
+	e2eUnlocked    = "none"
+	e2eNotLockable = "[N/A]"
+)
+
+// e2eFileProblems compares the tree files that match each pattern with the
+// value wanted, every match and at least one.
+func e2eFileProblems(node string, files map[string]string, want map[*regexp.Regexp]string) []string {
+	var out []string
+	for re, v := range want {
+		got := e2eFilesLike(files, re)
+		if len(got) == 0 {
+			if v != e2eUnlocked {
+				out = append(out, fmt.Sprintf("node %s: no file matches %s", node, re))
+			}
+			continue
+		}
+		var off []string
+		for k, g := range got {
+			if g != v && !(v == e2eUnlocked && g == e2eNotLockable) {
+				off = append(off, fmt.Sprintf("%s=%q", k, g))
+			}
+		}
+		if len(off) > 0 {
+			sort.Strings(off)
+			if len(off) > 3 {
+				off = append(off[:3], fmt.Sprintf("and %d more", len(off)-3))
+			}
+			out = append(out, fmt.Sprintf("node %s: want %q, got %s", node, v, strings.Join(off, ", ")))
+		}
+	}
+	return out
+}
+
+// GS03: for every applied or equivalent governor result, the emulated
+// files hold its native words: the A files the agent writes, read through
+// tree.sh as an operator would.
+func e2eGS03FilesHoldTheNativeWord(c *e2eCase) {
+	e := c.env
+	s, nodes := e.governorChecks(c)
+	if !s.writes {
+		c.Skipf("the agents do not write governors")
+	}
+	twins, err := e.twins()
+	if err != nil {
+		c.Fatalf("NodeTwins: %v", err)
+	}
+	checked := 0
+	for _, n := range nodes {
+		tw := twins[n.Name]
+		if tw.Status.ControlStatus == nil {
+			continue
+		}
+		var files map[string]string
+		for _, r := range []*v1alpha1.ControlResult{tw.Status.ControlStatus.CPUGovernor, tw.Status.ControlStatus.GPUGovernor} {
+			if r == nil || !slices.Contains([]string{joulie.GovernorResultApplied, joulie.GovernorResultAppliedUnverified, joulie.GovernorResultEquivalent}, r.Result) {
+				continue
+			}
+			want := e2eNativeFiles(r)
+			if r.Backend == joulie.GovernorBackendNvidiaSMI && r.Applied == joulie.GovernorStateUnknown {
+				want = map[*regexp.Regexp]string{e2eGPULockFileRE: e2eUnlocked, e2eMemLockFileRE: e2eUnlocked}
+			}
+			if len(want) == 0 {
+				c.Errorf("node %s: result %s names no native state", n.Name, e2eStatus(r))
+				continue
+			}
+			if files == nil {
+				if files, err = e.treeFiles(n.Name); err != nil {
+					c.Fatalf("%v", err)
+				}
+			}
+			for _, p := range e2eFileProblems(n.Name, files, want) {
+				c.Errorf("%s (result %s, applied %q)", p, r.Result, r.Applied)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		c.Errorf("no Node has an applied or equivalent governor result to check")
+	}
+	c.observe(float64(checked), ">= 1")
+}
+
+// GS04: after one helm upgrade to GOVERNOR_CONTROL=off, every governor
+// result is restored or gone, at least one is restored, and every Node's
+// files are back at the baseline its NodeHardware recorded before the
+// agent's first write, which is the governor the profile renders. The boost
+// files (cpufreq/boost, each policy's boost, intel_pstate/no_turbo) and the
+// AMD overdrive tables (pp_od_clk_voltage, which efficient edits on the
+// MI300X) are compared whole with the files the profile renders at boot,
+// and a boost baseline NodeHardware recorded must be that boot state.
+func e2eGS04RestoredWhenOff(c *e2eCase) {
+	e := c.env
+	s, nodes := e.governorChecks(c)
+	if !s.writes {
+		c.Skipf("the agents do not write governors")
+	}
+	hws, err := e.hardware()
+	if err != nil {
+		c.Fatalf("NodeHardware: %v", err)
+	}
+	boot := map[string]map[string]string{}
+	for _, n := range nodes {
+		files, err := e2eBootFiles(n.Profile, n.Name)
+		if err != nil {
+			c.Fatalf("node %s: render its profile: %v", n.Name, err)
+		}
+		boot[n.Name] = files
+		state := e2eBootBoost(files)
+		if st := hws[n.Name].Status.CPU; state != "" && st != nil && st.Governor != nil && st.Governor.Baseline != nil {
+			for _, g := range st.Governor.Baseline.Groups {
+				if g.Boost != "" && g.Boost != state {
+					c.Errorf("node %s: baseline boost %q of policies %s, but the profile renders %q", n.Name, g.Boost, g.Policies, state)
+				}
+			}
+		}
+	}
+	baseline := map[string]map[*regexp.Regexp]string{}
+	for _, n := range nodes {
+		want := map[*regexp.Regexp]string{}
+		if cf := n.Profile.CPUFreq; cf != nil {
+			want[e2eGovernorFileRE] = cf.Governor.V
+		}
+		if st := hws[n.Name].Status.CPU; st != nil && st.Governor != nil && st.Governor.Baseline != nil {
+			for _, g := range st.Governor.Baseline.Groups {
+				if g.Governor != want[e2eGovernorFileRE] {
+					c.Errorf("node %s: baseline governor %q of policies %s, but the profile renders %q", n.Name, g.Governor, g.Policies, want[e2eGovernorFileRE])
+				}
+				if g.EPP != "" {
+					want[e2eEPPFileRE] = g.EPP
+				}
+			}
+		}
+		if g := n.Profile.GPUs; g != nil && g.DPM != nil {
+			want[e2eLevelFileRE] = g.DPM.Default.V
+		}
+		if g := n.Profile.GPUs; g != nil && g.Vendor == "nvidia" {
+			want[e2eGPULockFileRE], want[e2eMemLockFileRE] = e2eUnlocked, e2eUnlocked
+		}
+		baseline[n.Name] = want
+	}
+	out, err := e.helm("upgrade", e2eReleaseJoulie, filepath.Join(e.Repo, "charts", "joulie"), "-n", scenario.NamespaceJoulie,
+		"--reuse-values", "--skip-crds", "--set-string", "controllerManager.env.GOVERNOR_CONTROL=off")
+	if err != nil {
+		c.Fatalf("helm upgrade to GOVERNOR_CONTROL=off: %v\n%s", err, out)
+	}
+	if err := e.rollout(scenario.NamespaceJoulie, e2eDeployController, 5*time.Minute); err != nil {
+		c.Fatalf("the controller manager after the upgrade: %v", err)
+	}
+	var problems []string
+	restored := 0
+	err = e2eEventually(e.agentSettle()+e.twinFollow(), func() error {
+		problems, restored = problems[:0], 0
+		twins, err := e.twins()
+		if err != nil {
+			return err
+		}
+		for _, n := range nodes {
+			tw := twins[n.Name]
+			if e2eCPUPresetOf(tw) != "" || e2eGPUPresetOf(tw) != "" {
+				problems = append(problems, fmt.Sprintf("node %s: the NodeTwin still asks for a governor", n.Name))
+				continue
+			}
+			if cs := tw.Status.ControlStatus; cs != nil {
+				for _, r := range []*v1alpha1.ControlResult{cs.CPUGovernor, cs.GPUGovernor} {
+					switch {
+					case r == nil:
+					case r.Result == joulie.GovernorResultRestored:
+						restored++
+					default:
+						problems = append(problems, fmt.Sprintf("node %s: governor result %s, want restored or none", n.Name, e2eStatus(r)))
+					}
+				}
+			}
+			files, err := e.treeFiles(n.Name)
+			if err != nil {
+				return err
+			}
+			problems = append(problems, e2eFileProblems(n.Name, files, baseline[n.Name])...)
+			rels := make([]string, 0, len(boot[n.Name]))
+			for rel := range boot[n.Name] {
+				rels = append(rels, rel)
+			}
+			sort.Strings(rels)
+			for _, rel := range rels {
+				got, ok := files[rel]
+				if ok && e2eODFileRE.MatchString(rel) {
+					// tree.sh prints a file's first line; the table
+					// needs the whole file.
+					out, err := e.script("tree", nil, n.Name, rel)
+					if err != nil {
+						return fmt.Errorf("tree.sh %s %s: %v\n%s", n.Name, rel, err, e2eTail(out, 10))
+					}
+					got = out
+				}
+				if want := boot[n.Name][rel]; !ok || strings.TrimSpace(got) != strings.TrimSpace(want) {
+					problems = append(problems, fmt.Sprintf("node %s: %s holds %q, want %q as the profile renders it", n.Name, rel, got, want))
+				}
+			}
+		}
+		if len(problems) > 0 {
+			return fmt.Errorf("%d problems", len(problems))
+		}
+		if restored == 0 {
+			return fmt.Errorf("no governor result is restored")
+		}
+		return nil
+	})
+	if err != nil {
+		for _, p := range problems {
+			c.Errorf("%s", p)
+		}
+		c.Errorf("%v", err)
+	}
+	c.observe(float64(restored), ">= 1")
 }

@@ -20,6 +20,11 @@ agent:
     RECONCILE_INTERVAL: "20s"
     METRICS_ADDR: ":8080"
     SIMULATE_ONLY: "false"
+    # Governor presets of the NodeTwin are written only with "true"; the
+    # agent always discovers the governors. Restore the baseline governors
+    # when the agent stops (a rolling update restores, then re-applies).
+    GOVERNOR_WRITES: "false"
+    GOVERNOR_RESTORE_ON_EXIT: "true"
   daemonset:
     nodeSelector:
       joulie.io/managed: "true"
@@ -95,7 +100,29 @@ controllerManager:
     GPU_ECO_CAP_PCT_OF_MAX: "60"
     GPU_WRITE_ABSOLUTE_CAPS: "false"
     GPU_MODEL_CAPS_JSON: "{}"
-    GPU_PRODUCT_LABEL_KEYS: "joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product,amd.com/gpu.family"
+    # First match wins; the AMD node labeller names the board in gpu.product-name.
+    GPU_PRODUCT_LABEL_KEYS: "joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,amd.com/gpu.family"
+    # Governor control, off by default: off, cpu, gpu or all. When on, the
+    # controller manager writes vendor-neutral CPU and GPU governor presets
+    # into each NodeTwin, by the profile the node runs at, and only presets the
+    # node lists in NodeHardware. The agent writes nothing unless its own
+    # GOVERNOR_WRITES is true as well. A GPU node gets no CPU governor unless
+    # CPU_GOVERNOR_ON_GPU_NODES is true.
+    GOVERNOR_CONTROL: "off"
+    CPU_GOVERNOR_PERFORMANCE_PRESET: "performance"  # performance, balanced or efficiency
+    CPU_GOVERNOR_ECO_PRESET: "efficiency"
+    CPU_GOVERNOR_ECO_BOOST: ""  # on or off with the eco preset; empty leaves boost alone
+    CPU_GOVERNOR_ON_GPU_NODES: "false"
+    # GPU presets: auto, sustained, efficient, low or peak; empty writes none.
+    # The performance default is empty: sustained holds the data-path clocks
+    # and costs idle power, so opt a model in through the model map below once
+    # a measurement shows it gains on that model.
+    GPU_GOVERNOR_PERFORMANCE_PRESET: ""
+    GPU_GOVERNOR_ECO_PRESET: "efficient"
+    GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX: "80"  # compute clock ceiling of efficient, (0, 100]
+    # Per GPU model, keyed like GPU_MODEL_CAPS_JSON:
+    # {"<model>": {"performance": "sustained", "eco": "efficient", "ecoCeilingPctOfMax": 70}}
+    GPU_GOVERNOR_MODEL_PRESETS_JSON: "{}"
     # Measured power and facility metrics come from this Prometheus: producers
     # push hw.* over OTLP (--web.enable-otlp-receiver), and promoting k8s.node.name
     # (otlp.promote_resource_attributes) avoids a target_info join. See values/prometheus-grafana.yaml.

@@ -41,6 +41,12 @@ spec:
     - jsonPath: .spec.scheduling.draining
       name: Draining
       type: boolean
+    - jsonPath: .spec.cpu.governor.preset
+      name: CPU-Gov
+      type: string
+    - jsonPath: .spec.gpu.governor.preset
+      name: GPU-Gov
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -73,8 +79,34 @@ spec:
               cpu:
                 description: |-
                   NodeTwinCPU is the CPU package power cap, as an absolute value or as a
-                  fraction of the hardware maximum. At most one is set.
+                  fraction of the hardware maximum, and the CPU frequency governor. At most
+                  one cap is set.
                 properties:
+                  governor:
+                    description: |-
+                      Governor is the CPU frequency governor preset for every cpufreq policy
+                      of the node. Absent means the agent leaves the governor as it is.
+                    properties:
+                      boost:
+                        description: Boost turns frequency boost (turbo) on or off.
+                          Absent leaves it as it is.
+                        enum:
+                        - "on"
+                        - "off"
+                        type: string
+                      preset:
+                        description: |-
+                          Preset is performance (highest frequency at any load), balanced
+                          (demand-driven, quick ramp) or efficiency (demand-driven with an energy
+                          bias).
+                        enum:
+                        - performance
+                        - balanced
+                        - efficiency
+                        type: string
+                    required:
+                    - preset
+                    type: object
                   packagePowerCapPctOfMax:
                     exclusiveMinimum: true
                     maximum: 100
@@ -85,8 +117,39 @@ spec:
                     type: number
                 type: object
               gpu:
-                description: NodeTwinGPU holds the GPU power controls.
+                description: NodeTwinGPU holds the GPU power controls and the GPU
+                  clock governor.
                 properties:
+                  governor:
+                    description: |-
+                      Governor is the GPU clock governor preset for every GPU of the node.
+                      Absent means the agent leaves the GPU clocks as they are.
+                    properties:
+                      computeClockCeilingPctOfMax:
+                        description: |-
+                          ComputeClockCeilingPctOfMax is the compute clock ceiling of the
+                          efficient preset, as a percentage of the GPU's maximum compute clock.
+                          Only meaningful with efficient.
+                        exclusiveMinimum: true
+                        maximum: 100
+                        minimum: 0
+                        type: number
+                      preset:
+                        description: |-
+                          Preset is auto (the vendor default), sustained (data-path clocks held
+                          at their maximum, idle gating kept), efficient (compute clock under a
+                          ceiling), low (every clock at its minimum) or peak (every clock at its
+                          maximum, idle gating off).
+                        enum:
+                        - auto
+                        - sustained
+                        - efficient
+                        - low
+                        - peak
+                        type: string
+                    required:
+                    - preset
+                    type: object
                   powerCap:
                     description: |-
                       GPUPowerCap is the GPU power cap, as an absolute value per GPU or as a
@@ -141,6 +204,31 @@ spec:
                     description: ControlResult is the outcome of the last control
                       write for one component.
                     properties:
+                      applied:
+                        description: |-
+                          Applied is the native setting in effect, in the driver's own words,
+                          such as schedutil or high. Set by the governor results only.
+                        type: string
+                      backend:
+                        type: string
+                      message:
+                        type: string
+                      result:
+                        type: string
+                      updatedAt:
+                        description: UpdatedAt is the RFC3339 time of the last agent
+                          write.
+                        type: string
+                    type: object
+                  cpuGovernor:
+                    description: CPUGovernor is the outcome of the last CPU governor
+                      write.
+                    properties:
+                      applied:
+                        description: |-
+                          Applied is the native setting in effect, in the driver's own words,
+                          such as schedutil or high. Set by the governor results only.
+                        type: string
                       backend:
                         type: string
                       message:
@@ -156,6 +244,31 @@ spec:
                     description: ControlResult is the outcome of the last control
                       write for one component.
                     properties:
+                      applied:
+                        description: |-
+                          Applied is the native setting in effect, in the driver's own words,
+                          such as schedutil or high. Set by the governor results only.
+                        type: string
+                      backend:
+                        type: string
+                      message:
+                        type: string
+                      result:
+                        type: string
+                      updatedAt:
+                        description: UpdatedAt is the RFC3339 time of the last agent
+                          write.
+                        type: string
+                    type: object
+                  gpuGovernor:
+                    description: GPUGovernor is the outcome of the last GPU governor
+                      write.
+                    properties:
+                      applied:
+                        description: |-
+                          Applied is the native setting in effect, in the driver's own words,
+                          such as schedutil or high. Set by the governor results only.
+                        type: string
                       backend:
                         type: string
                       message:

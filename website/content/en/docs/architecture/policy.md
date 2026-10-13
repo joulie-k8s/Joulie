@@ -58,10 +58,16 @@ Main spec fields:
 - `spec.profile` (required, `performance|eco`)
 - `spec.cpu.packagePowerCapWatts` (optional, absolute package cap)
 - `spec.cpu.packagePowerCapPctOfMax` (optional, normalized policy intent)
+- `spec.cpu.governor` (optional, CPU governor preset; see [Governor policy](#governor-policy)):
+  - `preset` (`performance|balanced|efficiency`)
+  - `boost` (optional, `on|off`)
 - `spec.gpu.powerCap` (optional):
   - `scope` (`perGpu`)
   - `capWattsPerGpu` (absolute per-GPU cap)
   - `capPctOfMax` (percentage of node GPU max power)
+- `spec.gpu.governor` (optional, GPU governor preset):
+  - `preset` (`auto|sustained|efficient|low|peak`)
+  - `computeClockCeilingPctOfMax` (only with `efficient`)
 - `spec.policy.name` (optional, provenance/debug)
 
 Resolution/precedence in agent runtime:
@@ -71,7 +77,8 @@ Resolution/precedence in agent runtime:
 
 What the controller manager typically writes today:
 
-- CPU intent is commonly emitted as `packagePowerCapPctOfMax`.
+- CPU intent is commonly emitted as `packagePowerCapPctOfMax` on CPU-only nodes.
+- A GPU node's CPU gets `packagePowerCapWatts` at `PERFORMANCE_CAP_WATTS` whatever the node's profile: capping the CPU of a GPU node slows the GPU data feed by more than it saves, so a GPU node gets only GPU caps.
 - GPU intent may be emitted as:
   - `capPctOfMax` only, when the agent is expected to resolve percentage to watts from device limits,
   - `capWattsPerGpu` plus `capPctOfMax`, when the controller manager has deterministic model-based mapping available and wants the absolute target to be explicit.
@@ -87,7 +94,7 @@ spec:
   nodeName: kwok-gpu-nvidia-0
   profile: eco
   cpu:
-    packagePowerCapPctOfMax: 60
+    packagePowerCapWatts: 5000
   gpu:
     powerCap:
       scope: perGpu
@@ -99,9 +106,23 @@ spec:
 
 In this example:
 
-- CPU is expressed as a normalized percentage of max package power.
+- The CPU of this GPU node is left at the performance cap; a CPU-only eco node would get `packagePowerCapPctOfMax: 60` instead.
 - GPU is expressed as both percentage and resolved absolute watts per GPU.
 - The agent applies the absolute GPU cap when present and falls back to percentage only when absolute watts are not provided.
+
+## Governor policy
+
+Off by default (`GOVERNOR_CONTROL=off`); see [Governor control]({{< relref "/docs/getting-started/05-configuration-reference.md#governor-control" >}}) for the variables. A governor is its own axis, separate from the caps: one vendor-neutral preset per component, which the agent maps to the node's native settings. The preset follows the profile the node runs at, so a draining node keeps the performance presets, as it keeps the performance caps. Pod classes (`joulie.io/workload-class`) only steer placement.
+
+| Node state | CPU-only node: `spec.cpu.governor` | GPU node: `spec.cpu.governor` | `spec.gpu.governor` | Why |
+|---|---|---|---|---|
+| ActivePerformance | `CPU_GOVERNOR_PERFORMANCE_PRESET` (`performance`) | not written (`CPU_GOVERNOR_ON_GPU_NODES=false`) | the model's entry in `GPU_GOVERNOR_MODEL_PRESETS_JSON`, else `GPU_GOVERNOR_PERFORMANCE_PRESET` (empty: not written) | race to idle; a data path is held only on models the operator opted in |
+| DrainingPerformance | as ActivePerformance | not written | as ActivePerformance | performance pods still run |
+| ActiveEco | `CPU_GOVERNOR_ECO_PRESET` (`efficiency`), with `CPU_GOVERNOR_ECO_BOOST` when set | not written | the model's entry, else `GPU_GOVERNOR_ECO_PRESET` (`efficient`, ceiling `GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX`, 80) | a compute-bound job's energy optimum sits below the maximum clock; a memory-bound one loses almost nothing |
+| preset not in the node's `NodeHardware` presets | not written, one warning | | not written, one warning (no fallback to `auto`, which would override an operator's own setting) | never ask a node for what it cannot do |
+| `GOVERNOR_CONTROL=off` | nothing written | nothing | nothing | the default |
+
+`GOVERNOR_CONTROL=cpu` writes only the CPU column, `gpu` only the GPU one. When a field leaves the spec, because control was turned off or the node stopped listing the preset, the agent puts back the state it recorded before its first write. The twin's power budget and the scheduler extender do not read the governor: a governor moves the measured power, which the twin already reads.
 
 ## Hardware-discovery object: `NodeHardware`
 
@@ -118,12 +139,15 @@ Main fields:
   - normalized inventory model when recognized
   - sockets / total cores / cores per socket
   - runtime CPU cap range when available
+  - frequency landmarks from cpufreq (`landmarks`: minimum, nominal, maximum boost)
+  - the cpufreq governor state, the presets the node accepts and the baseline the agent restores (`governor`)
   - control and telemetry availability
 - `status.gpu`:
   - raw model string
   - normalized inventory model when recognized
   - GPU count
   - runtime GPU cap range when available
+  - the GPU clock governor state, clock ranges, the presets the GPUs accept and the baseline per GPU (`governor`)
   - control and telemetry availability
 - `status.quality`:
   - overall discovery quality

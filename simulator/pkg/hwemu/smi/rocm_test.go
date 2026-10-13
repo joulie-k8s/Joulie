@@ -2,6 +2,7 @@ package smi
 
 import (
 	"encoding/json"
+	"fmt"
 	"path"
 	"regexp"
 	"strconv"
@@ -291,5 +292,259 @@ func TestS13SecondaryDie(t *testing.T) {
 	}
 	if got := doc.GPUData[0].Power.SocketPower.Value; got != 210 {
 		t.Errorf("amd-smi socket_power of GPU 0 = %d W, want its own 210", got)
+	}
+}
+
+// dpmLevelWords are the words power_dpm_force_performance_level parses.
+var dpmLevelWords = []string{"auto", "low", "high", "manual", "profile_exit", "profile_standard",
+	"profile_min_sclk", "profile_min_mclk", "profile_peak", "perf_determinism"}
+
+// dpmCardFamily is the DPM rendering of one family, as package hwemu
+// writes it, with neutral clocks: the levels it refuses with their errno,
+// the overdrive bounds a write may set (none: no overdrive file), whether
+// it has a power profile table, and the unprivileged rocm-smi no-op.
+type dpmCardFamily struct {
+	refused  map[string]string
+	od       []string
+	profiles bool
+	noop     bool
+}
+
+// dpmLevelRel is power_dpm_force_performance_level of GPU i of newMI300XNode.
+func dpmLevelRel(i int) string { return dpmDevRel(i, layout.AMDGPUPerfLevelFile) }
+
+func dpmDevRel(i int, name string) string {
+	return path.Join(layout.SysDir, layout.PCIDevDir(0x10+i), name)
+}
+
+// dpm adds the DPM files of family f to every GPU of newMI300XNode, at
+// level auto, sclk 300 to 1500 MHz and mclk 400 to 800 MHz.
+func (n *testNode) dpm(f dpmCardFamily) {
+	for i := 0; i < 8; i++ {
+		n.write(dpmLevelRel(i), "auto", 0o644)
+		n.write(dpmDevRel(i, "pp_dpm_sclk"), "0: 300Mhz *\n1: 1500Mhz ", 0o644)
+		n.write(dpmDevRel(i, "pp_dpm_mclk"), "0: 400Mhz *\n1: 800Mhz ", 0o644)
+		state := path.Join(layout.StateDir, "amdgpu", "card"+strconv.Itoa(i+1))
+		var levels []string
+		for _, w := range dpmLevelWords {
+			if e := f.refused[w]; e != "" {
+				w += " " + e
+			}
+			levels = append(levels, w)
+		}
+		n.write(path.Join(state, amdgpuPerfLevelsFile), strings.Join(levels, "\n"), 0o444)
+		noop := "0"
+		if f.noop {
+			noop = "1"
+		}
+		n.write(path.Join(state, amdgpuUnprivNoopFile), noop, 0o444)
+		if len(f.od) > 0 {
+			n.write(dpmDevRel(i, layout.AMDGPUODFile), "OD_SCLK:\n0: 300Mhz\n1: 1500Mhz\nOD_MCLK:\n0: 400Mhz\n1: 800Mhz", 0o644)
+			n.write(path.Join(state, amdgpuODWritableFile), strings.Join(f.od, " "), 0o444)
+		}
+		if f.profiles {
+			n.write(dpmDevRel(i, layout.AMDGPUPowerProfileFile), dpmProfileTable(0), 0o644)
+		}
+	}
+}
+
+// dpmProfileTable is pp_power_profile_mode of SMU 13.0.0 with mode star
+// starred, without its trailing newline.
+func dpmProfileTable(star int) string {
+	modes := []string{"BOOTUP_DEFAULT", "3D_FULL_SCREEN", "POWER_SAVING", "VIDEO", "VR", "COMPUTE", "CUSTOM", "WINDOW_3D"}
+	out := fmt.Sprintf("%16s %s %s %s %s %s %s %s %s %s", "PROFILE_INDEX(NAME)", "CLOCK_TYPE(NAME)", "FPS", "MinActiveFreqType",
+		"MinActiveFreq", "BoosterFreqType", "BoosterFreq", "PD_Data_limit_c", "PD_Data_error_coeff", "PD_Data_error_rate_coeff")
+	for i, m := range modes {
+		s := " "
+		if i == star {
+			s = "*"
+		}
+		out += fmt.Sprintf("\n%2d %14s%s:", i, m, s)
+	}
+	return out
+}
+
+// dpmNavi is a family that takes every level but perf_determinism, has a
+// power profile table and no overdrive, as the Radeon PRO W7900; dpmAqua
+// takes auto, manual and perf_determinism only and has overdrive without an
+// uclk minimum, as the MI300X.
+var (
+	dpmNavi = dpmCardFamily{refused: map[string]string{"perf_determinism": "EINVAL"}, profiles: true, noop: true}
+	dpmAqua = dpmCardFamily{refused: map[string]string{"low": "EINVAL", "high": "EINVAL", "profile_exit": "EINVAL",
+		"profile_standard": "EINVAL", "profile_min_sclk": "EINVAL", "profile_min_mclk": "EINVAL", "profile_peak": "EINVAL"},
+		od: []string{"sclkMin", "sclkMax", "uclkMax"}, noop: true}
+)
+
+// SG01: -p prints each GPU's level as showPerformanceLevel does
+// (rocm_smi.py:2612-2622), and under --json the key Performance Level.
+func TestSG01ShowPerfLevel(t *testing.T) {
+	t.Parallel()
+	n := newMI300XNode(t, rocmVariantCurrent, "")
+	n.dpm(dpmNavi)
+	n.write(dpmLevelRel(2), "high", 0o644)
+	code, stdout, stderr := n.main("", "rocm-smi", "--showperflevel")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
+	}
+	for i := 0; i < 8; i++ {
+		want := "auto"
+		if i == 2 {
+			want = "high"
+		}
+		if line := fmt.Sprintf("GPU[%d]\t\t: Performance Level: %s\n", i, want); !strings.Contains(stdout, line) {
+			t.Errorf("stdout lacks %q:\n%s", line, stdout)
+		}
+	}
+	if !strings.Contains(stdout, "= Show Performance Level =") {
+		t.Errorf("stdout lacks the section spacer:\n%s", stdout)
+	}
+	code, stdout, _ = n.main("", "rocm-smi", "-d", "1", "2", "--showperflevel", "--json")
+	if m := rocmJSON(t, stdout); code != 0 || len(m) != 2 || m["card1"]["Performance Level"] != "auto" || m["card2"]["Performance Level"] != "high" {
+		t.Errorf("--json: exit %d, %v; want card1 auto and card2 high", code, m)
+	}
+}
+
+// SG02: --setperflevel high writes the level file and prints the success
+// line; a word outside auto, low, high and manual, such as profile_peak, is
+// refused by rocm-smi itself and writes nothing; a level the family refuses
+// fails quietly (rsmi_ret_ok) and writes nothing either.
+func TestSG02SetPerfLevel(t *testing.T) {
+	t.Parallel()
+	n := newMI300XNode(t, rocmVariantCurrent, "")
+	n.dpm(dpmNavi)
+	code, stdout, stderr := n.main("", "rocm-smi", "-d", "0", "--setperflevel", "high")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "GPU[0]\t\t: Performance level set to high\n") {
+		t.Fatalf("high: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if got := n.read(dpmLevelRel(0)); got != "high" {
+		t.Errorf("level after high: %q", got)
+	}
+	if got := n.read(dpmLevelRel(1)); got != "auto" {
+		t.Errorf("-d 0 changed GPU 1: %q", got)
+	}
+	code, stdout, stderr = n.main("", "rocm-smi", "-d", "1", "--setperflevel", "profile_peak")
+	if code != 0 || strings.Contains(stdout, "set to") || !strings.Contains(stderr, "ERROR: GPU[1]\t: Unable to set Performance Level\n") ||
+		!strings.Contains(stderr, "ERROR: Invalid Performance level: profile_peak\n") {
+		t.Errorf("profile_peak: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if got := n.read(dpmLevelRel(1)); got != "auto" {
+		t.Errorf("profile_peak wrote the level: %q", got)
+	}
+
+	m := newMI300XNode(t, rocmVariantCurrent, "")
+	m.dpm(dpmAqua)
+	code, stdout, stderr = m.main("", "rocm-smi", "-d", "0", "--setperflevel", "high")
+	if code != 0 || stderr != "" || strings.Contains(stdout, "set to") {
+		t.Errorf("high on a family that refuses it: exit %d, stdout %q, stderr %q; want no success line", code, stdout, stderr)
+	}
+	if got := m.read(dpmLevelRel(0)); got != "auto" {
+		t.Errorf("a refused high was written: %q", got)
+	}
+	if code, _, stderr := m.main("", "rocm-smi", "-d", "0", "--setperflevel", "high", "--loglevel", "debug"); code != 1 || !strings.Contains(stderr, "DEBUG: RSMI_STATUS_INVALID_ARGS GPU[0]: set_perf_level") {
+		t.Errorf("refused high with --loglevel debug: exit %d, stderr %q; want exit 1 and the debug line", code, stderr)
+	}
+}
+
+// SG03: without root, a family whose rocm-smi set is a silent no-op prints
+// nothing, exits 0 and changes nothing; another family's set fails the
+// write and prints no success line.
+func TestSG03UnprivilegedSetPerfLevel(t *testing.T) {
+	t.Parallel()
+	n := newMI300XNode(t, rocmVariantCurrent, "")
+	n.dpm(dpmNavi)
+	n.env.Unprivileged = true
+	if code, stdout, stderr := n.main("", "rocm-smi", "--setperflevel", "high"); code != 0 || stdout != "" || stderr != "" {
+		t.Errorf("unprivileged no-op: exit %d, stdout %q, stderr %q; want 0 and nothing", code, stdout, stderr)
+	}
+	if code, stdout, stderr := n.main("", "rocm-smi", "-d", "0", "--setpoweroverdrive", "500"); code != 0 || stdout != "" || stderr != "" {
+		t.Errorf("unprivileged no-op, power: exit %d, stdout %q, stderr %q; want 0 and nothing", code, stdout, stderr)
+	}
+	for i := 0; i < 8; i++ {
+		if got := n.read(dpmLevelRel(i)); got != "auto" {
+			t.Errorf("GPU %d level %q after the no-op", i, got)
+		}
+	}
+	if got := n.read(hwmonRel(0, "power1_cap")); got != "750000000" {
+		t.Errorf("power1_cap %s after the no-op", got)
+	}
+
+	f := dpmNavi
+	f.noop = false
+	m := newMI300XNode(t, rocmVariantCurrent, "")
+	m.dpm(f)
+	m.env.Unprivileged = true
+	code, stdout, _ := m.main("", "rocm-smi", "-d", "0", "--setperflevel", "high")
+	if code != 0 || strings.Contains(stdout, "set to") || m.read(dpmLevelRel(0)) != "auto" {
+		t.Errorf("unprivileged without the no-op: exit %d, stdout %q, level %q", code, stdout, m.read(dpmLevelRel(0)))
+	}
+	n.env.Unprivileged = false
+	if code, stdout, _ := n.main("", "rocm-smi", "-d", "0", "--setperflevel", "high"); code != 0 || !strings.Contains(stdout, "set to high") {
+		t.Errorf("as root: exit %d, stdout %q", code, stdout)
+	}
+}
+
+// SG04: --setprofile N names the profile of bit N-1 (profileString,
+// rocm_smi.py:4125-4133); rocm_smi_lib sets the level to manual first, then
+// writes the mode's index (rocm_smi.cc:1807-1840). -l lists the profiles
+// with the one in effect starred.
+func TestSG04SetProfileSwitchesToManualFirst(t *testing.T) {
+	t.Parallel()
+	n := newMI300XNode(t, rocmVariantCurrent, "")
+	n.dpm(dpmNavi)
+	code, stdout, stderr := n.main("", "rocm-smi", "-d", "0", "--setprofile", "4")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "GPU[0]\t\t: Successfully set profile to: COMPUTE\n") {
+		t.Fatalf("--setprofile 4: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if lvl, mode := n.read(dpmLevelRel(0)), n.read(dpmDevRel(0, layout.AMDGPUPowerProfileFile)); lvl != "manual" || mode != "5" {
+		t.Errorf("after --setprofile 4: level %q, pp_power_profile_mode %q; want manual and 5, the index of COMPUTE", lvl, mode)
+	}
+	n.write(dpmDevRel(1, layout.AMDGPUPowerProfileFile), dpmProfileTable(5), 0o644)
+	if _, stdout, _ := n.main("", "rocm-smi", "-d", "1", "--setprofile", "compute"); !strings.Contains(stdout, "GPU[1]\t\t: Profile was already set to: COMPUTE\n") {
+		t.Errorf("--setprofile compute over COMPUTE: stdout %q", stdout)
+	}
+	if _, _, stderr := n.main("", "rocm-smi", "-d", "1", "--setprofile", "turbo"); !strings.Contains(stderr, "Unable to set profile to: turbo (UNKNOWN profile)") {
+		t.Errorf("--setprofile turbo: stderr %q", stderr)
+	}
+	_, stdout, _ = n.main("", "rocm-smi", "-d", "1", "--showprofile")
+	for _, line := range []string{
+		"GPU[1]\t\t: 1. Available power profile (#1 of 7): CUSTOM\n",
+		"GPU[1]\t\t: 4. Available power profile (#4 of 7): COMPUTE*\n",
+		"GPU[1]\t\t: 7. Available power profile (#7 of 7): BOOTUP DEFAULT\n",
+	} {
+		if !strings.Contains(stdout, line) {
+			t.Errorf("--showprofile lacks %q:\n%s", line, stdout)
+		}
+	}
+}
+
+// SG08: the DPM options that printed "not emulated" with exit 2 now work;
+// every option still unmodelled exits 2 as before.
+func TestSG08ModelledFlagsWorkOthersStillExit2(t *testing.T) {
+	t.Parallel()
+	n := newMI300XNode(t, rocmVariantCurrent, amdsmiVariant72)
+	n.dpm(dpmAqua)
+	for _, argv := range [][]string{
+		{"rocm-smi", "--showperflevel"},
+		{"rocm-smi", "-d", "0", "--setperflevel", "manual"},
+		{"rocm-smi", "--showprofile"},
+		{"amd-smi", "set", "-g", "0", "--perf-level", "auto"},
+		{"amd-smi", "set", "-g", "0", "--profile", "3"},
+		{"amd-smi", "set", "-g", "0", "-L", "sclk", "max", "1200"},
+		{"amd-smi", "metric", "-g", "0", "--perf-level", "--json"},
+	} {
+		if code, _, stderr := n.main("", argv...); code != 0 || strings.Contains(stderr, "not emulated") {
+			t.Errorf("%v: exit %d, stderr %q; want it emulated", argv, code, stderr)
+		}
+	}
+	for _, argv := range [][]string{
+		{"rocm-smi", "--showclocks"},
+		{"rocm-smi", "--setsclk", "1"},
+		{"amd-smi", "set", "-g", "0", "--soc-pstate", "1"},
+		{"amd-smi", "metric", "-g", "0", "--clock", "--json"},
+		{"amd-smi", "metric", "-g", "0", "--perf-level"},
+	} {
+		if code, _, stderr := n.main("", argv...); code != 2 || !strings.Contains(stderr, "is not emulated") {
+			t.Errorf("%v: exit %d, stderr %q; want 2 and not emulated", argv, code, stderr)
+		}
 	}
 }

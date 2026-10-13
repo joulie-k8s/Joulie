@@ -94,12 +94,16 @@ type workloadClass struct {
 	GPU string `json:"gpu,omitempty"`
 }
 
+// workloadProfileRec is a job's workloadProfile. PeerTransferIntensity is
+// written only with -peer-transfer-intensity (v3), on the jobs that request
+// two or more GPUs.
 type workloadProfileRec struct {
-	CPUUtilization      float64 `json:"cpuUtilization,omitempty"`
-	GPUUtilization      float64 `json:"gpuUtilization,omitempty"`
-	MemoryIntensity     float64 `json:"memoryIntensity,omitempty"`
-	IOIntensity         float64 `json:"ioIntensity,omitempty"`
-	CPUFeedIntensityGPU float64 `json:"cpuFeedIntensityGpu,omitempty"`
+	CPUUtilization        float64 `json:"cpuUtilization,omitempty"`
+	GPUUtilization        float64 `json:"gpuUtilization,omitempty"`
+	MemoryIntensity       float64 `json:"memoryIntensity,omitempty"`
+	IOIntensity           float64 `json:"ioIntensity,omitempty"`
+	CPUFeedIntensityGPU   float64 `json:"cpuFeedIntensityGpu,omitempty"`
+	PeerTransferIntensity float64 `json:"peerTransferIntensity,omitempty"`
 }
 
 type generatorConfig struct {
@@ -135,6 +139,7 @@ type generatorConfig struct {
 	GPUSensitivity        *float64 // v3 only: sensitivity.gpu of every job; nil omits it
 	ArrivalWindowSec      float64  // v3 only: the last arrival is at most this; 0 keeps the offsets
 	MaxDurationSec        float64  // v3 only: durationSec is at most this; 0 keeps the durations
+	PeerTransferIntensity float64  // v3 only: peerTransferIntensity of every job with two or more GPUs; 0 omits it
 }
 
 // v3BaseSpeedPerCore is the v3 default of -base-speed-per-core. It equals the
@@ -168,6 +173,17 @@ func (c generatorConfig) baseSpeedPerCore() float64 {
 	default:
 		return v2DiurnalBaseSpeedPerCore
 	}
+}
+
+// jobProfile is the workloadProfile of a job requesting gpus GPUs: the
+// workload's shared profile, plus -peer-transfer-intensity when the job
+// requests two or more GPUs, the jobs that can move data between their
+// GPUs on one node.
+func (c generatorConfig) jobProfile(shared workloadProfileRec, gpus int) workloadProfileRec {
+	if gpus >= 2 {
+		shared.PeerTransferIntensity = c.PeerTransferIntensity
+	}
+	return shared
 }
 
 // sensitivity is a job's sensitivity record. v2 writes both values given;
@@ -267,7 +283,7 @@ func run(args []string) error {
 // one with the other schema is an error rather than a flag that does
 // nothing, or one that breaks v3's ideal runtime.
 var (
-	v3OnlyFlags = []string{"cpu-sensitivity", "gpu-sensitivity", "arrival-window-sec", "max-duration-sec"}
+	v3OnlyFlags = []string{"cpu-sensitivity", "gpu-sensitivity", "arrival-window-sec", "max-duration-sec", "peer-transfer-intensity"}
 	v2OnlyFlags = []string{"cpu-work-rate-per-core", "gpu-work-rate-per-gpu", "work-scale"}
 )
 
@@ -311,6 +327,7 @@ func parseFlags(args []string) (generatorConfig, error) {
 	fs.Float64Var(&gpuSensitivity, "gpu-sensitivity", 0, "v3 only: sensitivity.gpu, in [0,1], of every job; unset, the key is absent and the simulator uses 1")
 	fs.Float64Var(&cfg.ArrivalWindowSec, "arrival-window-sec", 0, "v3 only: scale submit offsets linearly so the last arrival is at most this many seconds (0 keeps them)")
 	fs.Float64Var(&cfg.MaxDurationSec, "max-duration-sec", 0, "v3 only: clamp each workload's durationSec to this many seconds before its work is sized (0 keeps them)")
+	fs.Float64Var(&cfg.PeerTransferIntensity, "peer-transfer-intensity", 0, "v3 only: workloadProfile.peerTransferIntensity, in [0,1], of every job that requests two or more GPUs: the share of its GPU time spent moving data between its GPUs (0 omits the key)")
 	_ = fs.Parse(args) // ExitOnError: never returns an error
 	given := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
@@ -350,6 +367,9 @@ func parseFlags(args []string) (generatorConfig, error) {
 		}
 		if !(cfg.ArrivalWindowSec >= 0) || !(cfg.MaxDurationSec >= 0) {
 			return cfg, fmt.Errorf("-arrival-window-sec %v, -max-duration-sec %v: must not be negative", cfg.ArrivalWindowSec, cfg.MaxDurationSec)
+		}
+		if !(cfg.PeerTransferIntensity >= 0 && cfg.PeerTransferIntensity <= 1) {
+			return cfg, fmt.Errorf("-peer-transfer-intensity %v: must be in [0,1]", cfg.PeerTransferIntensity)
 		}
 	default:
 		return cfg, fmt.Errorf("-schema-version %q: want %s or %s", cfg.SchemaVersion, workload.TraceSchemaV3, workload.TraceSchemaV2)
@@ -704,7 +724,7 @@ func diurnalRecords(cfg generatorConfig, at func(float64) float64, emit func(any
 				Work:                workRec{CPUUnits: cpuUnits, GPUUnits: gpuUnits},
 				Sensitivity:         cfg.sensitivity(sensCPU, sensGPU),
 				WorkloadClass:       wlCls,
-				WorkloadProfile:     profile,
+				WorkloadProfile:     cfg.jobProfile(profile, gpuReq),
 			}
 			if err := emit(jobRec); err != nil {
 				return 0, err
@@ -797,7 +817,7 @@ func expandLogicalWorkload(wl logicalWorkload, cfg generatorConfig, ordinal *int
 				Work:            workRec{CPUUnits: p.CPUUnits, GPUUnits: p.GPUUnits},
 				Sensitivity:     cfg.sensitivity(0, 0),
 				WorkloadClass:   workloadClass{CPU: wl.CPUClass, GPU: wl.GPUClass},
-				WorkloadProfile: wl.Profile,
+				WorkloadProfile: cfg.jobProfile(wl.Profile, p.GPURequest),
 				Tags:            append([]string{}, wl.Tags...),
 			})
 		}

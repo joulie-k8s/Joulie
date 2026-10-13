@@ -88,6 +88,8 @@ func TestH18PolicyGrouping(t *testing.T) {
 // 20000 ns fallback only for the passive amd-pstate (amd-pstate.c:968-976,
 // 1086). The EPYC 9655 server boots amd-pstate-epp under performance
 // (amd-pstate.c:1941-1944), where EPP reads and offers performance only.
+// intel_pstate with HWP has the EPP pair too, listing every preference
+// whatever the policy (v6.12 intel_pstate.c:808-819).
 func TestH18CPUFreqAttributesPerDriver(t *testing.T) {
 	t.Parallel()
 	type file struct{ rel, want string }
@@ -107,7 +109,9 @@ func TestH18CPUFreqAttributesPerDriver(t *testing.T) {
 			{"policy7/scaling_cur_freq", "1000000\n"},
 			{"policy7/scaling_setspeed", "<unsupported>\n"},
 			{"policy7/cpuinfo_transition_latency", "0\n"},
-		}, []string{"policy7/scaling_available_frequencies", "policy7/energy_performance_preference", "boost"}},
+			{"policy7/energy_performance_preference", "balance_performance\n"},
+			{"policy7/energy_performance_available_preferences", "default performance balance_performance balance_power power \n"},
+		}, []string{"policy7/scaling_available_frequencies", "boost"}},
 		{"amd-epyc-2s-energy-only", []file{
 			{"policy7/scaling_driver", "acpi-cpufreq\n"},
 			{"policy7/scaling_available_governors", "conservative ondemand userspace powersave performance schedutil \n"},
@@ -165,6 +169,8 @@ func TestH18CPUFreqAttributesPerDriver(t *testing.T) {
 	// space, there is no EPP pair, and the latency is the CPPC fallback.
 	p = renderBuiltin(t, "amd-epyc-2s-hsmp")
 	p.CPUFreq.Driver.V = "amd-pstate"
+	p.CPUFreq.DriverMode.V = "passive"
+	p.CPUFreq.EPP = nil
 	tree = renderTestTree(t, p)
 	dir := "sys/" + layout.PolicyDir(7) + "/"
 	if got := renderReadFile(t, tree, dir+"cpuinfo_transition_latency"); got != "20000\n" {

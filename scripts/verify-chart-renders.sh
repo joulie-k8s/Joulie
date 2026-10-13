@@ -77,6 +77,13 @@ Cases:
                            asserts every image is tagged with the appVersion,
                            also under values/joulie.yaml and for emulated
                            agents, unless a tag is set
+  GC12 governor control    the controller manager writes no governor by
+                           default: GOVERNOR_CONTROL=off, with the documented
+                           preset defaults, also under values/joulie.yaml
+  GA27 agent governor      the agent writes no governor by default:
+                           GOVERNOR_WRITES=false, GOVERNOR_RESTORE_ON_EXIT=true,
+                           also under values/joulie.yaml; the two variables
+                           are the only lines they add to the DaemonSet
   OTel inputs              the controller manager reads OTel inputs by
                            default: NODE_POWER_SOURCE=prometheus, scope
                            components, a 5m window and FACILITY_PRESET=otel;
@@ -845,6 +852,73 @@ for otel_case in otel-defaults otel-release-values otel-custom-query; do
 	done
 done
 assert_env otel-custom-query "${CM_DEPLOY}" NODE_POWER_PROMETHEUS_QUERY "sum by (node) (power)"
+
+# --------------------------------------------------------------------------
+# GC12: governor control is off unless the operator turns it on. The agent
+# writes nothing without its own GOVERNOR_WRITES either, but the controller
+# manager must not ask: a governor changes how every node runs. The preset
+# defaults render as documented, the GPU performance preset empty (write none).
+# --------------------------------------------------------------------------
+case_start "GC12 governor control is off by default"
+for gov_case in governor-defaults governor-release-values; do
+	case "${gov_case}" in
+	governor-defaults) gov_args=() ;;
+	governor-release-values) gov_args=(-f "${REPO_ROOT}/values/joulie.yaml") ;;
+	esac
+	render "${gov_case}" "${CHART}" ${gov_args[@]+"${gov_args[@]}"} || continue
+	assert_env "${gov_case}" "${CM_DEPLOY}" GOVERNOR_CONTROL off
+	assert_env "${gov_case}" "${CM_DEPLOY}" CPU_GOVERNOR_PERFORMANCE_PRESET performance
+	assert_env "${gov_case}" "${CM_DEPLOY}" CPU_GOVERNOR_ECO_PRESET efficiency
+	assert_env "${gov_case}" "${CM_DEPLOY}" CPU_GOVERNOR_ON_GPU_NODES false
+	# Empty, but rendered: an empty value and an absent one read the same here.
+	assert_doc "${gov_case}" has Deployment "${CM_DEPLOY}" '^ +- name: GPU_GOVERNOR_PERFORMANCE_PRESET$' "GPU_GOVERNOR_PERFORMANCE_PRESET rendered"
+	assert_env "${gov_case}" "${CM_DEPLOY}" GPU_GOVERNOR_PERFORMANCE_PRESET ""
+	assert_env "${gov_case}" "${CM_DEPLOY}" GPU_GOVERNOR_ECO_PRESET efficient
+	assert_env "${gov_case}" "${CM_DEPLOY}" GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX 80
+done
+
+# --------------------------------------------------------------------------
+# GA27: the agent writes no governor unless the operator turns it on, and
+# restores the baseline when it stops. Governor writes use the mounts and
+# privileges the DVFS fallback already has: without the two variables the
+# DaemonSet renders exactly as with them, less their four env lines.
+# --------------------------------------------------------------------------
+case_start "GA27 agent governor writes are off by default"
+# daemonset_env prints the value of one env var of the agent DaemonSet.
+daemonset_env() {
+	doc "$1" DaemonSet joulie-agent |
+		awk -v var="$2" '
+			$0 ~ "^[[:space:]]+- name: " var "$" { found=1; next }
+			found == 1 { sub(/^[[:space:]]+value:[[:space:]]*/, ""); gsub(/"/, ""); print; exit }
+		'
+}
+for ga_case in agent-governor-defaults agent-governor-release-values; do
+	case "${ga_case}" in
+	agent-governor-defaults) ga_args=() ;;
+	agent-governor-release-values) ga_args=(-f "${REPO_ROOT}/values/joulie.yaml") ;;
+	esac
+	render "${ga_case}" "${CHART}" ${ga_args[@]+"${ga_args[@]}"} || continue
+	for want in GOVERNOR_WRITES=false GOVERNOR_RESTORE_ON_EXIT=true; do
+		got="$(daemonset_env "${ga_case}" "${want%%=*}")"
+		if [ "${got}" != "${want#*=}" ]; then
+			fail "DaemonSet/joulie-agent: env ${want%%=*}=\"${got}\", want \"${want#*=}\""
+		fi
+	done
+done
+if render agent-governor-unset "${CHART}" --set 'agent.env.GOVERNOR_WRITES=null' --set 'agent.env.GOVERNOR_RESTORE_ON_EXIT=null'; then
+	doc agent-governor-defaults DaemonSet joulie-agent >"${WORKDIR}/ga27.with.yaml"
+	doc agent-governor-unset DaemonSet joulie-agent >"${WORKDIR}/ga27.without.yaml"
+	added="$(diff "${WORKDIR}/ga27.without.yaml" "${WORKDIR}/ga27.with.yaml" | grep -E '^[<>]')" || true
+	want_added="$(printf '%s\n' \
+		'>             - name: GOVERNOR_RESTORE_ON_EXIT' \
+		'>               value: "true"' \
+		'>             - name: GOVERNOR_WRITES' \
+		'>               value: "false"')"
+	if [ "${added}" != "${want_added}" ]; then
+		fail "DaemonSet/joulie-agent: the governor variables change more than their env lines:"
+		printf '%s\n' "${added}" | sed 's/^/    /' >&2
+	fi
+fi
 
 echo
 if [ "${FAILURES}" -ne 0 ]; then

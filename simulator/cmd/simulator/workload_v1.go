@@ -41,6 +41,7 @@ import (
 	"log"
 	"math"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -830,9 +831,86 @@ func (r *workloadRun) computeLoads() {
 		if memSum > 0 {
 			l.MemoryIntensity = memW / memSum
 		}
+		l.PeerTransfers, _ = r.peerRing(next[node], n.info.PeerLinkBps)
 		loads[node] = l
 	}
 	r.loads, r.nextLoaded = loads, next
+}
+
+// peerRater is what the engine reads of an emulated node whose jobs move
+// data between its GPUs: the rate each transfer of the node's load got in
+// the step that just ended, in load order (hwemu.Node.PeerTransferRates). A
+// node without it slows no transfer.
+type peerRater interface {
+	PeerTransferRates() []float64
+}
+
+var _ peerRater = (*hwemu.Node)(nil)
+
+// peerRing is the peer transfers of jobs, the jobs loading one node with a
+// peer link of linkBps bytes per second, in job order, and the job of each.
+// A job whose trace gives peerTransferIntensity p > 0 and that holds n >= 2
+// GPUs sends a ring over its GPUs in ascending order, GPU k to the next and
+// the last to the first, n transfers each demanding p x linkBps; two GPUs
+// send to each other. A job on one GPU, and every job on a node without a
+// peer link, sends none. computeLoads and progress both build the ring from
+// the jobs of a step, so the transfers and the rates hwemu gives back for
+// them line up.
+func (r *workloadRun) peerRing(jobs []workload.JobLoad, linkBps float64) ([]hwemu.PeerTransfer, []string) {
+	if linkBps <= 0 {
+		return nil, nil
+	}
+	var out []hwemu.PeerTransfer
+	var owner []string
+	for _, jl := range jobs {
+		j := r.byID[jl.ID]
+		if j == nil || j.sim.PeerTransferIntensity <= 0 {
+			continue
+		}
+		var devs []int
+		for _, u := range jl.GPUs {
+			if !slices.Contains(devs, u.Device) {
+				devs = append(devs, u.Device)
+			}
+		}
+		if len(devs) < 2 {
+			continue
+		}
+		slices.Sort(devs)
+		demand := clamp01(j.sim.PeerTransferIntensity) * linkBps
+		for k, d := range devs {
+			out = append(out, hwemu.PeerTransfer{Src: d, Dst: devs[(k+1)%len(devs)], BytesPerS: demand})
+			owner = append(owner, jl.ID)
+		}
+	}
+	return out, owner
+}
+
+// peerMuls is, for each job that sent peer transfers on node in the step
+// that just ended, the rate its transfers got over the rate they demanded:
+// the lowest over its ring, since a ring moves at its slowest link. A job
+// not in it sent none. Without the node's rates, or with rates that do not
+// match the step's transfers, every transfer counts at its demand.
+func (r *workloadRun) peerMuls(node string, n *v1Node) map[string]float64 {
+	ts, owner := r.peerRing(r.loaded[node], n.info.PeerLinkBps)
+	if len(ts) == 0 {
+		return nil
+	}
+	var rates []float64
+	if pr, ok := n.info.TP.(peerRater); ok {
+		rates = pr.PeerTransferRates()
+	}
+	out := make(map[string]float64, len(ts))
+	for i, t := range ts {
+		g := 1.0
+		if len(rates) == len(ts) {
+			g = clamp01(rates[i] / t.BytesPerS)
+		}
+		if prev, ok := out[owner[i]]; !ok || g < prev {
+			out[owner[i]] = g
+		}
+	}
+	return out
 }
 
 // gangHeld reports whether gang job j waits for the other pods of its
@@ -859,6 +937,7 @@ func (r *workloadRun) progress(now time.Time, dt time.Duration, act *tickActivit
 	for node, jobs := range r.runningOn() {
 		n := r.nodes[node]
 		util := cpuUtilOf(jobs)
+		peer := r.peerMuls(node, n)
 		for _, j := range jobs {
 			if !j.runningAt.Before(now) {
 				continue
@@ -877,13 +956,17 @@ func (r *workloadRun) progress(now time.Time, dt time.Duration, act *tickActivit
 					gpuMul = math.Min(gpuMul, tp.GPUThroughput(u.Device))
 				}
 			}
-			cpuRate, gpuRate := workload.Rates(workload.ModelV1, workload.RateInputs{
+			in := workload.RateInputs{
 				BaseSpeed: r.set.baseSpeed, CPURequest: j.sim.RequestedCPUCores, GPURequest: j.sim.RequestedGPUs,
 				CPUUtil: j.sim.CPUUtilTarget, MemoryIntensity: j.sim.MemoryIntensity, IOIntensity: j.sim.IOIntensity,
 				CPUFeedIntensity: j.sim.CPUFeedIntensity, SensitivityCPU: j.sim.SensitivityCPU, SensitivityGPU: j.sim.SensitivityGPU,
 				CPUMul: cpuMul, GPUMul: gpuMul, GPUCapFactor: 1,
 				CPUShare: n.cpu.Share(id, util), GPUShare: n.gpu.Share(id),
-			})
+			}
+			if g, ok := peer[id]; ok {
+				in.PeerTransferIntensity, in.PeerMul = j.sim.PeerTransferIntensity, g
+			}
+			cpuRate, gpuRate := workload.Rates(workload.ModelV1, in)
 			progressed := false
 			if rem := j.sim.CPUUnitsRemaining; rem > 0 {
 				if d := math.Min(rem, cpuRate*secs); d > 0 {

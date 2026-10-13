@@ -18,6 +18,8 @@ sources:
   pciids:     {kind: published, ref: "https://pci-ids.ucw.cz/read/PC/10de/2330", note: "10de:2330 GH100 [H100 SXM5 80GB] (pci.ids 2026.10.01)"}
   nvml:       {kind: published, ref: "https://docs.nvidia.com/deploy/nvml-api/api/group__nvmlDeviceQueries.html", note: "power averaged over 1 s on Ampere (except GA100) or newer; limits in mW"}
   gfd:        {kind: published, ref: "https://github.com/NVIDIA/k8s-device-plugin/blob/d7265fdcf89f/docs/gpu-feature-discovery/README.md", note: "lines 216-242"}
+  smih100clk: {kind: published, ref: "https://github.com/utkuozdemir/nvidia_gpu_exporter/blob/f6977bb790011483824091c916da991ae7ca97cf/internal/captures/linux-x86_64__nvidia-h100-80gb-hbm3__590.48.01.txt", note: "an H100 80GB HBM3 at driver 590.48.01. Idle nvidia-smi -q: Performance State P0 (line 1571), Clocks SM 345 MHz and Memory 2619 MHz (1695-1699), Max Clocks SM 1980 MHz and Memory 2619 MHz (1708-1712). Idle query-gpu (1740-1741): clocks_event_reasons.active 0x0000000000000001. Under gpu-burn at 100 % utilization, query-gpu (2104-2105): clocks.current.sm 1980 MHz, clocks.current.memory 2619 MHz"}
+  nvsmi:      {kind: published, ref: "https://docs.nvidia.com/deploy/nvidia-smi/index.html", note: "-lgc and -lmc require root; -lmc does not work on GPUs based on the Hopper architecture"}
 node:
   taints: [{key: nvidia.com/gpu, effect: NoSchedule}]
 gpus:
@@ -40,6 +42,36 @@ gpus:
     defaultW: {v: 700, src: "published:smih100#Default Power Limit 700.00 W"}
     minW: {v: 200, src: "published:smih100#Min Power Limit 200.00 W"}
   tools: [{name: nvidia-smi, variant: default}]
+  clocks:
+    sm:
+      minMHz: {v: 345, src: "assumed:the idle SM clock (smih100clk), taken as the lowest supported clock"}
+      maxMHz: {v: 1980, src: "published:smih100clk#Max Clocks SM 1980 MHz"}
+      idleMHz: {v: 345, src: "published:smih100clk#Clocks SM 345 MHz at idle"}
+      sustainedMaxMHz: {v: 1980, src: "published:smih100clk#clocks.current.sm 1980 MHz under gpu-burn at 100 % utilization"}
+    mem:
+      minMHz: {v: 2619, src: "published:smih100clk#Max Clocks Memory 2619 MHz; HBM3 runs at its one clock"}
+      maxMHz: {v: 2619, src: "published:smih100clk#Max Clocks Memory 2619 MHz"}
+      idleMHz: {v: 2619, src: "published:smih100clk#Clocks Memory 2619 MHz at idle"}
+      runtimeLock: {v: false, src: "published:nvsmi#-lmc does not work on GPUs based on the Hopper architecture"}
+    idlePState: {v: P0, src: "published:smih100clk#Performance State P0 at idle"}
+    supported:
+      smMHz:
+        v: [1980, 1965, 1950, 1935, 1920, 1905, 1890, 1875, 1860, 1845, 1830, 1815, 1800, 1785,
+            1770, 1755, 1740, 1725, 1710, 1695, 1680, 1665, 1650, 1635, 1620, 1605, 1590, 1575,
+            1560, 1545, 1530, 1515, 1500, 1485, 1470, 1455, 1440, 1425, 1410, 1395, 1380, 1365,
+            1350, 1335, 1320, 1305, 1290, 1275, 1260, 1245, 1230, 1215, 1200, 1185, 1170, 1155,
+            1140, 1125, 1110, 1095, 1080, 1065, 1050, 1035, 1020, 1005, 990, 975, 960, 945, 930,
+            915, 900, 885, 870, 855, 840, 825, 810, 795, 780, 765, 750, 735, 720, 705, 690, 675,
+            660, 645, 630, 615, 600, 585, 570, 555, 540, 525, 510, 495, 480, 465, 450, 435, 420,
+            405, 390, 375, 360, 345]
+        src: "assumed:15 MHz steps from sm.minMHz to sm.maxMHz; capture nvidia-smi -q -d SUPPORTED_CLOCKS to check"
+      memMHz: {v: [2619], src: "published:smih100clk#Max Clocks Memory 2619 MHz"}
+    lockFloorAtIdle: {v: true, src: "assumed:an idle GPU sits at the lower bound of its lock; to measure with a lock floor and no load"}
+    locksResetOnDeinit: {v: false, src: "assumed:the driver persistence documentation lists the power limit, not the locks, among the settings a GPU initialization resets; to measure"}
+  transfer:
+    peerLinkGBps: {v: 450, src: "assumed:half the NVLink 900GB/s of h100page, which counts both directions; on a 4-GPU board every GPU links to the other three"}
+    receiverGate:
+      enabled: {v: false, src: "assumed:no receiver gate measured on this family; off in every repository profile"}
 physics:
   gpu:
     idleW: {v: 69.6, src: "measured:nvsmiqsxm#an idle GPU's Average Power Draw"}
@@ -49,3 +81,9 @@ physics:
     memoryGamma: {v: 1.2, src: "assumed:simulator default SIM_GPU_MEMORY_GAMMA; throughput only"}
     capSettleTauMS: {v: 150, src: "assumed:simulator default SIM_GPU_CAP_APPLY_TAU_MS"}
     telemetryWindowMS: {v: 1000, src: published:nvml}
+    clockBeta: {v: 1.5, src: "assumed:dynamic power falls faster than the compute clock, as the voltage falls with it; to sweep from 1.0 to 2.5"}
+    memoryKneeFrac: {v: 0.65, src: "assumed:memory-bound work keeps its speed down to 0.65 of the maximum compute clock, between the 0.41 and 0.87 where published memory-bound clock sweeps stop being flat"}
+    memoryKneeGamma: {v: 1.0, src: "assumed:below the knee memory-bound work slows in proportion to the clock"}
+    dataPathHoldW: {v: 0.0, src: "assumed:the HBM clock sits at its one rated clock at idle whatever the preset (mem.minMHz equals mem.maxMHz), so a held data path costs nothing idleW does not include"}
+    gatingOffIdleW: {v: 0.0, src: "assumed:no NVIDIA preset turns idle gating off"}
+    dataPathGamma: {v: 0.3, src: "assumed:memory-bound work loses 0.3 of its speed with the data path at its lowest level"}

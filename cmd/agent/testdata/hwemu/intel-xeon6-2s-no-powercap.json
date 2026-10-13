@@ -9,6 +9,61 @@
     "controlAvailable": true,
     "coresPerSocket": 172,
     "driverFamily": "intel_pstate",
+    "governor": {
+      "available": [
+        "performance",
+        "powersave"
+      ],
+      "baseline": {
+        "groups": [
+          {
+            "boost": "on",
+            "epp": "balance_performance",
+            "governor": "powersave",
+            "policies": "0-343"
+          }
+        ]
+      },
+      "boost": {
+        "scope": "no-turbo",
+        "state": "on"
+      },
+      "current": "powersave",
+      "driver": "intel_pstate",
+      "driverMode": "active",
+      "epp": {
+        "available": [
+          "default",
+          "performance",
+          "balance_performance",
+          "balance_power",
+          "power"
+        ],
+        "current": "balance_performance"
+      },
+      "presets": [
+        {
+          "native": "performance",
+          "preset": "performance",
+          "result": "applied"
+        },
+        {
+          "native": "powersave epp=balance_performance",
+          "preset": "balanced",
+          "result": "applied"
+        },
+        {
+          "native": "powersave epp=balance_power",
+          "preset": "efficiency",
+          "result": "applied"
+        }
+      ],
+      "writable": true
+    },
+    "landmarks": {
+      "maxBoostMHz": 3800,
+      "minFreqMHz": 800
+    },
     "model": "",
     "rawModel": "Intel(R) Xeon(R) 6787P",
     "sockets": 2,

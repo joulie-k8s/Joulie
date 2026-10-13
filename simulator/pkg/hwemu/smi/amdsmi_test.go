@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 )
 
 // static --limit --json changed shape between 7.1 and 7.2: flat power keys in
@@ -129,5 +131,115 @@ func TestS12ResetPowerCapWritesDefault(t *testing.T) {
 				t.Fatalf("power1_cap = %s, want the default 700000000", got)
 			}
 		})
+	}
+}
+
+// SG05: set --perf-level HIGH writes high and reports success; a family
+// that refuses HIGH gets the options list and the message, and the level
+// stays; without root the command raises PermissionError (cmds
+// 7.2:4731-4746).
+func TestSG05SetPerfLevel(t *testing.T) {
+	t.Parallel()
+	n := newMI300XNode(t, "", amdsmiVariant72)
+	n.dpm(dpmNavi)
+	code, stdout, stderr := n.main("", "amd-smi", "set", "-g", "0", "--perf-level", "high")
+	if code != 0 || stderr != "" || stdout != "GPU: 0\n    PERFLEVEL: Successfully set performance level HIGH\n\n" {
+		t.Fatalf("HIGH: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if got := n.read(dpmLevelRel(0)); got != "high" {
+		t.Errorf("level after HIGH: %q", got)
+	}
+	if code, stdout, _ := n.main("", "amd-smi", "set", "-g", "1", "-l", "STABLE_PEAK", "--json"); code != 0 || !strings.Contains(stdout, `"perflevel": "Successfully set performance level STABLE_PEAK"`) || n.read(dpmLevelRel(1)) != "profile_peak" {
+		t.Errorf("STABLE_PEAK --json: exit %d, stdout %q, level %q", code, stdout, n.read(dpmLevelRel(1)))
+	}
+	if code, _, stderr := n.main("", "amd-smi", "set", "-g", "0", "--perf-level", "turbo"); code != 2 || !strings.Contains(stderr, "argument -l/--perf-level: invalid choice: 'TURBO' (choose from 'AUTO', ") {
+		t.Errorf("TURBO: exit %d, stderr %q", code, stderr)
+	}
+
+	m := newMI300XNode(t, "", amdsmiVariant72)
+	m.dpm(dpmAqua)
+	code, stdout, _ = m.main("", "amd-smi", "set", "-g", "0", "--perf-level", "HIGH")
+	want := "\nPerformance Level Options:\n\tAUTO,LOW,HIGH,MANUAL,STABLE_STD,STABLE_PEAK,STABLE_MIN_MCLK,STABLE_MIN_SCLK,DETERMINISM\n\n" +
+		"GPU: 0\n    PERFLEVEL: [AMDSMI_STATUS_INVAL] Unable to set performance level to HIGH\n\n"
+	if code != 0 || stdout != want {
+		t.Errorf("HIGH refused: exit %d, stdout %q, want %q", code, stdout, want)
+	}
+	if got := m.read(dpmLevelRel(0)); got != "auto" {
+		t.Errorf("a refused HIGH was written: %q", got)
+	}
+
+	m.env.Unprivileged = true
+	if code, stdout, stderr := m.main("", "amd-smi", "set", "-g", "0", "--perf-level", "manual"); code != 1 || stdout != "" || stderr != "PermissionError: Command requires elevation\n" {
+		t.Errorf("unprivileged: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if got := m.read(dpmLevelRel(0)); got != "auto" {
+		t.Errorf("an unprivileged set was written: %q", got)
+	}
+}
+
+// SG06: set --profile is parsed and does nothing but print Not Yet
+// Implemented (cmds 7.2:4747-4751).
+func TestSG06SetProfileIsNotYetImplemented(t *testing.T) {
+	t.Parallel()
+	n := newMI300XNode(t, "", amdsmiVariant72)
+	n.dpm(dpmNavi)
+	before := n.read(dpmDevRel(0, layout.AMDGPUPowerProfileFile))
+	code, stdout, stderr := n.main("", "amd-smi", "set", "-g", "0", "--profile", "COMPUTE")
+	if code != 0 || stderr != "" || stdout != "GPU: 0\n    PROFILE: Not Yet Implemented\n\n" {
+		t.Errorf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if n.read(dpmDevRel(0, layout.AMDGPUPowerProfileFile)) != before || n.read(dpmLevelRel(0)) != "auto" {
+		t.Errorf("set --profile changed the profile or the level")
+	}
+	if code, _, stderr := n.main("", "amd-smi", "set", "-g", "0", "--profile", "COMPUTE", "-l", "HIGH"); code != 2 || !strings.Contains(stderr, "argument -l/--perf-level: not allowed with argument -P/--profile") {
+		t.Errorf("two options of the exclusive group: exit %d, stderr %q", code, stderr)
+	}
+}
+
+// SG07: set -L sclk max sets the level to manual, then writes the edit and
+// its commit to pp_od_clk_voltage in one write (rocm_smi.cc:1508-1560); the
+// emulator applies both (TestGD08OverdriveOnlyUnderManual runs it through a
+// Node). An uclk minimum is not supported, a bound outside the table is
+// refused, and a family without overdrive reports not supported after the
+// level moved to manual.
+func TestSG07ClkLimitGoesThroughManualAndOverdrive(t *testing.T) {
+	t.Parallel()
+	n := newMI300XNode(t, "", amdsmiVariant72)
+	n.dpm(dpmAqua)
+	code, stdout, stderr := n.main("", "amd-smi", "set", "-g", "0", "-L", "sclk", "max", "1200")
+	if code != 0 || stderr != "" || stdout != "GPU: 0\n    CLK_LIMIT: Successfully changed max of sclk to 1200MHz\n\n" {
+		t.Fatalf("sclk max 1200: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if lvl, od := n.read(dpmLevelRel(0)), n.read(dpmDevRel(0, layout.AMDGPUODFile)); lvl != "manual" || od != "s 1 1200\nc" {
+		t.Errorf("after sclk max 1200: level %q, pp_od_clk_voltage %q; want manual and the edit with its commit", lvl, od)
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-L", "mclk", "min", "600"}, "Setting mclk min is not supported"},
+		{[]string{"-L", "sclk", "max", "1500"}, "Clock limit is already set to 1500MHz"},
+		{[]string{"-L", "sclk", "max", "200"}, "Cannot set sclk max value less than min (300MHz)"},
+		{[]string{"-L", "sclk", "min", "1600"}, "Cannot set sclk min value greater than max (1500MHz)"},
+		{[]string{"-L", "sclk", "min", "200"}, "[AMDSMI_STATUS_INVAL] Unable to set min of sclk to 200MHz"},
+	} {
+		code, stdout, _ := n.main("", append([]string{"amd-smi", "set", "-g", "1"}, c.args...)...)
+		if code != 0 || !strings.Contains(stdout, c.want) {
+			t.Errorf("%v: exit %d, stdout %q; want %q", c.args, code, stdout, c.want)
+		}
+	}
+	if code, _, stderr := n.main("", "amd-smi", "set", "-g", "1", "-L", "fclk", "max", "1"); code != 1 || !strings.Contains(stderr, "AmdSmiInvalidParameterException") {
+		t.Errorf("-L fclk: exit %d, stderr %q; want the invalid parameter exception", code, stderr)
+	}
+
+	w := newMI300XNode(t, "", amdsmiVariant72)
+	w.dpm(dpmNavi)
+	if _, stdout, _ := w.main("", "amd-smi", "set", "-g", "0", "-L", "sclk", "max", "1200"); !strings.Contains(stdout, "[AMDSMI_STATUS_NOT_SUPPORTED] Unable to set max of sclk to 1200MHz") || w.read(dpmLevelRel(0)) != "manual" {
+		t.Errorf("no overdrive: stdout %q, level %q; want not supported, the level already at manual", stdout, w.read(dpmLevelRel(0)))
+	}
+	// NOT_SUPPORTED for an mclk minimum prints its own line, not the status
+	// (cmds 7.2:5163-5165).
+	if _, stdout, _ := w.main("", "amd-smi", "set", "-g", "1", "-L", "mclk", "min", "600"); stdout != "GPU: 1\n    CLK_LIMIT: Setting mclk min is not supported\n\n" {
+		t.Errorf("no overdrive, mclk min: stdout %q; want Setting mclk min is not supported", stdout)
 	}
 }

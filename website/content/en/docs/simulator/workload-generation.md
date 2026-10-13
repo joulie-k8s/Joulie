@@ -94,10 +94,11 @@ In benchmark experiments, there can also be a post-generation retargeting step. 
 | work units | every pod's ideal runtime equals its workload's `durationSec` (see [How work units are derived](#how-work-units-are-derived)) | scaled by utilisation, role and rate flags |
 | diurnal GPU class | `gpu.compute_bound`, which the physics model knows | `gpu.compute`, which the physics model treats as `gpu.mixed` |
 | `--arrival-window-sec`, `--max-duration-sec` | available | rejected |
+| `--peer-transfer-intensity` | available | rejected |
 
 `v2` is the schema experiments 01 to 03 were measured with. With `--schema-version v2` the output is byte for byte what the generator wrote before `v3`, and every legacy caller pins it: the experiment scripts `04_run_one.py` and `05_sweep.py`, `scripts/standalone_sweep.py` and example 10. A contract test (`TestWorkloadgenCallersPinSchemaVersion`) fails when one of these callers runs workloadgen without `--schema-version v2` as the first flag after the package. Other callers may build or install workloadgen and rely on the default `v3`. Golden traces in `simulator/cmd/workloadgen/testdata`, and the SHA-256 of the traces written with the legacy callers' flags, guard the `v2` bytes in both modes.
 
-Each schema rejects the flags that only shape the other: `v2` rejects `--cpu-sensitivity`, `--gpu-sensitivity`, `--arrival-window-sec` and `--max-duration-sec`; `v3` rejects `--cpu-work-rate-per-core`, `--gpu-work-rate-per-gpu` and `--work-scale`, which would break its ideal runtime.
+Each schema rejects the flags that only shape the other: `v2` rejects `--cpu-sensitivity`, `--gpu-sensitivity`, `--arrival-window-sec`, `--max-duration-sec` and `--peer-transfer-intensity`; `v3` rejects `--cpu-work-rate-per-core`, `--gpu-work-rate-per-gpu` and `--work-scale`, which would break its ideal runtime.
 
 ### Logical workload record
 
@@ -385,6 +386,7 @@ Useful knobs:
 - `--base-speed-per-core` (both modes in `v3`, default 1.0; diurnal mode only in `v2`, default 2.0)
 - `--cpu-sensitivity`, `--gpu-sensitivity` (`v3` only)
 - `--arrival-window-sec`, `--max-duration-sec` (`v3` only)
+- `--peer-transfer-intensity` (`v3` only): `workloadProfile.peerTransferIntensity`, in [0, 1], on every job that requests two or more GPUs, the share of its GPU time spent copying between its GPUs (see [Peer transfers]({{< relref "/docs/simulator/workload-simulator.md#peer-transfers" >}}))
 - `--cpu-work-rate-per-core`, `--gpu-work-rate-per-gpu`, `--work-scale` (`v2` only)
 
 ## What is still intentionally simplified

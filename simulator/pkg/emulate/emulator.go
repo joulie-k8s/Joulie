@@ -84,7 +84,9 @@ type EnsureFunc func(*hwemu.Profile, string, hwemu.RenderOptions) (*hwemu.Tree, 
 // how many nodes step at once; 0 or less means GOMAXPROCS, at most 12
 // (maxDefaultWorkers). FakeSMISource is the fakesmi binary copied to
 // <Root>/LibDir/FakeSMIName; empty skips the copy. Start is when the nodes'
-// clocks start, time.Now() when zero.
+// clocks start, time.Now() when zero. ReceiverGate is every node's
+// hwemu.Options.ReceiverGate, one of the hwemu.ReceiverGate* values; empty
+// means hwemu.ReceiverGateProfile.
 //
 // Ensure and NewRunner default to hwemu.Ensure and hwemu.NewNode. Registerer
 // receives the emulator's metrics when not nil. Logf defaults to log.Printf.
@@ -98,6 +100,7 @@ type Config struct {
 	Workers             int
 	FakeSMISource       string
 	Start               time.Time
+	ReceiverGate        string
 	Ensure              EnsureFunc
 	NewRunner           func(*hwemu.Profile, *hwemu.Tree, hwemu.Options) (Runner, error)
 	Registerer          prometheus.Registerer
@@ -250,7 +253,7 @@ func New(c Config) (*Emulator, error) {
 		e.logf("emulate: installed %s from %s", filepath.Join(root, LibDir, FakeSMIName), c.FakeSMISource)
 	}
 
-	opts := hwemu.Options{Substep: c.Substep, Start: c.Start, RenderCheckInterval: c.RenderCheckInterval}
+	opts := hwemu.Options{Substep: c.Substep, Start: c.Start, RenderCheckInterval: c.RenderCheckInterval, ReceiverGate: c.ReceiverGate}
 	errs := make([]error, len(members))
 	e.parallel(len(members), func(i int) {
 		errs[i] = e.startMember(members[i], c, opts)

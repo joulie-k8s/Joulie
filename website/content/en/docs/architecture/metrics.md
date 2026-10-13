@@ -70,6 +70,18 @@ For telemetry/control input interfaces (host/http routing), see:
 - `joulie_dvfs_cpu_max_freq_khz{node,cpu}` (gauge)
   - enforced max frequency cap in kHz
 
+### Governors
+
+Written by the agent's [governor control]({{< relref "/docs/architecture/agent.md#governor-control" >}}).
+
+- `joulie_agent_governor_writes_total{node,component,preset,result}` (counter)
+  - one per governor write: a preset applied, or the baseline restored (`preset="baseline"`)
+  - `component`: `cpu|gpu`
+  - `result`: `applied|applied-unverified|equivalent|unsupported|not-applied|refused|restored|error`
+  - a reconcile that only checks the setting, and a preset the node cannot express or the agent may not write (`disabled`), count nothing
+- `joulie_agent_governor_state{node,component,preset}` (gauge)
+  - the preset in effect is `1` (result `applied`, `applied-unverified` or `equivalent`), every other preset of the component `0`; all `0` before a write and after a restore
+
 ### Reliability
 
 - `joulie_reconcile_errors_total{node}` (counter)

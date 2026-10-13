@@ -32,6 +32,11 @@ const (
 	ErrorTypeRevertedOutOfRange = "reverted_out_of_range"
 	ErrorTypeParseError         = "parse_error"
 	ErrorTypeRestored           = "restored"
+	// A write the real driver refuses with an errno, which the emulator
+	// reverts: the errno name in lower case.
+	ErrorTypeEINVAL     = "einval"
+	ErrorTypeEOPNOTSUPP = "eopnotsupp"
+	ErrorTypeEBUSY      = "ebusy"
 )
 
 func init() {
@@ -73,7 +78,7 @@ var (
 	EventSimWriteRejected = RegisterEvent(Event{
 		Name: "joulie.sim.write.rejected", SeverityNumber: SeverityWarn, SeverityText: SeverityTextWarn,
 		Attributes: append(append([]string(nil), simHardwareEventAttributes...), AttrErrorType),
-		Brief:      "A write to an emulated node was reverted: out of range, unparsable, or to a file only the emulator writes.",
+		Brief:      "A write to an emulated node was reverted: out of range, unparsable, refused by the driver with an errno, or to a file only the emulator writes.",
 	})
 	EventSimCapReset = RegisterEvent(Event{
 		Name: "joulie.sim.cap.reset", SeverityNumber: SeverityWarn, SeverityText: SeverityTextWarn,

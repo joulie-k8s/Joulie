@@ -88,6 +88,13 @@ type Node struct {
 	afiles []*nodeAFile
 	rfiles []*nodeRFile
 	events []Event
+
+	// receiverGate is Options.ReceiverGate; rejectErrno the errno of each
+	// file whose write this step rejected (reject.go); cpuGov the CPU
+	// governor state beyond the policies (node_governor.go).
+	receiverGate string
+	rejectErrno  map[string]string
+	cpuGov       nodeCPUGovernor
 }
 
 // nodeTopology locates logical CPUs. Numbering socket-major-smt-last puts cpu k
@@ -128,6 +135,14 @@ func NewNode(p *Profile, t *Tree, o Options) (*Node, error) {
 		frozen:      o.Frozen,
 		renderEvery: o.RenderCheckInterval,
 	}
+	switch o.ReceiverGate {
+	case "":
+		n.receiverGate = ReceiverGateProfile
+	case ReceiverGateProfile, ReceiverGateOff, ReceiverGateOn:
+		n.receiverGate = o.ReceiverGate
+	default:
+		return nil, fmt.Errorf("hwemu: Options.ReceiverGate %q is not %s, %s or %s", o.ReceiverGate, ReceiverGateProfile, ReceiverGateOff, ReceiverGateOn)
+	}
 	if r, err := filepath.EvalSymlinks(t.Root); err == nil {
 		n.realRoot = r
 	}
@@ -164,7 +179,11 @@ func NewNode(p *Profile, t *Tree, o Options) (*Node, error) {
 		n.driverVersion = v
 	}
 
-	steps := []func() error{n.buildTopology, n.buildModels, n.buildPowercap, n.buildCPUFreq, n.buildHSMP, n.buildGPUs, n.snapshotRenderFiles}
+	steps := []func() error{
+		n.buildTopology, n.buildModels, n.buildPowercap, n.buildCPUFreq, n.buildHSMP, n.buildGPUs,
+		n.buildCPUGovernor, n.buildGPUDPM, n.buildNVClock,
+		n.snapshotRenderFiles,
+	}
 	for _, step := range steps {
 		if err := step(); err != nil {
 			return nil, err
@@ -189,6 +208,7 @@ func (n *Node) SetLoad(l Load) {
 		GPUUtil:         append([]float64(nil), l.GPUUtil...),
 		GPUClass:        l.GPUClass,
 		MemoryIntensity: l.MemoryIntensity,
+		PeerTransfers:   append([]PeerTransfer(nil), l.PeerTransfers...),
 	}
 	for c := range n.cpuUtil {
 		n.cpuUtil[c] = n.loadCPUUtil(c)
@@ -250,6 +270,7 @@ func (n *Node) AdvanceTo(t time.Time) error {
 func (n *Node) step(end time.Time) error {
 	n.events = nil
 	err := errors.Join(n.readback(n.renderCheckDue(end)), n.persistReset())
+	n.rejectAttach()
 	if n.frozen {
 		n.now, n.grid, n.segT = end, end, end
 		return err
@@ -317,6 +338,7 @@ func (n *Node) stateComponents(dt float64) ([]ComponentState, HostState) {
 			ID: stateID(semconv.HwTypeCPU, pk.socket), Type: semconv.HwTypeCPU, Name: fmt.Sprintf("package-%d", pk.socket),
 			Vendor: vendor, Model: model, Index: pk.socket,
 			PowerW: pk.pwr.W, EnergyJ: pk.pwr.J + pk.pwr.W*dt, LimitW: pk.capW, RequestedLimitW: pk.requestedW, Utilization: pk.util,
+			GovernorNative: pk.govNative, GovernorPreset: pk.govPreset,
 		}
 		mem := ComponentState{
 			ID: stateID(semconv.HwTypeMemory, pk.socket), Type: semconv.HwTypeMemory, Name: "dram", Parent: cpu.ID, Index: pk.socket,
@@ -377,6 +399,9 @@ func (n *Node) stateComponents(dt float64) ([]ComponentState, HostState) {
 				ID: g.id(), Type: semconv.HwTypeGPU, Name: gs.Product.V, Vendor: stateGPUVendor(gs.Vendor), Model: gs.Product.V,
 				UUID: g.uuid, PCIBusID: g.pciBusID, SysfsPath: g.sysfsPath, Index: g.index,
 				PowerW: g.pwr.W, EnergyJ: g.pwr.J + g.pwr.W*dt, LimitW: g.settledW, RequestedLimitW: g.limitW(), Utilization: n.gpuUtil(g.index),
+				ClockHz: g.clock.stateClockHz(), ClockMaxHz: g.clock.stateClockMaxHz(), ClockLimitHz: g.clock.stateClockLimitHz(),
+				GovernorNative: g.clock.native, GovernorPreset: g.clock.preset,
+				PeerRxBytes: stateBytes(g.clock.peerRxBytes), PeerTxBytes: stateBytes(g.clock.peerTxBytes),
 			}
 			if g.nvml {
 				c.Measured = g.energy != nil

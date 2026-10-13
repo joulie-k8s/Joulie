@@ -4,9 +4,9 @@ package main
 //
 // The agent reads hardware only through files and command output, so a captured
 // machine replays exactly. Each directory under cmd/agent/testdata/hardware is one real
-// machine: its powercap tree, its /proc/cpuinfo, the stdout of the GPU queries
-// the agent runs, its node labels, hand written metadata, and the golden
-// NodeHardware status the agent publishes for it.
+// machine: its powercap tree, its /proc/cpuinfo, its governor state, the stdout
+// of the GPU queries the agent runs, its node labels, hand written metadata,
+// and the golden NodeHardware status the agent publishes for it.
 //
 // Regenerate every golden after reviewing a new capture:
 //
@@ -302,6 +302,14 @@ func pointAgentAtFixture(t *testing.T, dir, powercapRoot string) {
 	dvfs.PowercapRoot = powercapRoot
 	t.Cleanup(func() { dvfs.PowercapRoot = oldRoot })
 
+	// Governor discovery reads the host's /sys through dvfs.HostSysRoot.
+	// Point it at a tree built from the capture's governor state, empty when
+	// the capture has none, so the replay never reads the /host-sys of the
+	// machine it runs on (TestCorpusReplayIgnoresTheHostSysfs).
+	oldHostSys := dvfs.HostSysRoot
+	dvfs.HostSysRoot = corpusHostSys(t, dir)
+	t.Cleanup(func() { dvfs.HostSysRoot = oldHostSys })
+
 	oldCPUInfo := procCPUInfoPath
 	procCPUInfoPath = filepath.Join(dir, "cpuinfo")
 	t.Cleanup(func() { procCPUInfoPath = oldCPUInfo })
@@ -328,6 +336,67 @@ func pointAgentAtFixture(t *testing.T, dir, powercapRoot string) {
 	oldRunner := commandRunner
 	commandRunner = runner
 	t.Cleanup(func() { commandRunner = oldRunner })
+}
+
+// corpusGovernorSysfs maps the directories of a capture's governor/ to where
+// the host's /sys keeps them. amdgpu/ and nvidia-smi-clocks.txt are not
+// replayed: hwemu.FromCorpus does not render them either, and the emulated
+// replay of a machine (TestHwemuA01) must publish the same golden.
+var corpusGovernorSysfs = []struct{ capture, sys string }{
+	{"cpufreq", "devices/system/cpu/cpufreq"},
+	{"intel_pstate", "devices/system/cpu/intel_pstate"},
+	{"amd_pstate", "devices/system/cpu/amd_pstate"},
+	{"cpuidle", "devices/system/cpu/cpu0/cpuidle"},
+}
+
+// corpusHostSys builds a writable /sys tree from the capture's governor/
+// directory and returns its root. Every captured policy also gets the
+// scaling_driver of cpufreq-driver, which the capture keeps once. A capture
+// with no governor state gets an empty tree.
+func corpusHostSys(t *testing.T, dir string) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "host-sys")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range corpusGovernorSysfs {
+		src := filepath.Join(dir, "governor", m.capture)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		dst := filepath.Join(root, filepath.FromSlash(m.sys))
+		err := filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(src, p)
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return os.MkdirAll(filepath.Join(dst, rel), 0o755)
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(dst, rel), b, 0o644)
+		})
+		if err != nil {
+			t.Fatalf("replay governor/%s: %v", m.capture, err)
+		}
+	}
+	driver, err := os.ReadFile(filepath.Join(dir, "cpufreq-driver"))
+	if err != nil {
+		return root
+	}
+	policies, _ := filepath.Glob(filepath.Join(root, "devices", "system", "cpu", "cpufreq", "policy*"))
+	for _, policy := range policies {
+		if err := os.WriteFile(filepath.Join(policy, "scaling_driver"), driver, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
 }
 
 // corpusNode builds the Node object the agent would see: the captured labels

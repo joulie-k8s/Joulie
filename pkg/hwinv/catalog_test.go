@@ -259,3 +259,19 @@ func TestFC07LabelSafeCPUInfoSpellingMatchesThe8260(t *testing.T) {
 		}
 	}
 }
+
+// The AMD GPU labeller names the MI300X by its board form factor,
+// AMD_Instinct_MI300X_OAM, in amd.com/gpu.product-name, which the agent
+// reads first: without that alias the node published "gpu model not
+// recognized" and fell back to the built-in GPU model.
+func TestMatchGPUMI300XLabellerProductName(t *testing.T) {
+	c, err := LoadDefaultCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{"AMD_Instinct_MI300X_OAM", "AMD Instinct MI300X OAM"} {
+		if key, _, ok := c.MatchGPU(raw); !ok || key != "AMD_INSTINCT_MI300X" {
+			t.Errorf("MatchGPU(%q) = %q, %v; want AMD_INSTINCT_MI300X", raw, key, ok)
+		}
+	}
+}

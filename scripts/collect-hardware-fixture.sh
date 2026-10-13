@@ -20,11 +20,17 @@ MAKE_TAR=1
 usage() {
 	cat <<'EOF'
 Usage: collect-hardware-fixture.sh --name <machine> [--out <dir>] [--node <nodeName>] [--no-tar]
+       collect-hardware-fixture.sh --check <dir> [--node <nodeName>]
 
 Captures the inputs the Joulie agent reads on one machine and writes them to
 <dir>/<machine>/, then tars that directory. Everything identifying is redacted
-before anything is written: GPU UUIDs and serial numbers, MAC addresses, the
-hostname in every spelling, and the machine's IP addresses.
+before anything is written: GPU UUIDs and serial numbers, MAC addresses, PCI
+bus ids, the hostname in every spelling, and the machine's IP addresses.
+
+Before the tar is written, an identifier check reads every file under
+governor/ and stops the capture, with exit status 1 and no tar, when a PCI bus
+id, a serial number or a host name is still in one of them, or when one of
+them cannot be read.
 
 What it writes:
   powercap/          copy of /sys/class/powercap (or /host-sys/class/powercap),
@@ -35,6 +41,24 @@ What it writes:
   rocm-smi.txt       stdout of the exact query the agent runs, if rocm-smi exists
   node-labels.json   the node's labels as a JSON object, or {} when unknown
   machine.yaml       metadata skeleton for a human to complete
+  governor/          the frequency governor state, absent when the node has
+                     none. Copied verbatim from sysfs:
+                       cpufreq/policyN/   scaling_governor,
+                                          scaling_available_governors,
+                                          energy_performance_preference,
+                                          energy_performance_available_preferences,
+                                          boost, cpuinfo_min_freq, cpuinfo_max_freq
+                       cpufreq/boost
+                       intel_pstate/      status, no_turbo
+                       amd_pstate/        status
+                       cpuidle/stateN/    name, the idle states of CPU 0
+                       amdgpu/gpuN/       device, power_dpm_force_performance_level
+                                          and pp_dpm_{sclk,mclk,fclk,socclk,pcie}
+                                          of the Nth amdgpu device in bus id
+                                          order; the bus id itself is not kept
+                     and, redacted:
+                       nvidia-smi-clocks.txt  stdout of
+                                          nvidia-smi -q -d CLOCK,SUPPORTED_CLOCKS,PERFORMANCE
 
 It deliberately does NOT write expected.json. That golden is produced by a human
 who reviewed the capture, with:
@@ -47,6 +71,13 @@ Options:
   --node <nodeName>  Kubernetes node name, used to fetch labels with kubectl
                      (default: $NODE_NAME, which the agent DaemonSet sets)
   --no-tar           leave the directory, do not create the tar
+  --sysfs <dir>      the host /sys to read (default: /host-sys when it exists,
+                     else /sys)
+  --procfs <dir>     the host /proc to read (default: /proc)
+  --check <dir>      capture nothing: run the identifier check over the
+                     governor/ files of the capture in <dir>, and exit 1 when
+                     it finds a PCI bus id, a serial number or a host name.
+                     Host names are the --node value and this machine's names
   -h, --help         this text
 
 Way 1: on the node itself
@@ -86,6 +117,7 @@ EOF
 
 SYSFS_CLASS=""
 PROCFS=""
+CHECK_DIR=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -113,6 +145,10 @@ while [ $# -gt 0 ]; do
 		MAKE_TAR=0
 		shift
 		;;
+	--check)
+		CHECK_DIR="${2:-}"
+		shift 2
+		;;
 	-h | --help)
 		usage
 		exit 0
@@ -125,7 +161,7 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-if [ -z "$MACHINE_NAME" ]; then
+if [ -z "$MACHINE_NAME" ] && [ -z "$CHECK_DIR" ]; then
 	echo "$SCRIPT_NAME: --name is required" >&2
 	exit 2
 fi
@@ -140,10 +176,12 @@ if [ -z "$SYSFS_CLASS" ]; then
 	fi
 fi
 [ -n "$PROCFS" ] || PROCFS=/proc
+SYSFS_ROOT=$(dirname "$SYSFS_CLASS")
 
-DEST="$OUT_DIR/$MACHINE_NAME"
-rm -rf "$DEST"
-mkdir -p "$DEST"
+# The redaction program and the host name list live outside the capture, so
+# nothing of them can reach the tar.
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/collect-hardware-fixture.XXXXXX")
+trap 'rm -rf "$WORK"' EXIT
 
 # ---------------------------------------------------------------------------
 # Redaction
@@ -152,7 +190,7 @@ mkdir -p "$DEST"
 # the dump to a machine, a person or a network must not reach the repository.
 # ---------------------------------------------------------------------------
 
-REDACT_SED="$DEST/.redact.sed"
+REDACT_SED="$WORK/redact.sed"
 : >"$REDACT_SED"
 
 # GPU and MIG UUIDs, and bare UUIDs anywhere.
@@ -162,15 +200,25 @@ s/(GPU|MIG)-[0-9a-fA-F-]{16,}/\1-REDACTED/g
 s/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/UUID-REDACTED/g
 EOF
 
-# Serial numbers, board serials and asset tags, whatever the key spelling.
+# Serial numbers, board serials and asset tags, whatever the key spelling,
+# quoting and padding before the separator: nvidia-smi -q pads the key to a
+# column ("Serial Number                         : 1650..."), and JSON quotes
+# it. The separator is required, as in the corpus validator's pattern.
 cat >>"$REDACT_SED" <<'EOF'
-s/([Ss]erial([ _-]?[Nn]umber)?[^A-Za-z0-9]{0,3})[A-Za-z0-9-]{4,}/\1SERIAL-REDACTED/g
-s/([Aa]sset[ _-]?[Tt]ag[^A-Za-z0-9]{0,3})[A-Za-z0-9-]{4,}/\1ASSET-REDACTED/g
+s/([Ss]erial([ _-]?[Nn]umber)?["']?[[:space:]]*[:=][[:space:]]*["']?)[A-Za-z0-9][A-Za-z0-9-]{3,}/\1SERIAL-REDACTED/g
+s/([Aa]sset[ _-]?[Tt]ag["']?[[:space:]]*[:=][[:space:]]*["']?)[A-Za-z0-9][A-Za-z0-9-]{3,}/\1ASSET-REDACTED/g
 EOF
 
 # MAC addresses, both separators.
 cat >>"$REDACT_SED" <<'EOF'
 s/\b[0-9a-fA-F]{2}([:-][0-9a-fA-F]{2}){5}\b/MAC-REDACTED/g
+EOF
+
+# PCI bus ids, with or without the domain, as nvidia-smi -q heads every GPU
+# with one ("GPU 00000000:3B:00.0"). The slot of a device is where it sits in
+# one chassis, which is not needed to describe hardware.
+cat >>"$REDACT_SED" <<'EOF'
+s/\b([0-9a-fA-F]{4,8}:)?[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]\b/BUSID-REDACTED/g
 EOF
 
 # IPv4 addresses, with or without a CIDR suffix. Four dotted octets only, so
@@ -192,7 +240,7 @@ escape_for_sed() {
 	printf '%s' "$1" | sed -e 's/[.[\*^$()+?{|\\/]/\\&/g'
 }
 
-HOST_CANDIDATES="$DEST/.hosts"
+HOST_CANDIDATES="$WORK/hosts"
 : >"$HOST_CANDIDATES"
 for h in \
 	"$NODE_NAME_ARG" \
@@ -222,6 +270,80 @@ redact() {
 	sed -E -f "$REDACT_SED" "$1" >"$1.redacted" 2>/dev/null || cp "$1" "$1.redacted"
 	mv "$1.redacted" "$1"
 }
+
+# ---------------------------------------------------------------------------
+# Identifier check
+#
+# The governor files are copied verbatim, because sysfs prints kernel words and
+# numbers there and a substring redaction could rewrite a governor word. This
+# check is what stands between them and the repository instead: it rejects a
+# PCI bus id, a serial number or one of the host names above in any file under
+# governor/, nvidia-smi-clocks.txt included after its redaction. Grep patterns
+# without \b, so a busybox grep reads them the same way.
+# ---------------------------------------------------------------------------
+
+IDENT_BUSID='([0-9a-fA-F]{4,8}:)?[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]([^0-9]|$)'
+IDENT_SERIAL="([Ss]erial([ _-]?[Nn]umber)?|[Aa]sset[ _-]?[Tt]ag)[\"']?[[:space:]]*[:=][[:space:]]*[\"']?[A-Za-z0-9][A-Za-z0-9-]{3,}"
+
+ident_report() {
+	# ident_report <file> <what>: one line per grep -n hit read from stdin.
+	while IFS=: read -r line _; do
+		echo "$SCRIPT_NAME: $1:$line: contains $2" >&2
+	done
+}
+
+check_identifiers() {
+	# check_identifiers <capture dir>: return 1 when a governor file still
+	# carries an identifier. The placeholders the redaction writes, such as
+	# BUSID-REDACTED and REDACTED-HOST, are not identifiers. The file list is
+	# read line by line, not split on white space, so a capture under a path
+	# with a space is checked too, and a file that cannot be read fails the
+	# check rather than passing it unread.
+	ident_found=0
+	[ -d "$1/governor" ] || return 0
+	find "$1/governor" -type f | sort >"$WORK/files"
+	while IFS= read -r f; do
+		rel=${f#"$1"/}
+		if ! sed -E 's/[A-Za-z0-9]*-?REDACTED(-[A-Za-z]+)?//g' "$f" >"$WORK/clean"; then
+			echo "$SCRIPT_NAME: $rel: cannot be read, so it cannot be checked" >&2
+			ident_found=1
+			continue
+		fi
+		if grep -qE "$IDENT_BUSID" "$WORK/clean"; then
+			grep -nE "$IDENT_BUSID" "$WORK/clean" | ident_report "$rel" "a PCI bus id"
+			ident_found=1
+		fi
+		if grep -qE "$IDENT_SERIAL" "$WORK/clean"; then
+			grep -nE "$IDENT_SERIAL" "$WORK/clean" | ident_report "$rel" "a serial number or an asset tag"
+			ident_found=1
+		fi
+		while IFS= read -r h; do
+			[ -n "$h" ] || continue
+			if grep -qiwF -- "$h" "$WORK/clean"; then
+				grep -niwF -- "$h" "$WORK/clean" | ident_report "$rel" "the host name $h"
+				ident_found=1
+			fi
+		done <"$HOST_CANDIDATES.sorted"
+	done <"$WORK/files"
+	return "$ident_found"
+}
+
+if [ -n "$CHECK_DIR" ]; then
+	if [ ! -d "$CHECK_DIR" ]; then
+		echo "$SCRIPT_NAME: --check $CHECK_DIR is not a directory" >&2
+		exit 2
+	fi
+	if check_identifiers "$CHECK_DIR"; then
+		echo "$SCRIPT_NAME: no identifier in $CHECK_DIR/governor"
+		exit 0
+	fi
+	echo "$SCRIPT_NAME: $CHECK_DIR/governor still carries an identifier; remove it before the capture is published" >&2
+	exit 1
+fi
+
+DEST="$OUT_DIR/$MACHINE_NAME"
+rm -rf "$DEST"
+mkdir -p "$DEST"
 
 # ---------------------------------------------------------------------------
 # powercap
@@ -274,13 +396,79 @@ fi
 # cpufreq scaling driver, which the agent reports as cpu.driverFamily
 # ---------------------------------------------------------------------------
 
-CPUFREQ_DRIVER="$(dirname "$SYSFS_CLASS")/devices/system/cpu/cpufreq/policy0/scaling_driver"
+CPUFREQ_DRIVER="$SYSFS_ROOT/devices/system/cpu/cpufreq/policy0/scaling_driver"
 if [ -f "$CPUFREQ_DRIVER" ]; then
 	cat "$CPUFREQ_DRIVER" >"$DEST/cpufreq-driver"
 	echo "$SCRIPT_NAME: copied $CPUFREQ_DRIVER"
 else
 	echo "$SCRIPT_NAME: no cpufreq scaling driver at $CPUFREQ_DRIVER"
 fi
+
+# ---------------------------------------------------------------------------
+# Governor state, which the agent reports as cpu.governor and gpu.governor:
+# the cpufreq governor, preference and boost of every policy, the driver mode,
+# the idle state names, and the performance level and clock tables of every
+# GPU. Sysfs files are copied verbatim; check_identifiers reads them all.
+# ---------------------------------------------------------------------------
+
+GOV_DEST="$DEST/governor"
+CPU_SYS="$SYSFS_ROOT/devices/system/cpu"
+
+copy_attr() {
+	# copy_attr <src> <dst>: copy one sysfs attribute when it reads.
+	[ -f "$1" ] || return 0
+	mkdir -p "$(dirname "$2")"
+	cat "$1" >"$2" 2>/dev/null || rm -f "$2"
+}
+
+policy_count=0
+for policy in "$CPU_SYS"/cpufreq/policy*; do
+	[ -d "$policy" ] || continue
+	base=$(basename "$policy")
+	for f in scaling_governor scaling_available_governors \
+		energy_performance_preference energy_performance_available_preferences \
+		boost cpuinfo_min_freq cpuinfo_max_freq; do
+		copy_attr "$policy/$f" "$GOV_DEST/cpufreq/$base/$f"
+	done
+	policy_count=$((policy_count + 1))
+done
+copy_attr "$CPU_SYS/cpufreq/boost" "$GOV_DEST/cpufreq/boost"
+copy_attr "$CPU_SYS/intel_pstate/status" "$GOV_DEST/intel_pstate/status"
+copy_attr "$CPU_SYS/intel_pstate/no_turbo" "$GOV_DEST/intel_pstate/no_turbo"
+copy_attr "$CPU_SYS/amd_pstate/status" "$GOV_DEST/amd_pstate/status"
+for state in "$CPU_SYS"/cpu0/cpuidle/state*; do
+	[ -d "$state" ] || continue
+	copy_attr "$state/name" "$GOV_DEST/cpuidle/$(basename "$state")/name"
+done
+echo "$SCRIPT_NAME: copied the governor state of $policy_count cpufreq policies"
+
+# amdgpu devices in bus id order, as the agent lists them. The directory is
+# named after the position, so the bus id stays on the machine.
+amdgpu_count=0
+for dev in "$SYSFS_ROOT"/bus/pci/devices/*; do
+	[ -f "$dev/power_dpm_force_performance_level" ] || continue
+	[ "$(cat "$dev/vendor" 2>/dev/null || true)" = "0x1002" ] || continue
+	for f in device power_dpm_force_performance_level \
+		pp_dpm_sclk pp_dpm_mclk pp_dpm_fclk pp_dpm_socclk pp_dpm_pcie; do
+		copy_attr "$dev/$f" "$GOV_DEST/amdgpu/gpu$amdgpu_count/$f"
+	done
+	amdgpu_count=$((amdgpu_count + 1))
+done
+if [ "$amdgpu_count" -gt 0 ]; then
+	echo "$SCRIPT_NAME: copied the performance level of $amdgpu_count amdgpu device(s)"
+fi
+
+if command -v nvidia-smi >/dev/null 2>&1; then
+	mkdir -p "$GOV_DEST"
+	if nvidia-smi -q -d CLOCK,SUPPORTED_CLOCKS,PERFORMANCE >"$GOV_DEST/nvidia-smi-clocks.txt" 2>/dev/null; then
+		redact "$GOV_DEST/nvidia-smi-clocks.txt"
+		echo "$SCRIPT_NAME: captured nvidia-smi clock state"
+	else
+		rm -f "$GOV_DEST/nvidia-smi-clocks.txt"
+		echo "$SCRIPT_NAME: warning: nvidia-smi present but the clock query failed" >&2
+	fi
+fi
+rmdir "$GOV_DEST" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # GPU query commands, exactly as cmd/agent/main.go runs them
@@ -362,7 +550,11 @@ captured_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	printf 'writeRejectingZones: []\n'
 } >"$DEST/machine.yaml"
 
-rm -f "$REDACT_SED" "$HOST_CANDIDATES" "$HOST_CANDIDATES.sorted"
+if ! check_identifiers "$DEST"; then
+	echo "$SCRIPT_NAME: $DEST/governor still carries an identifier, so no tar was written." >&2
+	echo "$SCRIPT_NAME: remove it from the files named above, then rerun with --check $DEST" >&2
+	exit 1
+fi
 
 echo "$SCRIPT_NAME: wrote $DEST"
 echo "$SCRIPT_NAME: review every file, complete machine.yaml, then run the test with -update"

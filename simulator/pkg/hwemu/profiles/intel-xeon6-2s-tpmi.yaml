@@ -21,6 +21,7 @@ sources:
   powercapsys: {kind: published, ref: "linux v7.3-rc5 drivers/powercap/powercap_sys.c:420-441,513-522", note: "enabled prints 0 when get_enable fails; a top-level zone takes the lowest free index of its control type"}
   tpmiroot:    {kind: published, ref: "https://github.com/torvalds/linux/commit/903eb9fb85e3", note: "powercap: intel_rapl_tpmi: Fix System Domain probing; only domain root packages enumerate the System (Psys) domain; first in v6.9-rc1, absent from v6.8 (no TPMI_RAPL_DOMAIN_ROOT)"}
   spec01576:   {kind: published, ref: "https://www.spec.org/power_ssj2008/results/res2026q2/power_ssj2008-20260615-01576.txt", note: "2x Xeon 6787P, 512 GB: Active Idle 162 W, 100% 698 W"}
+  uncoretpmi:  {kind: published, ref: "linux v6.12 drivers/platform/x86/intel/uncore-frequency/uncore-frequency-common.c:164-206; uncore-frequency-tpmi.c:195-235,291-327,563-564", note: "one uncoreNN directory per power domain and fabric cluster with package_id, domain_id and fabric_cluster_id; the ELC attributes from UFS header version 2"}
 node:
   labels:
     kernel:
@@ -79,6 +80,13 @@ powercap:
           powerUnitUW: {v: 125000, src: "assumed:PU 3 in the TPMI unit register"}
           constraints: *pkgconstraints
           children: *dram
+cpufreq:
+  uncore:
+    layout: {v: per-cluster, src: "published:uncoretpmi#uncore-frequency-common.c:175-181, the TPMI interface"}
+    clustersPerDie: {v: 1, src: "assumed:one fabric cluster per power domain"}
+    initialMinKHz: {v: 800000, src: "assumed:uncore range of a Granite Rapids domain, not published"}
+    initialMaxKHz: {v: 2200000, src: "assumed:uncore range of a Granite Rapids domain, not published"}
+    elc: {v: true, src: "assumed:Granite Rapids reports UFS header version 2 (uncoretpmi#563-564)"}
 physics:
   platform:
     otherW: {v: 20, src: "assumed:bounded by spec01503, spec01504 and spec01576: Active Idle 157 to 164 W for a whole 2S node less 2 x idlePkgW 50 and 2 x DRAM 8 leaves at most 41 W for the platform and PSU losses"}

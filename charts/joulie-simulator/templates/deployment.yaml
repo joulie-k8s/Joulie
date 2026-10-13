@@ -22,6 +22,12 @@
 {{- $_ := set $env "SIM_HWEMU_ROOT" ($emulate.root | toString) }}
 {{- $_ := set $env "SIM_CLUSTER_SPEC" "/etc/joulie-sim-spec/cluster-spec.yaml" }}
 {{- $_ := set $env "SIM_EMULATE_TICK" ($emulate.tick | toString) }}
+{{- /* YAML reads an unquoted on or off as a boolean: map it back. */}}
+{{- $gate := $emulate.receiverGate }}
+{{- if kindIs "bool" $gate }}
+{{- $gate = ternary "on" "off" $gate }}
+{{- end }}
+{{- $_ := set $env "SIM_GPU_RECEIVER_GATE" ($gate | default "profile" | toString) }}
 {{- with $emulate.exporters }}
 {{- $_ := set $env "SIM_EXPORTERS" (join "," .) }}
 {{- end }}

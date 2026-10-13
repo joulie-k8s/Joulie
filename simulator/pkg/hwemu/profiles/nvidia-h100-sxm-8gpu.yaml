@@ -17,6 +17,32 @@ gpus:
     maxW: {v: 700, src: published:h100page}
     defaultW: {v: 700, src: "published:smih100#Default Power Limit 700.00 W"}
     minW: {v: 200, src: "published:smih100#Min Power Limit 200.00 W"}
+  clocks:
+    sm:
+      minMHz: {v: 345, src: "assumed:the idle SM clock (smih100clk), taken as the lowest supported clock"}
+      maxMHz: {v: 1980, src: "published:smih100clk#Max Clocks SM 1980 MHz"}
+      idleMHz: {v: 345, src: "published:smih100clk#Clocks SM 345 MHz at idle"}
+      sustainedMaxMHz: {v: 1980, src: "published:smih100clk#clocks.current.sm 1980 MHz under gpu-burn at 100 % utilization"}
+    mem:
+      minMHz: {v: 2619, src: "published:smih100clk#Max Clocks Memory 2619 MHz; HBM3 runs at its one clock"}
+      maxMHz: {v: 2619, src: "published:smih100clk#Max Clocks Memory 2619 MHz"}
+      idleMHz: {v: 2619, src: "published:smih100clk#Clocks Memory 2619 MHz at idle"}
+      runtimeLock: {v: false, src: "published:nvsmi#-lmc does not work on GPUs based on the Hopper architecture"}
+    idlePState: {v: P0, src: "published:smih100clk#Performance State P0 at idle"}
+    supported:
+      smMHz:
+        v: [1980, 1965, 1950, 1935, 1920, 1905, 1890, 1875, 1860, 1845, 1830, 1815, 1800, 1785,
+            1770, 1755, 1740, 1725, 1710, 1695, 1680, 1665, 1650, 1635, 1620, 1605, 1590, 1575,
+            1560, 1545, 1530, 1515, 1500, 1485, 1470, 1455, 1440, 1425, 1410, 1395, 1380, 1365,
+            1350, 1335, 1320, 1305, 1290, 1275, 1260, 1245, 1230, 1215, 1200, 1185, 1170, 1155,
+            1140, 1125, 1110, 1095, 1080, 1065, 1050, 1035, 1020, 1005, 990, 975, 960, 945, 930,
+            915, 900, 885, 870, 855, 840, 825, 810, 795, 780, 765, 750, 735, 720, 705, 690, 675,
+            660, 645, 630, 615, 600, 585, 570, 555, 540, 525, 510, 495, 480, 465, 450, 435, 420,
+            405, 390, 375, 360, 345]
+        src: "assumed:15 MHz steps from sm.minMHz to sm.maxMHz; capture nvidia-smi -q -d SUPPORTED_CLOCKS to check"
+      memMHz: {v: [2619], src: "published:smih100clk#Max Clocks Memory 2619 MHz"}
+  transfer:
+    peerLinkGBps: {v: 450, src: "assumed:half the NVLink 900GB/s of h100page, which counts both directions"}
 physics:
   gpu:
     idleW: {v: 69.6, src: "measured:nvsmiqsxm#an idle GPU's Average Power Draw"}

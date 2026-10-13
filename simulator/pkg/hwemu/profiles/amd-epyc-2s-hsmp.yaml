@@ -10,6 +10,7 @@ sources:
   hsmphwmon: {kind: published, ref: "linux v7.3-rc5 drivers/platform/x86/amd/hsmp/hwmon.c:20,34-38,74,79-96; plat.c:30,198,286,300-341"}
   hsmpdoc:   {kind: published, ref: "linux v7.3-rc5 Documentation/arch/x86/amd_hsmp.rst:148-155; merged platform-drivers-x86-v6.16-1"}
   pstate:    {kind: published, ref: "linux v7.3-rc5 drivers/cpufreq/amd-pstate.c:1941-1944,2185 (.name amd-pstate-epp)"}
+  amdpstate612: {kind: published, ref: "linux v6.12 drivers/cpufreq/amd-pstate.c:299-302,665-702,995,1136-1152,1550-1572; drivers/cpufreq/cpufreq.c:616-650", note: "a non-zero EPP refused under performance; boost on at init where supported, per policy; the available preferences follow the policy"}
 node:
   labels:
     cpu:
@@ -35,7 +36,14 @@ cpufreq:
   availableKHz: {v: [], src: "derived:pstate#amd-pstate.c sets no frequency table, so cpufreq creates no scaling_available_frequencies"}
   cpuinfoMaxKHz: {v: 4500000, src: "published:amd9655#boost up to 4.5 GHz"}
   cpuinfoMinKHz: {v: 1500000, src: "assumed:lowest frequency not published"}
+  baseKHz: {v: 2600000, src: "published:amd9655#base 2.6 GHz"}
   policyGrouping: {v: per-cpu, src: "assumed:amd-pstate registers one policy per CPU, not read"}
+  driverMode: {v: active, src: "published:pstate#.name amd-pstate-epp, the active mode"}
+  epp:
+    available: {v: "default performance balance_performance balance_power power", src: "published:amdpstate612#amd-pstate.c:1136-1152"}
+    default: {v: balance_performance, src: "assumed:the firmware EPP outside performance, as AMD_CPPC_EPP_BALANCE_PERFORMANCE"}
+  boostScope: {v: per-cpu, src: "published:amdpstate612#cpufreq.c:616-650, the policy's boost"}
+  boost: {v: 1, src: "published:amdpstate612#amd-pstate.c:995, boost_enabled from boost_supported"}
 hsmp:
   layout: {v: platform, src: "assumed:firmware exposes no ACPI HSMP device (hsmphwmon plat.c:335-341); hwmon under amd_hsmp (plat.c:30,198,286)"}
   capMaxUW: {v: 400000000, src: "published:amd9655#cTDP 320-400W, top of range"}

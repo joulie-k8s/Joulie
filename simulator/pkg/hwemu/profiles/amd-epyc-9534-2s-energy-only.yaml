@@ -20,6 +20,7 @@ cpu:
 cpufreq:
   availableKHz: {v: [2450000, 1900000, 1500000], src: measured:cpufreq9534}
   cpuinfoMaxKHz: {v: 3718066, src: "measured:cpufreq9534#includes boost, above the table"}
+  baseKHz: {v: 2450000, src: "published:amd9534#base 2.45 GHz, the top availableKHz entry"}
 physics:
   cpu:
     maxPkgW: {v: 280, src: "published:amd9534#Default TDP"}

@@ -155,6 +155,90 @@ func NVMLGPUDir(i int) string {
 // nvidia-smi -pm.
 const NVMLPersistenceModeFile = "persistence_mode"
 
+// NVMLLockedGPUClocksFile and NVMLLockedMemClocksFile are the clock locks of
+// a GPU, in its NVMLGPUDir, written by the fake nvidia-smi -lgc and -lmc
+// and cleared by -rgc and -rmc. No query prints them: NVML has no getter for
+// a lock.
+const (
+	NVMLLockedGPUClocksFile = "locked_gpu_clocks"
+	NVMLLockedMemClocksFile = "locked_mem_clocks"
+)
+
+// Governor entries of the CPU (cpufreq.rst, intel_pstate.rst, amd-pstate.rst,
+// intel_uncore_frequency_scaling.rst in Documentation/admin-guide/pm).
+
+// CPUFreqDir holds the attributes common to every policy, such as the
+// global boost, and the tunables of a governor that is not per policy.
+func CPUFreqDir() string {
+	return path.Join(cpuDir, "cpufreq")
+}
+
+// GovernorTunablesDir is the directory of a governor's tunables when they
+// are global: "devices/system/cpu/cpufreq/<governor>".
+func GovernorTunablesDir(governor string) string {
+	return path.Join(CPUFreqDir(), governor)
+}
+
+// PolicyGovernorTunablesDir is the directory of a governor's tunables when
+// the driver keeps them per policy: "<PolicyDir>/<governor>".
+func PolicyGovernorTunablesDir(policy int, governor string) string {
+	return path.Join(PolicyDir(policy), governor)
+}
+
+// IntelPstateDir holds the global attributes of intel_pstate in active and
+// passive mode, such as status and no_turbo.
+func IntelPstateDir() string {
+	return path.Join(cpuDir, "intel_pstate")
+}
+
+// AMDPstateDir holds the global attributes of amd-pstate, such as status.
+func AMDPstateDir() string {
+	return path.Join(cpuDir, "amd_pstate")
+}
+
+// IntelUncoreDir is the directory of the Intel uncore frequency driver.
+func IntelUncoreDir() string {
+	return path.Join(cpuDir, "intel_uncore_frequency")
+}
+
+// IntelUncoreDieDir is the uncore domain of die die of package pkg, as the
+// legacy interface names it: "package_<pkg>_die_<die>" in two digits each.
+func IntelUncoreDieDir(pkg, die int) string {
+	return path.Join(IntelUncoreDir(), fmt.Sprintf("package_%02d_die_%02d", pkg, die))
+}
+
+// IntelUncoreClusterDir is uncore domain id of the TPMI interface,
+// "uncore<id>" in two digits.
+func IntelUncoreClusterDir(id int) string {
+	return path.Join(IntelUncoreDir(), fmt.Sprintf("uncore%02d", id))
+}
+
+// Governor entries of an amdgpu device, in its PCIDevDir
+// (Documentation/gpu/amdgpu/thermal.rst).
+const (
+	// AMDGPUPerfLevelFile is power_dpm_force_performance_level.
+	AMDGPUPerfLevelFile = "power_dpm_force_performance_level"
+	// AMDGPUODFile is the overdrive file, pp_od_clk_voltage.
+	AMDGPUODFile = "pp_od_clk_voltage"
+	// AMDGPUPowerProfileFile is pp_power_profile_mode.
+	AMDGPUPowerProfileFile = "pp_power_profile_mode"
+)
+
+// AMDGPUPMPolicyDir is the pm_policy directory of the amdgpu device on bus
+// bus.
+func AMDGPUPMPolicyDir(bus int) string {
+	return path.Join(PCIDevDir(bus), "pm_policy")
+}
+
+// PCIBusDeviceLink is the bus entry of the PCI device on bus bus and its
+// target: "bus/pci/devices/0000:<bus>:00.0" pointing at
+// "../../../devices/pci0000:<bus>/0000:<bus>:00.0", the path an agent
+// enumerates PCI devices by.
+func PCIBusDeviceLink(bus int) (link, target string) {
+	dev := PCIDevDir(bus)
+	return path.Join("bus", "pci", "devices", path.Base(dev)), path.Join("..", "..", "..", dev)
+}
+
 // ToolsManifest is state/tools.json: the GPU tools on the node's PATH and the
 // variant each one emulates. Every family writes the same envelope, with an
 // empty Tools map when it has no tool.

@@ -14,6 +14,61 @@
     "controlAvailable": true,
     "coresPerSocket": 48,
     "driverFamily": "intel_pstate",
+    "governor": {
+      "available": [
+        "performance",
+        "powersave"
+      ],
+      "baseline": {
+        "groups": [
+          {
+            "boost": "on",
+            "epp": "balance_performance",
+            "governor": "powersave",
+            "policies": "0-95"
+          }
+        ]
+      },
+      "boost": {
+        "scope": "no-turbo",
+        "state": "on"
+      },
+      "current": "powersave",
+      "driver": "intel_pstate",
+      "driverMode": "active",
+      "epp": {
+        "available": [
+          "default",
+          "performance",
+          "balance_performance",
+          "balance_power",
+          "power"
+        ],
+        "current": "balance_performance"
+      },
+      "presets": [
+        {
+          "native": "performance",
+          "preset": "performance",
+          "result": "applied"
+        },
+        {
+          "native": "powersave epp=balance_performance",
+          "preset": "balanced",
+          "result": "applied"
+        },
+        {
+          "native": "powersave epp=balance_power",
+          "preset": "efficiency",
+          "result": "applied"
+        }
+      ],
+      "writable": true
+    },
+    "landmarks": {
+      "maxBoostMHz": 3900,
+      "minFreqMHz": 1000
+    },
     "model": "INTEL_XEON_PLATINUM_8260",
     "rawModel": "Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz",
     "sockets": 2,

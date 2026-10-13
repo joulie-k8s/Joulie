@@ -1,0 +1,21 @@
+# Governor presets cluster: 12 Nodes, two per hardware family, so the
+# default policy (static_partition, STATIC_HP_FRAC=0.5 in values.yaml) keeps
+# one Node of each family in performance and runs the other in eco. Two
+# CPU-only families with different cpufreq drivers, two AMD and two NVIDIA
+# GPU families: one per governor mechanism, not a mirror of any deployment.
+# No baseLoad: the Nodes idle, which is enough to see presets, native words
+# and results.
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: governor-presets}
+spec:
+  defaults:
+    labels: {joulie.io/managed: "true"}
+  pools:
+  - {name: xeon,   profile: intel-xeon-2s-rapl,        count: 2}  # intel_pstate active, EPP
+  - {name: epyc,   profile: amd-epyc-2s-energy-only,   count: 2}  # acpi-cpufreq
+  - {name: w7900,  profile: amd-radeon-pro-w7900-4gpu, count: 2}  # amdgpu level file, no overdrive
+  - {name: mi300x, profile: amd-instinct-mi300x-8gpu,  count: 2}  # amdgpu manual plus overdrive
+  - {name: h100,   profile: nvidia-h100-nvl-8gpu,      count: 2}  # nvidia-smi, HBM
+  - {name: l40s,   profile: nvidia-l40s-4gpu,          count: 2}  # nvidia-smi, GDDR
+  harness: {pools: {}}

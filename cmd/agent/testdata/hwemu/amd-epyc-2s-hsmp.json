@@ -9,6 +9,61 @@
     "controlAvailable": true,
     "coresPerSocket": 192,
     "driverFamily": "amd-pstate-epp",
+    "governor": {
+      "available": [
+        "performance",
+        "powersave"
+      ],
+      "baseline": {
+        "groups": [
+          {
+            "boost": "on",
+            "epp": "performance",
+            "governor": "performance",
+            "policies": "0-383"
+          }
+        ]
+      },
+      "boost": {
+        "scope": "per-cpu",
+        "state": "on"
+      },
+      "current": "performance",
+      "driver": "amd-pstate-epp",
+      "driverMode": "active",
+      "epp": {
+        "available": [
+          "default",
+          "performance",
+          "balance_performance",
+          "balance_power",
+          "power"
+        ],
+        "current": "performance"
+      },
+      "presets": [
+        {
+          "native": "performance",
+          "preset": "performance",
+          "result": "applied"
+        },
+        {
+          "native": "powersave epp=balance_performance",
+          "preset": "balanced",
+          "result": "applied"
+        },
+        {
+          "native": "powersave epp=balance_power",
+          "preset": "efficiency",
+          "result": "applied"
+        }
+      ],
+      "writable": true
+    },
+    "landmarks": {
+      "maxBoostMHz": 4500,
+      "minFreqMHz": 1500
+    },
     "model": "AMD_EPYC_9655",
     "rawModel": "AMD EPYC 9655 96-Core Processor",
     "sockets": 2,

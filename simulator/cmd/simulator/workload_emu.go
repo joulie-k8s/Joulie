@@ -36,6 +36,9 @@ var _ throughputer = (*hwemu.Node)(nil)
 // logical CPUs in hwemu's numbering, the length of the per-CPU load;
 // AllocatableCPU is the Node's allocatable CPUs, the denominator of the
 // idle energy split; GPUIdleW is one GPU's power at zero utilization.
+// PeerLinkBps is the peer link into each GPU, gpus.transfer.peerLinkGBps in
+// bytes per second: 0 on a profile without it, whose GPUs move no data
+// between them.
 type emuNode struct {
 	Profile        string
 	CPUs           int
@@ -43,6 +46,7 @@ type emuNode struct {
 	GPUs           int
 	AllocatableCPU float64
 	GPUIdleW       float64
+	PeerLinkBps    float64
 	TP             throughputer
 }
 
@@ -81,6 +85,9 @@ func emuNodeOf(m clusterspec.Member, tp throughputer) emuNode {
 	}
 	if p.GPUs != nil {
 		n.GPUs = p.GPUs.Count.V
+		if tr := p.GPUs.Transfer; tr != nil {
+			n.PeerLinkBps = tr.PeerLinkGBps.V * 1e9
+		}
 	}
 	n.AllocatableCPU = float64(n.CPUs)
 	if m.Node != nil {

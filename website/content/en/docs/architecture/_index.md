@@ -37,8 +37,12 @@ If you are new, first read:
 |--------|-------|-------|---------|
 | `NodeHardware` | `spec.nodeName` | Agent | which node this describes |
 | `NodeHardware` | `status.*` | Agent | discovered hardware facts |
+| `NodeHardware` | `status.cpu.governor`, `status.gpu.governor` | Agent | governor state read without writing, the presets the node accepts, and the baseline the agent restores |
+| `NodeHardware` | `status.cpu.landmarks` | Agent | minimum, nominal and maximum boost frequency from cpufreq |
 | `NodeTwin` | `spec.*` | Controller manager (policy) | desired profile, caps, policy name, draining |
+| `NodeTwin` | `spec.cpu.governor`, `spec.gpu.governor` | Controller manager (policy) | governor presets; absent means the agent leaves the governor as it is |
 | `NodeTwin` | `status.controlStatus.*` | Agent | what was applied on the node, per component |
+| `NodeTwin` | `status.controlStatus.cpuGovernor`, `status.controlStatus.gpuGovernor` | Agent | outcome of the last governor write, with the native setting in `applied` |
 | `NodeTwin` | every other `status` field | Controller manager (twin) | the twin's computed state: measured power, headroom, stress scores, PUE |
 
 Rules that follow from the table:

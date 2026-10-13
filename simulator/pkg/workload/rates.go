@@ -37,6 +37,14 @@ type RateInputs struct {
 	// CPUSlots.Share and GPUSlots.Share.
 	CPUShare float64
 	GPUShare float64
+	// PeerTransferIntensity is the share p of the job's GPU time spent
+	// moving data between its GPUs on one node (the trace's
+	// workloadProfile.peerTransferIntensity), and PeerMul the rate those
+	// transfers get over the rate they demand: 1 while nothing slows them.
+	// A p of 0, the zero value, means no transfers, and PeerMul is then
+	// not read. ModelLegacy reads neither.
+	PeerTransferIntensity float64
+	PeerMul               float64
 }
 
 // Rates returns a running job's CPU and GPU progress in work units per
@@ -69,6 +77,15 @@ type RateInputs struct {
 // feed = clamp01(1 - (1 - CPUMul) x CPUFeedIntensity x S_cpu), or 1 for a
 // job with no CPU feed. Negative rates are 0.
 //
+// A ModelV1 job that moves data between its GPUs spends the share
+// p = PeerTransferIntensity of its GPU time on the transfers, which run at
+// g = PeerMul of their demand whatever the cap, and the rest on work at
+// thr = 1 - S_gpu x (1 - GPUMul), so the throughput factor above becomes
+//
+//	1 / ((1 - p) / thr + p / g)
+//
+// It is thr when p is 0, bit for bit, and 0 when thr or g is 0.
+//
 // ModelLegacy keeps the operand order of the old code, so its CPU rate is
 // bit-identical to it.
 func Rates(model Model, in RateInputs) (cpuRate, gpuRate float64) {
@@ -81,12 +98,26 @@ func Rates(model Model, in RateInputs) (cpuRate, gpuRate float64) {
 	if model == ModelLegacy {
 		gpuRate = gpuBase * in.GPUMul * feed * in.GPUShare
 	} else {
-		gpuRate = gpuBase * (1.0 - in.SensitivityGPU*(1.0-clamp01(in.GPUMul))) * feed * in.GPUShare
+		gpuRate = gpuBase * peerFactor(1.0-in.SensitivityGPU*(1.0-clamp01(in.GPUMul)), in) * feed * in.GPUShare
 	}
 	if gpuRate < 0 {
 		gpuRate = 0
 	}
 	return cpuRate, gpuRate
+}
+
+// peerFactor is the GPU throughput factor thr of a job with its peer
+// transfers counted (Rates): thr itself while the job makes none.
+func peerFactor(thr float64, in RateInputs) float64 {
+	p := clamp01(in.PeerTransferIntensity)
+	if p == 0 {
+		return thr
+	}
+	g := clamp01(in.PeerMul)
+	if thr <= 0 || g == 0 {
+		return 0
+	}
+	return 1.0 / ((1.0-p)/thr + p/g)
 }
 
 // cpuThrottleFactor is the simulator's cpuThrottleImpactFactor.

@@ -15,8 +15,9 @@ import (
 // assumed: the kernel runs a job's threads on about as many CPUs as it has
 // threads and leaves the other CPUs idle; no CPU pinning is modelled. The
 // alternative, spreading a job's demand over every CPU, would put the whole
-// node at a low utilization, where hwemu's governor model picks a low
-// frequency and slows an uncapped job down.
+// node at a low utilization, where a demand-driven governor in hwemu picks a
+// low frequency, and hwemu's CPUThroughput, measured against a
+// governor-independent reference, slows an uncapped job down.
 //
 // CPUSlots is not safe for concurrent use.
 type CPUSlots struct {

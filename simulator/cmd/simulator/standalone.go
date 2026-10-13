@@ -1499,15 +1499,25 @@ func applyPowerPolicy(s *simulator, tracker map[string]*standaloneNodeTracker, n
 				t.isEco = false
 				t.isDraining = true
 			} else {
-				// ActiveEco: apply eco caps. A profile node with a
-				// writable PL1 gets a CPU power cap, as the agent writes
-				// one; any other node, HSMP included since the agent has
-				// no HSMP path, gets a frequency scale.
-				if n := nodeByName[name]; n != nil && n.EcoPowerCap {
+				// ActiveEco: apply eco caps. A GPU node gets GPU caps
+				// only, as the controller manager plans it: its CPU runs
+				// as on a performance node, since capping it saves little
+				// and slows the GPU data feed by more (exp-03). A CPU-only
+				// profile node with a writable PL1 gets a CPU power cap,
+				// as the agent writes one; any other CPU-only node, HSMP
+				// included since the agent has no HSMP path, gets a
+				// frequency scale.
+				n := nodeByName[name]
+				switch {
+				case n != nil && n.GPUCount > 0:
+					st.FreqScale = 1.0
+					st.TargetThrottlePct = 0
+					st.TargetCapWatts = model.DefaultCapW
+				case n != nil && n.EcoPowerCap:
 					st.FreqScale = 1.0
 					st.TargetThrottlePct = 0
 					st.TargetCapWatts = cpuEcoPct * model.RaplCapMaxW
-				} else {
+				default:
 					throttlePct := int(math.Round((1.0 - cpuEcoPct) * 100))
 					st.FreqScale = cpuEcoPct
 					st.TargetThrottlePct = throttlePct

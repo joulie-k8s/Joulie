@@ -13,3 +13,4 @@ This directory contains runnable Joulie examples, ordered by setup complexity.
 - [09-scheduler-steering](./09-scheduler-steering/README.md): energy-aware scheduler extender steering workloads to optimal nodes.
 - [10-kubectl-joulie-demo](./10-kubectl-joulie-demo/README.md): end-to-end demo with `kubectl joulie status` plugin on a 6-node heterogeneous KWOK cluster.
 - [11-otel-collector-bridge](./11-otel-collector-bridge/README.md): OpenTelemetry Collector config that turns Kepler, dcgm-exporter and AMD device-metrics-exporter series into the `hw.*` metrics the default node power preset reads.
+- [12-governor-presets](./12-governor-presets/README.md): CPU and GPU governor presets on a simulated cluster of six hardware families: the two gates, the presets each node lists, the native settings they become, opting a GPU model in to `sustained`, and the restore.

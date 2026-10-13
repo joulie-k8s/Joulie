@@ -80,6 +80,7 @@ func renderPCIDevices(b *renderBuilder, p *Profile, o RenderOptions) error {
 		hwmonBase = max(hwmonBase, p.CPU.Sockets.V)
 	}
 	for i := 0; i < g.Count.V; i++ {
+		gbus, gcard := renderAMDGPUCard(p, i)
 		var extra []renderEntry
 		if g.Product.V != "" {
 			extra = append(extra, renderEntry{name: "product_name", content: g.Product.V + "\n", owner: layout.OwnerRender, mode: 0o444})
@@ -87,18 +88,29 @@ func renderPCIDevices(b *renderBuilder, p *Profile, o RenderOptions) error {
 		if g.VBIOSVersion.V != "" {
 			extra = append(extra, renderEntry{name: "vbios_version", content: g.VBIOSVersion.V + "\n", owner: layout.OwnerRender, mode: 0o444})
 		}
-		gbus := renderGPUBus + i
-		if err := renderPCIDevice(b, gbus, card+i, g.PCI, extra); err != nil {
+		if err := renderPCIDevice(b, gbus, gcard, g.PCI, extra); err != nil {
 			return err
 		}
 		if err := renderAMDGPUHwmon(b, p, gbus, hwmonBase+i); err != nil {
 			return err
 		}
-		if err := renderAMDGPUState(b, g, card+i, slices.Contains(g.SecondaryDies, i)); err != nil {
+		if err := renderAMDGPUState(b, g, gcard, slices.Contains(g.SecondaryDies, i)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// renderAMDGPUCard is the PCI bus and the DRM card number of AMD GPU i of p,
+// as renderPCIDevices lays them out: GPUs from renderGPUBus on, their cards
+// after those of the listed devices with drm set.
+func renderAMDGPUCard(p *Profile, i int) (bus, card int) {
+	for _, d := range p.PCI {
+		if d.DRM {
+			card++
+		}
+	}
+	return renderGPUBus + i, card + i
 }
 
 // renderAMDGPUState writes what rocm-smi and amd-smi learn from KFD or from

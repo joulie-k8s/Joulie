@@ -536,6 +536,10 @@ func (p *Profile) Validate() error {
 	errs = append(errs, renderValidateCPUFreq(p)...)
 	errs = append(errs, renderValidateHSMP(p)...)
 	errs = append(errs, renderValidateGPUs(p)...)
+	errs = append(errs, renderValidateCPUGovernor(p)...)
+	errs = append(errs, renderValidateGPUDPM(p)...)
+	errs = append(errs, renderValidateNVClock(p)...)
+	errs = append(errs, renderValidateGPUTransfer(p)...)
 	if !renderCPUModels[p.Physics.CPU.Model] {
 		fail("physics.cpu.model %q is not analytic or catalog-curve", p.Physics.CPU.Model)
 	}
@@ -767,6 +771,29 @@ func renderValidateCPUFreq(p *Profile) []error {
 	}
 	if f.Boost.V != 0 && f.Boost.V != 1 {
 		fail("boost is %d, want 0 or 1", f.Boost.V)
+	}
+	return errs
+}
+
+// renderValidateGPUTransfer checks gpus.transfer: a link rate that is not
+// negative and receiver-gate fractions within [0, 1].
+func renderValidateGPUTransfer(p *Profile) []error {
+	if p.GPUs == nil || p.GPUs.Transfer == nil {
+		return nil
+	}
+	var errs []error
+	t := p.GPUs.Transfer
+	if t.PeerLinkGBps.V < 0 {
+		errs = append(errs, fmt.Errorf("%s: gpus.transfer.peerLinkGBps is %v, want >= 0", p.Name, t.PeerLinkGBps.V))
+	}
+	g := t.ReceiverGate
+	for _, f := range []struct {
+		name string
+		v    float64
+	}{{"slowFraction", g.SlowFraction.V}, {"midFraction", g.MidFraction.V}, {"midPairFraction", g.MidPairFraction.V}} {
+		if f.v < 0 || f.v > 1 {
+			errs = append(errs, fmt.Errorf("%s: gpus.transfer.receiverGate.%s is %v, want within [0, 1]", p.Name, f.name, f.v))
+		}
 	}
 	return errs
 }

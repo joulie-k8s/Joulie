@@ -1,0 +1,67 @@
+# Tier A of experiment 05: the offline sweep, E-G1 (CPU) and E-G2 (GPU),
+# run by simulator/cmd/govsweep (scripts/run_tier_a.sh). Every arm names a
+# vendor-neutral preset; govsweep plans it with pkg/governor on each
+# emulated node, as the agent would. A job does at the reference (no cap,
+# performance or auto) durationS of work.
+name: tier-a
+seeds: [1, 2]
+durationS: 60
+settleS: 10
+stepS: 2
+substepMS: 100
+limitFactor: 10
+cpu:
+  # One profile per CPU frequency driver: acpi-cpufreq, intel_cpufreq
+  # (intel_pstate passive), intel_pstate active with HWP, amd-pstate-epp,
+  # and intel_pstate on a TPMI part.
+  profiles:
+  - amd-epyc-9534-2s-energy-only
+  - intel-xeon-6530-2s-rapl
+  - intel-xeon-2s-rapl
+  - amd-epyc-2s-hsmp
+  - intel-xeon6-2s-tpmi
+  arms:
+  - {preset: default}
+  - {preset: performance, boost: "on"}
+  - {preset: performance, boost: "off"}
+  - {preset: balanced, boost: "on"}
+  - {preset: balanced, boost: "off"}
+  - {preset: efficiency, boost: "on"}
+  - {preset: efficiency, boost: "off"}
+  idle: true
+  steadyPct: [10, 30, 50, 70, 100]
+  # Midpoints of workloadgen's default intensities per class (assumed).
+  classes:
+    cpu.compute_bound: {memoryIntensity: 0.2, ioIntensity: 0.05}
+    cpu.memory_bound:  {memoryIntensity: 0.85, ioIntensity: 0.1}
+    cpu.mixed:         {memoryIntensity: 0.5, ioIntensity: 0.15}
+    cpu.io_bound:      {memoryIntensity: 0.3, ioIntensity: 0.85}
+  bursty: {class: cpu.io_bound, burstMS: 50, periodMS: 1000, jitterMS: 100, bursts: 30, substepMS: 10}
+gpu:
+  profiles:
+  - amd-radeon-pro-w7900-4gpu
+  - amd-instinct-mi300x-8gpu
+  - nvidia-h100-sxm-8gpu
+  - nvidia-h100-nvl-8gpu
+  - nvidia-l40s-4gpu
+  arms:
+  - {preset: auto}
+  - {preset: sustained}
+  - {preset: efficient, ceilingPct: [50, 60, 70, 75, 80, 90]}
+  - {preset: low}
+  - {preset: peak}
+  capsPct: [100, 60]
+  # Every repository profile leaves the gate off with neutral fractions, so
+  # forcing it on changes nothing here; the gate runs in
+  # tier-a-sensitivity.yaml, with slowFraction below 1.
+  receiverGates: [profile]
+  classes:
+    gpu.compute_bound:   {memoryIntensity: 0.2}
+    gpu.memory_bound:    {memoryIntensity: 0.85}
+    gpu.bandwidth_bound: {memoryIntensity: 0.95}
+  jobs:
+  - {gpus: 1}
+  - {gpus: 2, peer: [0.1, 0.3, 0.6], nic: [0.1, 0.3, 0.6]}
+  - {gpus: 4, peer: [0.1, 0.3, 0.6], nic: [0.1, 0.3, 0.6], gather: [0.1, 0.3, 0.6]}
+  idle: true
+  cpuUtil: 0.05

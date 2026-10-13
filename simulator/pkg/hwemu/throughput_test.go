@@ -21,9 +21,17 @@ import (
 // model reads them: the agent's controls go in through files and tools, and
 // the methods report what those controls cost a job.
 
-// throughputProfile is the powersave intel_pstate machine the CPU tests use:
-// one policy per CPU, 1.0 to 3.9 GHz, an analytic CPU model, RAPL zones.
+// throughputProfile is the intel_pstate machine the CPU tests use: one
+// policy per CPU, 1.0 to 3.9 GHz, an analytic CPU model, RAPL zones. Its
+// shipped governor is powersave with EPP balance_performance, which holds a
+// fully loaded CPU below its maximum; the tests of a cap or a limit run it
+// under performance (throughputPerformance), so the governor costs nothing.
 const throughputProfile = "intel-xeon-2s-rapl"
+
+// throughputPerformance runs a profile under the performance governor.
+func throughputPerformance(p *hwemu.Profile) {
+	p.CPUFreq.Governor = hwemu.Fact[string]{V: "performance", Src: "assumed:test fixture"}
+}
 
 // throughputTol is how close two throughputs must be to count as equal: far
 // below any effect of a control, far above float rounding.
@@ -143,13 +151,13 @@ func TestGPUThroughputFollowsTheEnforcedLimitAndTheLoad(t *testing.T) {
 	}
 }
 
-// TestCPUThroughputFollowsPackageCap: a PL1 limit on package 0 below its
-// natural power lowers the throughput of a job on socket 0 to TM at the
-// package's capped frequency scale over TM at full frequency, and lower for a
-// lower limit, while socket 1, uncapped, stays at 1.
+// TestCPUThroughputFollowsPackageCap: under performance, a PL1 limit on
+// package 0 below its natural power lowers the throughput of a job on socket
+// 0 to TM at the package's capped frequency scale over TM at full frequency,
+// and lower for a lower limit, while socket 1, uncapped, stays at 1.
 func TestCPUThroughputFollowsPackageCap(t *testing.T) {
 	t.Parallel()
-	n, tree, p := hwemutest.NewNode(t, throughputProfile, nil)
+	n, tree, p := hwemutest.NewNode(t, throughputProfile, throughputPerformance)
 	throughputAnalytic(t, p)
 	const class, mem, io = "cpu.compute_bound", 0.2, 0.1
 	socket0, socket1 := throughputSocketCPUs(p, 0), throughputSocketCPUs(p, 1)
@@ -182,102 +190,70 @@ func TestCPUThroughputFollowsPackageCap(t *testing.T) {
 	}
 }
 
-// TestCPUThroughputIsOneUncappedUnderPowersave: with no control, a job runs
-// as fast as the governor lets it, so its throughput is 1 at any load, though
-// powersave holds a lightly loaded intel_pstate CPU far below its maximum,
-// and acpi-cpufreq powersave holds every CPU at its minimum. TM at the
-// package's own scale, the plain implementation, is well below 1 there.
-func TestCPUThroughputIsOneUncappedUnderPowersave(t *testing.T) {
+// CG14: under performance with no cap and no limit, a job runs at the
+// reference, the frequency performance holds with the profile's boost, so
+// its throughput is 1 at any load and for every class: on intel_pstate,
+// which has no table, and on an acpi-cpufreq table with boost, where the
+// policy runs above its top entry.
+func TestCG14PerformanceUncappedGivesThroughputOne(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		name, profile string
-		mutate        func(*hwemu.Profile)
-	}{
-		{name: "intel_pstate", profile: throughputProfile},
-		{name: "acpi-cpufreq", profile: "amd-epyc-2s-energy-only", mutate: func(p *hwemu.Profile) {
-			p.CPUFreq.Governor = hwemu.Fact[string]{V: "powersave", Src: "assumed:test fixture"}
-		}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, profile := range []string{throughputProfile, "amd-epyc-2s-energy-only"} {
+		t.Run(profile, func(t *testing.T) {
 			t.Parallel()
-			n, _, p := hwemutest.NewNode(t, tc.profile, tc.mutate)
+			n, _, p := hwemutest.NewNode(t, profile, func(p *hwemu.Profile) {
+				throughputPerformance(p)
+				throughputSmall(p)
+			})
 			throughputAnalytic(t, p)
-			if g := p.CPUFreq.Governor.V; g != "powersave" {
-				t.Fatalf("%s runs governor %s, want powersave", tc.profile, g)
-			}
 			all := append(throughputSocketCPUs(p, 0), throughputSocketCPUs(p, 1)...)
-			for _, u := range []float64{0, 0.038, 0.5, 1} {
+			for _, u := range []float64{0, 0.3, 1} {
 				n.SetLoad(hwemu.Load{CPUUtil: []float64{u}})
-				throughputStep(t, n, 20*time.Second)
+				throughputStep(t, n, 10*time.Second)
 				for _, class := range []string{"", "cpu.compute_bound", "cpu.memory_bound", "cpu.io_bound"} {
 					if got := n.CPUThroughput(all, class, 0, 0); math.Abs(got-1) > throughputTol {
-						t.Errorf("util %v, class %q, uncapped: throughput %v, want 1", u, class, got)
+						t.Errorf("util %v, class %q, performance uncapped: throughput %v, want 1", u, class, got)
 					}
-				}
-				if u != 0.038 {
-					continue
-				}
-				scale := n.State().Packages[0].FreqScale
-				if plain := throughputTM(p, scale, "", 0, 0); plain > 0.6 {
-					t.Fatalf("util %v: TM at the package scale %.4f is %.4f; the case needs it well below 1 to tell a ratio from a plain TM", u, scale, plain)
 				}
 			}
 		})
 	}
 }
 
-// TestCPUThroughputFollowsScalingMaxFreq: scaling_max_freq written at 2.0
-// GHz on CPUs 0 to 3 lowers their throughput at full load to TM(2.0/3.9)
-// over TM(1) and leaves CPU 4 at 1. At light load intel_pstate powersave
-// scales between cpuinfo_min_freq and the limit, so the limit still costs
-// throughput there, less: the reference is the governor's target at the same
-// load without the limit, not cpuinfo_max_freq.
+// TestCPUThroughputFollowsScalingMaxFreq: under performance,
+// scaling_max_freq written at 2.0 GHz on CPUs 0 to 3 lowers their throughput
+// to TM(2.0/3.9) over TM(1) and leaves CPU 4 at 1. Performance holds the
+// limit at any load, and the reference is cpuinfo_max_freq whatever the
+// load, so the limit costs the same at light load.
 func TestCPUThroughputFollowsScalingMaxFreq(t *testing.T) {
 	t.Parallel()
-	n, tree, p := hwemutest.NewNode(t, throughputProfile, nil)
+	n, tree, p := hwemutest.NewNode(t, throughputProfile, throughputPerformance)
 	throughputAnalytic(t, p)
 	const limKHz = 2000000
 	maxKHz := p.CPUFreq.CPUInfoMaxKHz.V
 	for c := 0; c < 4; c++ {
 		throughputWrite(t, tree, path.Join("devices/system/cpu", "cpu"+strconv.Itoa(c), "cpufreq", "scaling_max_freq"), strconv.Itoa(limKHz))
 	}
-
-	n.SetLoad(hwemu.Load{CPUUtil: []float64{1}})
-	throughputStep(t, n, 20*time.Second)
 	want := throughputTM(p, float64(limKHz)/float64(maxKHz), "", 0, 0) / throughputTM(p, 1, "", 0, 0)
 	if want >= 1 {
 		t.Fatalf("TM(%d/%d)/TM(1) = %v; the case needs a limit that costs throughput", limKHz, maxKHz, want)
 	}
-	for c := 0; c < 4; c++ {
-		if got := n.CPUThroughput([]int{c}, "", 0, 0); math.Abs(got-want) > throughputTol {
-			t.Errorf("CPU %d at %d kHz scaling_max_freq, full load: throughput %v, want %v", c, limKHz, got, want)
+	for _, u := range []float64{1, 0.038} {
+		n.SetLoad(hwemu.Load{CPUUtil: []float64{u}})
+		throughputStep(t, n, 20*time.Second)
+		for c := 0; c < 4; c++ {
+			if got := n.CPUThroughput([]int{c}, "", 0, 0); math.Abs(got-want) > throughputTol {
+				t.Errorf("CPU %d at %d kHz scaling_max_freq, load %v: throughput %v, want %v", c, limKHz, u, got, want)
+			}
 		}
-	}
-	if got := n.CPUThroughput([]int{4}, "", 0, 0); math.Abs(got-1) > throughputTol {
-		t.Errorf("CPU 4, not limited: throughput %v, want 1", got)
-	}
-	if got, mean := n.CPUThroughput([]int{0, 4}, "", 0, 0), (want+1)/2; math.Abs(got-mean) > throughputTol {
-		t.Errorf("CPUs 0 and 4: throughput %v, want their mean %v", got, mean)
+		if got := n.CPUThroughput([]int{4}, "", 0, 0); math.Abs(got-1) > throughputTol {
+			t.Errorf("CPU 4, not limited, load %v: throughput %v, want 1", u, got)
+		}
+		if got, mean := n.CPUThroughput([]int{0, 4}, "", 0, 0), (want+1)/2; math.Abs(got-mean) > throughputTol {
+			t.Errorf("CPUs 0 and 4, load %v: throughput %v, want their mean %v", u, got, mean)
+		}
 	}
 	if got := n.CPUThroughput(nil, "", 0, 0); got != 1 {
 		t.Errorf("no CPUs: throughput %v, want 1", got)
-	}
-
-	// At 3.8 % load powersave asks for min + u*(max - min): about 1.04 GHz
-	// under the limit, 1.11 GHz without it.
-	const u = 0.038
-	n.SetLoad(hwemu.Load{CPUUtil: []float64{u}})
-	throughputStep(t, n, 20*time.Second)
-	minKHz := float64(p.CPUFreq.CPUInfoMinKHz.V)
-	limited := (minKHz + u*(limKHz-minKHz)) / float64(maxKHz)
-	free := (minKHz + u*(float64(maxKHz)-minKHz)) / float64(maxKHz)
-	light := throughputTM(p, limited, "", 0, 0) / throughputTM(p, free, "", 0, 0)
-	if got := n.CPUThroughput([]int{0, 1, 2, 3}, "", 0, 0); math.Abs(got-light) > throughputTol || got <= want || got >= 1 {
-		t.Errorf("CPUs 0 to 3 at %v load: throughput %v, want TM(%.6f)/TM(%.6f) = %v, between the full-load %v and 1", u, got, limited, free, light, want)
-	}
-	if got := n.CPUThroughput([]int{4}, "", 0, 0); math.Abs(got-1) > throughputTol {
-		t.Errorf("CPU 4, not limited, at %v load: throughput %v, want 1", u, got)
 	}
 }
 
@@ -348,6 +324,14 @@ func TestGPUExposureFollowsTheProfile(t *testing.T) {
 	}
 }
 
+// throughputSmall shrinks a profile to two cores per socket, which keeps a
+// many-core profile's per-CPU policies few and its steps fast.
+func throughputSmall(p *hwemu.Profile) {
+	const src = "assumed:test fixture, a small topology"
+	p.CPU.CoresPerSocket = hwemu.Fact[int]{V: 2, Src: src}
+	p.Node.Capacity.CPU = hwemu.Fact[int64]{V: int64(p.CPU.Sockets.V * 2 * p.CPU.ThreadsPerCore.V), Src: src}
+}
+
 // throughputSocketCPUs lists the logical CPUs of socket s in hwemu's
 // numbering, socket-major-smt-last: CPU k sits on socket (k mod S*C)/C.
 func throughputSocketCPUs(p *hwemu.Profile, s int) []int {
@@ -390,5 +374,53 @@ func throughputWrite(t *testing.T, tree *hwemu.Tree, rel, v string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(tree.SysRoot, filepath.FromSlash(rel)), []byte(v), 0); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// XF09: State's PeerRxBytes of each receiver and PeerTxBytes of each source
+// integrate the rates PeerTransferRates gives, through a change of load
+// between substep boundaries. Copies into one GPU share its link: two
+// copies into GPU 1 asking 25 GB/s of a 20 GB/s link (a test value) get 8
+// and 12 GB/s. A NIC transfer gets its demand and counts on no peer ledger.
+func TestXF09PeerBytesIntegrateTheDeliveredRate(t *testing.T) {
+	t.Parallel()
+	n, _, p := hwemutest.NewNode(t, "amd-radeon-pro-w7900-4gpu", func(p *hwemu.Profile) {
+		throughputSmall(p)
+		p.GPUs.Transfer.PeerLinkGBps = hwemu.Fact[float64]{V: 20, Src: "assumed:test value"}
+	})
+	if p.GPUs.Transfer.ReceiverGate.Enabled.V {
+		t.Fatalf("%s: receiver gate on; the case needs it off", p.Name)
+	}
+	first := []hwemu.PeerTransfer{{Src: 0, Dst: 1, BytesPerS: 10e9}, {Src: 2, Dst: 1, BytesPerS: 15e9}, {Src: 3, Dst: 0, BytesPerS: 5e9}, {Src: phys.HostSource, Dst: 2, BytesPerS: 7e9}}
+	second := []hwemu.PeerTransfer{{Src: 1, Dst: 3, BytesPerS: 4e9}}
+	wantRates := [][]float64{{8e9, 12e9, 5e9, 7e9}, {4e9}}
+
+	rx, tx := make([]float64, 4), make([]float64, 4)
+	for k, ts := range [][]hwemu.PeerTransfer{first, second} {
+		n.SetLoad(hwemu.Load{PeerTransfers: ts})
+		got := n.PeerTransferRates()
+		for i, want := range wantRates[k] {
+			if i >= len(got) || math.Abs(got[i]-want) > 1e-3 {
+				t.Fatalf("load %d: rates %v, want %v", k, got, wantRates[k])
+			}
+		}
+		const seconds = 2.35 // ends between two substep boundaries
+		throughputStep(t, n, time.Duration(seconds*float64(time.Second)))
+		for i, tr := range ts {
+			if tr.Src >= 0 && tr.Dst >= 0 {
+				rx[tr.Dst] += got[i] * seconds
+				tx[tr.Src] += got[i] * seconds
+			}
+		}
+		gpus := map[string]hwemu.ComponentState{}
+		for _, c := range n.State().Components {
+			gpus[c.ID] = c
+		}
+		for i := 0; i < 4; i++ {
+			c := gpus["gpu"+strconv.Itoa(i)]
+			if math.Abs(float64(c.PeerRxBytes)-rx[i]) > 1 || math.Abs(float64(c.PeerTxBytes)-tx[i]) > 1 {
+				t.Errorf("after load %d: GPU %d received %d and sent %d bytes, want %.0f and %.0f", k, i, c.PeerRxBytes, c.PeerTxBytes, rx[i], tx[i])
+			}
+		}
 	}
 }

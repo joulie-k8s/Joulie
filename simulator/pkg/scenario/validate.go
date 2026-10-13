@@ -273,6 +273,7 @@ func (v *validator) job(s Scenario, j JobSpec, seen map[string]bool) {
 	v.unit(at+": profile.memoryIntensity", p.MemoryIntensity)
 	v.unit(at+": profile.ioIntensity", p.IOIntensity)
 	v.unit(at+": profile.cpuFeedIntensityGpu", p.CPUFeedIntensityGPU)
+	v.unit(at+": profile.peerTransferIntensity", p.PeerTransferIntensity)
 	if sens := j.Sensitivity; sens != nil {
 		v.unit(at+": sensitivity.cpu", sens.CPU)
 		v.unit(at+": sensitivity.gpu", sens.GPU)

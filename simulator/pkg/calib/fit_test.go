@@ -85,11 +85,22 @@ func TestCB01EPYCPerformanceSweepGivesBackTheProfile(t *testing.T) {
 	}
 }
 
-// CB04: beta is not fitted when frequency cannot be told from load:
-// intel-xeon-2s-rapl under intel_pstate powersave, where frequency follows
-// load, and amd-epyc-2s-energy-only under acpi-cpufreq powersave, where it
-// stays at the minimum. Alpha and the maximum are still fitted, with the
-// base beta.
+// CB04: beta is not fitted when frequency cannot be told from load, and is
+// fitted when the governor holds frequency while load varies. The sweep
+// reports the node's own utilization, which counts work in cycles (design
+// D10), so a governor below the maximum raises it.
+//   - intel-xeon-2s-rapl without its governor facts: frequency scales
+//     linearly with load, as before governors were modelled, and the fit
+//     cannot tell the exponents apart.
+//   - amd-epyc-2s-energy-only under acpi-cpufreq powersave: frequency stays
+//     at the minimum.
+//   - intel-xeon-2s-rapl as shipped, intel_pstate powersave with EPP 128:
+//     frequency rises with load up to the EPP ceiling, 0.85 of the maximum
+//     from a load of 0.6, and stays there while utilization climbs from 0.7
+//     to 1, so the fit gives the profile's beta back.
+//
+// Alpha and the maximum are fitted in every case, with the base beta when
+// beta is not.
 func TestCB04BetaIsNotFittedWhenFrequencyFollowsLoadOrStands(t *testing.T) {
 	t.Parallel()
 	loads := []float64{0, 0.2, 0.4, 0.6, 0.8, 1}
@@ -100,12 +111,18 @@ func TestCB04BetaIsNotFittedWhenFrequencyFollowsLoadOrStands(t *testing.T) {
 		}
 		return out
 	}
+	withoutGovernorFacts := func(p *hwemu.Profile) {
+		f := p.CPUFreq
+		f.DriverMode, f.HWP, f.BoostScope = hwemu.Fact[string]{}, hwemu.Fact[bool]{}, hwemu.Fact[string]{}
+		f.EPP, f.Tunables, f.Uncore = nil, nil, nil
+	}
 	for _, tc := range []struct {
 		name, profile string
 		mutate        func(*hwemu.Profile)
-		reason        string
+		// reason is why beta is not fitted; empty when it is.
+		reason string
 	}{
-		{"intel_pstate powersave", "intel-xeon-2s-rapl", nil, "frequency followed load"},
+		{"intel_pstate powersave without governor facts", "intel-xeon-2s-rapl", withoutGovernorFacts, "frequency followed load"},
 		{"acpi-cpufreq powersave", "amd-epyc-2s-energy-only", func(p *hwemu.Profile) { p.CPUFreq.Governor.V = "powersave" }, "one frequency"},
 		// A base beta of 0 is 1 to the analytic model, and to the profile
 		// the fit writes, which inherits it. Fitting with 0 left
@@ -114,16 +131,18 @@ func TestCB04BetaIsNotFittedWhenFrequencyFollowsLoadOrStands(t *testing.T) {
 			p.CPUFreq.Governor.V = "powersave"
 			p.Physics.CPU.BetaFreq.V = 0
 		}, "one frequency"},
+		{"intel_pstate powersave with EPP 128", "intel-xeon-2s-rapl", nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			sw := generateSweep(t, sweepSpec{profile: tc.profile, mutate: tc.mutate, period: 2 * time.Second, steps: steps()})
 			r := fit(t, sw, Options{})
-			beta := param(t, r, pathCPUBeta)
-			if beta.Fitted || !strings.Contains(beta.Reason, tc.reason) {
+			cpu := sw.profile.Physics.CPU
+			if tc.reason == "" {
+				near(t, r, pathCPUBeta, cpu.BetaFreq.V, 0.03)
+			} else if beta := param(t, r, pathCPUBeta); beta.Fitted || !strings.Contains(beta.Reason, tc.reason) {
 				t.Errorf("beta fitted %v (%.4g), reason %q; want not fitted because %s", beta.Fitted, beta.Value, beta.Reason, tc.reason)
 			}
-			cpu := sw.profile.Physics.CPU
 			within(t, r, pathCPUIdle, cpu.IdlePkgW.V, 0.01)
 			within(t, r, pathCPUMax, cpu.MaxPkgW.V, 0.01)
 			near(t, r, pathCPUAlpha, cpu.AlphaUtil.V, 0.02)

@@ -167,7 +167,9 @@ gpuModels:
       # No public minimum: the L40S product brief (PB-11470-001_v02) says "TBD".
       minBoardPowerW: 200
   AMD_INSTINCT_MI300X:
-    aliases: ["AMD_Instinct_MI300X", "AMD Instinct MI300X", "MI300X"]
+    # AMD_Instinct_MI300X_OAM is how the AMD GPU labeller names it in
+    # amd.com/gpu.product-name.
+    aliases: ["AMD_Instinct_MI300X", "AMD Instinct MI300X", "MI300X", "AMD_Instinct_MI300X_OAM"]
     provenance: official+runtime+literature
     official:
       vendor: amd

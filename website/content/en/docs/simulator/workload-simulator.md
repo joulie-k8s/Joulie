@@ -52,7 +52,7 @@ Helper tools:
 
 The v1 engine needs the emulated nodes, so `v1` without emulate mode, and `legacy` with it, stop the start. The legacy engine keeps the behaviour experiments 01 to 03 were measured with, except two loader fixes: trace lines longer than 64 KiB load, and jobs whose pod names collide get a suffix instead of a failed create. The variables and their defaults are in [Simulator workloads and scenarios]({{< relref "/docs/getting-started/05-configuration-reference.md#simulator-workloads-and-scenarios" >}}).
 
-**Trace schema v3.** `workloadgen` writes schema v3 by default: a job carries no sensitivity unless one is given (the simulator then uses 1), no power-profile affinity (the class is `intentClass`, rendered by `SIM_WORKLOAD_INTENT`), and its work is sized so that its ideal runtime equals `durationSec` at `-base-speed-per-core` (default 1, the simulator's `SIM_BASE_SPEED_PER_CORE`). `-arrival-window-sec` compresses the submit offsets and `-max-duration-sec` clamps durations. `-schema-version v2` writes the previous schema byte for byte, which the experiments' scripts pin.
+**Trace schema v3.** `workloadgen` writes schema v3 by default: a job carries no sensitivity unless one is given (the simulator then uses 1), no power-profile affinity (the class is `intentClass`, rendered by `SIM_WORKLOAD_INTENT`), and its work is sized so that its ideal runtime equals `durationSec` at `-base-speed-per-core` (default 1, the simulator's `SIM_BASE_SPEED_PER_CORE`). `-arrival-window-sec` compresses the submit offsets and `-max-duration-sec` clamps durations. `-peer-transfer-intensity p` writes `workloadProfile.peerTransferIntensity` on every job that requests two or more GPUs (see [Peer transfers](#peer-transfers)). `-schema-version v2` writes the previous schema byte for byte, which the experiments' scripts pin.
 
 [Workload Scenarios]({{< relref "/docs/simulator/scenarios.md" >}}) run v1 workloads on the simulated cluster and check their completion, placement, slowdown and energy.
 
@@ -72,6 +72,7 @@ Generated fields:
 - `workloadProfile.memoryIntensity`
 - `workloadProfile.ioIntensity`
 - `workloadProfile.cpuFeedIntensityGpu`
+- `workloadProfile.peerTransferIntensity`, only with `-peer-transfer-intensity`, on jobs with two or more GPUs
 
 ### Current generator behavior
 
@@ -203,6 +204,14 @@ CPU throttling can also slow GPU jobs when CPU-side feeding is part of the bottl
 State update:
 
 `GPUUnitsRemaining -= gpuProgress`
+
+### Peer transfers
+
+A v1 job whose trace record gives `workloadProfile.peerTransferIntensity` `p > 0` and that holds `n >= 2` GPUs of its node moves data between them. Each step it loads the emulated node with a ring of `n` copies over its GPUs in ascending order, GPU `k` to the next and the last to the first (two GPUs send to each other), each demanding `p * peerLinkGBps`, the `gpus.transfer.peerLinkGBps` of the node's hardware profile. The node gives each copy a rate: the copies into one GPU share its link, and with the receiver gate on (`SIM_GPU_RECEIVER_GATE`) a receiver whose data path is down lets through only a fraction of it, whatever the sender does. With `g` the lowest ratio of delivered to demanded rate over the job's ring, since a ring moves at its slowest link, the job's GPU progress becomes:
+
+`gpuSpeed ~= G_req * BaseSpeedPerGPU * 1 / ((1 - p) / thr + p / g) * cpuFeedImpact`
+
+where `thr = 1 - S_gpu * (1 - gpuThroughput)`, the v1 GPU factor above: `p` is the share of the job's GPU time spent on its copies, which a cap does not slow, and `1 - p` the share spent on work. Copies that get their demand (`g = 1`) cost nothing beyond the work the trace already sizes. A job with `p = 0`, the default for a record without the key, a job on one GPU, a job on a node whose profile has no peer link, and every legacy job make no copies and run as before.
 
 Completion condition:
 

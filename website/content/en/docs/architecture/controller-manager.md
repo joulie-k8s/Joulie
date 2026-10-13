@@ -22,11 +22,11 @@ At each reconcile tick, the controller manager:
 4. classifies workload demand from pod scheduling constraints,
 5. runs a policy algorithm (`pkg/controller/policy/`) to compute a plan,
 6. applies transition guards for safe downgrades,
-7. writes desired node targets (`NodeTwin.spec`) and the `joulie.io/power-profile` node label.
+7. writes desired node targets (`NodeTwin.spec`: caps and, with governor control on, governor presets) and the `joulie.io/power-profile` node label.
 
 The agent then enforces those targets node-by-node.
 
-In addition to the reconcile loop, the controller manager runs a background controller:
+In addition to the reconcile loop, the controller manager runs a background controller: the facility poller (see [Measured inputs](#measured-inputs)).
 
 ## Reads, writes and leader election
 
@@ -104,6 +104,23 @@ High-level behavior:
   - when `GPU_WRITE_ABSOLUTE_CAPS=true`, controller manager may write resolved `capWattsPerGpu` in addition to `capPctOfMax`, when model-based mapping is available.
 
 This is why GPU `NodeTwin.spec` objects may contain both normalized intent and resolved absolute caps at the same time.
+
+## Governor presets
+
+Off by default. With `GOVERNOR_CONTROL` set to `cpu`, `gpu` or `all`, the reconcile that writes a node's caps also writes a vendor-neutral governor preset per component into its `NodeTwin.spec`, `spec.cpu.governor` and `spec.gpu.governor` (`governorIntents` in `cmd/controller-manager/governor_config.go`). The controller manager never turns a preset into a native setting: the agent does, through `pkg/governor`, and only with its own `GOVERNOR_WRITES` on.
+
+| Profile | CPU preset | GPU preset |
+|---|---|---|
+| `performance` | `CPU_GOVERNOR_PERFORMANCE_PRESET` (default `performance`), boost left alone | `GPU_GOVERNOR_PERFORMANCE_PRESET` (default none) |
+| `eco` | `CPU_GOVERNOR_ECO_PRESET` (default `efficiency`), with `CPU_GOVERNOR_ECO_BOOST` when set | `GPU_GOVERNOR_ECO_PRESET` (default `efficient`, at `GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX`, default 80 % of the maximum compute clock) |
+
+- A draining node keeps the performance presets until its performance pods finish, as it keeps the performance caps (`TestGC04DrainingNodeKeepsPerformancePresets`).
+- A node gets only a preset its agent lists in `NodeHardware` `status.cpu.governor.presets` or `status.gpu.governor.presets`. Any other preset is not written and nothing replaces it, `auto` included, so a setting the node's operator chose stays; one warning per node is logged (`TestGC05UnlistedPresetIsNotWritten`).
+- A GPU node gets no CPU governor unless `CPU_GOVERNOR_ON_GPU_NODES` is `true`, the rule the CPU cap follows; only GPU nodes get a GPU governor (`TestGC03GPUNodeGetsNoCPUGovernorByDefault`).
+- `GPU_GOVERNOR_MODEL_PRESETS_JSON` overrides the GPU presets and the ceiling per GPU model, keyed like `GPU_MODEL_CAPS_JSON` by the GPU product label (`GPU_PRODUCT_LABEL_KEYS`) and matched against the model the agent reports. It is how a model is opted in to `sustained`, which no default selects.
+- Turning `GOVERNOR_CONTROL` off removes the fields at the next reconcile (`TestGC09SwitchingOffRemovesTheGovernors`); the agent then puts back the state it recorded before its first write.
+
+The defaults are provisional until measured on hardware. See [Governor presets]({{< relref "/docs/hardware/hardware-modeling.md#69-governor-presets" >}}) for what each preset means and [Governor control]({{< relref "/docs/getting-started/05-configuration-reference.md#governor-control" >}}) for the variables.
 
 ## Heterogeneous planning
 

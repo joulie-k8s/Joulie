@@ -48,6 +48,12 @@ emulate:
   root: /var/lib/joulie-hwemu
   # Physics tick (SIM_EMULATE_TICK), a Go duration.
   tick: 1s
+  # Receiver gate of the peer links between the GPUs of a node
+  # (SIM_GPU_RECEIVER_GATE): profile follows each hardware profile's
+  # gpus.transfer.receiverGate.enabled, off in every builtin profile; off
+  # disables it everywhere; on enables it on every GPU profile with the
+  # profile's fractions, for what-if runs.
+  receiverGate: profile
   # The cluster spec as YAML text, stored in the ConfigMap
   # joulie-simulator-cluster-spec. Usually given with
   #   --set-file emulate.clusterSpec=tests/simcluster/specs/smoke.yaml

@@ -22,18 +22,50 @@ const (
 	facilityLedgerTmpPrefix = ".facility-ledger-"
 )
 
-// nodeLedger is <root>/<node>/state/LedgerFile: the energy counters a node
-// exports, in J. They only grow: each tick adds the increase of the node's
-// own counters since the last tick, so a new Node, whose counters restart at
-// 0, continues them instead of resetting them (DR-32). StartTime is when the
-// ledger was created, the startTimeUnixNano of every counter it holds.
-// Components is keyed by hw.id.
+// nodeLedger is <root>/<node>/state/LedgerFile: the counters a node
+// exports, the energies in J and the GPU bytes. They only grow: each tick
+// adds the increase of the node's own counters since the last tick, so a new
+// Node, whose counters restart at 0, continues them instead of resetting
+// them (DR-32). StartTime is when the ledger was created, the
+// startTimeUnixNano of every counter it holds. ComponentsJ and GPUIO are
+// keyed by hw.id. A ledger written before GPUIO existed reads as one whose
+// GPUs moved nothing yet, so the field needs no new schemaVersion.
+//
+// ioBase is the runner's byte counters at the last tick, per hw.id. It is
+// not persisted: a new Node starts them at 0, as an empty ioBase says.
 type nodeLedger struct {
-	SchemaVersion int                `json:"schemaVersion"`
-	Node          string             `json:"node"`
-	StartTime     time.Time          `json:"startTime"`
-	HostJ         float64            `json:"hostJ"`
-	ComponentsJ   map[string]float64 `json:"componentsJ"`
+	SchemaVersion int                    `json:"schemaVersion"`
+	Node          string                 `json:"node"`
+	StartTime     time.Time              `json:"startTime"`
+	HostJ         float64                `json:"hostJ"`
+	ComponentsJ   map[string]float64     `json:"componentsJ"`
+	GPUIO         map[string]gpuIOLedger `json:"gpuIO,omitempty"`
+
+	ioBase map[string]gpuIOLedger
+}
+
+// gpuIOLedger is what one GPU moved over its peer link: the bytes it
+// received from and sent to the other GPUs of its node.
+type gpuIOLedger struct {
+	PeerRxBytes uint64 `json:"peerRxBytes"`
+	PeerTxBytes uint64 `json:"peerTxBytes"`
+}
+
+// accrueGPUIO adds to the ledger of GPU id the increase of the runner's byte
+// counters, which read rx and tx now, as ledgerAccrue does for energy.
+// wentBack reports a counter that went back.
+func (l *nodeLedger) accrueGPUIO(id string, rx, tx uint64) (wentBack bool) {
+	if l.GPUIO == nil {
+		l.GPUIO = map[string]gpuIOLedger{}
+	}
+	if l.ioBase == nil {
+		l.ioBase = map[string]gpuIOLedger{}
+	}
+	total, base := l.GPUIO[id], l.ioBase[id]
+	rxBack := ledgerAccrueBytes(&total.PeerRxBytes, &base.PeerRxBytes, rx)
+	txBack := ledgerAccrueBytes(&total.PeerTxBytes, &base.PeerTxBytes, tx)
+	l.GPUIO[id], l.ioBase[id] = total, base
+	return rxBack || txBack
 }
 
 // facilityLedger is <root>/FacilityLedgerFile: the facility counters, in J,
@@ -203,6 +235,20 @@ func ledgerAccrue(total, base *float64, v float64) (wentBack bool) {
 	}
 	*total += d
 	return false
+}
+
+// ledgerAccrueBytes is ledgerAccrue for a byte counter: it adds to *total
+// the increase of a runner counter that reads v now and read *base at the
+// last tick, then moves *base to v. A counter that went back adds 0 and
+// reports wentBack.
+func ledgerAccrueBytes(total, base *uint64, v uint64) (wentBack bool) {
+	d := v - *base
+	wentBack = v < *base
+	*base = v
+	if !wentBack {
+		*total += d
+	}
+	return wentBack
 }
 
 // ledgerFinite is v when it is finite and not negative, else 0: what a

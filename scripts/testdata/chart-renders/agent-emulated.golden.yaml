@@ -55,6 +55,10 @@ spec:
               value: "epyc-0"
             - name: PATH
               value: "/emu/bin:/usr/local/bin:/usr/bin:/bin"
+            - name: GOVERNOR_RESTORE_ON_EXIT
+              value: "true"
+            - name: GOVERNOR_WRITES
+              value: "false"
             - name: METRICS_ADDR
               value: ":8080"
             - name: RECONCILE_INTERVAL
@@ -158,6 +162,10 @@ spec:
               value: "mi300x-0"
             - name: PATH
               value: "/emu/bin:/usr/local/bin:/usr/bin:/bin"
+            - name: GOVERNOR_RESTORE_ON_EXIT
+              value: "true"
+            - name: GOVERNOR_WRITES
+              value: "false"
             - name: METRICS_ADDR
               value: ":8080"
             - name: RECONCILE_INTERVAL
@@ -261,6 +269,10 @@ spec:
               value: "nvl-0"
             - name: PATH
               value: "/emu/bin:/usr/local/bin:/usr/bin:/bin"
+            - name: GOVERNOR_RESTORE_ON_EXIT
+              value: "true"
+            - name: GOVERNOR_WRITES
+              value: "false"
             - name: METRICS_ADDR
               value: ":8080"
             - name: RECONCILE_INTERVAL

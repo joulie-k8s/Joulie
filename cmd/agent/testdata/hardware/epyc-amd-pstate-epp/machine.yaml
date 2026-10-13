@@ -1,0 +1,24 @@
+description: >-
+  Hand written one socket AMD EPYC on amd-pstate-epp in active mode, every
+  cpufreq policy on the powersave governor with the balance_power
+  energy-performance preference and boost off, no powercap tree and no GPU.
+  It is the machine with captured governor state: the scaling governor, the
+  preference pair, the per-policy boost, the driver mode and the frequency
+  range all reach NodeHardware.status.cpu.governor and cpu.landmarks from
+  governor/, so it exercises the CPU governor discovery that the captures
+  holding the scaling driver alone cannot.
+source: >-
+  Hand written, not captured from any host. Every file has the layout
+  scripts/collect-hardware-fixture.sh writes and the format the kernel prints,
+  with neutral values (a 400 to 1500 MHz range). The preference and boost
+  differ from the hwemu defaults (balance_performance, boost on), so the
+  emulated replay matches the golden only when FromCorpus maps both. The
+  cpuinfo is trimmed to two cores with two threads each, four logical CPUs,
+  one cpufreq policy per CPU, and carries the keys the agent and hwemu read.
+  It stands in until a real capture with governor state is contributed.
+capturedAt: "2026-10-10"
+allocatable:
+  cpu: "4"
+  memory: "16384Ki"
+  gpu: {}
+writeRejectingZones: []

@@ -14,9 +14,10 @@ permanent regression test.
 ## Why the corpus exists
 
 The agent reads hardware only through files and command output: the powercap
-tree under `dvfs.PowercapRoot`, `/proc/cpuinfo` through `procCPUInfoPath`, and
-the stdout of `nvidia-smi` and `rocm-smi`. Nothing else. A copy of those inputs
-therefore replays the machine exactly, with no hardware and no cluster.
+tree under `dvfs.PowercapRoot`, `/proc/cpuinfo` through `procCPUInfoPath`, the
+cpufreq governor state under `dvfs.HostSysRoot`, and the stdout of `nvidia-smi`
+and `rocm-smi`. Nothing else. A copy of those inputs therefore replays the
+machine exactly, with no hardware and no cluster.
 
 That matters because the defects this project keeps hitting are not logic
 errors. They are a machine reporting something no developer thought to invent:
@@ -39,6 +40,9 @@ Adding your machine asserts, forever after:
 - its RAPL zones are classified correctly, so a power cap lands on the package
   zones and on nothing else;
 - its GPUs are discovered with the right count, vendor and cap range;
+- when the capture holds governor state, its CPU governor, energy-performance
+  preference, boost, driver mode and frequency range are published as the node
+  runs them, and the presets it accepts follow from them;
 - the `NodeHardware` status published for it does not change silently. If a
   future refactor changes one number for your machine, the golden diff says so
   in the pull request that caused it.
@@ -77,6 +81,23 @@ cmd/agent/testdata/hardware/<machine>/
   machine.yaml              hand written metadata
   expected.json             generated golden: the published NodeHardware status
   README.md                 optional notes that do not fit in machine.yaml
+  governor/                 the frequency governor state, if any
+    cpufreq/policy0/scaling_governor     powersave
+    cpufreq/policy0/scaling_available_governors
+    cpufreq/policy0/energy_performance_preference
+    cpufreq/policy0/energy_performance_available_preferences
+    cpufreq/policy0/boost
+    cpufreq/policy0/cpuinfo_min_freq
+    cpufreq/policy0/cpuinfo_max_freq
+    ...                                  one directory per policy
+    cpufreq/boost                        the global boost switch
+    intel_pstate/status                  active or passive
+    intel_pstate/no_turbo
+    amd_pstate/status
+    cpuidle/state0/name                  the idle states of CPU 0
+    amdgpu/gpu0/power_dpm_force_performance_level
+    amdgpu/gpu0/pp_dpm_sclk              and mclk, fclk, socclk, pcie, device
+    nvidia-smi-clocks.txt                nvidia-smi -q -d CLOCK,SUPPORTED_CLOCKS,PERFORMANCE
 ```
 
 `machine.yaml`, `cpuinfo`, `node-labels.json` and `expected.json` are required.
@@ -99,6 +120,45 @@ rocm-smi --showpowercap --showproductname --json
 only as a presence probe, are not captured: their output is a list of GPU UUIDs
 and nothing reads it. The stub answers them with success whenever the machine
 has the matching query file.
+
+### Governor state
+
+`governor/` holds what the governor discovery reads, each file under the
+name sysfs gives it, and only the files the capture script copies; any other
+file there is rejected. Sysfs files are copied verbatim. The amdgpu devices are
+numbered `gpu0`, `gpu1` in bus id order, the order the agent lists them in, so
+the bus id itself never leaves the machine; `nvidia-smi-clocks.txt` goes
+through the same redaction as every other command output, bus ids included.
+Before it writes the tar, the script's identifier check reads every file under
+`governor/` and stops the capture when a PCI bus id, a serial number or a host
+name is still in one. Run it again on a capture you edited by hand:
+
+```sh
+sh scripts/collect-hardware-fixture.sh --check cmd/agent/testdata/hardware/<machine> --node <node>
+```
+
+A capture with `governor/cpufreq/` needs `cpufreq-driver` beside it, and every
+captured policy needs its `scaling_governor`. The policies must all be in one
+state, because an emulated node holds one state for all of them, and must be
+the CPUs of the cpuinfo, one policy per CPU or per core.
+
+What each replay does with it:
+
+- `pointAgentAtFixture` builds a `/sys` tree from `cpufreq/`,
+  `intel_pstate/`, `amd_pstate/` and `cpuidle/`, writes `cpufreq-driver` into
+  every policy as its `scaling_driver`, and points `dvfs.HostSysRoot` at it.
+- `hwemu.FromCorpus` renders the captured governor, available governors,
+  preference pair, boost, driver mode and frequency range, and
+  `TestH21FromCorpusReplaysEveryMachine` reads them back byte for byte. A
+  capture with `cpufreq-driver` alone still renders `scaling_driver` alone.
+- `amdgpu/` and `nvidia-smi-clocks.txt` are recorded for review and for
+  calibrating hardware profiles, and neither replay reads them yet: an
+  emulated amdgpu or NVIDIA governor needs facts a capture does not show, such
+  as the levels a family accepts and the clocks a profile level pins, and both
+  replays must publish the same golden (`TestHwemuA01`).
+- `base_frequency`, which the agent reads as the nominal frequency, is not
+  captured: hwemu renders no such file, so a captured one would make the two
+  replays differ.
 
 ### The template
 
@@ -163,8 +223,9 @@ removed by deleting one.
    ```
 
    `scripts/collect-hardware-fixture.sh --help` documents the `kubectl` route as
-   well. The script writes the layout above, redacts what it can, and tars the
-   directory. It never writes `expected.json`.
+   well. The script writes the layout above, redacts what it can, checks the
+   governor files for identifiers, and tars the directory. It never writes
+   `expected.json`.
 
 2. **Review the output, file by file, before it leaves the machine.** The
    redaction in the script is a first pass, not a guarantee: it cannot know that
@@ -226,9 +287,10 @@ removed by deleting one.
 ## What is never accepted
 
 **Anything identifying.** `cmd/agent/corpus_validate_test.go` fails the build on
-a MAC address, an IPv4 or IPv6 address, a UUID of any kind including a GPU or
-MIG UUID, a serial number, an asset tag, a hostname or FQDN, a username or home
-directory path, and a cloud instance or provider id, in any file of any capture.
+a MAC address, an IPv4 or IPv6 address, a PCI bus id, a UUID of any kind
+including a GPU or MIG UUID, a serial number, an asset tag, a hostname or FQDN,
+a username or home directory path, and a cloud instance or provider id, in any
+file of any capture.
 It uses the same patterns the capture script redacts with, so the two cannot
 drift apart.
 
@@ -276,7 +338,7 @@ a capture instead of at the machine the test runs on:
 | `procCPUInfoPath` | `/proc/cpuinfo` | `pointAgentAtFixture`, at the capture's `cpuinfo` |
 | `cpufreqDriverPath` | `/host-sys/devices/system/cpu/cpufreq/policy0/scaling_driver` | `pointAgentAtFixture`, at `cpufreq-driver`, or at an absent path when the capture has none |
 | `nvidiaControlDevicePath` | `/dev/nvidiactl` | `hideHostGPUProbe`, at a marker file when the capture has `nvidia-smi.txt`, otherwise at an absent path |
-| `dvfs.HostSysRoot` | `/host-sys` | nothing in the corpus tests: discovery never reads it |
+| `dvfs.HostSysRoot` | `/host-sys` | `pointAgentAtFixture`, at a tree built from the capture's `governor/`, empty when the capture has none |
 
 `detectGPUVendor` stats `nvidiaControlDevicePath` to decide whether the NVIDIA
 driver is loaded. Without `hideHostGPUProbe`, a machine captured without a GPU
@@ -285,17 +347,21 @@ would describe that host instead of the capture. `TestHardwareFixtureCorpus`
 redirects it for every machine, so the goldens replay and regenerate the same
 way on any host.
 
-`dvfs.HostSysRoot` is the root of the `/host-sys` globs that the DVFS loop
-reads: the cpufreq globs of `dvfs.CPUFreqList` and the
-`devices/virtual/powercap` globs of `dvfs.EnergyFiles`. A capture holds no
-cpufreq tree, so the corpus never sets it. A test that drives the DVFS loop over
-a whole `/sys` tree points it at that tree, and `dvfs.PowercapRoot` at the
-tree's `class/powercap`.
+`dvfs.HostSysRoot` is the root of the `/host-sys` paths that the governor
+discovery and the DVFS loop read: the cpufreq policies, `intel_pstate/`,
+`amd_pstate/` and `bus/pci/devices`, the cpufreq globs of `dvfs.CPUFreqList`
+and the `devices/virtual/powercap` globs of `dvfs.EnergyFiles`. The corpus tests
+point it at a tree of the capture's own governor state, so a machine whose
+`/host-sys` is mounted, an agent image or a runner, never leaks its governor
+into a golden; `TestCorpusReplayIgnoresTheHostSysfs` replays every machine with
+such a tree present. A test that drives the DVFS loop over a whole `/sys` tree
+points it at that tree, and `dvfs.PowercapRoot` at the tree's `class/powercap`.
 
 ## The machines
 
 | Machine | What it is | Why it is here |
 |---|---|---|
 | `xeon-4socket-no-labels` | Bare metal 4 socket Intel Xeon Gold 6252, 192 logical CPUs, 165 W per package zone, DRAM sub-zones at 47.25 W, no GPU | NFD publishes neither `cpu-sockets` nor `cpu-model.name`, so sockets and model both come from `/proc/cpuinfo`. The DRAM sub-zones are the trap that zone selection by name exists to avoid. |
-| `xeon-4socket-nfd-labels` | Bare metal 4 socket Intel Xeon Platinum 8260, 192 logical CPUs, 165 W per package zone, DRAM sub-zones at 47.25 W, no GPU | A real capture, contributed by the node's owner, of the same machine class the row above approximates by hand. NFD publishes 69 labels here and still neither `cpu-sockets` nor `cpu-model.name`, which is the evidence that those two cannot be depended on. It is also the only machine with a cpufreq driver (`intel_pstate`) and with a `pci-0300` display device that belongs to no GPU vendor. |
+| `xeon-4socket-nfd-labels` | Bare metal 4 socket Intel Xeon Platinum 8260, 192 logical CPUs, 165 W per package zone, DRAM sub-zones at 47.25 W, no GPU | A real capture, contributed by the node's owner, of the same machine class the row above approximates by hand. NFD publishes 69 labels here and still neither `cpu-sockets` nor `cpu-model.name`, which is the evidence that those two cannot be depended on. It is also the only machine with a cpufreq driver (`intel_pstate`) and no governor state, and the only one with a `pci-0300` display device that belongs to no GPU vendor. |
 | `vm-no-rapl` | VM with one NVIDIA Tesla T4, no powercap tree at all | The hypervisor gives every vCPU its own `physical id`, so the agent reads 28 sockets. No RAPL means no CPU cap range and no CPU control, and the GPU path has to carry the node on its own. |
+| `epyc-amd-pstate-epp` | Hand written one socket AMD EPYC, four logical CPUs on `amd-pstate-epp` (active), governor `powersave`, preference `balance_power`, boost off in every policy, no powercap tree, no GPU | The machine with captured governor state: the governor, the preference pair, the per-policy boost, the driver mode and the frequency range reach `cpu.governor` and `cpu.landmarks` from `governor/`, and `hwemu.FromCorpus` renders the same state. The preference and boost differ from the hwemu defaults, so the emulated replay shows that both were mapped. Written by hand, with neutral values, until a real capture with governor state is contributed. |

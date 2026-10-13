@@ -30,9 +30,11 @@ package main
 //   - D7: one CPU cap has two meanings: applyRAPLPackageCap writes it to each
 //     package, while the DVFS fallback (dvfs.Controller.Reconcile) compares
 //     it with the node total.
-//   - D8: hasNFDGPUVendor ignores the NFD accelerator class pci-1200_<vendor>,
-//     and the GPU model is read from amd.com/gpu.product while the AMD
-//     labeller publishes amd.com/gpu.product-name.
+//   - D8: hasNFDGPUVendor ignores the NFD accelerator class pci-1200_<vendor>.
+//     Its other half is fixed: the GPU model was read from amd.com/gpu.product
+//     while the AMD labeller publishes amd.com/gpu.product-name, so an AMD
+//     node took the family code as its model; gpu_label_regression_test.go
+//     guards it.
 //   - D9: discoverCPUVendor reads NFD labels only. Without NFD the vendor is
 //     empty, so applyRAPLPackageCap skips RAPL, while NodeHardware still
 //     publishes the RAPL capRange and controlAvailable.
@@ -80,17 +82,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/matbun/joulie/api/v1alpha1"
 	"github.com/matbun/joulie/pkg/agent/dvfs"
+	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/otel/otlpjson"
+	"github.com/matbun/joulie/pkg/otel/semconv"
 	"github.com/matbun/joulie/simulator/pkg/hwemu"
 	"github.com/matbun/joulie/simulator/pkg/hwemu/hwemutest"
 	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
@@ -275,12 +285,12 @@ var a02Paths = map[string]a02Path{
 	},
 	"amd-instinct-mi300x-8gpu": {
 		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9654",
-		gpuVendor: "amd", gpuCount: 8, gpuVendorFrom: rocmProductProbe,
+		gpuVendor: "amd", gpuCount: 8, gpuModel: "AMD_INSTINCT_MI300X", gpuVendorFrom: rocmProductProbe,
 		energyZones: a02Packages,
 	},
 	"amd-radeon-pro-w7900-4gpu": {
 		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9534",
-		gpuVendor: "amd", gpuCount: 4, gpuVendorFrom: amdDisplayNFD,
+		gpuVendor: "amd", gpuCount: 4, gpuModel: "AMD_RADEON_PRO_W7900", gpuVendorFrom: amdDisplayNFD,
 		energyZones: a02Packages,
 	},
 	"vm-no-powercap": {
@@ -306,8 +316,9 @@ var a02Paths = map[string]a02Path{
 // the MI300X, counts from allocatable with no GPU control; the VM reads one
 // socket per vCPU and has no control. Every CPU and GPU model string matches
 // its hardware catalog entry, except the VM's CPU, the 9282 and the 6787P,
-// which the catalog does not list, and the MI300X and the W7900, whose
-// inventory fails (D1).
+// which the catalog does not list. With the inventory failing (D1), the AMD
+// GPU model comes from amd.com/gpu.product-name, which names the MI300X
+// AMD_Instinct_MI300X_OAM, a catalog alias of AMD_INSTINCT_MI300X.
 func TestHwemuA02GenericProfilesTakeTheirFamilyPath(t *testing.T) {
 	profiles, err := hwemu.BuiltinProfiles()
 	if err != nil {
@@ -593,21 +604,21 @@ func TestHwemuA03RAPLCapsEachPackage(t *testing.T) {
 // It skips if dvfs.EnergyFiles lists a package twice again (D5): the agent
 // would then read about twice the true power and throttle to the floor.
 //
-// The agent turns energy_uj deltas into watts over its own wall-clock
-// interval, so the files must hold the energy of the instant it reads them.
-// A step of this 384-CPU node takes tens of milliseconds, because it reads
-// back every agent-writable file, so the loop runs in lockstep: it advances
-// the node to a moment just ahead, waits for that moment, and only then lets
-// the agent reconcile, which reads the energy files last. The loop asks for a
-// reading every 25 ms and gets one as often as the node keeps up; a slow
-// machine gets as many readings, later.
-//
-// How far ahead it steps (the lead) follows the time the last step took,
-// down as well as up. A lead that only doubled stayed at its 2 s ceiling
-// after one slow step under a loaded full-suite run, so every later reading
-// took 2 s and the 30 settle readings used up the old one-minute limit. The
-// limit is the read count's backstop, not a timing assertion: the settle and
-// hold conditions count readings and simulated time.
+// The loop runs on the node's simulated clock, one reading every 25 ms, and
+// never on the wall clock. It used to: the host reader turns energy_uj deltas
+// into watts over its own time.Now interval (dvfs readPowerWatts), and the
+// cooldown compares time.Now with LastAction, so the test slept until each
+// simulated moment and let the agent read late by however long its reconcile
+// took before the energy files. That lag varies with host load, so each
+// reading was off by the change in lag over its 25 ms interval, and a loaded
+// run once averaged 552.6 W under a 572.1 W cap. A test cannot set that
+// clock, so after one host reading, which shows the agent reads every
+// package counter, the agent reads the same counters through its telemetry
+// endpoint, as an OTLP hw.energy export stamped with simulated time, which
+// its reader turns into watts over those stamps (otlpjson.PowerReader). The
+// cooldown is kept in simulated time too: before each reconcile LastAction
+// is set to the zero time when the cooldown has run out since the last
+// action, and far ahead when it has not.
 func TestHwemuA04DVFSHoldsTheEnergyOnlyHostAtItsCap(t *testing.T) {
 	n, tree, p := hwemutest.NewNode(t, "amd-epyc-2s-energy-only", func(p *hwemu.Profile) {
 		p.Physics.CPU.FreqRampMS = intFact(50)
@@ -633,64 +644,86 @@ func TestHwemuA04DVFSHoldsTheEnergyOnlyHostAtItsCap(t *testing.T) {
 	reader, dyn := newTestClients(t, e.nodeObject(p), nodeTwinWithCPUCap(e.name, capW))
 	nc := e.controller(t)
 	ctx := context.Background()
+	start := n.State().Time
+
+	// One reading on the host path: DVFS keeps a sample of every package
+	// counter, and has no interval yet to act on.
+	if err := reconcileOnce(ctx, reader, dyn, nc); err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	for _, f := range files {
+		if _, ok := nc.dvfs.Samples[f]; !ok {
+			t.Fatalf("after a host reading DVFS has samples of %d counters, none of %s; want all of %v", len(nc.dvfs.Samples), f, files)
+		}
+	}
+
+	// The counters as the agent's telemetry endpoint serves them. The
+	// path is unique per run, because the HTTP reader keeps its energy
+	// points per endpoint for the life of the process, and every run
+	// starts at the same simulated time: a kept point of an earlier run on
+	// a reused port would stand for the first readings of this one.
+	energy := newPackageEnergy(t, files)
+	var body atomic.Pointer[[]byte]
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(*body.Load())
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("TELEMETRY_CPU_SOURCE", "http")
+	t.Setenv("TELEMETRY_CPU_HTTP_ENDPOINT", fmt.Sprintf("%s/a04/%d/{node}", srv.URL, a04Runs.Add(1)))
+	t.Setenv("TELEMETRY_HTTP_TIMEOUT_SECONDS", "60")
+	resource := otlpjson.Resource{Attributes: []otlpjson.KeyValue{otlpjson.String(semconv.AttrK8sNodeName, e.name)}}
+
 	const (
-		tick                   = 25 * time.Millisecond
-		settleFor, holdFor     = 3 * time.Second, time.Second
-		settleReads, holdReads = 30, 10
-		maxLead, giveUp        = 2 * time.Second, 5 * time.Minute
+		tick               = 25 * time.Millisecond
+		settleFor, holdFor = 3 * time.Second, time.Second
 	)
-	lead := tick
-	start := time.Now()
-	next := start
-	reads := 0
+	farAhead := time.Now().Add(24 * time.Hour)
+	var acted, holdStart time.Time
 	var held []float64
-	var holdStart time.Time
-	for {
-		next = next.Add(tick)
-		if earliest := time.Now().Add(lead); next.Before(earliest) {
-			next = earliest
-		}
-		if next.Sub(start) > giveUp {
-			t.Fatalf("the controller read %d times in %v; the node cannot keep up", reads, giveUp)
-		}
-		stepStart := time.Now()
-		if err := n.AdvanceTo(next); err != nil {
+	for at := start.Add(tick); ; at = at.Add(tick) {
+		if err := n.AdvanceTo(at); err != nil {
 			t.Fatal(err)
 		}
-		// Step twice as far ahead as this step took, at least one tick
-		// and at most maxLead: up when the machine is loaded, back down
-		// when the load passes.
-		took := time.Since(stepStart)
-		late := time.Now().After(next)
-		if late {
-			took = max(took, lead)
+		points := make([]otlpjson.NumberDataPoint, len(files))
+		for i, j := range energy.joules(t) {
+			points[i] = otlpjson.DoublePoint(start, at, j,
+				otlpjson.String(semconv.AttrHwType, semconv.HwTypeCPU),
+				otlpjson.String(semconv.AttrHwID, filepath.Base(filepath.Dir(files[i]))))
 		}
-		lead = min(max(2*took, tick), maxLead)
-		if late {
-			// The step ended after the moment it stands for: give the
-			// next one more time instead of letting the agent read late.
-			continue
+		doc, err := json.Marshal(otlpjson.NewMetricsData(resource, otlpjson.Scope{Name: "a04"}, otlpjson.SumMetric(semconv.HwEnergy, points...)))
+		if err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(time.Until(next))
+		body.Store(&doc)
+
+		last := time.Time{}
+		if !acted.IsZero() && at.Sub(acted) < nc.dvfs.Cooldown {
+			last = farAhead
+		}
+		nc.dvfs.LastAction = last
 		// The agent's whole reconcile, so the cap reaches DVFS the way it
-		// does in a deployed agent. It reads the energy files last.
+		// does in a deployed agent.
 		if err := reconcileOnce(ctx, reader, dyn, nc); err != nil {
 			t.Fatalf("reconcileOnce: %v", err)
 		}
-		reads++
-		elapsed := next.Sub(start)
+		if !nc.dvfs.LastAction.Equal(last) {
+			acted = at
+		}
+
+		elapsed := at.Sub(start)
 		if holdStart.IsZero() {
-			if elapsed < settleFor || reads < settleReads {
+			if elapsed < settleFor {
 				continue
 			}
-			holdStart = next
+			holdStart = at
 		}
 		if pct := nc.dvfs.ThrottlePct; pct != 20 && pct != 30 && pct != 40 {
-			t.Fatalf("throttle %d%% after %v and %d readings, want 20, 30 or 40 once settled (cap %.1f W, true power %.1f W)",
-				pct, elapsed.Round(time.Millisecond), reads, capW, totalPackagePower(n))
+			t.Fatalf("throttle %d%% after %v, want 20, 30 or 40 once settled (cap %.1f W, true power %.1f W)",
+				pct, elapsed, capW, totalPackagePower(n))
 		}
 		held = append(held, totalPackagePower(n))
-		if next.Sub(holdStart) >= holdFor && len(held) >= holdReads {
+		if at.Sub(holdStart) >= holdFor {
 			break
 		}
 	}
@@ -702,11 +735,60 @@ func TestHwemuA04DVFSHoldsTheEnergyOnlyHostAtItsCap(t *testing.T) {
 	if mean < capW-15 || mean > capW+10 {
 		t.Fatalf("true package power averages %.1f W over the hold window, want within [%.1f, %.1f] W", mean, capW-15, capW+10)
 	}
+	t.Logf("throttle %d%%, true package power averages %.3f W over the hold window (cap %.3f W)", nc.dvfs.ThrottlePct, mean, capW)
 
 	// RAPL has no limit to write on this host, so the cap went to DVFS.
 	if s := controlStatus(t, dyn, e.name, "cpu"); s["backend"] != "dvfs" {
 		t.Fatalf("cpu control status %v, want backend dvfs", s)
 	}
+}
+
+// a04Runs numbers the runs of A04 in this process, for its endpoint path.
+var a04Runs atomic.Int64
+
+// packageEnergy reads the package energy counters the agent's DVFS reads and
+// keeps their running totals in joules across counter wraps, so an export of
+// them never decreases.
+type packageEnergy struct {
+	files   []string
+	rangeUJ []int64
+	lastUJ  []int64
+	totalJ  []float64
+}
+
+func newPackageEnergy(t *testing.T, files []string) *packageEnergy {
+	t.Helper()
+	pe := &packageEnergy{files: files, rangeUJ: make([]int64, len(files)), lastUJ: make([]int64, len(files)), totalJ: make([]float64, len(files))}
+	for i, f := range files {
+		pe.rangeUJ[i] = readInt64File(t, filepath.Join(filepath.Dir(f), "max_energy_range_uj"))
+		pe.lastUJ[i] = readInt64File(t, f)
+		pe.totalJ[i] = float64(pe.lastUJ[i]) / 1e6
+	}
+	return pe
+}
+
+// joules reads every counter and returns the running totals.
+func (pe *packageEnergy) joules(t *testing.T) []float64 {
+	t.Helper()
+	for i, f := range pe.files {
+		uj := readInt64File(t, f)
+		d := uj - pe.lastUJ[i]
+		if d < 0 {
+			d += pe.rangeUJ[i]
+		}
+		pe.lastUJ[i] = uj
+		pe.totalJ[i] += float64(d) / 1e6
+	}
+	return append([]float64(nil), pe.totalJ...)
+}
+
+func readInt64File(t *testing.T, path string) int64 {
+	t.Helper()
+	v, err := strconv.ParseInt(readTrimmed(t, path), 10, 64)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	return v
 }
 
 func totalPackagePower(n *hwemu.Node) float64 {
@@ -948,11 +1030,10 @@ func TestHwemuA05dRocmSMIPromptReadsEOF(t *testing.T) {
 
 // A06: on the MI300X node with the current rocm-smi, the agent's inventory
 // call fails, because no rocm-smi release has --showpowercap (D1). NodeHardware
-// then counts 8 GPUs from allocatable, has no GPU control, and takes the model
-// from the amd.com/gpu.family label, because the agent reads
-// amd.com/gpu.product while the labeller publishes amd.com/gpu.product-name
-// (D8); that family code matches no catalog entry. A GPU cap ends in backend
-// none, result error, with the argparse message.
+// then counts 8 GPUs from allocatable, has no GPU control, and takes the raw
+// model from the labeller's amd.com/gpu.product-name, AMD_Instinct_MI300X_OAM,
+// which the catalog lists as an alias of AMD_INSTINCT_MI300X. A GPU cap ends
+// in backend none, result error, with the argparse message.
 func TestHwemuA06AMDInventoryFailsOnCurrentRocmSMI(t *testing.T) {
 	_, tree, p := hwemutest.NewNode(t, "amd-instinct-mi300x-8gpu", nil)
 	e := useEmulatedNode(t, tree, nil)
@@ -962,11 +1043,11 @@ func TestHwemuA06AMDInventoryFailsOnCurrentRocmSMI(t *testing.T) {
 	}
 	status := publishedStatusMap(t, node.Name, discoverHardware(context.Background(), node))
 	gpu, _ := status["gpu"].(map[string]any)
-	family := node.Labels["amd.com/gpu.family"]
-	if gpu["count"] != float64(8) || gpu["controlAvailable"] != false || gpu["rawModel"] != family ||
-		!containsAny(gpu["warnings"], "gpu model not recognized") {
+	product := node.Labels[amdLabellerProduct]
+	if gpu["count"] != float64(8) || gpu["controlAvailable"] != false || gpu["rawModel"] != product ||
+		gpu["model"] != "AMD_INSTINCT_MI300X" || containsAny(gpu["warnings"], "gpu model not recognized") {
 		t.Fatalf("NodeHardware gpu %v; today inventory fails (D1), so count 8 comes from allocatable, controlAvailable is false, "+
-			"and rawModel is the amd.com/gpu.family value %q with a gpu model not recognized warning (D8)", gpu, family)
+			"and rawModel is the %s value %q, which the catalog matches as AMD_INSTINCT_MI300X, with no gpu model not recognized warning", gpu, amdLabellerProduct, product)
 	}
 
 	dyn, err := reconcileEmulated(t, e.controller(t), node, nodeTwinWithGPUCap(e.name, float64Ptr(500), nil))
@@ -1330,9 +1411,8 @@ func TestHwemuA16UnsupportedNvidiaLimitsBlockAPercentCap(t *testing.T) {
 // vendor from the NFD display-class label pci-0300_1002 and runs no probe.
 // Its inventory call fails as on the MI300X (D1), so NodeHardware counts 4
 // GPUs from allocatable, has no capRangePerGpu and no GPU control, and takes
-// the raw model from amd.com/gpu.family with a gpu model not recognized
-// warning (D8), while the labeller's amd.com/gpu.product-name matches the
-// catalog's AMD_RADEON_PRO_W7900. A 200 W cap ends in backend none, result
+// the raw model from the labeller's amd.com/gpu.product-name, which matches
+// the catalog's AMD_RADEON_PRO_W7900. A 200 W cap ends in backend none, result
 // error. With the legacy rocm-smi standing in for an inventory that works,
 // the agent publishes the pinned range, 241 to 241 W, with control available
 // and the Card SKU as the model (D4), and blocks the 200 W cap below the
@@ -1367,15 +1447,11 @@ func TestHwemuA19W7900PinnedCapIsNeverWritten(t *testing.T) {
 		}
 		status := publishedStatusMap(t, node.Name, hw)
 		gpu, _ := status["gpu"].(map[string]any)
-		family := node.Labels["amd.com/gpu.family"]
+		product := node.Labels[amdLabellerProduct]
 		if _, ranged := gpu["capRangePerGpu"]; ranged || gpu["vendor"] != "amd" || gpu["count"] != float64(4) || gpu["controlAvailable"] != false ||
-			gpu["rawModel"] != family || !containsAny(gpu["warnings"], "gpu model not recognized") {
+			gpu["rawModel"] != product || gpu["model"] != "AMD_RADEON_PRO_W7900" || containsAny(gpu["warnings"], "gpu model not recognized") {
 			t.Fatalf("NodeHardware gpu %v; today inventory fails (D1), so count 4 comes from allocatable with no capRangePerGpu and no control, "+
-				"and rawModel is the amd.com/gpu.family value %q with a gpu model not recognized warning (D8)", gpu, family)
-		}
-		if key, _, ok := loadHardwareCatalog().MatchGPU(node.Labels[amdLabellerProduct]); !ok || key != "AMD_RADEON_PRO_W7900" {
-			t.Errorf("the labeller's %s %q matches catalog key %q (%v), want AMD_RADEON_PRO_W7900: reading it would name the board (D8)",
-				amdLabellerProduct, node.Labels[amdLabellerProduct], key, ok)
+				"and rawModel is the %s value %q, the catalog's AMD_RADEON_PRO_W7900", gpu, amdLabellerProduct, product)
 		}
 
 		dyn, err := reconcileEmulated(t, e.controller(t), node, nodeTwinWithGPUCap(e.name, float64Ptr(200), nil))
@@ -1437,4 +1513,503 @@ func containsAny(list any, want string) bool {
 		}
 	}
 	return false
+}
+
+// Governor rows. Each renders a generic profile, points the agent at it
+// with GOVERNOR_WRITES true and drives its real discovery and control: the
+// emulated cpufreq and amdgpu attributes, the fake nvidia-smi, and the
+// emulator's step, which takes a write or reverts it as the driver would.
+
+// govEmu is an emulated node for the governor rows.
+type govEmu struct {
+	n *hwemu.Node
+	e *emulatedNode
+	p *hwemu.Profile
+}
+
+func emulatedGovernorNode(t *testing.T, profile string, mutate func(*hwemu.Profile)) *govEmu {
+	t.Helper()
+	n, tree, p := hwemutest.NewNode(t, profile, mutate)
+	return &govEmu{n: n, e: useEmulatedNode(t, tree, nil), p: p}
+}
+
+// rig is the governor rig of the node, with GOVERNOR_WRITES true.
+func (g *govEmu) rig(t *testing.T, cpu *v1alpha1.CPUGovernorIntent, gpu *v1alpha1.GPUGovernorIntent) *govRig {
+	t.Helper()
+	return newGovRig(t, g.e.nodeObject(g.p), governorOn, cpu, gpu)
+}
+
+// step runs one emulator step, which takes or reverts what the agent wrote.
+func (g *govEmu) step(t *testing.T) {
+	t.Helper()
+	if err := g.n.Step(time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// stepInBackground steps the node every few milliseconds until stop, as the
+// emulator of a deployed simulator ticks on its own: the overdrive sequence
+// waits for the table it prints.
+func (g *govEmu) stepInBackground(t *testing.T) (stop func()) {
+	t.Helper()
+	done := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-done:
+				finished <- nil
+				return
+			case <-tick.C:
+				if err := g.n.Step(5 * time.Millisecond); err != nil {
+					finished <- err
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		if err := <-finished; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// discoveredGovernors is the governor discovery of the node.
+func (g *govEmu) discoveredGovernors() governorDiscovery {
+	return discoverHardware(context.Background(), g.e.nodeObject(g.p)).Governors
+}
+
+// allPolicyFiles is one attribute of every cpufreq policy.
+func allPolicyFiles(t *testing.T, g *govEmu, name string) []string {
+	t.Helper()
+	dirs, err := filepath.Glob(filepath.Join(g.e.tree.SysRoot, "devices", "system", "cpu", "cpufreq", "policy*"))
+	if err != nil || len(dirs) == 0 {
+		t.Fatalf("no cpufreq policies: %v", err)
+	}
+	var out []string
+	for _, d := range dirs {
+		out = append(out, readTrimmed(t, filepath.Join(d, name)))
+	}
+	return out
+}
+
+// amdLevelFiles is the performance level file of every amdgpu device the
+// agent discovered, by bus id.
+func amdLevelFiles(t *testing.T, g *govEmu) map[string]string {
+	t.Helper()
+	d := g.discoveredGovernors().GPU
+	if d == nil || len(d.AMD) == 0 {
+		t.Fatal("no amdgpu device discovered")
+	}
+	out := map[string]string{}
+	for _, f := range d.AMD {
+		out[f.BusID] = filepath.Join(g.e.tree.SysRoot, "bus", "pci", "devices", f.BusID, "power_dpm_force_performance_level")
+	}
+	return out
+}
+
+func presetNames(ps []v1alpha1.GovernorPresetSupport) []string {
+	var out []string
+	for _, p := range ps {
+		out = append(out, p.Preset)
+	}
+	return out
+}
+
+// A20: on the EPYC 9534 energy-only host the CPU runs schedutil, and the
+// efficiency preset is realised as conservative.
+func TestHwemuA20EpycEfficiencyIsConservative(t *testing.T) {
+	g := emulatedGovernorNode(t, "amd-epyc-9534-2s-energy-only", nil)
+	c := g.discoveredGovernors().CPU
+	if c == nil {
+		t.Fatal("no CPU governor discovered")
+	}
+	if c.Inventory.Current != "schedutil" {
+		t.Errorf("current %q, want schedutil", c.Inventory.Current)
+	}
+	var native string
+	for _, p := range c.Inventory.Presets {
+		if p.Preset == joulie.CPUGovernorPresetEfficiency {
+			native = p.Native
+		}
+	}
+	if native != "conservative" {
+		t.Errorf("efficiency maps to %q, want conservative", native)
+	}
+}
+
+// A21: the W7900 node publishes mechanism amdgpu-sysfs, current auto and
+// the presets auto, sustained, low and peak (no overdrive ceiling).
+func TestHwemuA21W7900GovernorDiscovery(t *testing.T) {
+	g := emulatedGovernorNode(t, "amd-radeon-pro-w7900-4gpu", nil)
+	d := g.discoveredGovernors().GPU
+	if d == nil {
+		t.Fatal("no GPU governor discovered")
+	}
+	inv := d.Inventory
+	want := []string{joulie.GPUGovernorPresetAuto, joulie.GPUGovernorPresetSustained, joulie.GPUGovernorPresetLow, joulie.GPUGovernorPresetPeak}
+	if inv.Mechanism != joulie.GovernorBackendAMDGPUSysfs || inv.Current != "auto" || !slices.Equal(presetNames(inv.Presets), want) {
+		t.Errorf("mechanism %q current %q presets %v, want amdgpu-sysfs, auto, %v", inv.Mechanism, inv.Current, presetNames(inv.Presets), want)
+	}
+}
+
+// A22: the MI300X node accepts auto and efficient only.
+func TestHwemuA22MI300XGovernorPresets(t *testing.T) {
+	g := emulatedGovernorNode(t, "amd-instinct-mi300x-8gpu", nil)
+	d := g.discoveredGovernors().GPU
+	if d == nil {
+		t.Fatal("no GPU governor discovered")
+	}
+	if got, want := presetNames(d.Inventory.Presets), []string{joulie.GPUGovernorPresetAuto, joulie.GPUGovernorPresetEfficient}; !slices.Equal(got, want) {
+		t.Errorf("presets %v, want %v", got, want)
+	}
+}
+
+// A23: on the H100 SXM node with nvidia-smi in reach, the mechanism is
+// nvidia-smi and the current state unknown: a lock has no getter.
+func TestHwemuA23H100GovernorDiscovery(t *testing.T) {
+	g := emulatedGovernorNode(t, "nvidia-h100-sxm-4gpu", nil)
+	d := g.discoveredGovernors().GPU
+	if d == nil {
+		t.Fatal("no GPU governor discovered")
+	}
+	if d.Inventory.Mechanism != joulie.GovernorBackendNvidiaSMI || d.Inventory.Current != joulie.GovernorStateUnknown {
+		t.Errorf("mechanism %q current %q, want nvidia-smi, unknown", d.Inventory.Mechanism, d.Inventory.Current)
+	}
+}
+
+// A24: on the acpi-cpufreq EPYC host, efficiency writes conservative to
+// every policy and leaves boost alone; without the field every policy goes
+// back to schedutil.
+func TestHwemuA24EpycEfficiencyAndRestore(t *testing.T) {
+	g := emulatedGovernorNode(t, "amd-epyc-2s-energy-only", nil)
+	writes := watchWrites(t, g.e.tree.SysRoot)
+	r := g.rig(t, efficiency, nil)
+	r.reconcile()
+	g.step(t)
+	r.reconcile()
+	if got := allPolicyFiles(t, g, "scaling_governor"); !allEqual(got, "conservative") {
+		t.Fatalf("scaling_governor %v, want conservative on every policy", got)
+	}
+	for _, w := range writes.take() {
+		if strings.Contains(w, "boost") {
+			t.Errorf("efficiency without a boost field wrote %s", w)
+		}
+	}
+	if s := r.status(componentCPUGovernor); s == nil || s.Result != joulie.GovernorResultApplied || s.Applied != "conservative" {
+		t.Fatalf("cpuGovernor status %+v after a step, want applied conservative", s)
+	}
+	r.setIntents(nil, nil)
+	r.reconcile()
+	g.step(t)
+	if got := allPolicyFiles(t, g, "scaling_governor"); !allEqual(got, "schedutil") {
+		t.Fatalf("scaling_governor %v without the field, want schedutil", got)
+	}
+	if s := r.status(componentCPUGovernor); s == nil || s.Result != joulie.GovernorResultRestored {
+		t.Errorf("cpuGovernor status %+v, want restored", s)
+	}
+}
+
+// A25: on the Intel HWP host, balanced is powersave with the preference
+// balance_performance on every policy; performance writes no preference,
+// which the kernel rejects under performance.
+func TestHwemuA25IntelHWPBalancedAndPerformance(t *testing.T) {
+	g := emulatedGovernorNode(t, "intel-xeon-2s-rapl", nil)
+	writes := watchWrites(t, g.e.tree.SysRoot)
+	r := g.rig(t, &v1alpha1.CPUGovernorIntent{Preset: joulie.CPUGovernorPresetBalanced}, nil)
+	r.reconcile()
+	g.step(t)
+	if got := allPolicyFiles(t, g, "scaling_governor"); !allEqual(got, "powersave") {
+		t.Errorf("scaling_governor %v, want powersave", got)
+	}
+	if got := allPolicyFiles(t, g, "energy_performance_preference"); !allEqual(got, "balance_performance") {
+		t.Errorf("energy_performance_preference %v, want balance_performance", got)
+	}
+	eppWrites := 0
+	for _, w := range writes.take() {
+		if strings.HasSuffix(w, "/energy_performance_preference=balance_performance") {
+			eppWrites++
+		}
+	}
+	if n := len(allPolicyFiles(t, g, "scaling_governor")); eppWrites != n {
+		t.Errorf("%d preference writes, want one per policy (%d)", eppWrites, n)
+	}
+
+	r.setIntents(&v1alpha1.CPUGovernorIntent{Preset: joulie.CPUGovernorPresetPerformance}, nil)
+	r.reconcile()
+	g.step(t)
+	if got := allPolicyFiles(t, g, "scaling_governor"); !allEqual(got, "performance") {
+		t.Errorf("scaling_governor %v, want performance", got)
+	}
+	for _, w := range writes.take() {
+		if strings.Contains(w, "energy_performance_preference") {
+			t.Errorf("performance wrote %s", w)
+		}
+	}
+}
+
+// A26: on the W7900 node, sustained writes high to all four level files and
+// is applied; efficient is unsupported and writes nothing.
+func TestHwemuA26W7900Sustained(t *testing.T) {
+	g := emulatedGovernorNode(t, "amd-radeon-pro-w7900-4gpu", nil)
+	levels := amdLevelFiles(t, g)
+	writes := watchWrites(t, g.e.tree.SysRoot)
+	r := g.rig(t, nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetSustained})
+	r.reconcile()
+	g.step(t)
+	r.reconcile()
+	if len(levels) != 4 {
+		t.Fatalf("%d devices, want 4", len(levels))
+	}
+	for bus, f := range levels {
+		if got := readTrimmed(t, f); got != "high" {
+			t.Errorf("%s level %q, want high", bus, got)
+		}
+	}
+	if s := r.status(componentGPUGovernor); s == nil || s.Result != joulie.GovernorResultApplied || s.Applied != "high" {
+		t.Fatalf("gpuGovernor status %+v, want applied high", s)
+	}
+	writes.take()
+	r.setIntents(nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetEfficient})
+	r.reconcile()
+	if s := r.status(componentGPUGovernor); s == nil || s.Result != joulie.GovernorResultUnsupported {
+		t.Errorf("efficient: status %+v, want unsupported", s)
+	}
+	if w := writes.take(); len(w) != 0 {
+		t.Errorf("an unsupported preset wrote %v", w)
+	}
+}
+
+// A27: on the MI300X node, sustained is unsupported and writes nothing;
+// efficient at the default 80 % sets manual, then "s 1" at 80 % of the
+// sclk maximum, then "c" once the edit reads back, and the ceiling reads
+// back in OD_SCLK.
+func TestHwemuA27MI300XEfficientOverdrive(t *testing.T) {
+	g := emulatedGovernorNode(t, "amd-instinct-mi300x-8gpu", nil)
+	levels := amdLevelFiles(t, g)
+	writes := watchWrites(t, g.e.tree.SysRoot)
+	r := g.rig(t, nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetSustained})
+	r.reconcile()
+	if s := r.status(componentGPUGovernor); s == nil || s.Result != joulie.GovernorResultUnsupported {
+		t.Fatalf("sustained: status %+v, want unsupported", s)
+	}
+	if w := writes.take(); len(w) != 0 {
+		t.Fatalf("sustained wrote %v", w)
+	}
+
+	sclkMax := int(g.p.GPUs.DPM.Tables.Sclk.MaxMHz.V)
+	ceiling := sclkMax * 80 / 100
+	r.setIntents(nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetEfficient})
+	stop := g.stepInBackground(t)
+	r.reconcile()
+	stop()
+	s := r.status(componentGPUGovernor)
+	if want := fmt.Sprintf("manual sclk_max=%d", ceiling); s == nil || s.Result != joulie.GovernorResultApplied || s.Applied != want {
+		t.Fatalf("efficient: status %+v, want applied %q", s, want)
+	}
+	for bus, f := range levels {
+		if got := readTrimmed(t, f); got != "manual" {
+			t.Errorf("%s level %q, want manual", bus, got)
+		}
+		od := readTrimmed(t, filepath.Join(filepath.Dir(f), "pp_od_clk_voltage"))
+		if got, ok := odSclkMax(od); !ok || got != ceiling {
+			t.Errorf("%s OD_SCLK maximum %d (%v), want %d", bus, got, ok, ceiling)
+		}
+	}
+	// Per device: manual, then the edit, then the commit, in that order.
+	order := map[string][]string{}
+	for _, w := range writes.take() {
+		path, value, _ := strings.Cut(w, "=")
+		dir := filepath.Dir(path)
+		order[dir] = append(order[dir], filepath.Base(path)+"="+value)
+	}
+	want := []string{"power_dpm_force_performance_level=manual", fmt.Sprintf("pp_od_clk_voltage=s 1 %d", ceiling), "pp_od_clk_voltage=c"}
+	for dir, got := range order {
+		if !slices.Equal(got, want) {
+			t.Errorf("%s writes %v, want %v", dir, got, want)
+		}
+	}
+	if len(order) != len(levels) {
+		t.Errorf("writes reached %d devices, want %d", len(order), len(levels))
+	}
+}
+
+// A28: on the H100 SXM node, sustained is equivalent and runs no -lmc;
+// efficient runs -lgc and is applied-unverified until busy samples within
+// the lock make it applied.
+func TestHwemuA28H100EfficientIsVerifiedUnderLoad(t *testing.T) {
+	g := emulatedGovernorNode(t, "nvidia-h100-sxm-4gpu", nil)
+	r := g.rig(t, nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetSustained})
+	r.reconcile()
+	if s := r.status(componentGPUGovernor); s == nil || s.Result != joulie.GovernorResultEquivalent {
+		t.Fatalf("sustained: status %+v, want equivalent", s)
+	}
+	if c := lockCommands(g.e, "-lmc", "-lgc"); len(c) != 0 {
+		t.Fatalf("sustained ran %v on Hopper", c)
+	}
+
+	r.setIntents(nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetEfficient})
+	r.reconcile()
+	if c := lockCommands(g.e, "-lgc"); len(c) != g.p.GPUs.Count.V {
+		t.Fatalf("efficient ran %v, want one -lgc per GPU", c)
+	}
+	if s := r.status(componentGPUGovernor); s == nil || s.Result != joulie.GovernorResultAppliedUnverified {
+		t.Fatalf("efficient: status %+v, want applied-unverified (a lock has no getter)", s)
+	}
+	busy := make([]float64, g.p.GPUs.Count.V)
+	for i := range busy {
+		busy[i] = 1
+	}
+	g.n.SetLoad(hwemu.Load{GPUUtil: busy})
+	for i := 0; i < nvidiaVerifySamples; i++ {
+		g.step(t)
+		r.reconcile()
+	}
+	if s := r.status(componentGPUGovernor); s == nil || s.Result != joulie.GovernorResultApplied {
+		t.Fatalf("efficient after %d busy samples: status %+v, want applied", nvidiaVerifySamples, s)
+	}
+}
+
+// A29: on the L40S node, sustained runs -lmc <max>,<max> per bus id; with
+// persistence mode Disabled, the profile's own, the lock is issued again at
+// every reconcile, and with it Enabled it is not.
+func TestHwemuA29L40SSustainedReissuedWithoutPersistence(t *testing.T) {
+	g := emulatedGovernorNode(t, "nvidia-l40s-4gpu", nil)
+	d := g.discoveredGovernors().GPU
+	if d == nil || len(d.NVIDIA) == 0 {
+		t.Fatal("no NVIDIA GPU discovered")
+	}
+	memMax := slices.Max(d.NVIDIA[0].Facts.SupportedMemMHz)
+	r := g.rig(t, nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetSustained})
+	want := map[string]bool{}
+	for _, n := range d.NVIDIA {
+		want[fmt.Sprintf("nvidia-smi -i %s -lmc %d,%d", n.BusID, memMax, memMax)] = true
+	}
+	for i := 0; i < 2; i++ {
+		r.reconcile()
+		got := lockCommands(g.e, "-lmc")
+		if len(got) != len(want) {
+			t.Fatalf("reconcile %d ran %v, want %d -lmc commands", i, got, len(want))
+		}
+		for _, c := range got {
+			if !want[c] {
+				t.Errorf("reconcile %d ran %q, want one of %v", i, c, want)
+			}
+		}
+	}
+	if _, err := g.e.runner.Run(context.Background(), "nvidia-smi", "-pm", "1"); err != nil {
+		t.Fatal(err)
+	}
+	g.e.runner.reset()
+	r.reconcile()
+	if got := lockCommands(g.e, "-lmc"); len(got) != 0 {
+		t.Errorf("with persistence mode Enabled the lock was issued again: %v", got)
+	}
+}
+
+// A30: on a W7900 whose driver refuses high, the write lands, reads back,
+// and the emulator reverts it at its next step: not-applied, the silent
+// no-op path, and no retry at the next reconcile.
+func TestHwemuA30W7900RevertedLevelIsNotApplied(t *testing.T) {
+	g := emulatedGovernorNode(t, "amd-radeon-pro-w7900-4gpu", func(p *hwemu.Profile) {
+		var accept []string
+		for _, l := range p.GPUs.DPM.Levels.Accept.V {
+			if l != "high" {
+				accept = append(accept, l)
+			}
+		}
+		p.GPUs.DPM.Levels.Accept = hwemu.Fact[[]string]{V: accept, Src: variantSrc}
+	})
+	writes := watchWrites(t, g.e.tree.SysRoot)
+	r := g.rig(t, nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetSustained})
+	r.reconcile()
+	if s := r.status(componentGPUGovernor); s == nil || s.Result != joulie.GovernorResultApplied {
+		t.Fatalf("status %+v right after the write, want applied (it read back)", s)
+	}
+	g.step(t)
+	writes.take()
+	r.reconcile()
+	if s := r.status(componentGPUGovernor); s == nil || s.Result != joulie.GovernorResultNotApplied {
+		t.Fatalf("status %+v after the emulator reverted the level, want not-applied", s)
+	}
+	r.reconcile()
+	if w := writes.take(); len(w) != 0 {
+		t.Errorf("a level the driver did not take was written again at once: %v", w)
+	}
+}
+
+// A31: with the DRM card order, which the tools number GPUs by, reversed
+// against the bus order, each GPU keeps its own baseline: the operator's
+// low on one bus comes back there, auto on the others.
+func TestHwemuA31AMDGPUsKeyedByBusID(t *testing.T) {
+	g := emulatedGovernorNode(t, "amd-radeon-pro-w7900-4gpu", nil)
+	drm := filepath.Join(g.e.tree.SysRoot, "class", "drm")
+	entries, err := os.ReadDir(drm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cards []string
+	targets := map[string]string{}
+	for _, en := range entries {
+		if n, ok := strings.CutPrefix(en.Name(), "card"); ok && !strings.Contains(n, "-") {
+			if dst, err := os.Readlink(filepath.Join(drm, en.Name())); err == nil {
+				cards = append(cards, en.Name())
+				targets[en.Name()] = dst
+			}
+		}
+	}
+	sort.Slice(cards, func(i, j int) bool {
+		a, _ := strconv.Atoi(strings.TrimPrefix(cards[i], "card"))
+		b, _ := strconv.Atoi(strings.TrimPrefix(cards[j], "card"))
+		return a < b
+	})
+	if len(cards) < 2 {
+		t.Fatalf("cards %v, want several", cards)
+	}
+	for i, c := range cards {
+		link := filepath.Join(drm, c)
+		if err := os.Remove(link); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(targets[cards[len(cards)-1-i]], link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	levels := amdLevelFiles(t, g)
+	buses := make([]string, 0, len(levels))
+	for bus := range levels {
+		buses = append(buses, bus)
+	}
+	sort.Strings(buses)
+	firstCardBus, err := filepath.EvalSymlinks(filepath.Join(drm, cards[0], "device"))
+	if err != nil || filepath.Base(firstCardBus) != buses[len(buses)-1] {
+		t.Fatalf("%s is the device at %q, want the last bus %s: the reversal did not take", cards[0], firstCardBus, buses[len(buses)-1])
+	}
+	operator := buses[len(buses)-1]
+	if err := os.WriteFile(levels[operator], []byte("low\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := g.rig(t, nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetSustained})
+	r.reconcile()
+	for bus, f := range levels {
+		if got := readTrimmed(t, f); got != "high" {
+			t.Fatalf("%s level %q, want high", bus, got)
+		}
+	}
+	r.setIntents(nil, nil)
+	r.reconcile()
+	for bus, f := range levels {
+		want := "auto"
+		if bus == operator {
+			want = "low"
+		}
+		if got := readTrimmed(t, f); got != want {
+			t.Errorf("%s level %q after the restore, want its own baseline %q", bus, got, want)
+		}
+	}
 }

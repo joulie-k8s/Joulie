@@ -140,6 +140,42 @@ One tick loop steps every node to wall time each `SIM_EMULATE_TICK` (default 1 s
 
 Nodes the spec does not list keep the label-based model of the rest of this page, in the same simulator.
 
+### Governors and clocks
+
+A tree also holds the CPU and GPU governor files of its profile, so the agent's governor discovery and control run against them. File classes: R is rendered and read-only, S is written by the emulator, A is writable by the agent and read back each tick, where a value the kernel would refuse is put back and reported as a `rejected` event with its errno (`joulie.sim.write.rejected`, see [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})).
+
+| Files, under `sys/` or `state/` | Class | Where | What the emulator does |
+|---|---|---|---|
+| `devices/system/cpu/cpufreq/policyN/scaling_governor`, `scaling_min_freq`, `scaling_max_freq` | A | every profile with cpufreq | runs the governor as the kernel's does, see [governor and clock physics]({{< relref "/docs/hardware/hardware-modeling.md#68-emulated-nodes-governor-and-clock-physics" >}}) |
+| `policyN/energy_performance_preference`, `energy_performance_available_preferences` | A, R (S on amd-pstate-epp) | intel_pstate and intel_cpufreq with `hwp`, amd-pstate-epp | refuses a non-zero EPP under performance on intel_pstate and amd-pstate-epp with `EBUSY` |
+| `policyN/scaling_setspeed` | A | profiles offering userspace | the frequency userspace holds, within the policy's limits; refused under any other governor |
+| `devices/system/cpu/cpufreq/{schedutil,ondemand,conservative}/<tunable>` | A | profiles offering those governors | `rate_limit_us`, `up_threshold`, `sampling_rate`, `freq_step`, `down_threshold`, checked as the kernel checks them |
+| `devices/system/cpu/cpufreq/boost` | A | acpi-cpufreq | boost above the top table entry, from that entry only |
+| `devices/system/cpu/intel_pstate/{status,no_turbo,max_perf_pct,min_perf_pct,hwp_dynamic_boost}` | R, A, A, A, A | intel_pstate, intel_cpufreq | `no_turbo` lowers each policy's maximum to the top non-turbo frequency |
+| `devices/system/cpu/amd_pstate/status`, `policyN/boost` | R, A | amd-pstate-epp | boost per policy |
+| `devices/system/cpu/intel_uncore_frequency/uncoreNN/` | A, R, S | `intel-xeon6-2s-tpmi`, `intel-xeon-2s-multidie` | limits stored and checked; `current_freq_khz` follows the package load |
+| `bus/pci/devices/<bdf>/power_dpm_force_performance_level` | A | AMD GPUs | takes the levels the profile accepts; a refused level goes back with the profile's errno |
+| `<bdf>/pp_dpm_{sclk,mclk,fclk,socclk,pcie}` | S | AMD GPUs | the DPM tables, with `*` on the level each domain runs at |
+| `<bdf>/pp_od_clk_voltage` | A | MI300X | overdrive edits `s 0`, `s 1`, `m 1` and `c`, only under `manual` or `perf_determinism` |
+| `<bdf>/pp_power_profile_mode`, `<bdf>/pm_policy/{soc_pstate,xgmi_plpd}` | A | W7900, MI300X | stored and shown as the driver shows them |
+| `nvml/gpuN/{clocks_sm_mhz,clocks_mem_mhz,pstate,clocks_event_reasons}` | S | NVIDIA GPUs | clocks, performance state and event reasons after each tick |
+| `nvml/gpuN/{clocks_max_sm_mhz,clocks_max_mem_mhz,supported_clocks}` | R | NVIDIA GPUs | from the profile's `gpus.clocks` |
+| `nvml/gpuN/{locked_gpu_clocks,locked_mem_clocks}` | A | NVIDIA GPUs | written by `nvidia-smi -lgc` and `-lmc`; no query prints them, as NVML has no getter for a lock |
+
+The fake tools act on the same files:
+
+| Command | Effect |
+|---|---|
+| `rocm-smi --showperflevel`, `--setperflevel LEVEL`, `--showprofile`, `--setprofile N` | read or write the level; `--setprofile` switches to `manual` first |
+| `amd-smi set -g GPU --perf-level LEVEL`, `--clk-limit sclk max MHZ`; `amd-smi metric --perf-level` | set or read the level, or the overdrive ceiling under `manual`; `set --profile` prints `Not Yet Implemented` |
+| `nvidia-smi -i ID -lgc MIN,MAX`, `-rgc`, `-lmc MIN,MAX`, `-rmc` | set or clear a lock, one line per GPU then `All done.`; `-lmc` fails on Hopper, which has no run-time memory lock |
+| `nvidia-smi --query-gpu=clocks.sm,clocks.mem,clocks.max.sm,clocks.max.mem,pstate,clocks_event_reasons.active`; `nvidia-smi -q -d SUPPORTED_CLOCKS` | read the clock files |
+| `nvidia-smi -ac`, `-rac` | refused as deprecated, non-zero exit |
+
+`HWEMU_UNPRIVILEGED=1` in the tool's environment runs it as a user without root: `rocm-smi --setperflevel` prints nothing, exits 0 and changes nothing on a profile with `unprivilegedSetIsNoop`, `amd-smi set` fails with `Command requires elevation`, and the `nvidia-smi` lock commands fail with `Insufficient Permissions` and exit 4.
+
+Load from the workload can include peer transfers between the GPUs of a node (`hwemu.Load.PeerTransfers`): they share each receiver's `gpus.transfer.peerLinkGBps`, and the bytes each GPU received and sent are counted in State (`PeerRxBytes`, `PeerTxBytes`).
+
 ### Builtin hardware profiles
 
 Each profile in `simulator/pkg/hwemu/profiles/` names the source of every value: a published document, a kernel or tool source line, a measurement described by its hardware only, or an assumption. A GPU profile extends a CPU host profile and keeps its CPU block.
@@ -162,6 +198,23 @@ Each profile in `simulator/pkg/hwemu/profiles/` names the source of every value:
 | `amd-instinct-mi300x-8gpu` | 8x Instinct MI300X on the 9654 host | amdgpu hwmon, rocm-smi and amd-smi, 0 to 750 W per GPU; accelerator class, NFD `pci-1200_1002` |
 | `amd-radeon-pro-w7900-4gpu` | 4x Radeon PRO W7900 on the 9534 host | amdgpu hwmon, rocm-smi and amd-smi; display class, NFD `pci-0300_1002`; the cap is pinned at 241 W per GPU |
 | `vm-no-powercap` | KVM guest | none: no powercap, no cpufreq |
+
+The governor each profile ships with and the presets it can express (CPU `performance`, `balanced`, `efficiency`; GPU `auto`, `sustained`, `efficient`, `low`, `peak`, as `pkg/governor` maps them):
+
+| Profile | CPU driver, shipped governor | CPU presets | GPU mechanism, presets |
+|---|---|---|---|
+| `amd-epyc-2s-energy-only`, `amd-epyc-9534-2s-energy-only` | acpi-cpufreq, schedutil | all three (schedutil, conservative), global boost | none |
+| `amd-epyc-2s-hsmp` | amd-pstate-epp, performance | all three through EPP, boost per policy | none |
+| `intel-xeon-2s-rapl`, `intel-xeon-2s-psys`, `intel-xeon-2s-multidie`, `intel-xeon6-2s-no-powercap`, `intel-xeon6-2s-tpmi` | intel_pstate with HWP, powersave | all three through EPP, `no_turbo` | none |
+| `intel-xeon-6530-2s-rapl` | intel_cpufreq, schedutil | all three (schedutil, conservative), `no_turbo` | none |
+| `amd-radeon-pro-w7900-4gpu` | as the 9534 | as the 9534 | amdgpu sysfs: `auto`, `sustained` (`high`), `low`, `peak` |
+| `amd-instinct-mi300x-8gpu` | as the 9654 | as the 9654 | amdgpu sysfs: `auto`, `efficient` |
+| `nvidia-h100-nvl-8gpu`, `nvidia-h100-sxm-8gpu` | as the 8260 | as the 8260 | nvidia-smi: every preset, `sustained` equivalent to `auto` |
+| `nvidia-h100-sxm-4gpu` | as the 6530 | as the 6530 | as the H100 above |
+| `nvidia-l40s-4gpu` | as the 9534 | as the 9534 | nvidia-smi: every preset, `sustained` locks the memory clock at its maximum |
+| `vm-no-powercap` | no cpufreq | none | none |
+
+No builtin profile turns the receiver gate on.
 
 The W7900's cap is pinned as measured: hwmon and both tools report minimum, maximum, default and current at 241 W, so the driver refuses every other value (a [`reverted-out-of-range` event]({{< relref "/docs/simulator/metrics.md#events-emulate-mode" >}})), `rocm-smi --setpoweroverdrive` prints the bound it violates and exits 0, and `amd-smi set -o ppt0` prints "Power cap must be between 241W and 241W". AMD publishes 295 W for the board; that is total board power, while 241 W is the package power limit the driver enforces and reports.
 

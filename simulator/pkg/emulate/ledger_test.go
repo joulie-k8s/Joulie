@@ -6,7 +6,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 
 	"github.com/matbun/joulie/simulator/pkg/clusterspec"
 	"github.com/matbun/joulie/simulator/pkg/facility"
+	"github.com/matbun/joulie/simulator/pkg/hwemu"
 	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 )
 
@@ -446,5 +449,130 @@ func TestLedgerSkipsANonFiniteCounter(t *testing.T) {
 	emuNear(t, "cpu0 energy after the NaN reading", a3.Components[0].EnergyJ, 100*3)
 	if math.IsNaN(a3.Host.EnergyJ) {
 		t.Error("the ledger took the NaN")
+	}
+}
+
+// emuIORunner gives the GPUs of a fake runner peer bytes: each received
+// rxBps and sent txBps bytes per second since the runner started, or since
+// restartAt when that is later, as hwemu's own counters do, which restart
+// at 0 with a new Node.
+type emuIORunner struct {
+	*emuFakeRunner
+	mu           sync.Mutex
+	rxBps, txBps float64
+	restartAt    time.Time
+}
+
+func (r *emuIORunner) State() hwemu.State {
+	st := r.emuFakeRunner.State()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	from := r.opts.Start
+	if r.restartAt.After(from) {
+		from = r.restartAt
+	}
+	sec := 0.0
+	if st.Time.After(from) {
+		sec = st.Time.Sub(from).Seconds()
+	}
+	for i := range st.Components {
+		if c := &st.Components[i]; c.Type == "gpu" {
+			c.PeerRxBytes, c.PeerTxBytes = uint64(r.rxBps*sec), uint64(r.txBps*sec)
+		}
+	}
+	return st
+}
+
+// emuIOConfig is emuConfig whose runners are emuIORunners, the last one per
+// node kept in runners.
+func emuIOConfig(root string, f *emuFakes, log *emuLog, runners map[string]*emuIORunner, members ...clusterspec.Member) Config {
+	c := emuConfig(root, f, log, members...)
+	c.NewRunner = func(p *hwemu.Profile, tr *hwemu.Tree, o hwemu.Options) (Runner, error) {
+		r, err := f.newRunner(p, tr, o)
+		if err != nil {
+			return nil, err
+		}
+		io := &emuIORunner{emuFakeRunner: r.(*emuFakeRunner), rxBps: 1e9, txBps: 2e9}
+		runners[tr.NodeName] = io
+		return io, nil
+	}
+	return c
+}
+
+// The GPU peer bytes of a reading are ledger values: across Close and a
+// second New, whose runners start their byte counters at 0 again, they
+// continue from their value before the restart and are on disk in the node
+// ledger; a byte counter that goes back adds nothing and is logged, and the
+// ledger grows again from the new value. Components other than GPUs keep no
+// byte ledger.
+func TestLedgerGPUIOBytesSurviveARestart(t *testing.T) {
+	root := t.TempDir()
+	member := emuMember("g", "", "", 1, 2)
+	runners := map[string]*emuIORunner{}
+	c := emuIOConfig(root, newEmuFakes(), &emuLog{}, runners, member)
+	c.Registerer = prometheus.NewRegistry()
+	e1, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before NodeSnapshot
+	for i := 1; i <= 3; i++ {
+		before = emuNode(t, emuTick(t, e1, time.Duration(i)*time.Second, nil, true, nil), "g")
+	}
+	if err := e1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	gpuIO := func(n NodeSnapshot) map[string][2]uint64 {
+		out := map[string][2]uint64{}
+		for _, c := range n.Components {
+			if c.Type == "gpu" {
+				out[c.ID] = [2]uint64{c.PeerRxBytes, c.PeerTxBytes}
+			}
+		}
+		return out
+	}
+	if got, want := gpuIO(before), map[string][2]uint64{"gpu0": {3e9, 6e9}, "gpu1": {3e9, 6e9}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("peer bytes before the restart %v, want %v", got, want)
+	}
+
+	log := &emuLog{}
+	c = emuIOConfig(root, newEmuFakes(), log, runners, member)
+	c.Start = emuStart.Add(time.Minute)
+	e2 := emuNew(t, c)
+	tick := func(at time.Duration) NodeSnapshot {
+		t.Helper()
+		s, err := e2.Tick(c.Start.Add(at), nil, true, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return emuNode(t, s, "g")
+	}
+	after := tick(time.Second)
+	if got, want := gpuIO(after), map[string][2]uint64{"gpu0": {4e9, 8e9}, "gpu1": {4e9, 8e9}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("peer bytes one second after the restart %v, want %v: the counters went back or skipped", got, want)
+	}
+	var onDisk nodeLedger
+	if found, err := ledgerRead(filepath.Join(root, "g", layout.StateDir, LedgerFile), &onDisk); err != nil || !found {
+		t.Fatalf("read the ledger: found %v, %v", found, err)
+	}
+	if want := map[string]gpuIOLedger{"gpu0": {4e9, 8e9}, "gpu1": {4e9, 8e9}}; !reflect.DeepEqual(onDisk.GPUIO, want) {
+		t.Errorf("ledger gpuIO %v, want %v", onDisk.GPUIO, want)
+	}
+
+	// The counters restart half a second before the next tick: 0.5e9 and
+	// 1e9 bytes, below the 1e9 and 2e9 of the last tick.
+	r := runners["g"]
+	r.mu.Lock()
+	r.restartAt = c.Start.Add(1500 * time.Millisecond)
+	r.mu.Unlock()
+	back := tick(2 * time.Second)
+	if got := gpuIO(back); !reflect.DeepEqual(got, gpuIO(after)) {
+		t.Errorf("peer bytes after the counters went back %v, want them unchanged at %v", got, gpuIO(after))
+	}
+	if log.count("peer bytes went back") == 0 {
+		t.Error("a byte counter going back was not logged")
+	}
+	if got, want := gpuIO(tick(3*time.Second)), map[string][2]uint64{"gpu0": {5e9, 10e9}, "gpu1": {5e9, 10e9}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("peer bytes a tick after the counters went back %v, want %v", got, want)
 	}
 }

@@ -131,6 +131,10 @@ Prometheus names are those of the default translation strategy (`UnderscoreEscap
 | `hw.cpu.speed.limit` | Hz | Gauge (int), one point per `hw.limit_type`: `max` and `throttled` | the same | `hw.id`, `hw.name`, `hw.vendor`, `hw.model`, `hw.limit_type` | `hw_cpu_speed_limit_hertz` |
 | `hw.gpu.utilization` | 1 | Gauge | GPUs | `hw.id`, `hw.name`, `hw.vendor`, `hw.model`, `hw.gpu.task=general` | `hw_gpu_utilization_ratio` |
 | `joulie.hw.power.limit` | W | Gauge, one point per `joulie.hw.limit.state`: `requested` and `enforced` | components with a power limit | `hw.id`, `hw.type`, `joulie.hw.limit.state` | `joulie_hw_power_limit_watts` |
+| `hw.gpu.io` | By | Counter (int), one point per `network.io.direction` and `joulie.hw.gpu.io.path` | GPUs, on the `peer` path only: the bytes a GPU received from and sent to the other GPUs of its node. The emulator models no host or network interface bytes, so `host` and `nic` have no point. The counters come from the node's ledger and start at its start | `hw.id`, `hw.name`, `hw.vendor`, `hw.model`, `network.io.direction` (`receive`, `transmit`), `joulie.hw.gpu.io.path` (`peer`, `host`, `nic`) | `hw_gpu_io_bytes_total` |
+| `joulie.hw.gpu.speed` | Hz | Gauge (int), one point per `joulie.hw.clock.domain` | GPUs with a clock model, every GPU of the builtin profiles: `graphics` and `memory` on NVIDIA, plus `fabric` and `soc` on an AMD family whose profile has fclk and socclk tables | `hw.id`, `hw.vendor`, `hw.model`, `joulie.hw.clock.domain` (`graphics`, `memory`, `fabric`, `soc`) | `joulie_hw_gpu_speed_hertz` |
+| `joulie.hw.gpu.speed.limit` | Hz | Gauge (int), one point per `joulie.hw.clock.domain` and `hw.limit_type`: `max` and `throttled` | the GPUs and domains of `joulie.hw.gpu.speed`: `max` is the domain's hardware maximum (the top of its `pp_dpm_*` table, NVML's maximum clock), `throttled` the maximum in effect, the clock a busy GPU reaches under the present performance level, overdrive range or clock lock (on NVIDIA at most the sustained maximum) | `hw.id`, `hw.vendor`, `hw.model`, `joulie.hw.clock.domain`, `hw.limit_type` | `joulie_hw_gpu_speed_limit_hertz` |
+| `joulie.hw.governor` | 1 | UpDownCounter (int): 1 for the state a component is in, 0 for the one it left | CPU packages and GPUs with a governor state: 1 for the state, and 0 for the state the component was in before, sent with every export until the state changes again and dropped by a simulator restart. `joulie.hw.governor.preset` is empty when no single preset maps to the native state | `hw.id`, `hw.type`, `joulie.hw.governor.preset`, `joulie.hw.governor.native` | `joulie_hw_governor` |
 | `joulie.facility.ambient_temperature` | Cel | Gauge | the facility | | `joulie_facility_ambient_temperature_celsius` |
 | `joulie.facility.it.energy` | J | Counter | the facility | | `joulie_facility_it_energy_joules_total` |
 | `joulie.facility.it.power` | W | Gauge | the facility | | `joulie_facility_it_power_watts` |
@@ -141,7 +145,7 @@ Prometheus names are those of the default translation strategy (`UnderscoreEscap
 | `joulie.rack.energy` | J | Counter | each rack | `joulie.rack.name` | `joulie_rack_energy_joules_total` |
 | `joulie.rack.power` | W | Gauge | each rack | `joulie.rack.name` | `joulie_rack_power_watts` |
 
-The point attributes become the labels `hw_id`, `hw_type`, `hw_name`, `hw_parent`, `hw_limit_type`, `joulie_hw_limit_state`, `joulie_cooling_zone_name` and `joulie_rack_name`. The resource attributes `k8s_node_name` and `host_name` are always on `target_info`, and on the data series only when Prometheus promotes them (below).
+The point attributes become the labels `hw_id`, `hw_type`, `hw_name`, `hw_parent`, `hw_vendor`, `hw_model`, `hw_limit_type`, `joulie_hw_limit_state`, `network_io_direction`, `joulie_hw_gpu_io_path`, `joulie_hw_clock_domain`, `joulie_hw_governor_preset`, `joulie_hw_governor_native`, `joulie_cooling_zone_name` and `joulie_rack_name`. The resource attributes `k8s_node_name` and `host_name` are always on `target_info`, and on the data series only when Prometheus promotes them (below).
 
 ### Components
 
@@ -158,7 +162,7 @@ The point attributes become the labels `hw_id`, `hw_type`, `hw_name`, `hw_parent
 - One `cpu` component per package. RAPL core, uncore and psys zones are never `cpu`. DRAM is `memory`; Joulie does not count it as node power.
 - Host power is the packages, the DRAM zones, the platform remainder and the GPUs together. Power supply losses are not included.
 - Only readings a real collector could measure are emitted: package and DRAM `energy_uj`, NVML total energy, amdgpu power. A node whose profile is a virtual machine gets no `hw.*` metric at all, and a CPU without a DRAM zone gets no `memory` component.
-- Exported counters never decrease, not even across a simulator restart: they continue from a ledger kept in the tree root. While the simulator is down no energy accrues, so a restart shows as a gap in the rate, never as a reset. A counter's start time is the ledger's start.
+- Exported counters never decrease, not even across a simulator restart: they continue from a ledger kept in the tree root, the GPU bytes of `hw.gpu.io` as well as the energies. While the simulator is down no energy accrues, so a restart shows as a gap in the rate, never as a reset. A counter's start time is the ledger's start.
 
 ### Prometheus
 
@@ -208,9 +212,9 @@ They are always appended to `events.jsonl` in `SIM_OTEL_FILE_DIR`, one `LogsData
 | `joulie.sim.cap.applied` | 9 INFO | a power limit written to a node file took effect, possibly quantized or clamped | `hw.id`, `hw.type`, `joulie.sim.file`, `joulie.sim.outcome`, `joulie.sim.value.written`, `joulie.sim.value.effective` |
 | `joulie.sim.setting.applied` | 9 INFO | another setting took effect, such as a frequency bound or a governor | the same |
 | `joulie.sim.cap.reset` | 13 WARN | a GPU limit went back to its default: persistence mode off and no client | the same, with `hw.type=gpu`; written is the old limit, effective the default |
-| `joulie.sim.write.rejected` | 13 WARN | a write was reverted | the same, and `error.type` (`reverted_out_of_range`, `parse_error`, `restored`) |
+| `joulie.sim.write.rejected` | 13 WARN | a write was reverted | the same, and `error.type` (`reverted_out_of_range`, `parse_error`, `restored`, `einval`, `eopnotsupp`, `ebusy`) |
 
-`joulie.sim.outcome` is the emulator's own name for what happened to the write, such as `accepted`, `clamped` or `reset-persistence-off`. `restored` means a file only the emulator writes was overwritten and put back.
+`joulie.sim.outcome` is the emulator's own name for what happened to the write, such as `accepted`, `clamped`, `rejected` or `reset-persistence-off`. `restored` means a file only the emulator writes was overwritten and put back. `einval`, `eopnotsupp` and `ebusy` mean the real driver refuses the value with that errno (outcome `rejected`): a file tree cannot fail the write itself, so the emulator reverts the value at its next step, and a reader sees its write not applied.
 
 ## Workload run and scenario names
 

@@ -14,6 +14,7 @@ sources:
   raplmultidie: {kind: published, ref: "https://github.com/torvalds/linux/commit/32fb480e0a2c", note: "RAPL package domains are implemented in hardware per die"}
   pstate:       {kind: published, ref: "linux v7.3-rc5 Documentation/admin-guide/pm/intel_pstate.rst:39-41,90-91", note: "one policy per logical CPU; active mode offers powersave and performance"}
   nfd:          {kind: published, ref: "https://kubernetes-sigs.github.io/node-feature-discovery/stable/reference/worker-configuration-reference.html", note: "deviceClassWhitelist [03, 0b40, 12]; deviceLabelFields [class, vendor]"}
+  pstate612:   {kind: published, ref: "linux v6.12 drivers/cpufreq/intel_pstate.c:42-44,694-701,790-797,808-819,1420-1430,1511-1560,1810-1822,3248-3263", note: "status prints the mode; no_turbo in both modes; the EPP pair with HWP, every preference listed, a non-zero EPP refused under performance in active mode; transition delay 5000 us with HWP and 500 us without in passive mode"}
 node:
   nfd: present
   labels:
@@ -81,7 +82,18 @@ cpufreq:
   availableGovernors: {v: "performance powersave", src: "published:pstate#90-91"}
   cpuinfoMaxKHz: {v: 3800000, src: "published:ark9282#Max Turbo Frequency 3.80 GHz"}
   cpuinfoMinKHz: {v: 1000000, src: "assumed:the corpus8260 idle frequency"}
+  baseKHz: {v: 2600000, src: "published:ark9282#base 2.60 GHz"}
   policyGrouping: {v: per-cpu, src: "published:pstate#39-41"}
+  driverMode: {v: active, src: "assumed:intel_pstate runs in active mode where the CPU has HWP (pstate612#intel_pstate.c:3248-3263 and the admin guide's defaults)"}
+  hwp: {v: true, src: "assumed:active mode with HWP is the default where HWP exists, as on the corpus 8260"}
+  epp:
+    available: {v: "default performance balance_performance balance_power power", src: "published:pstate612#intel_pstate.c:694-701,808-819"}
+    default: {v: balance_performance, src: "assumed:the boot EPP the firmware programs, 128 on server platforms"}
+  boostScope: {v: no-turbo, src: "published:pstate612#intel_pstate.c:1511-1560, no_turbo in place of the generic boost"}
+  uncore:
+    layout: {v: per-die, src: "assumed:the MSR interface of a pre-TPMI Xeon, one domain per die"}
+    initialMinKHz: {v: 1200000, src: "assumed:uncore range of a Cascade Lake die, not published"}
+    initialMaxKHz: {v: 2400000, src: "assumed:uncore range of a Cascade Lake die, not published"}
 physics:
   cpu:
     model: analytic
@@ -91,6 +103,9 @@ physics:
     betaFreq: {v: 1.35, src: "assumed:simulator default SIM_BETA_FREQ"}
     knee: {v: 0.7, src: "assumed:phys default knee of MeasuredCurveCPUModel"}
     freqRampMS: {v: 500, src: "assumed:simulator default SIM_DVFS_RAMP_MS"}
+    idleGovernorDeltaW: {v: 0, src: "assumed:no idle cost of a governor that holds the top frequency until one is measured; to sweep from 0 to 5 % of the idle power"}
+    eppGain: {v: 1.0, src: "assumed:EPP 0 reaches the maximum frequency at half load under the HWP powersave algorithm; to sweep from 0.5 to 2"}
+    eppCeilingDrop: {v: 0.2, src: "assumed:EPP 128 lowers the full-load frequency by 0.2 of the range, between 1 - 1/1.25 and 1 - 1/1.32, the published full-load gaps of EPP 128 to performance and to EPP 32; to sweep from 0 to 0.25"}
   dram: {wattsPerSocket: {v: 16, src: "assumed:twice the 8 W placeholder of a 6-channel socket, for 12 channels"}}
   platform: {otherW: {v: 0, src: "assumed:no psys zone in this profile"}}
   rapl:

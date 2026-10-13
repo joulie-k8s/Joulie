@@ -133,6 +133,16 @@ type ConstraintSpec struct {
 
 // CPUFreqSpec describes the cpufreq policies. PolicyGrouping is per-cpu or
 // per-core; AvailableKHz is set only for table drivers.
+//
+// The governor facts follow. DriverMode is active, passive or guided, as
+// intel_pstate/status or amd_pstate/status shows it (empty for a driver
+// without modes); HWP says the CPU has hardware P-states; EPP lists the
+// energy-performance preferences, when the policies have them; BoostScope is
+// global (cpufreq/boost), per-cpu (each policy's boost) or no-turbo
+// (intel_pstate/no_turbo, inverted); Tunables are the governors' own
+// attributes; Uncore, when set, renders intel_uncore_frequency. BaseKHz is
+// the base frequency, the top non-turbo one: the maximum a policy keeps
+// with turbo off.
 type CPUFreqSpec struct {
 	Driver             Fact[string]  `json:"driver"`
 	Governor           Fact[string]  `json:"governor"`
@@ -143,6 +153,53 @@ type CPUFreqSpec struct {
 	AvailableKHz       Fact[[]int64] `json:"availableKHz"`
 	Boost              Fact[int]     `json:"boost"`
 	Minimal            bool          `json:"minimal"`
+
+	DriverMode Fact[string]          `json:"driverMode"`
+	HWP        Fact[bool]            `json:"hwp"`
+	EPP        *EPPSpec              `json:"epp"`
+	BoostScope Fact[string]          `json:"boostScope"`
+	Tunables   *GovernorTunablesSpec `json:"tunables"`
+	Uncore     *UncoreSpec           `json:"uncore"`
+	BaseKHz    Fact[int64]           `json:"baseKHz"`
+}
+
+// EPPSpec is energy_performance_available_preferences (Available, the words
+// separated by spaces, as the file lists them) and the
+// energy_performance_preference a policy starts with (Default).
+type EPPSpec struct {
+	Available Fact[string] `json:"available"`
+	Default   Fact[string] `json:"default"`
+}
+
+// GovernorTunablesSpec holds the tunables of the governors that have them,
+// under the names of their sysfs attributes (cpufreq.rst, "Generic Scaling
+// Governors"). Times are in us.
+type GovernorTunablesSpec struct {
+	Schedutil struct {
+		RateLimitUS Fact[int64] `json:"rate_limit_us"`
+	} `json:"schedutil"`
+	Ondemand struct {
+		UpThreshold  Fact[int64] `json:"up_threshold"`
+		SamplingRate Fact[int64] `json:"sampling_rate"`
+	} `json:"ondemand"`
+	Conservative struct {
+		FreqStep      Fact[int64] `json:"freq_step"`
+		UpThreshold   Fact[int64] `json:"up_threshold"`
+		DownThreshold Fact[int64] `json:"down_threshold"`
+	} `json:"conservative"`
+}
+
+// UncoreSpec is the Intel uncore frequency driver. Layout is per-die
+// (package_<p>_die_<d> directories) or per-cluster (uncore<n> directories
+// of the TPMI interface, ClustersPerDie of them per die); every domain
+// starts at the same initial range. ELC says the efficiency latency control
+// attributes are present.
+type UncoreSpec struct {
+	Layout         Fact[string] `json:"layout"`
+	ClustersPerDie Fact[int]    `json:"clustersPerDie"`
+	InitialMinKHz  Fact[int64]  `json:"initialMinKHz"`
+	InitialMaxKHz  Fact[int64]  `json:"initialMaxKHz"`
+	ELC            Fact[bool]   `json:"elc"`
 }
 
 // HSMPSpec describes the AMD HSMP socket power caps.
@@ -213,6 +270,145 @@ type GPUSpec struct {
 	ComputeCapability Fact[string] `json:"computeCapability"`
 	MemoryMiB         Fact[int]    `json:"memoryMiB"`
 	MIGCapable        Fact[bool]   `json:"migCapable"`
+	// DPM is the amdgpu performance level and clock tables, AMD only.
+	DPM *DPMSpec `json:"dpm"`
+	// Clocks are the NVIDIA clock ranges and lock behaviour, NVIDIA only.
+	Clocks *NVClocksSpec `json:"clocks"`
+	// Transfer is the peer link between the node's GPUs.
+	Transfer *GPUTransferSpec `json:"transfer"`
+}
+
+// DPMSpec is the amdgpu dynamic power management of a family.
+// Levels.Accept lists the power_dpm_force_performance_level words the
+// firmware takes and Levels.Reject the errno (EINVAL, EOPNOTSUPP or EBUSY)
+// of each word it refuses; Default is the level at boot. Tables are the
+// pp_dpm_* clock levels; PState the clocks of profile_standard and
+// profile_peak; OD the overdrive file pp_od_clk_voltage; PowerProfiles the
+// pp_power_profile_mode table; PMPolicy the pm_policy attributes.
+// AutoHoldS is how long the data path stays raised under auto after the
+// GPU's own memory activity stops. UnprivilegedSetIsNoop says a level set
+// through rocm-smi without root changes nothing and still exits 0.
+type DPMSpec struct {
+	Levels struct {
+		Accept Fact[[]string]          `json:"accept"`
+		Reject map[string]Fact[string] `json:"reject"`
+	} `json:"levels"`
+	Default               Fact[string]       `json:"default"`
+	Tables                DPMTablesSpec      `json:"tables"`
+	PState                DPMPStatesSpec     `json:"pstate"`
+	OD                    *ODSpec            `json:"od"`
+	PowerProfiles         *PowerProfilesSpec `json:"powerProfiles"`
+	PMPolicy              *PMPolicySpec      `json:"pmPolicy"`
+	AutoHoldS             Fact[float64]      `json:"autoHoldS"`
+	UnprivilegedSetIsNoop Fact[bool]         `json:"unprivilegedSetIsNoop"`
+}
+
+// DPMTablesSpec holds the clock levels of each pp_dpm_* file, in MHz,
+// ascending. A fine-grained sclk lists only its range, as the kernel prints
+// it; PCIe lists each level as pp_dpm_pcie prints it after the index, such
+// as "16.0GT/s, x16 619Mhz".
+type DPMTablesSpec struct {
+	Sclk struct {
+		Fine   Fact[bool]  `json:"fine"`
+		MinMHz Fact[int64] `json:"minMHz"`
+		MaxMHz Fact[int64] `json:"maxMHz"`
+	} `json:"sclk"`
+	Mclk   Fact[[]int64]  `json:"mclk"`
+	Fclk   Fact[[]int64]  `json:"fclk"`
+	Socclk Fact[[]int64]  `json:"socclk"`
+	PCIe   Fact[[]string] `json:"pcie"`
+}
+
+// DPMPStatesSpec holds the clocks the profile levels pin.
+type DPMPStatesSpec struct {
+	Standard DPMPStateSpec `json:"standard"`
+	Peak     DPMPStateSpec `json:"peak"`
+}
+
+// DPMPStateSpec is one pinned state, in MHz per clock domain.
+type DPMPStateSpec struct {
+	SclkMHz   Fact[int64] `json:"sclkMHz"`
+	MclkMHz   Fact[int64] `json:"mclkMHz"`
+	FclkMHz   Fact[int64] `json:"fclkMHz"`
+	SocclkMHz Fact[int64] `json:"socclkMHz"`
+}
+
+// ODSpec is pp_od_clk_voltage: Enabled renders it, Writable lists the
+// bounds a write may set, from sclkMin, sclkMax, uclkMin and uclkMax.
+type ODSpec struct {
+	Enabled  Fact[bool]     `json:"enabled"`
+	Writable Fact[[]string] `json:"writable"`
+}
+
+// PowerProfilesSpec is pp_power_profile_mode: the mode names in index
+// order and the default.
+type PowerProfilesSpec struct {
+	Modes   Fact[[]string] `json:"modes"`
+	Default Fact[string]   `json:"default"`
+}
+
+// PMPolicySpec holds the pm_policy attributes a family has.
+type PMPolicySpec struct {
+	SocPState *PMPolicyAttrSpec `json:"soc_pstate"`
+	XGMIPLPD  *PMPolicyAttrSpec `json:"xgmi_plpd"`
+}
+
+// PMPolicyAttrSpec is one pm_policy attribute: its policy names in index
+// order and the index it starts at.
+type PMPolicyAttrSpec struct {
+	Policies Fact[[]string] `json:"policies"`
+	Default  Fact[int]      `json:"default"`
+}
+
+// NVClocksSpec is the clock behaviour of an NVIDIA GPU. SM and Mem are the
+// ranges of the graphics and memory clocks, the clock each runs at idle and,
+// for SM, the highest it sustains under load (a higher lock is clamped);
+// Mem.RuntimeLock says -lmc takes effect at run time. IdlePState is the
+// performance state at idle; Supported lists the clocks -q -d
+// SUPPORTED_CLOCKS prints. LockFloorAtIdle says an idle GPU sits at the
+// lower bound of its lock (default true); LocksResetOnDeinit says the locks
+// go when the driver deinitializes the GPU with persistence off (default
+// false).
+type NVClocksSpec struct {
+	SM struct {
+		MinMHz          Fact[int64] `json:"minMHz"`
+		MaxMHz          Fact[int64] `json:"maxMHz"`
+		IdleMHz         Fact[int64] `json:"idleMHz"`
+		SustainedMaxMHz Fact[int64] `json:"sustainedMaxMHz"`
+	} `json:"sm"`
+	Mem struct {
+		MinMHz      Fact[int64] `json:"minMHz"`
+		MaxMHz      Fact[int64] `json:"maxMHz"`
+		IdleMHz     Fact[int64] `json:"idleMHz"`
+		RuntimeLock Fact[bool]  `json:"runtimeLock"`
+	} `json:"mem"`
+	IdlePState Fact[string] `json:"idlePState"`
+	Supported  struct {
+		SMMHz  Fact[[]int64] `json:"smMHz"`
+		MemMHz Fact[[]int64] `json:"memMHz"`
+	} `json:"supported"`
+	LockFloorAtIdle    *Fact[bool] `json:"lockFloorAtIdle"`
+	LocksResetOnDeinit *Fact[bool] `json:"locksResetOnDeinit"`
+}
+
+// GPUTransferSpec is the peer link between the GPUs of a node, in GB/s per
+// receiving GPU, and the receiver gate.
+type GPUTransferSpec struct {
+	PeerLinkGBps Fact[float64]    `json:"peerLinkGBps"`
+	ReceiverGate ReceiverGateSpec `json:"receiverGate"`
+}
+
+// ReceiverGateSpec is a family whose inbound peer transfers are bounded by
+// the receiving GPU's data-path clocks. Enabled is off in every repository
+// profile. A receiver forced to its lowest data-path level gets
+// SlowFraction of the link; an idle receiver under auto gets MidFraction
+// from a MidPairFraction share of its sources and SlowFraction from the
+// rest.
+type ReceiverGateSpec struct {
+	Enabled         Fact[bool]    `json:"enabled"`
+	SlowFraction    Fact[float64] `json:"slowFraction"`
+	MidFraction     Fact[float64] `json:"midFraction"`
+	MidPairFraction Fact[float64] `json:"midPairFraction"`
 }
 
 // GPU persistence modes, the values of GPUSpec.PersistenceMode.
@@ -232,6 +428,14 @@ type PhysicsSpec struct {
 		Knee         Fact[float64] `json:"knee"`
 		CoreFraction Fact[float64] `json:"coreFraction"`
 		FreqRampMS   Fact[int]     `json:"freqRampMS"`
+		// IdleGovernorDeltaW is drawn while the package idles and its
+		// governor holds the highest frequency (default 0). EPPGain scales
+		// how much a lower EPP raises the frequency at a given load
+		// (default 1.0); EPPCeilingDrop is how far EPP 128 lowers the
+		// full-load frequency, as a fraction of the range (default 0.2).
+		IdleGovernorDeltaW Fact[float64]  `json:"idleGovernorDeltaW"`
+		EPPGain            *Fact[float64] `json:"eppGain"`
+		EPPCeilingDrop     *Fact[float64] `json:"eppCeilingDrop"`
 	} `json:"cpu"`
 	DRAM struct {
 		WattsPerSocket Fact[float64] `json:"wattsPerSocket"`
@@ -254,6 +458,19 @@ type PhysicsSpec struct {
 		MemoryGamma       Fact[float64] `json:"memoryGamma"`
 		CapSettleTauMS    Fact[int]     `json:"capSettleTauMS"`
 		TelemetryWindowMS Fact[int]     `json:"telemetryWindowMS"`
+		// The clock model: ClockBeta is the exponent of the compute clock
+		// in dynamic power; MemoryKneeFrac the fraction of the maximum
+		// compute clock below which memory-bound work slows, by
+		// MemoryKneeGamma; DataPathHoldW the idle power of a data path held
+		// at its maximum; GatingOffIdleW the idle power with idle gating
+		// off; DataPathGamma how much memory-bound work slows with the data
+		// path at its minimum.
+		ClockBeta       Fact[float64] `json:"clockBeta"`
+		MemoryKneeFrac  Fact[float64] `json:"memoryKneeFrac"`
+		MemoryKneeGamma Fact[float64] `json:"memoryKneeGamma"`
+		DataPathHoldW   Fact[float64] `json:"dataPathHoldW"`
+		GatingOffIdleW  Fact[float64] `json:"gatingOffIdleW"`
+		DataPathGamma   Fact[float64] `json:"dataPathGamma"`
 	} `json:"gpu"`
 }
 
@@ -276,25 +493,44 @@ type RenderOptions struct {
 	EnergyStartUJ map[string]int64
 }
 
-// Load is the work a node runs, set with Node.SetLoad.
+// Load is the work a node runs, set with Node.SetLoad. PeerTransfers are
+// the GPU to GPU copies the work makes.
 type Load struct {
 	CPUUtil         []float64
 	CPUClass        string
 	GPUUtil         []float64
 	GPUClass        string
 	MemoryIntensity float64
+	PeerTransfers   []PeerTransfer
+}
+
+// PeerTransfer is a copy from GPU Src to GPU Dst of the same node, by GPU
+// index, at the demanded rate BytesPerS.
+type PeerTransfer struct {
+	Src, Dst  int
+	BytesPerS float64
 }
 
 // Options configure a Node. A zero Substep means 100 ms. A positive
 // RenderCheckInterval checks render-owned files only once per interval;
 // agent-writable files are still read back every step. Zero checks every
-// step.
+// step. ReceiverGate is one of the ReceiverGate* values; empty means
+// ReceiverGateProfile.
 type Options struct {
 	Substep             time.Duration
 	Start               time.Time
 	Frozen              bool
 	RenderCheckInterval time.Duration
+	ReceiverGate        string
 }
+
+// Values of Options.ReceiverGate: the profile's receiverGate.enabled, off on
+// every GPU, or on every GPU profile with the profile's fractions.
+const (
+	ReceiverGateProfile = "profile"
+	ReceiverGateOff     = "off"
+	ReceiverGateOn      = "on"
+)
 
 // State is a snapshot of a Node after a step. Components and Host are what a
 // collector on the node could read, in the identity telemetry uses;
@@ -328,6 +564,19 @@ type State struct {
 // real collector could read the component's energy or power: a package or
 // DRAM zone with energy_uj, an NVIDIA GPU with total_energy_mj, an AMD GPU
 // with power1_input or power1_average.
+//
+// ClockHz is a GPU's current clock per domain, keyed by the
+// semconv.ClockDomain* values, nil when the GPU has no clock model.
+// ClockMaxHz and ClockLimitHz have the same keys: ClockMaxHz is the
+// domain's hardware maximum (the top of its pp_dpm_* table, or NVML's
+// maximum clock), ClockLimitHz the maximum in effect, the clock the domain
+// reaches at full load under the present performance level, overdrive
+// range or clock lock, as SpeedLimitHz is for a package.
+// GovernorNative is the governor state in the driver's own words (a
+// package's scaling_governor when its policies agree, a GPU's performance
+// level or lock state) and GovernorPreset the preset it maps to, empty when
+// no single one does. PeerRxBytes and PeerTxBytes count the peer transfer
+// bytes a GPU received and sent since the Node started.
 type ComponentState struct {
 	ID              string
 	Type            string
@@ -349,6 +598,13 @@ type ComponentState struct {
 	SpeedMaxHz      float64
 	SpeedLimitHz    float64
 	Utilization     float64
+	ClockHz         map[string]int64
+	ClockMaxHz      map[string]int64
+	ClockLimitHz    map[string]int64
+	GovernorNative  string
+	GovernorPreset  string
+	PeerRxBytes     uint64
+	PeerTxBytes     uint64
 }
 
 // HostState is the whole node: PowerW is the sum of every package, DRAM
@@ -386,7 +642,9 @@ type GPUState struct {
 // Event records what a step did with a file. Kind is one of the Event*
 // kinds. Component is the hw.id of the component whose directory holds the
 // file, such as cpu1 for a policy of socket 1 or gpu3 for its NVML state,
-// and empty for any other file (Components in the package doc).
+// and empty for any other file (Components in the package doc). Errno is
+// set on an EventRejected: the Errno* name the real driver fails the write
+// with.
 type Event struct {
 	Time      time.Time `json:"time"`
 	File      string    `json:"file"`
@@ -394,11 +652,13 @@ type Event struct {
 	Written   string    `json:"written"`
 	Effective string    `json:"effective"`
 	Component string    `json:"component,omitempty"`
+	Errno     string    `json:"errno,omitempty"`
 }
 
 // Event kinds, the values of Event.Kind. EventResetPersistenceOff is a GPU
 // limit put back to its default because persistence mode is off and no
-// client holds the GPU.
+// client holds the GPU. EventRejected is a value the real driver refuses
+// with an errno, reverted at the step that reads it (rejectWrite).
 const (
 	EventAccepted            = "accepted"
 	EventQuantized           = "quantized"
@@ -408,6 +668,7 @@ const (
 	EventParseError          = "parse-error"
 	EventRestored            = "restored"
 	EventResetPersistenceOff = "reset-persistence-off"
+	EventRejected            = "rejected"
 )
 
 // EnsureReport says what Ensure did. Fresh is set when it rendered the tree

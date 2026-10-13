@@ -48,6 +48,7 @@ const (
 	envClusterSpec       = "SIM_CLUSTER_SPEC"
 	envHwemuRoot         = "SIM_HWEMU_ROOT"
 	envEmulateTick       = "SIM_EMULATE_TICK"
+	envGPUReceiverGate   = "SIM_GPU_RECEIVER_GATE"
 	envEmulateWorkers    = "SIM_EMULATE_WORKERS"
 	envFakeSMISource     = "SIM_FAKESMI_SOURCE"
 	envExporters         = "SIM_EXPORTERS"
@@ -95,10 +96,12 @@ func checkModes(getenv func(string) string) error {
 
 // emulateOptions is what newEmulateRuntime needs; emulateOptionsFromEnv
 // reads it from the environment. A zero Start means time.Now and a nil
-// Registerer registers nothing.
+// Registerer registers nothing. ReceiverGate is SIM_GPU_RECEIVER_GATE, one
+// of the hwemu.ReceiverGate* values; empty means the profile's.
 type emulateOptions struct {
 	SpecPath, Root, FakeSMISource string
 	Tick                          time.Duration
+	ReceiverGate                  string
 	Workers                       int
 	Exporters                     []string
 	DCGMHostnameLabel             string
@@ -150,8 +153,9 @@ func (s *simulator) emulated(node string) bool {
 }
 
 // emulateOptionsFromEnv reads the emulate settings through lookup, normally
-// os.LookupEnv. The telemetry warnings are logged; an invalid variable is an
-// error. A set but empty SIM_FAKESMI_SOURCE skips the fakesmi install.
+// os.LookupEnv. The telemetry warnings and an invalid SIM_GPU_RECEIVER_GATE
+// are logged; any other invalid variable is an error. A set but empty
+// SIM_FAKESMI_SOURCE skips the fakesmi install.
 func (s *simulator) emulateOptionsFromEnv(lookup func(string) (string, bool)) (emulateOptions, error) {
 	get := func(key string) string {
 		v, _ := lookup(key)
@@ -180,6 +184,7 @@ func (s *simulator) emulateOptionsFromEnv(lookup func(string) (string, bool)) (e
 		}
 		o.Tick = d
 	}
+	o.ReceiverGate = receiverGateFromEnv(get(envGPUReceiverGate), func(w string) { log.Printf("warning: %s", w) })
 	if v := get(envEmulateWorkers); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
@@ -199,6 +204,22 @@ func (s *simulator) emulateOptionsFromEnv(lookup func(string) (string, bool)) (e
 	}
 	o.Telemetry = tc
 	return o, errors.Join(errs...)
+}
+
+// receiverGateFromEnv is the receiver gate SIM_GPU_RECEIVER_GATE selects:
+// off, on, or profile, which empty also means. Any other value is reported
+// to warn and gives profile, the gate each hardware profile sets, so a typo
+// never turns a gate on or off.
+func receiverGateFromEnv(v string, warn func(string)) string {
+	switch v {
+	case "":
+		return hwemu.ReceiverGateProfile
+	case hwemu.ReceiverGateOff, hwemu.ReceiverGateOn, hwemu.ReceiverGateProfile:
+		return v
+	}
+	warn(fmt.Sprintf("%s=%q is not %s, %s or %s; using %s", envGPUReceiverGate, v,
+		hwemu.ReceiverGateOff, hwemu.ReceiverGateOn, hwemu.ReceiverGateProfile, hwemu.ReceiverGateProfile))
+	return hwemu.ReceiverGateProfile
 }
 
 // newEmulateRuntime loads and expands the spec, then builds the exporters,
@@ -248,6 +269,7 @@ func (s *simulator) newEmulateRuntime(o emulateOptions) (*emulateRuntime, error)
 		Workers:       o.Workers,
 		FakeSMISource: o.FakeSMISource,
 		Start:         o.Start,
+		ReceiverGate:  o.ReceiverGate,
 		Registerer:    o.Registerer,
 	})
 	if err != nil {

@@ -1,0 +1,16 @@
+# Receiver-gate test profile of the v1 engine tests (workload_peer_gate_test.go):
+# gate-on-test-gpu with the gate off in the profile, so only
+# SIM_GPU_RECEIVER_GATE=on turns it on. Gate code: it stays with the gate
+# files.
+schemaVersion: 1
+name: gate-off-test-gpu
+extends: amd-radeon-pro-w7900-4gpu
+description: Test profile, the W7900 node with an assumed receiver gate that the profile leaves off.
+gpus:
+  transfer:
+    peerLinkGBps: {v: 20.0, src: "assumed:test value"}
+    receiverGate:
+      enabled: {v: false, src: "assumed:test value"}
+      slowFraction: {v: 0.5, src: "assumed:test value"}
+      midFraction: {v: 0.75, src: "assumed:test value"}
+      midPairFraction: {v: 0.0, src: "assumed:test value, no pair at the mid rate"}

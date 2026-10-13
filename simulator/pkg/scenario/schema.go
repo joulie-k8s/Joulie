@@ -147,13 +147,16 @@ type WorkClass struct {
 
 // Profile is the trace's workloadProfile, each value in 0..1. An unset value
 // takes the renderer's default; 0 is a value, as for CPUFeedIntensityGPU,
-// where it turns the CPU feed factor off.
+// where it turns the CPU feed factor off. PeerTransferIntensity is the
+// share of a job's GPU time spent moving data between the GPUs it holds on
+// one node; unset, like 0, means no transfers.
 type Profile struct {
-	CPUUtilization      *float64 `json:"cpuUtilization,omitempty"`
-	GPUUtilization      *float64 `json:"gpuUtilization,omitempty"`
-	MemoryIntensity     *float64 `json:"memoryIntensity,omitempty"`
-	IOIntensity         *float64 `json:"ioIntensity,omitempty"`
-	CPUFeedIntensityGPU *float64 `json:"cpuFeedIntensityGpu,omitempty"`
+	CPUUtilization        *float64 `json:"cpuUtilization,omitempty"`
+	GPUUtilization        *float64 `json:"gpuUtilization,omitempty"`
+	MemoryIntensity       *float64 `json:"memoryIntensity,omitempty"`
+	IOIntensity           *float64 `json:"ioIntensity,omitempty"`
+	CPUFeedIntensityGPU   *float64 `json:"cpuFeedIntensityGpu,omitempty"`
+	PeerTransferIntensity *float64 `json:"peerTransferIntensity,omitempty"`
 }
 
 // Sensitivity is the trace's sensitivity, each in 0..1; unset means 1.

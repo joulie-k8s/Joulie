@@ -2,6 +2,7 @@ package hwemu
 
 import (
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -94,6 +95,16 @@ func renderCPUList(ids []int) string {
 // scaling_available_frequencies, amd-pstate-epp its EPP pair, and a profile
 // with boost the global cpufreq/boost (A). A minimal profile, from a capture
 // that recorded the driver only, has scaling_driver alone.
+//
+// With the governor facts (cpuGovModeled), intel_pstate in either mode adds
+// the EPP pair when hwp is true, scaling_setspeed is A where userspace is
+// available, and this function writes the one copy of boost where the
+// driver keeps it (cpuGovBoostScope): each policy's boost on amd-pstate
+// (v6.12 cpufreq.c:616-650), the global cpufreq/boost on the others, none
+// on intel_pstate, which has no_turbo instead. Where the driver has
+// set_boost (cpuGovSetBoost: amd-pstate, and acpi-cpufreq and the generic
+// drivers with the boost fact), renderCPUGovernor adds the other copy, so
+// those trees have both the global file and one per policy.
 func renderCPUFreq(b *renderBuilder, p *Profile, o RenderOptions) error {
 	f := p.CPUFreq
 	if f == nil {
@@ -116,7 +127,7 @@ func renderCPUFreq(b *renderBuilder, p *Profile, o RenderOptions) error {
 			}
 		}
 	}
-	if f.Boost.Src != "" && !f.Minimal {
+	if f.Boost.Src != "" && !f.Minimal && cpuGovBoostScope(f) == cpuGovBoostGlobal {
 		boost := renderSys(path.Join(path.Dir(layout.PolicyDir(0)), "boost"))
 		if err := b.file(boost, renderUint(f.Boost.V), layout.OwnerAgent, 0o644); err != nil {
 			return err
@@ -138,6 +149,17 @@ func renderPolicyEntries(f *CPUFreqSpec, pol renderPolicy) []renderEntry {
 		cur = f.CPUInfoMaxKHz.V
 	}
 	cpuList := renderCPUList(pol.CPUs)
+	// scaling_setspeed is the userspace governor's: A where that governor is
+	// available, showing the frequency it holds while it runs
+	// (v6.12 cpufreq_userspace.c:50-53, 88) and <unsupported> otherwise.
+	modeled := cpuGovModeled(f)
+	setspeed, setspeedOwner := "<unsupported>\n", layout.OwnerRender
+	if modeled && slices.Contains(govs, "userspace") {
+		setspeedOwner = layout.OwnerAgent
+		if f.Governor.V == "userspace" {
+			setspeed = renderUint(cur)
+		}
+	}
 	// The kernel resolves policy->min and policy->max to the frequency table
 	// on every policy update, the first one at boot included
 	// (cpufreq.c:2668-2681), so a table driver whose cpuinfo_max_freq
@@ -154,7 +176,7 @@ func renderPolicyEntries(f *CPUFreqSpec, pol renderPolicy) []renderEntry {
 		{name: "scaling_min_freq", content: renderUint(boot.effMinKHz()), owner: layout.OwnerAgent, mode: 0o644},
 		{name: "scaling_max_freq", content: renderUint(boot.effMaxKHz()), owner: layout.OwnerAgent, mode: 0o644},
 		{name: "scaling_cur_freq", content: renderUint(cur), owner: layout.OwnerEmulator, mode: 0o444},
-		{name: "scaling_setspeed", content: "<unsupported>\n", owner: layout.OwnerRender, mode: 0o644},
+		{name: "scaling_setspeed", content: setspeed, owner: setspeedOwner, mode: 0o644},
 		{name: "affected_cpus", content: cpuList, owner: layout.OwnerRender, mode: 0o444},
 		{name: "related_cpus", content: cpuList, owner: layout.OwnerRender, mode: 0o444},
 	}
@@ -166,18 +188,35 @@ func renderPolicyEntries(f *CPUFreqSpec, pol renderPolicy) []renderEntry {
 		}
 		entries = append(entries, renderEntry{name: "scaling_available_frequencies", content: sb.String() + "\n", owner: layout.OwnerRender, mode: 0o444})
 	}
-	if f.Driver.V == "amd-pstate-epp" {
-		// The preference starts at balance_performance (assumed). Under
-		// performance the driver programs EPP 0, which reads performance, and
-		// offers nothing else (amd-pstate.c:1398-1400, 2006-2007).
-		prefs, epp := renderEPPPreferences, "balance_performance\n"
-		if f.Governor.V == "performance" {
-			prefs, epp = "performance\n", "performance\n"
+	if cpuGovHasEPP(f) {
+		// The preference starts at epp.default, balance_performance without
+		// it (assumed). Under performance the setpolicy drivers program EPP
+		// 0, which reads performance (v6.12 amd-pstate.c:1563-1564,
+		// intel_pstate.c:1174-1180), and amd-pstate-epp offers nothing else
+		// (v6.12 amd-pstate.c:1143-1145), so with the governor facts its
+		// list is S and follows the governor. intel_pstate always lists
+		// every preference (v6.12 intel_pstate.c:808-819).
+		prefs, epp := cpuGovEPPList(cpuGovEPPWords(f)), cpuGovEPPDefault(f)+"\n"
+		prefsOwner := layout.OwnerRender
+		if f.Governor.V == "performance" && renderSetpolicyDrivers[f.Driver.V] {
+			epp = "performance\n"
+		}
+		if f.Driver.V == "amd-pstate-epp" {
+			if f.Governor.V == "performance" {
+				prefs = "performance\n"
+			}
+			if modeled {
+				prefsOwner = layout.OwnerEmulator
+			}
 		}
 		entries = append(entries,
 			renderEntry{name: "energy_performance_preference", content: epp, owner: layout.OwnerAgent, mode: 0o644},
-			renderEntry{name: "energy_performance_available_preferences", content: prefs, owner: layout.OwnerRender, mode: 0o444},
+			renderEntry{name: "energy_performance_available_preferences", content: prefs, owner: prefsOwner, mode: 0o444},
 		)
+	}
+	if modeled && cpuGovBoostScope(f) == cpuGovBoostPerCPU {
+		// cpufreq_policy.boost_enabled, 0644 (v6.12 cpufreq.c:616-650).
+		entries = append(entries, renderEntry{name: "boost", content: renderUint(cpuGovBootBoost(f)), owner: layout.OwnerAgent, mode: 0o644})
 	}
 	return entries
 }

@@ -37,6 +37,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: GOVERNOR_RESTORE_ON_EXIT
+              value: "true"
+            - name: GOVERNOR_WRITES
+              value: "false"
             - name: METRICS_ADDR
               value: ":8080"
             - name: RECONCILE_INTERVAL

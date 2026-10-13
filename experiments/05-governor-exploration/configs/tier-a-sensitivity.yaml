@@ -1,0 +1,62 @@
+# Q5 of experiment 05: which conclusions survive the assumed parameters.
+# Each assumed fact of the governor and GPU clock models runs at a low, mid
+# and high value, one fact at a time, on a smaller grid than tier-a.yaml:
+# the arms the defaults choose between, two loads of two CPU classes, a
+# one-GPU job and a gather job (four GPUs sending into an idle one). CPU
+# facts vary the CPU cells only, GPU facts the GPU cells only. The receiver
+# gate also runs forced on here; with slowFraction below the neutral 1.0 of
+# the repository profiles, the gather jobs show what sustained buys back.
+name: tier-a-sensitivity
+seeds: [1, 2]
+durationS: 60
+settleS: 10
+stepS: 2
+substepMS: 100
+limitFactor: 10
+cpu:
+  profiles:
+  - amd-epyc-9534-2s-energy-only
+  - intel-xeon-6530-2s-rapl
+  - intel-xeon-2s-rapl
+  - amd-epyc-2s-hsmp
+  arms:
+  - {preset: default}
+  - {preset: performance}
+  - {preset: balanced}
+  - {preset: efficiency}
+  idle: true
+  steadyPct: [30, 70]
+  classes:
+    cpu.compute_bound: {memoryIntensity: 0.2, ioIntensity: 0.05}
+    cpu.memory_bound:  {memoryIntensity: 0.85, ioIntensity: 0.1}
+gpu:
+  profiles:
+  - amd-radeon-pro-w7900-4gpu
+  - amd-instinct-mi300x-8gpu
+  - nvidia-h100-nvl-8gpu
+  - nvidia-l40s-4gpu
+  arms:
+  - {preset: auto}
+  - {preset: sustained}
+  - {preset: efficient, ceilingPct: [75]}
+  - {preset: peak}
+  capsPct: [100]
+  receiverGates: [profile, "on"]
+  classes:
+    gpu.compute_bound: {memoryIntensity: 0.2}
+    gpu.memory_bound:  {memoryIntensity: 0.85}
+  jobs:
+  - {gpus: 1}
+  - {gpus: 4, gather: [0.3]}
+  idle: true
+  cpuUtil: 0.05
+sensitivity:
+- {fact: idleGovernorDeltaPctOfIdle, values: [0, 2, 5]}
+- {fact: eppGain, values: [0.5, 1, 2]}
+- {fact: eppCeilingDrop, values: [0, 0.2, 0.25]}
+- {fact: dataPathHoldW, values: [1, 10, 50]}
+- {fact: gatingOffIdleW, values: [5, 20, 50]}
+- {fact: clockBeta, values: [1.0, 1.5, 2.5]}
+- {fact: memoryKneeFrac, values: [0.4, 0.65, 0.87]}
+- {fact: slowFraction, values: [0.5, 0.7]}
+- {fact: autoHoldS, values: [2, 10, 60]}

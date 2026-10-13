@@ -7,23 +7,58 @@ state/.tmp R dir 0755
 state/amdgpu R dir 0755
 state/amdgpu/card1 R dir 0755
 state/amdgpu/card1/gfx_version R file 0444
+state/amdgpu/card1/od_writable R file 0444
+state/amdgpu/card1/perf_levels R file 0444
+state/amdgpu/card1/unprivileged_set_noop R file 0444
 state/amdgpu/card2 R dir 0755
 state/amdgpu/card2/gfx_version R file 0444
+state/amdgpu/card2/od_writable R file 0444
+state/amdgpu/card2/perf_levels R file 0444
+state/amdgpu/card2/unprivileged_set_noop R file 0444
 state/amdgpu/card3 R dir 0755
 state/amdgpu/card3/gfx_version R file 0444
+state/amdgpu/card3/od_writable R file 0444
+state/amdgpu/card3/perf_levels R file 0444
+state/amdgpu/card3/unprivileged_set_noop R file 0444
 state/amdgpu/card4 R dir 0755
 state/amdgpu/card4/gfx_version R file 0444
+state/amdgpu/card4/od_writable R file 0444
+state/amdgpu/card4/perf_levels R file 0444
+state/amdgpu/card4/unprivileged_set_noop R file 0444
 state/amdgpu/card5 R dir 0755
 state/amdgpu/card5/gfx_version R file 0444
+state/amdgpu/card5/od_writable R file 0444
+state/amdgpu/card5/perf_levels R file 0444
+state/amdgpu/card5/unprivileged_set_noop R file 0444
 state/amdgpu/card6 R dir 0755
 state/amdgpu/card6/gfx_version R file 0444
+state/amdgpu/card6/od_writable R file 0444
+state/amdgpu/card6/perf_levels R file 0444
+state/amdgpu/card6/unprivileged_set_noop R file 0444
 state/amdgpu/card7 R dir 0755
 state/amdgpu/card7/gfx_version R file 0444
+state/amdgpu/card7/od_writable R file 0444
+state/amdgpu/card7/perf_levels R file 0444
+state/amdgpu/card7/unprivileged_set_noop R file 0444
 state/amdgpu/card8 R dir 0755
 state/amdgpu/card8/gfx_version R file 0444
+state/amdgpu/card8/od_writable R file 0444
+state/amdgpu/card8/perf_levels R file 0444
+state/amdgpu/card8/unprivileged_set_noop R file 0444
 state/hwemu.json R file 0444
 state/tools.json R file 0444
 sys R dir 0755
+sys/bus R dir 0755
+sys/bus/pci R dir 0755
+sys/bus/pci/devices R dir 0755
+sys/bus/pci/devices/0000:10:00.0 R link 0777 -> ../../../devices/pci0000:10/0000:10:00.0
+sys/bus/pci/devices/0000:11:00.0 R link 0777 -> ../../../devices/pci0000:11/0000:11:00.0
+sys/bus/pci/devices/0000:12:00.0 R link 0777 -> ../../../devices/pci0000:12/0000:12:00.0
+sys/bus/pci/devices/0000:13:00.0 R link 0777 -> ../../../devices/pci0000:13/0000:13:00.0
+sys/bus/pci/devices/0000:14:00.0 R link 0777 -> ../../../devices/pci0000:14/0000:14:00.0
+sys/bus/pci/devices/0000:15:00.0 R link 0777 -> ../../../devices/pci0000:15/0000:15:00.0
+sys/bus/pci/devices/0000:16:00.0 R link 0777 -> ../../../devices/pci0000:16/0000:16:00.0
+sys/bus/pci/devices/0000:17:00.0 R link 0777 -> ../../../devices/pci0000:17/0000:17:00.0
 sys/class R dir 0755
 sys/class/drm R dir 0755
 sys/class/drm/card0 R link 0777 -> ../../devices/pci0000:02/0000:02:00.0/drm/card0
@@ -73,6 +108,15 @@ sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2/power1_cap_default R file 0444
 sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2/power1_cap_max R file 0444
 sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2/power1_cap_min R file 0444
 sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2/power1_input S file 0444
+sys/devices/pci0000:10/0000:10:00.0/pm_policy R dir 0755
+sys/devices/pci0000:10/0000:10:00.0/pm_policy/soc_pstate A file 0644
+sys/devices/pci0000:10/0000:10:00.0/pm_policy/xgmi_plpd A file 0644
+sys/devices/pci0000:10/0000:10:00.0/power_dpm_force_performance_level A file 0644
+sys/devices/pci0000:10/0000:10:00.0/pp_dpm_fclk S file 0644
+sys/devices/pci0000:10/0000:10:00.0/pp_dpm_mclk S file 0644
+sys/devices/pci0000:10/0000:10:00.0/pp_dpm_sclk S file 0644
+sys/devices/pci0000:10/0000:10:00.0/pp_dpm_socclk S file 0644
+sys/devices/pci0000:10/0000:10:00.0/pp_od_clk_voltage A file 0644
 sys/devices/pci0000:10/0000:10:00.0/product_name R file 0444
 sys/devices/pci0000:10/0000:10:00.0/vbios_version R file 0444
 sys/devices/pci0000:10/0000:10:00.0/vendor R file 0444
@@ -91,6 +135,15 @@ sys/devices/pci0000:11/0000:11:00.0/hwmon/hwmon3/power1_cap_default R file 0444
 sys/devices/pci0000:11/0000:11:00.0/hwmon/hwmon3/power1_cap_max R file 0444
 sys/devices/pci0000:11/0000:11:00.0/hwmon/hwmon3/power1_cap_min R file 0444
 sys/devices/pci0000:11/0000:11:00.0/hwmon/hwmon3/power1_input S file 0444
+sys/devices/pci0000:11/0000:11:00.0/pm_policy R dir 0755
+sys/devices/pci0000:11/0000:11:00.0/pm_policy/soc_pstate A file 0644
+sys/devices/pci0000:11/0000:11:00.0/pm_policy/xgmi_plpd A file 0644
+sys/devices/pci0000:11/0000:11:00.0/power_dpm_force_performance_level A file 0644
+sys/devices/pci0000:11/0000:11:00.0/pp_dpm_fclk S file 0644
+sys/devices/pci0000:11/0000:11:00.0/pp_dpm_mclk S file 0644
+sys/devices/pci0000:11/0000:11:00.0/pp_dpm_sclk S file 0644
+sys/devices/pci0000:11/0000:11:00.0/pp_dpm_socclk S file 0644
+sys/devices/pci0000:11/0000:11:00.0/pp_od_clk_voltage A file 0644
 sys/devices/pci0000:11/0000:11:00.0/product_name R file 0444
 sys/devices/pci0000:11/0000:11:00.0/vbios_version R file 0444
 sys/devices/pci0000:11/0000:11:00.0/vendor R file 0444
@@ -109,6 +162,15 @@ sys/devices/pci0000:12/0000:12:00.0/hwmon/hwmon4/power1_cap_default R file 0444
 sys/devices/pci0000:12/0000:12:00.0/hwmon/hwmon4/power1_cap_max R file 0444
 sys/devices/pci0000:12/0000:12:00.0/hwmon/hwmon4/power1_cap_min R file 0444
 sys/devices/pci0000:12/0000:12:00.0/hwmon/hwmon4/power1_input S file 0444
+sys/devices/pci0000:12/0000:12:00.0/pm_policy R dir 0755
+sys/devices/pci0000:12/0000:12:00.0/pm_policy/soc_pstate A file 0644
+sys/devices/pci0000:12/0000:12:00.0/pm_policy/xgmi_plpd A file 0644
+sys/devices/pci0000:12/0000:12:00.0/power_dpm_force_performance_level A file 0644
+sys/devices/pci0000:12/0000:12:00.0/pp_dpm_fclk S file 0644
+sys/devices/pci0000:12/0000:12:00.0/pp_dpm_mclk S file 0644
+sys/devices/pci0000:12/0000:12:00.0/pp_dpm_sclk S file 0644
+sys/devices/pci0000:12/0000:12:00.0/pp_dpm_socclk S file 0644
+sys/devices/pci0000:12/0000:12:00.0/pp_od_clk_voltage A file 0644
 sys/devices/pci0000:12/0000:12:00.0/product_name R file 0444
 sys/devices/pci0000:12/0000:12:00.0/vbios_version R file 0444
 sys/devices/pci0000:12/0000:12:00.0/vendor R file 0444
@@ -127,6 +189,15 @@ sys/devices/pci0000:13/0000:13:00.0/hwmon/hwmon5/power1_cap_default R file 0444
 sys/devices/pci0000:13/0000:13:00.0/hwmon/hwmon5/power1_cap_max R file 0444
 sys/devices/pci0000:13/0000:13:00.0/hwmon/hwmon5/power1_cap_min R file 0444
 sys/devices/pci0000:13/0000:13:00.0/hwmon/hwmon5/power1_input S file 0444
+sys/devices/pci0000:13/0000:13:00.0/pm_policy R dir 0755
+sys/devices/pci0000:13/0000:13:00.0/pm_policy/soc_pstate A file 0644
+sys/devices/pci0000:13/0000:13:00.0/pm_policy/xgmi_plpd A file 0644
+sys/devices/pci0000:13/0000:13:00.0/power_dpm_force_performance_level A file 0644
+sys/devices/pci0000:13/0000:13:00.0/pp_dpm_fclk S file 0644
+sys/devices/pci0000:13/0000:13:00.0/pp_dpm_mclk S file 0644
+sys/devices/pci0000:13/0000:13:00.0/pp_dpm_sclk S file 0644
+sys/devices/pci0000:13/0000:13:00.0/pp_dpm_socclk S file 0644
+sys/devices/pci0000:13/0000:13:00.0/pp_od_clk_voltage A file 0644
 sys/devices/pci0000:13/0000:13:00.0/product_name R file 0444
 sys/devices/pci0000:13/0000:13:00.0/vbios_version R file 0444
 sys/devices/pci0000:13/0000:13:00.0/vendor R file 0444
@@ -145,6 +216,15 @@ sys/devices/pci0000:14/0000:14:00.0/hwmon/hwmon6/power1_cap_default R file 0444
 sys/devices/pci0000:14/0000:14:00.0/hwmon/hwmon6/power1_cap_max R file 0444
 sys/devices/pci0000:14/0000:14:00.0/hwmon/hwmon6/power1_cap_min R file 0444
 sys/devices/pci0000:14/0000:14:00.0/hwmon/hwmon6/power1_input S file 0444
+sys/devices/pci0000:14/0000:14:00.0/pm_policy R dir 0755
+sys/devices/pci0000:14/0000:14:00.0/pm_policy/soc_pstate A file 0644
+sys/devices/pci0000:14/0000:14:00.0/pm_policy/xgmi_plpd A file 0644
+sys/devices/pci0000:14/0000:14:00.0/power_dpm_force_performance_level A file 0644
+sys/devices/pci0000:14/0000:14:00.0/pp_dpm_fclk S file 0644
+sys/devices/pci0000:14/0000:14:00.0/pp_dpm_mclk S file 0644
+sys/devices/pci0000:14/0000:14:00.0/pp_dpm_sclk S file 0644
+sys/devices/pci0000:14/0000:14:00.0/pp_dpm_socclk S file 0644
+sys/devices/pci0000:14/0000:14:00.0/pp_od_clk_voltage A file 0644
 sys/devices/pci0000:14/0000:14:00.0/product_name R file 0444
 sys/devices/pci0000:14/0000:14:00.0/vbios_version R file 0444
 sys/devices/pci0000:14/0000:14:00.0/vendor R file 0444
@@ -163,6 +243,15 @@ sys/devices/pci0000:15/0000:15:00.0/hwmon/hwmon7/power1_cap_default R file 0444
 sys/devices/pci0000:15/0000:15:00.0/hwmon/hwmon7/power1_cap_max R file 0444
 sys/devices/pci0000:15/0000:15:00.0/hwmon/hwmon7/power1_cap_min R file 0444
 sys/devices/pci0000:15/0000:15:00.0/hwmon/hwmon7/power1_input S file 0444
+sys/devices/pci0000:15/0000:15:00.0/pm_policy R dir 0755
+sys/devices/pci0000:15/0000:15:00.0/pm_policy/soc_pstate A file 0644
+sys/devices/pci0000:15/0000:15:00.0/pm_policy/xgmi_plpd A file 0644
+sys/devices/pci0000:15/0000:15:00.0/power_dpm_force_performance_level A file 0644
+sys/devices/pci0000:15/0000:15:00.0/pp_dpm_fclk S file 0644
+sys/devices/pci0000:15/0000:15:00.0/pp_dpm_mclk S file 0644
+sys/devices/pci0000:15/0000:15:00.0/pp_dpm_sclk S file 0644
+sys/devices/pci0000:15/0000:15:00.0/pp_dpm_socclk S file 0644
+sys/devices/pci0000:15/0000:15:00.0/pp_od_clk_voltage A file 0644
 sys/devices/pci0000:15/0000:15:00.0/product_name R file 0444
 sys/devices/pci0000:15/0000:15:00.0/vbios_version R file 0444
 sys/devices/pci0000:15/0000:15:00.0/vendor R file 0444
@@ -181,6 +270,15 @@ sys/devices/pci0000:16/0000:16:00.0/hwmon/hwmon8/power1_cap_default R file 0444
 sys/devices/pci0000:16/0000:16:00.0/hwmon/hwmon8/power1_cap_max R file 0444
 sys/devices/pci0000:16/0000:16:00.0/hwmon/hwmon8/power1_cap_min R file 0444
 sys/devices/pci0000:16/0000:16:00.0/hwmon/hwmon8/power1_input S file 0444
+sys/devices/pci0000:16/0000:16:00.0/pm_policy R dir 0755
+sys/devices/pci0000:16/0000:16:00.0/pm_policy/soc_pstate A file 0644
+sys/devices/pci0000:16/0000:16:00.0/pm_policy/xgmi_plpd A file 0644
+sys/devices/pci0000:16/0000:16:00.0/power_dpm_force_performance_level A file 0644
+sys/devices/pci0000:16/0000:16:00.0/pp_dpm_fclk S file 0644
+sys/devices/pci0000:16/0000:16:00.0/pp_dpm_mclk S file 0644
+sys/devices/pci0000:16/0000:16:00.0/pp_dpm_sclk S file 0644
+sys/devices/pci0000:16/0000:16:00.0/pp_dpm_socclk S file 0644
+sys/devices/pci0000:16/0000:16:00.0/pp_od_clk_voltage A file 0644
 sys/devices/pci0000:16/0000:16:00.0/product_name R file 0444
 sys/devices/pci0000:16/0000:16:00.0/vbios_version R file 0444
 sys/devices/pci0000:16/0000:16:00.0/vendor R file 0444
@@ -199,6 +297,15 @@ sys/devices/pci0000:17/0000:17:00.0/hwmon/hwmon9/power1_cap_default R file 0444
 sys/devices/pci0000:17/0000:17:00.0/hwmon/hwmon9/power1_cap_max R file 0444
 sys/devices/pci0000:17/0000:17:00.0/hwmon/hwmon9/power1_cap_min R file 0444
 sys/devices/pci0000:17/0000:17:00.0/hwmon/hwmon9/power1_input S file 0444
+sys/devices/pci0000:17/0000:17:00.0/pm_policy R dir 0755
+sys/devices/pci0000:17/0000:17:00.0/pm_policy/soc_pstate A file 0644
+sys/devices/pci0000:17/0000:17:00.0/pm_policy/xgmi_plpd A file 0644
+sys/devices/pci0000:17/0000:17:00.0/power_dpm_force_performance_level A file 0644
+sys/devices/pci0000:17/0000:17:00.0/pp_dpm_fclk S file 0644
+sys/devices/pci0000:17/0000:17:00.0/pp_dpm_mclk S file 0644
+sys/devices/pci0000:17/0000:17:00.0/pp_dpm_sclk S file 0644
+sys/devices/pci0000:17/0000:17:00.0/pp_dpm_socclk S file 0644
+sys/devices/pci0000:17/0000:17:00.0/pp_od_clk_voltage A file 0644
 sys/devices/pci0000:17/0000:17:00.0/product_name R file 0444
 sys/devices/pci0000:17/0000:17:00.0/vbios_version R file 0444
 sys/devices/pci0000:17/0000:17:00.0/vendor R file 0444
@@ -206,8 +313,16 @@ sys/devices/system R dir 0755
 sys/devices/system/cpu R dir 0755
 sys/devices/system/cpu/cpufreq R dir 0755
 sys/devices/system/cpu/cpufreq/boost A file 0644
+sys/devices/system/cpu/cpufreq/conservative R dir 0755
+sys/devices/system/cpu/cpufreq/conservative/down_threshold A file 0644
+sys/devices/system/cpu/cpufreq/conservative/freq_step A file 0644
+sys/devices/system/cpu/cpufreq/conservative/up_threshold A file 0644
+sys/devices/system/cpu/cpufreq/ondemand R dir 0755
+sys/devices/system/cpu/cpufreq/ondemand/sampling_rate A file 0644
+sys/devices/system/cpu/cpufreq/ondemand/up_threshold A file 0644
 sys/devices/system/cpu/cpufreq/policy{N} R dir 0755 [N=0-383]
 sys/devices/system/cpu/cpufreq/policy{N}/affected_cpus R file 0444 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/boost A file 0644 [N=0-383]
 sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_max_freq R file 0444 [N=0-383]
 sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_min_freq R file 0444 [N=0-383]
 sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_transition_latency R file 0444 [N=0-383]
@@ -219,7 +334,9 @@ sys/devices/system/cpu/cpufreq/policy{N}/scaling_driver R file 0444 [N=0-383]
 sys/devices/system/cpu/cpufreq/policy{N}/scaling_governor A file 0644 [N=0-383]
 sys/devices/system/cpu/cpufreq/policy{N}/scaling_max_freq A file 0644 [N=0-383]
 sys/devices/system/cpu/cpufreq/policy{N}/scaling_min_freq A file 0644 [N=0-383]
-sys/devices/system/cpu/cpufreq/policy{N}/scaling_setspeed R file 0644 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/scaling_setspeed A file 0644 [N=0-383]
+sys/devices/system/cpu/cpufreq/schedutil R dir 0755
+sys/devices/system/cpu/cpufreq/schedutil/rate_limit_us A file 0644
 sys/devices/system/cpu/cpu{N} R dir 0755 [N=0-383]
 sys/devices/system/cpu/cpu{N}/cpufreq R link 0777 -> ../cpufreq/policy{N} [N=0-383]
 sys/devices/virtual R dir 0755

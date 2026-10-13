@@ -299,6 +299,49 @@ func nodeKstrtou(v string, base, bits int) (uint64, bool) {
 	return u, err == nil
 }
 
+// nodeSscanfU parses v as the kernel's sscanf("%u") does (lib/vsprintf.c,
+// vsscanf): spaces, then decimal digits up to the first other character,
+// which ends the number. No digit is a parse error; so is a value above 32
+// bits, which the kernel would truncate.
+func nodeSscanfU(v string) (uint64, bool) {
+	v = strings.TrimLeft(v, " \t\n\v\f\r")
+	end := 0
+	for end < len(v) && v[end] >= '0' && v[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0, false
+	}
+	u, err := strconv.ParseUint(v[:end], 10, 32)
+	return u, err == nil
+}
+
+// nodeKstrtobool parses v as the kernel's kstrtobool does
+// (lib/kstrtox.c): the first character decides, y, Y, t, T, e, E or 1 for
+// true and n, N, f, F, d, D or 0 for false, and o or O needs n or f after
+// it. It returns 1 or 0.
+func nodeKstrtobool(v string) (int, bool) {
+	if v == "" {
+		return 0, false
+	}
+	switch v[0] {
+	case 'y', 'Y', 't', 'T', 'e', 'E', '1':
+		return 1, true
+	case 'n', 'N', 'f', 'F', 'd', 'D', '0':
+		return 0, true
+	case 'o', 'O':
+		if len(v) > 1 {
+			switch v[1] {
+			case 'n', 'N':
+				return 1, true
+			case 'f', 'F':
+				return 0, true
+			}
+		}
+	}
+	return 0, false
+}
+
 // nodeParseInt parses a signed decimal, as kstrtol with base 10 does.
 func nodeParseInt(v string) (int64, bool) {
 	x, err := strconv.ParseInt(v, 10, 64)
@@ -320,6 +363,27 @@ func nodeBoolHandler(dst *int) (func(string) (string, string), func() string) {
 			return EventRevertedOutOfRange, strconv.Itoa(*dst)
 		}
 		return EventParseError, strconv.Itoa(*dst)
+	}
+	return handle, func() string { return strconv.Itoa(*dst) + "\n" }
+}
+
+// nodeFlagHandler is an attribute that takes any unsigned number and keeps
+// whether it is non-zero, such as intel_pstate/hwp_dynamic_boost
+// (kstrtouint, then !!input; intel_pstate.c:1677-1690 in v6.12).
+func nodeFlagHandler(dst *int) (func(string) (string, string), func() string) {
+	handle := func(v string) (string, string) {
+		u, ok := nodeKstrtou(v, 10, 32)
+		if !ok {
+			return EventParseError, strconv.Itoa(*dst)
+		}
+		*dst = 0
+		if u != 0 {
+			*dst = 1
+		}
+		if u > 1 {
+			return EventClamped, strconv.Itoa(*dst)
+		}
+		return EventAccepted, strconv.Itoa(*dst)
 	}
 	return handle, func() string { return strconv.Itoa(*dst) + "\n" }
 }
@@ -425,6 +489,8 @@ func (p *nodePolicy) freqHandler(high bool) (func(string) (string, string), func
 
 // nodeSetspeedHandler is scaling_setspeed without the userspace governor: the
 // write fails (cpufreq.c:901-925), modelled as a revert to <unsupported>.
+// With the governor facts, nodeGovPolicy.setspeedHandler takes over and
+// accepts a frequency under userspace.
 func nodeSetspeedHandler() (func(string) (string, string), func() string) {
 	handle := func(v string) (string, string) {
 		if v == "" {

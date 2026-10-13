@@ -91,7 +91,7 @@ A scenario may not set `NODE_POWER_*` or `FACILITY_*`, neither in `joulie.set` n
 
 The sources:
 
-- `jobs`: inline job kinds. Each is `name`, `class` (`performance` or `standard`), `count` groups submitted `every` apart, `pods` per group (a gang with `gang: true`), `requests` (cpu and memory), `gpus` (`resource`: `nvidia.com/gpu`, `amd.com/gpu`, `nvidia.com/gpu.shared` or `nvidia.com/mig-<profile>`, and `count`), the ideal `runtime`, `workClass`, `profile` (`cpuUtilization`, `gpuUtilization`, `memoryIntensity`, `ioIntensity`, `cpuFeedIntensityGpu`), `sensitivity`, and the pod's `affinity`, `nodeSelector` and `tolerations`.
+- `jobs`: inline job kinds. Each is `name`, `class` (`performance` or `standard`), `count` groups submitted `every` apart, `pods` per group (a gang with `gang: true`), `requests` (cpu and memory), `gpus` (`resource`: `nvidia.com/gpu`, `amd.com/gpu`, `nvidia.com/gpu.shared` or `nvidia.com/mig-<profile>`, and `count`), the ideal `runtime`, `workClass`, `profile` (`cpuUtilization`, `gpuUtilization`, `memoryIntensity`, `ioIntensity`, `cpuFeedIntensityGpu`, and `peerTransferIntensity`, the share of a multi-GPU job's GPU time spent copying between its GPUs, see [Peer transfers]({{< relref "/docs/simulator/workload-simulator.md#peer-transfers" >}})), `sensitivity`, and the pod's `affinity`, `nodeSelector` and `tolerations`.
 - `generate.workloadgen`: workloadgen flags without the dash, from an allowlist. The runner sets `seed`, `base-speed-per-core`, `out` and `schema-version` (always v3) itself.
 - `trace`: a v3 trace file, relative to the repository root.
 

@@ -66,6 +66,68 @@ Detailed deployment/runtime configuration is documented in:
 
 - [Agent Runtime Modes]({{< relref "/docs/getting-started/02-agent-runtime-modes.md" >}})
 
+## Governor discovery
+
+At every reconcile the agent also reads the frequency governors of its node, without writing anything, and publishes them in `NodeHardware.status`. Discovery is always on; whether the agent ever writes a governor is a separate switch.
+
+| Component | Reads (under the host `/sys` mounted at `/host-sys`) | Publishes |
+|---|---|---|
+| CPU | every `devices/system/cpu/cpufreq/policyN/`: `scaling_driver`, `scaling_governor`, `scaling_available_governors`, `energy_performance_preference`, `energy_performance_available_preferences`; `cpufreq/boost`, `intel_pstate/{status,no_turbo}`, `amd_pstate/status`, each policy's `boost`; the `hwp` flag of `/proc/cpuinfo` | `cpu.governor`: `driver`, `driverMode`, `current` (`mixed` when the policies differ), `available`, `epp`, `boost` (`state`, `scope`), `presets`, `baseline`, `writable` |
+| CPU landmarks | `cpuinfo_min_freq`, `cpuinfo_max_freq` and `base_frequency` of every policy | `cpu.landmarks`: `minFreqMHz` (lowest minimum), `maxBoostMHz` (highest maximum), `nominalFreqMHz` (highest base frequency, intel_pstate only) |
+| AMD GPU | every `bus/pci/devices/<bus id>/` with vendor `0x1002` and a `power_dpm_force_performance_level` file (and a `driver` link naming `amdgpu` where there is one): the level, the lowest and highest levels of `pp_dpm_sclk`, `pp_dpm_mclk`, `pp_dpm_fclk`, whether `pp_od_clk_voltage` exists | `gpu.governor` with `mechanism: amdgpu-sysfs`, `current` (the level, `mixed` when the GPUs differ), `uniform`, `presets`, `clockRangesMHz` (`graphics`, `memory`, `fabric`), `baseline` per bus id, `writable` |
+| NVIDIA GPU | only when the `nvidia-smi` inventory query answers, as for caps: `nvidia-smi --query-gpu=pci.bus_id,clocks.sm,clocks.mem,clocks.max.sm,clocks.max.mem,pstate,clocks_event_reasons.active --format=csv,noheader,nounits` and `nvidia-smi -q -d SUPPORTED_CLOCKS` | `gpu.governor` with `mechanism: nvidia-smi`, `current: unknown`, `presets`, `clockRangesMHz` (`graphics`, `memory`), `baseline` per bus id |
+
+Rules:
+
+- GPUs are keyed by PCI bus id, never by a tool's index: `rocm-smi` and HIP enumerate GPUs in opposite orders.
+- `presets` lists every preset the node accepts with the result it gives, `applied` or `equivalent`, and the native setting it maps to (`pkg/governor` is the only place that mapping lives). A preset the hardware cannot express is left out; on a node with several GPUs a preset is listed only when every GPU accepts it. The efficient GPU preset is judged at the default ceiling of 80 % of the maximum compute clock.
+- The NVIDIA architecture comes from the GPU feature discovery labels `nvidia.com/gpu.compute.major` and `minor`, then the product name, then `nvidia.com/gpu.family`. A GPU older than Ampere has no mapping, so nothing is queried and no block is published.
+- A clock lock cannot be read back on NVIDIA, so the baseline level is `unknown`, `current` is `unknown` until the agent sets a lock of its own (then it is the agent's record, such as `-lgc 300,1100`), and `uniform` is false. When either `nvidia-smi` query fails, the GPU governor block is left out and `gpu.warnings` says which query failed; the cap path is unaffected.
+- `presets` and `epp.available` do not depend on the governor the node runs now. amd-pstate-epp lists only `performance` in `energy_performance_available_preferences` while the governor is `performance` and its full set (`default`, `performance`, `balance_performance`, `balance_power`, `power`) under `powersave`; under `performance` discovery publishes and plans with the full set, so `balanced` and `efficiency` are `applied` there before any write and stay so after one.
+- Hardware P-states (the `hwp` row of the mapping) come from the `hwp` flag of `/proc/cpuinfo`, or from an `energy_performance_preference` file under `intel_pstate` or `intel_cpufreq`, which the kernel creates only with HWP.
+- `writable` comes from an `access(2)` write probe on the governor files discovery found, which writes nothing. It catches a read-only `/sys` mount and a non-root agent; a root agent passes it for every file, so an attribute the driver refuses shows only when the agent writes it. NVIDIA has no file to probe: `writable` is true while `nvidia-smi` answers.
+- `baseline` is the state found at the first discovery, before the agent writes anything: per group of CPU policies that share a governor, preference and boost state (`policies` in the kernel's list form, such as `0-63`), and per GPU, with `recordedAt`. Once stored it is kept: the agent reads it back from its own `NodeHardware` and never records over it a state it may have set itself. A GPU discovery that fails for one reconcile keeps the stored GPU baseline in a `gpu.governor` block that holds nothing else.
+- A node without cpufreq, or whose policies have no `scaling_governor`, publishes no CPU governor block; one without any of the frequency files publishes no landmarks.
+
+## Governor control
+
+The agent sets the governor presets of its `NodeTwin`, `spec.cpu.governor` and `spec.gpu.governor`, only when `GOVERNOR_WRITES` is `true` (see [Agent governor control]({{< relref "/docs/getting-started/05-configuration-reference.md#agent-governor-control" >}})). `pkg/governor` maps each preset to the native writes of the node's driver or GPU family; the agent writes them and reports the outcome in `status.controlStatus.cpuGovernor` and `gpuGovernor`, with the native setting in `applied` (such as `powersave epp=balance_power`, `high`, `manual sclk_max=1680` or `-lgc 345,1575`).
+
+Order in a reconcile: the CPU governor, then the CPU cap or the DVFS fallback (which writes `scaling_max_freq` and works under any governor); the GPU governor, then the GPU cap.
+
+| Mechanism | How the agent writes | How it reads back |
+|---|---|---|
+| CPU (`cpufreq`) | every policy's `scaling_governor`, then `energy_performance_preference` where the row sets one (never under `performance`, which the kernel rejects), then boost when the spec names it: `cpufreq/boost`, the inverted `intel_pstate/no_turbo`, or each policy's `boost` (the global `cpufreq/boost` is turned on first when it is off) | each attribute right after its write |
+| AMD GPU (`amdgpu-sysfs`) | `power_dpm_force_performance_level` of every device, by bus id, as root; `efficient` then writes `s 1 <MHz>` to `pp_od_clk_voltage`, waits until the file prints its table again, and writes `c`: the kernel takes one command per write. The devices go in lockstep, so they share each wait. | the level file; the `OD_SCLK` maximum for a ceiling |
+| NVIDIA GPU (`nvidia-smi`) | `nvidia-smi -i <pci bus id> -lgc` or `-lmc`; `-rgc` and `-rmc` only for a lock in the agent's own record, so an operator's lock is never reset | none: a lock has no getter. The result is `applied-unverified` until three busy samples of the clock query (event reasons without GPU idle) show the clocks within the lock, 2 % of slack |
+
+Outcomes:
+
+| Result | When | Then |
+|---|---|---|
+| `applied`, `equivalent` | written and read back; `equivalent` when the preset has no native state of its own here (a fallback word, or the vendor default) | the next reconcile checks the setting still holds |
+| `applied-unverified` | NVIDIA locks issued, not yet seen in use | turns `applied` after the busy samples |
+| `unsupported` | the family cannot express the preset (nothing is written), the driver rejects the value (`EINVAL`, `EOPNOTSUPP`, `EBUSY`; amdgpu answers `EINVAL` for a level its firmware refuses, such as `high` on MI300X), the HTTP control mode or a pool agent | no retry for 30 min unless the intent changes |
+| `not-applied` | the readback differs right after the write, or at the first check after it: a silent no-op, or a value an emulated driver reverts at its next tick | no retry for 30 min unless the intent changes |
+| `refused` | `EACCES`, `EPERM`, `EROFS`, or an `nvidia-smi` permission error | `NodeHardware` `writable: false`; no retry until the agent restarts |
+| `drift` | a checked setting changed later: another writer | applied again at most every 5 min; a level back at `auto` on AMD is a GPU reset and is applied again at once, without counting |
+| `contended` | the third drift within 30 min | no more writes for that component until the intent changes |
+| `disabled` | `GOVERNOR_WRITES` is `false`, or `SIMULATE_ONLY` | discovery only |
+| `restored` | the field disappeared, or `GOVERNOR_WRITES` was turned off, and the baseline went back | |
+| `error` | the mechanism could not run: a missing tool, a table that never printed | tried again after 5 min |
+
+NVIDIA locks are issued again every reconcile while a locked GPU has persistence mode Disabled (a driver that unloads may forget them), and every 5 min otherwise.
+
+Restore:
+
+- When a field disappears (the controller manager's `GOVERNOR_CONTROL` turned off, the node left the profile that sets it, the `NodeTwin` is gone, or its spec could not be read for longer than the spec read timeout, 5 min by default, after which caps are relaxed too) the agent writes the baseline back once, only the attributes that differ from it, and only when it changed something since the baseline. A restarted agent knows that from the last result in the `NodeTwin` status. Boost goes back only when the agent wrote it, also when only the `boost` field disappears. NVIDIA restore resets the agent's own locks.
+- When the agent runs with `GOVERNOR_WRITES` `false` after an earlier run changed a component, it writes the baseline back once, by the same rules, also while the field is still in the spec; that is the only write it makes, and later reconciles report `disabled`.
+- On SIGTERM or SIGINT, with `GOVERNOR_RESTORE_ON_EXIT` `true` (the default), the agent stops reconciling and restores before it exits, within the pod's termination grace period. A rolling update of the agent therefore puts the baseline back and the new agent applies the preset again a reconcile later. SIGKILL and an OOM kill restore nothing; the baseline in `NodeHardware` stays for the next start. DVFS ceilings are not restored on exit.
+- When there is nothing to restore, the governor status the agent wrote is removed with the field, also one an earlier run of the agent wrote.
+- A restarted agent whose `NodeHardware` is gone, after an earlier run changed a component, cannot trust the state it sees: the GPU baseline is the vendor default (`auto` on AMD; an NVIDIA lock stays `unknown`), and the CPU baseline is the state seen at that start, with a warning, because the driver's default governor is unknowable.
+
+The pod spec is unchanged: governor writes use the `/host-sys` mount, `runAsUser: 0` and the privileges the DVFS fallback already uses. An agent without them gets `refused`.
+
 ## Enforcement behavior
 
 The agent does not choose cluster policy.

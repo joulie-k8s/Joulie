@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -60,7 +61,7 @@ func TestH30ComponentIdentityAndMeasured(t *testing.T) {
 			cpu := stateComponent(t, s, fmt.Sprintf("cpu%d", i))
 			want := ComponentState{ID: cpu.ID, Type: "cpu", Name: fmt.Sprintf("package-%d", i), Vendor: "Intel", Model: "Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz",
 				SysfsPath: layout.PowercapZoneDir("intel-rapl", i), Index: i, Measured: true}
-			if got := (ComponentState{ID: cpu.ID, Type: cpu.Type, Name: cpu.Name, Vendor: cpu.Vendor, Model: cpu.Model, SysfsPath: cpu.SysfsPath, Index: cpu.Index, Measured: cpu.Measured}); got != want {
+			if got := (ComponentState{ID: cpu.ID, Type: cpu.Type, Name: cpu.Name, Vendor: cpu.Vendor, Model: cpu.Model, SysfsPath: cpu.SysfsPath, Index: cpu.Index, Measured: cpu.Measured}); !reflect.DeepEqual(got, want) {
 				t.Errorf("cpu%d identity %+v, want %+v", i, got, want)
 			}
 			mem := stateComponent(t, s, fmt.Sprintf("memory%d", i))

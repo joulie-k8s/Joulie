@@ -64,9 +64,12 @@ func Render(p *Profile, root string, o RenderOptions) (*Tree, error) {
 		renderBase,
 		renderPowercap,
 		renderCPUFreq,
+		renderCPUGovernor,
 		renderHSMP,
 		renderPCIDevices,
+		renderGPUDPM,
 		renderNVML,
+		renderNVClock,
 		renderTools,
 	} {
 		if err := step(b, p, o); err != nil {
