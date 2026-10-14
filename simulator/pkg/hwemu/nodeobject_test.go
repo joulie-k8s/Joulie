@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	joulie "github.com/matbun/joulie/pkg/api"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -63,9 +64,9 @@ func TestH17NodeObjectCapacityAndAllocatable(t *testing.T) {
 }
 
 // H17: each GPU exposure mode renders the resources the device plugin
-// advertises and the labels GFD publishes. The agent gates GPU control on an
-// allocatable key ending in /gpu (allocatableGPUCount in cmd/agent), so
-// mig-mixed, timeslice-rename and dra must have none.
+// advertises and the labels GFD publishes. Every resource is a GPU resource
+// of the kind pkg/api.GPUResourceKind gives it, the classifier the agent
+// and the controller manager count GPUs with; dra advertises none.
 func TestH17ExposureModesRenderResourcesAndGFDLabels(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -74,32 +75,32 @@ func TestH17ExposureModesRenderResourcesAndGFDLabels(t *testing.T) {
 		replicas  int
 		resources map[string]string
 		labels    map[string]string
-		gpuKey    bool
+		kind      string
 	}{
 		{"whole", 0, 0,
 			map[string]string{"nvidia.com/gpu": "8"},
 			map[string]string{"nvidia.com/gpu.count": "8", "nvidia.com/gpu.replicas": "1", "nvidia.com/gpu.product": "NVIDIA-H100-NVL"},
-			true},
+			joulie.GPUResourceWhole},
 		{"mig-single", 7, 0,
 			map[string]string{"nvidia.com/gpu": "56"},
 			map[string]string{"nvidia.com/gpu.count": "56", "nvidia.com/gpu.product": "NVIDIA-H100-NVL-MIG-1g.12gb", "nvidia.com/mig.strategy": "single"},
-			true},
+			joulie.GPUResourceWhole},
 		{"mig-mixed", 7, 0,
 			map[string]string{"nvidia.com/mig-1g.12gb": "56"},
-			map[string]string{"nvidia.com/mig.strategy": "mixed", "nvidia.com/mig-1g.12gb.count": "56", "nvidia.com/gpu.product": "NVIDIA-H100-NVL"},
-			false},
+			map[string]string{"nvidia.com/mig.strategy": "mixed", "nvidia.com/mig-1g.12gb.count": "56", "nvidia.com/gpu.product": "NVIDIA-H100-NVL", "nvidia.com/gpu.count": "8", "nvidia.com/gpu.replicas": "0"},
+			joulie.GPUResourcePartition},
 		{"timeslice-rename", 0, 4,
 			map[string]string{"nvidia.com/gpu.shared": "32"},
 			map[string]string{"nvidia.com/gpu.replicas": "4", "nvidia.com/gpu.sharing-strategy": "time-slicing", "nvidia.com/gpu.product": "NVIDIA-H100-NVL", "nvidia.com/gpu.count": "8"},
-			false},
+			joulie.GPUResourceShared},
 		{"timeslice-norename", 0, 4,
 			map[string]string{"nvidia.com/gpu": "32"},
 			map[string]string{"nvidia.com/gpu.replicas": "4", "nvidia.com/gpu.sharing-strategy": "time-slicing", "nvidia.com/gpu.product": "NVIDIA-H100-NVL-SHARED"},
-			true},
+			joulie.GPUResourceWhole},
 		{"dra", 0, 0,
 			map[string]string{},
 			map[string]string{"nvidia.com/gpu.product": "NVIDIA-H100-NVL"},
-			false},
+			""},
 	}
 	for _, c := range cases {
 		t.Run(c.exposure, func(t *testing.T) {
@@ -115,14 +116,15 @@ func TestH17ExposureModesRenderResourcesAndGFDLabels(t *testing.T) {
 			}
 			n := p.NodeObject("n")
 			got := map[string]string{}
-			gpuKey := false
+			kind := ""
 			for name, q := range n.Status.Allocatable {
 				if !strings.Contains(string(name), "/") {
 					continue
 				}
 				got[string(name)] = q.String()
-				if strings.HasSuffix(string(name), "/gpu") {
-					gpuKey = true
+				kind = joulie.GPUResourceKind(string(name))
+				if kind == "" {
+					t.Errorf("%s is not a GPU resource for pkg/api.GPUResourceKind", name)
 				}
 				if cq := n.Status.Capacity[name]; cq.Cmp(q) != 0 {
 					t.Errorf("%s: capacity %s and allocatable %s differ", name, cq.String(), q.String())
@@ -131,8 +133,8 @@ func TestH17ExposureModesRenderResourcesAndGFDLabels(t *testing.T) {
 			if renderMapString(got) != renderMapString(c.resources) {
 				t.Errorf("GPU resources = %v, want %v", got, c.resources)
 			}
-			if gpuKey != c.gpuKey {
-				t.Errorf("allocatable has a */gpu key = %v, want %v", gpuKey, c.gpuKey)
+			if kind != c.kind {
+				t.Errorf("GPU resource kind %q, want %q", kind, c.kind)
 			}
 			for k, v := range c.labels {
 				if n.Labels[k] != v {

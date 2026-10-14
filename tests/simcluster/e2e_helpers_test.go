@@ -581,10 +581,10 @@ const (
 	e2eFamilyDVFS      = "dvfs"       // CPU-only, caps through DVFS (E10)
 	e2eFamilyNoCPUCap  = "no-cpu-cap" // CPU-only, no power control (E11)
 	e2eFamilyNVIDIA    = "nvidia"     // NVIDIA GPUs, whole (E10, E11)
-	e2eFamilyAMDGPU    = "amd-gpu"    // AMD GPUs (E11, D1)
-	e2eFamilyGPUShared = "gpu-shared" // MIG or renamed time-slicing (MD01, D18)
+	e2eFamilyAMDGPU    = "amd-gpu"    // AMD GPUs, capped through sysfs with or without tools (E10, E11)
+	e2eFamilyGPUShared = "gpu-shared" // NVIDIA GPUs, MIG or renamed time-slicing (MD01, E10, E11)
 	e2eFamilyNoNFD     = "no-nfd"     // NFD absent (MD02)
-	e2eFamilyNoTools   = "no-tools"   // GPU tools not delivered (MD03)
+	e2eFamilyNoTools   = "no-tools"   // NVIDIA GPUs, nvidia-smi not delivered (MD03)
 	e2eFamilyUnmanaged = "unmanaged"  // joulie.io/managed is not true (MD04)
 	e2eFamilyUnreached = "unreached"  // managed, no agent (E12, D15)
 	e2eFamilyOther     = "other"      // a profile the checks have no expectation for
@@ -601,8 +601,9 @@ var e2eCPUFamily = map[string]string{
 	"vm-no-powercap":          e2eFamilyNoCPUCap,
 }
 
-// e2eSharedExposures are the GPU exposures the controller does not count as
-// GPUs (D18).
+// e2eSharedExposures are the GPU exposures that advertise no <vendor>/gpu
+// resource: MIG devices of the mixed strategy and renamed replicas. MD01
+// checks that they are planned and capped as GPU Nodes all the same.
 var e2eSharedExposures = map[string]bool{"mig-mixed": true, "timeslice-rename": true}
 
 // family is the family of n.
@@ -615,7 +616,7 @@ func (n e2eNode) family() string {
 		return e2eFamilyUnreached
 	case p.GPUs != nil && e2eSharedExposures[p.GPUs.Exposure.V]:
 		return e2eFamilyGPUShared
-	case p.GPUs != nil && n.ToolDelivery == simcluster.ToolDeliveryNone:
+	case p.GPUs != nil && p.GPUs.Vendor == "nvidia" && n.ToolDelivery == simcluster.ToolDeliveryNone:
 		return e2eFamilyNoTools
 	case p.GPUs != nil && p.GPUs.Vendor == "nvidia":
 		return e2eFamilyNVIDIA

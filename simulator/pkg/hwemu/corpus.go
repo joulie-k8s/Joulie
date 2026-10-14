@@ -51,8 +51,9 @@ const renderCorpusSource = "corpus"
 //   - nvidia-smi.txt becomes NVML state with the captured limits, product
 //     and power draw, plus dev/nvidiactl. All GPUs must report the same
 //     limits and product; the draw of GPU 0 stands for all of them;
-//   - rocm-smi.txt becomes amdgpu hwmon devices and the
-//     legacy-agent-contract rocm-smi.
+//   - amdgpu-hwmon/gpuN/ becomes amdgpu hwmon devices with the captured cap,
+//     minimum, maximum and default (renderCorpusAMDGPU). All GPUs must
+//     report the same values.
 //
 // A directory whose name starts with _ is not a machine. Choosing the corpus
 // root, JOULIE_HARDWARE_CORPUS included, is the caller's job.
@@ -145,17 +146,17 @@ func FromCorpus(machineDir string) (*Profile, error) {
 	if err != nil {
 		return fail(err)
 	}
-	rocm, hasRocm, err := read("rocm-smi.txt")
+	amdgpu, err := renderCorpusAMDGPUDevices(machineDir)
 	if err != nil {
 		return fail(err)
 	}
 	switch {
-	case hasNvidia && hasRocm:
-		return fail(errors.New("both nvidia-smi.txt and rocm-smi.txt; a profile has one GPU vendor"))
+	case hasNvidia && len(amdgpu) > 0:
+		return fail(errors.New("both nvidia-smi.txt and " + renderCorpusAMDGPUDir + "/; a profile has one GPU vendor"))
 	case hasNvidia:
 		err = renderCorpusNvidia(p, nvidia, labels, meta.Allocatable.GPU, src)
-	case hasRocm:
-		err = renderCorpusRocm(p, rocm, labels, meta.Allocatable.GPU, src)
+	case len(amdgpu) > 0:
+		err = renderCorpusAMDGPU(p, amdgpu, labels, meta.Allocatable.GPU, src)
 	}
 	if err != nil {
 		return fail(err)
@@ -522,95 +523,122 @@ func renderCorpusNvidia(p *Profile, text string, labels, gpu map[string]string, 
 	return nil
 }
 
-// renderCorpusRocm maps the output of rocm-smi --showpowercap
-// --showproductname --json, as the agent runs it (listAmdDevices in cmd/agent):
-// card<i> keys with string values.
-func renderCorpusRocm(p *Profile, text string, labels, gpu map[string]string, src func(string) string) error {
-	var raw map[string]map[string]any
-	if err := json.Unmarshal([]byte(text), &raw); err != nil {
-		return fmt.Errorf("rocm-smi.txt: %w", err)
+// renderCorpusAMDGPUDir holds the power cap attributes of the amdgpu hwmon
+// device of every AMD GPU of a capture, as scripts/collect-hardware-fixture.sh
+// copies them: gpuN/ for the Nth amdgpu device in bus id order, with
+// power1_cap, power1_cap_min, power1_cap_max and power1_cap_default in
+// microwatts, each one present when it read on the machine.
+const renderCorpusAMDGPUDir = "amdgpu-hwmon"
+
+// renderCorpusAMDGPUFiles are the attributes of one device the capture holds.
+var renderCorpusAMDGPUFiles = []string{"power1_cap", "power1_cap_min", "power1_cap_max", "power1_cap_default"}
+
+// renderCorpusAMDGPUDevices reads the attributes of every captured amdgpu
+// device, by file name and without the newline; nil when the capture has no
+// amdgpu-hwmon/. The devices must be gpu0 to gpuN-1.
+func renderCorpusAMDGPUDevices(machineDir string) ([]map[string]string, error) {
+	root := filepath.Join(machineDir, renderCorpusAMDGPUDir)
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
 	}
-	var cards []map[string]any
-	for i := 0; ; i++ {
-		c, ok := raw[fmt.Sprintf("card%d", i)]
-		if !ok {
-			break
+	if err != nil {
+		return nil, err
+	}
+	var devs []map[string]string
+	for i := range entries {
+		dir := filepath.Join(root, fmt.Sprintf("gpu%d", i))
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			return nil, fmt.Errorf("%s: want gpu0 to gpu%d, one directory per device and nothing else", renderCorpusAMDGPUDir, len(entries)-1)
 		}
-		cards = append(cards, c)
-	}
-	if len(cards) == 0 || len(cards) != len(raw) {
-		return errors.New("rocm-smi.txt: want keys card0..cardN-1")
-	}
-	str := func(c map[string]any, key string) string {
-		if v, ok := c[key]; ok {
-			return strings.TrimSpace(fmt.Sprint(v))
+		attrs := map[string]string{}
+		for _, f := range renderCorpusAMDGPUFiles {
+			b, err := os.ReadFile(filepath.Join(dir, f))
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			attrs[f] = strings.TrimSpace(string(b))
 		}
-		return ""
+		devs = append(devs, attrs)
 	}
-	watts := func(c map[string]any, key string) (float64, error) {
-		v, err := strconv.ParseFloat(strings.TrimSuffix(str(c, key), "W"), 64)
-		if err != nil {
-			return 0, fmt.Errorf("rocm-smi.txt %s: %w", key, err)
-		}
-		return v, nil
-	}
-	const (
-		maxKey = "Max Graphics Package Power (W)"
-		minKey = "Min Graphics Package Power (W)"
-		capKey = "Current Power Cap (W)"
-		avgKey = "Average Graphics Package Power (W)"
-	)
-	first := cards[0]
-	for _, c := range cards[1:] {
-		for _, k := range []string{maxKey, minKey, capKey, "Card Series", "Card SKU"} {
-			if str(c, k) != str(first, k) {
-				return fmt.Errorf("rocm-smi.txt: cards differ in %q; a profile holds one value for all GPUs", k)
+	return devs, nil
+}
+
+// renderCorpusAMDGPU maps the captured amdgpu hwmon attributes to AMD GPUs
+// whose hwmon devices hold the same values, so the agent reads the same cap
+// range from the emulated node as from the capture. power1_cap_default is
+// the limit the GPUs start at; the maximum stands for a missing or empty
+// one. The capture names no product; the labeller's label does when the node
+// has one. A device without a cap of its own (power1_cap absent or
+// 0) is not modelled.
+func renderCorpusAMDGPU(p *Profile, devs []map[string]string, labels, gpu map[string]string, src func(string) string) error {
+	first := devs[0]
+	for i, d := range devs[1:] {
+		for _, f := range renderCorpusAMDGPUFiles {
+			if d[f] != first[f] {
+				return fmt.Errorf("%s: gpu%d and gpu0 differ in %s; a profile holds one value for all GPUs", renderCorpusAMDGPUDir, i+1, f)
 			}
 		}
 	}
-	maxW, err := watts(first, maxKey)
+	watts := func(f string) (float64, bool, error) {
+		v, ok := first[f]
+		if !ok || v == "" {
+			return 0, false, nil
+		}
+		uw, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || uw < 0 {
+			return 0, false, fmt.Errorf("%s/gpu0/%s %q is not a number of microwatts", renderCorpusAMDGPUDir, f, v)
+		}
+		return float64(uw) / 1e6, true, nil
+	}
+	var w [4]float64
+	var has [4]bool
+	for i, f := range renderCorpusAMDGPUFiles {
+		var err error
+		if w[i], has[i], err = watts(f); err != nil {
+			return err
+		}
+	}
+	capW, minW, maxW, defW := w[0], w[1], w[2], w[3]
+	if capW <= 0 || maxW <= 0 {
+		return fmt.Errorf("%s/gpu0 has no power1_cap above 0 W and power1_cap_max: hwemu models only a device with a cap of its own", renderCorpusAMDGPUDir)
+	}
+	exposure, err := renderCorpusExposure(gpu, "amd.com/gpu", len(devs), src)
 	if err != nil {
 		return err
 	}
-	minW, err := watts(first, minKey)
-	if err != nil {
-		return err
-	}
-	capW, err := watts(first, capKey)
-	if err != nil {
-		return err
-	}
-	exposure, err := renderCorpusExposure(gpu, "amd.com/gpu", len(cards), src)
-	if err != nil {
-		return err
-	}
-	file := src("rocm-smi.txt")
+	file := func(f string) string { return src(renderCorpusAMDGPUDir + "/gpu0/" + f) }
 	g := &GPUSpec{
 		Vendor:      "amd",
-		Count:       Fact[int]{V: len(cards), Src: file},
+		Count:       Fact[int]{V: len(devs), Src: src(renderCorpusAMDGPUDir)},
 		PCI:         renderCorpusGPUPCI(labels, "1002", src),
 		Exposure:    exposure,
 		Labeller:    Fact[string]{V: "listed", Src: src("node-labels.json")},
-		PowerSensor: Fact[string]{V: "average", Src: "assumed:the agent reads Average Graphics Package Power"},
+		PowerSensor: Fact[string]{V: "input", Src: "assumed:the capture holds no power reading, and the agent reads none"},
+		Product:     Fact[string]{V: "AMD GPU", Src: "assumed:the capture names no product"},
 	}
-	product := str(first, "Card Series")
-	if product == "" {
-		product = str(first, "Card SKU")
+	for _, k := range []string{"amd.com/gpu.product-name", "beta.amd.com/gpu.product-name", "amd.com/gpu.product"} {
+		if v := labels[k]; v != "" {
+			g.Product = Fact[string]{V: v, Src: src("node-labels.json " + k)}
+			break
+		}
 	}
-	g.Product = Fact[string]{V: product, Src: file}
-	if sku := str(first, "Card SKU"); sku != "" && !strings.Contains(sku, "-") {
-		// rocm-smi prints the middle segment of a two-dash vbios_version as
-		// Card SKU (rocm_smi.py showProduct 2756-2761).
-		g.VBIOSVersion = Fact[string]{V: "113-" + sku + "-000", Src: "assumed:a vbios_version whose middle segment is the captured Card SKU"}
+	g.Limits.MinW = Fact[float64]{V: minW, Src: file("power1_cap_min")}
+	if !has[1] {
+		g.Limits.MinW.Src = "assumed:the capture has no power1_cap_min, which the agent reads as 0 W"
 	}
-	g.Limits.MinW = Fact[float64]{V: minW, Src: file}
-	g.Limits.MaxW = Fact[float64]{V: maxW, Src: file}
-	g.Limits.DefaultW = Fact[float64]{V: capW, Src: "assumed:the capture has no default cap; the current cap stands for it"}
-	g.Tools = append(g.Tools, GPUTool{Name: "rocm-smi", Variant: "legacy-agent-contract"})
+	g.Limits.MaxW = Fact[float64]{V: maxW, Src: file("power1_cap_max")}
+	g.Limits.DefaultW = Fact[float64]{V: defW, Src: file("power1_cap_default")}
+	if defW <= 0 {
+		g.Limits.DefaultW = Fact[float64]{V: maxW, Src: "assumed:the capture has no power1_cap_default; the maximum stands for it"}
+	}
+	if capW != g.Limits.DefaultW.V {
+		g.Limits.CurrentW = Fact[float64]{V: capW, Src: file("power1_cap")}
+	}
 	p.GPUs = g
-	if avg, err := watts(first, avgKey); err == nil {
-		p.Physics.GPU.IdleW = Fact[float64]{V: avg, Src: src("rocm-smi.txt " + avgKey + " of card0")}
-	}
 	return nil
 }
 

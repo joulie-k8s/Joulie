@@ -25,7 +25,7 @@ tar -xf /tmp/fixtures/<machine>.tar -C cmd/agent/testdata/hardware/
 ```
 
 The script overwrites `powercap/`, `cpuinfo`, `cpufreq-driver`,
-`nvidia-smi.txt`, `rocm-smi.txt` and `node-labels.json`, and writes its own
+`nvidia-smi.txt`, `amdgpu-hwmon/` and `node-labels.json`, and writes its own
 `machine.yaml` skeleton. Keep whichever `machine.yaml` you prefer to start from,
 this template's or the script's, and fill in the same keys either way. Delete
 any file the script did not write, because it describes a machine that is not
@@ -45,7 +45,7 @@ open a pull request.
 | `powercap/` | no | Copy of `/sys/class/powercap`, one directory per zone. Absent when the node has no RAPL. |
 | `cpufreq-driver` | no | The active cpufreq scaling driver, one word. |
 | `nvidia-smi.txt` | no | Stdout of the agent's NVIDIA query. Absent when the tool is not installed. |
-| `rocm-smi.txt` | no | Stdout of the agent's ROCm query. Absent when the tool is not installed. |
+| `amdgpu-hwmon/` | no | The power cap attributes of each amdgpu device. Absent when the node has none. |
 | `README.md` | no | Notes that do not fit in `machine.yaml`. Delete this one when you copy. |
 
 Any other file name is rejected. A tarball you forgot to delete, an editor
@@ -88,15 +88,20 @@ package zones by that file and never by the directory pattern, and at least one
 Delete the whole directory if the node has no RAPL. A machine with no powercap
 tree is a useful fixture, not a broken one: `vm-no-rapl` is exactly that.
 
-### `nvidia-smi.txt` and `rocm-smi.txt`
+### `nvidia-smi.txt`
 
-The stdout of the exact queries `cmd/agent/main.go` runs, no more and no less:
+The stdout of the exact query `cmd/agent/main.go` runs, no more and no less:
 
 ```sh
 nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits
-rocm-smi --showpowercap --showproductname --json
 ```
 
-One CSV line per GPU for NVIDIA, a JSON object with one `card<N>` key per GPU
-for ROCm. `nvidia-smi -L` is not captured: the agent runs it only to see whether
-the command succeeds, and its output is a list of GPU UUIDs.
+One CSV line per GPU. `nvidia-smi -L` is not captured: the agent runs it only
+to see whether the command succeeds, and its output is a list of GPU UUIDs.
+
+### `amdgpu-hwmon/`
+
+`gpuN/power1_cap`, `power1_cap_min`, `power1_cap_max` and `power1_cap_default`
+of the amdgpu hwmon device of the Nth amdgpu device in bus id order, copied
+verbatim: whole microwatts. The agent runs no AMD tool; it reads and writes
+these files.

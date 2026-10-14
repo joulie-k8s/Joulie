@@ -212,8 +212,9 @@ type Placement struct {
 // ToolDelivery is the tool delivery of a pool the spec says nothing about:
 // what the install gives the agent on a real node. The agent image ships no
 // GPU tools, so they reach it only through a runtime class or an extra
-// volume; with neither, the default install, the agent's GPU inventory
-// fails, and so the emulated agent gets ToolDeliveryNone.
+// volume; with neither, the default install, the agent's NVIDIA GPU
+// inventory fails (AMD GPUs need no tool), and so the emulated agent gets
+// ToolDeliveryNone.
 func (p Placement) ToolDelivery() string {
 	if p.RuntimeClassName != "" || len(p.ExtraVolumes) > 0 {
 		return ToolDeliveryMounted
@@ -247,7 +248,8 @@ const (
 	// requirement, so the tools run as on a node with the driver installed.
 	ToolDeliveryMounted = "mounted"
 	// ToolDeliveryNone mounts nothing, so the tools fail as on a node
-	// without the driver, and the agent's GPU inventory fails with them.
+	// without the driver, and the agent's NVIDIA GPU inventory fails with
+	// them; AMD GPUs need no tool.
 	ToolDeliveryNone = "none"
 )
 

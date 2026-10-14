@@ -16,22 +16,22 @@ import (
 )
 
 // The agent's GPU commands, verbatim from cmd/agent/main.go: the vendor
-// probes of detectGPUVendor, and the inventory queries of listNvidiaDevices
-// and listAmdDevices.
+// probes of detectGPUVendor and the inventory query of listNvidiaDevices.
+// rocmShowPowerCap asks rocm-smi for --showpowercap, which no release has.
 var (
-	agentNvidiaList    = []string{"nvidia-smi", "-L"}
-	agentNvidiaQuery   = []string{"nvidia-smi", "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name", "--format=csv,noheader,nounits"}
-	agentRocmProduct   = []string{"rocm-smi", "--showproductname"}
-	agentRocmInventory = []string{"rocm-smi", "--showpowercap", "--showproductname", "--json"}
+	agentNvidiaList  = []string{"nvidia-smi", "-L"}
+	agentNvidiaQuery = []string{"nvidia-smi", "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name", "--format=csv,noheader,nounits"}
+	agentRocmProduct = []string{"rocm-smi", "--showproductname"}
+	rocmShowPowerCap = []string{"rocm-smi", "--showpowercap", "--showproductname", "--json"}
 )
 
-// agentNvidiaSet is the call of applyNvidiaGPUCap; agentRocmSet is that of
-// applyAmdGPUCap.
+// agentNvidiaSet is the call of applyNvidiaGPUCap; rocmSetPowerOverDrive is
+// rocm-smi's per-device power cap set.
 func agentNvidiaSet(i, w int) []string {
 	return []string{"nvidia-smi", "-i", strconv.Itoa(i), "-pl", strconv.Itoa(w)}
 }
 
-func agentRocmSet(d, w int) []string {
+func rocmSetPowerOverDrive(d, w int) []string {
 	return []string{"rocm-smi", "-d", strconv.Itoa(d), "--setpoweroverdrive", strconv.Itoa(w)}
 }
 
@@ -240,8 +240,8 @@ func exitCode(t *testing.T, err error) int {
 }
 
 // The agent parses stdout and stderr combined (OSCommandRunner.Run), so a
-// success path that also wrote to stderr would corrupt what it parses, such
-// as the rocm-smi JSON. Each of the six agent calls is run on a node where it
+// success path that also wrote to stderr would corrupt what it parses. Each
+// agent call, and rocm-smi's power cap set, is run on a node where it
 // succeeds.
 func TestS15AgentSuccessPathsWriteNothingToStderr(t *testing.T) {
 	t.Parallel()
@@ -255,15 +255,11 @@ func TestS15AgentSuccessPathsWriteNothingToStderr(t *testing.T) {
 		{"nvidia-smi query", newNVLNode, agentNvidiaQuery},
 		{"nvidia-smi -i 0 -pl 300", newNVLNode, agentNvidiaSet(0, 300)},
 	}
-	for _, v := range []string{rocmVariantCurrent, rocmVariantLegacy} {
-		v := v
-		node := func(t *testing.T) *testNode { return newMI300XNode(t, v, "") }
-		cases = append(cases,
-			tc{"rocm-smi --showproductname " + v, node, agentRocmProduct},
-			tc{"rocm-smi -d 0 --setpoweroverdrive 500 " + v, node, agentRocmSet(0, 500)},
-		)
-	}
-	cases = append(cases, tc{"rocm-smi inventory legacy", func(t *testing.T) *testNode { return newMI300XNode(t, rocmVariantLegacy, "") }, agentRocmInventory})
+	node := func(t *testing.T) *testNode { return newMI300XNode(t, rocmVariantCurrent, "") }
+	cases = append(cases,
+		tc{"rocm-smi --showproductname", node, agentRocmProduct},
+		tc{"rocm-smi -d 0 --setpoweroverdrive 500", node, rocmSetPowerOverDrive(0, 500)},
+	)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			code, stdout, stderr := c.node(t).main("", c.argv...)

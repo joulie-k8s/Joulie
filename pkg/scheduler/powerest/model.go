@@ -48,13 +48,13 @@ func EstimateMarginalImpact(
 		if demand.WorkloadClass == "performance" {
 			utilCoeff = coeff.GPUUtilCoeffPerformance
 		}
-		est.DeltaGPUWatts = float64(demand.GPUCount) * gpuMaxW * utilCoeff
+		est.DeltaGPUWatts = demand.GPUCount * gpuMaxW * utilCoeff
 	}
 
 	est.DeltaTotalWatts = est.DeltaCPUWatts + est.DeltaGPUWatts
 
 	est.Explanation = fmt.Sprintf(
-		"cpu=%.1fW(%.2f cores/%.0f, coeff=%.2f) gpu=%.1fW(%dx%.0fW) total=%.1fW",
+		"cpu=%.1fW(%.2f cores/%.0f, coeff=%.2f) gpu=%.1fW(%.3gx%.0fW) total=%.1fW",
 		est.DeltaCPUWatts, demand.CPUCores, totalCores, coeff.CPUUtilCoeff,
 		est.DeltaGPUWatts, demand.GPUCount, node.GPUMaxWattsPerGPU,
 		est.DeltaTotalWatts,

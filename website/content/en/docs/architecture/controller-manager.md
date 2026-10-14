@@ -59,6 +59,7 @@ This separation keeps policy logic portable while actuator details stay node-loc
 3. Build a normalized hardware view:
    - prefer `NodeHardware`
    - otherwise derive hardware identity from node labels / allocatable resources
+   - take the GPU count from `NodeHardware`, else from the node's labels and GPU resources; the family split and the caps both read it, so a node is a GPU node for both or for neither ([Shared and partitioned GPUs]({{< relref "/docs/hardware/gpus.md#shared-and-partitioned-gpus" >}}))
    - resolve CPU/GPU models against the inventory
 4. Build demand view from active pods:
    - performance-constrained
@@ -130,8 +131,8 @@ The `joulie_policy_family_nodes` and `joulie_policy_family_performance_nodes` ga
 
 If `NodeHardware` is not available yet:
 
-- the controller manager derives a best-effort hardware view from labels such as `joulie.io/hw.cpu-model`, `joulie.io/hw.gpu-model`, `joulie.io/hw.gpu-count`,
-- and from allocatable extended resources (`nvidia.com/gpu`, `amd.com/gpu`).
+- the controller manager derives a best-effort hardware view from labels such as `joulie.io/hw.cpu-model`, `joulie.io/hw.gpu-model`, `joulie.io/hw.gpu-count`, GPU feature discovery's `nvidia.com/gpu.product` (without its `-MIG-<profile>` and `-SHARED` suffixes) and `nvidia.com/gpu.count`,
+- and from allocatable GPU resources: whole GPUs, MIG devices, AMD partitions and shared replicas (`nvidia.com/gpu`, `amd.com/gpu`, `nvidia.com/mig-<profile>`, `amd.com/cpx_nps4`, `nvidia.com/gpu.shared`, ...).
 
 That keeps simulator-first and bootstrap scenarios working without making `NodeHardware` a hand-authored prerequisite.
 

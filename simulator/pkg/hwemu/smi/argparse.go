@@ -297,7 +297,7 @@ func pyIsDigit(s string) bool {
 
 // pyFloat is repr(float): the shortest digits that round-trip, a ".0" on
 // whole numbers, and an exponent below 1e-4 and from 1e16 on. So 750000000/1e6
-// prints "750.0", which the agent parses (extractFloatAny in cmd/agent).
+// prints "750.0".
 func pyFloat(f float64) string {
 	switch {
 	case math.IsInf(f, 1):

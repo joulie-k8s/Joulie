@@ -55,8 +55,9 @@ func renderHSMP(b *renderBuilder, p *Profile, o RenderOptions) error {
 // each listed device with drm set, then each AMD GPU. Every one gets vendor,
 // and device and class when known (R), and a DRM card with its device link
 // and class/drm link, cards numbered in that order. An AMD GPU also gets
-// product_name, vbios_version, an amdgpu hwmon device (renderAMDGPUHwmon)
-// and the state the AMD tools read besides sysfs (renderAMDGPUState). NVIDIA
+// product_name, vbios_version, its bus/pci/devices entry (the path the agent
+// lists amdgpu devices by), an amdgpu hwmon device (renderAMDGPUHwmon) and
+// the state the AMD tools read besides sysfs (renderAMDGPUState). NVIDIA
 // GPUs have no sysfs power files; their state is NVML's.
 func renderPCIDevices(b *renderBuilder, p *Profile, o RenderOptions) error {
 	card := 0
@@ -89,6 +90,10 @@ func renderPCIDevices(b *renderBuilder, p *Profile, o RenderOptions) error {
 			extra = append(extra, renderEntry{name: "vbios_version", content: g.VBIOSVersion.V + "\n", owner: layout.OwnerRender, mode: 0o444})
 		}
 		if err := renderPCIDevice(b, gbus, gcard, g.PCI, extra); err != nil {
+			return err
+		}
+		link, target := layout.PCIBusDeviceLink(gbus)
+		if err := b.link(renderSys(link), target); err != nil {
 			return err
 		}
 		if err := renderAMDGPUHwmon(b, p, gbus, hwmonBase+i); err != nil {
@@ -161,17 +166,21 @@ func renderPCIDevice(b *renderBuilder, bus, card int, d PCIDevice, extra []rende
 }
 
 // renderAMDGPUHwmon writes the amdgpu hwmon device of the GPU on bus: name
-// (R), power1_cap (A) with power1_cap_min, power1_cap_max and
-// power1_cap_default (R), and the power sensor the product has, power1_input
+// (R), power1_cap (A) at limits.currentW when set and else at the default,
+// with power1_cap_min, power1_cap_max and power1_cap_default (R), and the power sensor the product has, power1_input
 // or power1_average or both (S), all in microwatts (amdgpu_pm.c:3591-3600,
 // 3664-3669, 3827-3834). A product with ppt1 present also gets the power2_cap
 // set, with the same limits (assumed).
 func renderAMDGPUHwmon(b *renderBuilder, p *Profile, bus, h int) error {
 	g := p.GPUs
 	uw := func(w float64) string { return renderUint(int64(w * 1e6)) }
+	current := g.Limits.DefaultW.V
+	if g.Limits.CurrentW.Src != "" {
+		current = g.Limits.CurrentW.V
+	}
 	entries := []renderEntry{
 		{name: "name", content: "amdgpu\n", owner: layout.OwnerRender, mode: 0o444},
-		{name: "power1_cap", content: uw(g.Limits.DefaultW.V), owner: layout.OwnerAgent, mode: 0o644},
+		{name: "power1_cap", content: uw(current), owner: layout.OwnerAgent, mode: 0o644},
 		{name: "power1_cap_min", content: uw(g.Limits.MinW.V), owner: layout.OwnerRender, mode: 0o444},
 		{name: "power1_cap_max", content: uw(g.Limits.MaxW.V), owner: layout.OwnerRender, mode: 0o444},
 		{name: "power1_cap_default", content: uw(g.Limits.DefaultW.V), owner: layout.OwnerRender, mode: 0o444},

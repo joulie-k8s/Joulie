@@ -110,8 +110,8 @@ func TestH44W7900IsADisplayClassNode(t *testing.T) {
 // refuse every cap but 241 W the way the real ones do. rocm-smi
 // --showmaxpower --json is byte for byte the captured output;
 // --showproductname gives the captured series, model, vendor, SKU and GFX
-// version; --showpower reads the average sensor; the agent's --showpowercap
-// is an unrecognized argument; amd-smi static --limit reports PPT0 from 241
+// version; --showpower reads the average sensor; --showpowercap is an
+// unrecognized argument; amd-smi static --limit reports PPT0 from 241
 // to 241 W at 241 W and no PPT1. rocm-smi --setpoweroverdrive 200 and 300
 // fail with the range bound and still exit 0, and amd-smi set -o ppt0 200
 // names the 241 to 241 W range; no power1_cap changes.
@@ -155,7 +155,7 @@ func TestX03W7900ToolsReportThePinnedCap(t *testing.T) {
 	}
 	if code, out, errOut := w7900Tool(t, tr, "rocm-smi", "--showpowercap", "--showproductname", "--json"); code != 2 || out != "" ||
 		!strings.Contains(errOut, "rocm-smi: error: unrecognized arguments: --showpowercap") {
-		t.Errorf("the agent's inventory call = %d, stdout %q, stderr %q; want 2 and the unrecognized --showpowercap, as captured", code, out, errOut)
+		t.Errorf("rocm-smi --showpowercap = %d, stdout %q, stderr %q; want 2 and the unrecognized --showpowercap, as captured", code, out, errOut)
 	}
 
 	code, out, _ := w7900Tool(t, tr, "amd-smi", "static", "--limit", "--json")

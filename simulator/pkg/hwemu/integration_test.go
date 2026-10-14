@@ -84,19 +84,12 @@ func TestX01CorpusNvidiaQueryIsByteIdentical(t *testing.T) {
 }
 
 // X02: a cap rocm-smi writes is what the physics enforces. On the MI300X
-// node with the legacy rocm-smi, at full load, rocm-smi -d 0
-// --setpoweroverdrive 500 and three seconds of node time bring device 0's
-// power1_input to at most 505 W, while device 1, which nobody capped, stays
-// at its natural power.
+// node at full load, rocm-smi -d 0 --setpoweroverdrive 500 and three seconds
+// of node time bring device 0's power1_input to at most 505 W, while device
+// 1, which nobody capped, stays at its natural power.
 func TestX02RocmSMICapReachesThePhysics(t *testing.T) {
 	t.Parallel()
-	n, tree, p := hwemutest.NewNode(t, "amd-instinct-mi300x-8gpu", func(p *hwemu.Profile) {
-		for i := range p.GPUs.Tools {
-			if p.GPUs.Tools[i].Name == "rocm-smi" {
-				p.GPUs.Tools[i].Variant = "legacy-agent-contract"
-			}
-		}
-	})
+	n, tree, p := hwemutest.NewNode(t, "amd-instinct-mi300x-8gpu", nil)
 	n.SetLoad(hwemu.Load{GPUUtil: []float64{1}})
 	if err := n.Step(3 * time.Second); err != nil {
 		t.Fatal(err)

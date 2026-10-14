@@ -135,9 +135,8 @@ func amdDevice(files map[string]string, bus, level string) {
 	files[dir+"pp_dpm_fclk"] = "0: 400Mhz *\n1: 1000Mhz\n"
 }
 
-// GA16: two AMD GPUs that rocm-smi lists in the reverse of their bus order
-// are published by bus id, each with its own level; the node is not
-// uniform.
+// GA16: two AMD GPUs are published by bus id, in bus order, each with its
+// own level; the node is not uniform.
 func TestGA16AMDGPUsArePublishedByBusID(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{}
@@ -146,11 +145,7 @@ func TestGA16AMDGPUsArePublishedByBusID(t *testing.T) {
 	// The HD audio function of a GPU has AMD's vendor id and no level file.
 	files["bus/pci/devices/0000:10:00.1/vendor"] = "0x1002\n"
 	sysfsFiles(t, root, files)
-	// rocm-smi's card0 is the GPU on bus 20: its order is not the bus order.
-	runner := fakeCommandRunner{responses: map[string]fakeCommandResult{
-		"rocm-smi --showpowercap --showproductname --json": {out: `{"card0": {"Card SKU": "W7900", "Current Power Cap (W)": "241"}, "card1": {"Card SKU": "W7900", "Current Power Cap (W)": "241"}}`},
-	}}
-	pointAgentAtSysfs(t, root, "", runner)
+	pointAgentAtSysfs(t, root, "", nil)
 
 	status := publishedStatus(t, "ga16-amd", map[string]string{"feature.node.kubernetes.io/pci-1002.present": "true"})
 	if status.GPU == nil || status.GPU.Governor == nil {

@@ -20,14 +20,11 @@ import (
 // used here hold from rocm-5.4.0 on. Line numbers below are that file's at
 // that commit.
 
-const (
-	rocmVariantCurrent = "current"
-	rocmVariantLegacy  = "legacy-agent-contract"
-)
+const rocmVariantCurrent = "current"
 
 // rocmOptionSpec is every option of rocm_smi.py in registration order
 // (3821-3964), so prefix abbreviation resolves and collides as argparse
-// makes it (3804-3806). rocmOptions adds the legacy --showpowercap.
+// makes it (3804-3806).
 const rocmOptionSpec = "-h/--help -V/--version -d/--device --alldevices --showhw -a/--showallinfo " +
 	"-i/--showid -v/--showvbios -e/--showevents --showdriverversion --showtempgraph --showfwinfo " +
 	"--showmclkrange --showmemvendor --showsclkrange --showproductname --showserial --showuniqueid " +
@@ -45,15 +42,14 @@ const rocmOptionSpec = "-h/--help -V/--version -d/--device --alldevices --showhw
 	"--setcomputepartition --setmemorypartition --rasenable --rasdisable --rasinject --gpureset " +
 	"--load --save --autorespond --loglevel --json --csv"
 
-// rocmModelled are the options fakesmi models: the agent's and their
-// neighbours on the same code paths.
+// rocmModelled are the options fakesmi models: the agent's vendor probe, the
+// power and performance options, and their neighbours on the same code paths.
 var rocmModelled = map[string]pyOpt{
 	"--help":                {},
 	"--device":              {nargs: pyOneOrMore, metavar: []string{"DEVICE"}, isInt: true},
 	"--showproductname":     {},
 	"--showpower":           {},
 	"--showmaxpower":        {},
-	"--showpowercap":        {},
 	"--showperflevel":       {},
 	"--showprofile":         {},
 	"--setperflevel":        {nargs: 1, metavar: []string{"LEVEL"}},
@@ -65,14 +61,9 @@ var rocmModelled = map[string]pyOpt{
 	"--json":                {},
 }
 
-// rocmOptions is the parser of a variant. The legacy variant registers
-// --showpowercap after --showmaxpower (assumed: no release has the flag).
-func rocmOptions(legacy bool) []pyOpt {
-	spec := rocmOptionSpec
-	if legacy {
-		spec = strings.Replace(spec, "-M/--showmaxpower ", "-M/--showmaxpower --showpowercap ", 1)
-	}
-	return pyOpts(spec, rocmModelled)
+// rocmOptions is the parser of rocm_smi.py.
+func rocmOptions() []pyOpt {
+	return pyOpts(rocmOptionSpec, rocmModelled)
 }
 
 const (
@@ -140,15 +131,10 @@ type rocmRun struct {
 
 // runRocmSMI follows rocm_smi.py's main (3803-4288) for the modelled options.
 func runRocmSMI(c *call) int {
-	legacy := false
-	switch c.variant {
-	case rocmVariantCurrent:
-	case rocmVariantLegacy:
-		legacy = true
-	default:
+	if c.variant != rocmVariantCurrent {
 		return c.unknownVariant()
 	}
-	p := &pyParser{prog: toolRocmSMI, opts: rocmOptions(legacy)}
+	p := &pyParser{prog: toolRocmSMI, opts: rocmOptions()}
 	a, err := p.parse(c.args)
 	if err != nil {
 		return p.fail(c.stderr, err.Error())
@@ -160,8 +146,8 @@ func runRocmSMI(c *call) int {
 		return c.notEmulated("option " + a.unmodelled)
 	}
 	if len(a.extras) > 0 {
-		// parse_args (3966) on an unknown flag, such as --showpowercap on
-		// every real release: usage on stderr, empty stdout, exit 2 (D1).
+		// parse_args (3966) on an unknown flag, such as --showpowercap,
+		// which no release has: usage on stderr, empty stdout, exit 2.
 		return p.fail(c.stderr, "unrecognized arguments: "+strings.Join(a.extras, " "))
 	}
 	r := &rocmRun{call: c, json: a.has("--json"), level: pyWarning, data: map[int]*pyDict{}}
@@ -226,9 +212,6 @@ func runRocmSMI(c *call) int {
 	if a.has("--showmaxpower") {
 		r.showMaxPower(devs)
 	}
-	if legacy && a.has("--showpowercap") {
-		r.showPowerCap(devs)
-	}
 	if a.has("--showprofile") {
 		r.showProfile(devs)
 	}
@@ -260,7 +243,7 @@ func runRocmSMI(c *call) int {
 		r.log(pyDebug, " \t\t One or more commands failed.")
 	}
 	// 4250-4255: every RETCODE=1 path exits 0 unless --loglevel names
-	// another level than warning (D2).
+	// another level than warning.
 	if !hasLevel || pyLogLevel(logLevel) == pyWarning {
 		r.retcode = 0
 	}
@@ -359,8 +342,8 @@ func (r *rocmRun) spacer(title string) {
 }
 
 // showMaxPower is -M (2462-2475). It reports the current cap, floored to
-// whole watts as a float (getMaxPower, 414-425), not the top of the range
-// (D4): 300500000 uW prints "300.0".
+// whole watts as a float (getMaxPower, 414-425), not the top of the range:
+// 300500000 uW prints "300.0".
 func (r *rocmRun) showMaxPower(devs []int) {
 	r.spacer(" Power Cap ")
 	for _, d := range devs {
@@ -368,37 +351,6 @@ func (r *rocmRun) showMaxPower(devs []int) {
 			r.printLog(d, "Max Graphics Package Power (W)", pyFloat(math.Floor(float64(uw)/1e6)))
 		} else {
 			r.printLog(d, "Max Graphics Package Power Unsupported")
-		}
-	}
-	r.spacer("")
-}
-
-// showPowerCap is --showpowercap of the legacy-agent-contract variant
-// (assumed, no release has it): the keys the agent reads (listAmdDevices in
-// cmd/agent), in W as float strings. Max is the top of the range here; when
-// -M also ran, this later value replaces its floored cap.
-func (r *rocmRun) showPowerCap(devs []int) {
-	r.spacer(" Power Cap ")
-	for _, d := range devs {
-		g := r.gpus[d]
-		for _, f := range [][2]string{
-			{"Max Graphics Package Power (W)", "power1_cap_max"},
-			{"Min Graphics Package Power (W)", "power1_cap_min"},
-			{"Current Power Cap (W)", "power1_cap"},
-		} {
-			if uw, ok := g.hwmonInt(f[1]); ok {
-				r.printLog(d, f[0], pyFloat(float64(uw)/1e6))
-			} else {
-				r.printLog(d, f[0], "N/A")
-			}
-		}
-		switch uw, _, ok := g.sensorUW(); {
-		case ok:
-			r.printLog(d, "Average Graphics Package Power (W)", pyFloat(float64(uw)/1e6))
-		case g.secondary():
-			r.printLog(d, "Average Graphics Package Power (W)", rocmSecondary)
-		default:
-			r.printLog(d, "Average Graphics Package Power (W)", "N/A")
 		}
 	}
 	r.spacer("")
@@ -435,7 +387,7 @@ func (r *rocmRun) showPower(devs []int) {
 
 // showProduct is --showproductname (showProduct, 2749-2770), whose keys and
 // order the JSON keeps. Card SKU is the middle segment of vbios_version when
-// it has exactly two dashes; the agent reads it as the product (D4).
+// it has exactly two dashes, not the product.
 func (r *rocmRun) showProduct(devs []int) {
 	r.spacer(" Product Info ")
 	for _, d := range devs {
@@ -517,8 +469,7 @@ func rocmGFXVersion(g amdGPU) string {
 
 // setPowerOverDrive is setPowerOverDrive (1659-1757), and value "0" is
 // --resetpoweroverdrive (1073-1078). It returns exited when the prompt ends
-// the program; otherwise failures only set RETCODE, which main then resets
-// (D2).
+// the program; otherwise failures only set RETCODE, which main then resets.
 func (r *rocmRun) setPowerOverDrive(devs []int, value, auto string) (code int, exited bool) {
 	w, ok := pyInt(value)
 	if !ok {
@@ -578,7 +529,7 @@ func (r *rocmRun) setPowerOverDrive(devs []int, value, auto string) (code int, e
 		}
 		cur = max(cur, def)
 		if !confirmed && newCap > cur {
-			// 1729-1734: above max(current, default) asks first (D3).
+			// 1729-1734: above max(current, default) asks first.
 			if code, exited := r.confirm(auto); exited {
 				return code, true
 			}
@@ -611,9 +562,9 @@ func (r *rocmRun) setPowerOverDrive(devs []int, value, auto string) (code int, e
 
 // confirm is confirmOutOfSpecWarning (3545-3570): the warning, then a prompt
 // read from stdin unless --autorespond answered it. Only yes, in five
-// spellings, goes on. The agent passes no --autorespond and exec gives it an
-// empty stdin, so input() raises EOFError and the run exits 1 (D3). The
-// traceback is abridged.
+// spellings, goes on. Without --autorespond, a caller that gives it an empty
+// stdin makes input() raise EOFError, and the run exits 1. The traceback is
+// abridged.
 func (r *rocmRun) confirm(auto string) (code int, exited bool) {
 	fmt.Fprintln(r.stdout, rocmOutOfSpecWarning)
 	answer := auto
@@ -838,7 +789,7 @@ func rocmProfileName(mode string) string {
 }
 
 // rocmFail is a library call that failed: rsmi_ret_ok (rocm_smi.py:4148-4184)
-// logs it at debug level and sets RETCODE, which main resets (D2). The
+// logs it at debug level and sets RETCODE, which main resets. The
 // status names are rocm_smi_lib's; which one an errno becomes is assumed.
 func (r *rocmRun) rocmFail(dev int, metric string, err error) {
 	status := "RSMI_STATUS_NOT_SUPPORTED"

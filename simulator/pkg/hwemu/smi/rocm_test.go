@@ -27,80 +27,32 @@ func rocmJSON(t *testing.T, out string) map[string]map[string]string {
 	return m
 }
 
-// No rocm-smi release has --showpowercap, so the agent's inventory call fails
-// argparse with exit 2 and a usage error on stderr, and stdout is empty (D1).
-func TestS04InventoryOnCurrentFailsWithUnrecognizedArguments(t *testing.T) {
+// No rocm-smi release has --showpowercap, so a call with it fails argparse
+// with exit 2, a usage error on stderr and an empty stdout.
+func TestS04ShowPowerCapFailsWithUnrecognizedArguments(t *testing.T) {
 	t.Parallel()
 	n := newMI300XNode(t, rocmVariantCurrent, "")
-	code, stdout, stderr := n.main("", agentRocmInventory...)
+	code, stdout, stderr := n.main("", rocmShowPowerCap...)
 	if code != 2 || stdout != "" {
 		t.Fatalf("exit %d, stdout %q; want 2 and empty", code, stdout)
 	}
 	if !strings.HasPrefix(stderr, "usage: rocm-smi [-h]") || !strings.Contains(stderr, "\nrocm-smi: error: unrecognized arguments: --showpowercap\n") {
 		t.Fatalf("stderr %q, want usage and the unrecognized --showpowercap", stderr)
 	}
-	out, err := n.run(agentRocmInventory...)
+	out, err := n.run(rocmShowPowerCap...)
 	if exitCode(t, err) != 2 || !strings.Contains(string(out), "error: unrecognized arguments: --showpowercap") {
 		t.Fatalf("Runner: %v, %q; want exit status 2 and the argparse error", err, out)
 	}
 }
 
-// The legacy variant answers the agent's inventory call with the keys the
-// agent reads (listAmdDevices in cmd/agent), all strings that parse as watts.
-// Max is the top of the range, not the current cap, even when -M also ran.
-func TestS05LegacyInventoryReturnsAgentKeysAsStrings(t *testing.T) {
-	t.Parallel()
-	n := newMI300XNode(t, rocmVariantLegacy, "")
-	n.write(hwmonRel(0, "power1_cap"), "600000000", 0o644)
-	code, stdout, stderr := n.main("", agentRocmInventory...)
-	if code != 0 || stderr != "" {
-		t.Fatalf("exit %d, stderr %q", code, stderr)
-	}
-	m := rocmJSON(t, stdout)
-	if len(m) != 8 {
-		t.Fatalf("%d cards, want 8: %v", len(m), m)
-	}
-	for i := 0; i < 8; i++ {
-		card := m["card"+strconv.Itoa(i)]
-		for _, k := range []string{"Card SKU", "Max Graphics Package Power (W)", "Min Graphics Package Power (W)", "Current Power Cap (W)", "Average Graphics Package Power (W)"} {
-			if _, ok := card[k]; !ok {
-				t.Fatalf("card%d has no %q: %v", i, k, card)
-			}
-		}
-	}
-	card0 := m["card0"]
-	want := map[string]string{
-		"Card SKU":                           "X0000000",
-		"Max Graphics Package Power (W)":     "750.0",
-		"Min Graphics Package Power (W)":     "0.0",
-		"Current Power Cap (W)":              "600.0",
-		"Average Graphics Package Power (W)": "100.0",
-	}
-	for k, v := range want {
-		if card0[k] != v {
-			t.Errorf("card0 %q = %q, want %q", k, card0[k], v)
-		}
-		if k != "Card SKU" {
-			if _, err := strconv.ParseFloat(card0[k], 64); err != nil {
-				t.Errorf("card0 %q = %q does not parse as watts", k, card0[k])
-			}
-		}
-	}
-
-	_, stdout, _ = n.main("", "rocm-smi", "-M", "--showpowercap", "--json")
-	if got := rocmJSON(t, stdout)["card0"]["Max Graphics Package Power (W)"]; got != "750.0" {
-		t.Fatalf("with -M too, card0 Max = %q, want --showpowercap's 750.0, not -M's current cap", got)
-	}
-}
-
-// --setpoweroverdrive as the agent calls it: a value in range is written; a
-// value above max is refused with exit 0 (D2); a value above max(current,
-// default) prompts and fails on the agent's empty stdin (D3); a missing
-// device exits 0; 0 restores the default.
+// --setpoweroverdrive with an empty stdin: a value in range is written; a
+// value above max is refused with exit 0; a value above max(current,
+// default) prompts and fails on the empty stdin; a missing device exits 0;
+// 0 restores the default.
 func TestS06SetPowerOverDriveOutcomes(t *testing.T) {
 	t.Parallel()
 	n := newMI300XNode(t, rocmVariantCurrent, "")
-	if out, err := n.run(agentRocmSet(0, 500)...); err != nil {
+	if out, err := n.run(rocmSetPowerOverDrive(0, 500)...); err != nil {
 		t.Fatalf("-d 0 500: %v (%q)", err, out)
 	}
 	if got := n.read(hwmonRel(0, "power1_cap")); got != "500000000" {
@@ -110,7 +62,7 @@ func TestS06SetPowerOverDriveOutcomes(t *testing.T) {
 		t.Fatalf("-d 0 changed device 1: power1_cap = %s", got)
 	}
 
-	code, _, stderr := n.main("", agentRocmSet(0, 800)...)
+	code, _, stderr := n.main("", rocmSetPowerOverDrive(0, 800)...)
 	if code != 0 || !strings.Contains(stderr, "ERROR: GPU[0]\t: Unable to set Power OverDrive") ||
 		!strings.Contains(stderr, "Value cannot be greater than: 750W") {
 		t.Fatalf("800 above max: exit %d, stderr %q; want 0 and the refusal", code, stderr)
@@ -119,7 +71,7 @@ func TestS06SetPowerOverDriveOutcomes(t *testing.T) {
 		t.Fatalf("after refused 800: power1_cap = %s, want 500000000", got)
 	}
 
-	code, stdout, stderr := n.main("", agentRocmSet(9, 500)...)
+	code, stdout, stderr := n.main("", rocmSetPowerOverDrive(9, 500)...)
 	if code != 0 || stdout != "" || stderr != "WARNING: No such device card9\n" {
 		t.Fatalf("-d 9: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
@@ -132,11 +84,11 @@ func TestS06SetPowerOverDriveOutcomes(t *testing.T) {
 	}
 
 	// Default 600 below max 750, current 600: 700 is above max(current,
-	// default), so rocm-smi asks, and the agent's stdin is empty.
+	// default), so rocm-smi asks, and stdin is empty.
 	p := newMI300XNode(t, rocmVariantCurrent, "")
 	p.write(hwmonRel(0, "power1_cap_default"), "600000000", 0o444)
 	p.write(hwmonRel(0, "power1_cap"), "600000000", 0o644)
-	out, err := p.run(agentRocmSet(0, 700)...)
+	out, err := p.run(rocmSetPowerOverDrive(0, 700)...)
 	if exitCode(t, err) != 1 || !strings.Contains(string(out), "Do you accept these terms? [y/N] ") ||
 		!strings.HasSuffix(string(out), "EOFError: EOF when reading a line\n") {
 		t.Fatalf("700 with EOF stdin: %v, %q; want exit status 1 after the prompt", err, out)
@@ -144,10 +96,10 @@ func TestS06SetPowerOverDriveOutcomes(t *testing.T) {
 	if got := p.read(hwmonRel(0, "power1_cap")); got != "600000000" {
 		t.Fatalf("after EOF: power1_cap = %s, want 600000000", got)
 	}
-	if code, _, stderr := p.main("n\n", agentRocmSet(0, 700)...); code != 1 || stderr != "Confirmation not given. Exiting without setting value\n" {
+	if code, _, stderr := p.main("n\n", rocmSetPowerOverDrive(0, 700)...); code != 1 || stderr != "Confirmation not given. Exiting without setting value\n" {
 		t.Fatalf("answer n: exit %d, stderr %q", code, stderr)
 	}
-	if code, _, stderr := p.main("", append(agentRocmSet(0, 700), "--autorespond", "y")...); code != 0 || stderr != "" {
+	if code, _, stderr := p.main("", append(rocmSetPowerOverDrive(0, 700), "--autorespond", "y")...); code != 0 || stderr != "" {
 		t.Fatalf("--autorespond y: exit %d, stderr %q", code, stderr)
 	}
 	if got := p.read(hwmonRel(0, "power1_cap")); got != "700000000" {
@@ -156,8 +108,8 @@ func TestS06SetPowerOverDriveOutcomes(t *testing.T) {
 }
 
 // --showproductname --json prints showProduct's keys in its order, and Card
-// SKU, which the agent takes for the product, is a VBIOS segment. -M, which
-// the agent would take for the maximum, is the current cap floored (D4).
+// SKU is a VBIOS segment, not the product. -M is the current cap floored, not
+// the maximum.
 func TestS07ProductNameKeysOrderAndSKU(t *testing.T) {
 	t.Parallel()
 	n := newMI300XNode(t, rocmVariantCurrent, "")
@@ -231,7 +183,7 @@ func TestS13SecondaryDie(t *testing.T) {
 	n.write(hwmonRel(0, "power1_input"), "210000000", 0o444)
 	n.remove(hwmonRel(1, "power1_input"))
 
-	code, _, stderr := n.main("", agentRocmSet(1, 500)...)
+	code, _, stderr := n.main("", rocmSetPowerOverDrive(1, 500)...)
 	if code != 0 || stderr != "" {
 		t.Fatalf("set on the secondary: exit %d, stderr %q; want 0, silent", code, stderr)
 	}
@@ -240,7 +192,7 @@ func TestS13SecondaryDie(t *testing.T) {
 			t.Fatalf("device %d power1_cap = %s after a set on the secondary, want 750000000", i, got)
 		}
 	}
-	if code, _, stderr := n.main("", agentRocmSet(0, 500)...); code != 0 || stderr != "" {
+	if code, _, stderr := n.main("", rocmSetPowerOverDrive(0, 500)...); code != 0 || stderr != "" {
 		t.Fatalf("set on the primary: exit %d, stderr %q", code, stderr)
 	}
 	if got := n.read(hwmonRel(0, "power1_cap")); got != "500000000" {

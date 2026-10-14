@@ -15,8 +15,8 @@ permanent regression test.
 
 The agent reads hardware only through files and command output: the powercap
 tree under `dvfs.PowercapRoot`, `/proc/cpuinfo` through `procCPUInfoPath`, the
-cpufreq governor state under `dvfs.HostSysRoot`, and the stdout of `nvidia-smi`
-and `rocm-smi`. Nothing else. A copy of those inputs therefore replays the
+cpufreq governor state and the amdgpu power cap attributes under
+`dvfs.HostSysRoot`, and the stdout of `nvidia-smi`. Nothing else. A copy of those inputs therefore replays the
 machine exactly, with no hardware and no cluster.
 
 That matters because the defects this project keeps hitting are not logic
@@ -76,7 +76,12 @@ cmd/agent/testdata/hardware/<machine>/
   cpuinfo                   copy of /proc/cpuinfo
   cpufreq-driver            the active cpufreq scaling driver, if any
   nvidia-smi.txt            stdout of the agent's nvidia-smi query, if any
-  rocm-smi.txt              stdout of the agent's rocm-smi query, if any
+  amdgpu-hwmon/             the power cap of each amdgpu device, if any
+    gpu0/power1_cap                      the cap in force, in microwatts
+    gpu0/power1_cap_min
+    gpu0/power1_cap_max
+    gpu0/power1_cap_default
+    ...                                  one directory per device
   node-labels.json          the node's labels as a JSON object, may be {}
   machine.yaml              hand written metadata
   expected.json             generated golden: the published NodeHardware status
@@ -105,21 +110,30 @@ Everything else is optional, and any other file name is rejected: a forgotten
 tarball or an editor backup fails the validation test rather than reaching a
 reviewer.
 
-`powercap/` is absent when the node has no RAPL. `nvidia-smi.txt` and
-`rocm-smi.txt` are absent when the tool is not installed, and the test's command
-stub then fails those commands the way a missing binary does.
+`powercap/` is absent when the node has no RAPL. `nvidia-smi.txt` is absent
+when the tool is not installed, and the test's command stub then fails the
+NVIDIA commands the way a missing binary does. Every `rocm-smi` command fails
+the same way: the agent reads and caps AMD GPUs through sysfs.
 
-The captured GPU queries are the exact ones `cmd/agent/main.go` runs:
+The captured NVIDIA query is the exact one `cmd/agent/main.go` runs:
 
 ```
 nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits
-rocm-smi --showpowercap --showproductname --json
 ```
 
-`nvidia-smi -L` and `rocm-smi --showproductname`, which `detectGPUVendor` uses
-only as a presence probe, are not captured: their output is a list of GPU UUIDs
-and nothing reads it. The stub answers them with success whenever the machine
-has the matching query file.
+`nvidia-smi -L`, which `detectGPUVendor` uses only as a presence probe, is not
+captured: its output is a list of GPU UUIDs and nothing reads it. The stub
+answers it with success whenever the machine has `nvidia-smi.txt`.
+
+`amdgpu-hwmon/` holds, for each amdgpu device, the four power cap attributes
+of its amdgpu hwmon device, copied verbatim from sysfs: whole microwatts, or
+the empty line the driver prints when the firmware query fails. The devices
+are numbered `gpu0`, `gpu1` in bus id order, the order the agent lists them
+in, so the bus id never leaves the machine. Both replays read it:
+`pointAgentAtFixture` lays each device out under a `bus/pci/devices` entry of
+the replayed `/sys`, and `hwemu.FromCorpus` renders amdgpu devices with the
+same attributes, which holds one value for all devices, so devices that differ
+are an error there.
 
 ### Governor state
 

@@ -2,15 +2,11 @@ package powerest
 
 import (
 	"math"
+	"sort"
 	"strings"
-)
 
-// gpuResourceKeys are the well-known extended resource names for GPU devices.
-var gpuResourceKeys = []string{
-	"nvidia.com/gpu",
-	"amd.com/gpu",
-	"gpu.intel.com/i915",
-}
+	joulie "github.com/matbun/joulie/pkg/api"
+)
 
 // ExtractPodDemand builds a PodDemand from a parsed pod spec represented as
 // nested maps (the format the scheduler extender receives from kube-scheduler).
@@ -118,22 +114,38 @@ func extractQuantityBytes(resources map[string]interface{}, key string) float64 
 	return 0
 }
 
-// extractGPU returns (count, vendor) from resource requests/limits.
-func extractGPU(resources map[string]interface{}) (int, string) {
+// extractGPU returns the GPU demand of one container, in physical GPUs, and
+// its vendor, from requests, else from limits: the units of every GPU
+// resource (pkg/api.GPUResourceKind), each weighted by the share of a GPU it
+// stands for (pkg/api.GPUResourceShare), so a MIG device, a partition and a
+// shared replica count too. The vendor is that of the first GPU resource in
+// name order.
+func extractGPU(resources map[string]interface{}) (float64, string) {
 	for _, section := range []string{"requests", "limits"} {
 		sec, _ := resources[section].(map[string]interface{})
 		if sec == nil {
 			continue
 		}
-		for _, key := range gpuResourceKeys {
-			raw, ok := sec[key]
-			if !ok {
+		keys := make([]string, 0, len(sec))
+		for key := range sec {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		var gpus float64
+		vendor := ""
+		for _, key := range keys {
+			share := joulie.GPUResourceShare(key)
+			units := parseQuantity(sec[key])
+			if share <= 0 || units <= 0 {
 				continue
 			}
-			count := int(parseQuantity(raw))
-			if count > 0 {
-				return count, vendorFromKey(key)
+			gpus += units * share
+			if vendor == "" {
+				vendor = vendorFromKey(key)
 			}
+		}
+		if gpus > 0 {
+			return gpus, vendor
 		}
 	}
 	return 0, ""

@@ -12,8 +12,8 @@ import (
 // agent read amd.com/gpu.product, so with no working GPU inventory an AMD
 // node took its raw model from amd.com/gpu.family (GC_11_0_0, AI), a code
 // that names no board. The emulated W7900 and MI300X nodes carry the
-// labeller's label set and fail the inventory call (D1), so the raw model
-// comes from the labels alone.
+// labeller's label set, and amdgpu sysfs, which the inventory reads, names
+// no product, so the raw model comes from the labels alone.
 func TestGPULabelRegressionAMDModelFromLabellerProductName(t *testing.T) {
 	for _, tc := range []struct {
 		profile   string

@@ -103,15 +103,15 @@ Emulated agents are what the [simulated cluster]({{< relref "/docs/simulator/sim
 
 ### Agent GPU tools
 
-The agent reads and caps GPUs by running `nvidia-smi` or `rocm-smi` from its `PATH`; it never runs `amd-smi`. The agent image (`gcr.io/distroless/static`) ships neither, and has no C library, no ELF loader and no Python, so mounting the host's tool alone is not enough: `nvidia-smi` is dynamically linked (`file $(command -v nvidia-smi)` on a GPU node shows it) and also needs the loader and the NVML library (`libnvidia-ml.so.1`), and `rocm-smi` is a Python script that needs `/usr/bin/env` and `python3`. The hooks above are where these come in: `agent.runtimeClassName` for a container runtime that injects the driver's tools and libraries, such as the NVIDIA one, or `agent.extraVolumes` and `agent.extraVolumeMounts` for a host directory, with `agent.extraEnv`.
+The agent reads and caps NVIDIA GPUs by running `nvidia-smi` from its `PATH`. AMD GPUs need no tool: the agent reads and writes the `power1_cap` files of their amdgpu hwmon devices under `/host-sys` (see [Agent host backends]({{< relref "/docs/hardware/gpus.md#agent-host-backends" >}})), which needs a root agent and a writable `/host-sys`, as the chart gives by default. It runs `rocm-smi --showproductname` only as a vendor probe, and never runs `amd-smi`. The agent image (`gcr.io/distroless/static`) ships no GPU tool, and has no C library and no ELF loader, so mounting the host's `nvidia-smi` alone is not enough: it is dynamically linked (`file $(command -v nvidia-smi)` on a GPU node shows it) and also needs the loader and the NVML library (`libnvidia-ml.so.1`). The hooks above are where these come in: `agent.runtimeClassName` for a container runtime that injects the driver's tools and libraries, such as the NVIDIA one, or `agent.extraVolumes` and `agent.extraVolumeMounts` for a host directory, with `agent.extraEnv`.
 
-Which combination works on a real GPU node is an open question: no recipe has been verified yet. After installing, check the GPU control status of every GPU node:
+Which combination works on a real NVIDIA node is an open question: no recipe has been verified yet. After installing, check the GPU control status of every GPU node:
 
 ```bash
 kubectl get nodetwins -o custom-columns=NODE:.spec.nodeName,GPU:.status.controlStatus.gpu.result,MESSAGE:.status.controlStatus.gpu.message
 ```
 
-A tool that cannot run shows as `error` with a message starting `gpu inventory failed`, or as `blocked` with `no supported GPU backend detected` when the vendor cannot be told either; the GPUs then keep their limits. AMD GPUs currently fail this way: see [GPU known limitations]({{< relref "/docs/hardware/gpus.md#known-limitations" >}}). The simulated cluster reproduces both sides: `fakesmi` fails as the real tool does when something it needs is missing (`HWEMU_ROOTFS` under [Simulator hardware emulation](#simulator-hardware-emulation)), and the harness either mounts those files (`toolDelivery: mounted`) or not (`toolDelivery: none`).
+A tool that cannot run shows as `error` with a message starting `gpu inventory failed`, or as `blocked` with `no supported GPU backend detected` when the vendor cannot be told either; the GPUs then keep their limits. On an AMD node without the amdgpu driver the message is `gpu inventory failed: no amdgpu hwmon device under bus/pci/devices`, and a cap the driver refuses, or a read-only `/host-sys`, is `error` naming the GPU's bus id. The simulated cluster reproduces both sides: `fakesmi` fails as the real tool does when something it needs is missing (`HWEMU_ROOTFS` under [Simulator hardware emulation](#simulator-hardware-emulation)), and the harness either mounts those files (`toolDelivery: mounted`) or not (`toolDelivery: none`).
 
 ## Controller manager
 
@@ -180,6 +180,8 @@ Upgrading from v0.2: see [Upgrading]({{< relref "/docs/getting-started/06-upgrad
 | `GPU_WRITE_ABSOLUTE_CAPS` | `false` | If `true`, write absolute GPU watts instead of percentage |
 | `GPU_MODEL_CAPS_JSON` | `{}` | JSON map of GPU model name to `{"minCapWatts": N, "maxCapWatts": M}` |
 | `GPU_PRODUCT_LABEL_KEYS` | `joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,amd.com/gpu.family` | Comma-separated node label keys to read the GPU product name from, first match wins. The AMD node labeller names the board in `amd.com/gpu.product-name` (and `beta.amd.com/gpu.product-name`); `amd.com/gpu.product` is the older key, and the family code in `amd.com/gpu.family` (for example `GC_11_0_0`) names no board, so it comes last. When its GPU inventory fails, the agent reads these default labels, in this order; it does not read this variable. |
+
+The GPU caps apply to every GPU node, per physical GPU: a node whose agent lists GPUs, whose labels state a GPU count (`joulie.io/hw.gpu-count`, or `nvidia.com/gpu.count` except when the single MIG strategy exposes MIG devices, product suffixed `-MIG-`), or that advertises whole GPUs, MIG devices, AMD partitions or shared replicas ([Shared and partitioned GPUs]({{< relref "/docs/hardware/gpus.md#shared-and-partitioned-gpus" >}})). The agent has no Intel GPU backend, so the GPU cap of an Intel GPU node ends `blocked`. A product read through `GPU_PRODUCT_LABEL_KEYS` loses the suffixes GPU feature discovery appends (`-MIG-<profile>`, `-MIG-INVALID`, `-SHARED`), so `GPU_MODEL_CAPS_JSON` and `GPU_GOVERNOR_MODEL_PRESETS_JSON` are keyed by the product without them.
 
 ### Policy configuration
 

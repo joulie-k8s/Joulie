@@ -62,9 +62,9 @@ func TestSimclusterE2E(t *testing.T) {
 	e2eInputChecks(t, env)
 	env.check(t, "E11", "the control status of each family", e2eE11ControlStatusPerFamily)
 	env.check(t, "E12", "a cap planned on the unreached Node (D15)", e2eE12UnreachedNodeIsPlannedNotEnforced)
-	env.check(t, "MD01", "shared GPU Nodes planned as CPU-only (D18)", e2eMD01SharedGPUsPlannedAsCPUOnly)
+	env.check(t, "MD01", "shared GPU Nodes planned and capped as GPU Nodes", e2eMD01SharedGPUsArePlannedAsGPUNodes)
 	env.check(t, "MD02", "nfd absent caps through DVFS", e2eMD02NoNFDTakesDVFS)
-	env.check(t, "MD03", "no GPU tools leaves the GPUs alone", e2eMD03NoToolsLeavesGPUsAlone)
+	env.check(t, "MD03", "no GPU tools leaves the NVIDIA GPUs alone", e2eMD03NoToolsLeavesGPUsAlone)
 	env.check(t, "MD04", "an unmanaged pool has series only", e2eMD04UnmanagedPoolHasSeriesOnly)
 	env.check(t, "E13", "the extender filters and scores a standard pod", e2eE13ExtenderPlacesAPod)
 
@@ -72,13 +72,13 @@ func TestSimclusterE2E(t *testing.T) {
 	// and the power at 50 %. The upgrade runs in the first 50 % check that
 	// runs, so a -run filter that selects neither leaves the caps alone.
 	env.check(t, "E09.80pct", "RAPL package limits at 80 % of the maximum", e2eE09RAPLAt80)
-	env.check(t, "E10.80pct", "NVIDIA GPU limits at 80 % of the maximum, DVFS applied", e2eE10GPUAndDVFSAt80)
+	env.check(t, "E10.80pct", "NVIDIA and AMD GPU limits at 80 % of the maximum, DVFS applied", e2eE10GPUAndDVFSAt80)
 	lower := env.lowerCapsOnce(t)
 	env.check(t, "E09.50pct", "RAPL package limits at 50 %, the NodeTwin follows", func(c *e2eCase) {
 		before, lowered := lower()
 		e2eE09RAPLAt50(c, before, lowered)
 	})
-	env.check(t, "E10.50pct", "NVIDIA GPU limits at 50 %, the NodeTwins follow", func(c *e2eCase) {
+	env.check(t, "E10.50pct", "NVIDIA and AMD GPU limits at 50 %, the NVIDIA NodeTwins follow", func(c *e2eCase) {
 		before, lowered := lower()
 		e2eE10GPUAndDVFSAt50(c, before, lowered)
 	})
@@ -638,27 +638,25 @@ type e2eControlWant struct {
 
 // e2eControlByFamily is E11's table.
 var e2eControlByFamily = map[string]e2eControlWant{
-	e2eFamilyRAPL:     {backend: "rapl", result: "applied"},
-	e2eFamilyDVFS:     {backend: "dvfs", result: "applied"},
-	e2eFamilyNoCPUCap: {backend: "none", result: "blocked", message: "pct intent unresolved and no dvfs backend available"},
-	e2eFamilyNVIDIA:   {gpu: true, backend: "host-nvidia", result: "applied"},
+	e2eFamilyRAPL:      {backend: "rapl", result: "applied"},
+	e2eFamilyDVFS:      {backend: "dvfs", result: "applied"},
+	e2eFamilyNoCPUCap:  {backend: "none", result: "blocked", message: "pct intent unresolved and no dvfs backend available"},
+	e2eFamilyNVIDIA:    {gpu: true, backend: "host-nvidia", result: "applied"},
+	e2eFamilyGPUShared: {gpu: true, backend: "host-nvidia", result: "applied"},
+	e2eFamilyAMDGPU:    {gpu: true, backend: "host-amd", result: "applied"},
 }
-
-// e2eD1Message is what the agent records while D1 lasts.
-const e2eD1Message = "unrecognized arguments: --showpowercap"
 
 // E11: the control status per family (cmd/agent/main.go): RAPL applied on
 // the Intel host, DVFS applied on both EPYC hosts, host-nvidia applied on
-// the NVIDIA GPUs, and on the VM nothing to apply. Known D1: the MI300X
-// GPU control ends in none/error with the argparse message.
+// the NVIDIA GPUs, whole or shared, host-amd applied on the AMD GPUs
+// (amdgpu sysfs, no tool), and on the VM nothing to apply.
 func e2eE11ControlStatusPerFamily(c *e2eCase) {
 	e := c.env
-	nodes := e.nodesOf(c, e2eFamilyRAPL, e2eFamilyDVFS, e2eFamilyNoCPUCap, e2eFamilyNVIDIA, e2eFamilyAMDGPU)
+	nodes := e.nodesOf(c, e2eFamilyRAPL, e2eFamilyDVFS, e2eFamilyNoCPUCap, e2eFamilyNVIDIA, e2eFamilyGPUShared, e2eFamilyAMDGPU)
 	if len(nodes) == 0 {
 		c.Skipf("no Node of a family E11 knows")
 	}
 	var problems []string
-	d1 := map[string]string{}
 	err := e2eEventually(e.agentSettle(), func() error {
 		problems = problems[:0]
 		twins, err := e.twins()
@@ -672,17 +670,6 @@ func e2eE11ControlStatusPerFamily(c *e2eCase) {
 				continue
 			}
 			cs := tw.Status.ControlStatus
-			if n.family() == e2eFamilyAMDGPU {
-				var gpu *v1alpha1.ControlResult
-				if cs != nil {
-					gpu = cs.GPU
-				}
-				d1[n.Name] = e2eStatus(gpu)
-				if gpu == nil || gpu.Result == "" {
-					problems = append(problems, fmt.Sprintf("node %s: no GPU control status yet", n.Name))
-				}
-				continue
-			}
 			want := e2eControlByFamily[n.family()]
 			var got *v1alpha1.ControlResult
 			if cs != nil {
@@ -710,11 +697,6 @@ func e2eE11ControlStatusPerFamily(c *e2eCase) {
 			c.Errorf("%s", p)
 		}
 		c.Errorf("%v", err)
-	}
-	for _, node := range e2eKeys(d1) {
-		got := d1[node]
-		reproduced := strings.HasPrefix(got, "none/error/") && strings.Contains(got, e2eD1Message)
-		c.knownDefect("D1", reproduced, fmt.Sprintf("node %s GPU control %s", node, got))
 	}
 }
 
@@ -864,57 +846,59 @@ func e2eGPUMaxW(h v1alpha1.NodeHardware) float64 {
 	return h.Status.GPU.CapRangePerGPU.MaxWatts
 }
 
-// MD01, known D18: MIG-mixed and renamed time-slicing GPU Nodes get no GPU
-// intent (none/none/"no GPU cap intent") and the CPU percent cap on both
-// packages, 132 W at 80 % of their maximum.
-func e2eMD01SharedGPUsPlannedAsCPUOnly(c *e2eCase) {
+// e2eGPUMinW is the per-GPU cap range minimum a NodeHardware publishes, 0
+// when it has none.
+func e2eGPUMinW(h v1alpha1.NodeHardware) float64 {
+	if h.Status.GPU == nil || h.Status.GPU.CapRangePerGPU == nil {
+		return 0
+	}
+	return h.Status.GPU.CapRangePerGPU.MinWatts
+}
+
+// MD01: MIG-mixed and renamed time-slicing GPU Nodes are planned and capped
+// as GPU Nodes, although they advertise no <vendor>/gpu resource: the
+// NodeHardware counts the physical GPUs, the NodeTwin holds the GPU cap of
+// the profile (80 %) and no CPU percent cap, and the agent applies it to
+// every physical GPU, host-nvidia applied with each limit at 80 % of the
+// maximum.
+func e2eMD01SharedGPUsArePlannedAsGPUNodes(c *e2eCase) {
 	e := c.env
 	nodes := e.nodesOf(c, e2eFamilyGPUShared)
 	if len(nodes) == 0 {
 		c.Skipf("the spec has no MIG-mixed or renamed time-slicing GPU Node")
 	}
-	observed := map[string]string{}
-	reproduced := map[string]bool{}
-	err := e2eEventually(e.agentSettle(), func() error {
-		twins, err := e.twins()
-		if err != nil {
-			return err
+	e.eventuallyEach(c, nodes, func(n e2eNode, tw v1alpha1.NodeTwin, h v1alpha1.NodeHardware, sn emulate.NodeSnapshot) []string {
+		var out []string
+		if want := n.Profile.GPUs.Count.V; h.Status.GPU == nil || h.Status.GPU.Count != want {
+			out = append(out, fmt.Sprintf("NodeHardware %s, want gpu.count %d, the physical GPUs", e2eHardwareGPU(h), want))
 		}
-		hw, err := e.hardware()
-		if err != nil {
-			return err
+		if s := tw.Spec.CPU; s != nil && s.PackagePowerCapPctOfMax != nil {
+			out = append(out, fmt.Sprintf("NodeTwin %s, want no CPU percent cap on a GPU Node", e2eIntent(tw)))
 		}
-		snap, err := e.snapshot()
-		if err != nil {
-			return err
+		if s := tw.Spec.GPU; s == nil || s.PowerCap == nil || s.PowerCap.CapPctOfMax == nil || !e2eNear(*s.PowerCap.CapPctOfMax, e2eCapPctBefore, 0.01) {
+			out = append(out, fmt.Sprintf("NodeTwin %s, want a GPU cap of %.0f %%", e2eIntent(tw), e2eCapPctBefore))
 		}
-		all := true
-		for _, n := range nodes {
-			tw, h := twins[n.Name], hw[n.Name]
-			sn, _ := e2eSnapshotNode(snap, n.Name)
-			var gpu *v1alpha1.ControlResult
-			if tw.Status.ControlStatus != nil {
-				gpu = tw.Status.ControlStatus.GPU
-			}
-			want := e2eCapPctBefore / 100 * e2ePackageMaxW(h)
-			cpu := e2eLimits(sn, semconv.HwTypeCPU)
-			observed[n.Name] = fmt.Sprintf("node %s: NodeTwin %s, GPU control %s, package limits %v W (80 %% is %.1f)",
-				n.Name, e2eIntent(tw), e2eStatus(gpu), cpu, want)
-			reproduced[n.Name] = gpu != nil && gpu.Backend == "none" && gpu.Result == "none" && gpu.Message == "no GPU cap intent" &&
-				want > 0 && e2eAllNear(cpu, want, e2eLimitTolW)
-			all = all && reproduced[n.Name]
+		var gpu *v1alpha1.ControlResult
+		if tw.Status.ControlStatus != nil {
+			gpu = tw.Status.ControlStatus.GPU
 		}
-		if !all {
-			return fmt.Errorf("not every shared GPU Node shows D18 yet")
+		if gpu == nil || gpu.Backend != "host-nvidia" || gpu.Result != "applied" {
+			out = append(out, fmt.Sprintf("GPU control %s, want host-nvidia/applied", e2eStatus(gpu)))
 		}
-		return nil
+		max := e2eGPUMaxW(h)
+		if lim, want := e2eLimits(sn, semconv.HwTypeGPU), e2eCapPctBefore/100*max; want <= 0 || !e2eAllNear(lim, want, e2eLimitTolW) {
+			out = append(out, fmt.Sprintf("GPU limits %v W, want %.1f (%.0f %% of %.1f)", lim, want, e2eCapPctBefore, max))
+		}
+		return out
 	})
-	if err != nil {
-		c.Logf("%v", err)
+}
+
+// e2eHardwareGPU describes the GPU count and model a NodeHardware publishes.
+func e2eHardwareGPU(h v1alpha1.NodeHardware) string {
+	if h.Status.GPU == nil {
+		return "without status.gpu"
 	}
-	for _, n := range nodes {
-		c.knownDefect("D18", reproduced[n.Name], observed[n.Name])
-	}
+	return fmt.Sprintf("gpu.count %d (%s)", h.Status.GPU.Count, h.Status.GPU.Model)
 }
 
 // MD02, nfd: absent: without NFD labels the agent reads no CPU vendor,
@@ -944,8 +928,8 @@ func e2eMD02NoNFDTakesDVFS(c *e2eCase) {
 	})
 }
 
-// MD03, toolDelivery: none: without the GPU tools the agent finds no GPU to
-// control: controlAvailable false, GPU control none/error starting with
+// MD03, toolDelivery: none: without nvidia-smi the agent finds no NVIDIA GPU
+// to control: controlAvailable false, GPU control none/error starting with
 // "gpu inventory failed", and no GPU limit changes.
 func e2eMD03NoToolsLeavesGPUsAlone(c *e2eCase) {
 	e := c.env
@@ -1179,8 +1163,8 @@ type e2eCapState struct {
 	unsteady string
 }
 
-// capsAt checks the enforced limits of the RAPL packages and NVIDIA
-// GPUs at pct of the NodeHardware maximum, and that the measured power
+// capsAt checks the enforced limits of the RAPL packages and NVIDIA and
+// AMD GPUs at pct of the NodeHardware maximum, and that the measured power
 // stays at most 1 % above the limit.
 func (e *e2eEnv) capsAt(nodes []e2eNode, typ string, pct float64) []string {
 	hw, err := e.hardware()
@@ -1193,15 +1177,16 @@ func (e *e2eEnv) capsAt(nodes []e2eNode, typ string, pct float64) []string {
 	}
 	var out []string
 	for _, n := range nodes {
-		max := e2ePackageMaxW(hw[n.Name])
+		max, min := e2ePackageMaxW(hw[n.Name]), 0.0
 		if typ == semconv.HwTypeGPU {
-			max = e2eGPUMaxW(hw[n.Name])
+			max, min = e2eGPUMaxW(hw[n.Name]), e2eGPUMinW(hw[n.Name])
 		}
 		if max <= 0 {
 			out = append(out, fmt.Sprintf("node %s: NodeHardware publishes no %s cap range", n.Name, typ))
 			continue
 		}
-		want := pct / 100 * max
+		// The agent raises a GPU cap below the published minimum to it.
+		want := math.Max(pct/100*max, min)
 		sn, ok := e2eSnapshotNode(snap, n.Name)
 		if !ok {
 			out = append(out, fmt.Sprintf("node %s is not in /debug/emulate", n.Name))
@@ -1235,15 +1220,17 @@ func e2eE09RAPLAt80(c *e2eCase) {
 	e.eventuallyNone(c, e.agentSettle(), func() []string { return e.capsAt(nodes, semconv.HwTypeCPU, e2eCapPctBefore) })
 }
 
-// E10 at 80 %: on every NVIDIA GPU Node each GPU's limit is 80 % of the
-// published maximum (NVL 320 W of 400, SXM 560 of 700) and its power at
-// most 1 % above it; the DVFS hosts report dvfs applied.
+// E10 at 80 %: on every GPU Node, NVIDIA whole or shared and AMD, each
+// GPU's limit is 80 % of the published maximum (NVL 320 W of 400, SXM 560
+// of 700, MI300X 600 of 750), or the published minimum when that is higher
+// (the W7900's pinned 241 W), and its power at most 1 % above it; the DVFS
+// hosts report dvfs applied.
 func e2eE10GPUAndDVFSAt80(c *e2eCase) {
 	e := c.env
-	gpus := e.nodesOf(c, e2eFamilyNVIDIA)
+	gpus := e.nodesOf(c, e2eFamilyNVIDIA, e2eFamilyGPUShared, e2eFamilyAMDGPU)
 	dvfs := e.nodesOf(c, e2eFamilyDVFS)
 	if len(gpus)+len(dvfs) == 0 {
-		c.Skipf("no NVIDIA GPU Node and no DVFS host")
+		c.Skipf("no GPU Node and no DVFS host")
 	}
 	e.eventuallyNone(c, e.agentSettle(), func() []string {
 		return append(e.capsAt(gpus, semconv.HwTypeGPU, e2eCapPctBefore), e.dvfsApplied(dvfs)...)
@@ -1312,7 +1299,7 @@ func (e *e2eEnv) lowerCaps(t *testing.T) (e2eCapState, bool) {
 	var moved []string
 	for _, n := range all {
 		switch n.family() {
-		case e2eFamilyRAPL, e2eFamilyNVIDIA, e2eFamilyDVFS:
+		case e2eFamilyRAPL, e2eFamilyNVIDIA, e2eFamilyGPUShared, e2eFamilyDVFS:
 			moved = append(moved, n.Name)
 		}
 	}
@@ -1494,16 +1481,19 @@ func e2eE09RAPLAt50(c *e2eCase, before e2eCapState, lowered bool) {
 	e.follow(c, before, nodes, nil)
 }
 
-// E10 at 50 %: after the upgrade each NVIDIA GPU's limit is 50 % of the
-// maximum (NVL 200 W, SXM 350), its power at most 1 % above it, and each
-// NodeTwin follows as in E09; the DVFS hosts still report dvfs applied, and
-// both their truth and their NodeTwin are lower than at 80 %.
+// E10 at 50 %: after the upgrade each GPU's limit, NVIDIA whole or shared
+// and AMD, is 50 % of the maximum (NVL 200 W, SXM 350, MI300X 375), or the
+// published minimum when that is higher (W7900 241), its power at most 1 %
+// above it, and each NVIDIA NodeTwin follows as in E09; the DVFS hosts still
+// report dvfs applied, and both their truth and their NodeTwin are lower
+// than at 80 %.
 func e2eE10GPUAndDVFSAt50(c *e2eCase, before e2eCapState, lowered bool) {
 	e := c.env
-	gpus := e.nodesOf(c, e2eFamilyNVIDIA)
+	nvidia := e.nodesOf(c, e2eFamilyNVIDIA, e2eFamilyGPUShared)
+	gpus := append(append([]e2eNode(nil), nvidia...), e.nodesOf(c, e2eFamilyAMDGPU)...)
 	dvfs := e.nodesOf(c, e2eFamilyDVFS)
 	if len(gpus)+len(dvfs) == 0 {
-		c.Skipf("no NVIDIA GPU Node and no DVFS host")
+		c.Skipf("no GPU Node and no DVFS host")
 	}
 	if !lowered {
 		c.Fatalf("the caps were not lowered (see the helm upgrade above)")
@@ -1511,7 +1501,7 @@ func e2eE10GPUAndDVFSAt50(c *e2eCase, before e2eCapState, lowered bool) {
 	e.eventuallyNone(c, e.agentSettle(), func() []string {
 		return append(e.capsAt(gpus, semconv.HwTypeGPU, e2eCapPctAfter), e.dvfsApplied(dvfs)...)
 	})
-	e.follow(c, before, gpus, dvfs)
+	e.follow(c, before, nvidia, dvfs)
 }
 
 // deploymentPods returns the UIDs of the Running pods matching the selector

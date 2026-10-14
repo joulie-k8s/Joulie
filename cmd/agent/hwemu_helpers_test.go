@@ -225,6 +225,19 @@ func (r *recordingRunner) commands() []string {
 	return out
 }
 
+// amdToolCalls lists the rocm-smi and amd-smi commands the agent ran, other
+// than the vendor probe rocm-smi --showproductname.
+func (e *emulatedNode) amdToolCalls() []string {
+	var out []string
+	for _, c := range e.runner.commands() {
+		tool, _, _ := strings.Cut(c, " ")
+		if (tool == "rocm-smi" || tool == "amd-smi") && c != "rocm-smi --showproductname" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 func (r *recordingRunner) reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -430,21 +443,10 @@ func withUnsupportedLimits(p *hwemu.Profile) {
 	p.GPUs.FieldSupport = map[string]string{"power.min_limit": "[N/A]", "power.max_limit": "[N/A]"}
 }
 
-// withLegacyRocmSMI installs the rocm-smi variant that accepts the agent's
-// --showpowercap, so the AMD path gets past inventory.
-func withLegacyRocmSMI(p *hwemu.Profile) {
-	for i := range p.GPUs.Tools {
-		if p.GPUs.Tools[i].Name == "rocm-smi" {
-			p.GPUs.Tools[i].Variant = "legacy-agent-contract"
-		}
-	}
-}
-
-// withSecondaryDie marks AMD device d as the secondary die of a package.
-func withSecondaryDie(d int) func(*hwemu.Profile) {
-	return func(p *hwemu.Profile) {
-		p.GPUs.SecondaryDies = append(p.GPUs.SecondaryDies, d)
-	}
+// withoutGPUTools is a node whose agent has no GPU tool, as the stock agent
+// image has none.
+func withoutGPUTools(p *hwemu.Profile) {
+	p.GPUs.Tools = nil
 }
 
 // withDefaultLimit sets the GPUs' default power limit, where they start.

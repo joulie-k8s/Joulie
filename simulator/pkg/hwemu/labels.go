@@ -54,20 +54,21 @@ func renderGFDProduct(product string) string {
 // renderGFDLabels returns the labels GPU feature discovery and the NVIDIA
 // device plugin publish for an exposure mode (NVIDIA/k8s-device-plugin at
 // d7265fdcf89f: docs/gpu-feature-discovery/README.md lines 216-242, README.md
-// lines 250-263, 402, 954-975):
+// lines 250-263, 402, 954-975; internal/lm/mig-strategy.go and resource.go):
 //
 //   - whole: gpu.product, gpu.count = N, gpu.replicas = 1;
 //   - mig-single: product suffixed -MIG-<profile>, count N*m,
-//     mig.strategy=single;
+//     mig.strategy=single, gpu.replicas = 1 (newMigStrategySingleLabeler
+//     relabels gpu.* from the MIG devices, with no sharing configured);
 //   - mig-mixed: mig.strategy=mixed and mig-<profile>.count = N*m, with the
-//     full-GPU product and count kept (assumed);
+//     full-GPU product and the physical count N (newGPULabelers counts
+//     MIG-enabled GPUs like the others), and gpu.replicas = 0, because
+//     MIG-enabled GPUs are labelled without sharing (getReplicas);
 //   - timeslice-rename: gpu.replicas = r and
 //     gpu.sharing-strategy=time-slicing;
 //   - timeslice-norename: as rename, with the product suffixed -SHARED;
 //   - dra: product and count only (assumed: the labeller runs beside a DRA
 //     driver).
-//
-// gpu.replicas is 1 in the mig modes (assumed: no sharing is configured).
 //
 // Every mode also carries what GPU feature discovery reads from NVML and its
 // own configuration: gpu.present, gpu.mode=compute, gpu.family,
@@ -114,6 +115,7 @@ func renderGFDLabels(g *GPUSpec) map[string]string {
 		out["nvidia.com/mig.strategy"] = "single"
 	case "mig-mixed":
 		out["nvidia.com/mig.strategy"] = "mixed"
+		out["nvidia.com/gpu.replicas"] = "0"
 		out["nvidia.com/mig-"+g.MIGProfile+".count"] = strconv.Itoa(n * g.MIGDevicesPerGPU)
 	case "timeslice-rename":
 		out["nvidia.com/gpu.replicas"] = strconv.Itoa(g.TimesliceReplicas)

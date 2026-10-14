@@ -110,7 +110,7 @@ For each candidate node, the extender gathers:
 
 3. **Pod resource demand** extracted from the pod's container specs:
    - CPU cores requested (summed across all containers)
-   - GPU count requested (from `nvidia.com/gpu` or `amd.com/gpu` limits)
+   - GPUs requested, from requests or else limits: every GPU resource, each unit weighted by the share of a GPU it stands for. A whole GPU (`nvidia.com/gpu`, `amd.com/gpu`, `gpu.intel.com/xe`) is 1; a MIG device (`nvidia.com/mig-<profile>`) is its compute slices out of 7, so `1g.12gb` is 1/7; an AMD partition (`amd.com/cpx_nps4`) is 1 over the partitions of its compute mode (SPX 1, DPX 2, TPX 3, QPX 4, CPX 8); a time-sliced or MPS replica (`nvidia.com/gpu.shared`) is the device it shares, since it can drive that device alone. See [Shared and partitioned GPUs]({{< relref "/docs/hardware/gpus.md#shared-and-partitioned-gpus" >}})
 
 4. **Node hardware** from `NodeHardware.status`:
    - CPU model, total cores, max watts per socket

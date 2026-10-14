@@ -95,8 +95,9 @@ type Bursty struct {
 type GPUGrid struct {
 	Profiles []string `json:"profiles"`
 	Arms     []GPUArm `json:"arms"`
-	// CapsPct are GPU power caps in percent of the board maximum, set as
-	// the agent sets them (nvidia-smi -pl, rocm-smi --setpoweroverdrive).
+	// CapsPct are GPU power caps in percent of the board maximum, set with
+	// nvidia-smi -pl and, on AMD, rocm-smi --setpoweroverdrive, which writes
+	// the power1_cap the agent writes directly.
 	CapsPct []float64 `json:"capsPct"`
 	// ReceiverGates are hwemu.Options.ReceiverGate values. A gate other
 	// than profile runs only for jobs with peer transfers, the only work it

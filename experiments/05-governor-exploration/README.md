@@ -63,9 +63,9 @@ node's cpufreq, amdgpu and `nvidia-smi` facts as the agent's discovery does,
 plans the arm's preset with `pkg/governor`, and writes the plan's sysfs
 attributes or runs its `nvidia-smi` commands against the node's fake tools,
 reading each back. A native word (a governor name, an EPP value, an amdgpu
-level, a clock lock) in a config is refused. GPU caps are set as the agent
-sets them (`nvidia-smi -pl`, `rocm-smi --setpoweroverdrive`) once the job
-holds its GPUs.
+level, a clock lock) in a config is refused. GPU caps are set with
+`nvidia-smi -pl` and, on AMD, `rocm-smi --setpoweroverdrive`, which writes the
+`power1_cap` the agent writes directly, once the job holds its GPUs.
 
 | Axis | Values |
 |---|---|

@@ -38,7 +38,11 @@ What it writes:
                      energy_uj as plain files. Absent when the node has no RAPL.
   cpuinfo            copy of /proc/cpuinfo
   nvidia-smi.txt     stdout of the exact query the agent runs, if nvidia-smi exists
-  rocm-smi.txt       stdout of the exact query the agent runs, if rocm-smi exists
+  amdgpu-hwmon/gpuN/ power1_cap, power1_cap_min, power1_cap_max and
+                     power1_cap_default, in microwatts, of the amdgpu hwmon
+                     device of the Nth amdgpu device in bus id order, as the
+                     agent lists them; the bus id itself is not kept, and a
+                     device none of whose attributes reads is left out
   node-labels.json   the node's labels as a JSON object, or {} when unknown
   machine.yaml       metadata skeleton for a human to complete
   governor/          the frequency governor state, absent when the node has
@@ -471,6 +475,40 @@ fi
 rmdir "$GOV_DEST" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
+# amdgpu power cap, which the agent reads and writes to cap an AMD GPU: the
+# cap attributes of the amdgpu hwmon device of every amdgpu device, in bus id
+# order as the agent lists them (vendor 0x1002, a driver link naming amdgpu
+# where there is one, a hwmon device named amdgpu). The directory is named
+# after the position, so the bus id stays on the machine.
+# ---------------------------------------------------------------------------
+
+amdgpu_hwmon_count=0
+for dev in "$SYSFS_ROOT"/bus/pci/devices/*; do
+	[ "$(cat "$dev/vendor" 2>/dev/null || true)" = "0x1002" ] || continue
+	if [ -L "$dev/driver" ]; then
+		[ "$(basename "$(readlink "$dev/driver")")" = "amdgpu" ] || continue
+	fi
+	hwmon=""
+	for h in "$dev"/hwmon/hwmon*; do
+		if [ "$(cat "$h/name" 2>/dev/null || true)" = "amdgpu" ]; then
+			hwmon=$h
+			break
+		fi
+	done
+	[ -n "$hwmon" ] || continue
+	gpu_dest="$DEST/amdgpu-hwmon/gpu$amdgpu_hwmon_count"
+	for f in power1_cap power1_cap_min power1_cap_max power1_cap_default; do
+		copy_attr "$hwmon/$f" "$gpu_dest/$f"
+	done
+	if [ -d "$gpu_dest" ]; then
+		amdgpu_hwmon_count=$((amdgpu_hwmon_count + 1))
+	fi
+done
+if [ "$amdgpu_hwmon_count" -gt 0 ]; then
+	echo "$SCRIPT_NAME: copied the power cap of $amdgpu_hwmon_count amdgpu device(s)"
+fi
+
+# ---------------------------------------------------------------------------
 # GPU query commands, exactly as cmd/agent/main.go runs them
 # ---------------------------------------------------------------------------
 
@@ -483,16 +521,6 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 	else
 		rm -f "$DEST/nvidia-smi.txt"
 		echo "$SCRIPT_NAME: warning: nvidia-smi present but the query failed" >&2
-	fi
-fi
-
-if command -v rocm-smi >/dev/null 2>&1; then
-	if rocm-smi --showpowercap --showproductname --json >"$DEST/rocm-smi.txt" 2>/dev/null; then
-		redact "$DEST/rocm-smi.txt"
-		echo "$SCRIPT_NAME: captured rocm-smi query output"
-	else
-		rm -f "$DEST/rocm-smi.txt"
-		echo "$SCRIPT_NAME: warning: rocm-smi present but the query failed" >&2
 	fi
 fi
 
@@ -541,6 +569,9 @@ captured_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	if [ "$gpu_count" -gt 0 ]; then
 		printf '  gpu:\n'
 		printf '    nvidia.com/gpu: "%s"\n' "$gpu_count"
+	elif [ "$amdgpu_hwmon_count" -gt 0 ]; then
+		printf '  gpu:\n'
+		printf '    amd.com/gpu: "%s"\n' "$amdgpu_hwmon_count"
 	else
 		printf '  gpu: {}\n'
 	fi

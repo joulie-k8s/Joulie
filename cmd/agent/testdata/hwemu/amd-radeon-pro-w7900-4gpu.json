@@ -2,7 +2,7 @@
   "capabilities": {
     "cpuControl": true,
     "cpuTelemetry": true,
-    "gpuControl": false,
+    "gpuControl": true,
     "gpuTelemetry": true
   },
   "cpu": {
@@ -65,9 +65,14 @@
     "warnings": null
   },
   "gpu": {
-    "controlAvailable": false,
+    "capRangePerGpu": {
+      "defaultWatts": 241,
+      "maxWatts": 241,
+      "minWatts": 241
+    },
+    "controlAvailable": true,
     "count": 4,
-    "currentCapWatts": 0,
+    "currentCapWatts": 241,
     "governor": {
       "baseline": {
         "devices": [
@@ -131,6 +136,7 @@
       "writable": true
     },
     "model": "AMD_RADEON_PRO_W7900",
+    "present": true,
     "rawModel": "AMD_Radeon_PRO_W7900",
     "telemetryAvailable": true,
     "vendor": "amd",
