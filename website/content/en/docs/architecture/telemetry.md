@@ -116,6 +116,8 @@ or
 { "cpu": { "packagePowerWatts": 245.3 } }
 ```
 
+The agent and the controller manager both take the first positive of `packagePowerWatts` and `cpu.packagePowerWatts` as the power of a legacy payload, whatever `NODE_POWER_SCOPE` says; with neither positive there is no reading. What `packagePowerWatts` holds is the producer's choice: the simulator puts the CPU packages and GPUs there, and the packages alone under `cpu`.
+
 The simulator exports a richer payload than this minimal contract. Important optional fields currently include:
 
 - top level:
@@ -142,7 +144,7 @@ Controllers should treat these richer fields as additive observability, not as a
 
 ### HTTP input format
 
-The agent (`TELEMETRY_CPU_SOURCE=http`) and the controller manager (`NODE_POWER_SOURCE=http`) read the same format: one OTLP JSON `ExportMetricsServiceRequest` per GET of the endpoint, with `{node}` replaced by the node name. It is the protobuf JSON mapping of OTLP: lowerCamelCase keys, 64-bit integers as decimal strings, integer enums. A body with a top-level `resourceMetrics` key is OTLP; any other body is read as the legacy JSON above, with one deprecation warning.
+The agent (`TELEMETRY_CPU_SOURCE=http`) and the controller manager (`NODE_POWER_SOURCE=http`) read the same format: one OTLP JSON `ExportMetricsServiceRequest` per GET of the endpoint, with `{node}` replaced by the node name. It is the protobuf JSON mapping of OTLP: lowerCamelCase keys, 64-bit integers as decimal strings, integer enums. A body with a top-level `resourceMetrics` key is OTLP; any other body is read as the legacy JSON above, with one deprecation warning. An answer longer than 8 MiB is an error (for the controller manager, `source: http-error`).
 
 - **Node filter.** A resource that carries `k8s.node.name` is read only when it names the node. A resource without it is always read, since an endpoint that serves one node need not name it.
 - **Power per component**, a component being one `(hw.type, hw.id)`:
@@ -229,7 +231,7 @@ Producer rules, which the simulator follows and tests:
 
 - One `cpu` component per CPU package (`hw.id` `cpu<socket>`) and one `gpu` component per GPU (`gpu<index>`). RAPL core, uncore and psys zones are never `cpu`; DRAM is `memory` (`hw.parent=cpu<socket>`) and is not part of node power.
 - Whole-host energy only as `hw.host.energy` and `hw.host.power`, never as `hw.energy`; `hw.host.*` carries no `hw.type`.
-- Counters never decrease, also across a producer restart (the simulator keeps them in a ledger). A counter that does go back is read as a reset: `rate()` counts it as a restart from zero and the HTTP reader drops that interval, so neither reads negative power, but `rate()` reads a spike.
+- Counters never decrease, also across a producer restart (the simulator keeps them in a ledger it rewrites whole each tick). A counter that does go back is read as a reset: `rate()` counts it as a restart from zero and the HTTP reader drops that interval, so neither reads negative power, but `rate()` reads a spike.
 
 The cooling zone and rack names are the values of the nodes' `joulie.io/cooling-zone` and `joulie.io/rack` labels; see [Node topology]({{< relref "/docs/getting-started/05-configuration-reference.md#node-topology" >}}).
 
@@ -264,13 +266,16 @@ The compatibility presets read exporters that do not speak OTLP:
 
 ```promql
 # NODE_POWER_PRESET=kepler (Kepler 0.10 and later), scope components
-sum by (node_name) (label_replace(rate(kepler_node_cpu_joules_total{zone="package"}[5m]), "joulie_component", "cpu", "", "") or label_replace(rate(kepler_node_gpu_joules_total[5m]), "joulie_component", "gpu", "", ""))
+sum by (node_name) (label_replace(rate(kepler_node_cpu_active_joules_total{zone=~"package(-[0-9]+-die-[0-9]+)?"}[5m]), "joulie_component", "cpu_active", "", "") or label_replace(rate(kepler_node_cpu_idle_joules_total{zone=~"package(-[0-9]+-die-[0-9]+)?"}[5m]), "joulie_component", "cpu_idle", "", "") or label_replace(rate(kepler_node_gpu_joules_total[5m]), "joulie_component", "gpu", "", ""))
 # NODE_POWER_PRESET=kepler-legacy (Kepler 0.7 to 0.9), scope components and scope host
 sum by (exported_instance) (label_replace(rate(kepler_node_package_joules_total[5m]), "joulie_component", "cpu", "", "") or label_replace(rate(kepler_node_gpu_joules_total[5m]), "joulie_component", "gpu", "", ""))
 sum by (exported_instance) (rate(kepler_node_platform_joules_total[5m]))
 ```
 
-The `label_replace` gives the CPU and GPU series different label sets: `a or b` drops every series of `b` whose labels equal one in `a`, which on a GPU node lost the GPU (100 W read instead of 300 W). A custom query that combines series with `or` needs the same guard.
+- **Active and idle, not the CPU counter.** Kepler 0.12's `kepler_node_cpu_joules_total` is the RAPL counter as the kernel shows it, which wraps at `max_energy_range_uj`. Prometheus reads a wrap as a reset, so `rate()` over a window that holds one reads low. The active and idle counters accumulate Kepler's own increments across the wrap, never wrap, and add up to the zone's energy.
+- **Package and die zones.** Kepler names a zone after its RAPL name file with the socket index stripped: `package-0` and `package-1` are one zone `package`, summed over the sockets. The zones of a multi-die package are named `package-N-die-M` and stay zones of their own. The `zone` matcher reads both.
+- **`label_replace`** gives each branch its own label set: `a or b` drops every series of `b` whose labels equal one in `a`, which on a GPU node drops the GPU (100 W read instead of 300 W) and drops a zone's idle series behind its active one. A custom query that combines series with `or` needs the same guard.
+- **`kepler-legacy` under a cap.** Kepler 0.7 to 0.9 split each counter into the modes `idle` and `dynamic`: the power of the lowest-load interval seen so far is the idle power of every later interval, and dynamic is the rest, or 0 when an interval measured less, while the idle energy is still reported in full. The preset sums both modes, so when a cap holds a package below the idle power Kepler recorded, it reads that recorded idle power, more than the package draws.
 
 ### Name translation strategies
 
@@ -377,6 +382,6 @@ If additional diagnostic snapshots are present in some environments, treat them 
 
 To see simulator-side algorithm details using these interfaces, read:
 
-- [Workload and Power Simulator]({{< relref "/docs/simulator/simulator.md" >}})
+- [KWOK and Standalone Modes]({{< relref "/docs/simulator/simulator.md" >}})
 - [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
 - [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})

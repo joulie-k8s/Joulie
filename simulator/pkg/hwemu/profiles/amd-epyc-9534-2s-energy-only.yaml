@@ -23,5 +23,8 @@ cpufreq:
   baseKHz: {v: 2450000, src: "published:amd9534#base 2.45 GHz, the top availableKHz entry"}
 physics:
   cpu:
+    # The hardware catalog has no measured curve for the 9534, so the
+    # analytic model stays.
+    model: analytic
     maxPkgW: {v: 280, src: "published:amd9534#Default TDP"}
     idlePkgW: {v: 40, src: "assumed:no public idle figure for the 9534; the 9654 host's placeholder kept"}

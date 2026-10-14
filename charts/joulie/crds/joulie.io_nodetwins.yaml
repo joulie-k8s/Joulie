@@ -329,7 +329,10 @@ spec:
                     description: Rate of change of measured power in watts per minute
                     type: number
                   source:
-                    description: 'Measurement source: kepler, utilization, or static'
+                    description: |-
+                      Where measuredNodePowerW came from: prometheus, prometheus-no-data,
+                      http, http-error, http-no-endpoint or static; kepler and utilization
+                      are reserved.
                     enum:
                     - kepler
                     - utilization

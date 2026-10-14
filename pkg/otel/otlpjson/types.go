@@ -19,7 +19,6 @@
 // The decoders complete the package (decode.go), with these signatures:
 //
 //	func DecodeMetrics(b []byte) (MetricsData, error)       // lenient: unknown fields ignored
-//	func DecodeLogs(b []byte) (LogsData, error)             // lenient: unknown fields ignored
 //	func DecodeMetricsStrict(b []byte) (MetricsData, error) // unknown or snake_case keys fail
 //	func DecodeLogsStrict(b []byte) (LogsData, error)       // unknown or snake_case keys fail
 //	func IsMetricsData(b []byte) bool                       // a top-level resourceMetrics key
@@ -30,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // Uint64String is a uint64 that marshals as a decimal string, as OTLP JSON
@@ -182,6 +182,17 @@ type NumberDataPoint struct {
 	AsInt             *Int64String `json:"asInt,omitempty"`
 }
 
+// Float64 is the point's value as a float64, and false when it has none.
+func (p NumberDataPoint) Float64() (float64, bool) {
+	switch {
+	case p.AsDouble != nil:
+		return *p.AsDouble, true
+	case p.AsInt != nil:
+		return float64(*p.AsInt), true
+	}
+	return 0, false
+}
+
 // HistogramDataPoint is one distribution. BucketCounts has one more element
 // than ExplicitBounds; Count is the sum of BucketCounts.
 type HistogramDataPoint struct {
@@ -238,6 +249,54 @@ type AnyValue struct {
 	Int    *Int64String `json:"intValue,omitempty"`
 	Double *float64     `json:"doubleValue,omitempty"`
 	Array  *ArrayValue  `json:"arrayValue,omitempty"`
+}
+
+// Text is the value as text, and false when no field is set: a string as
+// it is, a bool, integer or double as strconv writes it, and an array as
+// its elements' text in brackets, separated by commas.
+func (v AnyValue) Text() (string, bool) {
+	switch {
+	case v.String != nil:
+		return *v.String, true
+	case v.Bool != nil:
+		return strconv.FormatBool(*v.Bool), true
+	case v.Int != nil:
+		return strconv.FormatInt(int64(*v.Int), 10), true
+	case v.Double != nil:
+		return strconv.FormatFloat(*v.Double, 'g', -1, 64), true
+	case v.Array != nil:
+		parts := make([]string, len(v.Array.Values))
+		for i, e := range v.Array.Values {
+			parts[i], _ = e.Text()
+		}
+		return "[" + strings.Join(parts, ",") + "]", true
+	}
+	return "", false
+}
+
+// Any is the value as a Go value, and false when no field is set: a
+// string, bool, int64 or float64, or for an array a []any of the elements
+// that have a value.
+func (v AnyValue) Any() (any, bool) {
+	switch {
+	case v.String != nil:
+		return *v.String, true
+	case v.Bool != nil:
+		return *v.Bool, true
+	case v.Int != nil:
+		return int64(*v.Int), true
+	case v.Double != nil:
+		return *v.Double, true
+	case v.Array != nil:
+		out := make([]any, 0, len(v.Array.Values))
+		for _, e := range v.Array.Values {
+			if x, ok := e.Any(); ok {
+				out = append(out, x)
+			}
+		}
+		return out, true
+	}
+	return nil, false
 }
 
 // ArrayValue is a list of values.

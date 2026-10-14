@@ -10,16 +10,19 @@
 // Every exporter is computed from the emulate.Snapshot of each tick, which
 // holds the counters the agent and the fake tools read, and is served in
 // the Prometheus text format at /exporters/<name>/metrics for every
-// emulated node at once. The names, labels and constant labels are pinned
-// in upstream.go with the upstream file and line they reproduce; where an
-// exporter approximates its upstream, the comment says assumed:.
+// emulated node at once. Kepler v0.12.0 reads its RAPL zones from the
+// node's rendered sysfs tree, the snapshot's Root, as upstream reads the
+// host's, so it reports every zone the tree has under its own name and
+// counter. The names, labels and constant labels are pinned in upstream.go
+// with the upstream file and line they reproduce; where an exporter
+// approximates its upstream, the comment says assumed:.
 //
-// Like a real exporter, an exporter's own counters start at zero when the
-// simulator starts. Kepler v0.12.0 cpu and gpu totals, the DCGM energy and
-// the AMD GPU energy are hardware counters upstream, so they report the
-// snapshot's ledger and device counters, which continue across a restart.
-// A node without package energy, such as a virtual machine, gets no Kepler
-// series.
+// Like a real exporter, an exporter's own counters start when the
+// simulator starts. Kepler v0.12.0 zone counters are the RAPL counters of
+// the tree, and its GPU totals, the DCGM energy and the AMD GPU energy are
+// hardware counters upstream, so they report the snapshot's device counters;
+// all of these continue across a restart. A node without package energy,
+// such as a virtual machine, gets no Kepler series.
 package compat
 
 import (
@@ -57,6 +60,9 @@ type Options struct {
 	// name: "hostname", as dcgm-exporter writes it from 4.8.3 on and the
 	// default when empty, or "Hostname", as releases up to 4.8.2 wrote it.
 	DCGMHostnameLabel string
+	// Kepler012GPU turns on the kepler-0.12 GPU series, as Kepler's
+	// experimental.gpu.enabled does. It is off by default, as upstream.
+	Kepler012GPU bool
 }
 
 // Names returns every exporter name, in a fixed order.
@@ -116,7 +122,7 @@ func NewSet(names []string, o Options) (*Set, error) {
 		case Kepler07:
 			e = newKepler07()
 		case Kepler012:
-			e = newKepler012()
+			e = newKepler012(o.Kepler012GPU)
 		case DCGM484:
 			e = newDCGM(hostLabel)
 		case AMDDME152:
@@ -263,10 +269,8 @@ func compatGPUProduct(c *emulate.ComponentReading) string {
 }
 
 // compatHasPackageEnergy reports whether a collector on the node could read
-// CPU package energy. Without it the Kepler exporters emit nothing for the
-// node: Kepler v0.12.0 finds no RAPL zone and does not start, and the model
-// estimates Kepler v0.7.12 would publish instead are not reproduced
-// (follow-up S2-F5).
+// CPU package energy. Without it kepler-0.7 emits nothing for the node: the
+// model estimates Kepler v0.7.12 would publish instead are not reproduced.
 func compatHasPackageEnergy(n *emulate.NodeSnapshot) bool {
 	for i := range n.Components {
 		if c := &n.Components[i]; c.Type == semconv.HwTypeCPU && c.Measured {

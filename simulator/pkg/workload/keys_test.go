@@ -67,7 +67,7 @@ func TestKeysMatchTheController(t *testing.T) {
 }
 
 // The zero value of a limit is never "no limit": Unlimited is negative, and
-// the legacy values are the simulator's constants before S4.
+// the legacy values are the limits the legacy experiments ran with.
 func TestKeysLimitsAndDefaults(t *testing.T) {
 	if workload.Unlimited >= 0 {
 		t.Errorf("Unlimited = %d, want a negative sentinel", workload.Unlimited)

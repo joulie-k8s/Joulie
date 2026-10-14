@@ -4,7 +4,7 @@ Apply different cooling system models to Joulie simulator IT power traces and
 compute realistic PUE curves. Supports both simple parametric models and a
 physics-based Modelica FMU compiled via Docker (no local OpenModelica needed).
 
-## Quick Start (parametric models only — no external dependencies)
+## Quick Start (parametric models only: no external dependencies)
 
 ```bash
 # 1. Generate synthetic timeseries (60 days, 5-min resolution)
@@ -19,7 +19,7 @@ python 03_plot_pue_comparison.py
 
 ## With OpenModelica FMU (physics-based cooling)
 
-The FMU is built and run inside a Docker container — no local OpenModelica
+The FMU is built and run inside a Docker container: no local OpenModelica
 installation required. The only prerequisites are Docker and Python.
 
 ### Prerequisites
@@ -38,7 +38,7 @@ pip install numpy pandas matplotlib fmpy
 # 1. Compile the Modelica cooling model into an FMU (uses Docker)
 python 04_build_fmu.py --model-file cooling_models/DXCooledAirsideEconomizer.mo
 
-# 2. Apply ALL cooling models (parametric + FMU) — FMU runs inside Docker
+# 2. Apply ALL cooling models (parametric + FMU): FMU runs inside Docker
 python 02_apply_cooling_models.py --fmu cooling_models/DXCooledAirsideEconomizer.fmu
 
 # 3. Generate plots
@@ -72,16 +72,16 @@ connectors while preserving the key physics:
 
 | Original (Buildings library) | Adapted (FMU wrapper) |
 |---|---|
-| `weaDat` TMY3 file reader | `T_outdoor` input (K) — driven by our timeseries |
-| `QRooInt_flow = 500000` (fixed) | `Q_IT` input (W) — driven by IT power trace |
-| Internal `PHVAC` computation | `P_cooling` output (W) — compressor + fan |
+| `weaDat` TMY3 file reader | `T_outdoor` input (K): driven by our timeseries |
+| `QRooInt_flow = 500000` (fixed) | `Q_IT` input (W): driven by IT power trace |
+| Internal `PHVAC` computation | `P_cooling` output (W): compressor + fan |
 | `roo.TRooAir` internal variable | `T_indoor` output (K) |
-| No COP output | `COP` output — system-level COP |
+| No COP output | `COP` output: system-level COP |
 
 ### Physics preserved from the original
 
 - **Three cooling modes**: free cooling (outdoor air only), partial mechanical
-  (economizer + DX), full mechanical (DX compressor only) — switching based on
+  (economizer + DX), full mechanical (DX compressor only): switching based on
   outdoor temperature vs supply air setpoint
 - **Airside economizer**: outdoor air fraction varies from 5% (minimum fresh air)
   to 100% (full free cooling), with mixing temperature computation

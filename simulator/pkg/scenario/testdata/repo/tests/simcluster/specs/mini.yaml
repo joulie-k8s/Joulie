@@ -1,7 +1,7 @@
-# A small cluster spec for the planner tests: 2 CPU nodes, 1 GPU node with
-# its vendor's taint, as the GPU profiles carry, which only pods requesting
-# nvidia.com/gpu tolerate, and 1 CPU node whose taint no workload pod
-# tolerates.
+# A small cluster spec for the planner tests: 2 CPU nodes in rack r1, 1 GPU
+# node in rack r2 with its vendor's taint, which its profile carries and only
+# pods requesting nvidia.com/gpu tolerate, and 1 CPU node whose taint no
+# workload pod tolerates.
 apiVersion: sim.joulie.io/v1alpha1
 kind: ClusterSpec
 metadata: {name: mini}
@@ -9,11 +9,8 @@ spec:
   defaults:
     labels: {joulie.io/managed: "true"}
   pools:
-  - {name: intel, profile: intel-xeon-2s-rapl, count: 2}
-  - name: nvl
-    profile: nvidia-h100-nvl-8gpu
-    count: 1
-    taints: [{key: nvidia.com/gpu, effect: NoSchedule}]
+  - {name: intel, profile: intel-xeon-2s-rapl, count: 2, rack: r1}
+  - {name: nvl, profile: nvidia-h100-nvl-8gpu, count: 1, rack: r2}
   - name: intel-tainted
     profile: intel-xeon-2s-rapl
     count: 1

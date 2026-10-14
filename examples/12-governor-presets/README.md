@@ -133,16 +133,16 @@ No default selects `sustained`. It holds the data-path clocks (memory, fabric) a
 The opt-in is per model, in `GPU_GOVERNOR_MODEL_PRESETS_JSON`. Its key is the node's GPU product label value (the first of `GPU_PRODUCT_LABEL_KEYS` the node carries) or the model its `NodeHardware` reports:
 
 ```bash
-kubectl get nodehardware w7900-0 -o jsonpath='{.status.gpu.model} {.status.gpu.rawModel}{"\n"}'   # model empty, rawModel GC_11_0_0
+kubectl get nodehardware w7900-0 -o jsonpath='{.status.gpu.model} {.status.gpu.rawModel}{"\n"}'   # AMD_RADEON_PRO_W7900 AMD_Radeon_PRO_W7900
 ```
 
-The emulated W7900 Nodes carry the AMD labeller's `amd.com/gpu.product-name`, which the default `GPU_PRODUCT_LABEL_KEYS` does not list, and `amd.com/gpu.family=GC_11_0_0`, which it does: their key is the family, and a family key matches every GPU of that family. This example opts the W7900 in because `sustained` is a level there that reads back (`high`); the MI300X cannot express it, and on the H100 it is `equivalent` to `auto`.
+The emulated W7900 Nodes carry the AMD labeller's `amd.com/gpu.product-name=AMD_Radeon_PRO_W7900`, which the default `GPU_PRODUCT_LABEL_KEYS` reads before `amd.com/gpu.family`, so their key is the product name. The family value (`GC_11_0_0`) names no board and is read only when no product label is present. This example opts the W7900 in because `sustained` is a level there that reads back (`high`); the MI300X cannot express it, and on the H100 it is `equivalent` to `auto`.
 
 ```bash
 cat > /tmp/sustained.yaml <<'EOF'
 controllerManager:
   env:
-    GPU_GOVERNOR_MODEL_PRESETS_JSON: '{"GC_11_0_0": {"performance": "sustained"}}'
+    GPU_GOVERNOR_MODEL_PRESETS_JSON: '{"AMD_Radeon_PRO_W7900": {"performance": "sustained"}}'
 EOF
 helm -n joulie-system upgrade joulie charts/joulie --reuse-values -f /tmp/sustained.yaml
 ```
@@ -178,6 +178,7 @@ Every governor field leaves the `NodeTwin`s, and each agent writes its baseline 
 
 ## On a real cluster
 
+- On an existing install, apply the CRDs first (`kubectl apply -f charts/joulie/crds/`): `helm upgrade` never updates them, and an older CRD prunes the governor fields.
 - Install with the same `values.yaml` only after reading each node's presets in `NodeHardware`: with both gates on, the agents change the governors of every managed node. `GOVERNOR_CONTROL=cpu` turns on the CPU side alone.
 - The agent writes through the `/host-sys` mount as root, as the chart's DaemonSet runs it; an agent without those privileges reports `refused`. On NVIDIA nodes discovery runs `nvidia-smi`; a node where it does not answer lists no GPU presets and gets none.
 - The results, retries and restore rules are in [Governor control](https://joulie-k8s.github.io/Joulie/docs/architecture/agent/#governor-control).

@@ -78,7 +78,7 @@ func TestCP05DCGMRepeatedAndOutOfOrderSnapshotsChangeNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := compatNewCluster(compatNVL(), compatNoRAPL())
+	c := compatNewCluster(t, compatNVL(), compatNoRAPL())
 	first := c.snap(0, 0.5, 0.5)
 	late := c.snap(5, 0.5, 1)
 	mid := c.snap(5, 0.5, 0.25)
@@ -121,8 +121,8 @@ func TestCP05DCGMRepeatedAndOutOfOrderSnapshotsChangeNothing(t *testing.T) {
 // hwemu come out of DCGM as those files: the mJ rounding recovers
 // total_energy_mj exactly, the utilisation is utilization_gpu_pct, and the
 // UUID, pci_bus_id, model and driver labels pass through. The readings are
-// built here, so this does not check how a snapshot gets them from hwemu:
-// pending S2-WP1, whose State carries the Components to build them from.
+// built here from the files, so this checks the DCGM side alone; how a
+// snapshot gets them from hwemu is the emulator's tests' concern.
 func TestCP05DCGMMatchesTheNVMLFiles(t *testing.T) {
 	profiles, err := hwemu.BuiltinProfiles()
 	if err != nil {

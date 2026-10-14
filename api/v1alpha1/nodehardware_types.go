@@ -270,8 +270,10 @@ type NodeHardwareCapabilities struct {
 	GPUTelemetry bool `json:"gpuTelemetry,omitempty"`
 }
 
-// NodeHardwareQuality rates the inventory as a whole: "full", "partial" or
-// "unknown", with the warnings that lowered it.
+// NodeHardwareQuality rates the inventory as a whole: "exact" when the CPU
+// model and, on a GPU node, the GPU model are known, "heuristic" when only a
+// raw model string is, "unavailable" when neither is, with the warnings that
+// lowered it.
 type NodeHardwareQuality struct {
 	Overall  string   `json:"overall,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`

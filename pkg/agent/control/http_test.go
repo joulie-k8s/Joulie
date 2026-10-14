@@ -177,39 +177,3 @@ func TestApplyGPUControlSuccess(t *testing.T) {
 		t.Errorf("expected capWattsPerGpu 250, got %v", received["capWattsPerGpu"])
 	}
 }
-
-func TestExtractFloat(t *testing.T) {
-	tests := []struct {
-		name   string
-		val    any
-		expect float64
-		ok     bool
-	}{
-		{"float64", 42.5, 42.5, true},
-		{"int", 42, 42.0, true},
-		{"int64", int64(42), 42.0, true},
-		{"json.Number", json.Number("42.5"), 42.5, true},
-		{"string", "42", 0, false},
-		{"nil", nil, 0, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m := map[string]any{"key": tt.val}
-			got, ok := extractFloat(m, "key")
-			if ok != tt.ok {
-				t.Errorf("extractFloat ok=%v, want %v", ok, tt.ok)
-			}
-			if ok && got != tt.expect {
-				t.Errorf("extractFloat=%f, want %f", got, tt.expect)
-			}
-		})
-	}
-}
-
-func TestExtractFloatMissingKey(t *testing.T) {
-	m := map[string]any{"other": 42.0}
-	_, ok := extractFloat(m, "missing")
-	if ok {
-		t.Error("expected ok=false for missing key")
-	}
-}

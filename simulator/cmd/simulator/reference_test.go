@@ -110,7 +110,7 @@ func runReferenceBaseline(t *testing.T, baseline string) map[string]float64 {
 		t.Fatalf("embedded catalogue: %v", err)
 	}
 	s.catalog = catalog
-	if err := s.initWorkloadEngineFromTrace(filepath.Join(referenceDir, "trace.jsonl")); err != nil {
+	if err := s.initWorkloadEngineWithOptions(filepath.Join(referenceDir, "trace.jsonl"), workloadOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	runStandalone(s)

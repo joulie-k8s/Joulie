@@ -1,16 +1,18 @@
 package main
 
-// The formats of /telemetry/{node} (F8). The route answers by default with
+// The formats of /telemetry/{node}. The route answers by default with
 // the OTLP JSON of /otlp/telemetry/{node}, the format the agent's and the
 // controller manager's HTTP power inputs read. ?format=legacy keeps the
 // legacy packagePowerWatts JSON for one release, until
-// legacyTelemetryRemovedIn.
+// otlpjson.LegacyRemovedIn.
 
 import (
 	"fmt"
 	"log"
 	"net/http"
 	"sync/atomic"
+
+	"github.com/matbun/joulie/pkg/otel/otlpjson"
 )
 
 // telemetryFormat is the document /telemetry/{node} answers with.
@@ -23,10 +25,6 @@ const (
 	// telemetryFormatLegacy is the legacy packagePowerWatts JSON, deprecated.
 	telemetryFormatLegacy
 )
-
-// legacyTelemetryRemovedIn is the release that removes ?format=legacy, the
-// alias that keeps the legacy JSON on /telemetry/{node}.
-const legacyTelemetryRemovedIn = "v0.4.0"
 
 // legacyTelemetryWarned is set once the process has logged that
 // ?format=legacy is deprecated.
@@ -51,6 +49,6 @@ func parseTelemetryFormat(r *http.Request) (telemetryFormat, error) {
 // deprecated and when it goes.
 func warnLegacyTelemetry() {
 	if legacyTelemetryWarned.CompareAndSwap(false, true) {
-		log.Printf("warning: GET /telemetry/{node}?format=legacy is deprecated and removed in %s; /telemetry/{node} serves the OTLP JSON of /otlp/telemetry/{node} by default, which the agent's and the controller manager's http power sources read", legacyTelemetryRemovedIn)
+		log.Printf("warning: GET /telemetry/{node}?format=legacy is deprecated and removed in %s; /telemetry/{node} serves the OTLP JSON of /otlp/telemetry/{node} by default, which the agent's and the controller manager's http power sources read", otlpjson.LegacyRemovedIn)
 	}
 }

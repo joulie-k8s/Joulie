@@ -10,7 +10,7 @@ import (
 	"github.com/matbun/joulie/simulator/pkg/scenario"
 )
 
-// The known-defect registry of the end-to-end test (R9). A defect here is
+// The known-defect registry of the end-to-end test. A defect here is
 // one the run reproduces today and that is waiting for a fix or a decision;
 // its check asserts the defect's observation, so the run stays green while
 // the defect lasts and turns red the day it no longer reproduces. That run
@@ -48,7 +48,7 @@ var e2eDefects = []e2eDefect{
 		Check: "MD01",
 		Expected: "MIG-mixed and renamed time-slicing GPU Nodes get no GPU intent (none/none/\"no GPU cap intent\") " +
 			"and a CPU percent cap, as if they had no GPU",
-		FlipsWith: "U6, the controller counting nvidia.com/mig-* and nvidia.com/gpu.shared",
+		FlipsWith: "the controller counting nvidia.com/mig-* and nvidia.com/gpu.shared as GPUs",
 	},
 }
 
@@ -82,7 +82,8 @@ func (c *e2eCase) knownDefect(id string, reproduced bool, observed string) {
 	c.defects = append(c.defects, scenario.KnownDefect{ID: id, Assertion: c.name, Observed: observed})
 }
 
-// e2eCheckID matches the IDs of the end-to-end checks (S3-WP6 and IN6).
+// e2eCheckID matches the IDs of the end-to-end checks, those of
+// e2e_test.go and otel_inputs_test.go.
 var e2eCheckID = regexp.MustCompile(`^(E(0[1-9]|1[0-6])|MD0[1-4])$`)
 
 // TestE2EKnownDefectRegistry keeps the registry well formed: unique IDs,

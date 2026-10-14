@@ -74,9 +74,6 @@ func TestK01TruthExpressionsOnTheFixture(t *testing.T) {
 	if _, err := EvalTruth("packages", NodeTruth{}); err == nil {
 		t.Error("an unknown truth evaluates")
 	}
-	if f := FacilityTruthOf(testSnapshot(t)); f != (FacilityTruth{AmbientC: 21.5, ITPowerW: 3222, CoolingPowerW: 966.6}) {
-		t.Errorf("facility truth %+v", f)
-	}
 }
 
 // NodeTruthsOver reads power from the energy the ledgers added, as rate()

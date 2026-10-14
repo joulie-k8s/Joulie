@@ -36,17 +36,14 @@ type nodePowerConfig struct {
 	source       string // static, prometheus or http
 	httpEndpoint string
 	promAddress  string
-	promQuery    string
-	// spec has its Preset resolved and no CustomQuery: promQuery is the
-	// query of the custom preset.
+	// spec has its defaults filled by inputs.NodePowerSpec.WithDefaults;
+	// its CustomQuery is NODE_POWER_PROMETHEUS_QUERY.
 	spec inputs.NodePowerSpec
 }
 
 // query returns the node power query and, under auto, its target_info form.
 func (c nodePowerConfig) query() (primary, fallback inputs.Query, err error) {
-	spec := c.spec
-	spec.CustomQuery = c.promQuery
-	return spec.Query()
+	return c.spec.Query()
 }
 
 // loadInputConfig reads the input variables. An invalid value is an error,
@@ -102,25 +99,22 @@ func loadInputConfig() (inputConfig, error) {
 	}
 	np.httpEndpoint = envOrDeprecated("NODE_POWER_HTTP_ENDPOINT", "")
 	np.promAddress = envOrDeprecated("NODE_POWER_PROMETHEUS_ADDRESS", cfg.prometheusAddress)
-	np.promQuery = envOrDeprecated("NODE_POWER_PROMETHEUS_QUERY", "")
-	preset := inputs.NodePowerPreset(strings.ToLower(envOrDefault("NODE_POWER_PRESET", "")))
-	if preset == "" {
-		preset = inputs.NodePowerPresetOTel
-		if np.promQuery != "" {
-			preset = inputs.NodePowerPresetCustom
-		}
-	}
-	np.spec = inputs.NodePowerSpec{
-		Preset:             preset,
+	spec, err := inputs.NodePowerSpec{
+		Preset:             inputs.NodePowerPreset(strings.ToLower(envOrDefault("NODE_POWER_PRESET", ""))),
 		Scope:              inputs.Scope(strings.ToLower(envOrDefault("NODE_POWER_SCOPE", string(inputs.ScopeComponents)))),
 		Naming:             naming,
 		ResourceAttributes: inputs.ResourceAttributes(strings.ToLower(envOrDefault("PROMETHEUS_RESOURCE_ATTRIBUTES", string(inputs.ResourceAttributesAuto)))),
 		Window:             window,
 		NodeLabel:          envOrDefault("NODE_POWER_NODE_LABEL", ""),
+		CustomQuery:        envOrDeprecated("NODE_POWER_PROMETHEUS_QUERY", ""),
+	}.WithDefaults()
+	if err == nil {
+		_, _, err = spec.Query()
 	}
-	if _, _, err := np.query(); err != nil {
+	if err != nil {
 		return cfg, fmt.Errorf("node power input (NODE_POWER_PRESET, NODE_POWER_SCOPE, PROMETHEUS_RESOURCE_ATTRIBUTES, NODE_POWER_PROMETHEUS_QUERY): %w", err)
 	}
+	np.spec = spec
 
 	fc := defaultFacilityConfig()
 	fc.enabled = boolEnv("ENABLE_FACILITY_METRICS", false)
@@ -160,7 +154,6 @@ func (c inputConfig) install() {
 	nodePowerSource = c.nodePower.source
 	nodePowerHTTPEndpoint = c.nodePower.httpEndpoint
 	nodePowerPromAddress = c.nodePower.promAddress
-	nodePowerPromQuery = c.nodePower.promQuery
 	nodePowerSpec = c.nodePower.spec
 }
 

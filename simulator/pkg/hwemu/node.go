@@ -30,11 +30,7 @@ const nodeDefaultMinScale = 0.35
 // nodeDRMClassDir is where DRM cards are listed (drm_sysfs.c, class "drm").
 const nodeDRMClassDir = "class/drm"
 
-var (
-	nodeCardName       = regexp.MustCompile(`^card([0-9]+)$`)
-	nodePackageName    = regexp.MustCompile(`^package-([0-9]+)$`)
-	nodePackageDieName = regexp.MustCompile(`^package-([0-9]+)-die-([0-9]+)$`)
-)
+var nodeCardName = regexp.MustCompile(`^card([0-9]+)$`)
 
 // Node runs the physics of one rendered tree. Each Step reads back what the
 // agent and the GPU tools wrote, advances power, energy, frequency and limits
@@ -43,6 +39,11 @@ var (
 // lock only.
 type Node struct {
 	mu sync.Mutex
+
+	// unobserved is true during StepUnobserved; pendingS holds the S files
+	// it computed and did not write, with their latest content.
+	unobserved bool
+	pendingS   map[*nodeSFile]string
 
 	profile   *Profile
 	tree      *Tree
@@ -88,6 +89,19 @@ type Node struct {
 	afiles []*nodeAFile
 	rfiles []*nodeRFile
 	events []Event
+
+	// changedBuf holds the changed A files of a readback, and readBuf the
+	// content of the A file it reads; afilesDirty is set when a handler ran
+	// since the A files were last compared with the model (readback.go);
+	// pending the events of
+	// refused CheckWrite calls, which the next step
+	// reports (reject.go); seeding is true while NewNode seeds the model
+	// from the tree, where a file shows state that already holds.
+	changedBuf  []nodeAWrite
+	readBuf     []byte
+	afilesDirty bool
+	pending     []Event
+	seeding     bool
 
 	// receiverGate is Options.ReceiverGate; rejectErrno the errno of each
 	// file whose write this step rejected (reject.go); cpuGov the CPU
@@ -171,11 +185,11 @@ func NewNode(p *Profile, t *Tree, o Options) (*Node, error) {
 	}
 	if tree.NodeName == "" {
 		var meta renderMeta
-		if b, err := os.ReadFile(n.rootPath(ensureMetaFile)); err == nil && json.Unmarshal(b, &meta) == nil {
+		if b, err := n.readFile(n.rootPath(ensureMetaFile)); err == nil && json.Unmarshal(b, &meta) == nil {
 			tree.NodeName = meta.Node
 		}
 	}
-	if v, ok := nodeReadString(filepath.Join(n.stateRoot, layout.NVMLDir, "driver_version")); ok {
+	if v, ok := n.readString(filepath.Join(n.stateRoot, layout.NVMLDir, "driver_version")); ok {
 		n.driverVersion = v
 	}
 
@@ -184,11 +198,15 @@ func NewNode(p *Profile, t *Tree, o Options) (*Node, error) {
 		n.buildCPUGovernor, n.buildGPUDPM, n.buildNVClock,
 		n.snapshotRenderFiles,
 	}
+	n.seeding = true
 	for _, step := range steps {
 		if err := step(); err != nil {
 			return nil, err
 		}
 	}
+	n.seeding = false
+	n.afilesDirty = true
+	clear(n.rejectErrno)
 	n.cpuUtil = make([]float64, n.topo.cpus())
 	n.derive()
 	n.assign()
@@ -257,6 +275,41 @@ func (n *Node) Step(dt time.Duration) error {
 	return n.step(n.now.Add(dt))
 }
 
+// StepUnobserved advances the node by dt as Step does, for a caller that
+// neither writes nor reads the tree until it calls Step or Flush: it reads
+// back no file, since nobody wrote one, and holds the files it would write,
+// which the next Step or Flush writes with their latest content. State
+// after it is State after Step. The governor sweep steps a bursty load
+// every 10 ms this way, where the file I/O of Step is nearly all of the
+// cost and no file is read.
+func (n *Node) StepUnobserved(dt time.Duration) error {
+	if dt < 0 {
+		return fmt.Errorf("hwemu: step by negative %v", dt)
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.unobserved = true
+	defer func() { n.unobserved = false }()
+	return n.step(n.now.Add(dt))
+}
+
+// Flush writes the files StepUnobserved held, without stepping.
+func (n *Node) Flush() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.flushPending()
+}
+
+// flushPending writes every held S file with its latest content.
+func (n *Node) flushPending() error {
+	var errs []error
+	for f, c := range n.pendingS {
+		delete(n.pendingS, f)
+		errs = append(errs, n.writeS(f, c))
+	}
+	return errors.Join(errs...)
+}
+
 // AdvanceTo steps the node to t. A t before the node's time is an error.
 func (n *Node) AdvanceTo(t time.Time) error {
 	n.mu.Lock()
@@ -268,7 +321,7 @@ func (n *Node) AdvanceTo(t time.Time) error {
 }
 
 func (n *Node) step(end time.Time) error {
-	n.events = nil
+	n.events, n.pending = n.pending, nil
 	err := errors.Join(n.readback(n.renderCheckDue(end)), n.persistReset())
 	n.rejectAttach()
 	if n.frozen {
@@ -279,7 +332,11 @@ func (n *Node) step(end time.Time) error {
 		n.substep(next)
 	}
 	n.now = end
-	return errors.Join(err, n.writeOutputs())
+	err = errors.Join(err, n.writeOutputs())
+	if !n.unobserved {
+		err = errors.Join(err, n.flushPending())
+	}
+	return err
 }
 
 // renderCheckDue reports whether the step to end checks the R files: every
@@ -370,8 +427,9 @@ func (n *Node) stateComponents(dt float64) ([]ComponentState, HostState) {
 		if cpu.SysfsPath == "" {
 			cpu.SysfsPath = diePath
 		}
-		// The policies of the package, as scaling_cur_freq, cpuinfo_max_freq
-		// and the resolved scaling_max_freq show them, in kHz.
+		// The policies of the package, as scaling_cur_freq and the resolved
+		// scaling_max_freq show them, and the hardware maximum, the
+		// cpuinfo_max_freq of turbo on, in kHz.
 		var curKHz, limKHz float64
 		var maxKHz int64
 		k := 0
@@ -648,12 +706,10 @@ func nodeZoneName(format string, args ...int) string {
 
 // nodeRoleOf classifies a zone by its name, as intel_rapl_common.c names them.
 func nodeRoleOf(name string) (role, socket int) {
-	if m := nodePackageName.FindStringSubmatch(name); m != nil {
-		s, _ := strconv.Atoi(m[1])
-		return nodeRolePackage, s
-	}
-	if m := nodePackageDieName.FindStringSubmatch(name); m != nil {
-		s, _ := strconv.Atoi(m[1])
+	if s, die, ok := layout.RAPLPackageZone(name); ok {
+		if die < 0 {
+			return nodeRolePackage, s
+		}
 		return nodeRoleDie, s
 	}
 	switch name {
@@ -693,14 +749,14 @@ func (n *Node) buildZone(ct string, idx []int, parent *nodeZone, zs ZoneSpec, ro
 
 	enabled := filepath.Join(dir, "enabled")
 	if h, cur := nodeBoolHandler(&z.enabled); n.addAFile(enabled, z.component, h, cur) == nil {
-		if v, ok := nodeReadInt(enabled); ok {
+		if v, ok := n.readInt(enabled); ok {
 			z.enabled = int(v)
 		}
 	}
 	if sf := n.sfile(filepath.Join(dir, "energy_uj")); sf != nil {
 		unit := zs.EnergyUnitNJ.V
 		if unit <= 0 {
-			if r, ok := nodeReadInt(filepath.Join(dir, "max_energy_range_uj")); ok && r > 0 {
+			if r, ok := n.readInt(filepath.Join(dir, "max_energy_range_uj")); ok && r > 0 {
 				unit = nodeUnitFromRange(r)
 			} else if zs.MaxEnergyRangeUJ != nil && zs.MaxEnergyRangeUJ.V > 0 {
 				unit = nodeUnitFromRange(zs.MaxEnergyRangeUJ.V)
@@ -709,23 +765,23 @@ func (n *Node) buildZone(ct string, idx []int, parent *nodeZone, zs ZoneSpec, ro
 		if unit <= 0 {
 			return fmt.Errorf("hwemu: profile %s: zone %s has energy_uj but no energy unit", n.profile.Name, rel)
 		}
-		uj, _ := nodeReadInt(sf.path)
+		uj, _ := n.readInt(sf.path)
 		z.counter, z.energy, z.seedUJ = nodeNewCounter(unit, uj), sf, uj
 	}
 	for i, cs := range zs.Constraints {
 		c := &nodeConstraint{kind: nodeConstraintKind(cs.Name), limitUW: cs.PowerLimitUW.V, maxUW: cs.MaxPowerUW.V, windowUS: cs.TimeWindowUS.V, rejectWrites: cs.RejectWrites.V}
+		c.mask = nodeLimitMask(role, c.kind, zs.LimitBits)
 		prefix := filepath.Join(dir, fmt.Sprintf("constraint_%d_", i))
-		if v, ok := nodeReadInt(prefix + "max_power_uw"); ok {
+		if v, ok := n.readInt(prefix + "max_power_uw"); ok {
 			c.maxUW = v
 		}
-		// A rejecting constraint is a directory: its limit stays the profile's.
-		if h, cur := c.limitHandler(z.powerUnitUW); n.addAFile(prefix+"power_limit_uw", z.component, h, cur) == nil {
-			if v, ok := nodeReadInt(prefix + "power_limit_uw"); ok {
+		if h, cur := n.limitHandler(c, prefix+"power_limit_uw", z.powerUnitUW); n.addAFile(prefix+"power_limit_uw", z.component, h, cur) == nil {
+			if v, ok := n.readInt(prefix + "power_limit_uw"); ok {
 				c.limitUW = v
 			}
 		}
-		if h, cur := c.windowHandler(); n.addAFile(prefix+"time_window_us", z.component, h, cur) == nil {
-			if v, ok := nodeReadInt(prefix + "time_window_us"); ok && v > 0 {
+		if h, cur := n.windowHandler(c, prefix+"time_window_us"); n.addAFile(prefix+"time_window_us", z.component, h, cur) == nil {
+			if v, ok := n.readInt(prefix + "time_window_us"); ok && v > 0 {
 				c.windowUS = v
 			}
 		}
@@ -771,7 +827,7 @@ func (n *Node) buildCPUFreq() error {
 		dir := n.sysPath(layout.PolicyDir(k))
 		file := func(name string) string { return filepath.Join(dir, name) }
 		p := &nodePolicy{index: k, minKHz: cf.CPUInfoMinKHz.V, maxKHz: cf.CPUInfoMaxKHz.V, table: append([]int64(nil), cf.AvailableKHz.V...), governor: cf.Governor.V, boost: &boost}
-		if s, ok := nodeReadString(file("related_cpus")); ok {
+		if s, ok := n.readString(file("related_cpus")); ok {
 			for _, f := range strings.Fields(s) {
 				if c, err := strconv.Atoi(f); err == nil {
 					p.cpus = append(p.cpus, c)
@@ -781,13 +837,16 @@ func (n *Node) buildCPUFreq() error {
 		if len(p.cpus) == 0 {
 			p.cpus = []int{k}
 		}
-		if v, ok := nodeReadInt(file("cpuinfo_min_freq")); ok {
+		if v, ok := n.readInt(file("cpuinfo_min_freq")); ok {
 			p.minKHz = v
 		}
-		if v, ok := nodeReadInt(file("cpuinfo_max_freq")); ok {
+		// An emulator-owned cpuinfo_max_freq shows the maximum with turbo
+		// in its present state (writeCPUGovernor); the hardware maximum
+		// the physics scales by stays the profile's.
+		if v, ok := n.readInt(file("cpuinfo_max_freq")); ok && n.owners[n.relPath(file("cpuinfo_max_freq"))].Owner != layout.OwnerEmulator {
 			p.maxKHz = v
 		}
-		if s, ok := nodeReadString(file("scaling_available_frequencies")); ok {
+		if s, ok := n.readString(file("scaling_available_frequencies")); ok {
 			p.table = nil
 			for _, f := range strings.Fields(s) {
 				if v, err := strconv.ParseInt(f, 10, 64); err == nil {
@@ -796,12 +855,12 @@ func (n *Node) buildCPUFreq() error {
 			}
 		}
 		driver := cf.Driver.V
-		if s, ok := nodeReadString(file("scaling_driver")); ok {
+		if s, ok := n.readString(file("scaling_driver")); ok {
 			driver = s
 		}
 		p.setpolicy = driver == "intel_pstate" || driver == "amd-pstate-epp"
 		p.governors = strings.Fields(cf.AvailableGovernors.V)
-		if s, ok := nodeReadString(file("scaling_available_governors")); ok {
+		if s, ok := n.readString(file("scaling_available_governors")); ok {
 			p.governors = strings.Fields(s)
 		}
 		p.reqMinKHz, p.reqMaxKHz = p.minKHz, p.maxKHz
@@ -816,12 +875,12 @@ func (n *Node) buildCPUFreq() error {
 		n.addAFile(file("scaling_max_freq"), cpu, h, cur)
 		h, cur = p.freqHandler(false)
 		n.addAFile(file("scaling_min_freq"), cpu, h, cur)
-		h, cur = nodeEnumHandler(&p.governor, p.governors)
+		h, cur = n.nodeEnumHandler(file("scaling_governor"), &p.governor, p.governors)
 		n.addAFile(file("scaling_governor"), cpu, h, cur)
 		h, cur = nodeSetspeedHandler()
 		n.addAFile(file("scaling_setspeed"), cpu, h, cur)
-		if s, ok := nodeReadString(file("energy_performance_available_preferences")); ok {
-			h, cur = nodeEnumHandler(&p.epp, strings.Fields(s))
+		if s, ok := n.readString(file("energy_performance_available_preferences")); ok {
+			h, cur = n.nodeEnumHandler(file("energy_performance_preference"), &p.epp, strings.Fields(s))
 			n.addAFile(file("energy_performance_preference"), cpu, h, cur) // no effect on power (assumed)
 		}
 		if p.cur = n.sfile(file("scaling_cur_freq")); p.cur != nil {
@@ -863,7 +922,7 @@ func (n *Node) buildHSMP() error {
 			continue
 		}
 		h := &nodeHSMP{capUW: hs.CapDefaultUW.V, capMaxUW: hs.CapMaxUW.V}
-		if v, ok := nodeReadInt(filepath.Join(dir, "power1_cap_max")); ok {
+		if v, ok := n.readInt(filepath.Join(dir, "power1_cap_max")); ok {
 			h.capMaxUW = v
 		}
 		hh, cur := h.capHandler()
@@ -899,20 +958,20 @@ func (n *Node) buildGPUs() error {
 			g.persistence = persistModeText(gs.PersistenceMode.V)
 			dir := filepath.Join(n.stateRoot, filepath.FromSlash(layout.NVMLGPUDir(i)))
 			file := func(name string) string { return filepath.Join(dir, name) }
-			if v, ok := nodeReadInt(file("power_min_limit_mw")); ok {
+			if v, ok := n.readInt(file("power_min_limit_mw")); ok {
 				g.minW = float64(v) / 1000
 			}
-			if v, ok := nodeReadInt(file("power_max_limit_mw")); ok {
+			if v, ok := n.readInt(file("power_max_limit_mw")); ok {
 				g.maxW = float64(v) / 1000
 			}
-			if v, ok := nodeReadInt(file("power_default_limit_mw")); ok {
+			if v, ok := n.readInt(file("power_default_limit_mw")); ok {
 				g.defaultMW = v
 			}
-			g.uuid, _ = nodeReadString(file("uuid"))
-			g.pciBusID, _ = nodeReadString(file("pci_bus_id"))
+			g.uuid, _ = n.readString(file("uuid"))
+			g.pciBusID, _ = n.readString(file("pci_bus_id"))
 			h, cur := g.nvmlLimitHandler()
 			g.limitFile = n.addAFile(file("power_limit_mw"), g.id(), h, cur)
-			h, cur = nodeEnumHandler(&g.persistence, []string{persistTextEnabled, persistTextDisabled})
+			h, cur = n.nodeEnumHandler(file(layout.NVMLPersistenceModeFile), &g.persistence, []string{persistTextEnabled, persistTextDisabled})
 			n.addAFile(file(layout.NVMLPersistenceModeFile), g.id(), h, cur)
 			g.settledW = g.targetW()
 			if g.enforced = n.sfile(file("enforced_power_limit_mw")); g.enforced != nil {
@@ -933,17 +992,17 @@ func (n *Node) buildGPUs() error {
 			g.limitRaw = int64(math.Round(gs.Limits.DefaultW.V * 1e6))
 			if i < len(amd) {
 				file := func(name string) string { return filepath.Join(amd[i], name) }
-				if v, ok := nodeReadInt(file("power1_cap_min")); ok {
+				if v, ok := n.readInt(file("power1_cap_min")); ok {
 					g.minW = float64(v) / 1e6
 				}
-				if v, ok := nodeReadInt(file("power1_cap_max")); ok {
+				if v, ok := n.readInt(file("power1_cap_max")); ok {
 					g.maxW = float64(v) / 1e6
 				}
 				// hwmon/hwmon<N> sits in the PCI device's directory.
 				dev := filepath.Dir(filepath.Dir(amd[i]))
 				g.pciBusID = filepath.Base(dev)
 				g.sysfsPath = strings.TrimPrefix(n.relPath(dev), layout.SysDir+"/")
-				h, cur := g.amdgpuCapHandler()
+				h, cur := n.amdgpuCapHandler(g, file("power1_cap"))
 				n.addAFile(file("power1_cap"), g.id(), h, cur)
 				g.input = n.sfile(file("power1_input"))
 				if g.average = n.sfile(file("power1_average")); g.average != nil {
@@ -990,7 +1049,7 @@ func (n *Node) amdgpuHwmonDirs() ([]string, error) {
 	var dirs []string
 	for _, c := range cards {
 		dev := filepath.Join(classDir, c.name, "device")
-		if v, _ := nodeReadString(filepath.Join(dev, "vendor")); v != "0x1002" {
+		if v, _ := n.readString(filepath.Join(dev, "vendor")); v != "0x1002" {
 			continue
 		}
 		matches, _ := filepath.Glob(filepath.Join(dev, "hwmon", "hwmon*"))

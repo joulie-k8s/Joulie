@@ -1,3 +1,18 @@
+{{- /*
+The rules of a v1 workload run, which only emulate mode runs, are granted
+by rbac.workloadRuns: auto follows emulate.enabled, true and false force
+them. YAML reads an unquoted true or false as a boolean: map it back.
+*/}}
+{{- $runs := (.Values.rbac | default dict).workloadRuns }}
+{{- if kindIs "bool" $runs }}
+{{- $runs = ternary "true" "false" $runs }}
+{{- end }}
+{{- $runs = $runs | default "auto" | toString }}
+{{- if eq $runs "auto" }}
+{{- $runs = ternary "true" "false" (.Values.emulate.enabled | default false) }}
+{{- else if not (has $runs (list "true" "false")) }}
+{{- fail (printf "rbac.workloadRuns is %q; want auto, true or false" $runs) }}
+{{- end }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -8,21 +23,24 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "nodes"]
     verbs: ["get", "list", "watch", "create", "delete"]
+  {{- if eq $runs "true" }}
   # A v1 workload run marks a finished pod complete with an annotation,
-  # which the KWOK Stage pod-complete selects.
+  # which the KWOK Stage pod-complete selects, and a finish with cleanup
+  # deletes the run's pods by its label.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["patch"]
+    verbs: ["patch", "deletecollection"]
   # A v1 workload run creates one Job object per group of trace jobs and
-  # deletes them on a finish with cleanup.
+  # deletes them by the run's label on a finish with cleanup.
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection"]
   # A v1 workload run observes the NodeTwins' schedulable class; it never
   # writes them.
   - apiGroups: ["joulie.io"]
     resources: ["nodetwins"]
     verbs: ["get", "list", "watch"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

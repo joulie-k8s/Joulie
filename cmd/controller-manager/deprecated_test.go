@@ -8,6 +8,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+
+	"github.com/matbun/joulie/pkg/otel/otlpjson"
 )
 
 func captureLog(t *testing.T) *bytes.Buffer {
@@ -176,5 +178,14 @@ func TestPolicyMetricsRegisteredUnderBothNames(t *testing.T) {
 		if strings.HasPrefix(mf.GetName(), "joulie_operator_") && !strings.HasPrefix(mf.GetHelp(), "Deprecated, use joulie_policy_") {
 			t.Fatalf("%s help must point at the replacement, got %q", mf.GetName(), mf.GetHelp())
 		}
+	}
+}
+
+// The input aliases go in the release that removes the legacy formats every
+// component reads, so the controller manager's warnings and the agent's
+// name one release.
+func TestInputAliasesGoWithTheLegacyFormats(t *testing.T) {
+	if inputAliasesRemovedIn != otlpjson.LegacyRemovedIn {
+		t.Errorf("inputAliasesRemovedIn = %q, otlpjson.LegacyRemovedIn = %q", inputAliasesRemovedIn, otlpjson.LegacyRemovedIn)
 	}
 }

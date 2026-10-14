@@ -20,6 +20,7 @@ import (
 	agentctl "github.com/matbun/joulie/pkg/agent/control"
 	"github.com/matbun/joulie/pkg/agent/dvfs"
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/governor/discover"
 	"github.com/matbun/joulie/pkg/hwinv"
 	"github.com/matbun/joulie/pkg/kube"
 	"github.com/prometheus/client_golang/prometheus"
@@ -93,6 +94,11 @@ type HardwareInfo struct {
 	// nvidia-smi without writing anything (governor_discovery.go).
 	CPULandmarks *v1alpha1.CPULandmarks
 	Governors    governorDiscovery
+	// GPUDevices is the GPU inventory of GPUVendor this discovery listed,
+	// and GPUListErr the error listing it gave: the reconcile's one listing,
+	// which the GPU cap reuses.
+	GPUDevices []GPUDevice
+	GPUListErr error
 }
 
 type DesiredState struct {
@@ -214,6 +220,8 @@ type NodeController struct {
 	capsRelaxed            bool // true when caps have been relaxed due to stale spec
 	// governor sets the CPU and GPU governors (governor_control.go).
 	governor *governorControl
+	// gpuFacts keeps the static NVIDIA governor facts between reconciles.
+	gpuFacts *nvidiaFactsCache
 }
 
 // DVFSController is an alias for the extracted dvfs.Controller type.
@@ -342,7 +350,7 @@ func runDaemonsetMode() {
 		log.Fatal("NODE_NAME env var is required in daemonset mode")
 	}
 	reconcileEvery := durationEnv("RECONCILE_INTERVAL", 20*time.Second)
-	simulateOnly := strings.EqualFold(strings.TrimSpace(os.Getenv("SIMULATE_ONLY")), "true")
+	simulateOnly := boolEnv("SIMULATE_ONLY", false)
 	controller, err := newNodeController(nodeName, simulateOnly)
 	if err != nil {
 		log.Fatalf("init controller: %v", err)
@@ -368,7 +376,7 @@ func runDaemonsetMode() {
 
 func runPoolMode() {
 	reconcileEvery := durationEnv("RECONCILE_INTERVAL", 20*time.Second)
-	simulateOnly := strings.EqualFold(strings.TrimSpace(os.Getenv("SIMULATE_ONLY")), "true")
+	simulateOnly := boolEnv("SIMULATE_ONLY", false)
 	selectorExpr := envOrDefault("POOL_NODE_SELECTOR", "joulie.io/managed=true")
 	shards := intEnv("POOL_SHARDS", 1)
 	shardID := resolvePoolShardID()
@@ -557,6 +565,7 @@ func newNodeController(nodeName string, simulateOnly bool) (*NodeController, err
 		specReadTimeout:        durationEnv("SPEC_READ_TIMEOUT", 5*time.Minute),
 		lastSuccessfulSpecRead: time.Now(), // assume fresh at startup
 		governor:               newGovernorControl(nodeName),
+		gpuFacts:               &nvidiaFactsCache{},
 	}, nil
 }
 
@@ -607,7 +616,7 @@ func reconcileOnce(
 		return fmt.Errorf("get node: %w", err)
 	}
 
-	hw := discoverHardware(ctx, node)
+	hw := discoverHardwareWith(ctx, node, nc.gpuFacts)
 
 	selected, source, err := resolveDesiredStateForNode(ctx, reader, nodeName)
 	if err != nil {
@@ -710,7 +719,8 @@ func reconcileOnce(
 	}
 
 	if selected.GPU != nil {
-		backend, result, msg, observed, err := applyGPUIntent(ctx, node, selected.GPU, gpuControlClient)
+		backend, result, msg, observed, err := applyGPUIntentFrom(ctx, node, selected.GPU, gpuControlClient,
+			&gpuInventory{vendor: hw.GPUVendor, devices: hw.GPUDevices, err: hw.GPUListErr})
 		_ = updateTelemetryGPUStatus(ctx, dyn, telemetry, nodeName, backend, result, msg, observed)
 		if err != nil {
 			return err
@@ -802,6 +812,11 @@ func reconcileOnce(
 	return nil
 }
 
+// writeRAPLLimit writes a RAPL power limit as os.WriteFile does: opened for
+// writing, created when missing, truncated, then written. A variable so a
+// test can route the writes through an emulated node.
+var writeRAPLLimit = func(path string, data []byte) error { return os.WriteFile(path, data, 0) }
+
 func applyRAPLPackageCap(hw HardwareInfo, watts float64) (bool, int, error) {
 	if hw.CPUVendor != "AuthenticAMD" && hw.CPUVendor != "GenuineIntel" {
 		return false, 0, nil
@@ -818,13 +833,21 @@ func applyRAPLPackageCap(hw HardwareInfo, watts float64) (bool, int, error) {
 	}
 
 	uw := int64(watts * 1_000_000)
-	payload := []byte(strconv.FormatInt(uw, 10))
 	count := 0
 	var failures []string
 	for _, f := range files {
-		// Keep going after a failure: one unwritable socket must not leave the
-		// remaining sockets uncapped, which is what an early return did.
-		if err := os.WriteFile(f, payload, 0); err != nil {
+		// The kernel keeps a limit in the zone's power unit and masks it to
+		// the register's width, so a value above the zone's maximum wraps to
+		// a small cap on hardware: clamp to constraint_N_max_power_uw where
+		// the zone states one.
+		capUW := uw
+		if maxUW, ok := raplConstraintMaxUW(f); ok && capUW > maxUW {
+			capUW = maxUW
+		}
+		payload := []byte(strconv.FormatInt(capUW, 10))
+		// Keep going after a failure: one unwritable socket must not leave
+		// the remaining sockets uncapped.
+		if err := writeRAPLLimit(f, payload); err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", f, err))
 			continue
 		}
@@ -837,6 +860,21 @@ func applyRAPLPackageCap(hw HardwareInfo, watts float64) (bool, int, error) {
 		log.Printf("warning: applied cap to %d/%d package zones: %s", count, len(files), strings.Join(failures, "; "))
 	}
 	return true, count, nil
+}
+
+// raplConstraintMaxUW is constraint_N_max_power_uw of the constraint whose
+// constraint_N_power_limit_uw is limitFile; ok is false when the file is
+// missing, unreadable or not positive.
+func raplConstraintMaxUW(limitFile string) (int64, bool) {
+	base, ok := strings.CutSuffix(filepath.Base(limitFile), "_power_limit_uw")
+	if !ok {
+		return 0, false
+	}
+	v, err := readInt64(filepath.Join(filepath.Dir(limitFile), base+"_max_power_uw"))
+	if err != nil || v <= 0 {
+		return 0, false
+	}
+	return v, true
 }
 
 func resolveCPUCapFromPct(ctx context.Context, pct float64) (float64, string, bool) {
@@ -963,11 +1001,31 @@ func readRAPLPackageCapRangeWatts() (maxW float64, minW float64, ok bool) {
 	return maxW, minW, true
 }
 
+// gpuInventory is a GPU listing already taken this reconcile: the vendor,
+// the devices and the error the listing gave.
+type gpuInventory struct {
+	vendor  string
+	devices []GPUDevice
+	err     error
+}
+
 func applyGPUIntent(
 	ctx context.Context,
 	node *corev1.Node,
 	intent *GPUPowerCap,
 	httpClient *HTTPControlClient,
+) (string, string, string, map[string]any, error) {
+	return applyGPUIntentFrom(ctx, node, intent, httpClient, nil)
+}
+
+// applyGPUIntentFrom applies the GPU cap intent with the listing inv, or
+// lists the GPUs itself when inv is nil.
+func applyGPUIntentFrom(
+	ctx context.Context,
+	node *corev1.Node,
+	intent *GPUPowerCap,
+	httpClient *HTTPControlClient,
+	inv *gpuInventory,
 ) (string, string, string, map[string]any, error) {
 	if intent == nil {
 		return "none", "none", "no GPU cap intent", nil, nil
@@ -999,11 +1057,16 @@ func applyGPUIntent(
 		return "http", "applied", fmt.Sprintf("applied gpu cap %.1fW", capPerGPU), observed, nil
 	}
 
-	vendor := detectGPUVendor(ctx, nodeLabels)
+	if inv == nil {
+		inv = &gpuInventory{vendor: detectGPUVendor(ctx, nodeLabels)}
+		if inv.vendor != "none" {
+			inv.devices, inv.err = listGPUDevices(ctx, inv.vendor)
+		}
+	}
+	vendor, devices, err := inv.vendor, inv.devices, inv.err
 	if vendor == "none" {
 		return "none", "blocked", "no supported GPU backend detected", map[string]any{"vendor": "none"}, nil
 	}
-	devices, err := listGPUDevices(ctx, vendor)
 	if err != nil {
 		return "none", "error", fmt.Sprintf("gpu inventory failed: %v", err), map[string]any{"vendor": vendor}, nil
 	}
@@ -1197,9 +1260,18 @@ func listAmdDevices(ctx context.Context) ([]GPUDevice, error) {
 	return devices, nil
 }
 
+// applyNvidiaGPUCap sets the power limit of every device to capWatts,
+// rounded to whole watts as -pl takes it. A device whose listed limit
+// already rounds to that value is left alone: the listing is this
+// reconcile's, so a limit the driver put back after a reset or a reload
+// shows there and is set again.
 func applyNvidiaGPUCap(ctx context.Context, devices []GPUDevice, capWatts float64) error {
+	target := math.Round(capWatts)
 	for _, d := range devices {
-		if _, err := runCommand(ctx, "nvidia-smi", "-i", strconv.Itoa(d.Index), "-pl", strconv.Itoa(int(math.Round(capWatts)))); err != nil {
+		if math.Round(d.CurrentCapWatts) == target {
+			continue
+		}
+		if _, err := runCommand(ctx, "nvidia-smi", "-i", strconv.Itoa(d.Index), "-pl", strconv.Itoa(int(target))); err != nil {
 			return fmt.Errorf("nvidia-smi set cap gpu=%d: %w", d.Index, err)
 		}
 	}
@@ -1220,7 +1292,11 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 	defer cancel()
 	out, err := commandRunner.Run(timeoutCtx, name, args...)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s failed: %v (%s)", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		err = fmt.Errorf("%s %s failed: %w (%s)", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		if name == "nvidia-smi" && !discover.FieldRejected(err) {
+			nvidiaToolFailures.Add(1)
+		}
+		return nil, err
 	}
 	return out, nil
 }
@@ -1320,6 +1396,12 @@ func gpuControlClientFromTelemetry(cfg *TelemetryConfig, nodeName string) *HTTPC
 // HTTP control client methods are now in pkg/agent/control/http.go.
 
 func discoverHardware(ctx context.Context, node *corev1.Node) HardwareInfo {
+	return discoverHardwareWith(ctx, node, nil)
+}
+
+// discoverHardwareWith is discoverHardware with the controller's cache of
+// static NVIDIA governor facts; nil queries them every time.
+func discoverHardwareWith(ctx context.Context, node *corev1.Node, gpuFacts *nvidiaFactsCache) HardwareInfo {
 	nodeLabels := node.Labels
 	hw := HardwareInfo{
 		CPUVendor:       discoverCPUVendor(nodeLabels),
@@ -1363,7 +1445,8 @@ func discoverHardware(ctx context.Context, node *corev1.Node) HardwareInfo {
 		}
 	}
 	hw.GPUVendor = detectGPUVendor(ctx, nodeLabels)
-	gpuDevices, _ := listGPUDevices(ctx, hw.GPUVendor)
+	gpuDevices, listErr := listGPUDevices(ctx, hw.GPUVendor)
+	hw.GPUDevices, hw.GPUListErr = gpuDevices, listErr
 	hw.GPUCount = len(gpuDevices)
 	if hw.GPUCount == 0 {
 		hw.GPUCount = int(allocatableGPUCount(node))
@@ -1401,7 +1484,7 @@ func discoverHardware(ctx context.Context, node *corev1.Node) HardwareInfo {
 		hw.Warnings = append(hw.Warnings, "gpu model not recognized")
 	}
 	hw.CPULandmarks = discoverCPULandmarks()
-	hw.Governors = discoverGovernors(ctx, nodeLabels, hw, hw.GPUVendor == "nvidia" && len(gpuDevices) > 0)
+	hw.Governors = discoverGovernors(ctx, nodeLabels, hw, gpuFacts)
 	return hw
 }
 

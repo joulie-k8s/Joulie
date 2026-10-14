@@ -113,16 +113,6 @@ type Result struct {
 	cpuModel string
 }
 
-// Param returns the parameter at path.
-func (r *Result) Param(path string) (Param, bool) {
-	for _, p := range r.Params {
-		if p.Path == path {
-			return p, true
-		}
-	}
-	return Param{}, false
-}
-
 // Fitted reports whether any parameter that goes into a profile was fitted.
 func (r *Result) Fitted() bool {
 	for _, p := range r.Params {

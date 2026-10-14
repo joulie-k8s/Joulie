@@ -21,12 +21,13 @@
 //     the new one, whole. Temp files live in state/.tmp, never next to an
 //     attribute, because filepath.Glob("*") matches dotfiles.
 //   - A (layout.OwnerAgent): writable by the agent or a tool, such as a RAPL
-//     limit or scaling_max_freq. Written in place, read back every Step,
+//     limit or scaling_max_freq. Written in place, checked every Step (one
+//     lstat, and a read when the file changed since its last read),
 //     normalized in place, never renamed. An empty or unparsable read keeps
-//     the previous value: the writer is between truncate and write.
-//   - D (layout.KindRejectingDir): a directory in place of an attribute that
-//     rejects writes, so os.WriteFile fails with EISDIR, as in the hardware
-//     corpus (TestHardwareFixtureCorpusRAPLWrites in cmd/agent).
+//     the previous value: the writer is between truncate and write. A value
+//     the driver refuses, such as any write to a locked RAPL limit (ENODATA),
+//     is reverted with a rejected event; Node.CheckWrite answers it with the
+//     errno at the time of the write instead.
 //   - L (layout.KindSymlink): relative inside sys/; absolute
 //     layout.FakeSMIInContainer for the tool links in bin/.
 //

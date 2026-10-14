@@ -13,8 +13,9 @@ This section is ordered intentionally:
 1. [Core Concepts]({{< relref "/docs/getting-started/00-core-concepts.md" >}}) - what Joulie is, how the control loop works
 2. [Quickstart]({{< relref "/docs/getting-started/01-quickstart.md" >}}) - install and verify
 3. [Pod Compatibility]({{< relref "/docs/getting-started/03-pod-compatibility.md" >}}) - workload class annotations and scheduling behavior
-4. [Agent Runtime Modes]({{< relref "/docs/getting-started/02-agent-runtime-modes.md" >}}) - DaemonSet vs pool mode
+4. [Agent Runtime Modes]({{< relref "/docs/getting-started/02-agent-runtime-modes.md" >}}) - DaemonSet, pool and emulated modes
 5. [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md" >}}) - all environment variables
+6. [Upgrading]({{< relref "/docs/getting-started/06-upgrading.md" >}}) - what to check before upgrading an installation
 
 By the end, you should understand:
 

@@ -512,3 +512,37 @@ func TestAssertJobsDueBeforeDurationOnly(t *testing.T) {
 		t.Errorf("message %q, want 6 due jobs and the 240 s record not due", got["j.incomplete"].Message)
 	}
 }
+
+// The run's own files are read strictly: a key the model does not have, in
+// an OTLP file the simulator or the harness wrote or in the run status, is
+// an error naming the file, not a field silently lost.
+func TestReadRunDataRejectsUnknownKeys(t *testing.T) {
+	for _, c := range []struct{ rel, line string }{
+		{filepath.Join(workload.OTLPDir, scenario.HarnessMetricsFile), `{"resourceMetrics":[],"extra":1}`},
+		{filepath.Join(workload.OTLPDir, workload.SimulatorMetricsFile), `{"resource_metrics":[]}`},
+		{filepath.Join(workload.OTLPDir, scenario.HarnessLogsFile), `{"resourceLogs":[{"resource":{},"scopeLogs":[{"scope":{},"logRecords":[{"event_name":"x"}]}]}]}`},
+		{filepath.Join(workload.OTLPDir, workload.SimulatorLogsFile), `{"resourceLogs":[],"ResourceLogs":[]}`},
+		{scenario.RunStatusFile, `{"runId":"r","phase":"Finished","unknown":true}`},
+	} {
+		dir := t.TempDir()
+		writeFixture(t, dir)
+		path := filepath.Join(dir, c.rel)
+		mode := os.O_APPEND | os.O_WRONLY
+		if c.rel == scenario.RunStatusFile {
+			mode = os.O_TRUNC | os.O_WRONLY
+		}
+		f, err := os.OpenFile(path, mode, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString(c.line + "\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := scenario.ReadRunData(dir); err == nil || !strings.Contains(err.Error(), filepath.Base(c.rel)) {
+			t.Errorf("%s with %s: ReadRunData error %v, want one naming the file", c.rel, c.line, err)
+		}
+	}
+}

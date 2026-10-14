@@ -59,7 +59,7 @@ Example: the exp02 5k inventory (`experiments/02-heterogeneous-benchmark/configs
 | cpu-highfreq | 250 | 50 |
 | cpu-intensive | 500 | 100 |
 
-`TestPerformanceSetMatchesDocumentedExp02Split` in `pkg/controller/policy/policy_test.go` pins this split. The standalone simulator calls the same `policy.PerformanceSet`.
+The standalone simulator calls the same `policy.PerformanceSet`.
 
 The controller manager exports the split after the downgrade guard as `joulie_policy_family_nodes{family}` and `joulie_policy_family_performance_nodes{family}`, so a draining node counts as not performance.
 

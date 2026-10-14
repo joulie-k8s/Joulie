@@ -67,7 +67,8 @@
     },
     "landmarks": {
       "maxBoostMHz": 3800,
-      "minFreqMHz": 1000
+      "minFreqMHz": 1000,
+      "nominalFreqMHz": 2600
     },
     "model": "",
     "rawModel": "Intel(R) Xeon(R) Platinum 9282 CPU @ 2.60GHz",

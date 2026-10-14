@@ -12,8 +12,13 @@ receivers:
     config:
       scrape_configs:
         # Kepler v0.12 DaemonSet from its Helm chart: container port "http"
-        # (28282). Only the RAPL package zone is kept; Kepler sums it over
-        # sockets. Kepler's GPU series are dropped: the GPUs come from
+        # (28282). Only the power of the package zones is kept: zone
+        # "package", which Kepler sums over sockets, or one zone per die,
+        # "package-<socket>-die-<die>", on packages with several dies.
+        # kepler_node_cpu_joules_total is dropped: it is the RAPL counter as
+        # the kernel shows it, which wraps at max_energy_range_uj, and
+        # Prometheus would read each wrap as a reset and lose the energy
+        # before it. Kepler's GPU series are dropped too: the GPUs come from
         # dcgm-exporter and the AMD exporter, and reading both would count
         # each GPU twice.
         - job_name: kepler
@@ -26,7 +31,7 @@ receivers:
               action: keep
           metric_relabel_configs:
             - source_labels: [__name__, zone]
-              regex: kepler_node_cpu_(joules_total|watts);package
+              regex: kepler_node_cpu_watts;package(-[0-9]+-die-[0-9]+)?
               action: keep
         # dcgm-exporter 4.8.4 DaemonSet from its Helm chart: container port
         # "metrics" (9400). Energy is in mJ, power in W.
@@ -70,14 +75,14 @@ processors:
           - set(datapoint.attributes["k8s.node.name"], datapoint.attributes["node_name"]) where datapoint.attributes["node_name"] != nil
           - set(datapoint.attributes["k8s.node.name"], datapoint.attributes["hostname"]) where datapoint.attributes["hostname"] != nil
           - set(datapoint.attributes["k8s.node.name"], datapoint.attributes["Hostname"]) where datapoint.attributes["Hostname"] != nil
-      # One cpu component per node: Kepler reports the package zone summed
-      # over sockets, so there is no per-socket hw.id.
+      # One cpu component per package zone, named after the zone: the
+      # package zone summed over sockets, or each die zone.
       - conditions:
           - IsMatch(metric.name, "^kepler_node_cpu_")
         statements:
           - set(datapoint.attributes["hw.type"], "cpu")
-          - set(datapoint.attributes["hw.id"], "cpu")
-          - set(datapoint.attributes["hw.name"], "package")
+          - set(datapoint.attributes["hw.id"], datapoint.attributes["zone"])
+          - set(datapoint.attributes["hw.name"], datapoint.attributes["zone"])
       # One gpu component per GPU index, named after the product.
       - conditions:
           - IsMatch(metric.name, "^DCGM_FI_DEV_")
@@ -102,9 +107,8 @@ processors:
           - convert_gauge_to_sum("cumulative", true) where metric.name == "gpu_energy_consumed"
           - scale_metric(0.001, "J") where metric.name == "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION"
           - scale_metric(0.000001, "J") where metric.name == "gpu_energy_consumed"
-          - set(metric.unit, "J") where metric.name == "kepler_node_cpu_joules_total"
           - set(metric.unit, "W") where metric.name == "kepler_node_cpu_watts" or metric.name == "DCGM_FI_DEV_POWER_USAGE" or metric.name == "gpu_power_usage"
-          - set(metric.name, "hw.energy") where metric.name == "kepler_node_cpu_joules_total" or metric.name == "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION" or metric.name == "gpu_energy_consumed"
+          - set(metric.name, "hw.energy") where metric.name == "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION" or metric.name == "gpu_energy_consumed"
           - set(metric.name, "hw.power") where metric.name == "kepler_node_cpu_watts" or metric.name == "DCGM_FI_DEV_POWER_USAGE" or metric.name == "gpu_power_usage"
           - set(metric.description, "Energy consumed by the component.") where metric.name == "hw.energy"
           - set(metric.description, "Instantaneous power consumed by the component.") where metric.name == "hw.power"

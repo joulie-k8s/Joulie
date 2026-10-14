@@ -4,7 +4,7 @@ package main
 // safe for concurrent use and the emulator steps it on its own goroutine,
 // so the engine reads a node's throughput, idle power and GPU exposure only
 // inside the emulator's publish callback, through the Runner the emulator
-// hands out (X9). The engine never sets a node's load itself: the
+// hands out. The engine never sets a node's load itself: the
 // emulator's load callback returns what the engine computed, and the
 // emulator's Tick is the one caller of SetLoad.
 

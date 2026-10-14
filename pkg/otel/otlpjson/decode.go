@@ -24,16 +24,6 @@ func DecodeMetrics(b []byte) (MetricsData, error) {
 	return d, nil
 }
 
-// DecodeLogs reads one LogsData object, leniently as DecodeMetrics does;
-// traceId, spanId and flags are among the fields it ignores.
-func DecodeLogs(b []byte) (LogsData, error) {
-	var d LogsData
-	if err := json.Unmarshal(b, &d); err != nil {
-		return LogsData{}, fmt.Errorf("otlpjson: decode logs: %w", err)
-	}
-	return d, nil
-}
-
 // DecodeMetricsStrict reads one MetricsData object and fails on any key that
 // is not, exactly, the lowerCamelCase name of a field Joulie models: an
 // unknown field, a snake_case proto name (opentelemetry-proto v1.11.1

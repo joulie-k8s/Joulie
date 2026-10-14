@@ -5,11 +5,11 @@
 # Usage: scripts/simcluster/up.sh
 #
 # Runs one k3s server in Docker (container $SIMCLUSTER_NAME), installs KWOK
-# and Prometheus (and the OpenTelemetry Collector in mode otel-collector),
-# and registers the fake Nodes of the cluster spec. Running it again reuses
-# the container when it was created for at least as many pods and with the
-# same scheduler configuration and k3s image; otherwise it fails and says to
-# recreate. Nodes the spec no longer names are deleted.
+# and Prometheus (and the OpenTelemetry Collector in modes otel-collector and
+# otel-bridge), and registers the fake Nodes of the cluster spec. Running it
+# again reuses the container when it was created for at least as many pods
+# and with the same scheduler configuration and k3s image; otherwise it fails
+# and says to recreate. Nodes the spec no longer names are deleted.
 #
 # Settings (environment):
 #   SIMCLUSTER_NAME          container name, ^joulie-sim(-[a-z0-9]+)*$ (joulie-sim)
@@ -22,6 +22,11 @@
 #                            in-cluster simulator reads its built-in profiles
 #   SIMCLUSTER_TELEMETRY     telemetry mode (otel)
 #   SIMCLUSTER_TIMING        scripts/simcluster/timing/<name>.env (dev)
+#   SIMCLUSTER_EXTENDER      how kube-scheduler reaches the extender: hostnet,
+#                            on 127.0.0.1, or service, through the extender
+#                            Service's fixed ClusterIP (hostnet); the
+#                            container is created with the scheduler
+#                            configuration of one of them
 #   SIMCLUSTER_AIRGAP=1      preload the k3s system images from the release bundle
 #   SIMCLUSTER_EXTRA_VALUES  Joulie values files, space separated, also used
 #                            to decide which Nodes get an emulated agent
@@ -53,23 +58,24 @@ else
 fi
 mv "$D/spec.yaml.tmp" "$D/spec.yaml"
 spec=$D/spec.yaml
-sim_clusterspec validate -spec "$spec" "${SIM_PROFILES_SPEC[@]}" >&2
-sim_cli validate --spec "$spec" "${SIM_PROFILES_CLI[@]}" >&2
+# simcluster validate loads and expands the spec as clusterspec does, then
+# checks its harness section.
+sim_cli validate --spec "$spec" "${SIM_PROFILES[@]}" >&2
 # The simulator in the cluster cannot read SIMCLUSTER_PROFILES_DIR: a spec
 # that needs it would pass here and fail in deploy.sh, after five minutes of
 # waiting for the simulator's /readyz.
-if ((${#SIM_PROFILES_SPEC[@]})) && ! sim_clusterspec validate -spec "$spec" >/dev/null 2>&1; then
+if [[ -n ${SIMCLUSTER_PROFILES_DIR:-} ]] && ! sim_cli validate --spec "$spec" --profiles-dir "" >/dev/null 2>&1; then
   sim_die "the spec needs a profile of SIMCLUSTER_PROFILES_DIR; the in-cluster simulator reads only its built-in profiles, so local profiles serve the host tools only"
 fi
 
 # 2. Every emulated agent is a pod on the infra Node, next to the
 # infrastructure: size its kubelet and pod network for them.
-files=("$SIM_REPO/values/simcluster.yaml")
+files=("$SIM_REPO/values/simcluster.yaml" "${SIM_EXTENDER_VALUES[@]}")
 for f in ${SIMCLUSTER_EXTRA_VALUES:-}; do files+=("$(sim_path "$f")"); done
 sim_agents "$D/render/agents-up.yaml" "${files[@]}"
 agents=$(sim_count_agents "$D/render/agents-up.yaml")
 sim_pod_tier "$agents"
-sched_sha=$(sha256sum "$SIM_MANIFESTS/scheduler-config.yaml" | cut -d' ' -f1)
+sched_sha=$(sha256sum "$SIM_SCHEDULER_CONFIG" | cut -d' ' -f1)
 sim_log "$agents emulated agents: max-pods $SIM_MAX_PODS, Node CIDR /$SIM_NODE_CIDR_MASK, cluster CIDR $SIM_CLUSTER_CIDR"
 
 # 3. The k3s system images, from the release's air-gap bundle, which k3s
@@ -107,7 +113,7 @@ if [[ -n $state ]]; then
   ((h_pods >= SIM_MAX_PODS)) || why+=("max-pods $h_pods, now $SIM_MAX_PODS")
   ((h_mask <= SIM_NODE_CIDR_MASK)) || why+=("Node CIDR /$h_mask, now /$SIM_NODE_CIDR_MASK")
   ((h_cidr_bits <= ${SIM_CLUSTER_CIDR#*/})) || why+=("cluster CIDR ${h_cidr:-unknown}, now $SIM_CLUSTER_CIDR")
-  [[ $(have SCHEDULER_CONFIG_SHA256) == "$sched_sha" ]] || why+=("scheduler-config.yaml changed")
+  [[ $(have SCHEDULER_CONFIG_SHA256) == "$sched_sha" ]] || why+=("the scheduler configuration is not $(basename "$SIM_SCHEDULER_CONFIG") (SIMCLUSTER_EXTENDER=$SIMCLUSTER_EXTENDER) as it is now")
   if ((${#why[@]})); then
     sim_die "container $N was created for other settings ($(IFS=';'; printf '%s' "${why[*]}")); recreate with simcluster-down, then simcluster-up"
   fi
@@ -127,7 +133,7 @@ else
   sim_log "creating container $N ($K3S_IMAGE)"
   docker run -d --privileged --name "$N" --hostname "$N" \
     -v "$N-k3s:/var/lib/rancher/k3s" -v "$N-hwemu:$SIM_HWEMU_ROOT" -v "$D/images:/var/lib/rancher/k3s/agent/images" \
-    -v "$SIM_MANIFESTS/scheduler-config.yaml:/etc/rancher/k3s/scheduler-config.yaml:ro" \
+    -v "$SIM_SCHEDULER_CONFIG:/etc/rancher/k3s/scheduler-config.yaml:ro" \
     -p 127.0.0.1::6443 "$K3S_IMAGE" server --node-name "$N-infra" --node-label joulie.io/infra=true --node-label joulie.io/hwemu-host=true \
     --disable traefik --disable metrics-server --kube-scheduler-arg=--config=/etc/rancher/k3s/scheduler-config.yaml \
     "${SIM_POD_ARGS[@]}" "${args[@]}" >/dev/null
@@ -141,7 +147,15 @@ else
   } >"$cluster_env"
 fi
 
-# 5. The kubeconfig, pointed at the published port.
+# 5. The third-party images (Prometheus, KWOK, the Collector of the mode),
+# imported while the cluster starts; waited for before KWOK is applied.
+bash "$SIM_SCRIPTS/images.sh" --third-party &
+third_party=$!
+# shellcheck disable=SC2317 # called by the EXIT trap
+stop_imports() { kill "$third_party" 2>/dev/null || true; }
+trap stop_imports EXIT
+
+# 6. The kubeconfig, pointed at the published port.
 sim_wait 180 "k3s to write its kubeconfig" docker exec "$N" test -s /etc/rancher/k3s/k3s.yaml
 port=$(docker port "$N" 6443/tcp | head -n1)
 port=${port##*:}
@@ -154,19 +168,18 @@ mv "$KUBECONFIG.tmp" "$KUBECONFIG"
 sim_wait 180 "the API server" kubectl get --raw /readyz
 sim_wait 180 "Node $N-infra to register" kubectl get node "$N-infra"
 
-# 6. Third-party images.
-bash "$SIM_SCRIPTS/images.sh" --third-party
-
 # 7. Namespaces, KWOK and its Stages, Prometheus and the Collector.
 for ns in "$SIM_NS_JOULIE" "$SIM_NS_SIM" "$SIM_NS_MONITORING"; do
   kubectl create namespace "$ns" --dry-run=client -o yaml |
     kubectl apply --server-side --field-manager="$SIM_FIELD_MANAGER" -f - >/dev/null
 done
+sim_wait_pids "importing the third-party images" "$third_party"
 kwok=$SIM_MANIFESTS/kwok-$KWOK_VERSION
 kubectl apply --server-side --field-manager="$SIM_FIELD_MANAGER" --force-conflicts -f "$kwok/kwok.yaml" >/dev/null
 kubectl wait --for=condition=Established crd/stages.kwok.x-k8s.io --timeout=120s >/dev/null
 kubectl apply --server-side --field-manager="$SIM_FIELD_MANAGER" --force-conflicts -f "$kwok/stage-fast.yaml" >/dev/null
-# Overrides of the vendored Stages, in lexical order (X13).
+# Overrides of the vendored Stages, after them and in lexical order, so a
+# later file wins.
 while IFS= read -r -d '' stage; do
   kubectl apply --server-side --field-manager="$SIM_FIELD_MANAGER" --force-conflicts -f "$stage" >/dev/null
 done < <(find "$SIM_MANIFESTS" -maxdepth 1 -name 'stage-*.yaml' -print0 | LC_ALL=C sort -z)
@@ -179,7 +192,7 @@ docker exec "$N" sh -c 'mkdir -p "$1/lib" && { [ -f "$1/lib/driver-stub" ] || ec
 # 9. The fake Nodes. The status apply forces: KWOK owns the conditions.
 # Both applies force because the Node lifecycle controller takes over the
 # atomic taint list while a new Node is not yet Ready.
-sim_clusterspec render-nodes -spec "$spec" "${SIM_PROFILES_SPEC[@]}" >"$D/render/nodes.yaml"
+sim_clusterspec render-nodes -spec "$spec" "${SIM_PROFILES[@]}" >"$D/render/nodes.yaml"
 kubectl apply --server-side --field-manager="$SIM_FIELD_MANAGER" --force-conflicts -f "$D/render/nodes.yaml" -o name >"$D/render/nodes.names"
 kubectl apply --server-side --field-manager="$SIM_FIELD_MANAGER" --force-conflicts --subresource=status -f "$D/render/nodes.yaml" >/dev/null
 

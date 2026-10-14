@@ -15,12 +15,13 @@ import (
 // with the default workers and render check interval, at a 0.6 CPU base
 // load. It reports the median tick as p50-ms. The roots are under
 // os.TempDir, so TMPDIR picks the file system. Nearly all of a tick is
-// hwemu's system calls on the node's files: the readback of every A file
-// and the write of every changed S file (AdvanceTo). An S file goes in place
+// hwemu's system calls on the node's files: the readback, one lstat of
+// every A file and a read of each one written since its last read, and the
+// write of every changed S file (AdvanceTo). An S file goes in place
 // under a write lease; a file a non-root caller may not write, as here
 // outside the simulator's root container, also costs two chmods per write,
 // so the harness's numbers come from a root run (see "Tick cost" in
-// website/content/en/docs/simulator/simulator.md).
+// website/content/en/docs/simulator/emulate-mode.md).
 func BenchmarkEM01Tick(b *testing.B) {
 	for _, bc := range []struct {
 		name, profile string

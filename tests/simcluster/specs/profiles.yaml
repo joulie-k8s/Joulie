@@ -1,0 +1,44 @@
+# Profiles cluster: one Node of every builtin hardware profile, all managed
+# and on full background load, so every profile runs end to end once: its
+# emulated agent's inventory against the agent's golden, its telemetry
+# against the emulator's truth, its NodeTwin. TestSP05ProfilesCoversEveryBuiltin
+# holds it to the builtin list, so a new profile is added here. Pool names
+# are vendor or model words only; the pools mirror no deployment.
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: profiles}
+spec:
+  defaults:
+    kwok: true
+    labels: {joulie.io/managed: "true"}
+    baseLoad: {cpuUtil: 1.0, gpuUtil: 1.0, memoryIntensity: 0.2, cpuClass: cpu.compute_bound, gpuClass: gpu.compute_bound}
+  facility: {ambientC: 20, amplitudeC: 5, periodH: 24}
+  pools:
+  - {name: epyc,             profile: amd-epyc-2s-energy-only,      count: 1}
+  - {name: epyc-hsmp,        profile: amd-epyc-2s-hsmp,             count: 1}
+  - {name: epyc-9534,        profile: amd-epyc-9534-2s-energy-only, count: 1}
+  - {name: mi300x,           profile: amd-instinct-mi300x-8gpu,     count: 1}
+  - {name: w7900,            profile: amd-radeon-pro-w7900-4gpu,    count: 1}
+  - {name: xeon-multidie,    profile: intel-xeon-2s-multidie,       count: 1}
+  - {name: xeon-psys,        profile: intel-xeon-2s-psys,           count: 1}
+  - {name: xeon,             profile: intel-xeon-2s-rapl,           count: 1}
+  - {name: xeon-6530,        profile: intel-xeon-6530-2s-rapl,      count: 1}
+  - {name: xeon6-nopowercap, profile: intel-xeon6-2s-no-powercap,   count: 1}
+  - {name: xeon6-tpmi,       profile: intel-xeon6-2s-tpmi,          count: 1}
+  - {name: h100-nvl,         profile: nvidia-h100-nvl-8gpu,         count: 1}
+  - {name: h100-sxm4,        profile: nvidia-h100-sxm-4gpu,         count: 1}
+  - {name: h100-sxm8,        profile: nvidia-h100-sxm-8gpu,         count: 1}
+  - {name: l40s,             profile: nvidia-l40s-4gpu,             count: 1}
+  - {name: vm,               profile: vm-no-powercap,               count: 1}
+  # The GPU pools get the GPU tools a node with the driver installed has (a
+  # driver stub at each path the tools need). A pool left out follows the
+  # Joulie install, which by default delivers none (agent.runtimeClassName and
+  # agent.extraVolumes unset), so its agent's GPU inventory fails.
+  harness:
+    pools:
+      mi300x: {toolDelivery: mounted}
+      w7900: {toolDelivery: mounted}
+      h100-nvl: {toolDelivery: mounted}
+      h100-sxm4: {toolDelivery: mounted}
+      h100-sxm8: {toolDelivery: mounted}
+      l40s: {toolDelivery: mounted}

@@ -19,8 +19,8 @@ import (
 	"github.com/matbun/joulie/pkg/otel/semconv"
 )
 
-// telemetryRouteGoldenDir holds the legacy JSON of /telemetry/{node} as the
-// code before F8 wrote it; TL02 keeps ?format=legacy equal to it.
+// telemetryRouteGoldenDir holds the legacy JSON of /telemetry/{node}, the
+// document legacy clients parse; TL02 keeps ?format=legacy equal to it.
 var telemetryRouteGoldenDir = filepath.Join("testdata", "telemetry-legacy")
 
 // telemetryLegacyTS is the wall-clock "ts" of an analytic node's legacy
@@ -160,9 +160,8 @@ func TestTL01TelemetryDefaultsToOTLP(t *testing.T) {
 	})
 }
 
-// ?format=legacy returns the legacy JSON byte for byte as the code before
-// F8 served it on /telemetry/{node}, the analytic nodes' wall-clock "ts"
-// aside. Regenerate with -update only for a change of the simulated
+// ?format=legacy returns the legacy JSON byte for byte as the golden holds
+// it, the analytic nodes' wall-clock "ts" aside. Regenerate with -update only for a change of the simulated
 // numbers, never of the document's shape.
 func TestTL02LegacyFormatIsTheOldDocument(t *testing.T) {
 	got := map[string][]byte{}
@@ -217,7 +216,7 @@ func TestTL03LegacyFormatWarnsOncePerProcess(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("%d deprecation warnings over 6 legacy reads, want 1; log:\n%s", n, out)
 	}
-	for _, want := range []string{legacyTelemetryRemovedIn, "/telemetry/{node}", "OTLP"} {
+	for _, want := range []string{otlpjson.LegacyRemovedIn, "/telemetry/{node}", "OTLP"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the warning does not name %q:\n%s", want, out)
 		}

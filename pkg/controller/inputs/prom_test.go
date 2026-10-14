@@ -27,9 +27,10 @@ func promServer(t *testing.T, status int, contentType, body string) (*httptest.S
 	return srv, &last
 }
 
-// TestClientParsesVectorAndScalar: a vector keeps each series' labels and
-// value, a scalar is one sample without labels, warnings come through, the
-// query reaches GET /api/v1/query intact, and a matrix is refused.
+// TestClientParsesVectorAndScalar: a vector keeps each series' labels,
+// value and time, to the millisecond, a scalar is one sample without
+// labels, warnings come through, the query reaches GET /api/v1/query
+// intact, and a matrix is refused.
 func TestClientParsesVectorAndScalar(t *testing.T) {
 	const vector = `{"status":"success","data":{"resultType":"vector","result":[
 		{"metric":{"k8s_node_name":"a"},"value":[1759600000.123,"1050"]},
@@ -47,8 +48,8 @@ func TestClientParsesVectorAndScalar(t *testing.T) {
 	want := Result{
 		Type: "vector",
 		Samples: []Sample{
-			{Labels: map[string]string{"k8s_node_name": "a"}, Value: 1050},
-			{Labels: map[string]string{"k8s_node_name": "b"}, Value: 350.5},
+			{Labels: map[string]string{"k8s_node_name": "a"}, Value: 1050, Time: time.UnixMilli(1759600000123).UTC()},
+			{Labels: map[string]string{"k8s_node_name": "b"}, Value: 350.5, Time: time.UnixMilli(1759600000123).UTC()},
 		},
 		Warnings: []string{"PromQL warning: encountered a mix of histograms and floats"},
 	}
@@ -61,7 +62,7 @@ func TestClientParsesVectorAndScalar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v, err := res.Single(); err != nil || v != -3 || res.Type != "scalar" || len(res.Samples[0].Labels) != 0 {
+	if v, err := res.Single(); err != nil || v != -3 || res.Type != "scalar" || len(res.Samples[0].Labels) != 0 || !res.Samples[0].Time.Equal(time.Unix(1759600000, 0)) {
 		t.Errorf("scalar: %+v, Single %v %v; want one sample -3 without labels", res, v, err)
 	}
 

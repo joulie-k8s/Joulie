@@ -88,13 +88,28 @@ func PlacementFromRender(render []byte, imageArch string) (Placement, error) {
 	if a := pod.Affinity; a != nil && a.NodeAffinity != nil && a.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
 		return Placement{}, fmt.Errorf("placement: DaemonSet %s has required node affinity, which placement does not model", found[0].Name)
 	}
-	return Placement{
+	p := Placement{
 		NodeSelector: pod.NodeSelector,
 		Tolerations:  pod.Tolerations,
 		HostNetwork:  pod.HostNetwork,
 		ImageArch:    imageArch,
-	}, nil
+	}
+	if pod.RuntimeClassName != nil {
+		p.RuntimeClassName = *pod.RuntimeClassName
+	}
+	for _, v := range pod.Volumes {
+		if !placementChartVolumes[v.Name] {
+			p.ExtraVolumes = append(p.ExtraVolumes, v.Name)
+		}
+	}
+	return p, nil
 }
+
+// placementChartVolumes are the volumes joulie.agentPodSpec
+// (charts/joulie/templates/_helpers.tpl) gives a DaemonSet pod on its own:
+// the host's /sys and the hardware catalog. Every other volume of the render
+// comes from agent.extraVolumes.
+var placementChartVolumes = map[string]bool{"host-sys": true, "hardware-catalog": true}
 
 // EligibleNodes splits nodes into those the agent DaemonSet would run on and
 // those it would not, as the DaemonSet controller decides it:
@@ -184,8 +199,9 @@ func placementTolerated(taint *corev1.Taint, tolerations []corev1.Toleration) bo
 }
 
 // Agents returns the emulated agents of the members the agent DaemonSet
-// would reach under p, and the members it would not, with their reasons.
-// See EligibleNodes and EmulatedAgents.
+// would reach under p, and the members it would not, with their reasons. A
+// pool the spec's harness section leaves to the install gets p's tool
+// delivery. See EligibleNodes and EmulatedAgents.
 func Agents(members []clusterspec.Member, p Placement, h Harness, root string) ([]EmulatedAgent, []Exclusion, error) {
 	nodes := make([]*corev1.Node, 0, len(members))
 	for _, m := range members {
@@ -205,7 +221,7 @@ func Agents(members []clusterspec.Member, p Placement, h Harness, root string) (
 			eligible = append(eligible, m)
 		}
 	}
-	agents, err := EmulatedAgents(eligible, h, root)
+	agents, err := EmulatedAgents(eligible, h, p.ToolDelivery(), root)
 	if err != nil {
 		return nil, nil, err
 	}

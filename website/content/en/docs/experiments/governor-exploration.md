@@ -40,11 +40,17 @@ flip its sign.
 one fresh emulated node per cell, every cell in parallel. Each arm is a
 preset, which govsweep plans with `pkg/governor` on the facts the node's
 emulated sysfs and fake `nvidia-smi` show, exactly as the agent's discovery
-reads them, and writes as the agent would; a native word in a config is
-refused. A job does at the reference (no cap, `performance` or `auto`) 60 s
+reads them (`pkg/governor/discover`, shared with the agent): the L40S
+architecture is `ada`, and an AMD device bound to a driver other than
+`amdgpu` is skipped. It writes as the agent would; a native word in a config
+is refused. An arm a profile cannot express is decided once per arm: its
+other cells report `unsupported` without running. A job does at the reference (no cap, `performance` or `auto`) 60 s
 of work and progresses at the simulator's v1 workload rate under the
-throughput the node reports after each step. Energy to solution is the
-node's whole energy from the job's start to its end. The grid
+throughput the node reports after each step. The bursty cells step the
+node every 10 ms without its file I/O (`StepUnobserved`): nothing reads or
+writes the tree during the bursts, and the state after each step is the
+one a full step gives. Energy to solution is the node's whole energy from
+the job's start to its end. The grid
 (`configs/tier-a.yaml`): five CPU profiles, one per frequency driver, under
 the profile's own governor and each CPU preset with boost on and off, idle,
 at steady 10 to 100 % loads of four classes and under bursts; five GPU
@@ -54,16 +60,16 @@ with peer, host and gather transfers; two seeds.
 
 **Tier B** runs one arm on a simulated cluster
 (`tests/simcluster/specs/governor.yaml`, two Nodes per CPU driver and GPU
-family) with Joulie in the loop, and the harness checks GS01 to GS04: the
-presets each agent lists, the result each preset gives on each profile and
-Node state, the native word in the emulated files, and every file back at
-its baseline after an upgrade to `GOVERNOR_CONTROL=off`.
+family) with Joulie in the loop, and the harness checks the presets each
+agent lists, the result each preset gives on each profile and Node state,
+the native word in the emulated files, and every file back at its baseline
+after an upgrade to `GOVERNOR_CONTROL=off`.
 
 ## Results
 
 `analysis/summarize.py` regenerates these tables from a run's CSVs.
 
-Run of 2026-10-10 on the working tree of the governor work (the CPU grid rerun on 2026-10-11, after the sweep was made to read EPP support as the agent does): `configs/tier-a.yaml`,
+Run of 2026-10-14: `configs/tier-a.yaml`,
 11,340 cells (1,540 CPU, 9,800 GPU; 1,764 GPU cells name a preset their
 profile cannot express and do not run, 72 `low` cells on the L40S did not
 finish within 10 times the reference and are left out), every cell run once
@@ -99,21 +105,21 @@ sweep. Idle power is the same under every preset because
 
 | Arm | compute-bound | memory-bound | bandwidth-bound | idle node |
 |---|---|---|---|---|
-| `efficient` 90 % | -3.1 % energy, +6.1 % time | -6.7 %, +1.3 % | -7.0 %, +1.0 % | 0 % |
-| `efficient` 80 % | -5.9 %, +13.3 % | -13.2 %, +2.6 % | -13.7 %, +2.0 % | 0 % |
-| `efficient` 75 % | -7.2 %, +17.5 % | -16.3 %, +3.3 % | -16.9 %, +2.5 % | 0 % |
-| `efficient` 60 % | -10.4 %, +35.3 % | -22.2 %, +10.9 % | -22.8 %, +9.7 % | 0 % |
+| `efficient` 90 % | -3.1 % energy, +6.1 % time | -6.3 %, +1.3 % | -6.6 %, +1.0 % | 0 % |
+| `efficient` 80 % | -5.9 %, +13.3 % | -12.4 %, +2.6 % | -12.9 %, +2.0 % | 0 % |
+| `efficient` 75 % | -7.1 %, +17.5 % | -15.4 %, +3.3 % | -15.9 %, +2.5 % | 0 % |
+| `efficient` 60 % | -10.4 %, +35.3 % | -21.4 %, +10.9 % | -22.2 %, +9.7 % | 0 % |
 | `sustained` | 0 %, 0 % | 0 %, 0 % | 0 %, 0 % | +7.9 % |
 | `peak` | 0 %, 0 % | 0 %, 0 % | 0 %, 0 % | +7.9 % |
 | `low` | +38 %, +257 % | +37 %, +233 % | +36 %, +228 % | 0 % |
-| `auto`, cap 60 % | 0 %, +17.3 % | -7.6 %, +2.6 % | -7.6 %, +2.1 % | 0 % |
+| `auto`, cap 60 % | 0 %, +17.3 % | -7.0 %, +2.6 % | -7.0 %, +2.1 % | 0 % |
 
 `efficient` lowers energy on every family that can express it (MI300X,
 H100 SXM and NVL, L40S; the W7900 has no overdrive), most on memory-bound
-work, where the compute clock above the knee buys little. The 75 % default
-of this run costs 17.5 % time on compute-bound jobs, and its p95 slowdown
-over all workloads, +22.5 %, is just above the 20 % the eco class allows;
-80 % (+17.3 % p95, -10.7 % energy) passes, and is now the default.
+work, where the compute clock above the knee buys little. At 75 % it costs
+17.5 % time on compute-bound jobs, and its p95 slowdown over all workloads,
++22.5 %, is just above the 20 % the eco class allows;
+80 % (+17.3 % p95, -10.3 % energy) passes; it is the default.
 `sustained` and `peak` cost their idle power (`dataPathHoldW`,
 `gatingOffIdleW`) and gain nothing while the receiver gate is off. A 60 %
 cap does not bind on the W7900, whose cap range is a single value, and
@@ -127,14 +133,14 @@ binds on the L40S only once a job holds the GPU (persistence mode is off).
 
 | `slowFraction` | `auto` against no gate | `sustained` against `auto` |
 |---|---|---|
-| 1.0 (repository) | 0 % | +1.3 % energy, 0 % time |
+| 1.0 (repository) | 0 % | +1.4 % energy, 0 % time |
 | 0.7 | +8.6 % energy, +8.6 % time | -6.6 % energy, -7.9 % time |
 | 0.5 | +24 % energy, +24 % time | -18.2 % energy, -19.4 % time |
 
-On the W7900 the gate adds 9.2 kJ to such a 60 s job at `slowFraction` 0.5
-and 3.3 kJ at 0.7. `sustained` holds only the idle receiver's data path
+On the W7900 the gate adds 10.3 kJ to such a 60 s job at `slowFraction` 0.5
+and 3.7 kJ at 0.7. `sustained` holds only the idle receiver's data path
 (the busy GPUs raise their own), so it pays as long as that costs less than
-about 150 W (0.5) or 55 W (0.7); the repository assumes 10 W. Hopper never gates: its memory clock
+about 170 W (0.5) or 60 W (0.7); the repository assumes 10 W. Hopper never gates: its memory clock
 stays at its rated value under `auto`.
 
 Over the other assumed facts at low, mid and high values:
@@ -142,23 +148,24 @@ Over the other assumed facts at low, mid and high values:
 `dataPathHoldW`, `gatingOffIdleW` and `autoHoldS`, falls to -0.9 % at
 `clockBeta` 1.0 and to 0 % at `memoryKneeFrac` 0.87, so its saving rests on
 two assumptions a clock sweep on each family must check. The CPU presets'
-energy change against `performance` stays within 0.5 % in either direction
-over `idleGovernorDeltaW`, `eppGain` and `eppCeilingDrop`.
+energy change against `performance` stays between -0.4 % and +1.6 % over
+`idleGovernorDeltaW` (0 to 5 % of idle), `eppGain` and `eppCeilingDrop`:
+small, with a sign that depends on those facts.
 
 ### Acceptance (Tier A half)
 
 | Candidate default | Class | Energy | p95 slowdown | Tier A |
 |---|---|---|---|---|
 | CPU `efficiency` (boost as found) | eco | -0.5 % | +22.2 % | fails |
-| CPU `efficiency`, boost off | eco | -16.3 % | +48.0 % | fails |
-| GPU `efficient` 75 % | eco | -13.2 % | +22.5 % | fails, narrowly |
-| GPU `efficient` 80 % | eco | -10.7 % | +17.3 % | passes |
-| GPU `efficient` 90 % | eco | -5.5 % | +7.9 % | passes |
+| CPU `efficiency`, boost off | eco | -16.2 % | +54.6 % | fails |
+| GPU `efficient` 75 % | eco | -12.7 % | +22.5 % | fails, narrowly |
+| GPU `efficient` 80 % | eco | -10.3 % | +17.3 % | passes |
+| GPU `efficient` 90 % | eco | -5.2 % | +7.9 % | passes |
 
 ### Tier B
 
 Arm `all` (`GOVERNOR_CONTROL=all`, `GOVERNOR_WRITES=true`) on a fresh
-simulated cluster of 16 Nodes: GS01 to GS04 pass. Every agent lists the
+simulated cluster of 16 Nodes: every check passes. Every agent lists the
 presets its profile maps to, every NodeTwin asks for the preset of its
 Node's state (CPU `performance` or `efficiency` on CPU-only Nodes, GPU
 `efficient` on eco GPU Nodes that list it, nothing else), every result is
@@ -166,6 +173,22 @@ the one the mapping predicts, the emulated files hold the native words of
 the 11 results, and after the upgrade to `GOVERNOR_CONTROL=off` all 11 are
 `restored` and every file is back at its baseline. Workload runs per arm,
 for Q4, are not done yet.
+
+## Reproduce
+
+Tier A runs on one machine, with no Kubernetes:
+
+```bash
+experiments/05-governor-exploration/scripts/run_tier_a.sh [config] [out]
+```
+
+`config` defaults to `configs/tier-a.yaml` (`configs/tier-a-sensitivity.yaml` is the receiver gate and sensitivity grid) and `out` to a new directory under `~/.cache/joulie/experiments/05/`; the script writes `summary.md` there. Tier B needs Docker, as the [simulated cluster]({{< relref "/docs/simulator/simulated-cluster.md" >}}) does:
+
+```bash
+SIMCLUSTER_NAME=joulie-sim-gov experiments/05-governor-exploration/scripts/run_tier_b.sh all
+```
+
+The other arms, the settings and the result files are in the [experiment README](https://github.com/joulie-k8s/Joulie/tree/main/experiments/05-governor-exploration).
 
 ## What is assumed, and what would settle it
 

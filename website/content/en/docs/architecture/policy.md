@@ -89,7 +89,7 @@ Example:
 apiVersion: joulie.io/v1alpha1
 kind: NodeTwin
 metadata:
-  name: node-kwok-gpu-nvidia-0
+  name: kwok-gpu-nvidia-0
 spec:
   nodeName: kwok-gpu-nvidia-0
   profile: eco
@@ -99,7 +99,7 @@ spec:
     powerCap:
       scope: perGpu
       capPctOfMax: 60
-      capWattsPerGpu: 210
+      capWattsPerGpu: 240
   policy:
     name: static-partition-v1
 ```
@@ -112,17 +112,48 @@ In this example:
 
 ## Governor policy
 
-A governor decides how eagerly a CPU or GPU raises its clocks. It saves less than a cap and slows work less. Joulie sets one vendor-neutral preset per component, which the agent maps to the node's native settings. The preset follows the profile the node runs at, so a draining node keeps the performance presets, as it keeps the performance caps. Pod classes (`joulie.io/workload-class`) only steer placement. Off by default (`GOVERNOR_CONTROL=off`); see [Governor control]({{< relref "/docs/getting-started/05-configuration-reference.md#governor-control" >}}) for the variables.
+A governor decides how eagerly a CPU or GPU raises its clocks. It saves less than a cap and slows work less. Joulie sets one vendor-neutral preset per component, which the agent maps to the node's native settings. The preset follows the profile the node runs at, so a draining node keeps the performance presets, as it keeps the performance caps. Pod classes (`joulie.io/workload-class`) only steer placement.
+
+Off by default: the controller manager writes presets only with `GOVERNOR_CONTROL` set to `cpu`, `gpu` or `all`, and the agent applies them only with `GOVERNOR_WRITES=true`. The variables are under [Governor control]({{< relref "/docs/getting-started/05-configuration-reference.md#governor-control" >}}), what each preset means under [Governor presets]({{< relref "/docs/hardware/hardware-modeling.md#69-governor-presets" >}}).
 
 | Node state | CPU-only node: `spec.cpu.governor` | GPU node: `spec.cpu.governor` | `spec.gpu.governor` | Why |
 |---|---|---|---|---|
-| ActivePerformance | `CPU_GOVERNOR_PERFORMANCE_PRESET` (`performance`) | not written (`CPU_GOVERNOR_ON_GPU_NODES=false`) | the model's entry in `GPU_GOVERNOR_MODEL_PRESETS_JSON`, else `GPU_GOVERNOR_PERFORMANCE_PRESET` (empty: not written) | race to idle; a data path is held only on models the operator opted in |
+| ActivePerformance | `CPU_GOVERNOR_PERFORMANCE_PRESET` (`performance`), boost left alone | not written (`CPU_GOVERNOR_ON_GPU_NODES=false`) | the model's entry in `GPU_GOVERNOR_MODEL_PRESETS_JSON`, else `GPU_GOVERNOR_PERFORMANCE_PRESET` (empty: not written) | race to idle; a data path is held only on models the operator opted in |
 | DrainingPerformance | as ActivePerformance | not written | as ActivePerformance | performance pods still run |
 | ActiveEco | `CPU_GOVERNOR_ECO_PRESET` (`efficiency`), with `CPU_GOVERNOR_ECO_BOOST` when set | not written | the model's entry, else `GPU_GOVERNOR_ECO_PRESET` (`efficient`, ceiling `GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX`, 80) | a compute-bound job's energy optimum sits below the maximum clock; a memory-bound one loses almost nothing |
 | preset not in the node's `NodeHardware` presets | not written, one warning | | not written, one warning (no fallback to `auto`, which would override an operator's own setting) | never ask a node for what it cannot do |
 | `GOVERNOR_CONTROL=off` | nothing written | nothing | nothing | the default |
 
-`GOVERNOR_CONTROL=cpu` writes only the CPU column, `gpu` only the GPU one. When a field leaves the spec, because control was turned off or the node stopped listing the preset, the agent puts back the state it recorded before its first write. The twin's power budget and the scheduler extender do not read the governor: a governor moves the measured power, which the twin already reads.
+- `GOVERNOR_CONTROL=cpu` writes only the CPU presets, `gpu` only the GPU ones. Any value other than `off`, `cpu`, `gpu` or `all` logs a warning and means `off`.
+- A node gets only a preset its agent lists in `NodeHardware` `status.cpu.governor.presets` or `status.gpu.governor.presets`. Nothing replaces a preset the node does not list, so a setting the node's operator chose stays. A node whose agent finds no governor lists no preset and gets none.
+- A `gpu.governor` block that holds a `baseline` and no `mechanism` is a discovery gap: the agent's GPU discovery did not answer and it had no earlier block to keep. The block lists no presets, and the configured GPU preset is still written, since dropping it would make the agent restore the baseline and set the preset again a reconcile later.
+- `GPU_GOVERNOR_MODEL_PRESETS_JSON` sets the GPU presets and the ceiling per GPU model. Its keys are matched against the node's GPU product label value (the first of `GPU_PRODUCT_LABEL_KEYS` the node carries), as in `GPU_MODEL_CAPS_JSON`, and against the model the agent reports. It is how a model is opted in to `sustained`, which no default selects.
+- An empty GPU preset, in a variable or a model entry, writes none. A preset or ceiling the controller manager cannot use logs a warning and keeps the default.
+- When a field leaves the spec, because control was turned off or the node stopped listing the preset, the agent puts back the state it recorded before its first write.
+
+Both eco defaults are provisional until measured on hardware. In the simulator's [governor exploration]({{< relref "/docs/experiments/governor-exploration.md" >}}), CPU `efficiency` saved 0.5 % energy for a +22.2 % eco p95 slowdown, above the experiment's 20 % limit; GPU `efficient` at 80 % saved 10.3 % for +17.3 %.
+
+### Governor fields
+
+Only `pkg/governor` turns a preset into a native setting; every other component speaks presets, listed in `pkg/api/governor.go`.
+
+| Field | Type | Owner | Description |
+|-------|------|-------|-------------|
+| `spec.cpu.governor.preset` | `performance`, `balanced`, `efficiency` | Controller manager | the CPU governor of every cpufreq policy: highest frequency at any load, demand-driven with a quick ramp, or demand-driven with an energy bias |
+| `spec.cpu.governor.boost` | `on`, `off`, optional | Controller manager | frequency boost (turbo); absent leaves it as it is |
+| `spec.gpu.governor.preset` | `auto`, `sustained`, `efficient`, `low`, `peak` | Controller manager | the GPU clock governor of every GPU: vendor default, data-path clocks held at their maximum with idle gating kept, compute clock under a ceiling, every clock at its minimum, every clock at its maximum with idle gating off |
+| `spec.gpu.governor.computeClockCeilingPctOfMax` | number in (0, 100] | Controller manager | the compute clock ceiling of `efficient`, in percent of the maximum compute clock |
+| `status.controlStatus.cpuGovernor`, `status.controlStatus.gpuGovernor` | `ControlResult` | Agent | outcome of the last governor write: `backend` (`cpufreq`, `amdgpu-sysfs`, `nvidia-smi`, or `none` or `http` when nothing is written), `result`, `message`, and `applied`, the native setting in effect |
+| `NodeHardware.status.cpu.governor` | object | Agent | `driver`, `driverMode`, `current`, `available`, `epp`, `boost` (`state` `on` or `off`; `scope` `global` for `cpufreq/boost`, `per-cpu` for each policy's `boost`, `no-turbo` for the inverted `intel_pstate/no_turbo`), `presets` (each with the result it gives, `applied` or `equivalent`), `baseline`, `writable` |
+| `NodeHardware.status.gpu.governor` | object | Agent | `mechanism`, `current`, `presets`, `clockRangesMHz` (`graphics`, `memory`, `fabric`), `baseline` (per GPU, keyed by PCI bus id), `writable`, `uniform` |
+
+A preset a node cannot express is left out of its `presets`. Beside the governor block the agent publishes the cpufreq frequency landmarks in `NodeHardware.status.cpu.landmarks` (`minFreqMHz`, `nominalFreqMHz`, `maxBoostMHz`).
+
+`kubectl get nodetwins` shows the presets in the columns `CPU-Gov` and `GPU-Gov`; an empty column means no preset, so the agent changes nothing there, or puts back its baseline if it changed something.
+
+The result values are `applied`, `applied-unverified`, `equivalent`, `unsupported`, `not-applied`, `refused`, `drift`, `contended`, `disabled`, `restored` and `error` ([Governor control]({{< relref "/docs/architecture/agent.md#governor-control" >}}) says when each occurs). `ControlResult` is shared with the cap results, so the CRD does not enumerate them.
+
+The twin and the scheduler extender read no governor field: a governor moves the measured power, which the twin reads.
 
 ## Hardware-discovery object: `NodeHardware`
 
@@ -153,43 +184,56 @@ Main fields:
   - overall discovery quality
   - warnings
 
-Discovery quality values are:
+`status.quality.overall` is:
 
-- `exact`: recognized against the inventory
-- `heuristic`: some raw hardware signal is present, but normalization is incomplete
-- `unavailable`: no useful signal was found for that subsystem
+- `exact`: the CPU model, and the GPU model when the node has GPUs, are recognized against the inventory
+- `heuristic`: a raw CPU or GPU model is present, but not recognized
+- `unavailable`: no CPU or GPU model was found
 
-Example:
+Example, for an 8x H100 NVL node on a 2x Xeon Platinum 8260 host, with the governor blocks abridged. The object is named after the node:
 
 ```yaml
 apiVersion: joulie.io/v1alpha1
 kind: NodeHardware
 metadata:
-  name: node-kwok-gpu-nvidia-0
+  name: kwok-gpu-nvidia-0
 spec:
   nodeName: kwok-gpu-nvidia-0
 status:
   cpu:
-    rawModel: AMD EPYC 9654 96-Core Processor
-    model: AMD_EPYC_9654
-    vendor: amd
+    rawModel: Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz
+    model: INTEL_XEON_PLATINUM_8260
+    vendor: GenuineIntel
     sockets: 2
-    totalCores: 192
-    coresPerSocket: 96
-    driverFamily: amd-pstate
+    totalCores: 96
+    coresPerSocket: 48
+    driverFamily: intel_pstate
     controlAvailable: true
     telemetryAvailable: true
-    quality: exact
+    governor:
+      driver: intel_pstate
+      current: powersave
+      presets:
+      - {preset: performance, native: performance, result: applied}
+      - {preset: balanced, native: powersave epp=balance_performance, result: applied}
+      - {preset: efficiency, native: powersave epp=balance_power, result: applied}
+      writable: true
   gpu:
     rawModel: NVIDIA H100 NVL
     model: NVIDIA_H100_NVL
     vendor: nvidia
-    count: 4
-    capMinWatts: 200
-    capMaxWatts: 400
+    count: 8
+    capRangePerGpu:
+      minWatts: 200
+      maxWatts: 400
     controlAvailable: true
     telemetryAvailable: true
-    quality: exact
+    governor:
+      mechanism: nvidia-smi
+      presets:
+      - {preset: auto, native: unknown, result: equivalent}
+      - {preset: efficient, native: "-lgc 345,1425", result: applied}
+      writable: true
   capabilities:
     cpuControl: true
     gpuControl: true
@@ -197,7 +241,6 @@ status:
     gpuTelemetry: true
   quality:
     overall: exact
-    warnings: []
 ```
 
 The controller manager uses `NodeHardware` as the source of truth for:

@@ -19,7 +19,7 @@ func TestXF11ZeroPeerTransferIntensityKeepsTheRates(t *testing.T) {
 			BaseSpeed: 0.5 + 2*rng.Float64(), CPURequest: 8 * rng.Float64(), GPURequest: 4 * rng.Float64(),
 			CPUUtil: rng.Float64(), MemoryIntensity: rng.Float64(), IOIntensity: rng.Float64(), CPUFeedIntensity: rng.Float64(),
 			SensitivityCPU: rng.Float64(), SensitivityGPU: rng.Float64(),
-			CPUMul: rng.Float64(), GPUMul: rng.Float64(), GPUCapFactor: rng.Float64(),
+			CPUMul: rng.Float64(), GPUMul: rng.Float64(),
 			CPUShare: rng.Float64(), GPUShare: rng.Float64(),
 		}
 		for _, model := range []workload.Model{workload.ModelV1, workload.ModelLegacy} {

@@ -127,7 +127,7 @@ func TestB01ReExecThroughToolLinksMatchesInProcessMain(t *testing.T) {
 		{nvidia, []string{"nvidia-smi", "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name", "--format=csv,noheader,nounits"}, 0},
 		{nvidia, []string{"nvidia-smi", "-i", "1", "-pl", "300"}, 0},
 		{nvidia, []string{"nvidia-smi", "-i", "9", "-pl", "300"}, 6},
-		{nvidia, []string{"nvidia-smi", "--bogus"}, 2},
+		{nvidia, []string{"nvidia-smi", "--bogus"}, 255},
 		{nvidia, []string{"fakesmi", "nvidia-smi", "-L"}, 0},
 		{nvidia, []string{"rocm-smi", "--showproductname"}, 127},
 		{amd, []string{"rocm-smi", "--showproductname", "--json"}, 0},

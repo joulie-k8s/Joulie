@@ -186,13 +186,13 @@ func TestLoadInputConfigQueryImpliesCustom(t *testing.T) {
 		t.Fatalf("explicit custom preset: %+v, %v", cfg.nodePower.spec, err)
 	}
 
-	prevSpec, prevQuery, prevSource, prevAddr := nodePowerSpec, nodePowerPromQuery, nodePowerSource, nodePowerPromAddress
+	prevSpec, prevSource, prevAddr := nodePowerSpec, nodePowerSource, nodePowerPromAddress
 	t.Cleanup(func() {
-		nodePowerSpec, nodePowerPromQuery, nodePowerSource, nodePowerPromAddress = prevSpec, prevQuery, prevSource, prevAddr
+		nodePowerSpec, nodePowerSource, nodePowerPromAddress = prevSpec, prevSource, prevAddr
 	})
 	cfg.install()
-	if nodePowerSource != "prometheus" || nodePowerPromAddress != "http://prom:9090" || nodePowerPromQuery == "" || nodePowerSpec.Preset != inputs.NodePowerPresetCustom {
-		t.Fatalf("install set source=%q address=%q query=%q spec=%+v", nodePowerSource, nodePowerPromAddress, nodePowerPromQuery, nodePowerSpec)
+	if nodePowerSource != nodePowerSourcePrometheus || nodePowerPromAddress != "http://prom:9090" || nodePowerSpec.CustomQuery == "" || nodePowerSpec.Preset != inputs.NodePowerPresetCustom {
+		t.Fatalf("install set source=%q address=%q spec=%+v", nodePowerSource, nodePowerPromAddress, nodePowerSpec)
 	}
 }
 

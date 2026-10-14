@@ -76,7 +76,7 @@ if ((${#agent_nodes[@]})); then
 fi
 
 if [[ -s $SIMCLUSTER_DIR/spec.yaml ]]; then
-  wait_json=$(sim_cli telemetry "${SIM_TELEMETRY_FLAGS[@]}" --part wait --spec "$SIMCLUSTER_DIR/spec.yaml" "${SIM_PROFILES_CLI[@]}")
+  wait_json=$(sim_cli telemetry "${SIM_TELEMETRY_FLAGS[@]}" --part wait --spec "$SIMCLUSTER_DIR/spec.yaml" "${SIM_PROFILES[@]}")
   if missing=$(sim_missing_series "$wait_json"); then
     for n in $missing; do problems+=("Node $n has no series in Prometheus ($(jq -r .query <<<"$wait_json"))"); done
   else

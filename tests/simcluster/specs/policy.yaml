@@ -16,4 +16,8 @@ spec:
   - {name: intel, profile: intel-xeon-2s-rapl,      count: 3}
   - {name: epyc,  profile: amd-epyc-2s-energy-only, count: 2}
   - {name: nvl,   profile: nvidia-h100-nvl-8gpu,    count: 2}
-  harness: {pools: {}}
+  # The GPU pools get the GPU tools a node with the driver installed has (a
+  # driver stub at each path the tools need). A pool left out follows the
+  # Joulie install, which by default delivers none (agent.runtimeClassName and
+  # agent.extraVolumes unset), so its agent's GPU inventory fails.
+  harness: {pools: {nvl: {toolDelivery: mounted}}}

@@ -14,9 +14,11 @@ import (
 	"time"
 )
 
-// maxResponseBytes bounds the answer Client.Query reads. A grouped query
-// returns one series per node, a few hundred bytes each.
-const maxResponseBytes = 32 << 20
+// MaxResponseBytes bounds one Prometheus answer a reader takes: a grouped
+// instant query returns one series per node, a few hundred bytes each, and
+// a range query over a scenario's run, which the simulator's scenario
+// client reads through DecodeResponse, far more.
+const MaxResponseBytes = 64 << 20
 
 // errorExcerptBytes is how much of a body that is not JSON an Error keeps,
 // such as the HTML page of a proxy in front of Prometheus.
@@ -46,90 +48,129 @@ func (c Client) Query(ctx context.Context, q string) (Result, error) {
 		return Result{}, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	body, err := ReadResponseBody(resp.Body)
 	if err != nil {
-		return Result{}, fmt.Errorf("inputs: reading the Prometheus answer: %w", err)
+		return Result{}, err
 	}
-	if len(body) > maxResponseBytes {
-		return Result{}, fmt.Errorf("inputs: Prometheus answer exceeds %d bytes", maxResponseBytes)
-	}
-	return parseResponse(resp.StatusCode, body)
+	return ParseResponse(resp.StatusCode, body)
 }
 
-// apiResponse is the envelope of every Prometheus HTTP API answer.
-type apiResponse struct {
-	Status    string   `json:"status"`
-	ErrorType string   `json:"errorType"`
-	Error     string   `json:"error"`
-	Warnings  []string `json:"warnings"`
-	Data      struct {
-		ResultType string          `json:"resultType"`
-		Result     json.RawMessage `json:"result"`
-	} `json:"data"`
+// ReadResponseBody reads a Prometheus answer, at most MaxResponseBytes.
+func ReadResponseBody(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, MaxResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("inputs: reading the Prometheus answer: %w", err)
+	}
+	if len(body) > MaxResponseBytes {
+		return nil, fmt.Errorf("inputs: Prometheus answer exceeds %d bytes", MaxResponseBytes)
+	}
+	return body, nil
 }
 
-// parseResponse reads the answer to an instant query.
-func parseResponse(status int, body []byte) (Result, error) {
-	var r apiResponse
+// Response is a successful Prometheus HTTP API answer: its result type, its
+// result as sent, and its warnings.
+type Response struct {
+	ResultType string
+	Result     json.RawMessage
+	Warnings   []string
+}
+
+// DecodeResponse reads the envelope of a Prometheus HTTP API answer with
+// HTTP status status. A failed query is an *Error: a status other than 2xx,
+// a body that is not the Prometheus JSON, or a response with status
+// "error".
+func DecodeResponse(status int, body []byte) (Response, error) {
+	var r struct {
+		Status    string   `json:"status"`
+		ErrorType string   `json:"errorType"`
+		Error     string   `json:"error"`
+		Warnings  []string `json:"warnings"`
+		Data      struct {
+			ResultType string          `json:"resultType"`
+			Result     json.RawMessage `json:"result"`
+		} `json:"data"`
+	}
 	if err := json.Unmarshal(body, &r); err != nil || r.Status == "" {
-		return Result{}, &Error{Status: status, Message: excerpt(body)}
+		return Response{}, &Error{Status: status, Message: excerpt(body)}
 	}
 	if status < 200 || status > 299 || r.Status != "success" {
 		msg := r.Error
 		if msg == "" {
 			msg = excerpt(body)
 		}
-		return Result{}, &Error{Status: status, Type: r.ErrorType, Message: msg}
+		return Response{}, &Error{Status: status, Type: r.ErrorType, Message: msg}
 	}
-	res := Result{Type: r.Data.ResultType, Warnings: r.Warnings}
-	switch r.Data.ResultType {
+	return Response{ResultType: r.Data.ResultType, Result: r.Data.Result, Warnings: r.Warnings}, nil
+}
+
+// ParseResponse reads the answer to an instant query (DecodeResponse, then
+// Response.Instant).
+func ParseResponse(status int, body []byte) (Result, error) {
+	r, err := DecodeResponse(status, body)
+	if err != nil {
+		return Result{}, err
+	}
+	return r.Instant()
+}
+
+// Instant reads the vector or scalar result of an instant query; any other
+// result type is an error.
+func (r Response) Instant() (Result, error) {
+	res := Result{Type: r.ResultType, Warnings: r.Warnings}
+	switch r.ResultType {
 	case "vector":
 		var vec []struct {
 			Metric map[string]string `json:"metric"`
 			Value  []json.RawMessage `json:"value"`
 		}
-		if err := json.Unmarshal(r.Data.Result, &vec); err != nil {
+		if err := json.Unmarshal(r.Result, &vec); err != nil {
 			return Result{}, fmt.Errorf("inputs: decoding a vector result: %w", err)
 		}
 		res.Samples = make([]Sample, 0, len(vec))
 		for _, s := range vec {
-			v, err := sampleValue(s.Value)
+			t, v, err := ParseSample(s.Value)
 			if err != nil {
 				return Result{}, err
 			}
-			res.Samples = append(res.Samples, Sample{Labels: s.Metric, Value: v})
+			res.Samples = append(res.Samples, Sample{Labels: s.Metric, Value: v, Time: t})
 		}
 	case "scalar":
 		var pair []json.RawMessage
-		if err := json.Unmarshal(r.Data.Result, &pair); err != nil {
+		if err := json.Unmarshal(r.Result, &pair); err != nil {
 			return Result{}, fmt.Errorf("inputs: decoding a scalar result: %w", err)
 		}
-		v, err := sampleValue(pair)
+		t, v, err := ParseSample(pair)
 		if err != nil {
 			return Result{}, err
 		}
-		res.Samples = []Sample{{Value: v}}
+		res.Samples = []Sample{{Value: v, Time: t}}
 	default:
-		return Result{}, fmt.Errorf("inputs: query returned a %q result, want a vector or a scalar", r.Data.ResultType)
+		return Result{}, fmt.Errorf("inputs: query returned a %q result, want a vector or a scalar", r.ResultType)
 	}
 	return res, nil
 }
 
-// sampleValue reads the value of a [time, "value"] pair. Prometheus writes
-// the value as a string, NaN, +Inf and -Inf included.
-func sampleValue(pair []json.RawMessage) (float64, error) {
+// ParseSample reads a [time, "value"] pair: the time in Unix seconds, to
+// the millisecond, and the value, which Prometheus writes as a string, NaN, +Inf and -Inf
+// included.
+func ParseSample(pair []json.RawMessage) (time.Time, float64, error) {
 	if len(pair) != 2 {
-		return 0, fmt.Errorf("inputs: sample value has %d elements, want [time, value]", len(pair))
+		return time.Time{}, 0, fmt.Errorf("inputs: sample value has %d elements, want [time, value]", len(pair))
+	}
+	var ts float64
+	if err := json.Unmarshal(pair[0], &ts); err != nil {
+		return time.Time{}, 0, fmt.Errorf("inputs: sample time %s is not a number", pair[0])
 	}
 	var s string
 	if err := json.Unmarshal(pair[1], &s); err != nil {
-		return 0, fmt.Errorf("inputs: sample value %s is not a string", pair[1])
+		return time.Time{}, 0, fmt.Errorf("inputs: sample value %s is not a string", pair[1])
 	}
 	v, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return 0, fmt.Errorf("inputs: sample value %q is not a number", s)
+		return time.Time{}, 0, fmt.Errorf("inputs: sample value %q is not a number", s)
 	}
-	return v, nil
+	// Prometheus times have millisecond resolution.
+	return time.UnixMilli(int64(math.Round(ts * 1000))).UTC(), v, nil
 }
 
 // excerpt is the start of a body for an error message.

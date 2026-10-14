@@ -17,16 +17,6 @@ const (
 	CheckAbsFloorW = 1.0
 )
 
-// Checks returns the CheckSet of a telemetry mode and power scope over the
-// timing's rate window, the checks part of Telemetry.
-func Checks(mode Mode, scope Scope, timing Timing) (CheckSet, error) {
-	t, err := Telemetry(mode, scope, timing)
-	if err != nil {
-		return CheckSet{}, err
-	}
-	return t.Checks, nil
-}
-
 // The truths of the Kepler 0.7 platform checks of mode kepler-legacy (E07c).
 // Kepler reports only a Node with a measured CPU package (simulator/pkg/compat).
 const (
@@ -264,11 +254,4 @@ func nodeTruth(n, from *emulate.NodeSnapshot, dt float64) NodeTruth {
 		}
 	}
 	return t
-}
-
-// FacilityTruthOf returns the facility of a snapshot, from its
-// instantaneous readings.
-func FacilityTruthOf(s *emulate.Snapshot) FacilityTruth {
-	f := s.Facility
-	return FacilityTruth{AmbientC: f.AmbientC, ITPowerW: f.ITPowerW, CoolingPowerW: f.CoolingPowerW}
 }

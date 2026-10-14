@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -124,4 +125,73 @@ func TestGPUCapSlowsAGPUJobOnce(t *testing.T) {
 		s.advanceJobProgress(context.Background(), k8sfake.NewSimpleClientset(), 1, now)
 		check(t, jobs)
 	})
+}
+
+// legacyInlineCPURate is the legacy CPU progress formula, spelled out on
+// simJob's fields in the operand order the legacy experiments ran with: the
+// CPU throttle impact composed with the request, the base speed and the
+// share, and clamped at 0.
+func legacyInlineCPURate(j *simJob, baseSpeed, cpuMul, cpuShare float64) float64 {
+	baseImpact := clamp01(0.60*clamp01(j.CPUUtilTarget) + 0.25*(1.0-clamp01(j.MemoryIntensity)) + 0.15*(1.0-clamp01(j.IOIntensity)))
+	effective := 1.0 - baseImpact*(1.0-clamp01(cpuMul))
+	effective = 1.0 - j.SensitivityCPU*(1.0-effective)
+	speed := j.RequestedCPUCores * baseSpeed * clamp01(effective) * cpuShare
+	if speed < 0 {
+		speed = 0
+	}
+	return speed
+}
+
+// The CPU rate of legacyJobRates is the legacy inline formula bit for bit
+// over the inputs the legacy loops pass: CPU throughputs from
+// cpuThroughputMultiplier on the analytic and a curve model, every CPU work
+// class, the trace's profile and sensitivity, base speeds and CPU shares,
+// plus random inputs, out-of-range ones included.
+func TestLegacyJobRatesCPUEqualsTheInlineFormula(t *testing.T) {
+	analytic := gpuCapModel()
+	curve := gpuCapModel()
+	curve.CPUPowerCurve = []hw.PowerPoint{{LoadPct: 0, PowerW: 120}, {LoadPct: 50, PowerW: 260}, {LoadPct: 100, PowerW: 400}}
+	curve.CPULowestNonlinearFreqMHz, curve.FMaxMHz = 1800, 3600
+	check := func(j *simJob, base, cpuMul, share float64) {
+		t.Helper()
+		got, _ := legacyJobRates(j, analytic, base, cpuMul, share, 1, gpuCapW, 0)
+		if want := legacyInlineCPURate(j, base, cpuMul, share); got != want && !(math.IsNaN(got) && math.IsNaN(want)) {
+			t.Fatalf("job %+v, base %v, cpuMul %v, share %v: CPU rate %v, want the inline %v", *j, base, cpuMul, share, got, want)
+		}
+	}
+	n := 0
+	for _, model := range []simModel{analytic, curve} {
+		for _, class := range []string{"cpu.compute_bound", "cpu.memory_bound", "cpu.io_bound", "cpu.mixed", ""} {
+			for _, freq := range []float64{0.35, 0.5, 0.7, 0.85, 1} {
+				for _, mem := range []float64{0, 0.3, 0.9} {
+					for _, io := range []float64{0, 0.4, 1} {
+						for _, thermal := range []float64{0, 0.25} {
+							cpuMul := cpuThroughputMultiplier(freq, class, model, mem, io, thermal)
+							for _, util := range []float64{0, 0.5, 1} {
+								for _, sens := range []float64{0, 0.6, 1} {
+									for _, share := range []float64{1, 0.4} {
+										j := &simJob{RequestedCPUCores: 4, CPUUtilTarget: util, MemoryIntensity: mem, IOIntensity: io, SensitivityCPU: sens, CPUWorkClass: class}
+										check(j, 1, cpuMul, share)
+										check(j, 2.5, cpuMul, share)
+										n++
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	rng := rand.New(rand.NewSource(19))
+	r := func(lo, hi float64) float64 { return lo + (hi-lo)*rng.Float64() }
+	for i := 0; i < 20000; i++ {
+		j := &simJob{
+			RequestedCPUCores: r(0, 64), CPUUtilTarget: r(-0.2, 1.2), MemoryIntensity: r(-0.2, 1.2), IOIntensity: r(-0.2, 1.2),
+			SensitivityCPU: r(0, 1), CPUFeedIntensity: r(-0.2, 1.2), RequestedGPUs: math.Floor(r(0, 9)), GPUUnitsRemaining: r(-1, 1),
+		}
+		check(j, r(0, 3), r(-0.1, 1.1), r(0, 1))
+		n++
+	}
+	t.Logf("%d inputs", n)
 }

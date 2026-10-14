@@ -125,9 +125,10 @@ func (r policyRange) target(v int64, rel freqRelation) int64 {
 	return resolveTableKHz(r.table, min(max(v, r.lo), r.hi), rel)
 }
 
-// GovernorTargetKHz is the frequency, in kHz, the governor of in sets for
-// the policy after one step: a table entry when the policy has a table,
-// within the resolved scaling_min_freq and scaling_max_freq.
+// GovernorStep is one step of the governor of in: the request it keeps,
+// to pass back as CurKHz at the next step, and the frequency, in kHz, it
+// sets for the policy, a table entry when the policy has a table, within
+// the resolved scaling_min_freq and scaling_max_freq.
 //
 //   - performance sets policy->max (cpufreq_performance.c:17).
 //   - powersave sets policy->min (cpufreq_powersave.c:17); with HWP it is the
@@ -142,41 +143,24 @@ func (r policyRange) target(v int64, rel freqRelation) int64 {
 //   - ondemand jumps to policy->max when the load is above up_threshold, else
 //     sets a frequency proportional to the load from the minimum
 //     (cpufreq_ondemand.c:135-169).
-//   - conservative steps by freq_step per sampling period, see
-//     GovernorRequestKHz.
+//   - conservative steps by freq_step per sampling period: its
+//     requested_freq moves by freq_step per period and is resolved to a
+//     table entry only when written (cpufreq_conservative.c:103-117,
+//     126-140), so on a table coarser than the step the request climbs over
+//     several periods while the policy stays on one entry. The request it
+//     keeps equals the frequency it sets for every other governor.
 //   - userspace holds its last setting (cpufreq_userspace.c:113-122).
 //   - Any other word, and an empty one, holds the policy maximum: the
-//     performance governor the legacy engines imply (decision D9).
+//     performance governor the legacy engines imply.
 //
-// CurKHz is the governor's previous request, GovernorRequestKHz of the
-// previous step. schedutil reads it as the frequency the policy ran at, so
-// where the policy ran elsewhere (a table driver boosting above its top
-// entry, a binding cap) the caller passes the running frequency instead.
-// A zero CurKHz is a governor that has not run yet: schedutil then reads
-// Util as measured at MaxKHz, and conservative and userspace start at the
-// policy maximum.
+// CurKHz is the governor's previous request, the requestKHz of the previous
+// step. schedutil reads it as the frequency the policy ran at, so where the
+// policy ran elsewhere (a table driver boosting above its top entry, a
+// binding cap) the caller passes the running frequency instead. A zero
+// CurKHz is a governor that has not run yet: schedutil then reads Util as
+// measured at MaxKHz, and conservative and userspace start at the policy
+// maximum.
 //
-// GovernorTargetKHz does not know the frequency the governor set at the
-// previous step, which conservative on a table needs; GovernorStep takes it.
-func GovernorTargetKHz(in GovernorInput) int64 {
-	_, target := governorStep(in, 0)
-	return target
-}
-
-// GovernorRequestKHz is the request the governor keeps after the step: the
-// value to pass back as CurKHz at the next one. It equals GovernorTargetKHz
-// for every governor but conservative, whose requested_freq moves by
-// freq_step per sampling period and is resolved to a table entry only when
-// written (cpufreq_conservative.c:103-117, 126-140): on a table coarser than
-// the step, the request climbs over several periods while the policy stays
-// on one entry.
-func GovernorRequestKHz(in GovernorInput) int64 {
-	request, _ := governorStep(in, 0)
-	return request
-}
-
-// GovernorStep is one step in full: the request the governor keeps, to pass
-// back as CurKHz, and the frequency it sets, GovernorTargetKHz.
 // prevTargetKHz is the frequency the governor set at the previous step, the
 // targetKHz GovernorStep returned then (the kernel's policy->cur), and zero
 // before the first step. conservative needs it on a table: a rising request
@@ -284,7 +268,7 @@ func ondemandKHz(in GovernorInput, r policyRange, util float64) int64 {
 //
 // The load of each period is recomputed from the work of the step: Util was
 // measured at the current frequency, so the same cycles at a higher
-// frequency are a lower load (work in cycles, decision D10). A saturated
+// frequency are a lower load (work in cycles). A saturated
 // Util stays saturated, since the demand above it is unknown.
 // Several idle periods without a sample lower the request one step each
 // (:86-99), which the per-period loop already does. sampling_down_factor is

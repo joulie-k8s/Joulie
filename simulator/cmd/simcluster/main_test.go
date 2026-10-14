@@ -46,7 +46,7 @@ func TestCLI01SubcommandsEqualTheLibrary(t *testing.T) {
 
 	t.Run("validate", func(t *testing.T) {
 		code, out, errOut := testRun("validate", "--spec", testSmokeSpec)
-		if code != 0 || !strings.Contains(out, "harness section of cluster spec smoke is valid: 8 Nodes, 7 with measured CPU packages, tool delivery none for pools []") {
+		if code != 0 || !strings.Contains(out, "harness section of cluster spec smoke is valid: 8 Nodes, 7 with measured CPU packages, tool delivery set for pools [nvl: mounted, sxm-nopm: mounted, mi300x: mounted], the install's for the others") {
 			t.Errorf("validate: exit %d, stdout %q, stderr %q", code, out, errOut)
 		}
 	})
@@ -204,4 +204,83 @@ func TestCLI02UsageErrorsExit2(t *testing.T) {
 			t.Errorf("%v: exit %d, want 0", args, code)
 		}
 	}
+}
+
+// CLI03: --profiles-dir defaults to SIM_PROFILES_DIR, as clusterspec's
+// -profiles-dir does, and an empty --profiles-dir means the builtins only.
+func TestCLI03ProfilesDirDefaultsToTheSimulatorsVariable(t *testing.T) {
+	spec := filepath.Join("..", "..", "pkg", "clusterspec", "testdata", "local.yaml")
+	b, err := os.ReadFile(filepath.Join("..", "..", "pkg", "clusterspec", "testdata", "lab-vm-4cpu.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "lab-vm-4cpu.yaml"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envProfilesDir, dir)
+	if code, _, errOut := testRun("validate", "--spec", spec); code != 0 {
+		t.Errorf("local.yaml with %s set: exit %d, stderr %q", envProfilesDir, code, errOut)
+	}
+	if code, _, errOut := testRun("validate", "--spec", spec, "--profiles-dir", ""); code != 1 || !strings.Contains(errOut, `profile "lab-vm-4cpu" is not known`) {
+		t.Errorf("local.yaml with --profiles-dir \"\": exit %d, stderr %q; want 1, the profile unknown", code, errOut)
+	}
+}
+
+// CLI04: a GPU pool the spec's harness section does not list gets the GPU
+// tools only when the install delivers them: under a DaemonSet render with
+// neither a runtime class nor an extra volume, the chart's default, its
+// agent mounts no driver stub, so its GPU inventory fails as on a real
+// node of such an install; with an extra volume it mounts the stub.
+func TestCLI04ToolDeliveryFollowsTheInstall(t *testing.T) {
+	dir := t.TempDir()
+	spec := filepath.Join(dir, "spec.yaml")
+	if err := os.WriteFile(spec, []byte(`apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: gpu}
+spec:
+  defaults: {labels: {joulie.io/managed: "true"}}
+  pools: [{name: nvl, profile: nvidia-h100-nvl-8gpu, count: 1}]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	render := func(extra string) string {
+		path := filepath.Join(dir, "render"+fmtLen(extra)+".yaml")
+		doc := `apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: joulie-agent}
+spec:
+  template:
+    spec:
+      nodeSelector: {joulie.io/managed: "true"}
+      tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+      volumes: [{name: host-sys, hostPath: {path: /sys}}` + extra + `]
+`
+		if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	for _, tc := range []struct {
+		extra string
+		stub  bool
+	}{
+		{"", false},
+		{", {name: nvidia-driver, hostPath: {path: /usr/lib/nvidia}}", true},
+	} {
+		code, out, errOut := testRun("agents", "--spec", spec, "--daemonset", render(tc.extra), "--image-arch", "amd64", "--root", testRoot)
+		if code != 0 {
+			t.Fatalf("agents: exit %d, stderr %q", code, errOut)
+		}
+		if !strings.Contains(out, "name: nvl-0") || strings.Contains(out, simcluster.DriverStubVolume) != tc.stub {
+			t.Errorf("extra volumes %q: the agent of nvl-0 mounts the driver stub: %v, want %v:\n%s", tc.extra, strings.Contains(out, simcluster.DriverStubVolume), tc.stub, out)
+		}
+	}
+}
+
+func fmtLen(s string) string {
+	if s == "" {
+		return "-default"
+	}
+	return "-extra"
 }

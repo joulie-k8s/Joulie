@@ -59,10 +59,8 @@ func regressionJobs(t *testing.T, cfg generatorConfig) []map[string]any {
 }
 
 // The simulator reads a missing sensitivity as 1: a cap slows the job in
-// full. Before v3 every default-mode job carried {"cpu":0,"gpu":0}, so a CPU
-// cap never slowed it (cpuThrottleImpactFactor in
-// simulator/cmd/simulator/main.go), and diurnal standard jobs carried the
-// same.
+// full. A default-mode job, and a diurnal standard job, must therefore carry
+// no sensitivity at all: {"cpu":0,"gpu":0} would make it immune to a CPU cap.
 func TestDefaultTraceLeavesSensitivityToTheSimulator(t *testing.T) {
 	for mode, cfg := range regressionConfigs() {
 		for _, j := range regressionJobs(t, cfg) {

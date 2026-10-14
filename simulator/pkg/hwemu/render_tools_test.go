@@ -62,10 +62,20 @@ func TestRenderToolsRequiresNeedSrc(t *testing.T) {
 	t.Parallel()
 	loader := layout.ToolRequirement{Paths: []string{"/lib64/ld-linux-x86-64.so.2"}, Exit: 127}
 	nvmlPaths := []string{"/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1", "/usr/lib64/libnvidia-ml.so.1"}
+	libs := []string{"libpthread.so.0", "libm.so.6", "libdl.so.2", "librt.so.1", "libc.so.6"}
+	nvidiaSMI := []layout.ToolRequirement{loader}
+	for _, l := range libs {
+		nvidiaSMI = append(nvidiaSMI, layout.ToolRequirement{
+			Paths:  []string{"/lib/x86_64-linux-gnu/" + l, "/usr/lib/x86_64-linux-gnu/" + l, "/lib64/" + l, "/usr/lib64/" + l},
+			Exit:   127,
+			Stderr: "nvidia-smi: error while loading shared libraries: " + l + ": cannot open shared object file: No such file or directory",
+		})
+	}
+	nvidiaSMI = append(nvidiaSMI, layout.ToolRequirement{Paths: nvmlPaths, Exit: 12})
 	env := layout.ToolRequirement{Paths: []string{"/usr/bin/env"}, Exit: 127}
 	python := layout.ToolRequirement{Paths: []string{"/usr/bin/python3", "/usr/local/bin/python3"}, Exit: 127, Stderr: "/usr/bin/env: 'python3': No such file or directory"}
 	want := map[string]map[string][]layout.ToolRequirement{
-		"nvidia-h100-nvl-8gpu":     {"nvidia-smi": {loader, {Paths: nvmlPaths, Exit: 12}}},
+		"nvidia-h100-nvl-8gpu":     {"nvidia-smi": nvidiaSMI},
 		"amd-instinct-mi300x-8gpu": {"rocm-smi": {env, python}, "amd-smi": {env, python}},
 	}
 	for name, tools := range want {
@@ -111,16 +121,28 @@ func TestRenderToolsRequiresNeedSrc(t *testing.T) {
 		}
 	}
 
-	// fakesmi over the rendered NVL tree: the loader alone gives the NVML
-	// exit code with the profile's message; the loader and the second NVML
-	// path let the agent's listing run.
+	// fakesmi over the rendered NVL tree: the loader alone fails on the
+	// first shared library, with the loader's message and 127; the loader
+	// and the libraries, from the RHEL directories, give the NVML exit code
+	// with the profile's message; the second NVML path lets the agent's
+	// listing run.
 	p, tree := renderSharedBuiltin(t, "nvidia-h100-nvl-8gpu")
 	rootFS := t.TempDir()
 	renderTouchUnder(t, rootFS, "/lib64/ld-linux-x86-64.so.2")
 	e := smi.Env{SysRoot: tree.SysRoot, StateRoot: tree.StateRoot, RootFS: rootFS}
 	var out, errOut bytes.Buffer
+	if code := smi.Main([]string{"nvidia-smi", "-L"}, e, strings.NewReader(""), &out, &errOut); code != 127 || out.Len() != 0 ||
+		errOut.String() != nvidiaSMI[1].Stderr+"\n" {
+		t.Errorf("nvidia-smi -L without its libraries = %d, stdout %q, stderr %q; want 127 and the loader's message", code, out.String(), errOut.String())
+	}
+	for _, l := range libs {
+		renderTouchUnder(t, rootFS, "/usr/lib64/"+l)
+	}
+	out.Reset()
+	errOut.Reset()
+	nvml := p.GPUs.Tools[0].Requires[len(p.GPUs.Tools[0].Requires)-1]
 	if code := smi.Main([]string{"nvidia-smi", "-L"}, e, strings.NewReader(""), &out, &errOut); code != 12 || out.Len() != 0 ||
-		errOut.String() != p.GPUs.Tools[0].Requires[1].Stderr+"\n" {
+		errOut.String() != nvml.Stderr+"\n" {
 		t.Errorf("nvidia-smi -L without NVML = %d, stdout %q, stderr %q; want 12 and the profile's message", code, out.String(), errOut.String())
 	}
 	renderTouchUnder(t, rootFS, "/usr/lib64/libnvidia-ml.so.1")

@@ -1,6 +1,6 @@
 // Package scenario reads, validates, plans and evaluates simulated-cluster
 // scenarios, and writes the run results of both scenarios and the smoke test:
-// one run directory layout and one summary.json schema (X12).
+// one run directory layout and one summary.json schema.
 //
 // # Scenario files
 //

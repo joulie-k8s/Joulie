@@ -297,3 +297,48 @@ classes:
 		}
 	}
 }
+
+// A node whose only GPU facts are the AMD node labeller's labels resolves
+// to the board the controller manager resolves it to: both read
+// amd.com/gpu.product-name and beta.amd.com/gpu.product-name before
+// amd.com/gpu.product and the family code, which names no board. The cases
+// and boards are the controller manager's
+// (TestGPULabelRegressionChartKeysAMDFamilyByProductName in
+// cmd/controller-manager), whose family gpu:<key> is the catalogue key here.
+func TestAMDLabelOnlyNodeResolvesLikeTheControllerManager(t *testing.T) {
+	clearSimEnv(t)
+	s, _ := mrSimulator(t, nil)
+	for _, tc := range []struct {
+		name   string
+		labels map[string]string
+		want   string
+	}{
+		{"w7900", map[string]string{
+			"amd.com/gpu.family":       "GC_11_0_0",
+			"amd.com/gpu.product-name": "AMD_Radeon_PRO_W7900",
+		}, "AMD_RADEON_PRO_W7900"},
+		{"mi300x", map[string]string{
+			"amd.com/gpu.family":            "AI",
+			"amd.com/gpu.product-name":      "AMD_Instinct_MI300X_OAM",
+			"beta.amd.com/gpu.family":       "AI",
+			"beta.amd.com/gpu.product-name": "AMD_Instinct_MI300X_OAM",
+		}, "AMD_INSTINCT_MI300X"},
+		{"beta prefix only", map[string]string{
+			"beta.amd.com/gpu.family":       "AI",
+			"amd.com/gpu.family":            "AI",
+			"beta.amd.com/gpu.product-name": "AMD_Instinct_MI300X_OAM",
+		}, "AMD_INSTINCT_MI300X"},
+		{"older amd.com/gpu.product", map[string]string{
+			"amd.com/gpu.family":  "AI",
+			"amd.com/gpu.product": "AMD_Instinct_MI300X",
+		}, "AMD_INSTINCT_MI300X"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			labels := mrMergeLabels(tc.labels, map[string]string{"joulie.io/hw.gpu-count": "4"})
+			model, class := s.resolveModelForNode(labels)
+			if model.GPU.Product != tc.want {
+				t.Fatalf("GPU %q (class %s), want the catalogue's %s, as the controller manager resolves it", model.GPU.Product, class, tc.want)
+			}
+		})
+	}
+}

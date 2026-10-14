@@ -3,7 +3,6 @@ package scenario
 import (
 	"fmt"
 	"math"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -11,10 +10,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"sigs.k8s.io/yaml"
 
 	"github.com/matbun/joulie/simulator/pkg/clusterspec"
-	"github.com/matbun/joulie/simulator/pkg/hwemu"
 )
 
 // MaxOfferedLoad is the highest offered load plan accepts for any
@@ -22,99 +19,37 @@ import (
 // assertion fails by construction rather than by Joulie's doing.
 const MaxOfferedLoad = 0.9
 
-// SpecPool is one pool of a cluster spec as the planner sees it: its Node
-// count, the labels and taints of each Node, and each Node's allocatable
-// resources, with the pool's overrides applied to its profile.
+// SpecPool is one pool of a cluster spec as the planner sees it: its Nodes
+// as clusterspec.Expand renders them, with their labels (the topology and
+// host name labels included), taints and allocatable resources.
 type SpecPool struct {
-	Name        string
-	Nodes       int
-	Labels      map[string]string
-	Taints      []corev1.Taint
-	Allocatable corev1.ResourceList
+	Name  string
+	Nodes []*corev1.Node
 }
 
-// ReadSpecPools reads the cluster spec file spec (relative to repoRoot)
-// strictly and returns its name and pools, each pool's profile taken from
-// the builtin profiles with its overrides applied.
-//
-// It stands in for clusterspec's Load and Expand, which arrive in the same
-// wave; it computes only what planning needs and leaves validation of the
-// spec to them.
+// ReadSpecPools loads the cluster spec file spec (relative to repoRoot) as
+// the simulator and the harness do, clusterspec.LoadFile then Expand, and
+// returns its name and its Nodes grouped by pool, in the spec's pool order.
+// The profiles are the builtin ones: the in-cluster simulator reads no
+// other, and up.sh refuses a spec that needs a local profile.
 func ReadSpecPools(repoRoot, spec string) (string, []SpecPool, error) {
-	path := filepath.Join(repoRoot, spec)
-	b, err := os.ReadFile(path)
+	s, err := clusterspec.LoadFile(filepath.Join(repoRoot, spec))
 	if err != nil {
 		return "", nil, fmt.Errorf("cluster spec: %w", err)
 	}
-	var s clusterspec.Spec
-	if err := yaml.UnmarshalStrict(b, &s); err != nil {
+	members, err := s.Expand(clusterspec.Profiles(""))
+	if err != nil {
 		return "", nil, fmt.Errorf("cluster spec %s: %w", spec, err)
 	}
-	var out []SpecPool
+	byPool := map[string][]*corev1.Node{}
+	for _, m := range members {
+		byPool[m.Pool] = append(byPool[m.Pool], m.Node)
+	}
+	out := make([]SpecPool, 0, len(s.Spec.Pools))
 	for _, pool := range s.Spec.Pools {
-		// BuiltinProfiles parses on every call, so one pool's overrides
-		// never reach another pool's profile.
-		builtins, err := hwemu.BuiltinProfiles()
-		if err != nil {
-			return "", nil, err
-		}
-		p, ok := builtins[pool.Profile]
-		if !ok {
-			return "", nil, fmt.Errorf("cluster spec %s: pool %s: profile %q is not builtin", spec, pool.Name, pool.Profile)
-		}
-		if err := applyPoolOverrides(p, s.Metadata.Name, pool); err != nil {
-			return "", nil, fmt.Errorf("cluster spec %s: pool %s: %w", spec, pool.Name, err)
-		}
-		node := p.NodeObject(pool.Name)
-		labels := map[string]string{}
-		for _, m := range []map[string]string{node.Labels, s.Spec.Defaults.Labels, pool.Labels} {
-			for k, v := range m {
-				labels[k] = v
-			}
-		}
-		labels[clusterspec.LabelCluster] = s.Metadata.Name
-		labels[clusterspec.LabelPool] = pool.Name
-		taints := append(append([]corev1.Taint(nil), node.Spec.Taints...), pool.Taints...)
-		if s.Spec.Defaults.Kwok == nil || *s.Spec.Defaults.Kwok {
-			taints = append(taints, corev1.Taint{Key: clusterspec.KWOKTaintKey, Value: clusterspec.KWOKValue, Effect: corev1.TaintEffectNoSchedule})
-		}
-		out = append(out, SpecPool{Name: pool.Name, Nodes: pool.Count, Labels: labels, Taints: taints, Allocatable: node.Status.Allocatable})
+		out = append(out, SpecPool{Name: pool.Name, Nodes: byPool[pool.Name]})
 	}
 	return s.Metadata.Name, out, nil
-}
-
-// applyPoolOverrides sets a pool's overrides on its profile with the
-// provenance package clusterspec gives them, then validates the result.
-func applyPoolOverrides(p *hwemu.Profile, spec string, pool clusterspec.Pool) error {
-	o := pool.Overrides
-	if o == nil {
-		return nil
-	}
-	src := fmt.Sprintf("assumed:cluster spec %s pool %s override", spec, pool.Name)
-	if o.NFD != "" {
-		p.Node.NFD = o.NFD
-	}
-	if g := o.GPUs; g != nil {
-		if p.GPUs == nil {
-			return fmt.Errorf("overrides gpus, but profile %s has no GPUs", p.Name)
-		}
-		if g.PersistenceMode != "" {
-			p.GPUs.PersistenceMode = hwemu.Fact[string]{V: g.PersistenceMode, Src: src}
-		}
-		if g.Exposure != "" {
-			p.GPUs.Exposure = hwemu.Fact[string]{V: g.Exposure, Src: src}
-		}
-		if g.MIGProfile != "" {
-			p.GPUs.MIGProfile = g.MIGProfile
-		}
-		if g.MIGDevicesPerGPU != nil {
-			p.GPUs.MIGDevicesPerGPU = *g.MIGDevicesPerGPU
-		}
-		if g.TimesliceReplicas != nil {
-			p.GPUs.TimesliceReplicas = *g.TimesliceReplicas
-		}
-	}
-	return p.Validate()
 }
 
 // runTolerations are the tolerations of every pod of a run: the scenario's
@@ -126,15 +61,15 @@ func runTolerations(s Scenario) []corev1.Toleration {
 	return []corev1.Toleration{{Key: clusterspec.KWOKTaintKey, Operator: corev1.TolerationOpEqual, Value: clusterspec.KWOKValue, Effect: corev1.TaintEffectNoSchedule}}
 }
 
-// Capacity sums the allocatable resources of the pools whose Nodes some of
-// the jobs' pods can use: every NoSchedule and NoExecute taint is
-// tolerated, and the placement's node selector, when it sets one, matches.
+// Capacity sums the allocatable resources of the Nodes some of the jobs'
+// pods can use: every NoSchedule and NoExecute taint is tolerated, and the
+// placement's node selector, when it sets one, matches the Node's labels.
 // A pod tolerates the run's tolerations plus, for each extended resource
 // it requests, the taint keyed by that resource, as Kubernetes'
-// ExtendedResourceToleration admission plugin adds: a GPU pool carrying
+// ExtendedResourceToleration admission plugin adds: a GPU Node carrying
 // its vendor's taint (nvidia.com/gpu, amd.com/gpu) counts only when some
 // job requests its GPUs. The simulator's default selector is the spec's
-// own label, which every pool matches. Values are in cores for cpu, bytes
+// own label, which every Node matches. Values are in cores for cpu, bytes
 // for memory and units otherwise.
 func Capacity(pools []SpecPool, jobs []TraceJob, nodeSelector map[string]string, tolerations []corev1.Toleration) map[string]float64 {
 	// Each distinct set of extended resources the jobs request is one set
@@ -152,21 +87,23 @@ func Capacity(pools []SpecPool, jobs []TraceJob, nodeSelector map[string]string,
 	}
 	out := map[string]float64{}
 	for _, p := range pools {
-		usable := false
-		for _, ext := range kinds {
-			if poolUsable(p, nodeSelector, withResourceTolerations(tolerations, ext)) {
-				usable = true
-				break
+		for _, n := range p.Nodes {
+			usable := false
+			for _, ext := range kinds {
+				if nodeUsable(n, nodeSelector, withResourceTolerations(tolerations, ext)) {
+					usable = true
+					break
+				}
 			}
-		}
-		if !usable {
-			continue
-		}
-		for name, q := range p.Allocatable {
-			if name == corev1.ResourcePods {
+			if !usable {
 				continue
 			}
-			out[string(name)] += float64(p.Nodes) * q.AsApproximateFloat64()
+			for name, q := range n.Status.Allocatable {
+				if name == corev1.ResourcePods {
+					continue
+				}
+				out[string(name)] += q.AsApproximateFloat64()
+			}
 		}
 	}
 	return out
@@ -182,14 +119,14 @@ func withResourceTolerations(base []corev1.Toleration, resources []string) []cor
 	return out
 }
 
-func poolUsable(p SpecPool, nodeSelector map[string]string, tolerations []corev1.Toleration) bool {
+func nodeUsable(n *corev1.Node, nodeSelector map[string]string, tolerations []corev1.Toleration) bool {
 	for k, v := range nodeSelector {
-		if p.Labels[k] != v {
+		if n.Labels[k] != v {
 			return false
 		}
 	}
-	for i := range p.Taints {
-		t := &p.Taints[i]
+	for i := range n.Spec.Taints {
+		t := &n.Spec.Taints[i]
 		if t.Effect != corev1.TaintEffectNoSchedule && t.Effect != corev1.TaintEffectNoExecute {
 			continue
 		}

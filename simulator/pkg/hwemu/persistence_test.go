@@ -148,8 +148,8 @@ func TestH35PersistenceOffResetsAnIdleGPU(t *testing.T) {
 		}
 		nodeWrite(t, tree, mode, "sometimes")
 		nodeStep(t, n, time.Second)
-		if got, e := nodeRead(t, tree, mode), nodeOneEvent(t, n, mode); got != "Disabled\n" || e.Kind != EventRevertedOutOfRange {
-			t.Errorf("persistence_mode %q, event %+v after an unknown word; want Disabled kept and reverted", got, e)
+		if got, e := nodeRead(t, tree, mode), nodeOneEvent(t, n, mode); got != "Disabled\n" || e.Kind != EventRejected || e.Errno != ErrnoEINVAL {
+			t.Errorf("persistence_mode %q, event %+v after an unknown word; want Disabled kept and the word refused with EINVAL", got, e)
 		}
 	})
 }

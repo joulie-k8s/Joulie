@@ -152,8 +152,8 @@ func TestS19RocmSMIWithoutPythonExits127(t *testing.T) {
 }
 
 // An empty RootFS checks nothing, so the in-process Runner the agent tests
-// use (cmd/agent hwemu_helpers_test.go) gives exactly the S1 answers on a
-// manifest with requirements none of which exists anywhere. EnvFromOS gives
+// use (cmd/agent hwemu_helpers_test.go) answers a manifest whose
+// requirements exist nowhere as it answers one without requirements. EnvFromOS gives
 // / unless HWEMU_ROOTFS says otherwise, so fakesmi in a pod checks the pod's
 // own files.
 func TestS20EmptyRootFSBehavesAsS1(t *testing.T) {

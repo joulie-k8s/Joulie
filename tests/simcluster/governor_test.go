@@ -34,7 +34,8 @@ var gvNameWords = []string{
 }
 
 // gvProfiles are the profiles the spec must cover once each: one per CPU
-// frequency driver and one per GPU family of the experiment (section 5.3).
+// frequency driver and one per GPU family of experiment 05
+// (experiments/05-governor-exploration).
 var gvProfiles = []string{
 	"amd-epyc-9534-2s-energy-only", // acpi-cpufreq
 	"intel-xeon-6530-2s-rapl",      // intel_cpufreq

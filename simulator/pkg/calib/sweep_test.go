@@ -183,7 +183,7 @@ func sweepLines(t testing.TB, out []byte) []otlpjson.MetricsData {
 func attr(kvs []otlpjson.KeyValue, k string) (string, bool) {
 	for _, kv := range kvs {
 		if kv.Key == k {
-			return attrText(kv.Value)
+			return kv.Value.Text()
 		}
 	}
 	return "", false
@@ -191,7 +191,7 @@ func attr(kvs []otlpjson.KeyValue, k string) (string, bool) {
 
 // pointValue is a point's value.
 func pointValue(p otlpjson.NumberDataPoint) float64 {
-	v, _ := otlpPointValue(p)
+	v, _ := p.Float64()
 	return v
 }
 
@@ -205,7 +205,7 @@ func pointValue(p otlpjson.NumberDataPoint) float64 {
 // the load is stopped and scaling_max_freq is put back.
 func TestCB11SweepCollectorOverAnHwemuTree(t *testing.T) {
 	t.Parallel()
-	e := newEmulatedHost(t, "amd-epyc-2s-energy-only", func(p *hwemu.Profile) { p.CPUFreq.Governor.V = "performance" }, hwemu.RenderOptions{Seed: 1})
+	e := newEmulatedHost(t, "amd-epyc-2s-energy-only", epycAnalytic("performance"), hwemu.RenderOptions{Seed: 1})
 	before := snapshot(t, e.tree.SysRoot, "devices/system/cpu/cpufreq/policy*/scaling_max_freq")
 	steps := SweepGrid([]float64{0, 0.2, 0.4, 0.6, 0.8, 1}, []float64{2.4e9, 1.9e9, 1.5e9}, nil)
 	var out bytes.Buffer

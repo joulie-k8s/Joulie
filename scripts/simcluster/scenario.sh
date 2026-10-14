@@ -69,25 +69,20 @@ scenario_file=$(sim_path "$1")
 scenario_name=$(basename "$scenario_file" .yaml)
 
 # The run directory, named as scenario.RunDirName names it.
-sha=$(git -C "$SIM_REPO" rev-parse HEAD 2>/dev/null | cut -c1-12) || true
-sha=${sha:-nogit}
-dirty=
-if [[ $sha != nogit && -n $(git -C "$SIM_REPO" status --porcelain 2>/dev/null) ]]; then
-  dirty=-dirty
-fi
 runs=$SIMCLUSTER_DIR/runs
 link_latest=0
 if [[ -n ${SCENARIO_RUN_DIR:-} ]]; then
   run_dir=$SCENARIO_RUN_DIR
   [[ $run_dir == /* ]] || run_dir=$PWD/$run_dir
 else
-  run_dir=$runs/$(date -u +%Y%m%dT%H%M%SZ)-$scenario_name-$sha$dirty
+  run_dir=$runs/$(date -u +%Y%m%dT%H%M%SZ)-$scenario_name-$(sim_git_state)
   link_latest=1
 fi
 mkdir -p "$run_dir"
 exec > >(tee -a "$run_dir/scenario.log") 2>&1
 work=$(mktemp -d)
 otlpcheck=$SIMCLUSTER_NAME-otlpcheck
+# shellcheck disable=SC2317 # called by the EXIT trap
 cleanup() {
   local rc=$?
   set +e
@@ -97,7 +92,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 1. The host tools, the validation and the plan.
+# 1. The host tools, the validation and the plan. simcluster and
+# clusterspec are built once here, for every up.sh and deploy.sh below.
+sim_host_tools
 mkdir -p "$SIM_HOST_BIN"
 (cd "$SIM_REPO" && "$GO" build -trimpath -o "$SIM_HOST_BIN/" ./simulator/cmd/simscenario ./simulator/cmd/workloadgen) ||
   sim_die "building the host tools (simscenario, workloadgen) failed"
@@ -157,6 +154,7 @@ recreate_namespaces() {
   done < <(workload_namespaces "$1")
 }
 
+# shellcheck disable=SC2317 # called by sim_wait
 no_joulie_pods() {
   [[ -z $(kubectl -n "$SIM_NS_JOULIE" get pods -o name) ]]
 }
@@ -243,7 +241,7 @@ otlp_count() {
 # validate_otlp <variant dir> posts every line of its OTLP files and checks
 # the answers and what the Collector wrote.
 validate_otlp() {
-  local vdir=$1 out=$work/otlpcheck/out f signal code bad=0 sent_m=0 sent_l=0 n line
+  local vdir=$1 out=$work/otlpcheck/out f base signal code bad=0 sent_m=0 sent_l=0 n line
   [[ -n $otlp_port ]] || start_otlpcheck
   # The Collector appends: what it wrote for an earlier variant is counted
   # first.
@@ -258,6 +256,7 @@ validate_otlp() {
       *) continue ;;
     esac
     n=0
+    base=$(basename "$f")
     while IFS= read -r line || [[ -n $line ]]; do
       n=$((n + 1))
       [[ -n $line ]] || continue
@@ -265,10 +264,10 @@ validate_otlp() {
       code=$(curl -sS -o "$work/answer.json" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
         --data-binary "@$work/line.json" "http://127.0.0.1:$otlp_port/v1/$signal") || code=000
       if [[ $code != 200 ]]; then
-        sim_log "OTLP check: $(basename "$f") line $n: HTTP $code: $(head -c 300 "$work/answer.json")"
+        sim_log "OTLP check: $base line $n: HTTP $code: $(head -c 300 "$work/answer.json")"
         bad=1
       elif ! jq -e '(.partialSuccess // {}) | ((.rejectedDataPoints // .rejectedLogRecords // "0") | tonumber) == 0 and ((.errorMessage // "") == "")' "$work/answer.json" >/dev/null 2>&1; then
-        sim_log "OTLP check: $(basename "$f") line $n: partial success: $(head -c 300 "$work/answer.json")"
+        sim_log "OTLP check: $base line $n: partial success: $(head -c 300 "$work/answer.json")"
         bad=1
       fi
     done <"$f"
@@ -278,6 +277,7 @@ validate_otlp() {
       sent_l=$((sent_l + $(otlp_count logs "$f")))
     fi
   done
+  # shellcheck disable=SC2317 # called by sim_wait
   otlp_received() {
     [[ $(otlp_count metrics "$out/metrics.jsonl") == $((had_m + sent_m)) && $(otlp_count logs "$out/logs.jsonl") == $((had_l + sent_l)) ]]
   }
@@ -366,6 +366,8 @@ run_variant() {
   return "$erc"
 }
 
+# simscenario's exit code for a variant that could not be run or evaluated,
+# scenario.ExitError; TestSC19ScenarioExitErrorIsTheLibrarys holds them equal.
 scenario_exit_error=2
 if [[ ${SIMCLUSTER_VALIDATE_OTLP:-0} == 1 ]]; then
   sim_require curl

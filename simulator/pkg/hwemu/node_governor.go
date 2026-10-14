@@ -3,7 +3,6 @@ package hwemu
 import (
 	"errors"
 	"math"
-	"os"
 	"path"
 	"path/filepath"
 	"slices"
@@ -16,7 +15,7 @@ import (
 
 // CPU governor emulation, Node side. NewNode, derive, substep and
 // writeOutputs call these hooks; they do nothing on a profile without the
-// governor facts (cpuGovModeled), which runs as it did before them. The
+// governor facts (cpuGovModeled), whose policies follow nodePolicy.target. The
 // policies themselves (governor, EPP, boost, frequency bounds) are
 // nodePolicy; nodePackage.govNative is the governor State reports for a
 // package. Kernel citations are against Linux v6.12.
@@ -33,10 +32,12 @@ import (
 //     each policy's maximum to the top non-turbo frequency and keep the
 //     scaling_max_freq request, so turning turbo back on restores it
 //     (intel_pstate.c:1351-1361, amd-pstate.c:665-702 with
-//     refresh_frequency_limits). cpuinfo_max_freq, which the kernel lowers
-//     too, stays as rendered. A Node started over a tree with turbo off
-//     cannot read the request the file hides under the cap, and takes the
-//     kernel's default, no limit below cpuinfo_max_freq.
+//     refresh_frequency_limits). cpuinfo_max_freq shows the top non-turbo
+//     frequency while turbo is off and the turbo maximum again once it is
+//     on, as the kernel sets it (renderTracksTurbo); the physics keeps
+//     scaling by the turbo maximum. A Node started over a tree with turbo
+//     off cannot read the request the file hides under the cap, and takes
+//     the kernel's default, no limit below cpuinfo_max_freq.
 //   - where the driver has set_boost, the global cpufreq/boost and each
 //     policy's boost are both there: a global write of a new state sets
 //     every policy, and a policy's boost refuses any write with EINVAL while
@@ -85,18 +86,24 @@ type nodeCPUGovernor struct {
 
 // nodeGovPolicy is the governor state of one policy beyond nodePolicy.
 // userMaxKHz is scaling_max_freq as last written, before the turbo cap;
-// boost the policy's own boost (amd-pstate); setspeedKHz the userspace
+// boost the policy's own boost in effect (amd-pstate, acpi-cpufreq), and
+// boostShown what its boost file shows, the core's per-policy flag, which
+// differs from boost only on acpi-cpufreq before the first write that
+// changes it (cpuGovPolicyBootBoost); setspeedKHz the userspace
 // governor's frequency, 0 outside userspace; eppSaved the preference
 // intel_pstate saved on entering performance. eppAvail is amd-pstate-epp's
-// list of preferences, which follows the governor.
+// list of preferences, which follows the governor, and cpuinfoMax the
+// policy's cpuinfo_max_freq where it follows turbo.
 type nodeGovPolicy struct {
 	p           *nodePolicy
 	hasEPP      bool
 	userMaxKHz  int64
 	boost       int
+	boostShown  int
 	setspeedKHz int64
 	eppSaved    string
 	eppAvail    *nodeSFile
+	cpuinfoMax  *nodeSFile
 }
 
 // nodeUncore is one Intel uncore domain: its limits in kHz, its initial
@@ -170,7 +177,7 @@ func (n *Node) buildCPUGovernor() error {
 		n.rehandle(f, h, cur)
 	}
 	for _, p := range n.policies {
-		gp := &nodeGovPolicy{p: p, boost: g.boost, userMaxKHz: p.reqMaxKHz}
+		gp := &nodeGovPolicy{p: p, boost: g.boost, boostShown: g.boost, userMaxKHz: p.reqMaxKHz}
 		g.pols = append(g.pols, gp)
 		dir := n.sysPath(layout.PolicyDir(p.index))
 		cpu := stateID(semconv.HwTypeCPU, p.socket)
@@ -180,6 +187,9 @@ func (n *Node) buildCPUGovernor() error {
 		}
 		if g.setBoost {
 			p.boost = &gp.boost // read by nodePolicy.ceilingKHz
+		}
+		if abs := filepath.Join(dir, "cpuinfo_max_freq"); n.owners[n.relPath(abs)].Owner == layout.OwnerEmulator {
+			gp.cpuinfoMax = n.sfile(abs)
 		}
 		rel := func(name string) *nodeAFile { return afiles[n.relPath(filepath.Join(dir, name))] }
 		if f := rel("scaling_max_freq"); f != nil {
@@ -269,7 +279,7 @@ func (n *Node) buildCPUGovernor() error {
 // file again, as addAFile does.
 func (n *Node) rehandle(f *nodeAFile, handle func(string) (string, string), current func() string) {
 	f.handle, f.current = handle, current
-	if b, err := os.ReadFile(f.path); err == nil && len(b) > 0 {
+	if b, err := n.readFile(f.path); err == nil && len(b) > 0 {
 		handle(strings.TrimSuffix(string(b), "\n"))
 	}
 	f.held = current()
@@ -393,9 +403,10 @@ func (gp *nodeGovPolicy) setspeedHandler() (func(string) (string, string), func(
 // policyEPPHandler is energy_performance_preference with the governor
 // facts. The first word must be one of epp.available, or on intel_pstate a
 // raw EPP from 0 to 255, which reads back as its word when it has one
-// (intel_pstate.c:826-908); "default" sets the boot preference. Under the
-// performance policy of a setpolicy driver a non-zero EPP is refused with
-// EBUSY and the file goes back to performance.
+// (intel_pstate.c:826-908); "default" sets the boot preference. Any other
+// word is refused with EINVAL. Under the performance policy of a setpolicy
+// driver a non-zero EPP is refused with EBUSY and the file goes back to
+// performance.
 func (n *Node) policyEPPHandler(gp *nodeGovPolicy, rel string) (func(string) (string, string), func() string) {
 	p, g := gp.p, &n.cpuGov
 	handle := func(v string) (string, string) {
@@ -417,7 +428,7 @@ func (n *Node) policyEPPHandler(gp *nodeGovPolicy, rel string) (func(string) (st
 			}
 		}
 		if epp < 0 {
-			return EventRevertedOutOfRange, p.epp
+			return n.rejectWrite(rel, ErrnoEINVAL), p.epp
 		}
 		if g.active && p.governor == "performance" && epp > 0 {
 			return n.rejectWrite(rel, ErrnoEBUSY), p.epp
@@ -443,22 +454,40 @@ func nodeEPPWord(epp int) string {
 // refused with EINVAL while the global boost is off (store_local_boost,
 // cpufreq.c:621-648): on amd-pstate turning it off caps the policy's
 // maximum at the top non-turbo frequency; on acpi-cpufreq it takes away
-// the boost above the table (nodePolicy.ceilingKHz).
+// the boost above the table (nodePolicy.ceilingKHz). The file shows the
+// core's per-policy flag, and a write equal to it changes nothing, as
+// store_local_boost returns at once: on acpi-cpufreq, whose policies boot
+// showing 0 while the global boost is on (cpuGovPolicyBootBoost), a 0
+// leaves the CPUs boosting, and only a 1, then a 0, turns the policy off.
+// Seeding, a file at the profile's boot value takes the global state, as
+// at boot; any other value is in effect as shown (assumed: a policy file
+// at its boot value was never written).
 func (n *Node) policyBoostHandler(gp *nodeGovPolicy, rel string) (func(string) (string, string), func() string) {
 	g := &n.cpuGov
 	handle := func(v string) (string, string) {
 		b, ok := nodeKstrtobool(v)
 		if !ok {
-			return EventParseError, strconv.Itoa(gp.boost)
+			return EventParseError, strconv.Itoa(gp.boostShown)
 		}
-		if g.setBoost && g.boost == 0 && !g.seeding {
-			return n.rejectWrite(rel, ErrnoEINVAL), strconv.Itoa(gp.boost)
+		if g.seeding {
+			gp.boostShown, gp.boost = b, b
+			if g.setBoost && g.scope == cpuGovBoostGlobal && b == cpuGovPolicyBootBoost(n.profile.CPUFreq) {
+				gp.boost = g.boost
+			}
+			g.applyTurbo(gp)
+			return EventAccepted, strconv.Itoa(b)
 		}
-		gp.boost = b
+		if g.setBoost && g.boost == 0 {
+			return n.rejectWrite(rel, ErrnoEINVAL), strconv.Itoa(gp.boostShown)
+		}
+		if b == gp.boostShown {
+			return EventAccepted, strconv.Itoa(b)
+		}
+		gp.boostShown, gp.boost = b, b
 		g.applyTurbo(gp)
 		return EventAccepted, strconv.Itoa(b)
 	}
-	return handle, func() string { return strconv.Itoa(gp.boost) + "\n" }
+	return handle, func() string { return strconv.Itoa(gp.boostShown) + "\n" }
 }
 
 // globalBoostHandler is cpufreq/boost where the driver has set_boost,
@@ -474,7 +503,7 @@ func (g *nodeCPUGovernor) globalBoostHandler() (func(string) (string, string), f
 		}
 		if b != g.boost && !g.seeding {
 			for _, gp := range g.pols {
-				gp.boost = b
+				gp.boost, gp.boostShown = b, b
 				g.applyTurbo(gp)
 			}
 		}
@@ -719,32 +748,60 @@ func nodeELCHandler(name string, dst *int64) (func(string) (string, string), fun
 // pkg/governor spells Plan.Native, and empty when its policies disagree.
 // Under the performance policy of a setpolicy driver the kernel holds EPP
 // at 0, so the preference is left out there, as a performance plan writes
-// none.
+// none. derive runs at every substep, so the policies are compared field
+// by field and the string is built only when the package's state changes.
 func (n *Node) deriveCPUGovernor() {
 	g := &n.cpuGov
 	if !g.on {
 		return
 	}
 	for _, pk := range n.pkgs {
-		native, mixed := "", false
+		var first *nodeGovPolicy
+		mixed := false
 		for _, gp := range g.pols {
 			if gp.p.socket != pk.socket {
 				continue
 			}
-			s := gp.p.governor
-			if gp.hasEPP && !(g.active && s == "performance") {
-				s += " epp=" + gp.p.epp
+			if first == nil {
+				first = gp
+				continue
 			}
-			if native != "" && s != native {
+			if gp.p.governor != first.p.governor || g.showsEPP(gp) != g.showsEPP(first) || g.showsEPP(gp) && gp.p.epp != first.p.epp {
 				mixed = true
+				break
 			}
-			native = s
 		}
-		if mixed {
-			native = ""
+		key := nodeGovKey{}
+		if first != nil && !mixed {
+			key = nodeGovKey{set: true, governor: first.p.governor, epp: g.showsEPP(first), word: first.p.epp}
 		}
-		pk.govNative = native
+		if key == pk.govKey {
+			continue
+		}
+		pk.govKey, pk.govNative = key, ""
+		if key.set {
+			pk.govNative = key.governor
+			if key.epp {
+				pk.govNative += " epp=" + key.word
+			}
+		}
 	}
+}
+
+// showsEPP reports whether gp's preference is part of its governor state:
+// a policy with the EPP pair, except under the performance policy of a
+// setpolicy driver, where the kernel holds EPP at 0.
+func (g *nodeCPUGovernor) showsEPP(gp *nodeGovPolicy) bool {
+	return gp.hasEPP && !(g.active && gp.p.governor == "performance")
+}
+
+// nodeGovKey is the governor state of a package's policies that
+// nodePackage.govNative spells, set when they agree.
+type nodeGovKey struct {
+	set      bool
+	governor string
+	epp      bool
+	word     string
 }
 
 // substepCPUGovernor advances the governor state by one substep of h
@@ -753,15 +810,29 @@ func (n *Node) substepCPUGovernor(h float64) {}
 
 // writeCPUGovernor writes the governor files the emulator owns: the
 // preferences amd-pstate-epp offers, performance alone under the
-// performance policy (amd-pstate.c:1136-1152), and each uncore domain's
-// current_freq_khz, which runs from the domain's minimum to its maximum
-// with the load of its package in whole ratios (assumed: no uncore physics).
+// performance policy (amd-pstate.c:1136-1152), cpuinfo_max_freq where it
+// follows turbo, the top non-turbo frequency while turbo is off, and each
+// uncore domain's current_freq_khz, which runs from the domain's minimum to
+// its maximum with the load of its package in whole ratios (assumed: no
+// uncore physics).
 func (n *Node) writeCPUGovernor() error {
 	g := &n.cpuGov
 	if !g.on {
 		return nil
 	}
 	var errs []error
+	for _, gp := range g.pols {
+		if gp.cpuinfoMax == nil {
+			continue
+		}
+		khz := g.turboKHz
+		if g.turboOff(gp) && g.baseKHz > 0 {
+			khz = min(khz, g.baseKHz)
+		}
+		if err := n.writeS(gp.cpuinfoMax, nodeItoa(khz)+"\n"); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	for _, gp := range g.pols {
 		if gp.eppAvail == nil {
 			continue

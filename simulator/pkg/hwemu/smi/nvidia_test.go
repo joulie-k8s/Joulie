@@ -91,17 +91,21 @@ func TestS02PowerLimitWritesInRangeOnlyAndExitCodes(t *testing.T) {
 	}
 }
 
-// An option nvidia-smi does not have is an invalid argument, exit 2, with
-// nothing on stdout for the agent to mistake for data.
-func TestS03UnknownNvidiaOptionExits2(t *testing.T) {
+// An option nvidia-smi does not have prints the invalid-combination line
+// on stdout and exits 255, as driver R525 does; a known option without its
+// value is an invalid argument, exit 2, with nothing on stdout.
+func TestS03UnknownNvidiaOptionExits255OnStdout(t *testing.T) {
 	t.Parallel()
 	n := newNVLNode(t)
 	code, stdout, stderr := n.main("", "nvidia-smi", "--showpowercap")
-	if code != 2 || stdout != "" || !strings.Contains(stderr, "Invalid combination of input arguments") {
-		t.Fatalf("exit %d, stdout %q, stderr %q; want 2, empty, invalid combination", code, stdout, stderr)
+	if code != 255 || stdout != "Invalid combination of input arguments. Please run 'nvidia-smi -h' for help.\n" || stderr != "" {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want 255, the invalid-combination line on stdout, nothing on stderr", code, stdout, stderr)
 	}
-	if _, err := n.run("nvidia-smi", "-x"); exitCode(t, err) != 2 {
-		t.Fatalf("-x through Runner: %v, want exit status 2", err)
+	if _, err := n.run("nvidia-smi", "-x"); exitCode(t, err) != 255 {
+		t.Fatalf("-x through Runner: %v, want exit status 255", err)
+	}
+	if code, stdout, stderr := n.main("", "nvidia-smi", "-pl"); code != 2 || stdout != "" || !strings.Contains(stderr, "Invalid combination of input arguments") {
+		t.Fatalf("-pl without a value: exit %d, stdout %q, stderr %q; want 2, empty, invalid combination", code, stdout, stderr)
 	}
 }
 
@@ -174,8 +178,9 @@ func TestS14MissingStateFileFailsTheCall(t *testing.T) {
 
 // S16: -pm 0 writes Disabled to persistence_mode of every GPU, in place, and
 // prints one line per GPU and All done, exit 0; -i limits it to the GPUs
-// named; a value other than 0 or 1 is an invalid argument, exit 2, with
-// nothing written; the persistence_mode query field prints what is stored.
+// named; ENABLED and DISABLED are 1 and 0; any other value is an invalid
+// argument, exit 2, with nothing written; the persistence_mode query field
+// prints what is stored.
 func TestS16PersistenceModeSetAndQuery(t *testing.T) {
 	t.Parallel()
 	n := newNVLNode(t)
@@ -218,6 +223,14 @@ func TestS16PersistenceModeSetAndQuery(t *testing.T) {
 	}
 	if want := "0, Disabled\n1, Disabled\n2, Enabled\n3, Disabled\n4, Disabled\n5, Disabled\n6, Disabled\n7, Disabled\n"; string(out) != want {
 		t.Errorf("query output %q, want %q", out, want)
+	}
+	for _, c := range []struct{ word, want string }{{"ENABLED", "Enabled"}, {"DISABLED", "Disabled"}} {
+		if out, err := n.run("nvidia-smi", "-i", "3", "-pm", c.word); err != nil || !strings.HasPrefix(string(out), c.want+" persistence mode for GPU 00000000:13:00.0.") {
+			t.Errorf("-pm %s: %v, %q", c.word, err, out)
+		}
+		if got := n.read(nvmlRel(3, "persistence_mode")); got != c.want {
+			t.Errorf("-pm %s: gpu3 persistence_mode = %q, want %s", c.word, got, c.want)
+		}
 	}
 
 	for _, v := range []string{"2", "on", ""} {
@@ -383,13 +396,15 @@ func TestNV02NoQueryFieldPrintsTheLock(t *testing.T) {
 
 // The clock fields print the NVML state with the units of the capture
 // nvFields cites: " [MHz]" in the header and " MHz" after a clock; pstate
-// and the event reasons as stored.
+// and the event reasons as stored. The header names a field by its
+// canonical name whichever alias was asked for (clocks.sm prints
+// clocks.current.sm).
 func TestNVClockFieldsPrintWithUnits(t *testing.T) {
 	t.Parallel()
 	n := newNVClockNode(t, true)
 	n.write(nvmlRel(1, "clocks_sm_mhz"), "1410", 0o444)
 	out, err := n.run("nvidia-smi", "-i", "1", "--query-gpu=index,clocks.sm,clocks.current.memory,clocks.max.sm,clocks.max.mem,pstate,clocks_event_reasons.active", "--format=csv")
-	want := "index, clocks.sm [MHz], clocks.current.memory [MHz], clocks.max.sm [MHz], clocks.max.mem [MHz], pstate, clocks_event_reasons.active\n" +
+	want := "index, clocks.current.sm [MHz], clocks.current.memory [MHz], clocks.max.sm [MHz], clocks.max.memory [MHz], pstate, clocks_event_reasons.active\n" +
 		"1, 1410 MHz, 300 MHz, 1500 MHz, 1200 MHz, P8, 0x0000000000000001\n"
 	if err != nil || string(out) != want {
 		t.Fatalf("query: %v\n got %q\nwant %q", err, out, want)
@@ -635,5 +650,32 @@ func TestNV09SupportedClocksListsTheState(t *testing.T) {
 	n.remove(nvmlRel(3, "supported_clocks"))
 	if code, stdout, _ := n.main("", "nvidia-smi", "-q", "-d", "SUPPORTED_CLOCKS"); code != 255 || stdout != "" {
 		t.Errorf("gpu3 without supported_clocks: exit %d, stdout %q; want 255 and nothing", code, stdout)
+	}
+
+	// A memory clock with a ceiling lists only the graphics clocks up to it.
+	n.write(nvmlRel(1, "supported_clocks"), "memory 1200 600 300\ngraphics 1500 1200 900 600 300\ngraphics-max 600 900\ngraphics-max 300 600", 0o444)
+	code, stdout, stderr = n.main("", "nvidia-smi", "-q", "-d", "SUPPORTED_CLOCKS", "-i", "1")
+	if code != 0 || stderr != "" {
+		t.Fatalf("with ceilings: exit %d, stderr %q", code, stderr)
+	}
+	got := map[string][]string{}
+	var mem string
+	for _, line := range strings.Split(stdout, "\n") {
+		key, value, _ := strings.Cut(line, ":")
+		switch strings.TrimSpace(key) {
+		case "Memory":
+			mem = strings.TrimSpace(value)
+		case "Graphics":
+			got[mem] = append(got[mem], strings.TrimSuffix(strings.TrimSpace(value), " MHz"))
+		}
+	}
+	for m, want := range map[string]string{"1200 MHz": "1500 1200 900 600 300", "600 MHz": "900 600 300", "300 MHz": "600 300"} {
+		if g := strings.Join(got[m], " "); g != want {
+			t.Errorf("graphics under %s: %s, want %s", m, g, want)
+		}
+	}
+	n.write(nvmlRel(1, "supported_clocks"), "memory 1200\ngraphics 1500\ngraphics-max 1200", 0o444)
+	if code, stdout, _ := n.main("", "nvidia-smi", "-q", "-d", "SUPPORTED_CLOCKS", "-i", "1"); code != 255 || stdout != "" {
+		t.Errorf("a graphics-max line without its ceiling: exit %d, stdout %q; want 255 and nothing", code, stdout)
 	}
 }

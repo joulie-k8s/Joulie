@@ -42,6 +42,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -242,24 +243,11 @@ func writeOutputs(outputs map[string]string, rows []Row, exports []*otlpjson.Met
 // writeFile writes a file through a temporary file in its directory, so a
 // failed run leaves no half-written result.
 func writeFile(path string, write func(io.Writer) error) error {
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	if err := write(f); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+	var buf bytes.Buffer
+	if err := write(&buf); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
-	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
-		return err
-	}
-	if err := os.Chmod(f.Name(), 0o644); err != nil {
-		os.Remove(f.Name())
-		return err
-	}
-	return os.Rename(f.Name(), path)
+	return hwemu.WriteFileAtomic(filepath.Dir(path), "."+filepath.Base(path)+".", path, buf.Bytes(), 0o644)
 }
 
 // profileCache holds the builtin and local profiles, and a fresh copy of

@@ -543,11 +543,11 @@ func (e VariantEnv) TwinPowerWarmup() time.Duration {
 func (e VariantEnv) Marshal() []byte {
 	var b bytes.Buffer
 	b.WriteString("# Written by simscenario plan; sourced by scripts/simcluster/scenario.sh.\n")
-	str := func(k, v string) { fmt.Fprintf(&b, "%s=%s\n", k, shellQuote(v)) }
+	str := func(k, v string) { fmt.Fprintf(&b, "%s=%s\n", k, simcluster.ShellQuote(v)) }
 	list := func(k string, vs []string) {
 		q := make([]string, len(vs))
 		for i, v := range vs {
-			q[i] = shellQuote(v)
+			q[i] = simcluster.ShellQuote(v)
 		}
 		fmt.Fprintf(&b, "%s=(%s)\n", k, strings.Join(q, " "))
 	}
@@ -575,7 +575,7 @@ func (e VariantEnv) Marshal() []byte {
 
 // ParseVariantEnv reads what Marshal writes.
 func ParseVariantEnv(data []byte) (VariantEnv, error) {
-	kv, err := parseEnvFile(data)
+	kv, err := envWords(data)
 	if err != nil {
 		return VariantEnv{}, err
 	}
@@ -613,140 +613,22 @@ func ParseVariantEnv(data []byte) (VariantEnv, error) {
 	return e, nil
 }
 
-// shellQuote single-quotes s for bash.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-// parseEnvFile reads KEY=VALUE lines, as written by VariantEnv.Marshal and
-// by the harness's images.env: a value is bare, single-quoted (a quote in
-// the text closes the quotes, adds an escaped quote and reopens them, as
-// shellQuote writes it) or a bash array of such words. Comments and blank
-// lines are skipped. Each key maps to its words.
-func parseEnvFile(data []byte) (map[string][]string, error) {
-	out := map[string][]string{}
-	for n, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+// envWords reads KEY=VALUE lines as simcluster.ParseEnvFile does, as
+// VariantEnv.Marshal and the harness's images.env write them, and returns
+// each key's words. A scalar must be one word.
+func envWords(data []byte) (map[string][]string, error) {
+	vars, err := simcluster.ParseEnvFile(data)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]string, len(vars))
+	for _, v := range vars {
+		if !v.Array && len(v.Words) > 1 {
+			return nil, fmt.Errorf("line %d: %s has %d words, want one", v.Line, v.Key, len(v.Words))
 		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			return nil, fmt.Errorf("line %d: %q is not KEY=VALUE", n+1, line)
-		}
-		array := strings.HasPrefix(v, "(") && strings.HasSuffix(v, ")")
-		if array {
-			v = v[1 : len(v)-1]
-		}
-		words, err := shellWords(v)
-		if err != nil {
-			return nil, fmt.Errorf("line %d: %w", n+1, err)
-		}
-		if !array && len(words) > 1 {
-			return nil, fmt.Errorf("line %d: %s has %d words, want one", n+1, k, len(words))
-		}
-		if !array && len(words) == 0 {
-			words = []string{""}
-		}
-		out[k] = words
+		out[v.Key] = v.Words
 	}
 	return out, nil
-}
-
-// shellWords splits s into words: bare runs, double-quoted runs without
-// escapes, and single-quoted runs.
-func shellWords(s string) ([]string, error) {
-	var words []string
-	var cur strings.Builder
-	inWord := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == '\'' || c == '"':
-			end := strings.IndexByte(s[i+1:], c)
-			if end < 0 {
-				return nil, fmt.Errorf("unterminated quote in %q", s)
-			}
-			cur.WriteString(s[i+1 : i+1+end])
-			i += end + 1
-			inWord = true
-		case c == '\\' && i+1 < len(s):
-			cur.WriteByte(s[i+1])
-			i++
-			inWord = true
-		case c == ' ' || c == '\t':
-			if inWord {
-				words = append(words, cur.String())
-				cur.Reset()
-				inWord = false
-			}
-		default:
-			cur.WriteByte(c)
-			inWord = true
-		}
-	}
-	if inWord {
-		words = append(words, cur.String())
-	}
-	return words, nil
-}
-
-// TimingFile is the harness timing profile name under the repository root.
-func TimingFile(repoRoot, name string) string {
-	return filepath.Join(repoRoot, "scripts", "simcluster", "timing", name+".env")
-}
-
-// ReadTiming reads the harness timing profile name from
-// scripts/simcluster/timing/<name>.env under repoRoot.
-func ReadTiming(repoRoot, name string) (simcluster.Timing, error) {
-	path := TimingFile(repoRoot, name)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return simcluster.Timing{}, fmt.Errorf("timing %s: %w", name, err)
-	}
-	kv, err := parseEnvFile(data)
-	if err != nil {
-		return simcluster.Timing{}, fmt.Errorf("%s: %w", path, err)
-	}
-	t := simcluster.Timing{Name: name}
-	var errs []string
-	for key, dst := range map[string]*time.Duration{
-		"CONTROLLER_RECONCILE_INTERVAL": &t.ControllerReconcile,
-		"AGENT_RECONCILE_INTERVAL":      &t.AgentReconcile,
-		"AGENT_SPEC_READ_TIMEOUT":       &t.SpecReadTimeout,
-		"PROM_SCRAPE_INTERVAL":          &t.ScrapeInterval,
-		"RATE_WINDOW":                   &t.RateWindow,
-		"FACILITY_POLL_INTERVAL":        &t.FacilityPoll,
-	} {
-		d, err := time.ParseDuration(strings.Join(kv[key], ""))
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", key, err))
-		}
-		*dst = d
-	}
-	ms, err := strconv.Atoi(strings.Join(kv["OTLP_EXPORT_INTERVAL_MS"], ""))
-	if err != nil {
-		errs = append(errs, fmt.Sprintf("OTLP_EXPORT_INTERVAL_MS: %v", err))
-	}
-	t.OTLPExportInterval = time.Duration(ms) * time.Millisecond
-	sort.Strings(errs)
-	if len(errs) > 0 {
-		return t, fmt.Errorf("%s: %s", path, strings.Join(errs, "; "))
-	}
-	return t, nil
-}
-
-// telemetryMode is the harness telemetry mode a Joulie input preset needs:
-// the Kepler presets read the Kepler compatibility series, which only their
-// modes make the simulator serve.
-func telemetryMode(preset string) simcluster.Mode {
-	switch preset {
-	case string(simcluster.ModeKepler):
-		return simcluster.ModeKepler
-	case string(simcluster.ModeKeplerLegacy):
-		return simcluster.ModeKeplerLegacy
-	}
-	return simcluster.ModeOTel
 }
 
 // setArgs returns m as sorted key=value arguments.
@@ -785,7 +667,7 @@ func NewVariantEnv(s Scenario, name, runID, clusterName string, t simcluster.Tim
 	}
 	e := VariantEnv{
 		Scenario: s.Name, Variant: name, RunID: runID, ClusterName: clusterName,
-		Spec: s.Cluster.Spec, Timing: t.Name, Telemetry: string(telemetryMode(v.Joulie.InputPreset)),
+		Spec: s.Cluster.Spec, Timing: t.Name, Telemetry: string(simcluster.ModeForPreset(v.Joulie.InputPreset)),
 		PowerScope:    string(simcluster.ScopeComponents),
 		Isolation:     s.Isolation,
 		JoulieEnabled: v.Joulie.Enabled == nil || *v.Joulie.Enabled,
@@ -855,7 +737,7 @@ type Plan struct {
 // everything, when the offered load of a resource exceeds MaxOfferedLoad.
 func MakePlan(ctx context.Context, s Scenario, o PlanOptions) (*Plan, error) {
 	eff := Effective(s)
-	timing, err := ReadTiming(o.RepoRoot, eff.Cluster.Timing)
+	timing, err := simcluster.ReadTiming(o.RepoRoot, eff.Cluster.Timing)
 	if err != nil {
 		return nil, err
 	}

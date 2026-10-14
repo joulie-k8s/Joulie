@@ -19,7 +19,10 @@ package simcluster_test
 //   - E16: the controller manager's facility gauges equal the facility
 //     truth, and the cooling stress of one CPU-only NodeTwin is the twin's
 //     formula of its measured power, its TDP and the temperature its Node
-//     breathes.
+//     breathes. In a mode that leaves Joulie's facility metrics off, as the
+//     chart has them (simcluster.Mode.Facility), the controller manager
+//     serves no facility gauge and the cooling stress is the formula with
+//     the ambient unknown.
 //
 // The truth comes from the simulator's /debug/emulate snapshots, which a
 // recorder samples in the background twice a second for as long as the
@@ -27,8 +30,8 @@ package simcluster_test
 // (E(t) - E(t-W)) / W, so a truth needs a sample near both ends of the
 // window a check reads, not only the power at the end.
 //
-// e2e_test.go calls e2eInputChecks through e2eInputHook; the other
-// package-level names of this file carry the prefix input.
+// TestSimclusterE2E calls e2eInputChecks; the other package-level names of
+// this file carry the prefix input.
 
 import (
 	"bufio"
@@ -56,8 +59,6 @@ import (
 	"github.com/matbun/joulie/simulator/pkg/scenario"
 	"github.com/matbun/joulie/simulator/pkg/simcluster"
 )
-
-func init() { e2eInputHook = e2eInputChecks }
 
 // e2eInputChecks runs the input checks E07, E07c, E08 and E16 against the
 // cluster under test, with the truth recorder running for all of them.
@@ -362,44 +363,14 @@ func inputPlatformCheck(ck simcluster.Check) bool {
 	return ck.Truth == simcluster.TruthKepler07PlatformSeries || ck.Truth == simcluster.TruthKepler07Host
 }
 
-// inputQuery runs query in the harness Prometheus at time at and returns
-// each series' value by its label label.
-func inputQuery(e *e2eEnv, query, label string, at time.Time) (map[string]float64, error) {
-	b, err := e.proxyGet(scenario.NamespaceMonitoring, scenario.PrometheusService, "api/v1/query",
-		map[string]string{"query": query, "time": strconv.FormatFloat(float64(at.UnixNano())/1e9, 'f', 3, 64)})
-	if err != nil {
-		return nil, err
-	}
-	r, err := scenario.ParsePromResponse(b, 200)
-	if err != nil {
-		return nil, fmt.Errorf("query %s: %w", query, err)
-	}
-	return inputByLabel(r, query, label)
-}
-
-// inputByLabel returns each series' last value by its label label. A series
-// without the label or a value, or two series of one Node, is an error.
-func inputByLabel(r scenario.PromResult, query, label string) (map[string]float64, error) {
-	out := map[string]float64{}
-	for _, s := range r.Series {
-		node := s.Labels[label]
-		if node == "" || len(s.Samples) == 0 {
-			return nil, fmt.Errorf("query %s: a series without %s or a value: %v", query, label, s.Labels)
-		}
-		if _, dup := out[node]; dup {
-			return nil, fmt.Errorf("query %s: two series with %s=%s", query, label, node)
-		}
-		out[node] = s.Samples[len(s.Samples)-1].Value
-	}
-	return out, nil
-}
-
 // E07: once every Node's series is older than the rate window plus two
-// export intervals, and the truth has been recorded for two windows, every
-// check query of the mode, run in Prometheus at the time of the newest
-// truth sample, equals the truth over the window ending there within the
-// check's tolerance. With platform, E07c: only the Kepler 0.7 platform
-// checks, which mode kepler-legacy alone has.
+// export intervals, and the truth has been recorded for one window and the
+// sampling slack, every check query of the mode, run in Prometheus at the
+// time of the newest truth sample, equals the truth over the window ending
+// there within the check's tolerance. Only when a check fails does it wait
+// for a second window of truth, to say whether the load was steady over
+// both. With platform, E07c: only the Kepler 0.7 platform checks, which
+// mode kepler-legacy alone has.
 func inputE07(c *e2eCase, rec *inputRecorder, platform bool) {
 	e := c.env
 	var checks []simcluster.Check
@@ -418,7 +389,7 @@ func inputE07(c *e2eCase, rec *inputRecorder, platform bool) {
 	if err := e.waitSeriesAge(c.T); err != nil {
 		c.Fatalf("%v", err)
 	}
-	if err := rec.waitSpan(2*w, 2*w+time.Minute); err != nil {
+	if err := rec.waitSpan(w+inputSampleSlack, w+inputSampleSlack+time.Minute); err != nil {
 		c.Fatalf("%v", err)
 	}
 	var failures []string
@@ -435,7 +406,7 @@ func inputE07(c *e2eCase, rec *inputRecorder, platform bool) {
 			return err
 		}
 		for _, ck := range checks {
-			observed, err := inputQuery(e, ck.Query, e.Parts.Checks.NodeLabel, end)
+			observed, err := e.promByLabel(ck.Query, e.Parts.Checks.NodeLabel, end)
 			if err != nil {
 				return err
 			}
@@ -453,7 +424,9 @@ func inputE07(c *e2eCase, rec *inputRecorder, platform bool) {
 			c.Errorf("%s", f)
 		}
 		c.Errorf("%v", err)
-		if u := rec.unsteady(inputSteadyTruth(e), end, w); len(u) > 0 {
+		if err := rec.waitSpan(2*w, 2*w+time.Minute); err != nil {
+			c.Errorf("steadiness unknown: %v", err)
+		} else if u := rec.unsteady(inputSteadyTruth(e), end, w); len(u) > 0 {
 			c.Errorf("the load was not steady over the last two rate windows: %s", strings.Join(u, "; "))
 		}
 		return
@@ -656,9 +629,15 @@ func inputFacilitySeries(gauge string) string {
 // the NodeTwin's measured power and TDP and of the inlet temperature its
 // Node had (twin.go computeCoolingStress), within 2 points; that part is
 // skipped, with the reason logged, when no such NodeTwin is below the
-// clamp at 100.
+// clamp at 100. Where the mode leaves the facility metrics off, the
+// controller manager serves neither gauge and the formula runs with the
+// ambient unknown.
 func inputE16(c *e2eCase, rec *inputRecorder) {
 	e := c.env
+	if !e.Mode.Facility() {
+		inputE16FacilityOff(c, rec)
+		return
+	}
 	w, lag := e.Timing.RateWindow, inputPollLag(e.Timing)
 	if err := rec.waitSpan(w+lag, w+lag+time.Minute); err != nil {
 		c.Fatalf("%v", err)
@@ -696,7 +675,50 @@ func inputE16(c *e2eCase, rec *inputRecorder) {
 			}
 		}
 		var p string
-		if p, skip, err = inputCoolingStress(e, rec); err != nil {
+		if p, skip, err = inputCoolingStress(e, rec, true); err != nil {
+			return err
+		} else if p != "" {
+			problems = append(problems, p)
+		}
+		if len(problems) > 0 {
+			return fmt.Errorf("%d problems", len(problems))
+		}
+		return nil
+	})
+	if err != nil {
+		for _, p := range problems {
+			c.Errorf("%s", p)
+		}
+		c.Errorf("%v", err)
+	}
+	if skip != "" {
+		e.warn(c.T, "E16 did not compare a cooling stress: %s", skip)
+	}
+}
+
+// inputE16FacilityOff is E16 with the facility metrics off, the chart's
+// default: the controller manager serves no facility gauge, and the
+// cooling stress of one CPU-only NodeTwin is the twin's formula with the
+// ambient unknown, measured power over TDP.
+func inputE16FacilityOff(c *e2eCase, rec *inputRecorder) {
+	e := c.env
+	var problems []string
+	var skip string
+	err := e2eEventually(e.twinFollow(), func() error {
+		problems, skip = problems[:0], ""
+		text, err := e.proxyGet(scenario.NamespaceJoulie, inputControllerMetrics, "metrics", nil)
+		if err != nil {
+			return err
+		}
+		for _, series := range []string{inputFacilitySeries(inputAmbientGauge), inputFacilitySeries(inputITGauge)} {
+			if v, ok, err := inputSeriesValue(text, series); err != nil {
+				return err
+			} else if ok {
+				problems = append(problems, fmt.Sprintf("the controller manager serves %s %.3f with the facility metrics off", series, v))
+			}
+		}
+		var p string
+		if p, skip, err = inputCoolingStress(e, rec, false); err != nil {
 			return err
 		} else if p != "" {
 			problems = append(problems, p)
@@ -718,9 +740,10 @@ func inputE16(c *e2eCase, rec *inputRecorder) {
 }
 
 // inputCoolingStress compares the cooling stress of one CPU-only NodeTwin
-// (inputStressNode) with what the twin computes for it (inputStressProblem).
-// skip says why no NodeTwin was compared.
-func inputCoolingStress(e *e2eEnv, rec *inputRecorder) (problem, skip string, err error) {
+// (inputStressNode) with what the twin computes for it (inputStressProblem),
+// with the facility metrics on or off. skip says why no NodeTwin was
+// compared.
+func inputCoolingStress(e *e2eEnv, rec *inputRecorder, facility bool) (problem, skip string, err error) {
 	nodes, err := e.nodes()
 	if err != nil {
 		return "", "", err
@@ -733,19 +756,29 @@ func inputCoolingStress(e *e2eEnv, rec *inputRecorder) (problem, skip string, er
 	if skip != "" {
 		return "", skip, nil
 	}
-	return inputStressProblem(rec, n.Name, tw), "", nil
+	return inputStressProblem(rec, n.Name, tw, facility), "", nil
 }
 
 // inputStressProblem checks the cooling stress of node's NodeTwin against
 // inputExpectedStress of its measured power, its TDP and the Node's inlet
 // temperature at its last update, which is the temperature the controller
 // manager reads for it: the inlet, else the cooling zone's, else the
-// facility ambient, each equal to the inlet the emulator reports. It
-// returns what is wrong, or "".
-func inputStressProblem(rec *inputRecorder, node string, tw v1alpha1.NodeTwin) string {
+// facility ambient, each equal to the inlet the emulator reports. Without
+// facility metrics the controller manager knows no temperature, and the
+// stress is inputUnknownAmbientStress of the power and the TDP. It returns
+// what is wrong, or "".
+func inputStressProblem(rec *inputRecorder, node string, tw v1alpha1.NodeTwin, facility bool) string {
 	pm := tw.Status.PowerMeasurement
 	if pm == nil {
 		return fmt.Sprintf("node %s: the NodeTwin has no powerMeasurement", node)
+	}
+	if !facility {
+		want := inputUnknownAmbientStress(pm.MeasuredNodePowerW, pm.NodeTdpW)
+		if got := tw.Status.PredictedCoolingStressScore; math.Abs(got-want) > inputStressTolPoints {
+			return fmt.Sprintf("node %s: predictedCoolingStressScore %.2f, want %.2f within %.0f points with the ambient unknown (measured %.1f W of %.1f W TDP)",
+				node, got, want, inputStressTolPoints, pm.MeasuredNodePowerW, pm.NodeTdpW)
+		}
+		return ""
 	}
 	end, err := inputTwinTime(tw)
 	if err != nil {
@@ -799,11 +832,11 @@ func inputExpectedStress(measuredW, tdpW, ambientC float64) float64 {
 	return math.Min(100, math.Max(0, measuredW/tdpW/math.Max(0.5, 1-(ambientC-20)*0.02)*100))
 }
 
-// TestInputChecksAreHooked: TestSimclusterE2E runs the input checks.
-func TestInputChecksAreHooked(t *testing.T) {
-	if e2eInputHook == nil {
-		t.Fatal("e2eInputHook is nil: TestSimclusterE2E would skip E07, E08 and E16")
-	}
+// inputUnknownAmbientStress is the twin's cooling stress of a Node drawing
+// measuredW of tdpW with the ambient unknown: (measured / TDP) * 100,
+// clamped to 0..100.
+func inputUnknownAmbientStress(measuredW, tdpW float64) float64 {
+	return math.Min(100, math.Max(0, measuredW/tdpW*100))
 }
 
 // inputTestSnapshot is a snapshot at start+sec of node n drawing 100 W on
@@ -943,24 +976,6 @@ joulie_twin_facility_it_power_watts{preset="otel"} 1.5e+03
 	}
 }
 
-// TestInputByLabel: series by their node label; a missing label or two
-// series of one node are errors.
-func TestInputByLabel(t *testing.T) {
-	s := func(node string, v float64) scenario.PromSeries {
-		return scenario.PromSeries{Labels: map[string]string{"k8s_node_name": node}, Samples: []scenario.PromSample{{Value: v}}}
-	}
-	got, err := inputByLabel(scenario.PromResult{Series: []scenario.PromSeries{s("a", 1), s("b", 2)}}, "q", "k8s_node_name")
-	if err != nil || len(got) != 2 || got["a"] != 1 || got["b"] != 2 {
-		t.Errorf("got %v %v", got, err)
-	}
-	if _, err := inputByLabel(scenario.PromResult{Series: []scenario.PromSeries{s("a", 1), s("a", 2)}}, "q", "k8s_node_name"); err == nil {
-		t.Error("two series of one node: want an error")
-	}
-	if _, err := inputByLabel(scenario.PromResult{Series: []scenario.PromSeries{s("", 1)}}, "q", "k8s_node_name"); err == nil {
-		t.Error("a series without the label: want an error")
-	}
-}
-
 // TestInputTwinProblem: E08 on one NodeTwin, against the truth over the
 // window ending at its last update, in each scope and where the mode
 // leaves Joulie without data.
@@ -1070,8 +1085,15 @@ func TestInputStressProblem(t *testing.T) {
 	}
 	// 165 W of 330 W at 35 °C: 0.5 / 0.7 * 100; at the facility ambient,
 	// 20.8 °C at 80 s, it would be 0.5 / 0.984 * 100, about 50.8.
-	if p := inputStressProblem(r, "n", mk(80, 71.4)); p != "" {
+	if p := inputStressProblem(r, "n", mk(80, 71.4), true); p != "" {
 		t.Errorf("the stress at the Node's inlet: problem %q", p)
+	}
+	// Without facility metrics: 165 W of 330 W, 50 whatever the inlet.
+	if p := inputStressProblem(r, "n", mk(80, 50), false); p != "" {
+		t.Errorf("the stress with the ambient unknown: problem %q", p)
+	}
+	if p := inputStressProblem(r, "n", mk(80, 71.4), false); !strings.Contains(p, "want 50.00 within 2 points with the ambient unknown") {
+		t.Errorf("the stress at the inlet with the facility metrics off: problem %q, want one naming the unknown ambient", p)
 	}
 	for name, tc := range map[string]struct {
 		node    string
@@ -1082,7 +1104,7 @@ func TestInputStressProblem(t *testing.T) {
 		"a last update with no truth near":   {"n", mk(200, 71.4), "no truth at the NodeTwin's last update"},
 		"a Node the simulator lacks":         {"x", mk(80, 71.4), "does not emulate"},
 	} {
-		if p := inputStressProblem(r, tc.node, tc.tw); !strings.Contains(p, tc.problem) || p == "" {
+		if p := inputStressProblem(r, tc.node, tc.tw, true); !strings.Contains(p, tc.problem) || p == "" {
 			t.Errorf("%s: problem %q, want one with %q", name, p, tc.problem)
 		}
 	}
@@ -1090,7 +1112,8 @@ func TestInputStressProblem(t *testing.T) {
 
 // TestInputExpectedStressIsTheTwins: the cooling stress E16 expects is the
 // one the twin computes, read through twin.Compute, below and at the clamp
-// and at the floor of the temperature multiplier.
+// and at the floor of the temperature multiplier, and with the ambient
+// unknown.
 func TestInputExpectedStressIsTheTwins(t *testing.T) {
 	hw := joulie.NodeHardware{CPU: joulie.NodeHardwareCPU{Sockets: 2, CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 165}}}
 	for _, tc := range []struct{ measuredW, ambientC float64 }{
@@ -1104,6 +1127,10 @@ func TestInputExpectedStressIsTheTwins(t *testing.T) {
 		got := inputExpectedStress(tc.measuredW, out.PowerMeasurement.NodeTdpW, tc.ambientC)
 		if math.Abs(got-out.PredictedCoolingStressScore) > 1e-9 {
 			t.Errorf("%.0f W at %.0f °C: expected stress %.4f, the twin computes %.4f", tc.measuredW, tc.ambientC, got, out.PredictedCoolingStressScore)
+		}
+		unknown := twin.Compute(twin.Input{NodeName: "n", Hardware: hw, Profile: "performance", MeasuredNodePowerW: tc.measuredW})
+		if got := inputUnknownAmbientStress(tc.measuredW, unknown.PowerMeasurement.NodeTdpW); math.Abs(got-unknown.PredictedCoolingStressScore) > 1e-9 {
+			t.Errorf("%.0f W, ambient unknown: expected stress %.4f, the twin computes %.4f", tc.measuredW, got, unknown.PredictedCoolingStressScore)
 		}
 	}
 }

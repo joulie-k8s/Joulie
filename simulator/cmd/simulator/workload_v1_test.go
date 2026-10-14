@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -211,7 +212,7 @@ func (h *v1Harness) tick(sec float64) *emulate.Snapshot {
 // ticks at start+sec.
 func (h *v1Harness) step(sec float64) *emulate.Snapshot {
 	h.t.Helper()
-	h.run.kube.process(context.Background())
+	h.run.kube.runQueued(context.Background())
 	h.jobController()
 	return h.tick(sec)
 }
@@ -435,7 +436,7 @@ func TestV1JobsOwnPods(t *testing.T) {
 	}
 	h := newV1FakeHarness(t, nodes, []string{worker("w0"), worker("w1"), worker("w2"), traceJob("solo", nil)}, workload.RunOptions{})
 	h.tick(0)
-	h.run.kube.process(context.Background())
+	h.run.kube.runQueued(context.Background())
 	if n := h.countActions("create", "pods"); n != 0 {
 		t.Errorf("the run created %d bare pods; with owner job every pod belongs to a Job object", n)
 	}
@@ -543,7 +544,7 @@ func TestV1PodKeepsTraceAffinity(t *testing.T) {
 	}
 }
 
-// TestV1DefaultSelectorPinsSpecNodes (X11): unset, the node selector pins
+// TestV1DefaultSelectorPinsSpecNodes: unset, the node selector pins
 // every pod to the spec's nodes, next to the trace's own keys, and the
 // pods tolerate the KWOK taint.
 func TestV1DefaultSelectorPinsSpecNodes(t *testing.T) {
@@ -700,7 +701,7 @@ func TestV1InjectHasNoPerTickCap(t *testing.T) {
 	}
 	h := newV1FakeHarness(t, fakeNodes{}, lines, workload.RunOptions{})
 	h.tick(0)
-	h.run.kube.process(context.Background())
+	h.run.kube.runQueued(context.Background())
 	if n := h.countActions("create", "jobs"); n != 50 {
 		t.Errorf("%d creates after the first tick, want 50", n)
 	}
@@ -794,5 +795,69 @@ func TestV1ScheduledCarriesClassOfNodeTwinByNodeName(t *testing.T) {
 	}
 	if class, _ := sched[0].Attributes.String(semconv.AttrJoulieNodeSchedulableClass); class != "eco" {
 		t.Errorf("job.scheduled on %s carries schedulable class %q, want eco from the NodeTwin %s", node, class, twin.Name)
+	}
+}
+
+// TestV1LoadsAreThoseOfTheJobsLeftRunning: the tick computes the next
+// step's loads once, after completion, and they are what the jobs still
+// Running at the end of the tick give, on every tick of a run whose jobs
+// finish at different ticks on a shared CPU node and a GPU node with peer
+// transfers. progress changes nothing computeLoads reads, so computing the
+// loads before it as well gave the same loads whenever no job completed.
+func TestV1LoadsAreThoseOfTheJobsLeftRunning(t *testing.T) {
+	cpuJob := func(id, cores string, units float64) string {
+		return traceJob(id, func(r map[string]any) {
+			r["podTemplate"] = map[string]any{"requests": map[string]any{"cpu": cores}}
+			r["work"] = map[string]any{"cpuUnits": units}
+		})
+	}
+	gpuJob := func(id, gpus string, units, peer float64) string {
+		return traceJob(id, func(r map[string]any) {
+			r["podTemplate"] = map[string]any{"requests": map[string]any{"cpu": "2", "nvidia.com/gpu": gpus}}
+			r["work"] = map[string]any{"cpuUnits": units / 2, "gpuUnits": units}
+			r["workloadProfile"] = map[string]any{"cpuUtilization": 0.7, "gpuUtilization": 0.9, "memoryIntensity": 0.4, "peerTransferIntensity": peer}
+		})
+	}
+	gpu := fakeGPUNode(&fakeTP{gpu: map[int]float64{1: 0.5}, cpu: 0.8})
+	gpu.PeerLinkBps = 1e9
+	nodes := fakeNodes{"n1": fakeCPUNode(), "gpu1": gpu}
+	lines := []string{cpuJob("a", "2", 30), cpuJob("b", "4", 100), cpuJob("e", "1", 15), cpuJob("f", "12", 400),
+		gpuJob("c", "1", 20, 0), gpuJob("d", "2", 40, 0.3), gpuJob("g", "3", 25, 0.5)}
+	h := newV1FakeHarness(t, nodes, lines, workload.RunOptions{})
+	doneAt := map[time.Time]bool{}
+	check := func(sec float64) {
+		t.Helper()
+		r := h.run
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		loads, next := r.loads, r.loaded
+		r.computeLoads()
+		if !reflect.DeepEqual(r.loads, loads) || !reflect.DeepEqual(r.nextLoaded, next) {
+			t.Fatalf("t=%v: the tick left loads %+v for %+v; the jobs still Running give %+v for %+v", sec, loads, next, r.loads, r.nextLoaded)
+		}
+		r.loads, r.loaded, r.nextLoaded = loads, next, map[string][]workload.JobLoad{}
+		for _, j := range r.jobs {
+			if !j.doneAt.IsZero() {
+				doneAt[j.doneAt] = true
+			}
+		}
+	}
+	h.tick(0)
+	h.step(1)
+	h.runOn("a", "n1")
+	h.runOn("b", "n1")
+	h.runOn("c", "gpu1")
+	h.runOn("d", "gpu1")
+	h.step(2)
+	check(2)
+	h.runOn("e", "n1")
+	h.runOn("f", "n1")
+	h.runOn("g", "gpu1")
+	for sec := 3.0; sec <= 60; sec++ {
+		h.step(sec)
+		check(sec)
+	}
+	if st := h.run.status(); st.Phase != workload.PhaseFinished || len(doneAt) < 4 {
+		t.Errorf("phase %s with jobs done at %d distinct ticks, want finished and at least 4", st.Phase, len(doneAt))
 	}
 }

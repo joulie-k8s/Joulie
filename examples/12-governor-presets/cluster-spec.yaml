@@ -18,4 +18,13 @@ spec:
   - {name: mi300x, profile: amd-instinct-mi300x-8gpu,  count: 2}  # amdgpu manual plus overdrive
   - {name: h100,   profile: nvidia-h100-nvl-8gpu,      count: 2}  # nvidia-smi, HBM
   - {name: l40s,   profile: nvidia-l40s-4gpu,          count: 2}  # nvidia-smi, GDDR
-  harness: {pools: {}}
+  # The GPU pools get the GPU tools a node with the driver installed has. A
+  # pool left out follows the Joulie install, which by default delivers none
+  # (agent.runtimeClassName and agent.extraVolumes unset), so its agent's GPU
+  # inventory would fail and it would report no GPU governor.
+  harness:
+    pools:
+      w7900: {toolDelivery: mounted}
+      mi300x: {toolDelivery: mounted}
+      h100: {toolDelivery: mounted}
+      l40s: {toolDelivery: mounted}

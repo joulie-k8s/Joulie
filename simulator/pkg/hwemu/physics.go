@@ -4,10 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strconv"
 	"time"
 
-	"github.com/matbun/joulie/pkg/governor"
 	"github.com/matbun/joulie/pkg/otel/semconv"
 	"github.com/matbun/joulie/simulator/pkg/phys"
 )
@@ -46,18 +44,48 @@ type nodeChannel struct {
 	J float64
 }
 
-// nodeConstraint is constraint_N of a powercap zone.
+// nodeConstraint is constraint_N of a powercap zone. limitUW is what the
+// register holds, the raw limit times the power unit, which the file reads
+// back; mask is the width of the register's limit field in raw units
+// (nodeLimitMask).
 type nodeConstraint struct {
 	kind         int
-	limitUW      int64 // the readback: quantized, not clamped
+	limitUW      int64
+	mask         int64
 	maxUW        int64
 	windowUS     int64
 	rejectWrites string
 	settledW     float64 // PL1 only: the cap in effect, settling toward targetW
 }
 
-// enforcedUW is the limit the hardware applies: the written one, clamped to
-// max_power_uw when the zone has one (assumed: hardware clamp).
+// Limit fields of the RAPL registers, in raw power units
+// (intel_rapl_common.c): PL1 and PL2 of a package, die or DRAM domain
+// (POWER_LIMIT1_MASK, POWER_LIMIT2_MASK), PL1 and PL2 of the platform
+// domain (PSYS_POWER_LIMIT1_MASK, PSYS_POWER_LIMIT2_MASK) and PL4
+// (POWER_LIMIT4_MASK) on the MSR and MMIO interfaces.
+const (
+	nodeLimitMask15   = 0x7fff
+	nodeLimitMaskPsys = 0x1ffff
+	nodeLimitMaskPL4  = 0x1fff
+)
+
+// nodeLimitMask is the limit field of a constraint of kind on a zone of
+// role: bits wide when the profile's zone says so (limitBits, 18 on TPMI,
+// TPMI_POWER_LIMIT_MASK), else the field of the MSR interface.
+func nodeLimitMask(role, kind int, bits Fact[int]) int64 {
+	switch {
+	case bits.Src != "" && bits.V > 0 && bits.V < 63:
+		return 1<<bits.V - 1
+	case kind == nodePL4:
+		return nodeLimitMaskPL4
+	case role == nodeRolePsys:
+		return nodeLimitMaskPsys
+	}
+	return nodeLimitMask15
+}
+
+// enforcedUW is the limit the hardware applies: the one the register holds,
+// clamped to max_power_uw when the zone has one (assumed: hardware clamp).
 func (c *nodeConstraint) enforcedUW() int64 {
 	if c.maxUW > 0 && c.limitUW > c.maxUW {
 		return c.maxUW
@@ -198,11 +226,10 @@ func (p *nodePolicy) boostedKHz(set int64) int64 {
 }
 
 // target is where a profile without governor facts holds the policy at
-// util, as before the governors were modelled. performance sits at the
-// maximum at any load; powersave on a driver with governors sits at the
-// minimum (cpufreq.rst:372-389). The powersave of intel_pstate and
-// amd-pstate-epp, schedutil, ondemand and any other governor scale linearly
-// with load between the two (assumed).
+// util. performance sits at the maximum at any load; powersave on a driver
+// with governors sits at the minimum (cpufreq.rst:372-389). The powersave
+// of intel_pstate and amd-pstate-epp, schedutil, ondemand and any other
+// governor scale linearly with load between the two (assumed).
 func (p *nodePolicy) target(util float64) float64 {
 	lo, hi := float64(p.effMinKHz()), float64(p.ceilingKHz())
 	switch {
@@ -215,13 +242,13 @@ func (p *nodePolicy) target(util float64) float64 {
 }
 
 // effUtil is the busy share of demand u on pol. With the governor facts work
-// is counted in cycles (decision D10): u is the share the work keeps the
-// policy busy at the frequency performance runs it at under the present
-// limits (ceilingKHz), so a governor holding a lower frequency sees the same
-// work as a busier CPU, up to 1. Under performance it is u, and so it is on
-// a profile without the governor facts. assumed: the governor's frequency
+// is counted in cycles: u is the share the work keeps the policy busy at
+// the frequency performance runs it at under the present limits
+// (ceilingKHz), so a governor holding a lower frequency sees the same work
+// as a busier CPU, up to 1. Under performance it is u, and so it is on a
+// profile without the governor facts. assumed: the governor's frequency
 // (targetKHz), not the ramp toward it, sets the cycles, and a package cap
-// does not raise them, so the cap solve stays as it was.
+// does not raise them, so the cap solve reads the demand alone.
 func (n *Node) effUtil(pol *nodePolicy, u float64) float64 {
 	u = math.Max(0, math.Min(1, u))
 	if !n.cpuGov.on || pol.targetKHz <= 0 {
@@ -268,9 +295,11 @@ type nodePackage struct {
 	// govNative is the governor of the package's policies in the driver's
 	// own words, and govPreset the preset it maps to; empty when the
 	// policies disagree or no single preset maps. govPresetOf is the
-	// govNative govPreset was derived from.
+	// govNative govPreset was derived from, and govKey the state govNative
+	// spells (deriveCPUGovernor).
 	govNative, govPreset string
 	govPresetOf          string
+	govKey               nodeGovKey
 }
 
 // nodeGPU is one GPU. limitRaw is the limit file's value: mW in NVML state, uW
@@ -370,8 +399,7 @@ const nodeIdleUtil = 0.05
 // rates wait in next until adopt or a substep takes them. Governors run at
 // substep boundaries (governorTick); derive runs one for a single sampling
 // period only when it never ran or its demand changed since, so a new load
-// moves the target at once, as it did before the governors were modelled,
-// and the frequency still ramps toward it.
+// moves the target at once, and the frequency still ramps toward it.
 func (n *Node) derive() {
 	for i, pol := range n.policies {
 		if !pol.govSeeded || n.policyDemand(pol) != pol.govDemand {
@@ -413,355 +441,6 @@ func (n *Node) gpuDeviceState(g *nodeGPU) phys.DeviceState {
 		CapWatts:        math.Max(g.settledW, nodeMinGPUCapW),
 		MemoryIntensity: n.load.MemoryIntensity,
 		Class:           n.load.GPUClass,
-	}
-}
-
-// governorTick runs the governor of policy i, n.policies[i], for one step
-// of periodS seconds (phys.GovernorStep), and targetKHz becomes the
-// frequency it sets, with boost. The governor reads the busy share of the
-// step that ended, measured at the frequency the policy ran at: the one
-// scaling_cur_freq showed, ramp, boost and a binding cap included. Reading
-// it one step late stands in for rate_limit_us and the sampling period
-// (assumed). A profile without the governor facts keeps target, as it did
-// before them (node_governor.go).
-func (n *Node) governorTick(i int, pol *nodePolicy, periodS float64) {
-	u := n.policyDemand(pol)
-	if !n.cpuGov.on {
-		pol.targetKHz, pol.govDemand, pol.govSeeded = pol.target(u), u, true
-		return
-	}
-	req, set := phys.GovernorStep(n.governorInput(i, pol, u, periodS), pol.govSetKHz)
-	pol.govReqKHz, pol.govSetKHz, pol.govDemand, pol.govSeeded = req, set, u, true
-	pol.targetKHz = float64(pol.boostedKHz(set))
-}
-
-// governorInput is what the governor of policy i sees at a step of periodS
-// seconds with demand u. Util is that demand with work counted in cycles:
-// Load.CPUUtil is the share the work keeps a CPU busy at the frequency
-// performance runs it at under the present limits (ceilingKHz), so at a
-// lower frequency the same work is a higher share, up to 1. Before the
-// policy ran, Util is the demand itself. CurKHz is the frequency the policy
-// ran at for schedutil, the setting of the userspace governor, and the
-// governor's own request otherwise.
-//
-// powersave on intel_pstate or amd-pstate-epp is the driver's own
-// algorithm: with an energy_performance_preference it is the HWP shape of
-// phys, at the preference's EPP; without one, as on intel_pstate without
-// HWP, it is taken as 1.25 x the maximum frequency x the busy share, the
-// shape of intel_pstate's get_target_pstate (assumed, not checked against
-// a kernel tree), which is schedutil read at MaxKHz.
-func (n *Node) governorInput(i int, pol *nodePolicy, u, periodS float64) phys.GovernorInput {
-	ph := n.profile.Physics.CPU
-	in := phys.GovernorInput{
-		Governor:       pol.governor,
-		MinKHz:         pol.effMinKHz(),
-		MaxKHz:         pol.effMaxKHz(),
-		TableKHz:       pol.table,
-		CurKHz:         pol.govReqKHz,
-		PeriodS:        periodS,
-		EPPGain:        phys.DefaultEPPGain,
-		EPPCeilingDrop: phys.DefaultEPPCeilingDrop,
-	}
-	if ph.EPPGain != nil {
-		in.EPPGain = ph.EPPGain.V
-	}
-	if ph.EPPCeilingDrop != nil {
-		in.EPPCeilingDrop = ph.EPPCeilingDrop.V
-	}
-	in.Util = u
-	if ran := pol.shownKHz; ran > 0 {
-		in.Util = math.Min(1, u*float64(pol.ceilingKHz())/ran)
-	}
-	switch pol.governor {
-	case "ondemand", "conservative":
-		in.Tunables = n.governorTunables()
-	case "schedutil":
-		in.CurKHz = int64(math.Round(pol.shownKHz))
-	case "userspace":
-		if gp := n.govPolicy(i, pol); gp != nil && gp.setspeedKHz > 0 {
-			in.CurKHz = gp.setspeedKHz
-		}
-	case "powersave":
-		if !pol.setpolicy {
-			break
-		}
-		if epp, ok := policyEPP(pol.epp); ok {
-			in.HWP, in.EPP = true, epp
-		} else {
-			in.Governor, in.CurKHz = "schedutil", 0
-		}
-	}
-	return in
-}
-
-// policyDemand is the mean Load.CPUUtil over the policy's CPUs.
-func (n *Node) policyDemand(pol *nodePolicy) float64 {
-	u := 0.0
-	for _, c := range pol.cpus {
-		if c >= 0 && c < len(n.cpuUtil) {
-			u += n.cpuUtil[c]
-		}
-	}
-	if len(pol.cpus) > 0 {
-		u /= float64(len(pol.cpus))
-	}
-	return u
-}
-
-// policyEPP is the EPP of an energy_performance_preference word: its value
-// in epp_values, or the raw number intel_pstate also takes. ok is false
-// without a preference. A word the table lacks, such as default, counts as
-// balance_performance, the boot value the profiles assume.
-func policyEPP(word string) (int, bool) {
-	if word == "" {
-		return 0, false
-	}
-	if v, ok := cpuGovEPPValues[word]; ok {
-		return v, true
-	}
-	if v, err := strconv.Atoi(word); err == nil && v >= 0 && v <= 255 {
-		return v, true
-	}
-	return cpuGovEPPValues["balance_performance"], true
-}
-
-// govPolicy is the governor state node_governor.go keeps for policy i, nil
-// on a profile without governor facts.
-func (n *Node) govPolicy(i int, pol *nodePolicy) *nodeGovPolicy {
-	if g := n.cpuGov.pols; i < len(g) && g[i].p == pol {
-		return g[i]
-	}
-	return nil
-}
-
-// governorTunables are the tunables of ondemand and conservative in effect,
-// as the tunables files hold them; a zero stands for the kernel default.
-// schedutil's rate_limit_us is left to the one-step lag of governorTick.
-func (n *Node) governorTunables() phys.GovernorTunables {
-	t := n.cpuGov.tunables
-	get := func(gov, name string) int64 { return t[cpuGovTunableKey(gov, name)] }
-	return phys.GovernorTunables{
-		OndemandUpThreshold:       get("ondemand", "up_threshold"),
-		OndemandSamplingRateUS:    get("ondemand", "sampling_rate"),
-		ConservativeFreqStep:      get("conservative", "freq_step"),
-		ConservativeUpThreshold:   get("conservative", "up_threshold"),
-		ConservativeDownThreshold: get("conservative", "down_threshold"),
-	}
-}
-
-// deriveGovernorPresets sets each package's govPreset: the CPU preset whose
-// plan gives the governor and preference its policies run, through
-// governor.ReverseCPU, and empty when the policies disagree (govNative
-// empty) or no single preset maps, as for a hand-written ondemand.
-func (n *Node) deriveGovernorPresets() {
-	for _, pk := range n.pkgs {
-		if pk.govNative == pk.govPresetOf {
-			continue
-		}
-		pk.govPresetOf, pk.govPreset = pk.govNative, ""
-		if pk.govNative == "" {
-			continue
-		}
-		for _, pol := range n.policies {
-			if pol.socket != pk.socket {
-				continue
-			}
-			if p, ok := governor.ReverseCPU(n.cpuFacts(), pol.governor, pol.epp); ok {
-				pk.govPreset = p
-			}
-			break
-		}
-	}
-}
-
-// cpuFacts are the node's cpufreq facts as the agent's discovery reads
-// them (pkg/governor.CPUFacts), from the profile and the policies.
-func (n *Node) cpuFacts() governor.CPUFacts {
-	cf := n.profile.CPUFreq
-	if cf == nil {
-		return governor.CPUFacts{}
-	}
-	f := governor.CPUFacts{Driver: cf.Driver.V, DriverMode: cf.DriverMode.V, HWP: cf.HWP.V}
-	for _, pol := range n.policies {
-		if f.Governors == nil {
-			f.Governors = pol.governors
-		}
-		f.Policies = append(f.Policies, pol.index)
-	}
-	if g := &n.cpuGov; g.on {
-		f.BoostScope = g.scope
-		for _, gp := range g.pols {
-			if gp.hasEPP {
-				f.EPPs = g.eppWords
-				break
-			}
-		}
-	}
-	return f
-}
-
-// idleGovernorW is physics.cpu.idleGovernorDeltaW while every policy of pk
-// runs at the highest frequency it may (targetKHz at ceilingKHz), as
-// performance holds it, and 0 otherwise, on a package without cpufreq or on
-// a profile without the governor facts.
-// assumed: a governor holding the top frequency keeps the idle cores out of
-// their deepest states; the default 0 changes no profile.
-func (n *Node) idleGovernorW(pk *nodePackage) float64 {
-	d := n.profile.Physics.CPU.IdleGovernorDeltaW.V
-	if d == 0 || !n.cpuGov.on {
-		return 0
-	}
-	k := 0
-	for _, pol := range n.policies {
-		if pol.socket != pk.socket {
-			continue
-		}
-		if pol.maxKHz <= 0 || pol.targetKHz < float64(pol.ceilingKHz()) {
-			return 0
-		}
-		k++
-	}
-	if k == 0 {
-		return 0
-	}
-	return d
-}
-
-// gpuPhysClock is g's clock state as the phys clock model takes it: the
-// governor's compute ceiling (none when it is at or above the highest clock
-// the GPU sustains), the data-path level and the gating flag. own asks for
-// the view of the GPU's own work: a data path that follows demand rises for
-// the GPU's own kernels, so its own work always meets it at its maximum;
-// only inbound peer transfers, which the governor does not see, meet the
-// level it holds. A GPU without a clock model gives the zero GPUClock,
-// which the phys functions read as no model.
-func (n *Node) gpuPhysClock(g *nodeGPU, own bool) phys.GPUClock {
-	c := &g.clock
-	if !c.modelled || c.computeMaxMHz <= 0 {
-		return phys.GPUClock{}
-	}
-	top := c.computeMaxMHz
-	if v := g.nvclock.spec; v != nil {
-		if s := float64(v.SM.SustainedMaxMHz.V); s > 0 && s < top {
-			top = s
-		}
-	}
-	out := phys.GPUClock{ComputeMaxMHz: top, DataPath: c.dataPath, DataPathAuto: c.dataPathAuto, GatingOff: c.gatingOff}
-	if ceil := c.computeCeilMHz; ceil > 0 && ceil < top {
-		out.ComputeMHz = ceil
-	}
-	if own && c.dataPathAuto {
-		out.DataPath = phys.DataPathMax
-	}
-	return out
-}
-
-// gpuClockFacts are the profile's physics.gpu clock parameters.
-func (n *Node) gpuClockFacts() phys.GPUClockFacts {
-	g := &n.profile.Physics.GPU
-	return phys.GPUClockFacts{
-		ClockBeta:       g.ClockBeta.V,
-		MemoryKneeFrac:  g.MemoryKneeFrac.V,
-		MemoryKneeGamma: g.MemoryKneeGamma.V,
-		DataPathHoldW:   g.DataPathHoldW.V,
-		GatingOffIdleW:  g.GatingOffIdleW.V,
-		DataPathGamma:   g.DataPathGamma.V,
-	}
-}
-
-// gpuPowerW is g's board power running s: the GPU model's, through the
-// clock model when g has one (phys.GPUPowerWithClock), which at the maximum
-// compute clock, the data path at its maximum and idle gating kept is the
-// same.
-func (n *Node) gpuPowerW(g *nodeGPU, s phys.DeviceState) float64 {
-	m, ok := n.gpuModel.(phys.CappedBoardGPUModel)
-	clk := n.gpuPhysClock(g, false)
-	if !ok || clk.ComputeMaxMHz <= 0 {
-		return n.gpuModel.Power(s)
-	}
-	return phys.GPUPowerWithClock(m, s, clk, n.gpuClockFacts())
-}
-
-// gpuByIndex is the GPU with index i, nil when the node has none.
-func (n *Node) gpuByIndex(i int) *nodeGPU {
-	for _, g := range n.gpus {
-		if g.index == i {
-			return g
-		}
-	}
-	return nil
-}
-
-// nodeReceiverGate is the receiver gate a node's peer transfers go through.
-// physics_gate.go sets it from the profile and Options.ReceiverGate;
-// without that file no gate is on.
-var nodeReceiverGate = func(*Node) phys.ReceiverGate { return phys.ReceiverGate{} }
-
-// isPeer reports whether t is a peer transfer: a copy between two distinct
-// GPUs of the node, over the peer link.
-func (n *Node) isPeer(t PeerTransfer) bool {
-	return t.Src != t.Dst && n.gpuByIndex(t.Src) != nil && n.gpuByIndex(t.Dst) != nil
-}
-
-// peerRates is the rate, in bytes per second, each transfer of
-// Load.PeerTransfers gets, in order. A peer transfer alone gets phys.PeerRate
-// over gpus.transfer.peerLinkGBps (GB/s, 1e9 bytes) into a receiver at its
-// clock state, through the receiver gate: at most link x g, the fraction g
-// the receiver's data path lets through from that source. The copies into
-// one GPU share its link by time: each needs its demand over link x g of
-// the link's time, and when together they need more than all of it, each
-// gets its demand over that total, so a gated receiver takes in at most
-// link x g whatever the number of sources. Any other transfer, with a host
-// or NIC end (a negative Src or Dst, phys.HostSource) or naming no two GPUs
-// of the node, is not on the peer link and gets its demand, as does every
-// transfer on a profile without gpus.transfer, which does not model the
-// link.
-func (n *Node) peerRates() []float64 {
-	ts := n.load.PeerTransfers
-	if len(ts) == 0 {
-		return nil
-	}
-	out := make([]float64, len(ts))
-	var link float64
-	if gs := n.profile.GPUs; gs != nil && gs.Transfer != nil {
-		link = gs.Transfer.PeerLinkGBps.V * 1e9
-	}
-	gate := nodeReceiverGate(n)
-	busy := map[int]float64{} // the share of each receiver's link time the copies into it need
-	for i, t := range ts {
-		if !n.isPeer(t) || link <= 0 {
-			out[i] = phys.PeerRate(t.BytesPerS, 0, phys.GPUClock{}, phys.ReceiverGate{}, phys.HostSource, phys.HostSource)
-			continue
-		}
-		clk := n.gpuPhysClock(n.gpuByIndex(t.Dst), false)
-		out[i] = phys.PeerRate(t.BytesPerS, link, clk, gate, t.Src, t.Dst)
-		if pair := phys.PeerRate(math.Inf(1), link, clk, gate, t.Src, t.Dst); pair > 0 && t.BytesPerS > 0 {
-			busy[t.Dst] += t.BytesPerS / pair
-		}
-	}
-	for i, t := range ts {
-		if b := busy[t.Dst]; b > 1 && link > 0 && t.BytesPerS > 0 && n.isPeer(t) {
-			out[i] = t.BytesPerS / b
-		}
-	}
-	return out
-}
-
-// derivePeers sets each GPU's next peer receive and send rates from
-// peerRates. Only peer transfers count, and only on a profile with
-// gpus.transfer: State's PeerRxBytes and PeerTxBytes count the peer link.
-func (n *Node) derivePeers() {
-	for _, g := range n.gpus {
-		g.nextRx, g.nextTx = 0, 0
-	}
-	if gs := n.profile.GPUs; gs == nil || gs.Transfer == nil {
-		return
-	}
-	for i, r := range n.peerRates() {
-		if t := n.load.PeerTransfers[i]; n.isPeer(t) {
-			n.gpuByIndex(t.Dst).nextRx += r
-			n.gpuByIndex(t.Src).nextTx += r
-		}
 	}
 }
 

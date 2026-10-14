@@ -161,7 +161,7 @@ func TestConformance_Scheduler_PerfPodBlockedFromEco(t *testing.T) {
 	node := findNodeForJob(tracker, nodeNames, nodeByName, perfJob)
 
 	if node == "eco-node" {
-		t.Error("performance pod was placed on eco node — should be rejected")
+		t.Error("performance pod was placed on eco node; it should be rejected")
 	}
 	if node != "perf-node" {
 		t.Errorf("performance pod should go to perf-node, got %q", node)
@@ -189,7 +189,7 @@ func TestConformance_Scheduler_PerfPodBlockedFromDraining(t *testing.T) {
 	node := findNodeForJob(tracker, nodeNames, nodeByName, perfJob)
 
 	if node == "draining-node" {
-		t.Error("performance pod was placed on draining node — should be rejected")
+		t.Error("performance pod was placed on draining node; it should be rejected")
 	}
 	if node != "perf-node" {
 		t.Errorf("expected perf-node, got %q", node)

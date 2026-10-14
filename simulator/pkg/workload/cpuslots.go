@@ -34,9 +34,6 @@ func NewCPUSlots(cpus int) *CPUSlots {
 	return &CPUSlots{holders: make([][]string, cpus), held: map[string][]int{}, request: map[string]float64{}}
 }
 
-// Len is the number of logical CPUs.
-func (s *CPUSlots) Len() int { return len(s.holders) }
-
 // Assign gives job its CPUs for request and returns them in ascending
 // order. A job that already holds CPUs keeps them and the request it got
 // them for. A node with no CPUs gives none.
@@ -130,19 +127,23 @@ func (s *CPUSlots) Util(util map[string]float64) []float64 {
 	return out
 }
 
-// Share is the share of the CPU time it asks for that job gets, the value
-// RateInputs.CPUShare takes: the node's CPU count over what all its jobs
-// ask for together (util x request, summed) when they ask for more than
-// the node has, and 1 otherwise or for a job holding no CPUs. util is what
-// Util takes.
+// Holds reports whether job holds CPUs.
+func (s *CPUSlots) Holds(job string) bool {
+	_, ok := s.held[job]
+	return ok
+}
+
+// Share is the share of the CPU time it asks for that every job holding
+// CPUs gets, the value RateInputs.CPUShare takes: the node's CPU count over
+// what all its jobs ask for together (util x request, summed) when they ask
+// for more than the node has, and 1 otherwise. A job holding no CPUs (Holds
+// false) gets 1. util is what Util takes. The share is the same for every
+// holder, so a caller computes it once per node and step.
 //
 // assumed: with the load balancing of Util, contention is the node's and
 // not one CPU's, and the fair scheduler slows every job by the same
 // factor, as the legacy model does with capacity over requested cores.
-func (s *CPUSlots) Share(job string, util map[string]float64) float64 {
-	if _, ok := s.held[job]; !ok {
-		return 1
-	}
+func (s *CPUSlots) Share(util map[string]float64) float64 {
 	asked := 0.0
 	for _, d := range s.demand(util) {
 		asked += d

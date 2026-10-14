@@ -1,0 +1,20 @@
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+clientConnection:
+  kubeconfig: /var/lib/rancher/k3s/server/cred/scheduler.kubeconfig
+leaderElection:
+  leaderElect: false
+extenders:
+  # The extender's Service at the fixed ClusterIP of
+  # values/simcluster-extender-service.yaml, inside k3s' default service
+  # CIDR 10.43.0.0/16: kube-scheduler runs on the k3s server's network,
+  # where kube-proxy routes ClusterIPs, and reaches the extender off the
+  # host network, as a real install does by default.
+  - urlPrefix: "http://10.43.0.250:9876"
+    filterVerb: "filter"
+    prioritizeVerb: "prioritize"
+    weight: 5
+    enableHTTPS: false
+    nodeCacheCapable: false
+    managedResources: []
+    ignorable: true

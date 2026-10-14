@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
 )
 
@@ -260,4 +261,31 @@ func intentString(v any) string {
 		return fmt.Sprintf("%s boost %q", g.Preset, g.Boost)
 	}
 	return fmt.Sprint(v)
+}
+
+// A GPU governor block that holds the agent's baseline and no mechanism is
+// a discovery gap (a tool did not answer for a reconcile): the configured
+// preset is still written, so the agent does not restore the baseline and
+// set the preset again a reconcile later. A block from a discovery that
+// lists other presets still drops a preset it does not list.
+func TestGPUGovernorIntentKeptThroughADiscoveryGap(t *testing.T) {
+	cfg := useGovernorEnv(t, map[string]string{"GOVERNOR_CONTROL": "all"})
+	baseline := &v1alpha1.GPUGovernorBaseline{Devices: []v1alpha1.GPUGovernorDeviceState{{BusID: "00000000:18:00.0", Level: joulie.GovernorStateUnknown}}}
+	for _, tc := range []struct {
+		name  string
+		block *v1alpha1.GPUGovernorInventory
+		want  *joulie.GPUGovernorIntent
+	}{
+		{"discovery gap", &v1alpha1.GPUGovernorInventory{Baseline: baseline},
+			&joulie.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetEfficient, ComputeClockCeilingPctOfMax: floatPtr(80)}},
+		{"a node without efficient", &v1alpha1.GPUGovernorInventory{Mechanism: joulie.GovernorBackendNvidiaSMI, Baseline: baseline,
+			Presets: []v1alpha1.GovernorPresetSupport{{Preset: joulie.GPUGovernorPresetAuto, Result: joulie.GovernorResultEquivalent}}}, nil},
+		{"no block", nil, nil},
+	} {
+		obj := &v1alpha1.NodeHardware{Status: v1alpha1.NodeHardwareStatus{GPU: &v1alpha1.NodeHardwareGPU{Governor: tc.block}}}
+		_, gpu := cfg.governorIntents("g", profileEco, true, parseNodeHardware(obj), "")
+		if !reflect.DeepEqual(gpu, tc.want) {
+			t.Errorf("%s: GPU governor = %s, want %s", tc.name, intentString(gpu), intentString(tc.want))
+		}
+	}
 }

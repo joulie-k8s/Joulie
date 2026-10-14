@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-// GP14: lowering the cap never raises what a locked GPU gets. The W1 model
-// broke this twice. It scaled a locked GPU's power from the cap at the
-// cap-implied clock, so where ComputeGamma x ClockBeta x (1 - IdleW / MaxW)
-// exceeds 1 (here 1.2 x 2 x 0.875 = 2.1) a cap raised the power of a GPU
-// locked below the cap-implied clock above what the same lock drew without
-// a cap. And it took the memory share of a locked GPU relative to the memory
-// knee at the cap-implied clock, so below the knee a lower cap moved that
-// reference down and raised the memory-bound throughput of a locked GPU.
+// GP14: lowering the cap never raises what a locked GPU gets. Two models
+// break it. One that scales a locked GPU's power from the cap at the
+// cap-implied clock: where ComputeGamma x ClockBeta x (1 - IdleW / MaxW)
+// exceeds 1 (here 1.2 x 2 x 0.875 = 2.1) a cap raises the power of a GPU
+// locked below the cap-implied clock above what the same lock draws without
+// a cap. And one that takes the memory share of a locked GPU relative to the
+// memory knee at the cap-implied clock: below the knee a lower cap moves that
+// reference down and raises the memory-bound throughput of a locked GPU.
 func TestGP14LoweringTheCapNeverRaisesALockedGPU(t *testing.T) {
 	lock := gpClock(0.5 * gpClockMaxMHz)
 	for _, class := range gpClockClasses {

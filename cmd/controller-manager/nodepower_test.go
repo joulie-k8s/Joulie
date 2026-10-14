@@ -24,6 +24,9 @@ func resetNodePowerState(t *testing.T) {
 		nodePowerHintsMu.Lock()
 		nodePowerHintsSeen = map[string]struct{}{}
 		nodePowerHintsMu.Unlock()
+		nodePowerErrMu.Lock()
+		nodePowerErrLast = map[string]nodePowerLoggedError{}
+		nodePowerErrMu.Unlock()
 	}
 	prev := nodePowerSpec
 	reset()
@@ -274,6 +277,72 @@ func TestResolveNodePowerHintsCustomGroupedQuery(t *testing.T) {
 	for _, want := range []string{"custom query is summed by the label k8s_node_name", "NODE_POWER_NODE_LABEL", "{node}"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("hint %q missing from %q", want, out)
+		}
+	}
+}
+
+// Without a reachable Prometheus every reconcile fails both forms of the
+// default query. Each form's error is logged once, then again only when its
+// text changes or nodePowerErrorRepeat has passed, and the form that reads
+// again says so once.
+func TestNodePowerQueryErrorsLoggedOnceUntilTheyChange(t *testing.T) {
+	resetNodePowerState(t)
+	clock := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	prevNow := nodePowerNow
+	nodePowerNow = func() time.Time { return clock }
+	t.Cleanup(func() { nodePowerNow = prevNow })
+
+	down := newRegProm(t, func(string) (int, string) { return 200, regVector() })
+	addr := down.URL
+	down.Close()
+	regWithNodePowerVars(t, nodePowerSourcePrometheus, "", addr, "")
+	nodePowerSpec = inputs.NodePowerSpec{}
+	buf := captureLog(t)
+	errors := func() int { return strings.Count(buf.String(), "[twin] node power query: ") }
+
+	for i := 0; i < 3; i++ {
+		resolveRound("n0", "n1")
+	}
+	if n := errors(); n != 2 {
+		t.Fatalf("%d error lines after 3 reconciles against a closed address, want 2 (one per form):\n%s", n, buf.String())
+	}
+	clock = clock.Add(nodePowerErrorRepeat)
+	resolveRound("n0", "n1")
+	if n := errors(); n != 4 {
+		t.Fatalf("%d error lines once the repeat interval passed, want 4:\n%s", n, buf.String())
+	}
+
+	failing := newRegProm(t, func(string) (int, string) {
+		return 503, `{"status":"error","errorType":"unavailable","error":"starting up"}`
+	})
+	nodePowerPromAddress = failing.URL
+	resolveRound("n0", "n1")
+	resolveRound("n0", "n1")
+	if n := errors(); n != 6 {
+		t.Fatalf("%d error lines after the error changed, want 6:\n%s", n, buf.String())
+	}
+
+	working := newRegProm(t, func(string) (int, string) {
+		return 200, regVector(regSeries(`{"k8s_node_name":"n0"}`, "350"))
+	})
+	nodePowerPromAddress = working.URL
+	resolveRound("n0", "n1")
+	resolveRound("n0", "n1")
+	if n := strings.Count(buf.String(), "[twin] node power query works again"); n != 1 {
+		t.Fatalf("%d recovery lines, want 1 (the labels form, which reads first):\n%s", n, buf.String())
+	}
+	if n := errors(); n != 6 {
+		t.Fatalf("%d error lines after the query works, want still 6:\n%s", n, buf.String())
+	}
+}
+
+// The no-data hint of the default otel preset names the Kepler presets, for
+// a Prometheus that scrapes Kepler instead of receiving OTLP.
+func TestNoNodePowerHintNamesTheKeplerPresets(t *testing.T) {
+	h := noNodePowerHint(inputs.NodePowerPresetOTel, "")
+	for _, want := range []string{"--web.enable-otlp-receiver", "NODE_POWER_PRESET=kepler ", "NODE_POWER_PRESET=kepler-legacy"} {
+		if !strings.Contains(h, want) {
+			t.Errorf("otel no-data hint %q does not name %q", h, want)
 		}
 	}
 }

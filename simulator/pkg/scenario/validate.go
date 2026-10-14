@@ -298,9 +298,11 @@ func (v *validator) jobResources(s Scenario, o ValidateOptions, trace []TraceJob
 	}
 	have := map[string]bool{}
 	for _, p := range pools {
-		for name, q := range p.Allocatable {
-			if p.Nodes > 0 && q.Sign() > 0 {
-				have[string(name)] = true
+		for _, n := range p.Nodes {
+			for name, q := range n.Status.Allocatable {
+				if q.Sign() > 0 {
+					have[string(name)] = true
+				}
 			}
 		}
 	}

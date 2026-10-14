@@ -1,31 +1,21 @@
 ---
 title: "Power Simulator"
-weight: 30
+weight: 24
 ---
 
-This page describes the simulator runtime mechanics (control/state/energy paths).
+This page says how the simulator advances a modelled node (any node outside the emulate-mode cluster spec): its control state, its physics step, and the telemetry it serves. The physical model itself, its parameters and their sources, is in [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}); how jobs progress on a node is in [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}}).
 
-The canonical physical model, provenance, and hardware assumptions are documented in:
+The power simulator:
 
-- [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})
-
-For workload progression semantics:
-
-- [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
-
-## Scope
-
-The power simulator runtime is responsible for:
-
-- keeping per-node control state (CPU cap, DVFS throttle, GPU cap),
-- applying control actions from `/control/{node}`,
-- updating dynamics with settling/ramp behavior,
-- exposing power telemetry on `/otlp/telemetry/{node}` and `/telemetry/{node}` (OTLP JSON; `/telemetry/{node}?format=legacy` serves the deprecated legacy JSON until v0.4.0),
-- integrating energy over time (`/debug/energy`).
+- keeps per-node control state (CPU cap, DVFS throttle, GPU cap),
+- applies control actions from `/control/{node}`,
+- advances caps, frequency, power and temperature with their settling lags,
+- serves power telemetry on `/otlp/telemetry/{node}` and `/telemetry/{node}`,
+- integrates energy over time (`/debug/energy`).
 
 ## The physics step
 
-A modelled node (any node outside the emulate-mode cluster spec) advances only in a physics step, in simulated time, never when it is read:
+A modelled node advances only in a physics step, in simulated time, never when it is read:
 
 | Mode | What steps the nodes | Step | Longest substep |
 |---|---|---|---|
@@ -42,96 +32,25 @@ The order of the work inside a substep and the lag equations are in [Hardware Mo
 
 ## Runtime state and controls
 
-Main node state includes:
+Node state:
 
-- CPU:
-  - target/applied cap
-  - utilization
-  - effective frequency scale
-  - throttle target/current
-  - saturation flag
-  - instantaneous and averaged power
-  - temperature and thermal-throttle fraction
-- GPU:
-  - per-device cap/target
-  - per-device instantaneous and averaged power
-  - per-device temperature and thermal-throttle fraction
-  - aggregate utilization
-  - effective performance multiplier
-- workload-model inputs aggregated from running jobs:
-  - `memoryIntensity`
-  - `ioIntensity`
-  - `cpuFeedIntensity`
+- CPU: target and applied cap, utilization, effective frequency scale, throttle target and current, saturation flag, instantaneous and averaged power, temperature and thermal-throttle fraction.
+- GPU: per-device cap and target, per-device instantaneous and averaged power, per-device temperature and thermal-throttle fraction, aggregate utilization, effective performance multiplier.
+- Workload inputs aggregated from the running jobs: `memoryIntensity`, `ioIntensity`, `cpuFeedIntensity`.
 
-Supported control actions:
+Control actions: `rapl.set_power_cap_watts`, `dvfs.set_throttle_pct`, `gpu.set_power_cap_watts`.
 
-- `rapl.set_power_cap_watts`
-- `dvfs.set_throttle_pct`
-- `gpu.set_power_cap_watts`
-
-## Telemetry contract actually exposed by the simulator
+## Telemetry
 
 The simulator serves each node's power in two formats, computed from one snapshot of the node:
 
-- `GET /otlp/telemetry/{node}`: one OTLP JSON `ExportMetricsServiceRequest`, the [HTTP input format]({{< relref "/docs/architecture/telemetry.md#http-input-format" >}}) that the agent's and the controller manager's `http` sources read. Its resource carries `k8s.node.name`. It holds `hw.power` gauges for the CPU (`hw.id=cpu`, `hw.type=cpu`) and for each GPU (`hw.id=gpu<index>`, `hw.type=gpu`, `hw.name` the product), and `hw.host.power` (`hw.id=host`) for their sum. The values are the averaged powers, or the instantaneous ones while the average is still 0, unrounded. An [emulated node]({{< relref "/docs/simulator/simulator.md#emulate-mode" >}}) answers instead with its part of the emulate-mode export: energy counters and power gauges per CPU package, DRAM zone and GPU.
-- `GET /telemetry/{node}`: the same OTLP JSON by default. With `?format=legacy` it serves the legacy JSON, a compact node-level view and richer subsystem views, deprecated and removed in v0.4.0; the first such read logs one warning per process. Any other `format` than `otlp` or `legacy` answers 400.
+- `GET /otlp/telemetry/{node}`: one OTLP JSON `ExportMetricsServiceRequest`, the [HTTP input format]({{< relref "/docs/architecture/telemetry.md#http-input-format" >}}) that the agent's and the controller manager's `http` sources read. Its resource carries `k8s.node.name`. It holds `hw.power` gauges for the CPU (`hw.id=cpu`, `hw.type=cpu`) and for each GPU (`hw.id=gpu<index>`, `hw.type=gpu`, `hw.name` the product), and `hw.host.power` (`hw.id=host`) for their sum. The values are the averaged powers, or the instantaneous ones while the average is still 0, unrounded. An [emulated node]({{< relref "/docs/simulator/emulate-mode.md" >}}) answers instead with its part of the emulate-mode export: energy counters and power gauges per CPU package, DRAM zone and GPU.
+- `GET /telemetry/{node}`: the same OTLP JSON. `?format=legacy` serves the deprecated legacy JSON until v0.4.0, with one warning per process; any other `format` than `otlp` or `legacy` answers 400.
 
-Important top-level fields of the legacy JSON:
+The legacy JSON exposes the averaged and the instantaneous power side by side, which the OTLP document does not:
 
-- `packagePowerWatts`
-  - exported averaged node power
-- `instantPackagePowerWatts`
-  - internal instantaneous node power used by the model
+- top level: `packagePowerWatts` (exported averaged node power), `instantPackagePowerWatts` (instantaneous node power used by the model);
+- CPU: `cpu.packagePowerWatts`, `cpu.instantPowerWatts`, `cpu.utilization`, `cpu.memoryIntensity`, `cpu.ioIntensity`, `cpu.freqScale`, `cpu.temperatureC`, `cpu.thermalThrottlePct`;
+- GPU: `gpu.powerWattsTotal`, `gpu.avgPowerWattsTotal`, `gpu.utilization`, `gpu.memoryIntensity`, `gpu.cpuFeedIntensity`, `gpu.capWattsPerGpuApplied`, `gpu.capWattsPerGpuTarget`, `gpu.devices[]`.
 
-Important CPU fields:
-
-- `cpu.packagePowerWatts`
-- `cpu.instantPowerWatts`
-- `cpu.utilization`
-- `cpu.memoryIntensity`
-- `cpu.ioIntensity`
-- `cpu.freqScale`
-- `cpu.temperatureC`
-- `cpu.thermalThrottlePct`
-
-Important GPU fields:
-
-- `gpu.powerWattsTotal`
-- `gpu.avgPowerWattsTotal`
-- `gpu.utilization`
-- `gpu.memoryIntensity`
-- `gpu.cpuFeedIntensity`
-- `gpu.capWattsPerGpuApplied`
-- `gpu.capWattsPerGpuTarget`
-- `gpu.devices[]`
-
-This distinction matters because the simulator is now intentionally modeling the difference between:
-
-- internal fast-changing device power
-- exported averaged telemetry seen by the controller
-
-## Hardware identity and overrides
-
-The simulator runtime no longer depends primarily on pre-enumerated node classes.
-
-Today the intended precedence is:
-
-1. node labels define simulated hardware identity
-2. shared inventory resolves that identity into a CPU/GPU model
-3. optional `SIM_NODE_CLASS_CONFIG` overrides refine or override profile parameters
-
-So `SIM_NODE_CLASS_CONFIG` is still useful, but it is now an override layer rather than the main source of hardware truth.
-
-## Model source of truth
-
-This page intentionally avoids duplicating formulas and hardware assumptions.
-Use [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) as source of truth for:
-
-- measured vs proxy curves,
-- CPU/GPU workload-class behavior,
-- heterogeneous-node normalization semantics,
-- vendor/API-specific constraints and references.
-
-## Operational note
-
-When formulas and this page diverge, simulator behavior and `hardware-modeling.md` are authoritative; update this page only for runtime flow and interfaces.
+`/debug/nodes` shows the same state for every node.

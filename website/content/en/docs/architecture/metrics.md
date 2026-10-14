@@ -89,7 +89,7 @@ Written by the agent's [governor control]({{< relref "/docs/architecture/agent.m
 
 ## Policy controller metrics
 
-Exported by the controller manager. Until the next minor release each metric is also exported under its old `joulie_operator_*` name (same labels, same values, help text `Deprecated, use joulie_policy_...`); update dashboards and alerts to the `joulie_policy_*` names before that release.
+Exported by the controller manager. Until the next minor release each metric is also exported under its deprecated `joulie_operator_*` alias (same labels, same values, help text `Deprecated, use joulie_policy_...`); update dashboards and alerts to the `joulie_policy_*` names before that release.
 
 ### FSM state and profile label
 
@@ -111,18 +111,16 @@ Exported by the controller manager. Until the next minor release each metric is 
 
 ### Heterogeneous planning
 
-These two gauges are new in v0.2.2 and have no `joulie_operator_*` alias. Both are reset every reconcile and computed from the plan after the downgrade guard, so a draining node counts as not performance. `family` is `gpu:<model>` when the node has GPUs, otherwise `cpu:<model>` (see [Heterogeneous planning]({{< relref "/docs/architecture/controller-manager.md#heterogeneous-planning" >}})).
+These two gauges have no `joulie_operator_*` alias. Both are reset every reconcile and computed from the plan after the downgrade guard, so a draining node counts as not performance. `family` is `gpu:<model>` when the node has GPUs, otherwise `cpu:<model>` (see [Heterogeneous planning]({{< relref "/docs/architecture/controller-manager.md#heterogeneous-planning" >}})).
 
 - `joulie_policy_family_nodes{family}` (gauge)
   - eligible nodes in each hardware family
 - `joulie_policy_family_performance_nodes{family}` (gauge)
   - nodes of each hardware family planned in the `performance` profile
 
-`joulie_policy_node_compute_density{node,component}` and its alias `joulie_operator_node_compute_density` were removed in v0.2.2, together with the compute-density ordering that used them. The density values had no defined meaning and ranked many-core CPU-only nodes above GPU nodes; performance slots are now split across hardware families instead.
-
 ## Twin input metrics
 
-Exported by the controller manager, new in v0.3.0, with no `joulie_operator_*` alias. They show whether the measured inputs (see [Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}})) are read. Each name is the default Prometheus spelling of an OpenTelemetry name (`joulie.twin.input.queries`, unit `{query}`; the facility gauges with units `Cel` and `W`), so a dashboard reads them the same way whether Prometheus scrapes them or receives them over OTLP.
+Exported by the controller manager. They show whether the measured inputs (see [Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}})) are read.
 
 - `joulie_twin_input_queries_total{input,result}` (counter)
   - one increment per Prometheus query of a measured input

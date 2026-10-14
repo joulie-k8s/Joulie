@@ -201,6 +201,7 @@ func TestCG14PerformanceUncappedGivesThroughputOne(t *testing.T) {
 		t.Run(profile, func(t *testing.T) {
 			t.Parallel()
 			n, _, p := hwemutest.NewNode(t, profile, func(p *hwemu.Profile) {
+				p.Physics.CPU.Model = "analytic" // the profile's own facts, in place of a catalog curve
 				throughputPerformance(p)
 				throughputSmall(p)
 			})

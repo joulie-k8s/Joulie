@@ -1,8 +1,7 @@
 package main
 
-// Regression test of the governor discovery: the live agent never wrote
-// NodeHardware.status.cpu.landmarks, although the field existed and its
-// documentation says the agent publishes frequency landmarks.
+// The agent publishes the cpufreq frequency landmarks in
+// NodeHardware.status.cpu.landmarks.
 
 import (
 	"context"

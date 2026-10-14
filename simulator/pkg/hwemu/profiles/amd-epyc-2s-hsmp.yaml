@@ -50,6 +50,7 @@ hsmp:
   capDefaultUW: {v: 400000000, src: "published:amd9655#Default TDP 400W"}
 physics:
   cpu:
+    model: analytic
     maxPkgW: {v: 400, src: "published:amd9655#Default TDP"}
     idlePkgW: {v: 45, src: "assumed:bounded by spec01457 Active Idle 126 W for the whole node"}
   hsmp: {settleTauMS: {v: 1000, src: "assumed:no public settling data"}}

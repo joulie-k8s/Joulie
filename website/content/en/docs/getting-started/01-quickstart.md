@@ -15,6 +15,10 @@ For conceptual context first, read [Core Concepts]({{< relref "/docs/getting-sta
 - Optional for real enforcement: nodes exposing writable power interfaces
   - RAPL power limit files, or
   - cpufreq sysfs interfaces
+- Prometheus, for measured node power. The chart reads node power from Prometheus by default (`NODE_POWER_SOURCE=prometheus`): it expects Prometheus at `http://prometheus-operated.monitoring:9090` with its OTLP receiver on (`--web.enable-otlp-receiver`), receiving `hw.energy` or `hw.power` for each node. Without that data every node reads 0 W, with source `prometheus-no-data`.
+  - `values/prometheus-grafana.yaml` configures kube-prometheus-stack this way ([Prometheus settings]({{< relref "/docs/architecture/telemetry.md#prometheus-settings" >}})).
+  - [`examples/11-otel-collector-bridge`](https://github.com/joulie-k8s/Joulie/tree/main/examples/11-otel-collector-bridge) converts Kepler, dcgm-exporter and AMD device-metrics-exporter metrics into those names.
+  - To run without it, set `controllerManager.env.NODE_POWER_SOURCE=static` (0 W for every node).
 
 ## Install from release (recommended)
 
@@ -28,7 +32,14 @@ helm upgrade --install joulie oci://registry.cern.ch/joulie/joulie \
   -f values/joulie.yaml
 ```
 
-Charts, images and the kubectl plugin used to be published under `registry.cern.ch/mbunino/joulie`. Every tag published there up to 0.2.0 was copied to `registry.cern.ch/joulie` with the same digest, and later releases are published only to `registry.cern.ch/joulie`. If your values file sets an `image.repository` or you pull `latest`, point it at the new path.
+`helm upgrade` never updates CRDs. Before upgrading an existing release, apply the CRDs of the new chart, or the fields they add are pruned:
+
+```bash
+helm pull oci://registry.cern.ch/joulie/joulie --version <version> --untar --untardir /tmp/joulie-chart
+kubectl apply -f /tmp/joulie-chart/joulie/crds/
+```
+
+From a checkout, `kubectl apply -f charts/joulie/crds/`. [Upgrading]({{< relref "/docs/getting-started/06-upgrading.md" >}}) lists what else to check.
 
 ### Label nodes managed by the controller manager
 
@@ -79,7 +90,7 @@ If images for `TAG` are already in the registry (no source changes), run:
 make install TAG=<tag>
 ```
 
-This performs a Helm install/upgrade (`charts/joulie`) and sets both images to the requested tag.
+This performs a Helm install/upgrade (`charts/joulie`) and sets the three images to the requested tag. On an existing release, run `kubectl apply -f charts/joulie/crds/` first: `helm upgrade` never updates CRDs.
 Default values come from:
 
 - `values/joulie.yaml`
@@ -108,6 +119,8 @@ make uninstall
 ```bash
 make rollout TAG=<new-tag>
 ```
+
+When the chart changed, apply its CRDs first (`kubectl apply -f charts/joulie/crds/`).
 
 ## Joulie controller manager and agents
 
@@ -177,27 +190,23 @@ If controller manager logs show `no eligible nodes matched selector`, verify nod
 kubectl get nodes --show-labels | grep 'joulie.io/managed=true'
 ```
 
-## Workload and Power Simulator
+## Simulator
 
-The simulator has its own Helm chart, published alongside the main Joulie chart:
+To try Joulie without the hardware it manages:
+
+- [Simulated Cluster]({{< relref "/docs/simulator/simulated-cluster.md" >}}): Joulie on emulated bare-metal nodes, on one machine with Docker (`make simcluster-smoke`).
+- [KWOK mode]({{< relref "/docs/simulator/simulator.md" >}}): many fake nodes with the agent in pool mode, as the benchmark experiments run; [`examples/06-simulator-kwok`](https://github.com/joulie-k8s/Joulie/tree/main/examples/06-simulator-kwok) is a runnable version.
+
+The simulator has its own Helm chart, published next to the Joulie chart ([Installation]({{< relref "/docs/simulator/installation.md" >}})):
 
 ```bash
 helm upgrade --install joulie-simulator oci://registry.cern.ch/joulie/joulie-sim \
   --version <version> \
   -n joulie-sim-demo \
-  --create-namespace \
-  --set image.tag=<version>
+  --create-namespace
 ```
 
-Or from source: `make simulator-install TAG=<version>`
-
-For fake-node workload + power simulation (real scheduler, fake [KWOK](https://kwok.sigs.k8s.io/) nodes, real controller manager, agent pool mode), see:
-
-- [Simulator Overview]({{< relref "/docs/simulator/simulator.md" >}})
-- [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}})
-- [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})
-- [Hardware Modeling and Physical Power Model]({{< relref "/docs/hardware/hardware-modeling.md" >}})
-- [KWOK Simulator Example](https://github.com/joulie-k8s/Joulie/tree/main/examples/06-simulator-kwok)
+Or from source: `make simulator-install TAG=<version>`.
 
 ## kubectl plugin
 

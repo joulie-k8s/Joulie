@@ -56,13 +56,9 @@ type NodeSnapshot struct {
 	PreviousGovernors map[string]GovernorState `json:"previousGovernors,omitempty"`
 }
 
-// GovernorState is the governor state of a CPU package or a GPU: Native in
-// the driver's own words and Preset, the preset it maps to, empty when no
-// single one does. The zero value is a component without a governor.
-type GovernorState struct {
-	Native string `json:"native"`
-	Preset string `json:"preset,omitempty"`
-}
+// GovernorState is the governor state of a CPU package or a GPU, as
+// hwemu.GovernorState documents it.
+type GovernorState = hwemu.GovernorState
 
 // HostReading is the whole node. PowerW is the sum of every package, DRAM
 // zone and GPU plus the platform's OtherW; PSU losses are not included.
@@ -95,45 +91,8 @@ type HostReading struct {
 // them. PeerRxBytes and PeerTxBytes are the peer transfer bytes of a GPU as
 // ledger values, like EnergyJ: monotonic across restarts.
 //
-// The fields are those of hwemu.ComponentState, in the same order, so a
-// conversion copies one into the other.
-type ComponentReading struct {
-	ID              string           `json:"id"`
-	Type            string           `json:"type"`
-	Name            string           `json:"name"`
-	Vendor          string           `json:"vendor,omitempty"`
-	Model           string           `json:"model,omitempty"`
-	UUID            string           `json:"uuid,omitempty"`
-	PCIBusID        string           `json:"pciBusId,omitempty"`
-	SysfsPath       string           `json:"sysfsPath,omitempty"`
-	Parent          string           `json:"parent,omitempty"`
-	Index           int              `json:"index"`
-	Measured        bool             `json:"measured"`
-	PowerW          float64          `json:"powerW"`
-	EnergyJ         float64          `json:"energyJ"`
-	DeviceEnergyJ   float64          `json:"deviceEnergyJ,omitempty"`
-	LimitW          float64          `json:"limitW,omitempty"`
-	RequestedLimitW float64          `json:"requestedLimitW,omitempty"`
-	SpeedHz         float64          `json:"speedHz,omitempty"`
-	SpeedMaxHz      float64          `json:"speedMaxHz,omitempty"`
-	SpeedLimitHz    float64          `json:"speedLimitHz,omitempty"`
-	Utilization     float64          `json:"utilization"`
-	ClockHz         map[string]int64 `json:"clockHz,omitempty"`
-	ClockMaxHz      map[string]int64 `json:"clockMaxHz,omitempty"`
-	ClockLimitHz    map[string]int64 `json:"clockLimitHz,omitempty"`
-	GovernorNative  string           `json:"governorNative,omitempty"`
-	GovernorPreset  string           `json:"governorPreset,omitempty"`
-	PeerRxBytes     uint64           `json:"peerRxBytes,omitempty"`
-	PeerTxBytes     uint64           `json:"peerTxBytes,omitempty"`
-}
-
-// The conversion the ComponentReading comment promises.
-var _ = ComponentReading(hwemu.ComponentState{})
-
-// Governor is the component's governor state.
-func (c ComponentReading) Governor() GovernorState {
-	return GovernorState{Native: c.GovernorNative, Preset: c.GovernorPreset}
-}
+// It is hwemu.ComponentState, whose JSON names are this wire format.
+type ComponentReading = hwemu.ComponentState
 
 // FacilitySnapshot is the facility after a tick: the IT power of every
 // emulated host (and of legacy nodes, through the facility callback), the

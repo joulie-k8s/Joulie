@@ -32,8 +32,11 @@
 #                  (kept by down.sh)
 #
 # The host tools are built from the working tree on first use: clusterspec
-# (validate, render-nodes) and simcluster (validate, agents, telemetry,
-# scale-spec); scenario.sh also builds simscenario and workloadgen there.
+# (render-nodes) and simcluster (validate, agents, telemetry, scale-spec);
+# scenario.sh also builds simscenario and workloadgen there. Both read the
+# local hardware profiles through --profiles-dir, which the scripts always
+# pass ($SIMCLUSTER_PROFILES_DIR, empty for the builtins only), so the
+# tools' own default, SIM_PROFILES_DIR, never applies here.
 # simcluster prints each result on stdout and diagnostics on stderr; the
 # scripts read:
 #
@@ -70,9 +73,13 @@ SIM_HWEMU_ROOT=/var/lib/joulie-hwemu
 # The images are built for this architecture only.
 SIM_IMAGE_ARCH=amd64
 SIM_IMAGE_REGISTRY=joulie.local
-# A Prometheus ConfigMap key and an otelcol one, mounted by the manifests.
+# A Prometheus ConfigMap key and an otelcol one, mounted by the manifests;
+# the otel-bridge Collector reads the example's configuration under its
+# own key first.
 SIM_PROM_CONFIG_KEY=prometheus.yml
 SIM_OTELCOL_CONFIG_KEY=config.yaml
+SIM_BRIDGE_EXAMPLE_KEY=collector.yaml
+SIM_BRIDGE_EXAMPLE=$SIM_REPO/examples/11-otel-collector-bridge/collector.yaml
 
 # sim_usage <script> prints the script's header comment, its usage.
 sim_usage() {
@@ -103,19 +110,30 @@ sim_init() {
   SIMCLUSTER_TELEMETRY=${SIMCLUSTER_TELEMETRY:-otel}
   SIMCLUSTER_POWER_SCOPE=${SIMCLUSTER_POWER_SCOPE:-components}
   SIMCLUSTER_TIMING=${SIMCLUSTER_TIMING:-dev}
+  SIMCLUSTER_EXTENDER=${SIMCLUSTER_EXTENDER:-hostnet}
+  # The modes of simcluster.Modes, in its order.
   case $SIMCLUSTER_TELEMETRY in
-    otel | otel-unpromoted | otel-labels-unpromoted | otel-utf8 | otel-collector | kepler | kepler-legacy) ;;
-    *) sim_die "SIMCLUSTER_TELEMETRY=$SIMCLUSTER_TELEMETRY is not a telemetry mode (otel, otel-unpromoted, otel-labels-unpromoted, otel-utf8, otel-collector, kepler, kepler-legacy)" ;;
+    otel | otel-unpromoted | otel-labels-unpromoted | otel-utf8 | otel-collector | otel-bridge | kepler | kepler-legacy) ;;
+    *) sim_die "SIMCLUSTER_TELEMETRY=$SIMCLUSTER_TELEMETRY is not a telemetry mode (otel, otel-unpromoted, otel-labels-unpromoted, otel-utf8, otel-collector, otel-bridge, kepler, kepler-legacy)" ;;
   esac
   case $SIMCLUSTER_POWER_SCOPE in
     components | host) ;;
     *) sim_die "SIMCLUSTER_POWER_SCOPE=$SIMCLUSTER_POWER_SCOPE is not components or host" ;;
   esac
+  # How kube-scheduler reaches the extender: hostnet, on 127.0.0.1 with the
+  # extender on the infra Node's network; service, through the fixed
+  # ClusterIP of the extender's Service with the extender off the host
+  # network, as a real install defaults to.
+  case $SIMCLUSTER_EXTENDER in
+    hostnet) SIM_SCHEDULER_CONFIG=$SIM_MANIFESTS/scheduler-config.yaml SIM_EXTENDER_VALUES=() ;;
+    service) SIM_SCHEDULER_CONFIG=$SIM_MANIFESTS/scheduler-config-service.yaml SIM_EXTENDER_VALUES=("$SIM_REPO/values/simcluster-extender-service.yaml") ;;
+    *) sim_die "SIMCLUSTER_EXTENDER=$SIMCLUSTER_EXTENDER is not hostnet or service" ;;
+  esac
   local timing=$SIM_SCRIPTS/timing/$SIMCLUSTER_TIMING.env
   if [[ ! $SIMCLUSTER_TIMING =~ ^[a-z0-9-]+$ || ! -f $timing ]]; then
     sim_die "SIMCLUSTER_TIMING=$SIMCLUSTER_TIMING names no file scripts/simcluster/timing/<name>.env"
   fi
-  export SIMCLUSTER_NAME SIMCLUSTER_DIR SIMCLUSTER_TELEMETRY SIMCLUSTER_POWER_SCOPE SIMCLUSTER_TIMING
+  export SIMCLUSTER_NAME SIMCLUSTER_DIR SIMCLUSTER_TELEMETRY SIMCLUSTER_POWER_SCOPE SIMCLUSTER_TIMING SIMCLUSTER_EXTENDER
 
   set -a
   # shellcheck source=versions.env
@@ -126,15 +144,13 @@ sim_init() {
   # shellcheck source=timing/dev.env
   source "$timing"
 
-  SIM_PROFILES_CLI=()
-  SIM_PROFILES_SPEC=()
   if [[ -n ${SIMCLUSTER_PROFILES_DIR:-} ]]; then
     [[ -d $SIMCLUSTER_PROFILES_DIR ]] || sim_die "SIMCLUSTER_PROFILES_DIR=$SIMCLUSTER_PROFILES_DIR is not a directory"
     SIMCLUSTER_PROFILES_DIR=$(cd "$SIMCLUSTER_PROFILES_DIR" && pwd)
     export SIMCLUSTER_PROFILES_DIR
-    SIM_PROFILES_CLI=(--profiles-dir "$SIMCLUSTER_PROFILES_DIR")
-    SIM_PROFILES_SPEC=(-profiles "$SIMCLUSTER_PROFILES_DIR")
   fi
+  # The profiles flag of both host tools.
+  SIM_PROFILES=(--profiles-dir "${SIMCLUSTER_PROFILES_DIR:-}")
   SIM_TELEMETRY_FLAGS=(--mode "$SIMCLUSTER_TELEMETRY" --scope "$SIMCLUSTER_POWER_SCOPE" --timing "$SIMCLUSTER_TIMING")
 
   # /usr/bin/go may be another release than the toolchain go.mod asks for;
@@ -149,6 +165,35 @@ sim_init() {
   # kubectl caches API discovery under ~/.kube/cache unless told otherwise.
   export KUBECACHEDIR=$SIMCLUSTER_DIR/kube-cache
   SIM_HOST_BIN=$SIMCLUSTER_DIR/bin/host
+}
+
+# sim_git_state prints the commit of the working tree as a run directory
+# name ends with it (scenario.RunDirName): exactly 12 characters of HEAD
+# (--short=12 may print more to stay unambiguous), then -dirty when the tree
+# has changes; nogit outside a git checkout.
+sim_git_state() {
+  local sha
+  sha=$(git -C "$SIM_REPO" rev-parse HEAD 2>/dev/null | cut -c1-12) || true
+  if [[ -z $sha ]]; then
+    printf 'nogit\n'
+  elif [[ -n $(git -C "$SIM_REPO" status --porcelain 2>/dev/null) ]]; then
+    printf '%s-dirty\n' "$sha"
+  else
+    printf '%s\n' "$sha"
+  fi
+}
+
+# sim_image_tag_key <component> prints the Helm value that holds the image
+# tag of a component of images.env: agent, controller-manager and scheduler
+# in the Joulie chart, simulator in the simulator chart.
+sim_image_tag_key() {
+  case $1 in
+    agent) echo agent.image.tag ;;
+    controller-manager) echo controllerManager.image.tag ;;
+    scheduler) echo schedulerExtender.image.tag ;;
+    simulator) echo image.tag ;;
+    *) sim_die "component $1 has no image tag" ;;
+  esac
 }
 
 # sim_go_toolchain prints the go.mod toolchain line's release, or go<go line>
@@ -281,31 +326,80 @@ sim_normalize_ref() {
   fi
 }
 
+# sim_cluster_images prints every image reference the cluster's containerd
+# lists, one per line: the one listing a run takes before it imports, which
+# sim_import_image then reads from SIM_CLUSTER_IMAGES.
+sim_cluster_images() {
+  docker exec "$SIMCLUSTER_NAME" ctr -n k8s.io images ls -q
+}
+
+# sim_save_args sets SIM_SAVE_ARGS to the docker save command, with
+# --platform where docker save has it: with Docker's containerd image store,
+# a plain save of a multi-platform image wants every platform's content,
+# which a pull did not fetch. Called once, before imports run in parallel.
+sim_save_args() {
+  SIM_SAVE_ARGS=(docker save)
+  if docker save --help 2>/dev/null | grep -q -- '--platform'; then
+    SIM_SAVE_ARGS+=(--platform "linux/$SIM_IMAGE_ARCH")
+  fi
+}
+
 # sim_import_image <ref> copies a local Docker image into the cluster's
-# containerd, unless containerd lists it already.
+# containerd, unless containerd lists it already: in SIM_CLUSTER_IMAGES when
+# the caller listed them (sim_cluster_images), else by asking for it.
 sim_import_image() {
-  local ref=$1 listed
-  listed=$(docker exec "$SIMCLUSTER_NAME" ctr -n k8s.io images ls -q "name==$(sim_normalize_ref "$ref")")
-  if [[ -n $listed ]]; then
+  local ref=$1 norm listed
+  norm=$(sim_normalize_ref "$ref")
+  if [[ -n ${SIM_CLUSTER_IMAGES+set} ]]; then
+    grep -qxF "$norm" <<<"$SIM_CLUSTER_IMAGES" && listed=$norm
+  else
+    listed=$(docker exec "$SIMCLUSTER_NAME" ctr -n k8s.io images ls -q "name==$norm")
+  fi
+  if [[ -n ${listed:-} ]]; then
     sim_log "$ref: already in the cluster"
     return 0
   fi
   sim_log "$ref: importing"
-  local save=(docker save)
-  # With Docker's containerd image store, a plain save of a multi-platform
-  # image wants every platform's content, which a pull did not fetch.
-  if docker save --help 2>/dev/null | grep -q -- '--platform'; then
-    save+=(--platform "linux/$SIM_IMAGE_ARCH")
-  fi
-  "${save[@]}" "$ref" | docker exec -i "$SIMCLUSTER_NAME" ctr -n k8s.io images import --platform "linux/$SIM_IMAGE_ARCH" - >/dev/null
+  [[ -n ${SIM_SAVE_ARGS+set} ]] || sim_save_args
+  "${SIM_SAVE_ARGS[@]}" "$ref" | docker exec -i "$SIMCLUSTER_NAME" ctr -n k8s.io images import --platform "linux/$SIM_IMAGE_ARCH" - >/dev/null
 }
 
 # sim_image_ids <ref> prints, comma separated, the image ID and the repo
-# digests the kubelet may report as a container's imageID.
+# digests the kubelet may report as a container's imageID, once the
+# kubelet's image service lists the image (at most 60 s).
 sim_image_ids() {
-  sim_wait 60 "the kubelet's image service to list $1" docker exec "$SIMCLUSTER_NAME" crictl inspecti -o json "$1"
-  docker exec "$SIMCLUSTER_NAME" crictl inspecti -o json "$1" |
-    jq -r '[.status.id] + (.status.repoDigests // []) | map(select(. != null and . != "")) | join(",")'
+  local deadline=$((SECONDS + 60)) out
+  until out=$(docker exec "$SIMCLUSTER_NAME" crictl inspecti -o json "$1" 2>/dev/null); do
+    if ((SECONDS >= deadline)); then
+      sim_log "timed out after 60s waiting for the kubelet's image service to list $1"
+      return 1
+    fi
+    sleep 1
+  done
+  jq -r '[.status.id] + (.status.repoDigests // []) | map(select(. != null and . != "")) | join(",")' <<<"$out"
+}
+
+# sim_wait_pids <what> <pid>... waits for every one of the background jobs
+# and fails, naming what, when one of them failed.
+sim_wait_pids() {
+  local what=$1 pid failed=0
+  shift
+  for pid in "$@"; do
+    wait "$pid" || failed=1
+  done
+  ((failed == 0)) || sim_die "$what failed"
+}
+
+# sim_rollouts <namespace> <object>... waits for the rollout of every object
+# at once.
+sim_rollouts() {
+  local ns=$1 obj pids=()
+  shift
+  for obj in "$@"; do
+    kubectl -n "$ns" rollout status "$obj" --timeout=300s >/dev/null &
+    pids+=($!)
+  done
+  sim_wait_pids "the rollout in $ns of $*" ${pids[@]+"${pids[@]}"}
 }
 
 # sim_load_images reads images.env and checks it names every Joulie image.
@@ -350,7 +444,7 @@ sim_helm_sim() {
   for f in "$@"; do args+=(-f "$f"); done
   for f in ${SIMCLUSTER_SIM_EXTRA_VALUES:-}; do args+=(-f "$(sim_path "$f")"); done
   helm upgrade --install "$SIM_RELEASE_SIM" "$SIM_REPO/charts/joulie-simulator" -n "$SIM_NS_SIM" "${args[@]}" \
-    --set-file emulate.clusterSpec="$SIMCLUSTER_DIR/spec.yaml" --set image.tag="$(sim_tag "$IMAGE_SIMULATOR")" >/dev/null
+    --set-file emulate.clusterSpec="$SIMCLUSTER_DIR/spec.yaml" --set "$(sim_image_tag_key simulator)=$(sim_tag "$IMAGE_SIMULATOR")" >/dev/null
 }
 
 # sim_helm_joulie <values file>... installs or upgrades Joulie with the images
@@ -360,9 +454,9 @@ sim_helm_joulie() {
   local args=() f
   for f in "$@"; do args+=(-f "$f"); done
   helm upgrade --install "$SIM_RELEASE_JOULIE" "$SIM_REPO/charts/joulie" -n "$SIM_NS_JOULIE" "${args[@]}" --skip-crds \
-    --set agent.image.tag="$(sim_tag "$IMAGE_AGENT")" \
-    --set controllerManager.image.tag="$(sim_tag "$IMAGE_CONTROLLER_MANAGER")" \
-    --set schedulerExtender.image.tag="$(sim_tag "$IMAGE_SCHEDULER")" >/dev/null
+    --set "$(sim_image_tag_key agent)=$(sim_tag "$IMAGE_AGENT")" \
+    --set "$(sim_image_tag_key controller-manager)=$(sim_tag "$IMAGE_CONTROLLER_MANAGER")" \
+    --set "$(sim_image_tag_key scheduler)=$(sim_tag "$IMAGE_SCHEDULER")" >/dev/null
 }
 
 # sim_pod_tier <agents> sets SIM_MAX_PODS, SIM_NODE_CIDR_MASK, SIM_CLUSTER_CIDR
@@ -414,7 +508,7 @@ sim_agents() {
   helm template "$SIM_RELEASE_JOULIE" "$SIM_REPO/charts/joulie" -n "$SIM_NS_JOULIE" "${args[@]}" \
     --set agent.mode=daemonset --show-only templates/agent-daemonset.yaml >"$render/agent-daemonset.yaml"
   if ! sim_cli agents --spec "$SIMCLUSTER_DIR/spec.yaml" --daemonset "$render/agent-daemonset.yaml" \
-    --image-arch "$SIM_IMAGE_ARCH" --root "$SIM_HWEMU_ROOT" "${SIM_PROFILES_CLI[@]}" >"$out.tmp" 2>"$excl"; then
+    --image-arch "$SIM_IMAGE_ARCH" --root "$SIM_HWEMU_ROOT" "${SIM_PROFILES[@]}" >"$out.tmp" 2>"$excl"; then
     cat "$excl" >&2
     sim_die "simcluster agents failed"
   fi
@@ -438,35 +532,51 @@ sim_backend_current() {
   [[ -s $f ]] && grep -qx "TELEMETRY=$SIMCLUSTER_TELEMETRY" "$f" && grep -qx "TIMING=$SIMCLUSTER_TIMING" "$f"
 }
 
-# sim_apply_config <manifest> <configmap> <key> <file> applies a backend
-# manifest, then its ConfigMap from the generated file, and restarts the
-# manifest's Deployment when the configuration changed: Prometheus and the
-# Collector read their configuration only at start.
+# sim_apply_config <manifest> <configmap> <key>=<file>... applies a backend's
+# ConfigMap from the files, then its manifest, and restarts the manifest's
+# Deployment only when an earlier configuration changed: Prometheus and the
+# Collector read their configuration only at start, and a Deployment created
+# here starts with the ConfigMap in place.
 sim_apply_config() {
-  local manifest=$1 cm=$2 key=$3 file=$4 before objs dep
-  before=$(kubectl -n "$SIM_NS_MONITORING" get configmap "$cm" -o json 2>/dev/null | jq -r --arg k "$key" '.data[$k] // empty') || before=
+  local manifest=$1 cm=$2 before after objs dep kv
+  shift 2
+  local files=()
+  for kv in "$@"; do files+=(--from-file="$kv"); done
+  before=$(kubectl -n "$SIM_NS_MONITORING" get configmap "$cm" -o json 2>/dev/null | jq -cS '.data // {}') || before=
+  after=$(kubectl -n "$SIM_NS_MONITORING" create configmap "$cm" "${files[@]}" --dry-run=client -o json)
+  kubectl apply --server-side --field-manager="$SIM_FIELD_MANAGER" --force-conflicts -f - <<<"$after" >/dev/null
   objs=$(kubectl apply --server-side --field-manager="$SIM_FIELD_MANAGER" --force-conflicts -f "$manifest" -o name)
-  kubectl -n "$SIM_NS_MONITORING" create configmap "$cm" --from-file="$key=$file" --dry-run=client -o yaml |
-    kubectl apply --server-side --field-manager="$SIM_FIELD_MANAGER" --force-conflicts -f - >/dev/null
   dep=$(grep -m1 '^deployment' <<<"$objs" || true)
   [[ -n $dep ]] || sim_die "$manifest holds no Deployment"
-  if [[ $before != "$(cat "$file")" ]]; then
+  if [[ -n $before && $before != "$(jq -cS '.data // {}' <<<"$after")" ]]; then
     kubectl -n "$SIM_NS_MONITORING" rollout restart "$dep" >/dev/null
   fi
   kubectl -n "$SIM_NS_MONITORING" rollout status "$dep" --timeout=300s >/dev/null
 }
 
-# sim_apply_backend sets up Prometheus, and the Collector in mode
-# otel-collector, for the current telemetry mode and timing. A Collector left
-# from an earlier mode stays: nothing sends to it or scrapes it.
+# sim_apply_backend sets up Prometheus, and the Collector of the modes that
+# run one, for the current telemetry mode and timing. A core Collector left
+# from mode otel-collector stays, since nothing sends to it or scrapes it;
+# the bridge Collector is deleted outside mode otel-bridge, since it would
+# go on pushing hw.* series of its own into Prometheus.
 sim_apply_backend() {
   local render=$SIMCLUSTER_DIR/render
   mkdir -p "$render"
   sim_cli telemetry "${SIM_TELEMETRY_FLAGS[@]}" --part prom-config >"$render/prometheus.yml"
-  sim_apply_config "$SIM_MANIFESTS/prometheus.yaml" prometheus-config "$SIM_PROM_CONFIG_KEY" "$render/prometheus.yml"
-  if [[ $SIMCLUSTER_TELEMETRY == otel-collector ]]; then
-    sim_cli telemetry "${SIM_TELEMETRY_FLAGS[@]}" --part otelcol-config >"$render/otelcol.yaml"
-    sim_apply_config "$SIM_MANIFESTS/otelcol.yaml" otelcol-config "$SIM_OTELCOL_CONFIG_KEY" "$render/otelcol.yaml"
+  sim_apply_config "$SIM_MANIFESTS/prometheus.yaml" prometheus-config "$SIM_PROM_CONFIG_KEY=$render/prometheus.yml"
+  case $SIMCLUSTER_TELEMETRY in
+    otel-collector)
+      sim_cli telemetry "${SIM_TELEMETRY_FLAGS[@]}" --part otelcol-config >"$render/otelcol.yaml"
+      sim_apply_config "$SIM_MANIFESTS/otelcol.yaml" otelcol-config "$SIM_OTELCOL_CONFIG_KEY=$render/otelcol.yaml"
+      ;;
+    otel-bridge)
+      sim_cli telemetry "${SIM_TELEMETRY_FLAGS[@]}" --part otelcol-config >"$render/otelcol-bridge.yaml"
+      sim_apply_config "$SIM_MANIFESTS/otelcol-bridge.yaml" otelcol-bridge-config \
+        "$SIM_BRIDGE_EXAMPLE_KEY=$SIM_BRIDGE_EXAMPLE" "$SIM_OTELCOL_CONFIG_KEY=$render/otelcol-bridge.yaml"
+      ;;
+  esac
+  if [[ $SIMCLUSTER_TELEMETRY != otel-bridge && -n $(kubectl -n "$SIM_NS_MONITORING" get deployment otelcol-bridge -o name --ignore-not-found) ]]; then
+    kubectl delete --ignore-not-found -f "$SIM_MANIFESTS/otelcol-bridge.yaml" >/dev/null
   fi
   sim_wait 300 "Prometheus to be ready" kubectl get --raw "/api/v1/namespaces/$SIM_NS_MONITORING/services/$SIM_PROM_SERVICE/proxy/-/ready"
   printf 'TELEMETRY=%s\nTIMING=%s\n' "$SIMCLUSTER_TELEMETRY" "$SIMCLUSTER_TIMING" >"$SIMCLUSTER_DIR/telemetry.env"
@@ -486,10 +596,13 @@ sim_agent_nodes() {
 sim_missing_nodehardware() {
   local have
   have=$(kubectl get nodehardwares -o json | jq -r '.items[].spec.nodeName') || return 1
-  local n
-  for n in "$@"; do
-    grep -qx "$n" <<<"$have" || printf '%s\n' "$n"
-  done
+  sim_minus <(printf '%s\n' "$@") <(printf '%s\n' "$have")
+}
+
+# sim_minus <file> <file> prints, sorted, the lines of the first that the
+# second lacks: one set difference, not one search per line.
+sim_minus() {
+  LC_ALL=C comm -23 <(LC_ALL=C sort -u "$1" | sed '/^$/d') <(LC_ALL=C sort -u "$2")
 }
 
 # sim_missing_series <wait json> prints each Node the wait query does not
@@ -507,10 +620,7 @@ sim_missing_twins() {
   local nodes twins
   nodes=$(kubectl get nodes -l joulie.io/managed=true -o json | jq -r '.items[].metadata.name') || return 1
   twins=$(kubectl get nodetwins -o json | jq -r '.items[] | select((.status.lastUpdated // "") != "") | .spec.nodeName') || return 1
-  local n
-  for n in $nodes; do
-    grep -qx "$n" <<<"$twins" || printf '%s\n' "$n"
-  done
+  sim_minus <(printf '%s\n' "$nodes") <(printf '%s\n' "$twins")
 }
 
 # sim_none <cmd...> succeeds when cmd succeeds and prints nothing: the
@@ -526,7 +636,7 @@ sim_none() {
 
 # sim_verify_images prints every running container in the Joulie and
 # simulator namespaces whose image is not a Joulie image of images.env, or
-# whose imageID is not the one images.env recorded for it (DR-21), and fails
+# whose imageID is not the one images.env recorded for it, and fails
 # when there is one.
 sim_verify_images() {
   sim_load_images

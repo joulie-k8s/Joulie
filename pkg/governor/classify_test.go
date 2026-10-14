@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	joulie "github.com/matbun/joulie/pkg/api"
+	fakesmi "github.com/matbun/joulie/simulator/pkg/hwemu/smi"
 )
 
 // GA11: Classify sorts a write's outcome: no permission is refused, a value
@@ -52,12 +53,12 @@ func TestGA11ClassifySortsWriteOutcomes(t *testing.T) {
 	}
 }
 
-// toolExit is a failed in-process fake tool: its text is the text of the
-// *exec.ExitError the real binary gives, "exit status N", and it has no
-// ExitCode method.
-type toolExit struct{ code int }
+// codeless hides the text of a wrapped error, so a classification can only
+// come from the error value.
+type codeless struct{ err error }
 
-func (e *toolExit) Error() string { return fmt.Sprintf("exit status %d", e.code) }
+func (c codeless) Error() string { return "the tool failed" }
+func (c codeless) Unwrap() error { return c.err }
 
 // exitOf runs a shell that exits with code and returns its *exec.ExitError.
 func exitOf(t *testing.T, code int) error {
@@ -73,11 +74,14 @@ func exitOf(t *testing.T, code int) error {
 // Classify sorts a failed nvidia-smi by its documented return value (4: the
 // user has no permission; 2: an invalid argument; 3: not available on the
 // device; 13: not implemented by the local NVML) before its message, whose
-// wording is not documented: the output here names no known phrase.
+// wording is not documented: the output here names no known phrase. The
+// code comes from the error value, for the real binary (*exec.ExitError) and
+// for the simulator's in-process fake (fakesmi.ExitError) alike, also when the
+// "exit status N" text is not in the message.
 func TestClassifySortsNvidiaSMIByExitCode(t *testing.T) {
 	const output = "Terminating early due to previous errors."
 	wrap := func(err error) error {
-		return fmt.Errorf("nvidia-smi -i 00000000:18:00.0 -lgc 300,1100: %w: %s", err, output)
+		return fmt.Errorf("nvidia-smi -i 00000000:18:00.0 -lgc 300,1100 failed (%s): %w", output, codeless{err})
 	}
 	for code, want := range map[int]string{
 		4:   joulie.GovernorResultRefused,
@@ -87,7 +91,7 @@ func TestClassifySortsNvidiaSMIByExitCode(t *testing.T) {
 		9:   joulie.GovernorResultError,
 		255: joulie.GovernorResultError,
 	} {
-		for name, err := range map[string]error{"binary": exitOf(t, code), "in-process": &toolExit{code}} {
+		for name, err := range map[string]error{"binary": exitOf(t, code), "in-process": &fakesmi.ExitError{Code: code}} {
 			if got, msg := Classify(wrap(err), "", ""); got != want {
 				t.Errorf("%s exit %d: %q (message %q), want %q", name, code, got, msg, want)
 			}

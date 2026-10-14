@@ -6,14 +6,17 @@ package main
 // place a preset becomes a native word; this file writes what it plans, reads
 // every write back, and watches the result.
 //
-// No preset is written unless GOVERNOR_WRITES is true. The baseline, the
-// state discovery found before the first write, lives in NodeHardware; the
-// agent restores it once when a field disappears, when it runs with
-// GOVERNOR_WRITES false after an earlier run changed the node (the only
-// write it then makes) and, with GOVERNOR_RESTORE_ON_EXIT, when its pod
-// stops (SIGTERM). Writes use the mounts and privileges the DVFS fallback
-// already uses: cpufreq and amdgpu attributes under /host-sys,
-// nvidia-smi -i <pci bus id> for NVIDIA.
+// No preset is written unless GOVERNOR_WRITES is true. GOVERNOR_WRITES false
+// does not stop a restore: an agent that finds settings an earlier run of it
+// changed puts the baseline back once, and that is the only write it makes.
+// The baseline is the state discovery finds while the agent has nothing of
+// its own written; it lives in NodeHardware, follows every discovery until
+// the first write and then stays as it is. The agent restores it once when a
+// field disappears, when it runs with GOVERNOR_WRITES false after an earlier
+// run changed the node and, with GOVERNOR_RESTORE_ON_EXIT, when its pod stops
+// (SIGTERM). Writes use the mounts and privileges the DVFS fallback already
+// uses: cpufreq and amdgpu attributes under /host-sys, nvidia-smi -i <pci
+// bus id> for NVIDIA.
 
 import (
 	"context"
@@ -31,6 +34,7 @@ import (
 	"github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/governor"
+	"github.com/matbun/joulie/pkg/governor/discover"
 	"github.com/prometheus/client_golang/prometheus"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -65,8 +69,8 @@ const (
 const (
 	nvidiaVerifySamples   = 3
 	nvidiaVerifyTolerance = 1.02
-	// nvidiaReasonGPUIdle is the GPU idle bit of
-	// clocks_event_reasons.active (NVML clocksEventReasonGpuIdle).
+	// nvidiaReasonGPUIdle is the GPU idle bit of the clock reasons the
+	// clock query reads (NVML clocksEventReasonGpuIdle).
 	nvidiaReasonGPUIdle = 0x1
 )
 
@@ -80,21 +84,14 @@ var (
 	governorODPoll   = 20 * time.Millisecond
 )
 
-// writeSysfsAttr writes value to a sysfs attribute in place: open without
-// create, truncate, write. A missing attribute is an error rather than a new
-// file, and the attribute is never replaced, which an emulated tree, read
-// back in place, would not see. A variable so a test can watch or fail the
-// writes.
-var writeSysfsAttr = func(path, value string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
-	if err != nil {
-		return err
-	}
-	if _, err := f.WriteString(value); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
+// writeSysfsAttr writes value to a sysfs attribute in place
+// (discover.WriteAttr). A variable so a test can watch or fail the writes.
+var writeSysfsAttr = discover.WriteAttr
+
+// readSysfsWord is the trimmed content of a sysfs attribute; ok is false
+// when the file cannot be read.
+func readSysfsWord(path string) (string, bool) {
+	return discover.ReadWord(path)
 }
 
 // governorConfig holds the agent's governor switches.
@@ -113,19 +110,30 @@ func governorConfigFromEnv() governorConfig {
 	}
 }
 
-// boolEnv reads a boolean variable; empty or invalid gives def, with a
-// warning for an invalid value.
+// boolEnvWords are the spellings a boolean variable takes, in any case.
+var boolEnvWords = map[string]bool{
+	"true": true, "1": true, "yes": true, "on": true,
+	"false": false, "0": false, "no": false, "off": false,
+}
+
+// boolEnvWarned holds the values already warned about, by variable.
+var boolEnvWarned sync.Map
+
+// boolEnv reads a boolean variable: true, 1, yes or on, false, 0, no or off,
+// in any case. Unset or empty gives def; any other value gives def with one
+// warning naming the variable, so a typo never flips a switch.
 func boolEnv(key string, def bool) bool {
 	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
 		return def
 	}
-	v, err := strconv.ParseBool(raw)
-	if err != nil {
-		log.Printf("warning: invalid %s=%q, using %v", key, raw, def)
-		return def
+	if v, ok := boolEnvWords[strings.ToLower(raw)]; ok {
+		return v
 	}
-	return v
+	if _, seen := boolEnvWarned.LoadOrStore(key+"="+raw, true); !seen {
+		log.Printf("warning: %s=%q is not true, 1, yes, on, false, 0, no or off; using %t", key, raw, def)
+	}
+	return def
 }
 
 var (
@@ -186,19 +194,19 @@ type governorComponent struct {
 	// expect holds the attributes the agent wrote and the values it reads
 	// back while the setting holds.
 	expect []governor.Write
-	// od holds the overdrive file of each amdgpu device the agent gave a
-	// compute ceiling, relative to /host-sys, and the ceiling in MHz.
+	// od holds the bus id of each amdgpu device the agent gave a compute
+	// ceiling, and the ceiling in MHz.
 	od map[string]int
 	// odDevices lists the bus ids whose overdrive range the agent edited
 	// since the baseline.
 	odDevices map[string]bool
 	// nv is the NVIDIA lock record per bus id; nvGood counts the verified
 	// samples of each locked GPU under the current intent; nvSeed is the
-	// applied field of the last status, the record of an earlier run until
-	// the GPUs are discovered.
+	// state the last status applied, the record of an earlier run until the
+	// GPUs are discovered.
 	nv     map[string]*nvidiaRecord
 	nvGood map[string]int
-	nvSeed string
+	nvSeed *governor.State
 	// changed is true once the agent wrote something since the baseline;
 	// boostWritten once it wrote boost; globalBoostSeen is the global boost
 	// file before the agent turned it on for a per-policy boost, "" when
@@ -246,8 +254,10 @@ type governorControl struct {
 	cpuBaseline *v1alpha1.CPUGovernorBaseline
 	gpuBaseline *v1alpha1.GPUGovernorBaseline
 	cpu, gpu    governorComponent
-	// last is the latest discovery, which the exit restore plans with.
-	last governorDiscovery
+	// last is the latest discovery, which the exit restore plans with;
+	// lastGPU the latest GPU discovery that was not empty.
+	last    governorDiscovery
+	lastGPU *gpuGovernorDiscovery
 }
 
 func newGovernorControl(nodeName string) *governorControl {
@@ -280,14 +290,20 @@ func governorResultWrote(result string) bool {
 	return true
 }
 
-// prepare runs before NodeHardware is written. It reads the stored baselines
-// once, through the typed status, records a baseline the object lacks from
-// this discovery (so before the first write), and hands both to the
-// NodeHardware status: a baseline is never recorded again over a state the
-// agent may have set, also when one discovery comes back empty. A refused
-// write sets writable false. The last status in the NodeTwin tells a
-// restarted agent whether an earlier run changed the governors, and which
-// NVIDIA locks it set.
+// prepare runs before NodeHardware is written. It reads the stored
+// baselines once, through the typed status, and hands the baselines to the
+// NodeHardware status. A component's baseline follows every discovery while
+// the agent has nothing of its own written there (no write since the
+// baseline, by this run or, per the last status, an earlier one), so a
+// change an operator makes before writes are turned on is what a restore
+// puts back; from the agent's first write on it stays as it is, also when
+// one discovery comes back empty. A GPU discovery that comes back empty
+// hands NodeHardware the last one that did not (GPUKept), so the presets it
+// lists and the intent the controller manager builds on them do not drop out
+// for a reconcile where a tool did not answer; the control itself acts on
+// this reconcile's discovery only. A refused write sets writable false. The
+// last status in the NodeTwin tells a restarted agent whether an earlier
+// run changed the governors, and which NVIDIA locks it set.
 func (g *governorControl) prepare(ctx context.Context, dyn dynamic.Interface, hw *HardwareInfo, desired *DesiredState) {
 	if !g.loaded {
 		obj, err := dyn.Resource(nodeHardwareGVR).Get(ctx, sanitizeNodeObjectName(g.nodeName), metav1.GetOptions{})
@@ -307,41 +323,56 @@ func (g *governorControl) prepare(ctx context.Context, dyn dynamic.Interface, hw
 	}
 	now := g.now().UTC().Format(time.RFC3339)
 	gov := &hw.Governors
-	// Without a stored baseline after an earlier run changed a component
-	// (NodeHardware lost), the state seen now may be the agent's own: the
-	// GPUs take the vendor default (amdgpu auto; an NVIDIA lock stays
-	// unknown), the CPU the state seen now, since the driver's default
-	// governor is unknowable.
-	if g.cpuBaseline == nil && gov.CPU != nil {
-		b := gov.CPU.baseline()
-		b.RecordedAt = now
-		if g.cpu.changed {
+	if gov.GPU != nil {
+		g.lastGPU = gov.GPU
+	} else if g.lastGPU != nil {
+		kept := *g.lastGPU
+		gov.GPUKept = &kept
+	}
+	if gov.CPU != nil && (g.cpuBaseline == nil || !g.cpu.changed) {
+		// Without a stored baseline after an earlier run changed the CPU
+		// governor (NodeHardware lost), the state seen now may be the
+		// agent's own; the driver's default governor is unknowable, so it
+		// is the best there is.
+		if g.cpuBaseline == nil && g.cpu.changed {
 			log.Printf("warning: governor cpu node=%s: no stored baseline after an earlier run changed the governors; restoring to the state seen now", g.nodeName)
 		}
-		g.cpuBaseline = b
+		b := gov.CPU.baseline()
+		if g.cpuBaseline == nil || !slices.EqualFunc(b.Groups, g.cpuBaseline.Groups, func(x, y v1alpha1.CPUGovernorState) bool { return x == y }) {
+			b.RecordedAt = now
+			g.cpuBaseline = b
+		}
 	}
-	if g.gpuBaseline == nil && gov.GPU != nil {
+	if gov.GPU != nil && (g.gpuBaseline == nil || !g.gpu.changed) {
 		b := &v1alpha1.GPUGovernorBaseline{Devices: slices.Clone(gov.GPU.Devices), RecordedAt: now}
-		if g.gpu.changed {
+		if g.gpuBaseline == nil && g.gpu.changed {
+			// NodeHardware lost after an earlier run changed the GPUs: the
+			// level seen now may be the agent's own, so the GPUs take the
+			// vendor default (amdgpu auto; an NVIDIA lock stays unknown).
 			for i := range b.Devices {
 				if b.Devices[i].Level != joulie.GovernorStateUnknown {
-					b.Devices[i].Level = amdLevelAuto
+					b.Devices[i].Level = governor.AMDLevelAuto
 				}
 			}
 			log.Printf("warning: governor gpu node=%s: no stored baseline after an earlier run changed the GPUs; restoring to the vendor default", g.nodeName)
 		}
-		g.gpuBaseline = b
+		if g.gpuBaseline == nil || !slices.Equal(b.Devices, g.gpuBaseline.Devices) {
+			g.gpuBaseline = b
+		}
 	}
 	gov.CPUBaseline, gov.GPUBaseline = g.cpuBaseline, g.gpuBaseline
 	if gov.CPU != nil && g.cpu.refused {
 		gov.CPU.Inventory.Writable = false
 	}
-	if gov.GPU != nil {
-		if g.gpu.refused {
-			gov.GPU.Inventory.Writable = false
+	for _, d := range []*gpuGovernorDiscovery{gov.GPU, gov.GPUKept} {
+		if d == nil {
+			continue
 		}
-		if len(gov.GPU.NVIDIA) > 0 && g.nvidiaLocked() && g.gpu.status.applied != "" {
-			gov.GPU.Inventory.Current = g.gpu.status.applied
+		if g.gpu.refused {
+			d.Inventory.Writable = false
+		}
+		if len(d.NVIDIA) > 0 && g.nvidiaLocked() && g.gpu.status.applied != "" {
+			d.Inventory.Current = g.gpu.status.applied
 		}
 	}
 	g.last = *gov
@@ -362,15 +393,16 @@ func (g *governorControl) seed(desired *DesiredState) {
 	}
 	if r := desired.LastCPUGovernor; r != nil && governorResultWrote(r.Result) {
 		g.cpu.changed = true
-		g.cpu.boostWritten = strings.Contains(r.Applied, "boost=") || strings.Contains(r.Applied, "no_turbo=")
+		g.cpu.boostWritten = governor.ParseNative(r.Backend, r.Applied).Boost != ""
 	}
 	if r := desired.LastGPUGovernor; r != nil && governorResultWrote(r.Result) {
 		g.gpu.changed = true
+		st := governor.ParseNative(r.Backend, r.Applied)
 		switch r.Backend {
 		case joulie.GovernorBackendNvidiaSMI:
-			g.gpu.nvSeed = r.Applied
+			g.gpu.nvSeed = &st
 		case joulie.GovernorBackendAMDGPUSysfs:
-			if strings.Contains(r.Applied, "sclk_max=") {
+			if st.SclkMaxMHz > 0 {
 				g.gpu.odDevices = map[string]bool{"*": true}
 			}
 		}
@@ -411,6 +443,9 @@ func (g *governorControl) blocked(env governorEnv, http bool, missing, missingRe
 	case env.simulateOnly:
 		return governorStatus{backend: "none", result: joulie.GovernorResultDisabled, message: "simulate-only mode: no governor write"}, true
 	case !g.cfg.writes:
+		// No preset is written; a setting an earlier run changed was put
+		// back before this (restoreWritesOff), the one write GOVERNOR_WRITES
+		// false still makes.
 		return governorStatus{backend: "none", result: joulie.GovernorResultDisabled, message: "GOVERNOR_WRITES is false: discovery only"}, true
 	case g.remote:
 		return governorStatus{backend: "none", result: joulie.GovernorResultUnsupported, message: "pool mode: the agent does not run on this node"}, true
@@ -542,9 +577,10 @@ func (g *governorControl) checkNow(c *governorComponent, ops governorOps, now ti
 	}
 }
 
-// mayRestore reports whether the agent may write c's baseline back. It
-// does not ask for GOVERNOR_WRITES: putting back what an earlier run
-// changed is the one write a discovery-only agent makes (design D8).
+// mayRestore reports whether the agent may write c's baseline back. It does
+// not ask for GOVERNOR_WRITES: with GOVERNOR_WRITES false the agent still
+// puts back, once, a setting an earlier run of it changed, and that restore
+// is the only write a discovery-only agent makes.
 func (g *governorControl) mayRestore(c *governorComponent, env governorEnv) bool {
 	return !env.simulateOnly && !g.remote && !c.refused
 }
@@ -707,9 +743,6 @@ func (g *governorControl) reconcileCPU(ctx context.Context, dyn dynamic.Interfac
 	})
 }
 
-// globalBoostRel is the global cpufreq boost file.
-const globalBoostRel = cpufreqRelDir + "/boost"
-
 func (g *governorControl) applyCPU(d *cpuGovernorDiscovery, intent *joulie.CPUGovernorIntent) governorOutcome {
 	c := &g.cpu
 	backend := joulie.GovernorBackendCPUFreq
@@ -729,8 +762,8 @@ func (g *governorControl) applyCPU(d *cpuGovernorDiscovery, intent *joulie.CPUGo
 		// on, where the global file exists (assumed from the cpufreq core's
 		// local boost store): turn that on first, and remember to put it
 		// back.
-		if v, ok := readSysfsWord(hostSysPath(globalBoostRel)); ok && v == "0" {
-			writes = append([]governor.Write{{RelPath: globalBoostRel, Value: "1"}}, writes...)
+		if v, ok := readSysfsWord(hostSysPath(governor.GlobalBoostRelPath)); ok && v == "0" {
+			writes = append([]governor.Write{{RelPath: governor.GlobalBoostRelPath, Value: "1"}}, writes...)
 			if c.globalBoostSeen == "" {
 				c.globalBoostSeen = "0"
 			}
@@ -753,9 +786,10 @@ func (g *governorControl) applyCPU(d *cpuGovernorDiscovery, intent *joulie.CPUGo
 	return governorOutcome{status: governorStatus{backend: backend, result: plan.Result, applied: native}, wrote: wrote, attempted: true}
 }
 
-// parseCPUList reads the kernel's list form, such as 0-63 or 0,2,4-7.
-func parseCPUList(s string) []int {
-	var out []int
+// cpuListHas reports whether s, in the kernel's list form such as 0-63 or
+// 0,2,4-7, contains id. It never expands a range: the list comes from a CR,
+// and "0-99999999999" must not make the agent allocate.
+func cpuListHas(s string, id int) bool {
 	for _, part := range strings.Split(s, ",") {
 		lo, hi, isRange := strings.Cut(strings.TrimSpace(part), "-")
 		a, err := strconv.Atoi(lo)
@@ -764,24 +798,15 @@ func parseCPUList(s string) []int {
 		}
 		b := a
 		if isRange {
-			if b, err = strconv.Atoi(hi); err != nil || b < a {
+			if b, err = strconv.Atoi(hi); err != nil {
 				continue
 			}
 		}
-		for i := a; i <= b; i++ {
-			out = append(out, i)
+		if a <= id && id <= b {
+			return true
 		}
 	}
-	return out
-}
-
-// boostBit is the content of a boost file for a boost word: 1 for on, the
-// inverse on intel_pstate's no_turbo.
-func boostBit(word string, inverted bool) string {
-	if (word == joulie.CPUGovernorBoostOn) != inverted {
-		return "1"
-	}
-	return "0"
+	return false
 }
 
 // differing keeps the writes whose attribute does not already read the
@@ -796,60 +821,35 @@ func differing(writes []governor.Write) []governor.Write {
 	return out
 }
 
-// cpuBaselineWrites lists, for the policies of d, the baseline value of one
-// policy attribute (governor or EPP) by policy, from the groups of b.
-func cpuBaselineWrites(d *cpuGovernorDiscovery, b *v1alpha1.CPUGovernorBaseline, file string, value func(v1alpha1.CPUGovernorState) string) []governor.Write {
+// cpuBaselineGroups is the baseline b as pkg/governor groups of the
+// policies of d: each stored group with the policies of d its list holds.
+func cpuBaselineGroups(d *cpuGovernorDiscovery, b *v1alpha1.CPUGovernorBaseline) []governor.CPUGroup {
 	if b == nil {
 		return nil
 	}
-	present := map[int]bool{}
-	for _, id := range d.Facts.Policies {
-		present[id] = true
-	}
-	var out []governor.Write
+	var out []governor.CPUGroup
 	for _, grp := range b.Groups {
-		v := value(grp)
-		if v == "" {
-			continue
-		}
-		for _, id := range parseCPUList(grp.Policies) {
-			if present[id] {
-				out = append(out, governor.Write{RelPath: fmt.Sprintf("%s/policy%d/%s", cpufreqRelDir, id, file), Value: v})
+		g := governor.CPUGroup{Governor: grp.Governor, EPP: grp.EPP, Boost: grp.Boost}
+		for _, id := range d.Facts.Policies {
+			if cpuListHas(grp.Policies, id) {
+				g.Policies = append(g.Policies, id)
 			}
+		}
+		if len(g.Policies) > 0 {
+			out = append(out, g)
 		}
 	}
 	return out
 }
 
 // cpuBaselineBoostWrites are the writes that put boost back as the baseline
-// found it, skipping a file that already reads it: the global file, the
-// inverted no_turbo, or each policy's boost and then the global file the
-// agent turned on (globalSeen).
+// found it, skipping a file that already reads it, then the global boost
+// file the agent turned on for a per-policy boost (globalSeen, its content
+// before).
 func cpuBaselineBoostWrites(d *cpuGovernorDiscovery, b *v1alpha1.CPUGovernorBaseline, globalSeen string) []governor.Write {
-	if b == nil || len(b.Groups) == 0 {
-		return nil
-	}
-	var writes []governor.Write
-	first := b.Groups[0].Boost
-	switch d.Facts.BoostScope {
-	case joulie.CPUBoostScopeGlobal:
-		if first != "" {
-			writes = append(writes, governor.Write{RelPath: globalBoostRel, Value: boostBit(first, false)})
-		}
-	case joulie.CPUBoostScopeNoTurbo:
-		if first != "" {
-			writes = append(writes, governor.Write{RelPath: intelPstateRelDir + "/no_turbo", Value: boostBit(first, true)})
-		}
-	case joulie.CPUBoostScopePerCPU:
-		writes = cpuBaselineWrites(d, b, "boost", func(s v1alpha1.CPUGovernorState) string {
-			if s.Boost == "" {
-				return ""
-			}
-			return boostBit(s.Boost, false)
-		})
-		if globalSeen != "" {
-			writes = append(writes, governor.Write{RelPath: globalBoostRel, Value: globalSeen})
-		}
+	_, _, writes := governor.PlanCPUGroups(d.Facts, cpuBaselineGroups(d, b))
+	if globalSeen != "" && d.Facts.BoostScope == joulie.CPUBoostScopePerCPU {
+		writes = append(writes, governor.Write{RelPath: governor.GlobalBoostRelPath, Value: globalSeen})
 	}
 	return differing(writes)
 }
@@ -864,14 +864,11 @@ func (g *governorControl) restoreCPU(d *cpuGovernorDiscovery) governorOutcome {
 	if b == nil {
 		return governorOutcome{status: governorStatus{backend: backend, result: joulie.GovernorResultError, message: "no baseline to restore"}}
 	}
+	governors, epps, _ := governor.PlanCPUGroups(d.Facts, cpuBaselineGroups(d, b))
 	total := 0
 	phases := []func() []governor.Write{
-		func() []governor.Write {
-			return differing(cpuBaselineWrites(d, b, "scaling_governor", func(s v1alpha1.CPUGovernorState) string { return s.Governor }))
-		},
-		func() []governor.Write {
-			return differing(cpuBaselineWrites(d, b, "energy_performance_preference", func(s v1alpha1.CPUGovernorState) string { return s.EPP }))
-		},
+		func() []governor.Write { return differing(governors) },
+		func() []governor.Write { return differing(epps) },
 		func() []governor.Write {
 			// Boost goes back only when the agent wrote it.
 			if !g.cpu.boostWritten && g.cpu.globalBoostSeen == "" {
@@ -896,11 +893,7 @@ func (g *governorControl) restoreCPU(d *cpuGovernorDiscovery) governorOutcome {
 func cpuBaselineNative(b *v1alpha1.CPUGovernorBaseline) string {
 	var words []string
 	for _, grp := range b.Groups {
-		w := grp.Governor
-		if grp.EPP != "" {
-			w += " epp=" + grp.EPP
-		}
-		words = append(words, w)
+		words = append(words, governor.NativeCPU(grp.Governor, grp.EPP))
 	}
 	return uniformOrMixed(slices.Compact(words))
 }
@@ -931,7 +924,7 @@ func (g *governorControl) reconcileGPU(ctx context.Context, dyn dynamic.Interfac
 		switch {
 		case len(gov.GPUWarnings) > 0:
 			missing, missingResult = strings.Join(gov.GPUWarnings, "; "), joulie.GovernorResultError
-		case hw.GPUVendor == "nvidia" && nvidiaArch(env.nodeLabels, hw.GPURawModel) != "":
+		case hw.GPUVendor == "nvidia" && discover.NvidiaArch(env.nodeLabels, hw.GPURawModel) != "":
 			missing, missingResult = "nvidia-smi listed no GPU: NVIDIA governor presets need nvidia-smi in the agent", joulie.GovernorResultError
 		}
 	}
@@ -956,19 +949,6 @@ func (g *governorControl) reconcileGPU(ctx context.Context, dyn dynamic.Interfac
 		apply: func() governorOutcome { return g.applyAMD(ctx, d, intent.Preset, ceiling) },
 		check: g.checkAMD,
 	})
-}
-
-// amdLevelAuto is the amdgpu performance level of the vendor default.
-const amdLevelAuto = "auto"
-
-// amdDeviceDir is an amdgpu device's directory relative to /host-sys.
-func amdDeviceDir(bus string) string {
-	return pciDevicesRelDir + "/" + strings.ToLower(bus) + "/"
-}
-
-// isODWrite reports whether w edits pp_od_clk_voltage.
-func isODWrite(w governor.Write) bool {
-	return strings.HasSuffix(w.RelPath, "/pp_od_clk_voltage")
 }
 
 // odSclkMax reads the sclk maximum, the "1:" line of the OD_SCLK section,
@@ -1035,7 +1015,7 @@ func writeAMDSteps(ctx context.Context, steps [][]governor.Write) (expect []gove
 			}
 			more = true
 			w := writes[k]
-			if isODWrite(w) {
+			if governor.IsODWrite(w) {
 				if err := writeSysfsAttr(hostSysPath(w.RelPath), w.Value); err != nil {
 					result, message = governor.Classify(err, w.Value, "")
 					return expect, wrote, result, w.RelPath + ": " + message
@@ -1067,6 +1047,7 @@ func (g *governorControl) applyAMD(ctx context.Context, d *gpuGovernorDiscovery,
 	backend := joulie.GovernorBackendAMDGPUSysfs
 	var steps [][]governor.Write
 	var natives []string
+	od := map[string]int{}
 	result := joulie.GovernorResultApplied
 	for _, f := range d.AMD {
 		plan, err := governor.PlanAMD(f, preset, ceiling)
@@ -1082,35 +1063,41 @@ func (g *governorControl) applyAMD(ctx context.Context, d *gpuGovernorDiscovery,
 		}
 		steps = append(steps, plan.Writes)
 		natives = append(natives, plan.Native)
+		if plan.SclkMaxMHz > 0 {
+			od[f.BusID] = plan.SclkMaxMHz
+		}
 	}
 	native := uniformOrMixed(natives)
 	expect, wrote, res, msg := writeAMDSteps(ctx, steps)
-	od := map[string]int{}
-	for i, writes := range steps {
-		for _, w := range writes {
-			if mhz, ok := strings.CutPrefix(w.Value, "s 1 "); ok && isODWrite(w) && wrote > 0 {
-				if v, err := strconv.Atoi(mhz); err == nil {
-					od[w.RelPath] = v
-					if c.odDevices == nil {
-						c.odDevices = map[string]bool{}
-					}
-					c.odDevices[d.AMD[i].BusID] = true
-				}
-			}
+	if wrote > 0 && len(od) > 0 {
+		if c.odDevices == nil {
+			c.odDevices = map[string]bool{}
+		}
+		for bus := range od {
+			c.odDevices[bus] = true
 		}
 	}
 	if res != "" {
 		return governorOutcome{status: governorStatus{backend: backend, result: res, message: msg, applied: native}, wrote: wrote, attempted: true}
 	}
-	for rel, mhz := range od {
-		text, _ := readSysfsWord(hostSysPath(rel))
-		if got, ok := odSclkMax(text); !ok || got != mhz {
-			return governorOutcome{status: governorStatus{backend: backend, result: joulie.GovernorResultNotApplied,
-				message: fmt.Sprintf("%s: wrote an sclk maximum of %d MHz but OD_SCLK reads %d", rel, mhz, got), applied: native}, wrote: wrote, attempted: true}
+	for bus, mhz := range od {
+		if ok, msg := checkODCeiling(bus, mhz); !ok {
+			return governorOutcome{status: governorStatus{backend: backend, result: joulie.GovernorResultNotApplied, message: msg, applied: native}, wrote: wrote, attempted: true}
 		}
 	}
 	c.expect, c.od = expect, od
 	return governorOutcome{status: governorStatus{backend: backend, result: result, applied: native}, wrote: wrote, attempted: true}
+}
+
+// checkODCeiling reports whether the overdrive table of the amdgpu device
+// at bus reads the sclk maximum mhz, and says what it reads when not.
+func checkODCeiling(bus string, mhz int) (bool, string) {
+	rel := governor.AMDDeviceRelPath(bus, governor.AMDODFile)
+	text, _ := readSysfsWord(hostSysPath(rel))
+	if got, ok := odSclkMax(text); !ok || got != mhz {
+		return false, fmt.Sprintf("%s: OD_SCLK maximum reads %d, the agent set %d", rel, got, mhz)
+	}
+	return true, ""
 }
 
 // checkAMD compares the levels and overdrive ceilings the agent set with
@@ -1120,13 +1107,12 @@ func (g *governorControl) checkAMD() (ok, reset bool, msg string) {
 	for _, w := range c.expect {
 		got, _ := readSysfsWord(hostSysPath(w.RelPath))
 		if got != w.Value {
-			return false, got == amdLevelAuto, fmt.Sprintf("%s reads %q, the agent wrote %q", w.RelPath, got, w.Value)
+			return false, got == governor.AMDLevelAuto, fmt.Sprintf("%s reads %q, the agent wrote %q", w.RelPath, got, w.Value)
 		}
 	}
-	for rel, mhz := range c.od {
-		text, _ := readSysfsWord(hostSysPath(rel))
-		if got, ok := odSclkMax(text); !ok || got != mhz {
-			return false, false, fmt.Sprintf("%s: OD_SCLK maximum reads %d, the agent set %d", rel, got, mhz)
+	for bus, mhz := range c.od {
+		if ok, msg := checkODCeiling(bus, mhz); !ok {
+			return false, false, msg
 		}
 	}
 	return true, false, ""
@@ -1142,7 +1128,7 @@ func (g *governorControl) restoreGPU(ctx context.Context, d *gpuGovernorDiscover
 
 // restoreAMD puts each device's baseline level back. Leaving manual for
 // auto drops the overdrive range with it; for any other baseline the agent
-// first resets the range it edited ("r", then "c").
+// first resets the range it edited.
 func (g *governorControl) restoreAMD(ctx context.Context, d *gpuGovernorDiscovery) governorOutcome {
 	c := &g.gpu
 	backend := joulie.GovernorBackendAMDGPUSysfs
@@ -1162,11 +1148,10 @@ func (g *governorControl) restoreAMD(ctx context.Context, d *gpuGovernorDiscover
 			continue
 		}
 		natives = append(natives, dev.Level)
-		dir := amdDeviceDir(f.BusID)
-		if f.OD && dev.Level != amdLevelAuto && (c.odDevices[f.BusID] || c.odDevices["*"]) {
-			odSteps = append(odSteps, []governor.Write{{RelPath: dir + "pp_od_clk_voltage", Value: "r"}, {RelPath: dir + "pp_od_clk_voltage", Value: "c"}})
+		if f.OD && dev.Level != governor.AMDLevelAuto && (c.odDevices[f.BusID] || c.odDevices["*"]) {
+			odSteps = append(odSteps, governor.PlanAMDODReset(f.BusID))
 		}
-		if w := differing([]governor.Write{{RelPath: dir + "power_dpm_force_performance_level", Value: dev.Level}}); len(w) > 0 {
+		if w := differing([]governor.Write{governor.PlanAMDLevel(f.BusID, dev.Level)}); len(w) > 0 {
 			levels = append(levels, w)
 		}
 	}
@@ -1184,28 +1169,21 @@ func (g *governorControl) restoreAMD(ctx context.Context, d *gpuGovernorDiscover
 
 // --- NVIDIA ------------------------------------------------------------
 
-// seedNvidia turns the lock record of an earlier run (the applied field of
-// its last status) into a record per GPU, once the GPUs are known.
+// seedNvidia turns the lock record of an earlier run (the state its last
+// status applied) into a record per GPU, once the GPUs are known. The
+// values of an earlier lock do not matter, only that one is held.
 func (g *governorControl) seedNvidia(d *gpuGovernorDiscovery) {
 	c := &g.gpu
-	if c.nvSeed == "" {
+	if c.nvSeed == nil {
 		return
 	}
 	if c.nv == nil {
 		c.nv = map[string]*nvidiaRecord{}
 	}
-	locked := &[2]int{}
 	for _, n := range d.NVIDIA {
-		r := &nvidiaRecord{}
-		if strings.Contains(c.nvSeed, "-lgc") {
-			r.gpu = locked
-		}
-		if strings.Contains(c.nvSeed, "-lmc") {
-			r.mem = locked
-		}
-		c.nv[n.BusID] = r
+		c.nv[n.BusID] = &nvidiaRecord{gpu: c.nvSeed.GPULockMHz, mem: c.nvSeed.MemLockMHz}
 	}
-	c.nvSeed = ""
+	c.nvSeed = nil
 }
 
 // nvidiaLocked reports whether the record holds any lock.
@@ -1227,19 +1205,10 @@ func (g *governorControl) nvidiaFacts(n nvidiaGovernorFacts) governor.NVFacts {
 	return f
 }
 
-// parseLock reads "<min>,<max>" as nvidia-smi is told a lock.
-func parseLock(v string) nvidiaLock {
-	lo, hi, ok := strings.Cut(v, ",")
-	a, err1 := strconv.Atoi(strings.TrimSpace(lo))
-	b, err2 := strconv.Atoi(strings.TrimSpace(hi))
-	if !ok || err1 != nil || err2 != nil {
-		return nil
-	}
-	return &[2]int{a, b}
-}
-
-// recordNvidia updates the record after one successful command.
-func (g *governorControl) recordNvidia(bus string, args []string) {
+// recordNvidia updates the record after one successful command of plan:
+// a lock command sets the lock the plan names for its domain, a reset
+// clears it.
+func (g *governorControl) recordNvidia(bus string, args []string, plan governor.Plan) {
 	c := &g.gpu
 	if c.nv == nil {
 		c.nv = map[string]*nvidiaRecord{}
@@ -1249,16 +1218,12 @@ func (g *governorControl) recordNvidia(bus string, args []string) {
 		r = &nvidiaRecord{}
 		c.nv[bus] = r
 	}
-	for i, a := range args {
+	for _, a := range args {
 		switch a {
-		case "-lgc", "-lmc":
-			if i+1 < len(args) {
-				if a == "-lgc" {
-					r.gpu = parseLock(args[i+1])
-				} else {
-					r.mem = parseLock(args[i+1])
-				}
-			}
+		case "-lgc":
+			r.gpu = plan.GPULockMHz
+		case "-lmc":
+			r.mem = plan.MemLockMHz
 		case "-rgc":
 			r.gpu = nil
 		case "-rmc":
@@ -1276,7 +1241,7 @@ func (g *governorControl) runNvidiaPlans(ctx context.Context, plans map[string]g
 				return issued, result, message
 			}
 			issued++
-			g.recordNvidia(bus, args)
+			g.recordNvidia(bus, args, plans[bus])
 		}
 	}
 	return issued, "", ""
@@ -1332,26 +1297,18 @@ type nvidiaSample struct {
 }
 
 // nvidiaSamples runs the discovery's clock query: per bus id, the current
-// clocks and whether the GPU is busy (the idle bit of the event reasons
-// clear).
+// clocks and whether the GPU is busy (the idle bit of the clock reasons
+// clear). A row without both clocks and the reasons is left out.
 func nvidiaSamples(ctx context.Context) map[string]nvidiaSample {
-	out, err := runCommand(ctx, "nvidia-smi", nvidiaClockQueryArgs...)
+	rows, err := discover.QueryNvidiaClocks(ctx, runTool)
 	if err != nil {
 		return nil
 	}
 	res := map[string]nvidiaSample{}
-	for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		p := splitCSVLine(ln)
-		if len(p) < 7 {
-			continue
+	for _, r := range rows {
+		if r.ClocksOK && r.ReasonsOK {
+			res[r.BusID] = nvidiaSample{smMHz: r.SMMHz, memMHz: r.MemMHz, busy: r.Reasons&nvidiaReasonGPUIdle == 0}
 		}
-		sm, err1 := strconv.ParseFloat(p[1], 64)
-		mem, err2 := strconv.ParseFloat(p[2], 64)
-		reasons, err3 := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(p[6]), "0x"), 16, 64)
-		if err1 != nil || err2 != nil || err3 != nil {
-			continue
-		}
-		res[p[0]] = nvidiaSample{smMHz: sm, memMHz: mem, busy: reasons&nvidiaReasonGPUIdle == 0}
 	}
 	return res
 }

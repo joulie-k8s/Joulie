@@ -243,16 +243,6 @@ func (b *nodeTestTree) sys(rel string, owner layout.Owner, mode fs.FileMode, con
 	b.file(path.Join(layout.SysDir, rel), owner, mode, content)
 }
 
-// reject puts a directory in place of an attribute that rejects writes (D).
-func (b *nodeTestTree) reject(rel string) {
-	rel = path.Join(layout.SysDir, rel)
-	b.dir(path.Dir(rel))
-	if err := os.Mkdir(b.abs(rel), 0o755); err != nil {
-		b.tb.Fatal(err)
-	}
-	b.files = append(b.files, layout.FileSpec{Rel: rel, Kind: layout.KindRejectingDir, Owner: nodeR, Mode: fs.ModeDir | 0o755})
-}
-
 func (b *nodeTestTree) link(rel, target string) {
 	rel = path.Join(layout.SysDir, rel)
 	b.dir(path.Dir(rel))
@@ -413,13 +403,8 @@ func nodeRenderZone(b *nodeTestTree, ct string, idx []int, zs ZoneSpec, name str
 	for i, c := range zs.Constraints {
 		pre := path.Join(dir, fmt.Sprintf("constraint_%d_", i))
 		b.sys(pre+"name", nodeR, 0o444, c.Name+"\n")
-		if c.RejectWrites.V != "" {
-			b.reject(pre + "power_limit_uw")
-			b.sys(pre+"time_window_us", nodeR, 0o644, nodeItoa(c.TimeWindowUS.V)+"\n")
-		} else {
-			b.sys(pre+"power_limit_uw", nodeA, 0o644, nodeItoa(c.PowerLimitUW.V)+"\n")
-			b.sys(pre+"time_window_us", nodeA, 0o644, nodeItoa(c.TimeWindowUS.V)+"\n")
-		}
+		b.sys(pre+"power_limit_uw", nodeA, 0o644, nodeItoa(c.PowerLimitUW.V)+"\n")
+		b.sys(pre+"time_window_us", nodeA, 0o644, nodeItoa(c.TimeWindowUS.V)+"\n")
 		b.sys(pre+"max_power_uw", nodeR, 0o444, nodeItoa(c.MaxPowerUW.V)+"\n")
 	}
 	for j, ch := range zs.Children {

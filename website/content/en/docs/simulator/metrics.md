@@ -1,29 +1,19 @@
 ---
 title: "Simulator Metrics"
-weight: 40
+weight: 28
 ---
 
 The simulator publishes three kinds of telemetry:
 
 - **Prometheus metrics about itself** at `/metrics` (`joulie_sim_*`), for Prometheus to scrape.
-- **OpenTelemetry metrics and events about the emulated nodes and the facility**, in [emulate mode]({{< relref "/docs/simulator/simulator.md#emulate-mode" >}}) only. Metrics are pushed as OTLP JSON over HTTP; events are written to `events.jsonl` and pushed when a logs endpoint is set.
-- **Compatibility exporters**, in emulate mode only: the Prometheus formats of real exporters (Kepler, dcgm-exporter) at `/exporters/<name>/metrics`, opt-in.
+- **OpenTelemetry metrics and events about the emulated nodes and the facility**, in [emulate mode]({{< relref "/docs/simulator/emulate-mode.md" >}}) only. Metrics are pushed as OTLP JSON over HTTP; events are written to `events.jsonl` and pushed when a logs endpoint is set.
+- **Compatibility exporters**, in emulate mode only: the Prometheus formats of real exporters (Kepler, dcgm-exporter, the ROCm device-metrics-exporter) at `/exporters/<name>/metrics`, opt-in.
 
-The OpenTelemetry names are spelled once, in `pkg/otel/semconv`, and the controller manager reads the same names back from Prometheus. Their Prometheus spelling is computed by `pkg/otel/promname`. A contract test (`tests/contracts/otel_docs_test.go`) fails when this page misses a name of that table, names one the table does not define, or gives a name another unit, instrument, attribute list, severity or Prometheus spelling than the table.
+The OpenTelemetry names are spelled once, in `pkg/otel/semconv`, and the controller manager reads the same names back from Prometheus. Their Prometheus spelling is computed by `pkg/otel/promname`.
 
 ## Prometheus metrics at `/metrics`
 
-Endpoint:
-
-- path: `/metrics`
-- address: simulator HTTP listen address (`SIM_ADDR`, default `:18080`)
-
-Related debug endpoints (non-Prometheus):
-
-- `/debug/nodes`
-- `/debug/events`
-- `/debug/energy`
-- `/debug/emulate` (emulate mode): the latest snapshot of every emulated node and the facility, the values the OpenTelemetry export and the compatibility exporters are computed from
+Served at `/metrics` on the simulator's listen address (`SIM_ADDR`, default `127.0.0.1:18080`, and `:18080` in a pod). The JSON debug endpoints are listed under [HTTP API]({{< relref "/docs/simulator/simulator.md#http-api" >}}).
 
 ### HTTP/request metrics
 
@@ -61,6 +51,19 @@ Related debug endpoints (non-Prometheus):
 
 In emulate mode the per-node gauges of an emulated node are set from its snapshot at every tick.
 
+### Facility metrics
+
+The [facility model]({{< relref "/docs/simulator/simulator.md#facility-model" >}}), as gauges:
+
+- `joulie_sim_facility_ambient_temp_celsius` (gauge)
+  - outdoor ambient temperature, in degrees Celsius
+- `joulie_sim_facility_it_power_watts` (gauge)
+  - total IT power of the simulated nodes
+- `joulie_sim_facility_cooling_power_watts` (gauge)
+  - cooling power, derived from the IT power and the PUE
+- `joulie_sim_facility_pue` (gauge)
+  - simulated Power Usage Effectiveness
+
 ### Workload/job metrics
 
 - `joulie_sim_job_submitted_total{class}` (counter)
@@ -94,8 +97,7 @@ In emulate mode the per-node gauges of an emulated node are set from its snapsho
 
 - Prometheus metrics capture online simulator state and request/control behavior.
 - Integrated node/cluster energy totals of the label-modelled nodes are exposed through `/debug/energy` (JSON), not as Prometheus time series. Emulated nodes export their energy as OpenTelemetry counters (below).
-- Richer thermal and averaged-vs-instantaneous details are currently exposed through the HTTP telemetry/debug endpoints rather than as separate Prometheus gauges.
-- In particular, fields such as `instantPackagePowerWatts`, `cpu.temperatureC`, `cpu.thermalThrottlePct`, and per-device GPU averaged power live in the legacy JSON of `/telemetry/{node}?format=legacy` (until v0.4.0) and in `/debug/nodes`.
+- Thermal state and averaged versus instantaneous power are not Prometheus gauges: fields such as `instantPackagePowerWatts`, `cpu.temperatureC`, `cpu.thermalThrottlePct` and per-device GPU averaged power are in the legacy JSON of `/telemetry/{node}?format=legacy` (until v0.4.0) and in `/debug/nodes`.
 
 ## OpenTelemetry metrics (emulate mode)
 
@@ -114,7 +116,7 @@ Each emulated node is one resource:
 | `k8s.cluster.name` | the cluster spec's name |
 | `service.version` | the simulator's module version |
 
-The facility is a resource of its own, with `service.instance.id` `facility` and `k8s.cluster.name`. `OTEL_RESOURCE_ATTRIBUTES` adds attributes but never overrides `service.instance.id`, `k8s.node.name` or `host.name`. In Prometheus a node's series get `job="joulie/joulie-simulator"` and `instance="<node>"`.
+The facility is a resource of its own, with `service.instance.id` `facility` and `k8s.cluster.name`. `OTEL_RESOURCE_ATTRIBUTES` adds attributes but never overrides `service.instance.id`, `k8s.node.name` or `host.name`. In Prometheus a node's series get `job="joulie/joulie-simulator"` and `instance="<node>"`; that is a convenience of the default setup, not part of the contract, so select nodes by `k8s_node_name`.
 
 ### Metrics
 
@@ -134,7 +136,7 @@ Prometheus names are those of the default translation strategy (`UnderscoreEscap
 | `hw.gpu.io` | By | Counter (int), one point per `network.io.direction` and `joulie.hw.gpu.io.path` | GPUs, on the `peer` path only: the bytes a GPU received from and sent to the other GPUs of its node. The emulator models no host or network interface bytes, so `host` and `nic` have no point. The counters come from the node's ledger and start at its start | `hw.id`, `hw.name`, `hw.vendor`, `hw.model`, `network.io.direction` (`receive`, `transmit`), `joulie.hw.gpu.io.path` (`peer`, `host`, `nic`) | `hw_gpu_io_bytes_total` |
 | `joulie.hw.gpu.speed` | Hz | Gauge (int), one point per `joulie.hw.clock.domain` | GPUs with a clock model, every GPU of the builtin profiles: `graphics` and `memory` on NVIDIA, plus `fabric` and `soc` on an AMD family whose profile has fclk and socclk tables | `hw.id`, `hw.vendor`, `hw.model`, `joulie.hw.clock.domain` (`graphics`, `memory`, `fabric`, `soc`) | `joulie_hw_gpu_speed_hertz` |
 | `joulie.hw.gpu.speed.limit` | Hz | Gauge (int), one point per `joulie.hw.clock.domain` and `hw.limit_type`: `max` and `throttled` | the GPUs and domains of `joulie.hw.gpu.speed`: `max` is the domain's hardware maximum (the top of its `pp_dpm_*` table, NVML's maximum clock), `throttled` the maximum in effect, the clock a busy GPU reaches under the present performance level, overdrive range or clock lock (on NVIDIA at most the sustained maximum) | `hw.id`, `hw.vendor`, `hw.model`, `joulie.hw.clock.domain`, `hw.limit_type` | `joulie_hw_gpu_speed_limit_hertz` |
-| `joulie.hw.governor` | 1 | UpDownCounter (int): 1 for the state a component is in, 0 for the one it left | CPU packages and GPUs with a governor state: 1 for the state, and 0 for the state the component was in before, sent with every export until the state changes again and dropped by a simulator restart. `joulie.hw.governor.preset` is empty when no single preset maps to the native state | `hw.id`, `hw.type`, `joulie.hw.governor.preset`, `joulie.hw.governor.native` | `joulie_hw_governor` |
+| `joulie.hw.governor` | 1 | UpDownCounter (int): 1 for the state a component is in, 0 for the one it left | CPU packages and GPUs with a governor state: 1 for the state, and 0 for the state the component was in before, sent with every export until the state changes again and dropped by a simulator restart. `joulie.hw.governor.preset` is the preset `pkg/governor` maps the native state back to, empty when no single preset does ([Preset names]({{< relref "/docs/hardware/hardware-modeling.md#preset-names" >}})) | `hw.id`, `hw.type`, `joulie.hw.governor.preset`, `joulie.hw.governor.native` | `joulie_hw_governor` |
 | `joulie.facility.ambient_temperature` | Cel | Gauge | the facility | | `joulie_facility_ambient_temperature_celsius` |
 | `joulie.facility.it.energy` | J | Counter | the facility | | `joulie_facility_it_energy_joules_total` |
 | `joulie.facility.it.power` | W | Gauge | the facility | | `joulie_facility_it_power_watts` |
@@ -162,48 +164,17 @@ The point attributes become the labels `hw_id`, `hw_type`, `hw_name`, `hw_parent
 - One `cpu` component per package. RAPL core, uncore and psys zones are never `cpu`. DRAM is `memory`; Joulie does not count it as node power.
 - Host power is the packages, the DRAM zones, the platform remainder and the GPUs together. Power supply losses are not included.
 - Only readings a real collector could measure are emitted: package and DRAM `energy_uj`, NVML total energy, amdgpu power. A node whose profile is a virtual machine gets no `hw.*` metric at all, and a CPU without a DRAM zone gets no `memory` component.
-- Exported counters never decrease, not even across a simulator restart: they continue from a ledger kept in the tree root, the GPU bytes of `hw.gpu.io` as well as the energies. While the simulator is down no energy accrues, so a restart shows as a gap in the rate, never as a reset. A counter's start time is the ledger's start.
+- Exported counters never decrease, not even across a simulator restart: they continue from a ledger kept in the tree root, the GPU bytes of `hw.gpu.io` as well as the energies. The ledger is rewritten each tick, in place and whole up to 2 KB, by rename above, so a killed simulator leaves the last whole tick. While the simulator is down no energy accrues, so a restart shows as a gap in the rate, never as a reset. A counter's start time is the ledger's start.
 
 ### Prometheus
 
-A Prometheus started with `--web.enable-otlp-receiver` accepts the push at `/api/v1/otlp/v1/metrics`. Promote the node identity onto the data series:
-
-```yaml
-otlp:
-  promote_resource_attributes: [k8s.node.name, host.name]
-  translation_strategy: UnderscoreEscapingWithSuffixes
-storage:
-  tsdb:
-    out_of_order_time_window: 30m
-```
-
-Prometheus promotes no attribute by default. Without the promotion a query joins `target_info` for the node name, which is what the controller manager's `auto` mode falls back to; group `target_info` first, so that a restarted simulator's second `target_info` series does not fail the join:
-
-```promql
-sum by (k8s_node_name) (
-  rate(hw_energy_joules_total{hw_type=~"cpu|gpu"}[5m])
-  * on (job, instance) group_left (k8s_node_name) max by (job, instance, k8s_node_name) (target_info)
-)
-```
-
-`instance="<node>"` is a convenience of the default setup, not part of the contract; select nodes by `k8s_node_name`.
-
-`rate()` under-reads a series younger than its window, so a rate window should cover at least 4 export intervals. Under the other translation strategies the names change:
-
-| OTel | `UnderscoreEscapingWithSuffixes` (default) | `NoUTF8EscapingWithSuffixes` | `UnderscoreEscapingWithoutSuffixes` | `NoTranslation` |
-|---|---|---|---|---|
-| `hw.energy` (J, counter) | `hw_energy_joules_total` | `hw.energy_joules_total` | `hw_energy` | `hw.energy` |
-| `hw.host.power` (W, gauge) | `hw_host_power_watts` | `hw.host.power_watts` | `hw_host_power` | `hw.host.power` |
-| `hw.gpu.utilization` (1, gauge) | `hw_gpu_utilization_ratio` | `hw.gpu.utilization_ratio` | `hw_gpu_utilization` | `hw.gpu.utilization` |
-| label `k8s.node.name` | `k8s_node_name` | `"k8s.node.name"` | `k8s_node_name` | `"k8s.node.name"` |
-
-The full table for every name is `pkg/otel/promname/testdata/prometheus-names.tsv`.
+A Prometheus started with `--web.enable-otlp-receiver` accepts the push at `/api/v1/otlp/v1/metrics`. Its settings (promoting `k8s.node.name` and `host.name`, the translation strategy, the out-of-order window), the spelling of every name under the other translation strategies, and the pitfalls are under [Prometheus settings]({{< relref "/docs/architecture/telemetry.md#prometheus-settings" >}}), [Name translation strategies]({{< relref "/docs/architecture/telemetry.md#name-translation-strategies" >}}) and [Pitfalls]({{< relref "/docs/architecture/telemetry.md#pitfalls" >}}). The full table for every name is `pkg/otel/promname/testdata/prometheus-names.tsv`.
 
 ## Events (emulate mode)
 
 Events are OpenTelemetry log records with an `eventName`. `timeUnixNano` is when the change happened in the emulated node, `observedTimeUnixNano` when the simulator emitted it. The body is only a display string; read the attributes. A record is emitted on its node's resource, so the node is not an attribute.
 
-They are always appended to `events.jsonl` in `SIM_OTEL_FILE_DIR`, one `LogsData` object per line, and pushed only when a logs endpoint is set. `/debug/events` and `events.ndjson` keep their previous format.
+They are always appended to `events.jsonl` in `SIM_OTEL_FILE_DIR`, one `LogsData` object per line, and pushed only when a logs endpoint is set. `/debug/events` and `events.ndjson` in `SIM_DEBUG_PERSIST_DIR` use the simulator's own JSON instead.
 
 | `eventName` | Severity | When | Attributes |
 |---|---|---|---|
@@ -212,9 +183,9 @@ They are always appended to `events.jsonl` in `SIM_OTEL_FILE_DIR`, one `LogsData
 | `joulie.sim.cap.applied` | 9 INFO | a power limit written to a node file took effect, possibly quantized or clamped | `hw.id`, `hw.type`, `joulie.sim.file`, `joulie.sim.outcome`, `joulie.sim.value.written`, `joulie.sim.value.effective` |
 | `joulie.sim.setting.applied` | 9 INFO | another setting took effect, such as a frequency bound or a governor | the same |
 | `joulie.sim.cap.reset` | 13 WARN | a GPU limit went back to its default: persistence mode off and no client | the same, with `hw.type=gpu`; written is the old limit, effective the default |
-| `joulie.sim.write.rejected` | 13 WARN | a write was reverted | the same, and `error.type` (`reverted_out_of_range`, `parse_error`, `restored`, `einval`, `eopnotsupp`, `ebusy`) |
+| `joulie.sim.write.rejected` | 13 WARN | a write was reverted | the same, and `error.type` (`reverted_out_of_range`, `parse_error`, `restored`, `einval`, `eopnotsupp`, `ebusy`, `enodata`) |
 
-`joulie.sim.outcome` is the emulator's own name for what happened to the write, such as `accepted`, `clamped`, `rejected` or `reset-persistence-off`. `restored` means a file only the emulator writes was overwritten and put back. `einval`, `eopnotsupp` and `ebusy` mean the real driver refuses the value with that errno (outcome `rejected`): a file tree cannot fail the write itself, so the emulator reverts the value at its next step, and a reader sees its write not applied.
+`joulie.sim.outcome` is the emulator's own name for what happened to the write, such as `accepted`, `clamped`, `rejected` or `reset-persistence-off`. `restored` means a file only the emulator writes was overwritten and put back. `einval`, `eopnotsupp`, `ebusy` and `enodata` mean the real driver refuses the value with that errno (outcome `rejected`): a file tree cannot fail the write itself, so the emulator reverts the value at its next step, and a reader sees its write not applied. Among others, `einval` comes from an unknown governor or EPP word and an out-of-range amdgpu `power1_cap`, `ebusy` from a non-zero EPP under the performance governor, and `enodata` from any write to the limit or time window of a locked or disabled RAPL constraint.
 
 ## Workload run and scenario names
 
@@ -260,9 +231,9 @@ A calibration sweep records these two names beside the hardware metrics above, a
 
 | Name | Reproduces | Series | Notes |
 |---|---|---|---|
-| `kepler-0.7` | Kepler v0.7.12 (the same schema through 0.9.0) | `kepler_node_{package,core,uncore,dram,other,gpu,platform}_joules_total{package, instance, mode}` with the constant label `source` | One series per socket, `mode` `dynamic` and `idle`, so each node has two `platform` series. `instance` is the node name; scraped with `honor_labels: false` it becomes `exported_instance`. GPU series for NVIDIA GPUs only, `source="NVML"`; the others `source="rapl-sysfs"`. `platform` is the host energy, and `other` the platform energy not counted in package, DRAM and GPU. Idle is the energy of the lowest-load interval seen so far, an approximation of Kepler's rule. A node without RAPL emits nothing. |
-| `kepler-0.12` | Kepler v0.12.0 | `kepler_node_cpu_{joules_total,watts}` and `kepler_node_cpu_{active,idle}_{joules_total,watts}` with `zone`, `path` and the constant label `node_name`; for NVIDIA GPUs `kepler_node_gpu_{,active_,idle_}{joules_total,watts}` with `gpu`, `gpu_uuid`, `gpu_name`, `vendor` | Zones `package`, and `dram` when present; a 2-socket node aggregates each zone with `path="aggregated-<zone>"`. Active energy is the node's CPU usage share. The GPU series are what Kepler emits with its experimental GPU feature turned on. |
+| `kepler-0.7` | Kepler v0.7.12 (the same schema through 0.9.0) | `kepler_node_{package,core,uncore,dram,other,gpu,platform}_joules_total{package, instance, mode}` with the constant label `source` | One series per socket, `mode` `dynamic` and `idle`, so each node has two `platform` series. `instance` is the node name; scraped with `honor_labels: false` it becomes `exported_instance`. GPU series for NVIDIA GPUs only, `source="NVML"`; the others `source="rapl-sysfs"`. `platform` is the host energy, and `other` the platform energy not counted in package, DRAM and GPU. Idle and dynamic split as upstream: each series keeps the power of its lowest-load interval as the idle power of every later interval, and dynamic is the rest; an interval that measured less gets dynamic 0 and the full recorded idle, so under a cap that holds a package below that idle the two modes add up to more than it draws ([`kepler-legacy` under a cap]({{< relref "/docs/architecture/telemetry.md#the-queries" >}})). A node without RAPL emits nothing. |
+| `kepler-0.12` | Kepler v0.12.0 | `kepler_node_cpu_{joules_total,watts}` and `kepler_node_cpu_{active,idle}_{joules_total,watts}` with `zone`, `path` and the constant label `node_name`; for NVIDIA GPUs `kepler_node_gpu_{,active_,idle_}{joules_total,watts}` with `gpu`, `gpu_uuid`, `gpu_name`, `vendor` | The zones are the RAPL zones of the node's tree, named as Kepler names them: the socket index is stripped, so the packages of a 2-socket node are one zone `package` with `path="aggregated-package"`, while a die zone `package-N-die-M` keeps its name. `kepler_node_cpu_joules_total` is the zone's `energy_uj` and wraps at `max_energy_range_uj`, as upstream; the active and idle counters never wrap. Active energy is the node's CPU usage share; the first read of a node counts the whole counter as idle, at 0 W. The GPU series are served only with `SIM_KEPLER012_GPU=true`, as Kepler serves them only with its experimental GPU option. A node whose tree has no RAPL zone emits nothing, GPUs included. |
 | `dcgm-4.8.4` | dcgm-exporter 4.8.4 | `DCGM_FI_DEV_POWER_USAGE` (W), `DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION` (mJ), `DCGM_FI_DEV_GPU_UTIL` (%) per NVIDIA GPU | Labels `gpu`, `UUID`, `pci_bus_id`, `device=nvidia<i>`, `modelName`, `hostname` (`Hostname` with `SIM_DCGM_HOSTNAME_LABEL`, as releases up to 4.8.2 spell it) and `DCGM_FI_DRIVER_VERSION`. The energy is the GPU's NVML total energy counter. |
 | `amd-dme-1.5.2` | ROCm device-metrics-exporter v1.5.2 | `gpu_package_power` and `gpu_power_usage` (whole W), `gpu_energy_consumed` (uJ), `gpu_gfx_activity` (%) per AMD GPU, all typed gauge as upstream does | The fourteen labels upstream always sets: `gpu_id` (the index), `hostname` (the node), `card_model` (the product name here), `serial_number` (synthetic, stable per node and index), `gpu_partition_id="0"`, `gpu_compute_partition_type="spx"`, `gpu_memory_partition_type="nps1"`, `deployment_mode="baremetal"`, and `pod`, `namespace`, `container`, `job_id`, `job_user`, `job_partition`, which stay empty. The energy is the GPU's energy ledger. A power or energy reading of 0, or of a GPU without a power sensor, is left out, as upstream exports nothing for a field it reads as 0. Upstream has no power cap metric at v1.5.2, so none is served. |
 
-The exporters keep their counters in memory, so they restart from zero with the simulator, as the real exporters do. Counters that are hardware counters upstream (Kepler 0.12 totals, the DCGM energy, the AMD GPU energy) report the node's ledger or device counter instead, which continues across a restart.
+The exporters keep their counters in memory, so they restart from zero with the simulator, as the real exporters do. Counters that are hardware counters upstream report the emulated hardware's own, which continue across a restart: the Kepler 0.12 totals the zones' `energy_uj`, the DCGM energy the GPU's device counter, the AMD GPU energy its ledger.

@@ -92,8 +92,8 @@ type ensureEntry struct {
 
 // ensureStat records every entry under root: mode, content or link target,
 // inode and modification time. state/.tmp and what it holds are left out:
-// it is the scratch directory both the Node and Ensure write temporary
-// files to, so its own modification time moves with every step.
+// it is the directory the Node writes temporary files to, so its own
+// modification time moves with every step.
 func ensureStat(tb testing.TB, root string) map[string]ensureEntry {
 	tb.Helper()
 	scratch := path.Join(layout.StateDir, layout.TmpDir)
@@ -233,11 +233,11 @@ func TestEN02EnsureLeavesALiveTreeUntouched(t *testing.T) {
 	ensureNoScratch(t, root)
 }
 
-// EN03: entries deleted from a live tree come back from a fresh render, and
-// only those: an R file and a class link, each listed in Added; a whole
-// policy directory, listed with every entry in it; state/.tmp, created
-// before the scratch render goes in it. A scratch render a crashed resume
-// left behind is removed, and nothing else in state/.tmp is.
+// EN03: entries deleted from a live tree come back as a fresh render has
+// them, and only those: an R file and a class link, each listed in Added; a
+// whole policy directory, listed with every entry in it; state/.tmp. A
+// scratch render left in state/.tmp is removed, and nothing else there
+// is.
 func TestEN03EnsurePutsBackOnlyMissingEntries(t *testing.T) {
 	t.Parallel()
 	p := ensureBuiltin(t, "intel-xeon-2s-rapl")
@@ -311,8 +311,8 @@ func TestEN03EnsurePutsBackOnlyMissingEntries(t *testing.T) {
 	}
 	ensureNoScratch(t, root)
 
-	// A scratch render a crashed resume left in state/.tmp is removed; a
-	// temporary file of the Node next to it is not.
+	// A scratch render left in state/.tmp is removed; a temporary file of
+	// the Node next to it is not.
 	tmp := filepath.Join(root, layout.StateDir, layout.TmpDir)
 	crashed := filepath.Join(tmp, ensureScratchPrefix+"123")
 	nodeTemp := filepath.Join(tmp, "s-456")

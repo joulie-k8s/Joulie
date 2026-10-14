@@ -81,8 +81,6 @@ type NodeHardwareCPU struct {
 	ControlAvailable   bool         `json:"controlAvailable,omitempty"`
 	TelemetryAvailable bool         `json:"telemetryAvailable,omitempty"`
 	Warnings           []string     `json:"warnings,omitempty"`
-	// Governor is the cpufreq governor state the agent discovered.
-	Governor *CPUGovernorInventory `json:"governor,omitempty"`
 }
 
 type CPULandmarks struct {
@@ -111,8 +109,6 @@ type NodeHardwareGPU struct {
 	ControlAvailable   bool        `json:"controlAvailable,omitempty"`
 	TelemetryAvailable bool        `json:"telemetryAvailable,omitempty"`
 	Warnings           []string    `json:"warnings,omitempty"`
-	// Governor is the GPU clock governor state the agent discovered.
-	Governor *GPUGovernorInventory `json:"governor,omitempty"`
 }
 
 type GPUCapRange struct {

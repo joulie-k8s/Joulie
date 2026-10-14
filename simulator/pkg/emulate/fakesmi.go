@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/matbun/joulie/simulator/pkg/hwemu"
 )
 
 // fakesmiMode is the mode of the installed fakesmi: every bin/<tool> link of
@@ -70,30 +72,12 @@ func fakesmiSum(path string) ([]byte, error) {
 	return h.Sum(nil), nil
 }
 
-// fakesmiCopy copies src to a temp file in dir and renames it onto dst.
+// fakesmiCopy copies src to a temp file in dir and renames it onto dst
+// (hwemu.WriteFileAtomic).
 func fakesmiCopy(src, dir, dst string) error {
-	in, err := os.Open(src)
+	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
-	tmp, err := os.CreateTemp(dir, "."+FakeSMIName+"-")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	_, cerr := io.Copy(tmp, in)
-	if err := errors.Join(cerr, tmp.Close()); err != nil {
-		_ = os.Remove(name)
-		return err
-	}
-	if err := os.Chmod(name, fakesmiMode); err != nil {
-		_ = os.Remove(name)
-		return err
-	}
-	if err := os.Rename(name, dst); err != nil {
-		_ = os.Remove(name)
-		return err
-	}
-	return nil
+	return hwemu.WriteFileAtomic(dir, "."+FakeSMIName+"-", dst, data, fakesmiMode)
 }

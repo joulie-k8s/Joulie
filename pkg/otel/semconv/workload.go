@@ -1,6 +1,6 @@
 package semconv
 
-// Names of the S4 workload runs and scenarios: the simulator's v1 workload
+// Names of the workload runs and scenarios: the simulator's v1 workload
 // engine writes them to <runId>/otlp/simulator.{metrics,logs}.jsonl, and the
 // scenario runner writes the harness side to otlp/harness.{metrics,logs}.jsonl
 // and keys summary.json by the test.* attributes. None of the joulie.*
@@ -322,42 +322,42 @@ var (
 // energy no job holds.
 var (
 	JoulieSimWorkloadJobsSubmitted = Register(Metric{
-		Name: "joulie.sim.workload.jobs.submitted", Unit: "{job}", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.sim.workload.jobs.submitted", Unit: "{job}", Owner: OwnerJoulie,
 		Kind: Counter, Value: Int, Attributes: []string{AttrJoulieWorkloadClass},
 		Brief: "Jobs whose Job object or pod was created.",
 	})
 	JoulieSimWorkloadJobsFinished = Register(Metric{
-		Name: "joulie.sim.workload.jobs.finished", Unit: "{job}", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.sim.workload.jobs.finished", Unit: "{job}", Owner: OwnerJoulie,
 		Kind: Counter, Value: Int, Attributes: []string{AttrJoulieWorkloadClass, AttrSimJobOutcome},
 		Brief: "Jobs that ended, by outcome.",
 	})
 	JoulieSimWorkloadJobsActive = Register(Metric{
-		Name: "joulie.sim.workload.jobs.active", Unit: "{job}", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.sim.workload.jobs.active", Unit: "{job}", Owner: OwnerJoulie,
 		Kind: UpDownCounter, Value: Int, Attributes: []string{AttrJoulieWorkloadClass, AttrSimJobState},
 		Brief: "Submitted jobs that have not ended, by state.",
 	})
 	JoulieSimWorkloadJobDuration = Register(Metric{
-		Name: "joulie.sim.workload.job.duration", Unit: "s", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.sim.workload.job.duration", Unit: "s", Owner: OwnerJoulie,
 		Kind: Histogram, Value: Double, Attributes: []string{AttrJoulieWorkloadClass},
 		Brief: "Time from submission to completion of completed jobs.",
 	})
 	JoulieSimWorkloadJobQueueWait = Register(Metric{
-		Name: "joulie.sim.workload.job.queue_wait", Unit: "s", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.sim.workload.job.queue_wait", Unit: "s", Owner: OwnerJoulie,
 		Kind: Histogram, Value: Double, Attributes: []string{AttrJoulieWorkloadClass},
 		Brief: "Time from a job's creation to its pod's bind.",
 	})
 	JoulieSimWorkloadJobSlowdown = Register(Metric{
-		Name: "joulie.sim.workload.job.slowdown", Unit: "1", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.sim.workload.job.slowdown", Unit: "1", Owner: OwnerJoulie,
 		Kind: Histogram, Value: Double, Attributes: []string{AttrJoulieWorkloadClass},
 		Brief: "Run time over ideal run time of completed jobs.",
 	})
 	JoulieSimWorkloadWork = Register(Metric{
-		Name: "joulie.sim.workload.work", Unit: "{unit}", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.sim.workload.work", Unit: "{unit}", Owner: OwnerJoulie,
 		Kind: Counter, Value: Double, Attributes: []string{AttrJoulieWorkloadClass, AttrSimWorkKind},
 		Brief: "Work done by jobs, in trace work units.",
 	})
 	JoulieSimWorkloadEnergy = Register(Metric{
-		Name: "joulie.sim.workload.energy", Unit: "J", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.sim.workload.energy", Unit: "J", Owner: OwnerJoulie,
 		Kind: Counter, Value: Double,
 		Attributes: []string{AttrJoulieWorkloadClass, AttrHwType, AttrK8sNodeName, AttrSimProfile},
 		Brief:      "Energy of CPU packages and GPUs attributed to jobs by class, the unheld share as idle.",
@@ -368,23 +368,23 @@ var (
 // follow hw.status: an UpDownCounter of value 1 for the state in effect.
 var (
 	JoulieCaptureNodeTwinMeasuredPower = Register(Metric{
-		Name: "joulie.capture.nodetwin.measured_power", Unit: "W", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.capture.nodetwin.measured_power", Unit: "W", Owner: OwnerJoulie,
 		Kind: Gauge, Value: Double, Attributes: []string{AttrK8sNodeName, AttrJoulieNodeTwinPowerSource},
 		Brief: "The NodeTwin's measured node power at each capture.",
 	})
 	JoulieCaptureNodeTwinSchedulableClass = Register(Metric{
-		Name: "joulie.capture.nodetwin.schedulable_class", Unit: "1", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.capture.nodetwin.schedulable_class", Unit: "1", Owner: OwnerJoulie,
 		Kind: UpDownCounter, Value: Int, Attributes: []string{AttrK8sNodeName, AttrJoulieNodeSchedulableClass},
 		Brief: "1 for the NodeTwin's schedulable class at each capture.",
 	})
 	JoulieCaptureNodeTwinControlResult = Register(Metric{
-		Name: "joulie.capture.nodetwin.control_result", Unit: "1", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.capture.nodetwin.control_result", Unit: "1", Owner: OwnerJoulie,
 		Kind: UpDownCounter, Value: Int,
 		Attributes: []string{AttrK8sNodeName, AttrHwType, AttrJoulieNodeTwinControlBackend, AttrJoulieNodeTwinControlResult},
 		Brief:      "1 for the backend and result of each component in the NodeTwin's control status at each capture.",
 	})
 	JoulieScenarioAssertionValue = Register(Metric{
-		Name: "joulie.scenario.assertion.value", Unit: "{value}", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.scenario.assertion.value", Unit: "{value}", Owner: OwnerJoulie,
 		Kind: Gauge, Value: Double, Attributes: []string{AttrJoulieAssertionName, AttrJoulieAssertionSource},
 		Brief: "The observed value of one check of an assertion and, where it is a number, the expected one.",
 	})

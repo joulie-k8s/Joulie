@@ -67,8 +67,11 @@ const (
 	// components) or host energy and power (scope host), grouped by the
 	// translated k8s.node.name. The default.
 	NodePowerPresetOTel NodePowerPreset = "otel"
-	// NodePowerPresetKepler reads Kepler 0.10 and later: CPU package and
-	// GPU joules counters grouped by node_name. GPU series exist only from
+	// NodePowerPresetKepler reads Kepler 0.10 and later, grouped by
+	// node_name: the active and idle energy counters of the CPU package
+	// zones (the package zone summed over sockets, or each die zone), which
+	// add up to the zone's energy and, unlike kepler_node_cpu_joules_total,
+	// do not wrap; and the GPU joules counter. GPU series exist only from
 	// Kepler 0.12 with its experimental GPU feature on. Scope host is
 	// rejected.
 	NodePowerPresetKepler NodePowerPreset = "kepler"
@@ -200,10 +203,12 @@ type Result struct {
 }
 
 // Sample is one series of a result. Value is what Prometheus returned,
-// possibly NaN or infinite; the readers of Result reject such values.
+// possibly NaN or infinite; the readers of Result reject such values. Time
+// is the evaluation time Prometheus gave it.
 type Sample struct {
 	Labels map[string]string
 	Value  float64
+	Time   time.Time
 }
 
 // Issues counts what a reader found wrong in a result, for logs and hints.

@@ -630,8 +630,8 @@ var renderCorpusPolicyFiles = []string{
 
 // renderCorpusCPUFreq sets p.CPUFreq from the scaling driver (hasDriver says
 // cpufreq-driver exists) and the policies under governor/cpufreq. Without
-// policies the cpufreq is minimal, the scaling driver only, as before
-// captures held governor state. With them it carries the governor, the
+// policies the cpufreq is minimal, the scaling driver only, as a capture
+// without governor state allows. With them it carries the governor, the
 // available governors, the frequency range and the energy-performance
 // preference of the policies, the driver mode, HWP from the cpuinfo flags on
 // intel_pstate, and the boost state where the driver keeps it. A profile

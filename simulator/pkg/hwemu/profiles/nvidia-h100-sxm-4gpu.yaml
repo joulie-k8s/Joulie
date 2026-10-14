@@ -41,7 +41,40 @@ gpus:
     maxW: {v: 700, src: published:h100page}
     defaultW: {v: 700, src: "published:smih100#Default Power Limit 700.00 W"}
     minW: {v: 200, src: "published:smih100#Min Power Limit 200.00 W"}
-  tools: [{name: nvidia-smi, variant: default}]
+  # A real nvidia-smi runs only with its ELF loader, the shared libraries
+  # it links and the NVML library present; fakesmi checks them, in this
+  # order, under HWEMU_ROOTFS.
+  tools:
+    - name: nvidia-smi
+      variant: default
+      requires:
+        - paths: [/lib64/ld-linux-x86-64.so.2]
+          exit: 127
+          src: "assumed:nvidia-smi is a dynamically linked x86-64 ELF with this interpreter (check with file $(command -v nvidia-smi)); without it exec fails with ENOENT, which a shell reports as exit 127"
+        - paths: [/lib/x86_64-linux-gnu/libpthread.so.0, /usr/lib/x86_64-linux-gnu/libpthread.so.0, /lib64/libpthread.so.0, /usr/lib64/libpthread.so.0]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: libpthread.so.0: cannot open shared object file: No such file or directory"
+          src: "assumed:the shared libraries ldd lists for nvidia-smi, in its order (libpthread.so.0, libm.so.6, libdl.so.2, librt.so.1, libc.so.6; check with ldd $(command -v nvidia-smi)); the loader prints this line for the first one it cannot find and exits 127; the directories are the Debian and RHEL ones"
+        - paths: [/lib/x86_64-linux-gnu/libm.so.6, /usr/lib/x86_64-linux-gnu/libm.so.6, /lib64/libm.so.6, /usr/lib64/libm.so.6]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: libm.so.6: cannot open shared object file: No such file or directory"
+          src: "assumed:as libpthread.so.0"
+        - paths: [/lib/x86_64-linux-gnu/libdl.so.2, /usr/lib/x86_64-linux-gnu/libdl.so.2, /lib64/libdl.so.2, /usr/lib64/libdl.so.2]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: libdl.so.2: cannot open shared object file: No such file or directory"
+          src: "assumed:as libpthread.so.0"
+        - paths: [/lib/x86_64-linux-gnu/librt.so.1, /usr/lib/x86_64-linux-gnu/librt.so.1, /lib64/librt.so.1, /usr/lib64/librt.so.1]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: librt.so.1: cannot open shared object file: No such file or directory"
+          src: "assumed:as libpthread.so.0"
+        - paths: [/lib/x86_64-linux-gnu/libc.so.6, /usr/lib/x86_64-linux-gnu/libc.so.6, /lib64/libc.so.6, /usr/lib64/libc.so.6]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: libc.so.6: cannot open shared object file: No such file or directory"
+          src: "assumed:as libpthread.so.0"
+        - paths: [/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1, /usr/lib64/libnvidia-ml.so.1]
+          exit: 12
+          stderr: "NVIDIA-SMI couldn't find libnvidia-ml.so library in your system. Please make sure that the NVIDIA Display Driver is properly installed and present in your system.\nPlease also try adding directory that contains libnvidia-ml.so to your system PATH."
+          src: "published:nvsmi#RETURN VALUE, Return code 12 - NVML Shared Library couldn't be found or loaded; the library paths (Debian and RHEL layouts) and the stderr text are assumed"
   clocks:
     sm:
       minMHz: {v: 345, src: "assumed:the idle SM clock (smih100clk), taken as the lowest supported clock"}

@@ -7,10 +7,9 @@ import (
 	"github.com/matbun/joulie/simulator/pkg/hw"
 )
 
-// simulatorAnalyticPower is the analytic branch of cpuPowerWithModel in
-// simulator/cmd/simulator as it was before F2, with the model and node fields
-// as arguments. Since F2 the simulator calls AnalyticCPUModel instead, and this
-// copy stays as the reference for the move.
+// simulatorAnalyticPower is the analytic CPU power the simulator's legacy
+// engine computes, with the model and node fields as arguments: the
+// reference AnalyticCPUModel must equal, which the simulator calls.
 func simulatorAnalyticPower(baseIdleW, pMaxW, alphaUtil, betaFreq, cpuUtil, freqScale, memoryIntensity, ioIntensity, thermalThrottle float64) float64 {
 	util := clamp01(cpuUtil)
 	freq := clamp01(freqScale)
@@ -29,12 +28,11 @@ func simulatorAnalyticPower(baseIdleW, pMaxW, alphaUtil, betaFreq, cpuUtil, freq
 	return p
 }
 
-// simulatorSolveFreqScaleForCap is the analytic branch of the simulator's
-// solveFreqScaleForCap, with minFreqScale(model) passed in. F2 deleted that
-// function, and the simulator now calls SolveFreqScaleForCap; this copy stays
-// as the reference for the closed form. It ignores the activity factor, so
-// the reference passes util x activity as util (FC04 in
-// simulator/cmd/simulator/fxcode_regression_test.go).
+// simulatorSolveFreqScaleForCap is the closed form of the analytic cap
+// solve, with minFreqScale(model) passed in: the reference
+// SolveFreqScaleForCap must equal, which the simulator calls. It ignores the
+// activity factor, so the reference passes util x activity as util (FC04 in
+// simulator/cmd/simulator/loop_and_model_regression_test.go).
 func simulatorSolveFreqScaleForCap(baseIdleW, pMaxW, alphaUtil, betaFreq, util, capW, minFreq float64) float64 {
 	util = clamp01(util)
 	if util <= 0 || pMaxW <= baseIdleW {
@@ -59,9 +57,9 @@ func simulatorSolveFreqScaleForCap(baseIdleW, pMaxW, alphaUtil, betaFreq, util, 
 	return math.Pow(x, 1.0/beta)
 }
 
-// P01: AnalyticCPUModel.Power is the simulator formula moved verbatim, activity
-// and thermal factors included. A few points are evaluated by hand, the rest
-// of the grid against the formula as main.go wrote it before F2.
+// P01: AnalyticCPUModel.Power is the simulator formula, activity and thermal
+// factors included. A few points are evaluated by hand, the rest of the grid
+// against simulatorAnalyticPower.
 func TestP01AnalyticPowerIsTheSimulatorFormula(t *testing.T) {
 	m := AnalyticCPUModel{IdleW: 40, MaxW: 165, AlphaUtil: 1.15, BetaFreq: 1.35, Knee: 0.7}
 	byHand := []struct {
@@ -127,10 +125,10 @@ func TestP02FirstOrderTowardIsAClampedEulerStep(t *testing.T) {
 // H15: the solver throttles a curve model (D13 in cmd/agent/hwemu_test.go:
 // the simulator's own bisection passed CapWatts, the curve clamped to it, so
 // p > capW never held and the scale stayed at 1), and the analytic closed form
-// is the one the simulator had before F2 switched it to this solver, with the
-// activity factor in its utilization. At memory intensity 0.4 the old form
-// left it out, so a capped node drew below its cap (FC04); the
-// power at a solved scale of at most 1, for a cap above idle, is now the cap.
+// is simulatorSolveFreqScaleForCap with the activity factor in its
+// utilization. At memory intensity 0.4 a form that left it out held a
+// capped node below its cap (FC04); the power at a solved scale of at most
+// 1, for a cap above idle, is the cap.
 func TestH15SolveFreqScaleForCapThrottlesCurveModels(t *testing.T) {
 	curve := MeasuredCurveCPUModel{
 		Points: []hw.PowerPoint{{LoadPct: 0, PowerW: 100}, {LoadPct: 50, PowerW: 300}, {LoadPct: 100, PowerW: 700}},

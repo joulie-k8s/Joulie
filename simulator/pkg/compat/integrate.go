@@ -27,15 +27,17 @@ func (c *compatCounter) delta(v float64) float64 {
 // k07Split splits one Kepler v0.7.12 series into idle and dynamic energy.
 // Upstream keeps, per series, the energy of the interval with the lowest
 // node CPU time seen so far as the idle energy of every later interval, and
-// the dynamic energy is the rest (pkg/collector/stats/node_stats.go:69-104,
-// pkg/collector/stats/stats.go:158-181). A zero increment is skipped, so a
-// series that never moved has no idle energy yet.
+// the dynamic energy is the rest, or 0 when the interval measured less than
+// that idle energy; the idle energy is reported in full even then
+// (pkg/collector/stats/node_stats.go:69-104,
+// pkg/collector/stats/stats.go:158-181). So when a power cap holds a
+// component below the idle power recorded at a lower load, idle plus dynamic
+// exceeds the energy measured, and a reader that sums both modes, as the
+// kepler-legacy preset does, reads the recorded idle power. A zero increment
+// is skipped, so a series that never moved has no idle energy yet.
 //
 // assumed: the lowest interval is kept as a power, not as an energy, because
-// emulator ticks need not be the fixed 3 s Kepler sample period; and the
-// idle increment is capped at the interval's energy, so idle plus dynamic
-// always equals the energy measured, where upstream reports dynamic 0 and
-// the full idle when the interval is below the idle one.
+// emulator ticks need not be the fixed 3 s Kepler sample period.
 type k07Split struct {
 	seen    bool
 	minLoad float64
@@ -48,7 +50,7 @@ type k07Split struct {
 // returns the idle and dynamic increments. A new idle baseline needs a load
 // and a power at or below the current ones, as upstream requires both the
 // resource utilisation and the energy to be at or below the stored minimum
-// (node_stats.go:89-90).
+// (node_stats.go:89-90); the interval that sets it is all idle.
 func (s *k07Split) add(deltaJ, dt, load float64) (idle, dyn float64) {
 	if !(deltaJ > 0) || !(dt > 0) || math.IsInf(deltaJ, 0) {
 		return 0, 0
@@ -56,9 +58,13 @@ func (s *k07Split) add(deltaJ, dt, load float64) (idle, dyn float64) {
 	p := deltaJ / dt
 	if !s.seen || (load <= s.minLoad && p <= s.idleW) {
 		s.seen, s.minLoad, s.idleW = true, load, p
+		idle = deltaJ
+	} else {
+		idle = float64(s.idleW * dt)
+		if deltaJ > idle {
+			dyn = deltaJ - idle
+		}
 	}
-	idle = math.Min(float64(s.idleW*dt), deltaJ)
-	dyn = deltaJ - idle
 	s.idleJ += idle
 	s.dynJ += dyn
 	return idle, dyn

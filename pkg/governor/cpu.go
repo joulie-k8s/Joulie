@@ -3,7 +3,6 @@ package governor
 import (
 	"fmt"
 	"slices"
-	"strconv"
 
 	joulie "github.com/matbun/joulie/pkg/api"
 )
@@ -20,9 +19,6 @@ const (
 	eppBalancePerformance = "balance_performance"
 	eppBalancePower       = "balance_power"
 )
-
-// cpufreqDir is the cpufreq directory relative to the host's /sys.
-const cpufreqDir = "devices/system/cpu/cpufreq"
 
 // cpuChoice is the native state one preset maps to on one node: the
 // governor, the energy-performance preference (empty when the plan writes
@@ -114,11 +110,6 @@ func chooseCPU(f CPUFacts, preset string) cpuChoice {
 	return c
 }
 
-// policyPath is the attribute file of cpufreq policy n.
-func policyPath(n int, file string) string {
-	return cpufreqDir + "/policy" + strconv.Itoa(n) + "/" + file
-}
-
 // sortedPolicies returns the policy numbers sorted, without duplicates.
 func sortedPolicies(ps []int) []int {
 	out := slices.Clone(ps)
@@ -126,32 +117,50 @@ func sortedPolicies(ps []int) []int {
 	return slices.Compact(out)
 }
 
-// cpuBoostWrites plans the boost word on f: the global boost file, the
-// inverted intel_pstate no_turbo, or each policy's boost. ok is false when
-// the node has no boost file.
-func cpuBoostWrites(f CPUFacts, policies []int, boost string) (writes []Write, native string, ok bool) {
-	on := boost == joulie.CPUGovernorBoostOn
-	bit := func(b bool) string {
-		if b {
-			return "1"
-		}
-		return "0"
+// boostBit is the content of a boost file for a boost word: 1 for on, the
+// inverse in an inverted file (intel_pstate's no_turbo).
+func boostBit(boost string, inverted bool) string {
+	if (boost == joulie.CPUGovernorBoostOn) != inverted {
+		return "1"
 	}
+	return "0"
+}
+
+// CPUBoostWrites plans the boost word (a pkg/api CPUGovernorBoost* value) on
+// f: the global boost file, the inverted intel_pstate no_turbo, or the boost
+// of each of policies. It is nil when the node has no boost file.
+func CPUBoostWrites(f CPUFacts, policies []int, boost string) []Write {
 	switch f.BoostScope {
 	case joulie.CPUBoostScopeGlobal:
-		v := bit(on)
-		return []Write{{RelPath: cpufreqDir + "/boost", Value: v}}, "boost=" + v, true
+		return []Write{{RelPath: GlobalBoostRelPath, Value: boostBit(boost, false)}}
 	case joulie.CPUBoostScopeNoTurbo:
-		v := bit(!on)
-		return []Write{{RelPath: "devices/system/cpu/intel_pstate/no_turbo", Value: v}}, "no_turbo=" + v, true
+		return []Write{{RelPath: NoTurboRelPath, Value: boostBit(boost, true)}}
 	case joulie.CPUBoostScopePerCPU:
-		v := bit(on)
+		var writes []Write
 		for _, n := range policies {
-			writes = append(writes, Write{RelPath: policyPath(n, "boost"), Value: v})
+			writes = append(writes, Write{RelPath: PolicyRelPath(n, PolicyBoostFile), Value: boostBit(boost, false)})
 		}
-		return writes, "boost=" + v, true
+		return writes
 	}
-	return nil, "", false
+	return nil
+}
+
+// boostNative spells the boost word on a node with scope: boost=<0|1>, or
+// no_turbo=<0|1> for the inverted file.
+func boostNative(scope, boost string) string {
+	if scope == joulie.CPUBoostScopeNoTurbo {
+		return "no_turbo=" + boostBit(boost, true)
+	}
+	return "boost=" + boostBit(boost, false)
+}
+
+// NativeCPU spells a cpufreq governor and energy-performance preference (empty
+// for none) as Plan.Native does.
+func NativeCPU(governor, epp string) string {
+	if epp == "" {
+		return governor
+	}
+	return governor + " epp=" + epp
 }
 
 // PlanCPU plans the CPU preset (a pkg/api CPUGovernorPreset* value) and the
@@ -175,28 +184,66 @@ func PlanCPU(f CPUFacts, preset, boost string) (Plan, error) {
 	}
 	policies := sortedPolicies(f.Policies)
 	var boostWrites []Write
-	var boostNative string
 	if boost != "" {
-		var ok bool
-		if boostWrites, boostNative, ok = cpuBoostWrites(f, policies, boost); !ok {
+		if boostWrites = CPUBoostWrites(f, policies, boost); boostWrites == nil {
 			return Plan{Result: joulie.GovernorResultUnsupported}, nil
 		}
 	}
-	p := Plan{Native: c.governor, Result: c.result}
+	p := Plan{State: State{Governor: c.governor, EPP: c.epp, Boost: boost}, Native: NativeCPU(c.governor, c.epp), Result: c.result}
 	for _, n := range policies {
-		p.Writes = append(p.Writes, Write{RelPath: policyPath(n, "scaling_governor"), Value: c.governor})
+		p.Writes = append(p.Writes, Write{RelPath: PolicyRelPath(n, PolicyGovernorFile), Value: c.governor})
 	}
 	if c.epp != "" {
 		for _, n := range policies {
-			p.Writes = append(p.Writes, Write{RelPath: policyPath(n, "energy_performance_preference"), Value: c.epp})
+			p.Writes = append(p.Writes, Write{RelPath: PolicyRelPath(n, PolicyEPPFile), Value: c.epp})
 		}
-		p.Native += " epp=" + c.epp
 	}
-	if boostNative != "" {
+	if boost != "" {
 		p.Writes = append(p.Writes, boostWrites...)
-		p.Native += " " + boostNative
+		p.Native += " " + boostNative(f.BoostScope, boost)
 	}
 	return p, nil
+}
+
+// CPUGroup is a set of cpufreq policies that share one state: a governor,
+// an energy-performance preference and a boost word, each empty to leave
+// it alone.
+type CPUGroup struct {
+	Policies             []int
+	Governor, EPP, Boost string
+}
+
+// PlanCPUGroups plans the writes that bring each group of policies on f to
+// its state, in three phases the caller writes in order: every group's
+// governor, then every preference (which a governor change can reset), then
+// boost. Boost is per policy where the node sets it per policy; elsewhere
+// one file holds it for the node, and the first group with a boost word sets
+// it.
+func PlanCPUGroups(f CPUFacts, groups []CPUGroup) (governors, epps, boost []Write) {
+	for _, g := range groups {
+		for _, n := range sortedPolicies(g.Policies) {
+			if g.Governor != "" {
+				governors = append(governors, Write{RelPath: PolicyRelPath(n, PolicyGovernorFile), Value: g.Governor})
+			}
+			if g.EPP != "" {
+				epps = append(epps, Write{RelPath: PolicyRelPath(n, PolicyEPPFile), Value: g.EPP})
+			}
+		}
+	}
+	if f.BoostScope == joulie.CPUBoostScopePerCPU {
+		for _, g := range groups {
+			if g.Boost != "" {
+				boost = append(boost, CPUBoostWrites(f, sortedPolicies(g.Policies), g.Boost)...)
+			}
+		}
+		return governors, epps, boost
+	}
+	for _, g := range groups {
+		if g.Boost != "" {
+			return governors, epps, CPUBoostWrites(f, nil, g.Boost)
+		}
+	}
+	return governors, epps, nil
 }
 
 // ReverseCPU names the preset whose plan on f gives the native governor and

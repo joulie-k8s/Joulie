@@ -130,46 +130,56 @@ func GaugeMetric(m semconv.Metric, points ...NumberDataPoint) Metric {
 	}
 }
 
-// buildNumberPoints encodes points as m's value type (zero: as given),
-// rounding as SumMetric says, and drops those OTLP JSON cannot carry. The
-// result is never nil, so an empty metric is written with "dataPoints":[].
+// buildNumberPoints encodes points with EncodeNumberPoint and drops those
+// OTLP JSON cannot carry. The result is never nil, so an empty metric is
+// written with "dataPoints":[].
 func buildNumberPoints(m semconv.Metric, points []NumberDataPoint) []NumberDataPoint {
-	vt := m.Value
 	out := make([]NumberDataPoint, 0, len(points))
 	for _, p := range points {
-		if p.AsDouble != nil && p.AsInt != nil {
-			// value is a oneof: keep the declared type's value, and the
-			// double when no type is declared.
-			if vt == semconv.Int {
-				p.AsDouble = nil
-			} else {
-				p.AsInt = nil
-			}
+		if p, ok := EncodeNumberPoint(m, p); ok {
+			out = append(out, p)
 		}
-		switch {
-		case p.AsDouble == nil && p.AsInt == nil:
-			continue
-		case p.AsDouble != nil && (math.IsNaN(*p.AsDouble) || math.IsInf(*p.AsDouble, 0)):
-			continue
-		case vt == semconv.Int && p.AsDouble != nil:
-			r := math.Round(*p.AsDouble)
-			if m.Kind == semconv.Counter {
-				r = math.Floor(*p.AsDouble)
-			}
-			// 2^63 is exact as a float64; anything at or beyond it does
-			// not fit an int64, nor does anything below -2^63.
-			if r >= 1<<63 || r < -(1<<63) {
-				continue
-			}
-			i := Int64String(int64(r))
-			p.AsDouble, p.AsInt = nil, &i
-		case vt == semconv.Double && p.AsInt != nil:
-			d := float64(*p.AsInt)
-			p.AsDouble, p.AsInt = &d, nil
-		}
-		out = append(out, p)
 	}
 	return out
+}
+
+// EncodeNumberPoint is p as SumMetric and GaugeMetric write it for m: as
+// m's value type (zero: as given), rounding as SumMetric says. ok is false
+// for a point they leave out. A builder that counts what it leaves out
+// encodes each point with it before collecting it.
+func EncodeNumberPoint(m semconv.Metric, p NumberDataPoint) (NumberDataPoint, bool) {
+	vt := m.Value
+	if p.AsDouble != nil && p.AsInt != nil {
+		// value is a oneof: keep the declared type's value, and the
+		// double when no type is declared.
+		if vt == semconv.Int {
+			p.AsDouble = nil
+		} else {
+			p.AsInt = nil
+		}
+	}
+	switch {
+	case p.AsDouble == nil && p.AsInt == nil:
+		return p, false
+	case p.AsDouble != nil && (math.IsNaN(*p.AsDouble) || math.IsInf(*p.AsDouble, 0)):
+		return p, false
+	case vt == semconv.Int && p.AsDouble != nil:
+		r := math.Round(*p.AsDouble)
+		if m.Kind == semconv.Counter {
+			r = math.Floor(*p.AsDouble)
+		}
+		// 2^63 is exact as a float64; anything at or beyond it does not
+		// fit an int64, nor does anything below -2^63.
+		if r >= 1<<63 || r < -(1<<63) {
+			return p, false
+		}
+		i := Int64String(int64(r))
+		p.AsDouble, p.AsInt = nil, &i
+	case vt == semconv.Double && p.AsInt != nil:
+		d := float64(*p.AsInt)
+		p.AsDouble, p.AsInt = &d, nil
+	}
+	return p, true
 }
 
 // ExplicitHistogram accumulates values into explicit buckets, cumulatively
@@ -341,17 +351,6 @@ func IntArray(k string, v ...int64) KeyValue {
 	for i := range v {
 		n := Int64String(v[i])
 		vals[i] = AnyValue{Int: &n}
-	}
-	return KeyValue{Key: k, Value: AnyValue{Array: &ArrayValue{Values: vals}}}
-}
-
-// StringArray is an attribute whose value is a list of strings. An empty
-// list is written as "values":[].
-func StringArray(k string, v ...string) KeyValue {
-	vals := make([]AnyValue, len(v))
-	for i := range v {
-		s := v[i]
-		vals[i] = AnyValue{String: &s}
 	}
 	return KeyValue{Key: k, Value: AnyValue{Array: &ArrayValue{Values: vals}}}
 }

@@ -889,11 +889,9 @@ func TestGT04GPUSpeedHasOnePointPerClockDomain(t *testing.T) {
 	}
 }
 
-// Regression (integration after W2): joulie.hw.gpu.speed.limit was
-// registered and never emitted, because State had no GPU clock maximum. On
-// emulated nodes it now has a max and a throttled point for every clock
-// domain of every GPU, the values of the snapshot, throttled never above
-// max; an idle GPU at auto reports its maximum in effect, not its idle
+// joulie.hw.gpu.speed.limit has a max and a throttled point for every clock
+// domain of every emulated GPU, the values of the snapshot, throttled never
+// above max; an idle GPU at auto reports its maximum in effect, not its idle
 // clock, and one W7900 GPU set to low reports a throttled graphics clock
 // below its max.
 func TestGPUSpeedLimitHasMaxAndThrottledPerClockDomain(t *testing.T) {
@@ -964,4 +962,10 @@ func TestGPUSpeedLimitHasMaxAndThrottledPerClockDomain(t *testing.T) {
 			t.Errorf("%s: %d GPUs, joulie.hw.gpu.speed.limit for %d", n.Name, gpus, len(got))
 		}
 	}
+}
+
+// testUnixNano is t as the timeUnixNano of a point; the test times are
+// after the epoch.
+func testUnixNano(t time.Time) otlpjson.Uint64String {
+	return otlpjson.Uint64String(t.UnixNano())
 }

@@ -682,6 +682,9 @@ func renderValidatePowercap(p *Profile) []error {
 		if z.PowerUnitUW.V < 0 {
 			fail("%s.powerUnitUW is negative", at)
 		}
+		if z.LimitBits.Src != "" && (z.LimitBits.V < 1 || z.LimitBits.V > 62) {
+			fail("%s.limitBits is %d, want 1 to 62", at, z.LimitBits.V)
+		}
 		for i, c := range z.Constraints {
 			if c.Name == "" {
 				fail("%s.constraints[%d].name is empty", at, i)
@@ -771,6 +774,9 @@ func renderValidateCPUFreq(p *Profile) []error {
 	}
 	if f.Boost.V != 0 && f.Boost.V != 1 {
 		fail("boost is %d, want 0 or 1", f.Boost.V)
+	}
+	if f.PolicyBoost.V != 0 && f.PolicyBoost.V != 1 {
+		fail("policyBoost is %d, want 0 or 1", f.PolicyBoost.V)
 	}
 	return errs
 }

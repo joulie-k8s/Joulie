@@ -1,10 +1,12 @@
 package hwemu
 
 import (
+	"errors"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -227,22 +229,33 @@ func TestCG04AMDPstateBoostIsPerPolicy(t *testing.T) {
 	}
 }
 
-// CG05: a governor word not in scaling_available_governors is still
-// reverted, as nodeEnumHandler does without the governor facts.
+// CG05: a governor word not in scaling_available_governors, and an EPP word
+// the driver does not list, is refused with EINVAL and reverted, with or
+// without the governor facts (store_scaling_governor,
+// store_energy_performance_preference).
 func TestCG05UnavailableGovernorIsReverted(t *testing.T) {
 	t.Parallel()
 	n, tr := cgNode(t, ensureBuiltin(t, "intel-xeon-2s-rapl"))
 	gov := nodePolicyFile(2, "scaling_governor")
 	cgWriteStep(t, n, tr, gov, "schedutil")
-	if e := cgOneEvent(t, n, gov); e.Kind != EventRevertedOutOfRange || nodeRead(t, tr, gov) != "powersave\n" {
-		t.Fatalf("schedutil on intel_pstate: %+v, file %q, want reverted to powersave", e, nodeRead(t, tr, gov))
+	if e := cgOneEvent(t, n, gov); e.Kind != EventRejected || e.Errno != ErrnoEINVAL || nodeRead(t, tr, gov) != "powersave\n" {
+		t.Fatalf("schedutil on intel_pstate: %+v, file %q, want refused with EINVAL and reverted to powersave", e, nodeRead(t, tr, gov))
+	}
+	epp := nodePolicyFile(2, "energy_performance_preference")
+	was := nodeRead(t, tr, epp)
+	cgWriteStep(t, n, tr, epp, "turbo")
+	if e := cgOneEvent(t, n, epp); e.Kind != EventRejected || e.Errno != ErrnoEINVAL || nodeRead(t, tr, epp) != was {
+		t.Fatalf("EPP turbo: %+v, file %q, want refused with EINVAL and reverted to %q", e, nodeRead(t, tr, epp), was)
+	}
+	if err := n.CheckWrite(gov, "schedutil"); !errors.Is(err, syscall.EINVAL) {
+		t.Errorf("CheckWrite of schedutil: %v, want EINVAL", err)
 	}
 }
 
 // CG06: with userspace, scaling_setspeed starts at the current frequency,
 // takes a frequency and shows it clamped to the policy's limits, follows a
 // later limit, and reads <unsupported> again under any other governor,
-// where a write is reverted as before.
+// where a write is reverted.
 func TestCG06UserspaceTakesSetspeed(t *testing.T) {
 	t.Parallel()
 	p := ensureBuiltin(t, "amd-epyc-2s-energy-only")

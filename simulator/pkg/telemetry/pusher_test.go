@@ -329,10 +329,10 @@ func TestTM13PusherPointsCarryThePushTime(t *testing.T) {
 		for _, m := range rm.ScopeMetrics[0].Metrics {
 			ps := testPoints(m)
 			for k := range ps {
-				if ps[k].TimeUnixNano != metricsUnixNano(snap.Time) {
+				if ps[k].TimeUnixNano != testUnixNano(snap.Time) {
 					t.Fatalf("MetricsRequest %s: timeUnixNano %d, want the snapshot time", m.Name, ps[k].TimeUnixNano)
 				}
-				ps[k].TimeUnixNano = metricsUnixNano(pushed)
+				ps[k].TimeUnixNano = testUnixNano(pushed)
 			}
 		}
 	}
@@ -345,7 +345,7 @@ func TestTM13PusherPointsCarryThePushTime(t *testing.T) {
 		t.Errorf("pushed export differs from the snapshot's export at the push time:\n got %s\nwant %s", mustJSON(got), mustJSON(want))
 	}
 	fac := testMetrics(t, testResourceByInstance(t, got)[FacilityInstance])[semconv.JoulieFacilityITEnergy.Name]
-	if pts := testPoints(fac); len(pts) != 1 || pts[0].TimeUnixNano != metricsUnixNano(pushed) || pts[0].StartTimeUnixNano != metricsUnixNano(testFacStart) {
+	if pts := testPoints(fac); len(pts) != 1 || pts[0].TimeUnixNano != testUnixNano(pushed) || pts[0].StartTimeUnixNano != testUnixNano(testFacStart) {
 		t.Errorf("facility IT energy points %+v, want one at the push time from the facility start", pts)
 	}
 }

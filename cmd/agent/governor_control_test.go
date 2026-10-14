@@ -21,6 +21,7 @@ import (
 
 	"github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/governor"
 	"github.com/matbun/joulie/pkg/kube"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
@@ -629,9 +630,9 @@ func TestGA29HTTPControlModeHasNoGovernorAction(t *testing.T) {
 	}
 }
 
-// Regression (W1 review): with CPU_GOVERNOR_ECO_BOOST=off a node that goes
-// back to performance gets the governor without boost; the agent puts the
-// baseline boost back instead of leaving it off.
+// With CPU_GOVERNOR_ECO_BOOST=off a node that goes back to performance gets
+// the governor without boost; the agent puts the baseline boost back
+// instead of leaving it off.
 func TestGovernorBoostReturnsToBaselineWhenItsFieldDisappears(t *testing.T) {
 	root := acpiCPUFreqTree(t)
 	pointAgentAtSysfs(t, root, "", nil)
@@ -652,9 +653,9 @@ func TestGovernorBoostReturnsToBaselineWhenItsFieldDisappears(t *testing.T) {
 	}
 }
 
-// Regression (W1 review): a GPU discovery that comes back empty for one
-// reconcile keeps the stored baseline, so the next discovery does not take
-// the level the agent set for the baseline.
+// A GPU discovery that comes back empty for one reconcile keeps the stored
+// baseline, so the next discovery does not take the level the agent set for
+// the baseline.
 func TestGovernorGPUBaselineSurvivesAnEmptyDiscovery(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{}
@@ -695,9 +696,9 @@ func TestGovernorGPUBaselineSurvivesAnEmptyDiscovery(t *testing.T) {
 	}
 }
 
-// Regression (review): an agent that restarts after its NodeHardware was
-// lost, with the last status saying it set a level, takes the vendor
-// default auto as the GPU baseline, not the level it set itself.
+// An agent that restarts after its NodeHardware was lost, with the last
+// status saying it set a level, takes the vendor default auto as the GPU
+// baseline, not the level it set itself.
 func TestGovernorLostNodeHardwareTakesTheVendorDefault(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{}
@@ -729,8 +730,8 @@ func TestGovernorLostNodeHardwareTakesTheVendorDefault(t *testing.T) {
 	}
 }
 
-// Regression (review): a governor status written by an earlier run of the
-// agent is removed with the field, as one written by this run is.
+// A governor status written by an earlier run of the agent is removed with
+// the field, as one written by this run is.
 func TestGovernorStatusOfAnEarlierRunIsRemovedWithTheField(t *testing.T) {
 	root := acpiCPUFreqTree(t)
 	pointAgentAtSysfs(t, root, "", nil)
@@ -748,11 +749,10 @@ func TestGovernorStatusOfAnEarlierRunIsRemovedWithTheField(t *testing.T) {
 	}
 }
 
-// Regression (integration after W2): an agent restarted with
-// GOVERNOR_WRITES false after an earlier run changed the governor puts the
-// baseline back once (design D8), with the field still in the spec and
-// with it gone, and then writes nothing. The W2 agent reported disabled and
-// left the node at the earlier run's preset.
+// An agent restarted with GOVERNOR_WRITES false after an earlier run
+// changed the governor puts the baseline back once, with the field still in
+// the spec and with it gone, and then writes nothing: the restore is the
+// only write a discovery-only agent makes.
 func TestGovernorWritesTurnedOffRestoresTheBaselineOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -803,11 +803,10 @@ func TestGovernorWritesTurnedOffRestoresTheBaselineOnce(t *testing.T) {
 	}
 }
 
-// Regression (integration after W2): the GPU side of
-// TestGovernorWritesTurnedOffRestoresTheBaselineOnce. An AMD level an
-// earlier run set goes back to the baseline once when the agent restarts
-// with GOVERNOR_WRITES false and the field still in the spec, and later
-// reconciles write nothing and report disabled.
+// The GPU side of TestGovernorWritesTurnedOffRestoresTheBaselineOnce. An
+// AMD level an earlier run set goes back to the baseline once when the agent
+// restarts with GOVERNOR_WRITES false and the field still in the spec, and
+// later reconciles write nothing and report disabled.
 func TestGovernorWritesTurnedOffRestoresTheGPUBaselineOnce(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{}
@@ -851,9 +850,8 @@ func TestGovernorWritesTurnedOffRestoresTheGPUBaselineOnce(t *testing.T) {
 	}
 }
 
-// Regression (review): on an NVIDIA node whose agent has no working
-// nvidia-smi, a GPU preset is an error, as the cap path reports, not
-// unsupported.
+// On an NVIDIA node whose agent has no working nvidia-smi, a GPU preset is
+// an error, as the cap path reports, not unsupported.
 func TestGovernorNvidiaWithoutTheToolIsAnError(t *testing.T) {
 	root := acpiCPUFreqTree(t)
 	pointAgentAtSysfs(t, root, "", nil)
@@ -870,11 +868,35 @@ func TestGovernorNvidiaWithoutTheToolIsAnError(t *testing.T) {
 	}
 }
 
-func TestParseCPUList(t *testing.T) {
-	for in, want := range map[string][]int{"0-3": {0, 1, 2, 3}, "0,2,4-5": {0, 2, 4, 5}, "7": {7}, "": nil, "3-1": nil} {
-		if got := parseCPUList(in); !reflect.DeepEqual(got, want) {
-			t.Errorf("parseCPUList(%q) = %v, want %v", in, got, want)
+func TestCPUListHas(t *testing.T) {
+	for _, tc := range []struct {
+		list string
+		id   int
+		want bool
+	}{
+		{"0-3", 3, true}, {"0-3", 4, false}, {"0,2,4-5", 2, true}, {"0,2,4-5", 3, false},
+		{"7", 7, true}, {"", 0, false}, {"3-1", 2, false}, {"x,1", 1, true},
+		{"0-99999999999", 5, true},
+	} {
+		if got := cpuListHas(tc.list, tc.id); got != tc.want {
+			t.Errorf("cpuListHas(%q, %d) = %v, want %v", tc.list, tc.id, got, tc.want)
 		}
+	}
+}
+
+// A stored baseline whose policy range is far wider than the node maps to
+// the node's policies only, without allocating the range: the list comes
+// from a CR, and "0-1000000" must not make the agent allocate a million
+// entries.
+func TestCPUBaselineGroupsNeverExpandTheStoredRange(t *testing.T) {
+	d := &cpuGovernorDiscovery{Facts: governor.CPUFacts{Policies: []int{0, 1}}}
+	b := &v1alpha1.CPUGovernorBaseline{Groups: []v1alpha1.CPUGovernorState{{Policies: "0-1000000", Governor: "schedutil"}}}
+	var groups []governor.CPUGroup
+	allocs := testing.AllocsPerRun(1, func() {
+		groups = cpuBaselineGroups(d, b)
+	})
+	if len(groups) != 1 || len(groups[0].Policies) != 2 || allocs > 20 {
+		t.Fatalf("got groups %+v with %.0f allocations, want one group of 2 policies and no allocation per listed policy", groups, allocs)
 	}
 }
 

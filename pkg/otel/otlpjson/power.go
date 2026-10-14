@@ -10,7 +10,12 @@ package otlpjson
 // value per component, then the sum.
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"math"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +24,79 @@ import (
 
 	"github.com/matbun/joulie/pkg/otel/semconv"
 )
+
+// MaxTelemetryBody bounds the answer of an HTTP telemetry endpoint that
+// FetchTelemetry reads. One node's export is a few kilobytes.
+const MaxTelemetryBody = 8 << 20
+
+// LegacyRemovedIn is the release that removes what the OpenTelemetry inputs
+// replaced: the legacy packagePowerWatts JSON of the HTTP telemetry
+// endpoints, which ReadPower reads and the simulator serves until then, and
+// the controller manager's input aliases (FACILITY_*_METRIC and
+// FACILITY_PRESET=legacy). One minor release after v0.3.0 added their
+// replacements.
+const LegacyRemovedIn = "v0.4.0"
+
+// FetchTelemetry GETs url and returns the body of a 2xx answer. A body
+// longer than MaxTelemetryBody is an error.
+func FetchTelemetry(ctx context.Context, c *http.Client, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c == nil {
+		c = http.DefaultClient
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("otlpjson: GET %s: HTTP %d", url, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxTelemetryBody+1))
+	if err != nil {
+		return nil, fmt.Errorf("otlpjson: GET %s: %w", url, err)
+	}
+	if len(body) > MaxTelemetryBody {
+		return nil, fmt.Errorf("otlpjson: GET %s: the answer exceeds %d bytes", url, MaxTelemetryBody)
+	}
+	return body, nil
+}
+
+// ReadPower reads the power in watts from one answer of an HTTP telemetry
+// endpoint. An OTLP JSON metrics export (IsMetricsData) is read through r
+// with s, and ok is PowerReader.Watts' ok. Any other JSON object is the
+// legacy format, until LegacyRemovedIn, and legacy is set: its power is the
+// first positive number of packagePowerWatts and cpu.packagePowerWatts,
+// whatever s selects, and ok is false when neither is one. What
+// packagePowerWatts holds is the producer's choice; the simulator puts every
+// CPU package and GPU there and the packages alone under cpu. A body that
+// is no JSON object is an error.
+func ReadPower(body []byte, r *PowerReader, s Selector) (watts float64, ok, legacy bool, err error) {
+	if IsMetricsData(body) {
+		md, err := DecodeMetrics(body)
+		if err != nil {
+			return 0, false, false, err
+		}
+		w, ok := r.Watts(md, s)
+		return w, ok, false, nil
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return 0, false, false, fmt.Errorf("otlpjson: the telemetry answer is neither an OTLP metrics export nor the legacy JSON: %w", err)
+	}
+	if v, ok := doc["packagePowerWatts"].(float64); ok && v > 0 {
+		return v, true, true, nil
+	}
+	if cpu, ok := doc["cpu"].(map[string]any); ok {
+		if v, ok := cpu["packagePowerWatts"].(float64); ok && v > 0 {
+			return v, true, true, nil
+		}
+	}
+	return 0, false, true, nil
+}
 
 // Selector says which readings of a document make up the power a
 // PowerReader returns.
@@ -291,16 +369,8 @@ func powerSelect(attrs []KeyValue, host bool, types map[string]bool) (powerCompo
 // powerValue returns the value of p, and false when it has none or the value
 // is not finite or negative.
 func powerValue(p NumberDataPoint) (float64, bool) {
-	var v float64
-	switch {
-	case p.AsDouble != nil:
-		v = *p.AsDouble
-	case p.AsInt != nil:
-		v = float64(*p.AsInt)
-	default:
-		return 0, false
-	}
-	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+	v, ok := p.Float64()
+	if !ok || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
 		return 0, false
 	}
 	return v, true
@@ -313,7 +383,8 @@ func powerSeconds(ns uint64) float64 { return float64(ns) / 1e9 }
 func powerAttr(attrs []KeyValue, key string) (string, bool) {
 	for _, kv := range attrs {
 		if kv.Key == key {
-			return powerAttrText(kv.Value), true
+			text, _ := kv.Value.Text()
+			return text, true
 		}
 	}
 	return "", false
@@ -323,28 +394,9 @@ func powerAttr(attrs []KeyValue, key string) (string, bool) {
 func powerAttrsID(attrs []KeyValue) string {
 	parts := make([]string, len(attrs))
 	for i, kv := range attrs {
-		parts[i] = kv.Key + "=" + powerAttrText(kv.Value)
+		text, _ := kv.Value.Text()
+		parts[i] = kv.Key + "=" + text
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, "\x00")
-}
-
-func powerAttrText(v AnyValue) string {
-	switch {
-	case v.String != nil:
-		return *v.String
-	case v.Bool != nil:
-		return strconv.FormatBool(*v.Bool)
-	case v.Int != nil:
-		return strconv.FormatInt(int64(*v.Int), 10)
-	case v.Double != nil:
-		return strconv.FormatFloat(*v.Double, 'g', -1, 64)
-	case v.Array != nil:
-		parts := make([]string, len(v.Array.Values))
-		for i, e := range v.Array.Values {
-			parts[i] = powerAttrText(e)
-		}
-		return "[" + strings.Join(parts, ",") + "]"
-	}
-	return ""
 }

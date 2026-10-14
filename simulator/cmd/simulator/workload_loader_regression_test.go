@@ -1,8 +1,7 @@
 package main
 
-// The regression tests of the two legacy loader fixes. They use only
-// identifiers that exist at a94f345, so this file can be copied into that
-// tree to show both fail there.
+// The regression tests of the legacy loader: every job gets a pod of its
+// own, and a trace line longer than the scanner's default buffer loads.
 
 import (
 	"context"
@@ -56,8 +55,8 @@ func TestLegacyLoaderSuffixesCollidingPodNames(t *testing.T) {
 		job(long+"-1", "default"),
 		job(long+"-2", "default"),
 	)
-	if err := s.initWorkloadEngineFromTrace(path); err != nil {
-		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
 	}
 	want := map[string]string{
 		"a_b":       "default/sim-a-b",
@@ -105,8 +104,8 @@ func TestLoadTraceLongLine(t *testing.T) {
 		fmt.Sprintf(`{"type":"job","jobId":"long","submitTimeOffsetSec":1,"tags":[%q],"podTemplate":{"requests":{"cpu":"2"}}}`, pad),
 	)
 	s := newLoaderTestSimulator()
-	if err := s.initWorkloadEngineFromTrace(path); err != nil {
-		t.Fatalf("initWorkloadEngineFromTrace with a %d KiB line: %v", len(pad)/1024, err)
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions with a %d KiB line: %v", len(pad)/1024, err)
 	}
 	if len(s.workload.jobs) != 2 || s.workload.jobs[1].JobID != "long" || s.workload.jobs[1].RequestedCPUCores != 2 {
 		t.Fatalf("jobs = %d, want short and long with cpu 2", len(s.workload.jobs))
@@ -118,7 +117,7 @@ func TestLoadTraceLongLine(t *testing.T) {
 			`{"type":"job","jobId":"short","podTemplate":{"requests":{"cpu":"1"}}}`,
 			fmt.Sprintf(`{"type":"job","jobId":"huge","tags":[%q]}`, huge),
 		)
-		err := newLoaderTestSimulator().initWorkloadEngineFromTrace(path)
+		err := newLoaderTestSimulator().initWorkloadEngineWithOptions(path, workloadOptions{})
 		if err == nil || !strings.Contains(err.Error(), "trace line 2") {
 			t.Fatalf("error = %v, want one naming trace line 2", err)
 		}

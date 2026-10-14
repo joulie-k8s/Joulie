@@ -365,7 +365,8 @@ func upsertNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, a NodeAssign
 	}
 	// The whole spec is replaced below, so a governor the assignment no
 	// longer carries (GOVERNOR_CONTROL turned off, a preset the node stopped
-	// listing) leaves the object in the same write.
+	// listing, but not a block in a discovery gap: governorIntents) leaves
+	// the object in the same write.
 
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "joulie.io/v1alpha1",

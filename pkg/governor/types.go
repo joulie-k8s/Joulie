@@ -32,12 +32,16 @@ const (
 
 // DefaultCeilingPctOfMax is the compute clock ceiling of the efficient GPU
 // preset, in percent of the maximum compute clock, when the intent names
-// none. PresetsAMD and PresetsNvidia judge the efficient preset at it.
+// none. The agent's discovery judges the efficient preset at it, and the
+// controller manager writes it unless configured otherwise.
 //
-// 80 is provisional: in the simulator's governor exploration (experiment 05,
-// Tier A) 75 missed the eco p95 slowdown limit of 20 % (+22.5 %) and 80
-// passed (+17.3 %, energy -10.7 %). It stands until hardware measures the
-// clock exponent and the memory knee the simulator assumes.
+// 80 is provisional. Published sweeps put the best energy per job between
+// 61 and 76 % of the maximum clock, and the constant power of the rest of
+// the node moves the node's optimum up; in the simulator's governor
+// exploration (experiment 05, Tier A) 75 missed the eco p95 slowdown limit
+// of 20 % (+22.5 %) and 80 passed (+17.3 %, energy -10.7 %). It stands until
+// hardware measures the clock exponent and the memory knee the simulator
+// assumes.
 const DefaultCeilingPctOfMax = 80.0
 
 // CPUFacts is what discovery reads about the cpufreq policies of a node, all
@@ -110,18 +114,39 @@ type Write struct {
 	RelPath, Value string
 }
 
+// State is a native governor state in typed fields: what a plan sets, or
+// what ParseNative reads back from its Native spelling. Only the fields of
+// the plan's mechanism are set.
+type State struct {
+	// Governor is the cpufreq scaling_governor; EPP the
+	// energy_performance_preference, empty when the plan writes none; Boost
+	// the pkg/api CPUGovernorBoost* word the plan writes, empty when it
+	// leaves boost alone.
+	Governor, EPP, Boost string
+	// Level is the amdgpu power_dpm_force_performance_level; SclkMaxMHz the
+	// overdrive sclk ceiling, zero for none.
+	Level      string
+	SclkMaxMHz int
+	// GPULockMHz and MemLockMHz are the NVIDIA graphics and memory clock
+	// locks [min, max] in MHz, nil for a domain the plan does not lock.
+	GPULockMHz, MemLockMHz *[2]int
+}
+
 // Plan is how to set one preset. Writes are sysfs writes, in order, each to
 // be read back before the next; Args are nvidia-smi invocations, each the
 // arguments after the binary name, such as
-// ["-i", "00000000:18:00.0", "-lgc", "300,1500"]. Native is the native
-// state the plan sets, in the driver's own words (the controlStatus applied
-// field): the CPU governor, then " epp=<word>" and " boost=<0|1>" or
-// " no_turbo=<0|1>" when the plan writes them, such as
-// "powersave epp=balance_power"; the amdgpu performance level, then
-// " sclk_max=<MHz>" for an overdrive ceiling, such as "manual sclk_max=1125";
-// the NVIDIA locks as nvidia-smi is told them, such as "-lgc 300,1100", or
-// "unlocked" when the plan only resets locks, or "unknown" when it issues
-// nothing.
+// ["-i", "00000000:18:00.0", "-lgc", "300,1500"]. State is the native state
+// the plan sets, typed, for any code that acts on it.
+//
+// Native spells State for people (the controlStatus applied field and the
+// presets NodeHardware lists), and is never parsed outside this package: the
+// CPU governor, then " epp=<word>" and " boost=<0|1>" or " no_turbo=<0|1>"
+// when the plan writes them, such as "powersave epp=balance_power"; the
+// amdgpu performance level, then " sclk_max=<MHz>" for an overdrive
+// ceiling, such as "manual sclk_max=1125"; the NVIDIA locks as nvidia-smi is
+// told them, such as "-lgc 300,1100", or "unlocked" when the plan only
+// resets locks, or "unknown" when it issues nothing. ParseNative reads it
+// back.
 //
 // Result is the pkg/api GovernorResult* value the plan gives when every step
 // succeeds: applied, equivalent or unsupported. Equivalent means the preset
@@ -130,10 +155,11 @@ type Write struct {
 // another preset (efficiency as powersave without an energy-performance
 // preference), or the vendor default (sustained on Hopper). Its Writes and
 // Args still bring the node to that state, and may be empty. Unsupported has
-// no Writes and no Args.
+// no Writes, no Args and no State.
 type Plan struct {
 	Writes []Write
 	Args   [][]string
+	State
 	Native string
 	Result string
 }

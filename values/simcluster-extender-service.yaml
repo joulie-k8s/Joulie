@@ -1,0 +1,8 @@
+# Joulie values for the simulated cluster with SIMCLUSTER_EXTENDER=service:
+# deploy.sh adds them after values/simcluster.yaml. The scheduler extender
+# runs off the host network, the chart's default, and kube-scheduler reaches
+# it through its Service at a fixed ClusterIP, the address
+# scripts/simcluster/manifests/scheduler-config-service.yaml names.
+schedulerExtender:
+  hostNetwork: false
+  clusterIP: 10.43.0.250

@@ -38,6 +38,7 @@ powercap:
           enabled: {v: 1, src: "assumed:firmware enables PL1"}
           energyUnitNJ: {v: 61035, src: "assumed:ESU 14 in the TPMI unit register; formula rapltpmi#329-330"}
           powerUnitUW: {v: 125000, src: "assumed:PU 3 in the TPMI unit register"}
+          limitBits: {v: 18, src: "published:raplcommon#TPMI_POWER_LIMIT_MASK, bits 17:0 of every TPMI power limit, where the MSR fields are 15 bits"}
           # The kernel also creates constraint_2_time_window_us for PL4, but
           # reading it fails: PL4 has no time window primitive
           # (raplcommon#137-147). A file whose read fails cannot be rendered,
@@ -70,6 +71,7 @@ powercap:
           enabled: {v: 0, src: "assumed:firmware leaves the platform power limit at 0, so PL1 enable reads 0"}
           energyUnitNJ: {v: 61035, src: "assumed:ESU 14 in the system domain's unit register; defaults_tpmi sets no fixed psys unit (rapltpmi#344-349)"}
           powerUnitUW: {v: 125000, src: "assumed:PU 3 in the system domain's unit register"}
+          limitBits: {v: 18, src: "published:raplcommon#TPMI_POWER_LIMIT_MASK, bits 17:0 of every TPMI power limit, where the MSR fields are 15 bits"}
           constraints:
             - {src: "derived:raplcommon#846-847 a zero limit register reads limit 0 and one time unit, 976 us at the assumed TU 10; PL1 assumed flagged", name: long_term, powerLimitUW: 0, timeWindowUS: 976, rejectWrites: ""}
             - {src: "derived:raplcommon#846-847 a zero limit register reads limit 0 and one time unit, 976 us at the assumed TU 10; PL2 assumed flagged", name: short_term, powerLimitUW: 0, timeWindowUS: 976, rejectWrites: ""}
@@ -78,6 +80,7 @@ powercap:
           enabled: {v: 1, src: "assumed:firmware enables PL1"}
           energyUnitNJ: {v: 61035, src: "assumed:ESU 14 in the TPMI unit register; formula rapltpmi#329-330"}
           powerUnitUW: {v: 125000, src: "assumed:PU 3 in the TPMI unit register"}
+          limitBits: {v: 18, src: "published:raplcommon#TPMI_POWER_LIMIT_MASK, bits 17:0 of every TPMI power limit, where the MSR fields are 15 bits"}
           constraints: *pkgconstraints
           children: *dram
 cpufreq:

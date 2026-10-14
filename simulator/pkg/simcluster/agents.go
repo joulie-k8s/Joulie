@@ -56,12 +56,13 @@ func SpecHarness(s *clusterspec.Spec) (Harness, error) {
 // EmulatedAgents returns one EmulatedAgent per member, sorted by Node name:
 // the members are the Nodes the agent DaemonSet reaches (EligibleNodes).
 // DevNvidiactl is set for an NVIDIA profile, whose tree has dev/nvidiactl.
-// Under the pool's tool delivery ToolDeliveryMounted, the agent mounts the
+// Under the pool's tool delivery (Harness.ToolDelivery, install for a pool
+// the spec leaves to the install) ToolDeliveryMounted, the agent mounts the
 // driver stub (root/DriverStubPath) at the first path of each requirement
 // of the profile's GPU tools, once per path; under ToolDeliveryNone it
 // mounts nothing. root is the hwemu root on the infra Node, an absolute
 // path.
-func EmulatedAgents(members []clusterspec.Member, h Harness, root string) ([]EmulatedAgent, error) {
+func EmulatedAgents(members []clusterspec.Member, h Harness, install, root string) ([]EmulatedAgent, error) {
 	if !path.IsAbs(root) {
 		return nil, fmt.Errorf("emulated agents: the hwemu root %q is not an absolute path", root)
 	}
@@ -77,7 +78,7 @@ func EmulatedAgents(members []clusterspec.Member, h Harness, root string) ([]Emu
 			if err != nil {
 				return nil, fmt.Errorf("emulated agents: member %s: %w", m.Name, err)
 			}
-			a.ExtraVolumes, a.ExtraVolumeMounts = agentToolMounts(tools, h.ToolDelivery(m.Pool), root)
+			a.ExtraVolumes, a.ExtraVolumeMounts = agentToolMounts(tools, h.ToolDelivery(m.Pool, install), root)
 		}
 		agents = append(agents, a)
 	}
@@ -86,8 +87,8 @@ func EmulatedAgents(members []clusterspec.Member, h Harness, root string) ([]Emu
 }
 
 // agentTool is a GPU tool of a profile with its requirements: each one a
-// list of paths of which one must exist for the tool to run (S3-WP5's
-// hwemu GPUSpec.Tools[].Requires).
+// list of paths of which one must exist for the tool to run (hwemu
+// GPUSpec.Tools[].Requires).
 type agentTool struct {
 	Name     string             `json:"name"`
 	Requires []agentRequirement `json:"requires"`

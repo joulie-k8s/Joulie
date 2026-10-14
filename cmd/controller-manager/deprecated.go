@@ -44,8 +44,10 @@ var inputEnvAliases = map[string]string{
 }
 
 // inputAliasesRemovedIn is when inputEnvAliases, FACILITY_PRESET=legacy and
-// the legacy HTTP JSON body go: one minor release after v0.3.0 added their
-// replacements.
+// the legacy HTTP JSON body go: otlpjson.LegacyRemovedIn, the release every
+// component names (TestInputAliasesGoWithTheLegacyFormats). It is spelled
+// as a literal because tests/docs reads it from this file to check the
+// configuration reference.
 const inputAliasesRemovedIn = "v0.4.0"
 
 var (

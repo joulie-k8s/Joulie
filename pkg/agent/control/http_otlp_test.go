@@ -205,11 +205,11 @@ func TestHTTPPowerReaderFiltersByNodeResource(t *testing.T) {
 	}
 }
 
-// A body longer than maxTelemetryBody is cut there and fails to decode, so a
-// misbehaving endpoint cannot make the agent hold an unbounded body: here a
-// valid export behind more blank space than the limit.
+// A body longer than otlpjson.MaxTelemetryBody fails, so a misbehaving
+// endpoint cannot make the agent hold an unbounded body: here a valid export
+// behind more blank space than the limit.
 func TestHTTPPowerReaderBodyOverLimitFails(t *testing.T) {
-	body := append(bytes.Repeat([]byte(" "), maxTelemetryBody), otlpTestBody(t, "node-a", otlpTestPower(semconv.HwTypeCPU, "cpu0", 120))...)
+	body := append(bytes.Repeat([]byte(" "), otlpjson.MaxTelemetryBody), otlpTestBody(t, "node-a", otlpTestPower(semconv.HwTypeCPU, "cpu0", 120))...)
 	srv, _ := otlpTestServer(t, body)
 	r := &HTTPPowerReader{Endpoint: srv.URL, NodeName: "node-a", Client: srv.Client()}
 	if w, ok, err := r.ReadPowerWatts(); err == nil || ok {

@@ -52,6 +52,7 @@ func TestEV01ClassifyFollowsTheEventTable(t *testing.T) {
 		{level, hwemu.EventRejected, hwemu.ErrnoEOPNOTSUPP, semconv.EventSimWriteRejected, semconv.ErrorTypeEOPNOTSUPP},
 		{level, hwemu.EventRejected, hwemu.ErrnoEINVAL, semconv.EventSimWriteRejected, semconv.ErrorTypeEINVAL},
 		{epp, hwemu.EventRejected, hwemu.ErrnoEBUSY, semconv.EventSimWriteRejected, semconv.ErrorTypeEBUSY},
+		{pl1, hwemu.EventRejected, hwemu.ErrnoENODATA, semconv.EventSimWriteRejected, semconv.ErrorTypeENODATA},
 		{epp, hwemu.EventRejected, "EIO", semconv.EventSimWriteRejected, "eio"},
 		// The errno belongs to rejected only; the other kinds keep their values.
 		{level, hwemu.EventRevertedOutOfRange, hwemu.ErrnoEINVAL, semconv.EventSimWriteRejected, semconv.ErrorTypeRevertedOutOfRange},

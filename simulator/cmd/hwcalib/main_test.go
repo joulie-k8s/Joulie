@@ -26,7 +26,9 @@ import (
 const testNode = "sweep-node-0"
 
 // writeSweep writes a sweep of amd-epyc-2s-energy-only under the
-// performance governor to dir/sweep.jsonl and returns its path: two
+// performance governor, with the analytic model of its own facts in place
+// of its catalog curve, so the fit has them to give back, to
+// dir/sweep.jsonl and returns its path: two
 // frequency ceilings and three loads, 22 s each, sampled every 2 s and
 // exported as the simulator exports a node, plus the CPU utilization of the
 // whole host and the setpoints.
@@ -38,6 +40,7 @@ func writeSweep(t *testing.T, dir string) string {
 	}
 	p := profiles["amd-epyc-2s-energy-only"]
 	p.CPUFreq.Governor.V = "performance"
+	p.Physics.CPU.Model = "analytic"
 	tree, err := hwemu.Render(p, filepath.Join(t.TempDir(), "node"), hwemu.RenderOptions{NodeName: testNode, Seed: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -71,9 +74,7 @@ func writeSweep(t *testing.T, dir string) string {
 				st := n.State()
 				snap := emulate.NodeSnapshot{Name: testNode, StartTime: start,
 					Host: emulate.HostReading{Measured: true, PowerW: st.Host.PowerW, EnergyJ: st.Host.EnergyJ, OtherW: st.Host.OtherW, InletC: 24}}
-				for _, c := range st.Components {
-					snap.Components = append(snap.Components, emulate.ComponentReading(c))
-				}
+				snap.Components = append(snap.Components, st.Components...)
 				md, _ := telemetry.NodeRequest(snap, "hwcalib-test", now, res)
 				md.ResourceMetrics[0].ScopeMetrics = append(md.ResourceMetrics[0].ScopeMetrics, otlpjson.ScopeMetrics{
 					Scope: otlpjson.Scope{Name: "hwcalib-test"}, SchemaURL: semconv.SchemaURL,

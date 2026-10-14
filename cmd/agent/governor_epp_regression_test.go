@@ -1,12 +1,10 @@
 package main
 
-// Regression test of the CPU preset classification: on amd-pstate-epp the
-// kernel lists only performance in energy_performance_available_preferences
-// while the governor is performance, and the full set under powersave. The
-// agent classified balanced and efficiency from that file, so they were
-// equivalent on a node still at its boot governor and applied once eco had
-// switched it to powersave, and the published presets changed with the
-// governor Joulie itself had written.
+// The CPU presets a node publishes do not depend on the governor it runs:
+// on amd-pstate-epp the kernel lists only performance in
+// energy_performance_available_preferences while the governor is
+// performance, and the full set under powersave, so balanced and efficiency
+// are judged on the driver's own set (governor.EPPSupport).
 
 import (
 	"fmt"

@@ -27,8 +27,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 
 	"github.com/matbun/joulie/pkg/otel/otlpjson"
 	"github.com/matbun/joulie/pkg/otel/semconv"
@@ -53,8 +51,8 @@ const (
 	envFakeSMISource     = "SIM_FAKESMI_SOURCE"
 	envExporters         = "SIM_EXPORTERS"
 	envDCGMHostnameLabel = "SIM_DCGM_HOSTNAME_LABEL"
+	envKepler012GPU      = "SIM_KEPLER012_GPU"
 	envStandalone        = "SIM_STANDALONE"
-	envWorkloadTrace     = "SIM_WORKLOAD_TRACE_PATH"
 )
 
 // Defaults of emulate mode. The fakesmi source is where the simulator image
@@ -65,17 +63,27 @@ const (
 	defaultEmulateTick   = time.Second
 )
 
+// hwemuRoot is SIM_HWEMU_ROOT read through get, the directory that holds
+// one tree per emulated node and the runs directory; defaultHwemuRoot when
+// it is unset or blank.
+func hwemuRoot(get func(string) string) string {
+	if root := strings.TrimSpace(get(envHwemuRoot)); root != "" {
+		return root
+	}
+	return defaultHwemuRoot
+}
+
 // checkModes refuses the combinations emulate mode cannot run: with
 // SIM_STANDALONE, which has no Kubernetes and no trees; without
 // SIM_CLUSTER_SPEC, which names the nodes to emulate; and with
 // SIM_WORKLOAD_TRACE_PATH under SIM_WORKLOAD_MODEL=legacy, because a legacy
-// trace cannot drive emulated nodes (X10). A trace with the model unset or
+// trace cannot drive emulated nodes. A trace with the model unset or
 // v1 runs on the v1 engine; loadWorkloadOptions checks the model itself.
 // Booleans read as boolEnv reads them.
 func checkModes(getenv func(string) string) error {
 	set := func(key string) bool {
 		s := strings.TrimSpace(getenv(key))
-		return strings.EqualFold(s, "true") || s == "1" || strings.EqualFold(s, "yes")
+		return boolEnvWords[strings.ToLower(s)]
 	}
 	if !set(envEmulate) {
 		return nil
@@ -87,9 +95,9 @@ func checkModes(getenv func(string) string) error {
 	if strings.TrimSpace(getenv(envClusterSpec)) == "" {
 		errs = append(errs, fmt.Errorf("%s=true needs %s, the cluster spec that names the nodes to emulate", envEmulate, envClusterSpec))
 	}
-	if strings.TrimSpace(getenv(envWorkloadTrace)) != "" && strings.TrimSpace(getenv(workload.EnvModel)) == string(workload.ModelLegacy) {
+	if strings.TrimSpace(getenv(workload.EnvTracePath)) != "" && strings.TrimSpace(getenv(workload.EnvModel)) == string(workload.ModelLegacy) {
 		errs = append(errs, fmt.Errorf("%s=true cannot run with %s and %s=%s: a legacy trace cannot drive emulated nodes; leave %s unset for the v1 engine",
-			envEmulate, envWorkloadTrace, workload.EnvModel, workload.ModelLegacy, workload.EnvModel))
+			envEmulate, workload.EnvTracePath, workload.EnvModel, workload.ModelLegacy, workload.EnvModel))
 	}
 	return errors.Join(errs...)
 }
@@ -105,6 +113,7 @@ type emulateOptions struct {
 	Workers                       int
 	Exporters                     []string
 	DCGMHostnameLabel             string
+	Kepler012GPU                  bool
 	Telemetry                     telemetry.Config
 	Resource                      telemetry.Resource
 	Start                         time.Time
@@ -126,7 +135,7 @@ type emulateRuntime struct {
 	// when the first tick starts it at the wall time.
 	start time.Time
 	// ready is set once the first snapshot is published: every tree then
-	// exists and has stepped (/readyz, X20).
+	// exists and has stepped (/readyz).
 	ready atomic.Bool
 
 	// Owned by publishEmulateSnapshot, on the emulator's goroutine.
@@ -163,15 +172,13 @@ func (s *simulator) emulateOptionsFromEnv(lookup func(string) (string, bool)) (e
 	}
 	o := emulateOptions{
 		SpecPath:          get(envClusterSpec),
-		Root:              get(envHwemuRoot),
+		Root:              hwemuRoot(get),
 		FakeSMISource:     defaultFakeSMISource,
 		Tick:              defaultEmulateTick,
 		DCGMHostnameLabel: get(envDCGMHostnameLabel),
+		Kepler012GPU:      boolEnvFrom(get, envKepler012GPU, false),
 		Resource:          otlpTelemetryResource(),
 		Registerer:        prometheus.DefaultRegisterer,
-	}
-	if o.Root == "" {
-		o.Root = defaultHwemuRoot
 	}
 	if v, ok := lookup(envFakeSMISource); ok {
 		o.FakeSMISource = strings.TrimSpace(v)
@@ -235,7 +242,7 @@ func (s *simulator) newEmulateRuntime(o emulateOptions) (*emulateRuntime, error)
 	if err != nil {
 		return nil, fmt.Errorf("cluster spec %s: %w", o.SpecPath, err)
 	}
-	set, err := compat.NewSet(o.Exporters, compat.Options{DCGMHostnameLabel: o.DCGMHostnameLabel})
+	set, err := compat.NewSet(o.Exporters, compat.Options{DCGMHostnameLabel: o.DCGMHostnameLabel, Kepler012GPU: o.Kepler012GPU})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", envExporters, err)
 	}
@@ -370,7 +377,7 @@ func (s *simulator) stopEmulate() {
 
 // emulateLoads is the load callback of the emulator. While a v1 run is
 // active it returns the run's loads with no base load, so the jobs alone
-// drive the nodes (X9); otherwise no job load, with every node's baseLoad
+// drive the nodes; otherwise no job load, with every node's baseLoad
 // applied.
 func (s *simulator) emulateLoads() (map[string]hwemu.Load, bool) {
 	if r := s.run.Load(); r != nil {
@@ -411,7 +418,7 @@ func (s *simulator) emulateFacility(specITPowerW float64, now time.Time) facilit
 // step over the tick (stepLegacyNodes), the timeseries gets a row, and the
 // snapshot's events go to the event files and push and to /debug/events.
 // While a v1 run is active, the run then ticks on this goroutine, where it
-// may read the nodes' throughput (X9), and copies the hardware events into
+// may read the nodes' throughput, and copies the hardware events into
 // its own logs.
 func (s *simulator) publishEmulateSnapshot(snap *emulate.Snapshot) {
 	rt := s.emu
@@ -454,9 +461,11 @@ func (s *simulator) emitEmulateEvents(recs []telemetry.EventRecord) {
 	}
 	rt.lastSinkErr = msg
 	rt.sinkMu.Unlock()
-	for _, r := range recs {
-		s.recordEvent(r.Event.Name, r.Node, emulateEventPayload(r))
+	evs := make([]simEvent, len(recs))
+	for i, r := range recs {
+		evs[i] = newSimEvent(r.Event.Name, r.Node, emulateEventPayload(r))
 	}
+	s.recordEvents(evs)
 }
 
 // emulateEventPayload is an event record as /debug/events shows it: its
@@ -464,16 +473,8 @@ func (s *simulator) emitEmulateEvents(recs []telemetry.EventRecord) {
 func emulateEventPayload(r telemetry.EventRecord) map[string]any {
 	p := make(map[string]any, len(r.Attributes)+1)
 	for _, kv := range r.Attributes {
-		v := kv.Value
-		switch {
-		case v.String != nil:
-			p[kv.Key] = *v.String
-		case v.Bool != nil:
-			p[kv.Key] = *v.Bool
-		case v.Int != nil:
-			p[kv.Key] = int64(*v.Int)
-		case v.Double != nil:
-			p[kv.Key] = *v.Double
+		if v, ok := kv.Value.Any(); ok {
+			p[kv.Key] = v
 		}
 	}
 	p["body"] = r.Body
@@ -733,7 +734,7 @@ func (s *simulator) handleEmulatedState(w http.ResponseWriter, node string) {
 }
 
 // handleDebugEmulate serves /debug/emulate: the latest snapshot, the truth
-// every export is computed from (X4).
+// every export is computed from.
 func (s *simulator) handleDebugEmulate(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	status := http.StatusOK
@@ -753,7 +754,7 @@ func (s *simulator) handleDebugEmulate(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReadyz serves /readyz: 503 until the first snapshot is published,
-// when every tree exists and has stepped, then 200 (X20).
+// when every tree exists and has stepped, then 200.
 func (s *simulator) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	if s.emu == nil || !s.emu.ready.Load() {
 		http.Error(w, "not ready: no snapshot published yet", http.StatusServiceUnavailable)
@@ -763,40 +764,16 @@ func (s *simulator) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-// nodeMetaListFunc lists the annotations of every Node by name; tests
-// replace it.
-var nodeMetaListFunc = listNodeAnnotations
-
-func listNodeAnnotations(ctx context.Context, kube kubernetes.Interface) (map[string]map[string]string, error) {
-	nodes, err := kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]map[string]string, len(nodes.Items))
-	for _, n := range nodes.Items {
-		ann := map[string]string{}
-		for k, v := range n.GetAnnotations() {
-			ann[k] = v
-		}
-		out[n.GetName()] = ann
-	}
-	return out, nil
-}
-
-// checkEmulatedNodes compares each spec node with its Kubernetes Node: a
+// checkEmulatedNodes compares each spec node with its Kubernetes Node, of
+// the poll's Node list, which gives each Node's annotations by name: a
 // missing Node, or one whose profile annotation names another profile,
 // emits node.mismatch. Each node emits once per change of state, not once
 // per poll; a Node that matches again is logged.
-func (s *simulator) checkEmulatedNodes(ctx context.Context, kube kubernetes.Interface) {
+func (s *simulator) checkEmulatedNodes(nodes map[string]map[string]string) {
 	if s.emu == nil {
 		return
 	}
 	rt := s.emu
-	nodes, err := nodeMetaListFunc(ctx, kube)
-	if err != nil {
-		log.Printf("warning: emulated node check: %v", err)
-		return
-	}
 	now := time.Now().UTC()
 	var recs []telemetry.EventRecord
 	var matches []string

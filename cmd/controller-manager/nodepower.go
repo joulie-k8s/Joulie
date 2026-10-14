@@ -30,21 +30,19 @@ import (
 // The node power settings, set at start by inputConfig.install.
 // resolveNodePower reads only these, so it works without a setup call: the
 // zero values are the static source, and under the prometheus source the
-// otel preset, or the custom one when nodePowerPromQuery is set.
+// defaults of inputs.NodePowerSpec.WithDefaults.
 var (
-	nodePowerSource       string // "prometheus", "http", or "static"
+	nodePowerSource       string // nodePowerSource* of inputs_config.go
 	nodePowerHTTPEndpoint string // e.g. "http://sim:18080/telemetry/{node}"
 	nodePowerHTTPClient   = &http.Client{Timeout: 5 * time.Second}
 
 	// nodePowerPromAddress is the Prometheus the node power query goes to.
 	nodePowerPromAddress string
-	// nodePowerPromQuery is the custom preset's query, in watts. With
-	// {node} it runs once per node and its series are summed; without, it
-	// is summed by the node label.
-	nodePowerPromQuery string
-	// nodePowerSpec holds the other prometheus settings: preset, scope,
-	// translation strategy, resource attributes mode, rate window and node
-	// label. Its CustomQuery is ignored: nodePowerPromQuery is the query.
+	// nodePowerSpec holds the prometheus settings: preset, scope,
+	// translation strategy, resource attributes mode, rate window, node
+	// label and the custom preset's query, in watts. With {node} that
+	// query runs once per node and its series are summed; without, it is
+	// summed by the node label.
 	nodePowerSpec inputs.NodePowerSpec
 )
 
@@ -56,7 +54,7 @@ var (
 //   - "static" (default): returns 0.
 func resolveNodePower(ctx context.Context, _ dynamic.Interface, nodeName string, hw joulie.NodeHardware) (float64, string) {
 	switch nodePowerSource {
-	case "prometheus":
+	case nodePowerSourcePrometheus:
 		if nodePowerPromAddress != "" {
 			if power, ok := prometheusNodePower(ctx, nodeName); ok && power > 0 {
 				return power, joulie.PowerSourcePrometheus
@@ -67,11 +65,11 @@ func resolveNodePower(ctx context.Context, _ dynamic.Interface, nodeName string,
 		// Prometheus and estimate power using the hardware TDP curve.
 		return 0, joulie.PowerSourcePrometheusNoData
 
-	case "http":
+	case nodePowerSourceHTTP:
 		if nodePowerHTTPEndpoint != "" {
 			power, err := queryNodePowerHTTP(ctx, nodeName)
+			logNodePowerError("http:"+nodeName, fmt.Sprintf("http node power for %s", nodeName), err)
 			if err != nil {
-				log.Printf("[twin] http node power for %s: %v", nodeName, err)
 				return 0, joulie.PowerSourceHTTPError
 			}
 			return power, joulie.PowerSourceHTTP
@@ -86,9 +84,11 @@ func resolveNodePower(ctx context.Context, _ dynamic.Interface, nodeName string,
 // prometheusNodePower reads the node from Prometheus. ok is false when the
 // query failed or did not name the node.
 func prometheusNodePower(ctx context.Context, nodeName string) (float64, bool) {
-	spec := nodePowerSpec
-	spec.CustomQuery = nodePowerPromQuery
-	primary, fallback, err := spec.Query()
+	spec, err := nodePowerSpec.WithDefaults()
+	var primary, fallback inputs.Query
+	if err == nil {
+		primary, fallback, err = spec.Query()
+	}
 	if err != nil {
 		nodePowerHintOnce("spec", fmt.Sprintf("node power query: %v", err))
 		return 0, false
@@ -138,9 +138,9 @@ func roundNodePower(ctx context.Context, run func() map[string]float64) map[stri
 // producer still reads the whole node.
 func perNodePower(ctx context.Context, c inputs.Client, q inputs.Query, nodeName string) (float64, bool) {
 	res, err := c.Query(ctx, strings.ReplaceAll(q.PromQL, inputs.NodePlaceholder, nodeName))
+	logNodePowerError("node:"+nodeName, fmt.Sprintf("prometheus node power for %s", nodeName), err)
 	if err != nil {
 		recordInputQuery(inputNodePower, inputResultError)
-		log.Printf("[twin] prometheus node power for %s: %v", nodeName, err)
 		return 0, false
 	}
 	logQueryWarnings(res.Warnings)
@@ -193,17 +193,57 @@ func runGroupedNodePower(ctx context.Context, c inputs.Client, q inputs.Query) n
 	if err != nil {
 		r := nodePowerRead{err: err}
 		recordInputQuery(inputNodePower, r.result())
-		log.Printf("[twin] node power query: %v", err)
+		logNodePowerError("query:"+q.PromQL, "node power query", err)
 		return r
 	}
 	logQueryWarnings(res.Warnings)
 	values, iss, err := res.ByLabel(q.GroupLabel)
 	r := nodePowerRead{values: values, issues: iss, err: err}
 	recordInputQuery(inputNodePower, r.result())
-	if err != nil {
-		log.Printf("[twin] node power query: %v", err)
-	}
+	logNodePowerError("query:"+q.PromQL, "node power query", err)
 	return r
+}
+
+// nodePowerErrorRepeat is how long an unchanged node power error stays
+// unlogged after it was logged.
+const nodePowerErrorRepeat = 10 * time.Minute
+
+// The last error logged per key, and when; nodePowerNow is the clock.
+var (
+	nodePowerErrMu   sync.Mutex
+	nodePowerErrLast = map[string]nodePowerLoggedError{}
+	nodePowerNow     = time.Now
+)
+
+type nodePowerLoggedError struct {
+	text string
+	at   time.Time
+}
+
+// logNodePowerError logs a failed read of key (a query, or a node) the
+// first time, when its text changes, and while it stays the same at most
+// every nodePowerErrorRepeat, so a Prometheus that is down logs one line per
+// query and not one per reconcile. A nil err after a logged one logs that
+// the read works again.
+func logNodePowerError(key, what string, err error) {
+	nodePowerErrMu.Lock()
+	last, logged := nodePowerErrLast[key]
+	now := nodePowerNow()
+	var line string
+	switch {
+	case err == nil:
+		if logged {
+			delete(nodePowerErrLast, key)
+			line = fmt.Sprintf("[twin] %s works again", what)
+		}
+	case !logged || last.text != err.Error() || now.Sub(last.at) >= nodePowerErrorRepeat:
+		nodePowerErrLast[key] = nodePowerLoggedError{text: err.Error(), at: now}
+		line = fmt.Sprintf("[twin] %s: %v (logged again when it changes, or in %s)", what, err, nodePowerErrorRepeat)
+	}
+	nodePowerErrMu.Unlock()
+	if line != "" {
+		log.Print(line)
+	}
 }
 
 // The form PROMETHEUS_RESOURCE_ATTRIBUTES=auto reads first: the one that
@@ -283,19 +323,10 @@ func setNodePowerAutoForm(form inputs.ResourceAttributes) {
 }
 
 // hintNodePower logs, once per kind, what to change when a grouped query
-// read no node or not every node. auto marks a form auto tried.
+// read no node or not every node. spec has its defaults filled; auto marks
+// a form auto tried.
 func hintNodePower(spec inputs.NodePowerSpec, form inputs.ResourceAttributes, auto bool, q inputs.Query, r nodePowerRead) {
-	preset := spec.Preset
-	if preset == "" {
-		preset = inputs.NodePowerPresetOTel
-		if spec.CustomQuery != "" {
-			preset = inputs.NodePowerPresetCustom
-		}
-	}
-	naming := spec.Naming
-	if naming == "" {
-		naming = promname.Default
-	}
+	preset, naming := spec.Preset, spec.Naming
 	label := q.GroupLabel
 	var perr *inputs.Error
 	switch {
@@ -348,7 +379,7 @@ func noNodePowerHint(preset inputs.NodePowerPreset, naming promname.Strategy) st
 	case inputs.NodePowerPresetCustom:
 		return "node power: the custom query (NODE_POWER_PROMETHEUS_QUERY) returned no series"
 	}
-	return fmt.Sprintf("node power: no series; producers push OTLP to Prometheus' /api/v1/otlp/v1/metrics, which needs --web.enable-otlp-receiver, and PROMETHEUS_NAME_TRANSLATION (%s) must equal Prometheus' otlp.translation_strategy",
+	return fmt.Sprintf("node power: no series; producers push OTLP to Prometheus' /api/v1/otlp/v1/metrics, which needs --web.enable-otlp-receiver, and PROMETHEUS_NAME_TRANSLATION (%s) must equal Prometheus' otlp.translation_strategy; a Prometheus that scrapes Kepler is read with NODE_POWER_PRESET=kepler (Kepler 0.10 and later) or NODE_POWER_PRESET=kepler-legacy (Kepler 0.7 to 0.9)",
 		naming)
 }
 

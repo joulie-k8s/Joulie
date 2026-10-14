@@ -17,6 +17,32 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
+// get, set and setTopology read and write facilityMetrics in the tests;
+// the controller manager stores whole polls with store.
+func (f *facilityMetrics) get() (ambientC, itPowerW, coolingW float64) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.readings.ambientC, f.readings.itPowerW, f.readings.coolingPowerW
+}
+
+// set stores the three cluster-wide readings, all known.
+func (f *facilityMetrics) set(ambientC, itPowerW, coolingW float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.readings.ambientC, f.readings.ambientKnown = ambientC, true
+	f.readings.itPowerW, f.readings.itKnown = itPowerW, true
+	f.readings.coolingPowerW, f.readings.coolingKnown = coolingW, true
+	f.lastUpdated = time.Now()
+}
+
+// setTopology stores per-zone ambient temperatures and per-rack power.
+func (f *facilityMetrics) setTopology(zoneTemps map[string]float64, rackPower map[string]float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.readings.zoneAmbientC = cloneFloatMap(zoneTemps)
+	f.readings.rackPowerW = cloneFloatMap(rackPower)
+}
+
 func TestFacilityMetricsGetReturnsZerosWhenNotSet(t *testing.T) {
 	t.Parallel()
 	fm := &facilityMetrics{}
@@ -451,5 +477,27 @@ func TestFacilityMetricsLoopPollsAtStart(t *testing.T) {
 			t.Fatal("no facility reading 5 s after start with a 1 h poll interval")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// When the otel facility preset reads nothing, the hint names
+// FACILITY_PRESET=legacy for the inputs the legacy preset reads, and only
+// for those.
+func TestFacilityNoDataHintNamesTheLegacyPreset(t *testing.T) {
+	for input, legacy := range map[inputs.FacilityInput]bool{
+		inputs.FacilityInputAmbientTemp:     true,
+		inputs.FacilityInputITPower:         true,
+		inputs.FacilityInputCoolingPower:    true,
+		inputs.FacilityInputZoneAmbientTemp: false,
+		inputs.FacilityInputRackPower:       false,
+		inputs.FacilityInputNodeInletTemp:   false,
+	} {
+		h := facilityHint(input, string(inputs.FacilityPresetOTel), inputs.ErrNoData)
+		if got := strings.Contains(h, "FACILITY_PRESET=legacy"); got != legacy {
+			t.Errorf("%s no-data hint %q names FACILITY_PRESET=legacy: %t, want %t", input, h, got, legacy)
+		}
+		if !strings.Contains(h, facilityQueryEnv(input)) {
+			t.Errorf("%s no-data hint %q does not name %s", input, h, facilityQueryEnv(input))
+		}
 	}
 }

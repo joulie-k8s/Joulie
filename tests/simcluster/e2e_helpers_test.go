@@ -10,8 +10,8 @@ package simcluster_test
 // Every cluster read goes through the API server: Kubernetes objects
 // through a controller-runtime client with Joulie's typed CRDs, and HTTP to
 // Prometheus, the simulator and the scheduler extender through the
-// service proxy (/api/v1/namespaces/<ns>/services/<svc>:<port>/proxy/...),
-// the only way into the cluster (R6).
+// service proxy (/api/v1/namespaces/<ns>/services/<svc>:<port>/proxy/...):
+// the cluster publishes no port but the API server's.
 
 import (
 	"bufio"
@@ -38,9 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/matbun/joulie/api/v1alpha1"
-	"github.com/matbun/joulie/pkg/controller/inputs"
 	"github.com/matbun/joulie/pkg/kube"
-	"github.com/matbun/joulie/pkg/otel/promname"
 	"github.com/matbun/joulie/pkg/otel/semconv"
 	"github.com/matbun/joulie/simulator/pkg/clusterspec"
 	"github.com/matbun/joulie/simulator/pkg/emulate"
@@ -73,7 +71,7 @@ const (
 	e2eDeployExtender    = "joulie-scheduler-extender"
 )
 
-// The smoke policy (tests/simcluster/smoke-values.yaml, R5): CPU and GPU
+// The smoke policy (tests/simcluster/smoke-values.yaml): CPU and GPU
 // performance caps at 80 % of the maximum, lowered to 50 % in one upgrade.
 const (
 	e2eCapPctBefore = 80.0
@@ -105,6 +103,11 @@ type e2eEnv struct {
 	Spec     *clusterspec.Spec
 	Members  []clusterspec.Member
 	Harness  simcluster.Harness
+	// Install is the tool delivery of the Joulie install deploy.sh ran
+	// (simcluster.Placement.ToolDelivery of its agent DaemonSet render),
+	// the delivery of every pool the spec leaves to it; Extender is how
+	// kube-scheduler reaches the extender (SIMCLUSTER_EXTENDER).
+	Install, Extender string
 	// Mode, Scope and Timing are the settings deploy.sh installed with
 	// (deploy.env); Parts are their telemetry parts, with Wait.Nodes set.
 	Mode   simcluster.Mode
@@ -113,6 +116,8 @@ type e2eEnv struct {
 	Parts  simcluster.TelemetryParts
 	// Images is images.env.
 	Images map[string]string
+	// Prom queries the harness Prometheus through the service proxy.
+	Prom *scenario.PromClient
 
 	Config    *rest.Config
 	Client    client.Client
@@ -143,7 +148,7 @@ func e2eNewEnv(t *testing.T) *e2eEnv {
 // connects to it.
 func (e *e2eEnv) load(t *testing.T) {
 	t.Helper()
-	deploy, err := e2eEnvFile(filepath.Join(e.Dir, "deploy.env"))
+	deploy, err := simcluster.ReadEnvFile(filepath.Join(e.Dir, "deploy.env"))
 	if err != nil {
 		t.Fatalf("%v; run scripts/simcluster/deploy.sh first", err)
 	}
@@ -157,7 +162,10 @@ func (e *e2eEnv) load(t *testing.T) {
 		t.Fatalf("deploy.env: %v", err)
 	}
 	e.summary.TelemetryMode, e.summary.PowerScope, e.summary.Timing = string(e.Mode), string(e.Scope), e.Timing.Name
-	e.summary.InputPreset = e2eInputPreset(e.Mode)
+	e.summary.InputPreset = string(e.Mode.InputPreset())
+	if e.Extender = deploy["EXTENDER"]; e.Extender == "" {
+		e.Extender = e2eExtenderHostNet
+	}
 
 	e.SpecPath = filepath.Join(e.Dir, "spec.yaml")
 	if e.Spec, err = clusterspec.LoadFile(e.SpecPath); err != nil {
@@ -175,12 +183,21 @@ func (e *e2eEnv) load(t *testing.T) {
 	if e.Harness, err = simcluster.SpecHarness(e.Spec); err != nil {
 		t.Fatalf("%s: %v", e.SpecPath, err)
 	}
+	render, err := os.ReadFile(filepath.Join(e.Dir, "render", "agent-daemonset.yaml"))
+	if err != nil {
+		t.Fatalf("the agent DaemonSet render deploy.sh placed the agents with: %v", err)
+	}
+	placement, err := simcluster.PlacementFromRender(render, e2eImageArch)
+	if err != nil {
+		t.Fatalf("render/agent-daemonset.yaml: %v", err)
+	}
+	e.Install = placement.ToolDelivery()
 	if e.Parts, err = simcluster.Telemetry(e.Mode, e.Scope, e.Timing); err != nil {
 		t.Fatalf("telemetry parts: %v", err)
 	}
 	e.Parts.Wait.Nodes = simcluster.WaitNodes(e.Members)
 
-	if e.Images, err = e2eEnvFile(filepath.Join(e.Dir, "images.env")); err != nil {
+	if e.Images, err = simcluster.ReadEnvFile(filepath.Join(e.Dir, "images.env")); err != nil {
 		t.Fatal(err)
 	}
 	e.summary.Images = map[string]string{}
@@ -204,52 +221,27 @@ func (e *e2eEnv) load(t *testing.T) {
 	if e.Clientset, err = kubernetes.NewForConfig(e.Config); err != nil {
 		t.Fatal(err)
 	}
+	if e.Prom, err = scenario.NewProxyPromClient(e.Config); err != nil {
+		t.Fatal(err)
+	}
 	t.Logf("cluster %s: spec %s (%d Nodes), telemetry %s, scope %s, timing %s", filepath.Base(e.Dir), e.Spec.Metadata.Name,
 		len(e.Members), e.Mode, e.Scope, e.Timing.Name)
 }
 
-// e2eInputPreset is the node power preset Joulie runs with in mode, the
-// summary's inputPreset.
-func e2eInputPreset(mode simcluster.Mode) string {
-	switch mode {
-	case simcluster.ModeKepler:
-		return string(inputs.NodePowerPresetKepler)
-	case simcluster.ModeKeplerLegacy:
-		return string(inputs.NodePowerPresetKeplerLegacy)
-	}
-	return string(inputs.NodePowerPresetOTel)
-}
+// The values of SIMCLUSTER_EXTENDER (scripts/simcluster/lib.sh), as
+// deploy.env records them; hostnet when it records none.
+const (
+	e2eExtenderHostNet = "hostnet"
+	e2eExtenderService = "service"
+)
 
-// e2eStrategy is the Prometheus translation strategy of an otel mode, as
-// simcluster configures Prometheus for it.
-func e2eStrategy(mode simcluster.Mode) promname.Strategy {
-	if mode == simcluster.ModeOTelUTF8 {
-		return promname.NoUTF8EscapingWithSuffixes
-	}
-	return promname.Default
-}
-
-// e2eEnvFile reads a KEY=VALUE file the scripts write.
-func e2eEnvFile(path string) (map[string]string, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]string{}
-	sc := bufio.NewScanner(bytes.NewReader(b))
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			return nil, fmt.Errorf("%s: %q is not KEY=VALUE", path, line)
-		}
-		out[k] = v
-	}
-	return out, sc.Err()
-}
+// e2eImageArch is the architecture the scripts build the images for, and
+// e2eHwemuRoot where the hwemu trees live on the infra Node
+// (SIM_IMAGE_ARCH and SIM_HWEMU_ROOT in scripts/simcluster/lib.sh).
+const (
+	e2eImageArch = "amd64"
+	e2eHwemuRoot = "/var/lib/joulie-hwemu"
+)
 
 // e2eCase is one check: a subtest whose failures are also kept for
 // summary.json. Errorf and Fatalf record the message; a check that knows
@@ -330,7 +322,7 @@ func (e *e2eEnv) warn(t *testing.T, format string, args ...any) {
 
 // finish writes summary.json, and the joulie.scenario.assertion.evaluated
 // records and joulie.scenario.assertion.value points of the checks into
-// the run directory's otlp/ files (X12). A test that failed outside its
+// the run directory's otlp/ files, as a scenario run does. A test that failed outside its
 // checks, such as while reading the cluster, is a run error: exit code
 // ExitError, status aborted.
 func (e *e2eEnv) finish(t *testing.T) {
@@ -344,7 +336,7 @@ func (e *e2eEnv) finish(t *testing.T) {
 	if s.SuiteName == "" {
 		s.SuiteName = filepath.Base(e.Dir)
 	}
-	s.Git = e2eGit(e.Repo)
+	s.Git = scenario.ReadGit(e.Repo)
 	s.DurationsSeconds = map[string]float64{"test": math.Round(time.Since(e.start).Seconds()*10) / 10}
 	var runErr error
 	if t.Failed() && !e2eAnyFailed(s.Assertions) {
@@ -360,7 +352,7 @@ func (e *e2eEnv) finish(t *testing.T) {
 		t.Errorf("write %s: %v", path, err)
 		return
 	}
-	h := scenario.Harness{Dir: e.RunDir}
+	h := scenario.Recorder{Dir: e.RunDir}
 	if e.Spec != nil {
 		h.ClusterName = e.Spec.Metadata.Name
 	}
@@ -385,18 +377,6 @@ func e2eAnyFailed(rs []scenario.AssertionResult) bool {
 	return false
 }
 
-// e2eGit is the commit of the working tree, as smoke.sh names the run.
-func e2eGit(repo string) scenario.Git {
-	var g scenario.Git
-	if out, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output(); err == nil {
-		g.SHA = strings.TrimSpace(string(out))
-	}
-	if out, err := exec.Command("git", "-C", repo, "status", "--porcelain").Output(); err == nil {
-		g.Dirty = len(bytes.TrimSpace(out)) > 0
-	}
-	return g
-}
-
 // ctx returns a context for one API call.
 func (e *e2eEnv) ctx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), e2eCallTimeout)
@@ -418,38 +398,47 @@ func (e *e2eEnv) proxyGet(namespace, service, path string, params map[string]str
 	return b, nil
 }
 
-// prom runs an instant query in the harness Prometheus.
-func (e *e2eEnv) prom(query string) (scenario.PromResult, error) {
-	b, err := e.proxyGet(scenario.NamespaceMonitoring, scenario.PrometheusService, "api/v1/query", map[string]string{"query": query})
-	if err != nil {
-		return scenario.PromResult{}, err
-	}
-	r, err := scenario.ParsePromResponse(b, 200)
+// prom runs an instant query in the harness Prometheus at time at.
+func (e *e2eEnv) prom(query string, at time.Time) (scenario.PromResult, error) {
+	ctx, cancel := e.ctx()
+	defer cancel()
+	r, err := e.Prom.Query(ctx, query, at)
 	if err != nil {
 		return r, fmt.Errorf("query %s: %w", query, err)
 	}
 	return r, nil
 }
 
-// promByLabel runs query and returns the value of each series by its label
-// label; a series without the label is an error.
-func (e *e2eEnv) promByLabel(query, label string) (map[string]float64, error) {
-	r, err := e.prom(query)
+// promByLabel runs query at time at and returns each series' value by its
+// label label (e2eByLabel).
+func (e *e2eEnv) promByLabel(query, label string, at time.Time) (map[string]float64, error) {
+	r, err := e.prom(query, at)
 	if err != nil {
 		return nil, err
 	}
+	return e2eByLabel(r, query, label)
+}
+
+// e2eByLabel returns each series' last value by its label label. A series
+// without the label or a value, or two series with one value of it, is an
+// error: a query keyed by a Node returns one series per Node, and keeping
+// either of two would hide the other.
+func e2eByLabel(r scenario.PromResult, query, label string) (map[string]float64, error) {
 	out := map[string]float64{}
 	for _, s := range r.Series {
-		v, ok := s.Labels[label]
-		if !ok || len(s.Samples) == 0 {
+		v := s.Labels[label]
+		if v == "" || len(s.Samples) == 0 {
 			return nil, fmt.Errorf("query %s: a series without %s or a value: %v", query, label, s.Labels)
+		}
+		if _, dup := out[v]; dup {
+			return nil, fmt.Errorf("query %s: two series with %s=%s", query, label, v)
 		}
 		out[v] = s.Samples[len(s.Samples)-1].Value
 	}
 	return out, nil
 }
 
-// snapshot is the simulator's truth, GET /debug/emulate (X4).
+// snapshot is the simulator's truth, GET /debug/emulate.
 func (e *e2eEnv) snapshot() (*emulate.Snapshot, error) {
 	b, err := e.proxyGet(scenario.NamespaceSimulator, scenario.SimulatorService, "debug/emulate", nil)
 	if err != nil {
@@ -580,8 +569,8 @@ func e2eRunning(p *corev1.Pod) bool {
 type e2eNode struct {
 	clusterspec.Member
 	// Agent: an emulated agent stands in for the Node. Managed: the Node
-	// carries joulie.io/managed=true. ToolDelivery is the harness setting of
-	// its pool.
+	// carries joulie.io/managed=true. ToolDelivery is its pool's: the
+	// spec's harness setting, or the install's.
 	Agent, Managed bool
 	ToolDelivery   string
 }
@@ -613,7 +602,7 @@ var e2eCPUFamily = map[string]string{
 }
 
 // e2eSharedExposures are the GPU exposures the controller does not count as
-// GPUs (R13, D18).
+// GPUs (D18).
 var e2eSharedExposures = map[string]bool{"mig-mixed": true, "timeslice-rename": true}
 
 // family is the family of n.
@@ -654,7 +643,7 @@ func (e *e2eEnv) nodes() ([]e2eNode, error) {
 	for _, m := range e.Members {
 		_, agent := agents[m.Name]
 		out = append(out, e2eNode{Member: m, Agent: agent, Managed: m.Node.Labels[e2eLabelManaged] == "true",
-			ToolDelivery: e.Harness.ToolDelivery(m.Pool)})
+			ToolDelivery: e.Harness.ToolDelivery(m.Pool, e.Install)})
 	}
 	return out, nil
 }
@@ -871,6 +860,24 @@ func e2eMetricSum(text []byte, name string) (float64, error) {
 		sum += v
 	}
 	return sum, sc.Err()
+}
+
+// TestE2EByLabel: series by their node label; a missing label or two
+// series of one node are errors, never one of them kept.
+func TestE2EByLabel(t *testing.T) {
+	s := func(node string, v float64) scenario.PromSeries {
+		return scenario.PromSeries{Labels: map[string]string{"k8s_node_name": node}, Samples: []scenario.PromSample{{Value: v}}}
+	}
+	got, err := e2eByLabel(scenario.PromResult{Series: []scenario.PromSeries{s("a", 1), s("b", 2)}}, "q", "k8s_node_name")
+	if err != nil || len(got) != 2 || got["a"] != 1 || got["b"] != 2 {
+		t.Errorf("got %v %v", got, err)
+	}
+	if got, err := e2eByLabel(scenario.PromResult{Series: []scenario.PromSeries{s("a", 1), s("a", 2)}}, "q", "k8s_node_name"); err == nil {
+		t.Errorf("two series of one node: got %v, want an error", got)
+	}
+	if _, err := e2eByLabel(scenario.PromResult{Series: []scenario.PromSeries{s("", 1)}}, "q", "k8s_node_name"); err == nil {
+		t.Error("a series without the label: want an error")
+	}
 }
 
 // e2eEnvFilterChild marks the run of this test binary that

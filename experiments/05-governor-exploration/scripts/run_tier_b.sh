@@ -2,7 +2,7 @@
 #
 # run_tier_b.sh - Tier B of experiment 05: one arm on a fresh simulated
 # cluster (scripts/simcluster), Joulie in the loop, then the governor
-# harness checks GS01 to GS04 against it.
+# governor checks of tests/simcluster/e2e_test.go against it.
 #
 # Usage: experiments/05-governor-exploration/scripts/run_tier_b.sh ARM
 #        experiments/05-governor-exploration/scripts/run_tier_b.sh --check-context
@@ -178,5 +178,5 @@ if [[ $arm == off ]]; then
   sim_log "arm off: Joulie is removed; the governor checks have nothing to check"
   exit 0
 fi
-sim_log "running the governor checks GS01 to GS04"
+sim_log "running the governor checks"
 (cd "$SIM_REPO" && SIMCLUSTER_RUN_DIR=$run_dir "$GO" test -tags simcluster -count=1 -timeout 30m ./tests/simcluster/ -run 'TestSimclusterE2E/GS0[1-4]' -v)

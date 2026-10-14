@@ -1,8 +1,7 @@
 package main
 
-// The regression tests of stepNode (legacy physics advances only in
-// simulated time). They use only identifiers that exist at a94f345, so this
-// file can be copied into that tree to show both fail there.
+// The regression tests of stepNode: legacy physics advances only in
+// simulated time.
 
 import (
 	"encoding/json"
@@ -116,7 +115,7 @@ func TestStandaloneEnergyIntegratesInstantPower(t *testing.T) {
 		CPULowestNonlinearFreqMHz: 1800, CPUSockets: 2,
 	}
 	s := newSimulatorWithRegisterer(model, nil, nil, 0, prometheus.NewRegistry())
-	if err := s.initWorkloadEngineFromTrace(trace); err != nil {
+	if err := s.initWorkloadEngineWithOptions(trace, workloadOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	runStandalone(s)

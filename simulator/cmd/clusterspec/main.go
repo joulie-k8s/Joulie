@@ -1,10 +1,11 @@
 // Command clusterspec checks and expands a simulated cluster spec (package
-// clusterspec) against the builtin hardware profiles plus, with -profiles,
-// the local ones in a directory:
+// clusterspec) against the builtin hardware profiles plus the local ones in
+// the directory -profiles-dir names, SIM_PROFILES_DIR by default, as the
+// simulator and the simcluster command read them:
 //
-//	clusterspec validate     -spec FILE [-profiles DIR]
-//	clusterspec render-nodes -spec FILE [-profiles DIR]
-//	clusterspec list         -spec FILE [-profiles DIR]
+//	clusterspec validate     -spec FILE [-profiles-dir DIR]
+//	clusterspec render-nodes -spec FILE [-profiles-dir DIR]
+//	clusterspec list         -spec FILE [-profiles-dir DIR]
 //
 // validate checks the spec and prints its size. render-nodes prints the
 // spec's Nodes, with status, as one YAML v1 List to pipe into kubectl; it is
@@ -30,7 +31,11 @@ import (
 	"github.com/matbun/joulie/simulator/pkg/clusterspec"
 )
 
-const usage = `usage: clusterspec validate|render-nodes|list -spec FILE [-profiles DIR]`
+const usage = `usage: clusterspec validate|render-nodes|list -spec FILE [-profiles-dir DIR]`
+
+// envProfilesDir is the simulator's variable of the local profiles
+// directory, the default of -profiles-dir.
+const envProfilesDir = "SIM_PROFILES_DIR"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -63,7 +68,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("clusterspec "+cmd, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	specPath := flags.String("spec", "", "cluster spec file (required)")
-	profilesDir := flags.String("profiles", "", "directory of local hardware profiles (*.yaml), added to the builtin ones")
+	profilesDir := flags.String("profiles-dir", os.Getenv(envProfilesDir), "directory of local hardware profiles (*.yaml), added to the builtin ones; empty for the builtins only (default "+envProfilesDir+")")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0

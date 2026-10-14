@@ -16,6 +16,7 @@ import (
 
 	"github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/governor/discover"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -183,8 +184,8 @@ func TestGA16AMDGPUsArePublishedByBusID(t *testing.T) {
 // Command keys of the fake runner for the NVIDIA tests.
 var (
 	nvidiaInventoryKey = "nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits"
-	nvidiaClockKey     = "nvidia-smi " + strings.Join(nvidiaClockQueryArgs, " ")
-	nvidiaSupportedKey = "nvidia-smi " + strings.Join(nvidiaSupportedClocksArgs, " ")
+	nvidiaClockKey     = "nvidia-smi " + strings.Join(discover.NvidiaClockQueryArgs, " ")
+	nvidiaSupportedKey = "nvidia-smi " + strings.Join(discover.NvidiaSupportedClocksArgs, " ")
 )
 
 // nvidiaSupportedClocksOutput is nvidia-smi -q -d SUPPORTED_CLOCKS of two
@@ -302,8 +303,9 @@ func TestGA17NvidiaClockQueryParsesAndAToolFailureWarns(t *testing.T) {
 }
 
 // GA18: the NodeHardware write is skipped when nothing changed, the governor
-// block included; a governor change is written, and the stored baseline is
-// kept rather than recorded again over the new state.
+// block included; a governor change is written, and, with no governor
+// control holding a baseline, the stored one is kept rather than recorded
+// again over the new state.
 func TestGA18GovernorWriteSkippedWhenUnchanged(t *testing.T) {
 	root := acpiCPUFreqTree(t)
 	pointAgentAtSysfs(t, root, "", nil)

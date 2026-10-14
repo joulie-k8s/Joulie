@@ -139,8 +139,11 @@ func TestH09AmdgpuCapTruncatesAndRejectsOutOfRange(t *testing.T) {
 	if got := nodeRead(t, tr, capf); got != "300000000\n" {
 		t.Errorf("an out-of-range write reads back %q, want the previous 300000000", got)
 	}
-	if e := nodeOneEvent(t, n, capf); e.Kind != "reverted-out-of-range" || e.Written != "800000000" || e.Effective != "300000000" {
-		t.Errorf("event = %+v, want reverted-out-of-range keeping 300000000", e)
+	if e := nodeOneEvent(t, n, capf); e.Kind != EventRejected || e.Errno != ErrnoEINVAL || e.Written != "800000000" || e.Effective != "300000000" {
+		t.Errorf("event = %+v, want rejected with EINVAL keeping 300000000", e)
+	}
+	if err := n.CheckWrite(capf, "800000000"); !errors.Is(err, syscall.EINVAL) {
+		t.Errorf("CheckWrite of an out-of-range cap: %v, want EINVAL", err)
 	}
 	g := n.State().GPUs
 	if g[0].PowerW > 303 || g[1].PowerW < 600 {
@@ -186,43 +189,33 @@ func TestH10HSMPCapTruncatesToMilliwattsAndSettles(t *testing.T) {
 	}
 }
 
-// H25: D entries stay directories nobody writes, and a written R file is put
-// back in place at the next Step with a restored event.
-func TestH25RejectingEntriesStayAndRenderFilesAreRestored(t *testing.T) {
+// H25: a written R file is put back in place at the next Step with a
+// restored event, once. A constraint that rejects writes, the disabled DRAM
+// limit, is a regular file showing its value, as sysfs prints it; a write
+// to its limit or time window is refused with ENODATA, the errno the
+// powercap store returns when the RAPL op fails: CheckWrite answers it at
+// once and the readback reverts a write that landed, with a rejected event.
+func TestH25RejectingLimitsReadAndRefuseAndRenderFilesAreRestored(t *testing.T) {
 	t.Parallel()
 	p := nodeIntelProfile()
 	tr := nodeRender(t, p, nil)
 	n := nodeNewNode(t, p, tr)
 	n.SetLoad(nodeFullLoad)
-	var rejecting []string
-	for _, f := range tr.Files {
-		if f.Kind == layout.KindRejectingDir {
-			rejecting = append(rejecting, f.Rel)
-		}
-	}
-	if len(rejecting) != 2 {
-		t.Fatalf("fixture has %d D entries, want the two DRAM limits", len(rejecting))
-	}
 
-	window := nodeZoneFile("constraint_0_time_window_us", 0, 0)
 	enabled := nodeZoneFile("enabled", 0, 0)
-	before, err := os.Stat(filepath.Join(tr.Root, window))
+	before, err := os.Stat(filepath.Join(tr.Root, enabled))
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodeWrite(t, tr, window, "5000")
 	nodeWrite(t, tr, enabled, "1")
 	nodeStep(t, n, time.Second)
-	if got := nodeRead(t, tr, window); got != "976\n" {
-		t.Errorf("render-owned time window after a write = %q, want 976 restored", got)
-	}
 	if got := nodeRead(t, tr, enabled); got != "0\n" {
 		t.Errorf("render-owned DRAM enabled after a write = %q, want 0 restored", got)
 	}
-	if e := nodeOneEvent(t, n, window); e.Kind != "restored" || e.Written != "5000" || e.Effective != "976" {
-		t.Errorf("event = %+v, want restored 5000 to 976", e)
+	if e := nodeOneEvent(t, n, enabled); e.Kind != EventRestored || e.Written != "1" || e.Effective != "0" {
+		t.Errorf("event = %+v, want restored 1 to 0", e)
 	}
-	after, err := os.Stat(filepath.Join(tr.Root, window))
+	after, err := os.Stat(filepath.Join(tr.Root, enabled))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,23 +223,42 @@ func TestH25RejectingEntriesStayAndRenderFilesAreRestored(t *testing.T) {
 		t.Error("the restore replaced the file; a file bind mount would keep the old one")
 	}
 	nodeStep(t, n, time.Second)
-	if ev := nodeEvents(n, window); len(ev) != 0 {
+	if ev := nodeEvents(n, enabled); len(ev) != 0 {
 		t.Errorf("a restored file is restored again: %+v", ev)
 	}
 
-	for _, rel := range rejecting {
-		abs := filepath.Join(tr.Root, rel)
-		fi, err := os.Stat(abs)
-		if err != nil || !fi.IsDir() {
-			t.Errorf("%s is no longer a directory: %v", rel, err)
-			continue
+	for _, f := range []struct{ name, value, write string }{
+		{"constraint_0_power_limit_uw", "0\n", "20000000"},
+		{"constraint_0_time_window_us", "976\n", "5000"},
+	} {
+		for socket := 0; socket < 2; socket++ {
+			rel := nodeZoneFile(f.name, socket, 0)
+			fi, err := os.Lstat(filepath.Join(tr.Root, rel))
+			if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o644 {
+				t.Fatalf("%s: %v, %v; want a regular 0644 file", rel, fi, err)
+			}
+			if got := nodeRead(t, tr, rel); got != f.value {
+				t.Errorf("%s reads %q, want %q", rel, got, f.value)
+			}
+			if err := n.CheckWrite(rel, f.write); !errors.Is(err, syscall.ENODATA) {
+				t.Errorf("CheckWrite(%s, %s) = %v, want ENODATA", rel, f.write, err)
+			}
+			nodeStep(t, n, 0)
+			if e := nodeOneEvent(t, n, rel); e.Kind != EventRejected || e.Errno != ErrnoENODATA || e.Written != f.write {
+				t.Errorf("the refused CheckWrite reports %+v, want rejected %s with ENODATA", e, f.write)
+			}
+			nodeWrite(t, tr, rel, f.write)
+			nodeStep(t, n, time.Second)
+			if got := nodeRead(t, tr, rel); got != f.value {
+				t.Errorf("%s after a write reads %q, want %q put back", rel, got, f.value)
+			}
+			if e := nodeOneEvent(t, n, rel); e.Kind != EventRejected || e.Errno != ErrnoENODATA {
+				t.Errorf("a write that landed reports %+v, want rejected with ENODATA", e)
+			}
 		}
-		if entries, _ := os.ReadDir(abs); len(entries) != 0 {
-			t.Errorf("%s gained entries: %v", rel, entries)
-		}
-		if err := os.WriteFile(abs, []byte("1"), 0); !errors.Is(err, syscall.EISDIR) {
-			t.Errorf("writing %s: %v, want EISDIR", rel, err)
-		}
+	}
+	if err := n.CheckWrite(nodeZoneFile("constraint_0_power_limit_uw", 0, 0), "x"); !errors.Is(err, syscall.EINVAL) {
+		t.Errorf("a limit that does not parse: %v, want EINVAL before the op runs", err)
 	}
 }
 

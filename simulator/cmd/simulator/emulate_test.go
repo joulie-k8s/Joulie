@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"math"
@@ -16,14 +15,18 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/matbun/joulie/pkg/otel/otlpjson"
 	"github.com/matbun/joulie/pkg/otel/semconv"
 	"github.com/matbun/joulie/simulator/pkg/clusterspec"
 	"github.com/matbun/joulie/simulator/pkg/emulate"
 	"github.com/matbun/joulie/simulator/pkg/telemetry"
+	"github.com/matbun/joulie/simulator/pkg/workload"
 )
 
 // emulateTestStart is when the emulated nodes' clocks start in these tests;
@@ -167,14 +170,14 @@ func TestSE01CheckModesRefusesWhatEmulateCannotRun(t *testing.T) {
 		env  map[string]string
 		want []string // substrings of the error; none means no error
 	}{
-		{"legacy", map[string]string{"SIM_STANDALONE": "true", envWorkloadTrace: "/t.jsonl"}, nil},
+		{"legacy", map[string]string{"SIM_STANDALONE": "true", workload.EnvTracePath: "/t.jsonl"}, nil},
 		{"emulate with a spec", map[string]string{envEmulate: "true", envClusterSpec: "/s.yaml"}, nil},
 		{"emulate is off", map[string]string{envEmulate: "false", "SIM_STANDALONE": "true"}, nil},
 		{"with standalone", map[string]string{envEmulate: "true", envClusterSpec: "/s.yaml", "SIM_STANDALONE": "1"}, []string{"SIM_STANDALONE"}},
 		{"without a spec", map[string]string{envEmulate: "yes", envClusterSpec: "  "}, []string{"SIM_CLUSTER_SPEC"}},
-		{"with a v1 trace", map[string]string{envEmulate: "TRUE", envClusterSpec: "/s.yaml", envWorkloadTrace: "/t.jsonl"}, nil},
-		{"with a legacy trace", map[string]string{envEmulate: "TRUE", envClusterSpec: "/s.yaml", envWorkloadTrace: "/t.jsonl", "SIM_WORKLOAD_MODEL": " legacy "}, []string{"SIM_WORKLOAD_TRACE_PATH", "SIM_WORKLOAD_MODEL=legacy"}},
-		{"all three", map[string]string{envEmulate: "true", "SIM_STANDALONE": "true", envWorkloadTrace: "/t", "SIM_WORKLOAD_MODEL": "legacy"}, []string{"SIM_STANDALONE", "SIM_CLUSTER_SPEC", "SIM_WORKLOAD_TRACE_PATH"}},
+		{"with a v1 trace", map[string]string{envEmulate: "TRUE", envClusterSpec: "/s.yaml", workload.EnvTracePath: "/t.jsonl"}, nil},
+		{"with a legacy trace", map[string]string{envEmulate: "TRUE", envClusterSpec: "/s.yaml", workload.EnvTracePath: "/t.jsonl", "SIM_WORKLOAD_MODEL": " legacy "}, []string{"SIM_WORKLOAD_TRACE_PATH", "SIM_WORKLOAD_MODEL=legacy"}},
+		{"all three", map[string]string{envEmulate: "true", "SIM_STANDALONE": "true", workload.EnvTracePath: "/t", "SIM_WORKLOAD_MODEL": "legacy"}, []string{"SIM_STANDALONE", "SIM_CLUSTER_SPEC", "SIM_WORKLOAD_TRACE_PATH"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -256,41 +259,55 @@ func TestSE03TelemetryReadsDoNotStepEmulatedNodes(t *testing.T) {
 				gpuW += c.PowerW
 			}
 		}
-		for i := 0; i < 50; i++ {
-			w := emulateTestDo(t, mux, http.MethodGet, "/telemetry/"+node+"?format=legacy", nil)
-			if w.Code != http.StatusOK {
-				t.Fatalf("GET /telemetry/%s?format=legacy: status %d; body %s", node, w.Code, w.Body)
-			}
-			if i > 0 {
-				continue
-			}
-			var resp struct {
-				Emulated          bool    `json:"emulated"`
-				Seq               uint64  `json:"seq"`
-				PackagePowerWatts float64 `json:"packagePowerWatts"`
-				HostPowerWatts    float64 `json:"hostPowerWatts"`
-				CPU               struct {
+		// The default route answers with OTLP JSON and ?format=legacy with
+		// the legacy JSON; reads of neither may step the node.
+		for _, path := range []string{"/telemetry/" + node, "/telemetry/" + node + "?format=legacy"} {
+			legacy := strings.HasSuffix(path, "?format=legacy")
+			for i := 0; i < 50; i++ {
+				w := emulateTestDo(t, mux, http.MethodGet, path, nil)
+				if w.Code != http.StatusOK {
+					t.Fatalf("GET %s: status %d; body %s", path, w.Code, w.Body)
+				}
+				if i > 0 {
+					continue
+				}
+				if !legacy {
+					var req struct {
+						ResourceMetrics []json.RawMessage `json:"resourceMetrics"`
+					}
+					if err := json.Unmarshal(w.Body.Bytes(), &req); err != nil || len(req.ResourceMetrics) == 0 {
+						t.Errorf("GET %s: %v, %d resourceMetrics; want an OTLP JSON export", path, err, len(req.ResourceMetrics))
+					}
+					continue
+				}
+				var resp struct {
+					Emulated          bool    `json:"emulated"`
+					Seq               uint64  `json:"seq"`
 					PackagePowerWatts float64 `json:"packagePowerWatts"`
-				} `json:"cpu"`
+					HostPowerWatts    float64 `json:"hostPowerWatts"`
+					CPU               struct {
+						PackagePowerWatts float64 `json:"packagePowerWatts"`
+					} `json:"cpu"`
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+					t.Fatal(err)
+				}
+				if !resp.Emulated || resp.Seq != snap.Seq {
+					t.Errorf("%s: emulated %v seq %d, want true and %d", node, resp.Emulated, resp.Seq, snap.Seq)
+				}
+				emulateNear(t, node+" packagePowerWatts", resp.PackagePowerWatts, pkgW+gpuW, 0.006)
+				emulateNear(t, node+" cpu.packagePowerWatts", resp.CPU.PackagePowerWatts, pkgW, 0.006)
+				emulateNear(t, node+" hostPowerWatts", resp.HostPowerWatts, n.Host.PowerW, 0.006)
+				if pkgW <= 0 || (pool == "nvl" && gpuW <= 0) {
+					t.Errorf("%s: package power %v W, GPU power %v W, want both above 0 under load", node, pkgW, gpuW)
+				}
 			}
-			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-				t.Fatal(err)
+			if got := et.rt.emu.Latest().Seq; got != snap.Seq {
+				t.Errorf("Seq %d after 50 reads of %s, want %d", got, path, snap.Seq)
 			}
-			if !resp.Emulated || resp.Seq != snap.Seq {
-				t.Errorf("%s: emulated %v seq %d, want true and %d", node, resp.Emulated, resp.Seq, snap.Seq)
+			if after := et.stateJSON(t, node); after != before {
+				t.Errorf("50 reads of %s changed %s's mirrored state:\nbefore %s\nafter  %s", path, node, before, after)
 			}
-			emulateNear(t, node+" packagePowerWatts", resp.PackagePowerWatts, pkgW+gpuW, 0.006)
-			emulateNear(t, node+" cpu.packagePowerWatts", resp.CPU.PackagePowerWatts, pkgW, 0.006)
-			emulateNear(t, node+" hostPowerWatts", resp.HostPowerWatts, n.Host.PowerW, 0.006)
-			if pkgW <= 0 || (pool == "nvl" && gpuW <= 0) {
-				t.Errorf("%s: package power %v W, GPU power %v W, want both above 0 under load", node, pkgW, gpuW)
-			}
-		}
-		if got := et.rt.emu.Latest().Seq; got != snap.Seq {
-			t.Errorf("Seq %d after 50 reads, want %d", got, snap.Seq)
-		}
-		if after := et.stateJSON(t, node); after != before {
-			t.Errorf("50 reads changed %s's mirrored state:\nbefore %s\nafter  %s", node, before, after)
 		}
 	}
 }
@@ -473,13 +490,9 @@ func TestSE13NodeMismatchIsEmittedOncePerChange(t *testing.T) {
 		nvl: {clusterspec.AnnotationProfile: "nvidia-h100-sxm-8gpu"},
 		vm:  {clusterspec.AnnotationProfile: profileOf(vm)},
 	}
-	old := nodeMetaListFunc
-	nodeMetaListFunc = func(context.Context, kubernetes.Interface) (map[string]map[string]string, error) { return nodes, nil }
-	t.Cleanup(func() { nodeMetaListFunc = old })
-
 	poll := func(n int) {
 		for i := 0; i < n; i++ {
-			et.s.checkEmulatedNodes(context.Background(), nil)
+			et.s.checkEmulatedNodes(nodes)
 		}
 	}
 	poll(3)
@@ -626,7 +639,7 @@ func TestEmulateOptionsFromEnvReadsTheEmulateVariables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.SpecPath != "/s.yaml" || o.Root != defaultHwemuRoot || o.FakeSMISource != defaultFakeSMISource || o.Tick != time.Second || o.Workers != 0 || len(o.Exporters) != 0 {
+	if o.SpecPath != "/s.yaml" || o.Root != defaultHwemuRoot || o.FakeSMISource != defaultFakeSMISource || o.Tick != time.Second || o.Workers != 0 || len(o.Exporters) != 0 || o.Kepler012GPU {
 		t.Errorf("defaults: %+v", o)
 	}
 	if o.Telemetry.FileDir != "/tmp/debug-dir" {
@@ -636,13 +649,13 @@ func TestEmulateOptionsFromEnvReadsTheEmulateVariables(t *testing.T) {
 	o, err = s.emulateOptionsFromEnv(lookup(map[string]string{
 		envClusterSpec: "/s.yaml", envHwemuRoot: "/r", envFakeSMISource: "", envEmulateTick: "250ms",
 		envEmulateWorkers: "3", envExporters: "kepler-0.7, dcgm-4.8.4", envDCGMHostnameLabel: "Hostname",
-		telemetry.EnvFileDir: "",
+		envKepler012GPU: "on", telemetry.EnvFileDir: "",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if o.Root != "/r" || o.FakeSMISource != "" || o.Tick != 250*time.Millisecond || o.Workers != 3 ||
-		len(o.Exporters) != 2 || o.DCGMHostnameLabel != "Hostname" || o.Telemetry.FileDir != "" {
+		len(o.Exporters) != 2 || o.DCGMHostnameLabel != "Hostname" || !o.Kepler012GPU || o.Telemetry.FileDir != "" {
 		t.Errorf("set: %+v; a set but empty %s skips the install and an empty %s writes no file", o, envFakeSMISource, telemetry.EnvFileDir)
 	}
 
@@ -651,5 +664,42 @@ func TestEmulateOptionsFromEnvReadsTheEmulateVariables(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("error %v does not name %s", err, want)
 		}
+	}
+}
+
+// One pod poll lists the pods once and the Nodes once: the node state, the
+// per-node gauges and the check of the spec nodes' Nodes all read those two
+// lists. The check still sees each Node's profile annotation.
+func TestPollListsPodsAndNodesOnce(t *testing.T) {
+	et := newEmulateTest(t, emulateTestConfig{})
+	missing := et.rt.names[0]
+	objs := []runtime.Object{&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "p1"},
+		Spec:       corev1.PodSpec{NodeName: et.rt.names[1]},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+	}}
+	for _, name := range et.rt.names[1:] {
+		m, _ := et.rt.emu.Member(name)
+		objs = append(objs, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name, Annotations: map[string]string{clusterspec.AnnotationProfile: m.Profile.Name}}})
+	}
+	fake := k8sfake.NewSimpleClientset(objs...)
+	et.s.pollOnce(fake)
+	lists := map[string]int{}
+	for _, a := range fake.Actions() {
+		if a.GetVerb() == "list" {
+			lists[a.GetResource().Resource]++
+		}
+	}
+	if lists["pods"] != 1 || lists["nodes"] != 1 || len(lists) != 2 {
+		t.Errorf("one poll made lists %v, want one of pods and one of nodes", lists)
+	}
+	if got, want := emulateMismatches(t, et), map[string]string{missing: semconv.ErrorTypeNodeMissing}; !emulateSameMap(got, want) {
+		t.Errorf("node.mismatch %v after the poll, want only %v", got, want)
+	}
+	et.s.mu.RLock()
+	running := et.s.state[et.rt.names[1]].PodsRunning
+	et.s.mu.RUnlock()
+	if running != 1 {
+		t.Errorf("%s runs %d pods after the poll, want 1", et.rt.names[1], running)
 	}
 }

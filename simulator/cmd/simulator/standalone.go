@@ -16,8 +16,6 @@ import (
 	"github.com/matbun/joulie/pkg/hwinv"
 	"github.com/matbun/joulie/simulator/pkg/hw"
 	"github.com/matbun/joulie/simulator/pkg/hwemu"
-	"github.com/matbun/joulie/simulator/pkg/phys"
-	"github.com/matbun/joulie/simulator/pkg/workload"
 	"sigs.k8s.io/yaml"
 )
 
@@ -274,8 +272,8 @@ func runStandalone(s *simulator) {
 		}
 	}
 
-	// Flush timeseries.
-	s.flushTimeseries()
+	// Flush the timeseries and close the journal.
+	s.closePersistence()
 	log.Printf("standalone: done, timeseries written (%d ticks, dt=%.1fs)", tickCount, dt)
 }
 
@@ -900,38 +898,17 @@ func standaloneAdvanceJobProgressFast(s *simulator, tracker map[string]*standalo
 		for _, j := range activeJobs {
 			jobThermalThrottle := snapThermalThrottle
 			jobCPUMul := cpuThroughputMultiplier(freqScale, j.CPUWorkClass, model, j.MemoryIntensity, j.IOIntensity, jobThermalThrottle)
+			cpuSpeed, gpuSpeed := legacyJobRates(j, model, s.workload.baseSpeedCore, jobCPUMul, cpuShareFactor, gpuShareFactor, snapGPUCapPerGpu, snapThermalThrottle)
 
 			if j.CPUUnitsRemaining > 0 {
-				cpuThrottle := cpuThrottleImpactFactor(jobCPUMul, j)
-				speed := j.RequestedCPUCores * s.workload.baseSpeedCore * cpuThrottle * cpuShareFactor
-				if speed < 0 {
-					speed = 0
-				}
 				prev := j.CPUUnitsRemaining
-				j.CPUUnitsRemaining -= speed * dt
+				j.CPUUnitsRemaining -= cpuSpeed * dt
 				if j.CPUUnitsRemaining < prev {
 					j.LastProgressAt = now
 				}
 			}
 
 			if j.GPUUnitsRemaining > 0 {
-				gpuPhys := phys.CappedBoardGPUModel{
-					IdleW:         model.GPU.IdleWattsPerGPU,
-					MaxW:          model.GPU.MaxWattsPerGPU,
-					ComputeGamma:  model.GPU.ComputeGamma,
-					MemoryEpsilon: model.GPU.MemoryEpsilon,
-					MemoryGamma:   model.GPU.MemoryGamma,
-				}
-				gpuMul := gpuPhys.ThroughputMultiplier(phys.DeviceState{
-					Utilization:      clamp01(j.GPUUtilTarget),
-					CapWatts:         snapGPUCapPerGpu,
-					MaxCapWatts:      model.GPU.MaxWattsPerGPU,
-					MemoryIntensity:  j.MemoryIntensity,
-					CPUFeedIntensity: j.CPUFeedIntensity,
-					ThermalThrottle:  snapThermalThrottle,
-					Class:            j.GPUWorkClass,
-				}, j.GPUWorkClass)
-				_, gpuSpeed := workload.Rates(workload.ModelLegacy, legacyRateInputs(j, s.workload.baseSpeedCore, jobCPUMul, gpuMul, cpuShareFactor, gpuShareFactor))
 				prev := j.GPUUnitsRemaining
 				j.GPUUnitsRemaining -= gpuSpeed * dt
 				if j.GPUUnitsRemaining < prev {
@@ -1170,38 +1147,17 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 				for _, j := range activeJobs {
 					jobThermalThrottle := snapThermalThrottle
 					jobCPUMul := cpuThroughputMultiplier(freqScale, j.CPUWorkClass, model, j.MemoryIntensity, j.IOIntensity, jobThermalThrottle)
+					cpuSpeed, gpuSpeed := legacyJobRates(j, model, baseSpeedCore, jobCPUMul, cpuShareFactor, gpuShareFactor, snapGPUCapPerGpu, snapThermalThrottle)
 
 					if j.CPUUnitsRemaining > 0 {
-						cpuThrottle := cpuThrottleImpactFactor(jobCPUMul, j)
-						speed := j.RequestedCPUCores * baseSpeedCore * cpuThrottle * cpuShareFactor
-						if speed < 0 {
-							speed = 0
-						}
 						prev := j.CPUUnitsRemaining
-						j.CPUUnitsRemaining -= speed * dt
+						j.CPUUnitsRemaining -= cpuSpeed * dt
 						if j.CPUUnitsRemaining < prev {
 							j.LastProgressAt = now
 						}
 					}
 
 					if j.GPUUnitsRemaining > 0 {
-						gpuPhys := phys.CappedBoardGPUModel{
-							IdleW:         model.GPU.IdleWattsPerGPU,
-							MaxW:          model.GPU.MaxWattsPerGPU,
-							ComputeGamma:  model.GPU.ComputeGamma,
-							MemoryEpsilon: model.GPU.MemoryEpsilon,
-							MemoryGamma:   model.GPU.MemoryGamma,
-						}
-						gpuMul := gpuPhys.ThroughputMultiplier(phys.DeviceState{
-							Utilization:      clamp01(j.GPUUtilTarget),
-							CapWatts:         snapGPUCapPerGpu,
-							MaxCapWatts:      model.GPU.MaxWattsPerGPU,
-							MemoryIntensity:  j.MemoryIntensity,
-							CPUFeedIntensity: j.CPUFeedIntensity,
-							ThermalThrottle:  snapThermalThrottle,
-							Class:            j.GPUWorkClass,
-						}, j.GPUWorkClass)
-						_, gpuSpeed := workload.Rates(workload.ModelLegacy, legacyRateInputs(j, baseSpeedCore, jobCPUMul, gpuMul, cpuShareFactor, gpuShareFactor))
 						prev := j.GPUUnitsRemaining
 						j.GPUUnitsRemaining -= gpuSpeed * dt
 						if j.GPUUnitsRemaining < prev {

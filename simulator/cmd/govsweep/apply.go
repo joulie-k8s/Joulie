@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 
 	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/governor"
+	"github.com/matbun/joulie/pkg/governor/discover"
 	"github.com/matbun/joulie/simulator/pkg/hwemu"
 	"github.com/matbun/joulie/simulator/pkg/hwemu/smi"
 )
@@ -26,20 +26,6 @@ type armResult struct {
 	Native  string
 	Writes  int
 	Message string
-}
-
-// writeAttr writes value to a sysfs attribute in place, as the agent does
-// (cmd/agent writeSysfsAttr): open without create, truncate, write.
-func writeAttr(p, value string) error {
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_TRUNC, 0)
-	if err != nil {
-		return err
-	}
-	if _, err := f.WriteString(value); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
 }
 
 // tail is the last two elements of a sysfs path, how an event's file is
@@ -56,17 +42,18 @@ func tail(p string) string {
 // so the governor of every policy is set before any preference, and the
 // manual level before an overdrive edit, as the agent orders them. A
 // rejected write, or one that reads back otherwise, ends the plan with the
-// pkg/governor.Classify result. Overdrive edits ("s 1 <MHz>", "c") read
-// back as a table, not as the value, so only their rejection counts.
-func applyWrites(n *hwemu.Node, sys string, ws []governor.Write) (written int, result, msg string, err error) {
+// pkg/governor.Classify result and is returned as failed. Overdrive edits
+// ("s 1 <MHz>", "c") read back as a table, not as the value, so only their
+// rejection counts.
+func applyWrites(n *hwemu.Node, sys string, ws []governor.Write) (written int, result, msg string, failed governor.Write, err error) {
 	var group []governor.Write
-	flush := func() (string, string, error) {
+	flush := func() (string, string, governor.Write, error) {
 		if len(group) == 0 {
-			return "", "", nil
+			return "", "", governor.Write{}, nil
 		}
 		defer func() { group = group[:0] }()
 		if err := n.Step(0); err != nil {
-			return "", "", err
+			return "", "", governor.Write{}, err
 		}
 		for _, e := range n.State().Events {
 			if e.Kind != hwemu.EventRejected {
@@ -74,19 +61,19 @@ func applyWrites(n *hwemu.Node, sys string, ws []governor.Write) (written int, r
 			}
 			for _, w := range group {
 				if strings.HasSuffix(e.File, "/"+tail(w.RelPath)) {
-					return joulie.GovernorResultUnsupported, fmt.Sprintf("%s: %s rejected with %s", w.RelPath, w.Value, e.Errno), nil
+					return joulie.GovernorResultUnsupported, fmt.Sprintf("%s: %s rejected with %s", w.RelPath, w.Value, e.Errno), w, nil
 				}
 			}
 		}
 		for _, w := range group {
-			if path.Base(w.RelPath) == "pp_od_clk_voltage" {
+			if governor.IsODWrite(w) {
 				continue
 			}
 			if r, m := governor.Classify(nil, w.Value, readWord(filepath.Join(sys, w.RelPath))); r != joulie.GovernorResultApplied {
-				return r, w.RelPath + ": " + m, nil
+				return r, w.RelPath + ": " + m, w, nil
 			}
 		}
-		return "", "", nil
+		return "", "", governor.Write{}, nil
 	}
 	for _, w := range ws {
 		if len(group) > 0 {
@@ -96,30 +83,59 @@ func applyWrites(n *hwemu.Node, sys string, ws []governor.Write) (written int, r
 				repeat = repeat || g.RelPath == w.RelPath
 			}
 			if path.Base(last.RelPath) != path.Base(w.RelPath) || repeat {
-				if r, m, err := flush(); err != nil || r != "" {
-					return written, r, m, err
+				if r, m, f, err := flush(); err != nil || r != "" {
+					return written, r, m, f, err
 				}
 			}
 		}
 		p := filepath.Join(sys, w.RelPath)
-		if werr := writeAttr(p, w.Value); werr != nil {
+		if werr := discover.WriteAttr(p, w.Value); werr != nil {
 			r, m := governor.Classify(werr, w.Value, "")
-			return written, r, w.RelPath + ": " + m, nil
+			return written, r, w.RelPath + ": " + m, w, nil
 		}
 		written++
 		group = append(group, w)
 	}
-	r, m, err := flush()
-	return written, r, m, err
+	r, m, f, err := flush()
+	return written, r, m, f, err
+}
+
+// lockstep orders the writes of plans as the agent writes the GPUs of a
+// node (writeAMDSteps in cmd/agent): the first write of every plan, then
+// the second, and so on. A plan's writes keep their order, and applyWrites
+// sends each round of writes to different files in one step; a device's
+// validation of a write reads only that device's state, so sharing the
+// step changes no outcome.
+func lockstep(plans []governor.Plan) []governor.Write {
+	var out []governor.Write
+	for k := 0; ; k++ {
+		more := false
+		for _, p := range plans {
+			if k < len(p.Writes) {
+				out = append(out, p.Writes[k])
+				more = true
+			}
+		}
+		if !more {
+			return out
+		}
+	}
 }
 
 // applyCPU sets c's CPU arm: the pkg/governor plan of the preset on the
 // tree's facts, or nothing for the default arm, whose native state is what
-// policy0 runs.
+// the first policy runs.
 func applyCPU(n *hwemu.Node, t *hwemu.Tree, c Cell) (armResult, error) {
-	f := cpuFacts(t.SysRoot, t.CPUInfoPath)
+	cpu := discover.ReadCPU(t.SysRoot, t.CPUInfoPath)
+	var f governor.CPUFacts
+	if cpu != nil {
+		f = cpu.Facts
+	}
 	if c.Preset == ArmDefault {
-		return armResult{Native: cpuNative(t.SysRoot, f)}, nil
+		if cpu == nil {
+			return armResult{}, nil
+		}
+		return armResult{Native: governor.NativeCPU(cpu.Policies[0].Governor, cpu.Policies[0].EPP)}, nil
 	}
 	plan, err := governor.PlanCPU(f, c.Preset, c.Boost)
 	if err != nil {
@@ -129,26 +145,12 @@ func applyCPU(n *hwemu.Node, t *hwemu.Tree, c Cell) (armResult, error) {
 	if plan.Result == joulie.GovernorResultUnsupported {
 		return out, nil
 	}
-	written, r, msg, err := applyWrites(n, t.SysRoot, plan.Writes)
+	written, r, msg, _, err := applyWrites(n, t.SysRoot, plan.Writes)
 	out.Writes = written
 	if r != "" {
 		out.Result, out.Message = r, msg
 	}
 	return out, err
-}
-
-// cpuNative is the governor policy0 runs, with its preference when it has
-// one, in the plan's spelling.
-func cpuNative(sys string, f governor.CPUFacts) string {
-	if len(f.Policies) == 0 {
-		return ""
-	}
-	dir := filepath.Join(sys, cpufreqRel, "policy"+strconv.Itoa(f.Policies[0]))
-	s := readWord(filepath.Join(dir, "scaling_governor"))
-	if e := readWord(filepath.Join(dir, "energy_performance_preference")); e != "" {
-		s += " epp=" + e
-	}
-	return s
 }
 
 // applyCap sets c's GPU power cap on every GPU, as the agent sets it
@@ -194,6 +196,8 @@ func applyGPU(ctx context.Context, n *hwemu.Node, t *hwemu.Tree, p *hwemu.Profil
 	var natives, results []string
 	switch g.Vendor {
 	case "amd":
+		var plans []governor.Plan
+		native := map[string]string{} // by RelPath, the native state of the plan that writes it
 		for _, f := range amdFacts(t.SysRoot) {
 			plan, err := governor.PlanAMD(f, c.Preset, gpuCeiling(c))
 			if err != nil {
@@ -203,14 +207,18 @@ func applyGPU(ctx context.Context, n *hwemu.Node, t *hwemu.Tree, p *hwemu.Profil
 			if plan.Result == joulie.GovernorResultUnsupported {
 				continue
 			}
-			written, res, msg, err := applyWrites(n, t.SysRoot, plan.Writes)
-			out.Writes += written
-			if err != nil {
-				return out, err
+			plans = append(plans, plan)
+			for _, w := range plan.Writes {
+				native[w.RelPath] = plan.Native
 			}
-			if res != "" {
-				return armResult{Result: res, Native: plan.Native, Writes: out.Writes, Message: msg}, nil
-			}
+		}
+		written, res, msg, failed, err := applyWrites(n, t.SysRoot, lockstep(plans))
+		out.Writes += written
+		if err != nil {
+			return out, err
+		}
+		if res != "" {
+			return armResult{Result: res, Native: native[failed.RelPath], Writes: out.Writes, Message: msg}, nil
 		}
 	case "nvidia":
 		gpus, err := nvFacts(ctx, r, p)

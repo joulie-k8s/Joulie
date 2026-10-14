@@ -281,9 +281,9 @@ const (
 	DefaultOTLPFileInterval  = 10 * time.Second
 )
 
-// Values of ModelLegacy, the constants of the simulator before S4. The
-// per-tick caps and the force-complete timeout become settings with these
-// defaults; the rest stay fixed.
+// Values of ModelLegacy: the limits the legacy experiments ran with, and the
+// legacy defaults of EnvMaxCreatesPerTick, EnvMaxDeletesPerTick,
+// EnvStallForceComplete, EnvKubeQPS and EnvKubeBurst.
 const (
 	LegacyMaxCreatesPerTick  = 20
 	LegacyMaxDeletesPerTick  = 10

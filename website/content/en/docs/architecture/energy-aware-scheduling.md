@@ -33,7 +33,7 @@ Together, these produce three categories of signal:
 | Source | Granularity | Metrics |
 |--------|-------------|---------|
 | OpenTelemetry producer | Per component (CPU package, GPU) and host | `hw.energy`, `hw.power`, `hw.host.energy`, `hw.host.power` (`hw_energy_joules_total` and so on in Prometheus) |
-| Kepler | Per node and per container | `kepler_node_cpu_joules_total`, `kepler_node_gpu_joules_total` (0.10 and later), `kepler_node_package_joules_total` (0.7 to 0.9), `kepler_container_*_joules_total` |
+| Kepler | Per node and per container | `kepler_node_cpu_active_joules_total`, `kepler_node_cpu_idle_joules_total` and `kepler_node_gpu_joules_total` (0.10 and later), `kepler_node_package_joules_total` (0.7 to 0.9), `kepler_container_*_joules_total` |
 | RAPL, NVML/DCGM on the node | Per socket, per GPU | CPU package power for the agent's caps; GPU power draw, temperature, utilization |
 
 ### Stage 2: Prometheus aggregation

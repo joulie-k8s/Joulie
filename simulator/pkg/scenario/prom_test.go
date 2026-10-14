@@ -83,7 +83,7 @@ func TestPromQueryResults(t *testing.T) {
 		{`{"status":"success","data":{"resultType":"vector","result":[{"metric":{"a":"b"},"value":[1759608000,"3"]}]}}`, 200, "vector", 1, ""},
 		{`{"status":"success","data":{"resultType":"vector","result":[]}}`, 200, "vector", 0, ""},
 		{`{"status":"success","data":{"resultType":"scalar","result":[1759608000,"2.5"]}}`, 200, "scalar", 1, ""},
-		{`{"status":"error","errorType":"bad_data","error":"parse error"}`, 400, "", 0, "HTTP 400: bad_data: parse error"},
+		{`{"status":"error","errorType":"bad_data","error":"parse error"}`, 400, "", 0, "HTTP 400 bad_data: parse error"},
 		{`<html>`, 502, "", 0, "HTTP 502"},
 	} {
 		r, err := scenario.ParsePromResponse([]byte(c.body), c.status)

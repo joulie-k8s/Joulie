@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 	"syscall"
 
@@ -34,30 +33,16 @@ var smiExitResults = map[int]string{
 	13: joulie.GovernorResultUnsupported,
 }
 
-// exitStatusText is how *exec.ExitError prints a non-zero exit, a text the
-// simulator's in-process fake tools copy.
-const exitStatusText = "exit status "
-
-// toolExitCode returns the exit code of a failed tool run in err: from an
-// error with an ExitCode method (*exec.ExitError), else from the first
-// "exit status N" in its text. ok is false when err holds neither.
+// toolExitCode returns the exit code of a failed tool run in err, from an
+// error in its chain with an ExitCode method: *exec.ExitError for a binary,
+// the simulator's in-process fake tools for theirs. ok is false when the
+// chain holds none.
 func toolExitCode(err error) (code int, ok bool) {
 	var ec interface{ ExitCode() int }
 	if errors.As(err, &ec) {
 		return ec.ExitCode(), true
 	}
-	text := err.Error()
-	i := strings.Index(text, exitStatusText)
-	if i < 0 {
-		return 0, false
-	}
-	digits := text[i+len(exitStatusText):]
-	n := 0
-	for n < len(digits) && digits[n] >= '0' && digits[n] <= '9' {
-		n++
-	}
-	code, convErr := strconv.Atoi(digits[:n])
-	return code, convErr == nil
+	return 0, false
 }
 
 // Phrases of a failed nvidia-smi (or amd-smi) run, in lower case, that tell

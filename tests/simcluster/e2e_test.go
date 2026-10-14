@@ -25,20 +25,15 @@ import (
 
 	"github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/governor"
 	"github.com/matbun/joulie/pkg/otel/semconv"
 	"github.com/matbun/joulie/simulator/pkg/clusterspec"
 	"github.com/matbun/joulie/simulator/pkg/emulate"
 	"github.com/matbun/joulie/simulator/pkg/hwemu"
 	"github.com/matbun/joulie/simulator/pkg/scenario"
 	"github.com/matbun/joulie/simulator/pkg/simcluster"
-	"github.com/matbun/joulie/simulator/pkg/telemetry"
 	"github.com/matbun/joulie/simulator/pkg/workload"
 )
-
-// e2eInputHook runs IN6's input checks (E07, E08, E16). IN6's
-// otel_inputs_test.go sets it to its e2eInputChecks in an init function;
-// while it is unset, the run says so in the summary's warnings.
-var e2eInputHook func(t *testing.T, env *e2eEnv)
 
 // TestSimclusterE2E checks a simulated cluster end to end: the fake Nodes,
 // the images, the emulated agents, the hardware inventory, the telemetry,
@@ -50,9 +45,9 @@ var e2eInputHook func(t *testing.T, env *e2eEnv)
 //	go test -tags simcluster -count=1 -timeout 20m ./tests/simcluster/ -run TestSimclusterE2E -v
 //
 // Each check is a subtest named by its ID and lands in the run's
-// summary.json (simulator/pkg/scenario, X12). E07, E08 and E16, the input
-// checks, are IN6's (otel_inputs_test.go); MD01 to MD04 run only on a spec
-// that has their pools, such as medium.yaml.
+// summary.json, in the schema of a scenario run (simulator/pkg/scenario).
+// E07, E08 and E16, the input checks, are in otel_inputs_test.go; MD01 to
+// MD04 run only on a spec that has their pools, such as medium.yaml.
 func TestSimclusterE2E(t *testing.T) {
 	env := e2eNewEnv(t)
 	defer env.finish(t)
@@ -64,11 +59,7 @@ func TestSimclusterE2E(t *testing.T) {
 	env.check(t, "E04", "one emulated agent per Node the agent DaemonSet would reach", e2eE04AgentsWhereTheDaemonSetWouldRun)
 	env.check(t, "E05", "one NodeHardware per agent, equal to its profile's golden", e2eE05HardwareMatchesTheGoldens)
 	env.check(t, "E06", "series for every Node with a measured CPU package", e2eE06EveryMeasuredNodeReports)
-	if e2eInputHook != nil {
-		e2eInputHook(t, env)
-	} else {
-		env.warn(t, "E07, E08 and E16 did not run: tests/simcluster/otel_inputs_test.go (IN6) does not set e2eInputHook")
-	}
+	e2eInputChecks(t, env)
 	env.check(t, "E11", "the control status of each family", e2eE11ControlStatusPerFamily)
 	env.check(t, "E12", "a cap planned on the unreached Node (D15)", e2eE12UnreachedNodeIsPlannedNotEnforced)
 	env.check(t, "MD01", "shared GPU Nodes planned as CPU-only (D18)", e2eMD01SharedGPUsPlannedAsCPUOnly)
@@ -272,8 +263,8 @@ var e2eLocalImage = regexp.MustCompile(`^joulie\.local/joulie-[a-z-]+:dev-[0-9a-
 
 // E03: every container in joulie-system and joulie-sim runs an image
 // images.sh built (joulie.local/...:dev-<12 hex>), with the image ID
-// images.env recorded for it (DR-21), and pull policy IfNotPresent: the
-// images are imported, never pulled.
+// images.env recorded for it, so a stale image under the same tag fails,
+// and pull policy IfNotPresent: the images are imported, never pulled.
 func e2eE03ImagesAreTheOnesBuilt(c *e2eCase) {
 	e := c.env
 	ids := map[string][]string{}
@@ -337,15 +328,19 @@ func e2eContains(list []string, s string) bool {
 // E04: the emulated agent Deployments stand in for exactly the Nodes the
 // agent DaemonSet would reach (EligibleNodes over the live Nodes, with the
 // placement of the DaemonSet render deploy.sh made from the install's
-// values files, R8). Each has one Running pod, on the infra Node, without
-// host network and unprivileged; every Node left out has a reason.
+// values files, as a real install would place them). Each has one Running
+// pod, on the infra Node, without host network and unprivileged; every Node
+// left out has a reason. The agent of a GPU Node mounts the driver stub
+// exactly when its pool's tool delivery, the spec's or the install's, is
+// mounted and its profile's GPU tools require a path the stub stands in
+// for (simcluster.EmulatedAgents).
 func e2eE04AgentsWhereTheDaemonSetWouldRun(c *e2eCase) {
 	e := c.env
 	render, err := os.ReadFile(filepath.Join(e.Dir, "render", "agent-daemonset.yaml"))
 	if err != nil {
 		c.Fatalf("the DaemonSet render deploy.sh made: %v", err)
 	}
-	placement, err := simcluster.PlacementFromRender(render, "amd64")
+	placement, err := simcluster.PlacementFromRender(render, e2eImageArch)
 	if err != nil {
 		c.Fatalf("placement: %v", err)
 	}
@@ -373,6 +368,30 @@ func e2eE04AgentsWhereTheDaemonSetWouldRun(c *e2eCase) {
 			c.Errorf("node %s is left out without a reason", x.Node)
 		}
 		c.Logf("no agent on %s: %s", x.Node, x.Reason)
+	}
+	all, err := e.nodes()
+	if err != nil {
+		c.Fatalf("spec Nodes: %v", err)
+	}
+	for _, n := range all {
+		d, ok := deps[n.Name]
+		if !ok || n.Profile.GPUs == nil {
+			continue
+		}
+		stub := false
+		for _, v := range d.Spec.Template.Spec.Volumes {
+			stub = stub || v.Name == simcluster.DriverStubVolume
+		}
+		// The stub the delivery mounts, if any: none for a profile whose
+		// tools require no path, whatever the delivery.
+		withStub, err := simcluster.EmulatedAgents([]clusterspec.Member{n.Member}, simcluster.Harness{}, simcluster.ToolDeliveryMounted, e2eHwemuRoot)
+		if err != nil {
+			c.Fatalf("node %s: %v", n.Name, err)
+		}
+		needs := len(withStub) == 1 && len(withStub[0].ExtraVolumes) > 0
+		if want := needs && n.ToolDelivery == simcluster.ToolDeliveryMounted; stub != want {
+			c.Errorf("node %s: the agent mounts the driver stub: %v, want %v under tool delivery %s (the install's: %s)", n.Name, stub, want, n.ToolDelivery, e.Install)
+		}
 	}
 
 	infra := e2eInfraNode(c)
@@ -551,12 +570,9 @@ func (e *e2eEnv) goldenDiff(profile string, got v1alpha1.NodeHardwareStatus) (st
 	return fmt.Sprintf("got %s, want %s", gb, wb), nil
 }
 
-// e2eSimJob is the job label of every series the simulator pushes.
-const e2eSimJob = telemetry.ServiceNamespace + "/" + telemetry.DefaultServiceName
-
 // E06: every spec Node with a measured CPU package is returned by the
-// mode's wait expression; in the otel modes, target_info carries each one's
-// k8s.node.name.
+// mode's wait expression; in the otel modes, target_info of the jobs that
+// carry node power carries each one's k8s.node.name.
 func e2eE06EveryMeasuredNodeReports(c *e2eCase) {
 	e := c.env
 	w := e.Parts.Wait
@@ -565,7 +581,7 @@ func e2eE06EveryMeasuredNodeReports(c *e2eCase) {
 	}
 	var missing []string
 	err := e2eEventually(e.twinFollow(), func() error {
-		got, err := e.promByLabel(w.Query, w.Label)
+		got, err := e.promByLabel(w.Query, w.Label, time.Now())
 		if err != nil {
 			return err
 		}
@@ -586,9 +602,9 @@ func e2eE06EveryMeasuredNodeReports(c *e2eCase) {
 	if e.Mode == simcluster.ModeKepler || e.Mode == simcluster.ModeKeplerLegacy {
 		return
 	}
-	label := e2eStrategy(e.Mode).LabelName(semconv.AttrK8sNodeName)
-	query := fmt.Sprintf(`target_info{job=%q}`, e2eSimJob)
-	r, err := e.prom(query)
+	label := e.Mode.Strategy().LabelName(semconv.AttrK8sNodeName)
+	query := fmt.Sprintf(`target_info{job=~%q}`, strings.Join(e.Mode.Jobs(), "|"))
+	r, err := e.prom(query, time.Now())
 	if err != nil {
 		c.Fatalf("%v", err)
 	}
@@ -850,7 +866,7 @@ func e2eGPUMaxW(h v1alpha1.NodeHardware) float64 {
 
 // MD01, known D18: MIG-mixed and renamed time-slicing GPU Nodes get no GPU
 // intent (none/none/"no GPU cap intent") and the CPU percent cap on both
-// packages, 132 W at 80 % (R13).
+// packages, 132 W at 80 % of their maximum.
 func e2eMD01SharedGPUsPlannedAsCPUOnly(c *e2eCase) {
 	e := c.env
 	nodes := e.nodesOf(c, e2eFamilyGPUShared)
@@ -1008,7 +1024,7 @@ func e2eMD04UnmanagedPoolHasSeriesOnly(c *e2eCase) {
 	if err != nil {
 		c.Fatalf("NodeTwins: %v", err)
 	}
-	series, err := e.promByLabel(e.Parts.Wait.Query, e.Parts.Wait.Label)
+	series, err := e.promByLabel(e.Parts.Wait.Query, e.Parts.Wait.Label, time.Now())
 	if err != nil {
 		c.Fatalf("%v", err)
 	}
@@ -1040,9 +1056,21 @@ const e2eProbeImage = "registry.k8s.io/pause:3.10"
 
 // E13: a standard pod that tolerates the KWOK taint and selects managed
 // Nodes is bound to a fake Node, and the extender's filter and prioritize
-// counters grow. The pod is deleted again.
+// counters grow. The pod is deleted again. The extender runs on the host
+// network exactly in the hostnet variant (SIMCLUSTER_EXTENDER), so in the
+// service variant kube-scheduler reached it through its Service.
 func e2eE13ExtenderPlacesAPod(c *e2eCase) {
 	e := c.env
+	extCtx, extCancel := e.ctx()
+	var ext appsv1.Deployment
+	err := e.Client.Get(extCtx, client.ObjectKey{Namespace: scenario.NamespaceJoulie, Name: e2eDeployExtender}, &ext)
+	extCancel()
+	if err != nil {
+		c.Fatalf("extender Deployment: %v", err)
+	}
+	if got, want := ext.Spec.Template.Spec.HostNetwork, e.Extender == e2eExtenderHostNet; got != want {
+		c.Errorf("extender variant %s: the extender's hostNetwork is %v, want %v", e.Extender, got, want)
+	}
 	counters := func() (filter, prioritize float64, err error) {
 		b, err := e.proxyGet(scenario.NamespaceJoulie, e2eExtenderMetrics, "metrics", nil)
 		if err != nil {
@@ -1570,7 +1598,7 @@ func e2eE14ReloadRollsOrDoesNothing(c *e2eCase) {
 	if err != nil {
 		c.Fatalf("agent pods: %v", err)
 	}
-	images0, err := e2eEnvFile(filepath.Join(e.Dir, "images.env"))
+	images0, err := simcluster.ReadEnvFile(filepath.Join(e.Dir, "images.env"))
 	if err != nil {
 		c.Fatalf("%v", err)
 	}
@@ -1581,7 +1609,7 @@ func e2eE14ReloadRollsOrDoesNothing(c *e2eCase) {
 	if strings.Contains(out, ": importing") {
 		c.Errorf("reload.sh agent with an unchanged binary imported an image:\n%s", e2eTail(out, 30))
 	}
-	images1, err := e2eEnvFile(filepath.Join(e.Dir, "images.env"))
+	images1, err := simcluster.ReadEnvFile(filepath.Join(e.Dir, "images.env"))
 	if err != nil {
 		c.Fatalf("%v", err)
 	}
@@ -1615,8 +1643,8 @@ func e2eE15StatusIsClean(c *e2eCase) {
 }
 
 // e2eGovernorPresets are the presets each profile's agent lists, with the
-// result each gives, as sections 1.4, 1.5 and 3.1 of the governor design map
-// them: on acpi-cpufreq and intel_cpufreq every CPU preset is its own
+// result each gives, as pkg/governor maps them (the mapping tables of
+// hardware/cpus.md and hardware/gpus.md): on acpi-cpufreq and intel_cpufreq every CPU preset is its own
 // governor (schedutil, conservative); on intel_pstate with HWP balanced and
 // efficiency are powersave with an energy-performance preference, and so on
 // amd-pstate-epp, where the agent takes the driver's full preference set
@@ -1975,31 +2003,27 @@ var (
 // graphics and memory lock as "<min>,<max>", or none for a domain the
 // native words leave unlocked.
 func e2eNativeFiles(r *v1alpha1.ControlResult) map[*regexp.Regexp]string {
-	words := strings.Fields(r.Applied)
-	if len(words) == 0 {
+	if strings.TrimSpace(r.Applied) == "" {
 		return nil
+	}
+	st := governor.ParseNative(r.Backend, r.Applied)
+	lock := func(l *[2]int) string {
+		if l == nil {
+			return e2eUnlocked
+		}
+		return fmt.Sprintf("%d,%d", l[0], l[1])
 	}
 	out := map[*regexp.Regexp]string{}
 	switch r.Backend {
 	case joulie.GovernorBackendCPUFreq:
-		out[e2eGovernorFileRE] = words[0]
-		for _, w := range words[1:] {
-			if v, ok := strings.CutPrefix(w, "epp="); ok {
-				out[e2eEPPFileRE] = v
-			}
+		out[e2eGovernorFileRE] = st.Governor
+		if st.EPP != "" {
+			out[e2eEPPFileRE] = st.EPP
 		}
 	case joulie.GovernorBackendAMDGPUSysfs:
-		out[e2eLevelFileRE] = words[0]
+		out[e2eLevelFileRE] = st.Level
 	case joulie.GovernorBackendNvidiaSMI:
-		out[e2eGPULockFileRE], out[e2eMemLockFileRE] = e2eUnlocked, e2eUnlocked
-		for i := 0; i+1 < len(words); i++ {
-			switch words[i] {
-			case "-lgc":
-				out[e2eGPULockFileRE] = words[i+1]
-			case "-lmc":
-				out[e2eMemLockFileRE] = words[i+1]
-			}
-		}
+		out[e2eGPULockFileRE], out[e2eMemLockFileRE] = lock(st.GPULockMHz), lock(st.MemLockMHz)
 	}
 	return out
 }

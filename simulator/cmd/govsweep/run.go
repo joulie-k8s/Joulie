@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	joulie "github.com/matbun/joulie/pkg/api"
@@ -94,6 +96,18 @@ type runner struct {
 	work     string
 	keep     bool
 	resource telemetry.Resource
+	// unsupported holds, by armKey, the result of an arm that came out
+	// unsupported, so the other cells of that arm skip the render and the
+	// boot that would give the same result. Not used with keep, which
+	// keeps every cell's tree.
+	unsupported sync.Map
+}
+
+// armKey is what an arm's result depends on: the grid, the profile and its
+// sensitivity variant, the preset, the boost word and the ceiling. The
+// seed, the gate, the cap and the load come after the arm is set.
+func armKey(c Cell) string {
+	return strings.Join([]string{c.Grid, c.Profile, c.Sens, c.Preset, c.Boost, fmtNum(c.CeilingPct)}, "|")
 }
 
 // run runs one cell in its own root, cells/<id> under the work directory,
@@ -107,6 +121,10 @@ func (r *runner) run(ctx context.Context, c Cell) (Row, otlpjson.MetricsData, er
 	}
 	if !ok {
 		return row, otlpjson.MetricsData{}, errNoVariant
+	}
+	if arm, seen := r.unsupported.Load(armKey(c)); seen && !r.keep {
+		row.Arm, row.Status = arm.(armResult), statusUnsupported
+		return row, otlpjson.MetricsData{}, nil
 	}
 	root := filepath.Join(r.work, "cells", c.ID())
 	if err := os.RemoveAll(root); err != nil {
@@ -149,6 +167,7 @@ func (r *runner) run(ctx context.Context, c Cell) (Row, otlpjson.MetricsData, er
 	switch row.Arm.Result {
 	case joulie.GovernorResultUnsupported:
 		row.Status = statusUnsupported
+		r.unsupported.Store(armKey(c), row.Arm)
 		return row, otlpjson.MetricsData{}, nil
 	case "", joulie.GovernorResultApplied, joulie.GovernorResultEquivalent:
 	default:
@@ -302,7 +321,7 @@ func cpuRate(c Cell, util, mul float64) float64 {
 	rate, _ := workload.Rates(workload.ModelV1, workload.RateInputs{
 		BaseSpeed: 1, CPURequest: 1, CPUUtil: util,
 		MemoryIntensity: c.Intensity.MemoryIntensity, IOIntensity: c.Intensity.IOIntensity,
-		SensitivityCPU: 1, SensitivityGPU: 1, CPUMul: mul, GPUMul: 1, GPUCapFactor: 1, CPUShare: 1, GPUShare: 1,
+		SensitivityCPU: 1, SensitivityGPU: 1, CPUMul: mul, GPUMul: 1, CPUShare: 1, GPUShare: 1,
 	})
 	return rate
 }
@@ -392,7 +411,10 @@ func (r *runner) runBursty(m *meter, c Cell, row *Row) error {
 			m.node.SetLoad(l)
 			busy = want
 		}
-		if err := m.node.Step(step); err != nil {
+		// Nothing reads or writes the tree during the bursts, so the node
+		// skips the file I/O of each 10 ms step and writes its files once,
+		// at the end.
+		if err := m.node.StepUnobserved(step); err != nil {
 			return err
 		}
 		s := m.node.State()
@@ -416,11 +438,14 @@ func (r *runner) runBursty(m *meter, c Cell, row *Row) error {
 			break
 		}
 		if t >= limit {
+			if err := m.node.Flush(); err != nil {
+				return err
+			}
 			return errTimeout
 		}
 	}
 	row.BurstP50MS, row.BurstP95MS = percentile(lat, 50), percentile(lat, 95)
-	return nil
+	return m.node.Flush()
 }
 
 // cpuList is every logical CPU of c's profile.
@@ -529,7 +554,7 @@ func (r *runner) runGPUJob(ctx context.Context, m *meter, c Cell, tree *hwemu.Tr
 		}
 		m.minThr, m.minPeer = math.Min(m.minThr, thr), math.Min(m.minPeer, peer)
 		in := workload.RateInputs{BaseSpeed: 1, GPURequest: float64(len(workers)), SensitivityCPU: 1, SensitivityGPU: 1,
-			CPUMul: 1, GPUMul: thr, GPUCapFactor: 1, CPUShare: 1, GPUShare: 1}
+			CPUMul: 1, GPUMul: thr, CPUShare: 1, GPUShare: 1}
 		if len(ts) > 0 {
 			in.PeerTransferIntensity, in.PeerMul = c.TransferIntensity, peer
 		}
@@ -559,10 +584,8 @@ func (r *runner) export(n *hwemu.Node, c Cell, p *hwemu.Profile) otlpjson.Metric
 	st := n.State()
 	snap := emulate.NodeSnapshot{
 		Name: c.ID(), Pool: c.Grid, Profile: p.Name, StartTime: sweepEpoch, DriverVersion: st.DriverVersion,
-		Host: emulate.HostReading{Measured: st.Host.Measured, PowerW: st.Host.PowerW, EnergyJ: st.Host.EnergyJ, OtherW: st.Host.OtherW},
-	}
-	for _, comp := range st.Components {
-		snap.Components = append(snap.Components, emulate.ComponentReading(comp))
+		Host:       emulate.HostReading{Measured: st.Host.Measured, PowerW: st.Host.PowerW, EnergyJ: st.Host.EnergyJ, OtherW: st.Host.OtherW},
+		Components: append([]emulate.ComponentReading(nil), st.Components...),
 	}
 	d, _ := telemetry.NodeRequest(snap, r.cfg.Name, st.Time, r.resource)
 	return d

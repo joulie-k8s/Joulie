@@ -4,10 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -263,94 +261,6 @@ func buildReadLines(t *testing.T, path string) [][]byte {
 	return out
 }
 
-// buildDecodeStrict decodes one OTLP JSON object into v the way the strict
-// decoders are specified (types.go): an unknown key, which includes every
-// snake_case spelling, fails, and so does anything after the object. It
-// stands in for DecodeMetricsStrict and DecodeLogsStrict, which package
-// decode.go provides; once that file is in the package, the calls switch to
-// those and these stand-ins go.
-func buildDecodeStrict(b []byte, v any) error {
-	// encoding/json matches field names without regard to case, so
-	// DisallowUnknownFields alone accepts "ResourceMetrics": every key must
-	// first be spelled exactly as a field of the model.
-	var generic any
-	if err := json.Unmarshal(b, &generic); err == nil {
-		if err := buildCheckModelKeys(generic); err != nil {
-			return err
-		}
-	}
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		return err
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("data after the object: %v", err)
-	}
-	return nil
-}
-
-// buildModelKeys holds the JSON tag names of every field reachable from
-// MetricsData and LogsData.
-var buildModelKeys = func() map[string]bool {
-	keys := map[string]bool{}
-	seen := map[reflect.Type]bool{}
-	var walk func(t reflect.Type)
-	walk = func(t reflect.Type) {
-		for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice {
-			t = t.Elem()
-		}
-		if t.Kind() != reflect.Struct || seen[t] {
-			return
-		}
-		seen[t] = true
-		for i := 0; i < t.NumField(); i++ {
-			if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
-				keys[name] = true
-			}
-			walk(t.Field(i).Type)
-		}
-	}
-	walk(reflect.TypeOf(MetricsData{}))
-	walk(reflect.TypeOf(LogsData{}))
-	return keys
-}()
-
-// buildCheckModelKeys fails on the first object key in v that is not in
-// buildModelKeys.
-func buildCheckModelKeys(v any) error {
-	switch x := v.(type) {
-	case map[string]any:
-		for k, e := range x {
-			if !buildModelKeys[k] {
-				return fmt.Errorf("key %q is not an OTLP JSON field name", k)
-			}
-			if err := buildCheckModelKeys(e); err != nil {
-				return err
-			}
-		}
-	case []any:
-		for _, e := range x {
-			if err := buildCheckModelKeys(e); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// buildDecodeMetricsStrict and buildDecodeLogsStrict decode one line
-// strictly, with the signatures of DecodeMetricsStrict and DecodeLogsStrict.
-func buildDecodeMetricsStrict(b []byte) (MetricsData, error) {
-	var d MetricsData
-	return d, buildDecodeStrict(b, &d)
-}
-
-func buildDecodeLogsStrict(b []byte) (LogsData, error) {
-	var d LogsData
-	return d, buildDecodeStrict(b, &d)
-}
-
 // buildCountPoints counts the data points of every metric in d.
 func buildCountPoints(d MetricsData) int {
 	n := 0
@@ -597,7 +507,7 @@ func TestOJ08HistogramRoundTrips(t *testing.T) {
 			t.Errorf("marshal lacks %s\n%s", want, b)
 		}
 	}
-	back, err := buildDecodeMetricsStrict(b)
+	back, err := DecodeMetricsStrict(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,7 +600,7 @@ func TestOJ09StrictDecodeReadsEveryGoldenLine(t *testing.T) {
 		`{"resourceMetrics":[{"scopeMetrics":[{"metrics":[{"Name":"x"}]}]}]}`,
 		`{"resourceMetrics":[]} {"resourceMetrics":[]}`,
 	} {
-		if _, err := buildDecodeMetricsStrict([]byte(bad)); err == nil {
+		if _, err := DecodeMetricsStrict([]byte(bad)); err == nil {
 			t.Fatalf("the strict decoder accepted %s", bad)
 		}
 	}
@@ -698,7 +608,7 @@ func TestOJ09StrictDecodeReadsEveryGoldenLine(t *testing.T) {
 		`{"resource_logs":[]}`,
 		`{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"EventName":"x"}]}]}]}`,
 	} {
-		if _, err := buildDecodeLogsStrict([]byte(bad)); err == nil {
+		if _, err := DecodeLogsStrict([]byte(bad)); err == nil {
 			t.Fatalf("the strict decoder accepted %s", bad)
 		}
 	}
@@ -709,7 +619,7 @@ func TestOJ09StrictDecodeReadsEveryGoldenLine(t *testing.T) {
 		t.Fatalf("%s has %d lines, the builders wrote %d", buildGoldenMetricsFile, len(lines), len(metrics))
 	}
 	for i, line := range lines {
-		got, err := buildDecodeMetricsStrict(line)
+		got, err := DecodeMetricsStrict(line)
 		if err != nil {
 			t.Fatalf("%s line %d: %v", buildGoldenMetricsFile, i+1, err)
 		}
@@ -728,7 +638,7 @@ func TestOJ09StrictDecodeReadsEveryGoldenLine(t *testing.T) {
 		t.Fatalf("%s has %d lines, the builders wrote %d", buildGoldenLogsFile, len(lines), len(logs))
 	}
 	for i, line := range lines {
-		got, err := buildDecodeLogsStrict(line)
+		got, err := DecodeLogsStrict(line)
 		if err != nil {
 			t.Fatalf("%s line %d: %v", buildGoldenLogsFile, i+1, err)
 		}
@@ -970,8 +880,6 @@ func TestBuildArrayAttributes(t *testing.T) {
 	}{
 		{IntArray("k", 0, -1), `{"key":"k","value":{"arrayValue":{"values":[{"intValue":"0"},{"intValue":"-1"}]}}}`},
 		{IntArray("k"), `{"key":"k","value":{"arrayValue":{"values":[]}}}`},
-		{StringArray("k", "a", ""), `{"key":"k","value":{"arrayValue":{"values":[{"stringValue":"a"},{"stringValue":""}]}}}`},
-		{StringArray("k"), `{"key":"k","value":{"arrayValue":{"values":[]}}}`},
 	} {
 		b, err := json.Marshal(c.kv)
 		if err != nil {

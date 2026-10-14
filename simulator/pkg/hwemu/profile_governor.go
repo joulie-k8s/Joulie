@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 )
 
@@ -23,14 +24,15 @@ import (
 // Kernel citations in this file and in node_governor.go are against Linux
 // v6.12 unless they say otherwise.
 
-// Boost scopes, the values of cpufreq.boostScope: the global
-// cpufreq/boost of acpi-cpufreq and the generic drivers, the per-policy
-// boost of amd-pstate (cpufreq.c:616-650, local_boost), and the inverted
-// intel_pstate/no_turbo of both intel_pstate modes.
+// Boost scopes, the values of cpufreq.boostScope, spelled as pkg/api
+// spells cpu.governor.boost.scope: the global cpufreq/boost of acpi-cpufreq
+// and the generic drivers, the per-policy boost of amd-pstate
+// (cpufreq.c:616-650, local_boost), and the inverted intel_pstate/no_turbo
+// of both intel_pstate modes.
 const (
-	cpuGovBoostGlobal  = "global"
-	cpuGovBoostPerCPU  = "per-cpu"
-	cpuGovBoostNoTurbo = "no-turbo"
+	cpuGovBoostGlobal  = api.CPUBoostScopeGlobal
+	cpuGovBoostPerCPU  = api.CPUBoostScopePerCPU
+	cpuGovBoostNoTurbo = api.CPUBoostScopeNoTurbo
 )
 
 // Uncore layouts, the values of cpufreq.uncore.layout: one domain per die
@@ -132,6 +134,18 @@ func cpuGovBoostScope(f *CPUFreqSpec) string {
 		return cpuGovDriverBoostScope(f.Driver.V)
 	}
 	return cpuGovBoostGlobal
+}
+
+// cpuGovPolicyBootBoost is what each policy's boost file shows at boot
+// where the switch is global (cpuGovBoostGlobal) and the driver has
+// set_boost: the policyBoost fact, else 0. The file shows the core's
+// per-policy flag (policy->boost_enabled), which the captured acpi-cpufreq
+// nodes leave at 0 while cpufreq/boost reads 1 and the CPUs boost.
+func cpuGovPolicyBootBoost(f *CPUFreqSpec) int {
+	if f.PolicyBoost.Src != "" {
+		return f.PolicyBoost.V
+	}
+	return 0
 }
 
 // cpuGovBootBoost is the boost state a policy boots with: the boost fact
@@ -467,17 +481,18 @@ func renderCPUGovernor(b *renderBuilder, p *Profile, o RenderOptions) error {
 	if cpuGovSetBoost(f) {
 		// render_cpufreq.go writes boost where the driver keeps it
 		// (cpuGovBoostScope); set_boost makes the core create the other
-		// copy too. Both start at the boost fact: acpi-cpufreq gives every
-		// policy the global state (acpi-cpufreq.c:897-899), and amd-pstate
-		// the policy's boost support (amd-pstate.c:995, 1464), assumed equal
-		// to the global state it sets where the CPU has CPB (amd-pstate.c:747).
-		boot := renderUint(cpuGovBootBoost(f))
+		// copy too. amd-pstate's global copy starts at the boost fact, the
+		// policies' boost support (amd-pstate.c:995, 1464), assumed equal
+		// to the global state it sets where the CPU has CPB
+		// (amd-pstate.c:747). acpi-cpufreq's policies show the per-policy
+		// flag, cpuGovPolicyBootBoost.
 		switch cpuGovBoostScope(f) {
 		case cpuGovBoostPerCPU:
-			if err := b.file(renderSys(path.Join(layout.CPUFreqDir(), "boost")), boot, layout.OwnerAgent, 0o644); err != nil {
+			if err := b.file(renderSys(path.Join(layout.CPUFreqDir(), "boost")), renderUint(cpuGovBootBoost(f)), layout.OwnerAgent, 0o644); err != nil {
 				return err
 			}
 		case cpuGovBoostGlobal:
+			boot := renderUint(cpuGovPolicyBootBoost(f))
 			for _, pol := range renderPolicies(p, renderCPUs(p)) {
 				if err := b.file(renderSys(path.Join(layout.PolicyDir(pol.ID), "boost")), boot, layout.OwnerAgent, 0o644); err != nil {
 					return err

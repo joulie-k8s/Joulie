@@ -83,14 +83,15 @@ func TestCP01Kepler07FamiliesLabelsAndGolden(t *testing.T) {
 }
 
 // CP02: per series, the dynamic and idle increments of an interval sum to
-// the energy measured over it, PowerW x dt, and both counters only grow,
-// over 100 ticks of varying load and tick length.
+// the energy measured over it, PowerW x dt, whenever the interval has
+// dynamic energy, and to at least that energy when it has none, and both
+// counters only grow, over 100 ticks of varying load and tick length.
 func TestCP02Kepler07IdleAndDynamicSumToTheEnergy(t *testing.T) {
 	set, err := NewSet([]string{Kepler07}, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := compatNewCluster(compatIntel(), compatNVL())
+	c := compatNewCluster(t, compatIntel(), compatNVL())
 	rng := rand.New(rand.NewSource(7))
 	set.Observe(c.snap(0, 0.5, 0.5))
 	prev := compatGather(t, set, Kepler07)
@@ -115,7 +116,7 @@ func TestCP02Kepler07OutOfOrderSnapshotAddsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := compatNewCluster(compatIntel(), compatNVL())
+	c := compatNewCluster(t, compatIntel(), compatNVL())
 	first := c.snap(0, 0.5, 0.5)
 	late := c.snap(5, 0.5, 0.5)
 	mid := c.snap(5, 0.5, 0.5)
@@ -136,8 +137,10 @@ func TestCP02Kepler07OutOfOrderSnapshotAddsNothing(t *testing.T) {
 
 // k07CheckIncrements checks node n between two gathers dt seconds apart:
 // the dynamic and idle counters of its package, dram, gpu and platform
-// series did not fall and grew by PowerW x dt together, and other did not
-// fall. A series absent from prev counts from 0.
+// series did not fall and grew by PowerW x dt together when the dynamic one
+// grew, by at least that when it did not (the full idle of an interval
+// below the recorded idle), and other did not fall. A series absent from
+// prev counts from 0.
 func k07CheckIncrements(t *testing.T, what string, prev, cur []compatSample, n *emulate.NodeSnapshot, dt float64) {
 	t.Helper()
 	series := map[string]float64{k07Family(k07Platform) + "/" + k07PlatformID: n.Host.PowerW * dt}
@@ -153,7 +156,7 @@ func k07CheckIncrements(t *testing.T, what string, prev, cur []compatSample, n *
 	}
 	for key, wantJ := range series {
 		family, id, _ := strings.Cut(key, "/")
-		var sum float64
+		var sum, dyn float64
 		for _, mode := range []string{k07ModeDynamic, k07ModeIdle} {
 			match := map[string]string{k07LabelInstance: n.Name, k07LabelPackage: id, k07LabelMode: mode}
 			now := compatOne(t, cur, family, match)
@@ -165,8 +168,16 @@ func k07CheckIncrements(t *testing.T, what string, prev, cur []compatSample, n *
 				t.Fatalf("%s: %s %s %s fell from %g to %g", what, n.Name, key, mode, was, now)
 			}
 			sum += now - was
+			if mode == k07ModeDynamic {
+				dyn = now - was
+			}
 		}
-		compatNear(t, fmt.Sprintf("%s: %s %s dynamic+idle increment", what, n.Name, key), sum, wantJ)
+		what := fmt.Sprintf("%s: %s %s dynamic+idle increment", what, n.Name, key)
+		if dyn > 0 {
+			compatNear(t, what, sum, wantJ)
+		} else if sum < wantJ*(1-1e-9) {
+			t.Errorf("%s = %.12g without dynamic energy, want at least %.12g", what, sum, wantJ)
+		}
 	}
 	for _, mode := range []string{k07ModeDynamic, k07ModeIdle} {
 		match := map[string]string{k07LabelInstance: n.Name, k07LabelMode: mode}
@@ -178,7 +189,8 @@ func k07CheckIncrements(t *testing.T, what string, prev, cur []compatSample, n *
 
 // CP02: the split keeps the power of the lowest-load interval as idle; a
 // new baseline needs both a load and a power at or below the current ones;
-// an interval below the baseline is all idle; a zero interval adds nothing.
+// an interval below the baseline reports the baseline's idle in full and no
+// dynamic energy; a zero interval adds nothing.
 func TestCP02Kepler07SplitFollowsTheLowestLoadInterval(t *testing.T) {
 	var s k07Split
 	for i, c := range []struct {
@@ -189,10 +201,10 @@ func TestCP02Kepler07SplitFollowsTheLowestLoadInterval(t *testing.T) {
 		{2000, 10, 0.5, 2000, 0},    // first interval: all idle, baseline 200 W at 0.5
 		{1500, 10, 0.2, 1500, 0},    // lower load and power: baseline 150 W
 		{3000, 10, 0.9, 1500, 1500}, // busier: 150 W idle, the rest dynamic
-		{1200, 10, 0.6, 1200, 0},    // less power but more load: baseline kept
+		{1200, 10, 0.6, 1500, 0},    // less power but more load: baseline kept, its idle in full
 		{3000, 10, 0.9, 1500, 1500}, // so 150 W idle again, not 120 W
 		{4000, 10, 0.1, 1500, 2500}, // lower load but more power: baseline kept
-		{600, 5, 0.6, 600, 0},       // below the baseline: all idle, capped
+		{600, 5, 0.6, 750, 0},       // below the baseline: 150 W idle, no dynamic
 		{1200, 10, 0.05, 1200, 0},   // lower load and power: baseline 120 W
 		{2400, 20, 0.7, 2400, 0},    // 120 W x 20 s
 		{3000, 20, 0.7, 2400, 600},  // 150 W: 120 W idle, the rest dynamic
@@ -203,13 +215,59 @@ func TestCP02Kepler07SplitFollowsTheLowestLoadInterval(t *testing.T) {
 		compatNear(t, fmt.Sprintf("interval %d idle", i), idle, c.wantIdle)
 		compatNear(t, fmt.Sprintf("interval %d dynamic", i), dyn, c.wantDyn)
 	}
-	compatNear(t, "idle total", s.idleJ, 2000+1500+1500+1200+1500+1500+600+1200+2400+2400)
+	compatNear(t, "idle total", s.idleJ, 2000+1500+1500+1500+1500+1500+750+1200+2400+2400)
 	compatNear(t, "dynamic total", s.dynJ, 1500+1500+2500+600)
 }
 
+// CP11: a power cap that holds the packages below the power recorded as
+// idle at a lower load, while the load stays high, adds the recorded idle
+// energy in full and no dynamic energy, as upstream's calcDynEnergy does: so
+// the two modes together, which the kepler-legacy preset sums, read the
+// recorded idle power and not the lower measured one.
+func TestCP11Kepler07CapBelowTheRecordedIdleReportsTheFullIdle(t *testing.T) {
+	set, err := NewSet([]string{Kepler07}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := compatNewCluster(t, compatIntel())
+	// snap steps the node at the power of powerLoad and reports util.
+	snap := func(dt, powerLoad, util float64) *emulate.Snapshot {
+		s := c.snap(dt, powerLoad, 0)
+		for i := range s.Nodes[0].Components {
+			s.Nodes[0].Components[i].Utilization = util
+		}
+		return s
+	}
+	set.Observe(snap(0, 0.125, 0.125))
+	idle := snap(10, 0.125, 0.125) // the baseline: 103.75 W and 108.75 W at load 0.125
+	set.Observe(idle)
+	before := compatGather(t, set, Kepler07)
+	capped := snap(10, 0, 0.9) // busy, but capped to 90 W and 95 W
+	set.Observe(capped)
+	after := compatGather(t, set, Kepler07)
+
+	for i, comp := range capped.Nodes[0].Components {
+		if comp.Type != semconv.HwTypeCPU {
+			continue
+		}
+		recordedW := idle.Nodes[0].Components[i].PowerW
+		if !(comp.PowerW < recordedW) {
+			t.Fatalf("package %d draws %g W capped, %g W recorded idle; the test needs it below", comp.Index, comp.PowerW, recordedW)
+		}
+		match := map[string]string{k07LabelInstance: "intel-0", k07LabelPackage: fmt.Sprint(comp.Index)}
+		inc := func(mode string) float64 {
+			match[k07LabelMode] = mode
+			return compatOne(t, after, k07Family(k07Package), match) - compatOne(t, before, k07Family(k07Package), match)
+		}
+		compatNear(t, fmt.Sprintf("package %d idle increment under the cap", comp.Index), inc(k07ModeIdle), recordedW*10)
+		compatNear(t, fmt.Sprintf("package %d dynamic increment under the cap", comp.Index), inc(k07ModeDynamic), 0)
+	}
+}
+
 // CP03: kepler_node_platform_joules_total has two series per node, dynamic
-// and idle, both with instance=<node>: the input of D12, where a query per
-// node that kept only its first result read half the platform energy.
+// and idle, both with instance=<node>, so a query per node must sum every
+// series it returns: one that kept only its first result read half the
+// platform energy.
 func TestCP03Kepler07PlatformHasTwoSeriesPerNode(t *testing.T) {
 	set, _ := compatRun(t, []string{Kepler07}, Options{}, compatIntel(), compatNVL())
 	samples := compatGather(t, set, Kepler07)
@@ -245,7 +303,7 @@ func TestCP02Kepler07EachFamilyComparesItsOwnLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := compatNewCluster(compatNVL())
+	c := compatNewCluster(t, compatNVL())
 	// snap steps the node with powers set by the first two loads and
 	// reports the last two as its utilisation.
 	snap := func(dt, cpuPower, gpuPower, cpuUtil, gpuUtil float64) *emulate.Snapshot {
@@ -311,7 +369,7 @@ func TestCP02Kepler07OtherNeverFalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := compatNewCluster(compatNVL())
+	c := compatNewCluster(t, compatNVL())
 	other := func() (dyn, idle float64) {
 		t.Helper()
 		samples := compatGather(t, set, Kepler07)
@@ -384,7 +442,7 @@ func TestCP02Kepler07FirstSnapshotRepeatsAndRemovedNodes(t *testing.T) {
 			t.Fatalf("%s: %s has no series", what, node)
 		}
 	}
-	c := compatNewCluster(compatIntel(), compatNVL())
+	c := compatNewCluster(t, compatIntel(), compatNVL())
 	set.Observe(c.snap(0, 0.5, 0.5))
 	first("first snapshot", "intel-0")
 	first("first snapshot", "nvl-0")

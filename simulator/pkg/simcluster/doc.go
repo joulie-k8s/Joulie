@@ -19,8 +19,8 @@
 //   - Telemetry. For a Mode, a Scope and a Timing: the Prometheus and
 //     Collector configuration, the simulator and Joulie values files, the
 //     query that says every measured Node has reported, and the Checks that
-//     compare what Joulie reads with the emulator's truth (NodeTruth and
-//     FacilityTruth, taken from the simulator's /debug/emulate snapshot).
+//     compare what Joulie reads with the emulator's truth (NodeTruth, taken
+//     from the simulator's /debug/emulate snapshot).
 //   - Scale. A cluster spec of N Nodes of one profile.
 //
 // Node rendering is not here: package clusterspec is the only renderer of
@@ -35,7 +35,10 @@
 //	  pools:
 //	    nvl-nodriver: {toolDelivery: none}
 //
-// A pool that is not listed gets ToolDeliveryMounted.
+// A pool that is not listed gets the tool delivery of the Joulie install
+// (Placement.ToolDelivery): ToolDeliveryMounted when the agent DaemonSet has
+// a runtime class or extra volumes to reach the GPU tools, ToolDeliveryNone
+// otherwise, as a default install has it.
 //
 // # Names
 //

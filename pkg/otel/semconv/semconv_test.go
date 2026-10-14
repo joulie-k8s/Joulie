@@ -8,9 +8,11 @@ import (
 	"testing"
 )
 
-// frozenMetrics pins every metric the simulator emits and the controller
-// manager reads. A change here is a change of the wire contract between them
-// and of every stored series, so it needs both sides and the docs.
+// frozenMetrics pins every metric in the table: what the simulator emits
+// and the controller manager reads, what a calibration sweep records and
+// hwcalib fits, and what a run records and the scenario evaluator reads. A
+// change here is a change of the contract between a writer and its reader
+// and of every stored series or run, so it needs both sides and the docs.
 var frozenMetrics = []struct {
 	v     Metric
 	name  string
@@ -38,10 +40,40 @@ var frozenMetrics = []struct {
 	{JoulieCoolingZoneAmbientTemperature, "joulie.cooling_zone.ambient_temperature", "Cel", Gauge, Double, OwnerJoulie, []string{"joulie.cooling_zone.name"}},
 	{JoulieRackEnergy, "joulie.rack.energy", "J", Counter, Double, OwnerJoulie, []string{"joulie.rack.name"}},
 	{JoulieRackPower, "joulie.rack.power", "W", Gauge, Double, OwnerJoulie, []string{"joulie.rack.name"}},
+
+	// The governor stage.
+	{HwGPUIO, "hw.gpu.io", "By", Counter, Int, OwnerSemconv,
+		[]string{"hw.id", "hw.name", "hw.vendor", "hw.model", "network.io.direction", "joulie.hw.gpu.io.path"}},
+	{JoulieHwGPUSpeed, "joulie.hw.gpu.speed", "Hz", Gauge, Int, OwnerJoulie,
+		[]string{"hw.id", "hw.vendor", "hw.model", "joulie.hw.clock.domain"}},
+	{JoulieHwGPUSpeedLimit, "joulie.hw.gpu.speed.limit", "Hz", Gauge, Int, OwnerJoulie,
+		[]string{"hw.id", "hw.vendor", "hw.model", "joulie.hw.clock.domain", "hw.limit_type"}},
+	{JoulieHwGovernor, "joulie.hw.governor", "1", UpDownCounter, Int, OwnerJoulie,
+		[]string{"hw.id", "hw.type", "joulie.hw.governor.preset", "joulie.hw.governor.native"}},
+
+	// A calibration sweep: system.cpu.utilization is semconv v1.44.0
+	// model/system/metrics.yaml, the setpoint Joulie's own.
+	{SystemCPUUtilization, "system.cpu.utilization", "1", Gauge, Double, OwnerSemconv, []string{"cpu.mode", "cpu.logical_number"}},
+	{JoulieCalibrationSetpoint, "joulie.calibration.setpoint", "{setpoint}", Gauge, Double, OwnerJoulie,
+		[]string{"joulie.calibration.knob", "joulie.calibration.class", "joulie.calibration.memory_intensity"}},
+
+	// A workload run and the scenario runner.
+	{JoulieSimWorkloadJobsSubmitted, "joulie.sim.workload.jobs.submitted", "{job}", Counter, Int, OwnerJoulie, []string{"joulie.workload.class"}},
+	{JoulieSimWorkloadJobsFinished, "joulie.sim.workload.jobs.finished", "{job}", Counter, Int, OwnerJoulie, []string{"joulie.workload.class", "joulie.sim.job.outcome"}},
+	{JoulieSimWorkloadJobsActive, "joulie.sim.workload.jobs.active", "{job}", UpDownCounter, Int, OwnerJoulie, []string{"joulie.workload.class", "joulie.sim.job.state"}},
+	{JoulieSimWorkloadJobDuration, "joulie.sim.workload.job.duration", "s", Histogram, Double, OwnerJoulie, []string{"joulie.workload.class"}},
+	{JoulieSimWorkloadJobQueueWait, "joulie.sim.workload.job.queue_wait", "s", Histogram, Double, OwnerJoulie, []string{"joulie.workload.class"}},
+	{JoulieSimWorkloadJobSlowdown, "joulie.sim.workload.job.slowdown", "1", Histogram, Double, OwnerJoulie, []string{"joulie.workload.class"}},
+	{JoulieSimWorkloadWork, "joulie.sim.workload.work", "{unit}", Counter, Double, OwnerJoulie, []string{"joulie.workload.class", "joulie.sim.work.kind"}},
+	{JoulieSimWorkloadEnergy, "joulie.sim.workload.energy", "J", Counter, Double, OwnerJoulie, []string{"joulie.workload.class", "hw.type", "k8s.node.name", "joulie.sim.profile"}},
+	{JoulieCaptureNodeTwinMeasuredPower, "joulie.capture.nodetwin.measured_power", "W", Gauge, Double, OwnerJoulie, []string{"k8s.node.name", "joulie.nodetwin.power_source"}},
+	{JoulieCaptureNodeTwinSchedulableClass, "joulie.capture.nodetwin.schedulable_class", "1", UpDownCounter, Int, OwnerJoulie, []string{"k8s.node.name", "joulie.node.schedulable_class"}},
+	{JoulieCaptureNodeTwinControlResult, "joulie.capture.nodetwin.control_result", "1", UpDownCounter, Int, OwnerJoulie, []string{"k8s.node.name", "hw.type", "joulie.nodetwin.control.backend", "joulie.nodetwin.control.result"}},
+	{JoulieScenarioAssertionValue, "joulie.scenario.assertion.value", "{value}", Gauge, Double, OwnerJoulie, []string{"joulie.assertion.name", "joulie.assertion.source"}},
 }
 
-// frozenAttributes pins every attribute constant and value constant of the
-// S2 table.
+// frozenAttributes pins every attribute constant, each of which must be
+// registered.
 var frozenAttributes = map[string]string{
 	AttrHwID: "hw.id", AttrHwType: "hw.type", AttrHwName: "hw.name", AttrHwParent: "hw.parent",
 	AttrHwVendor: "hw.vendor", AttrHwModel: "hw.model", AttrHwLimitType: "hw.limit_type", AttrHwGPUTask: "hw.gpu.task",
@@ -57,17 +89,62 @@ var frozenAttributes = map[string]string{
 	AttrSimTreeResumed: "joulie.sim.tree.resumed", AttrSimTreeAdded: "joulie.sim.tree.added",
 	AttrSimNodeProfile: "joulie.sim.node.profile", AttrSimFile: "joulie.sim.file", AttrSimOutcome: "joulie.sim.outcome",
 	AttrSimValueWritten: "joulie.sim.value.written", AttrSimValueEffective: "joulie.sim.value.effective",
+
+	AttrNetworkIODirection: "network.io.direction", AttrJoulieGPUIOPath: "joulie.hw.gpu.io.path",
+	AttrJoulieClockDomain: "joulie.hw.clock.domain", AttrJoulieGovernorPreset: "joulie.hw.governor.preset",
+	AttrJoulieGovernorNative: "joulie.hw.governor.native",
+
+	AttrCPUMode: "cpu.mode", AttrCPULogicalNumber: "cpu.logical_number",
+	AttrCalibrationKnob: "joulie.calibration.knob", AttrCalibrationClass: "joulie.calibration.class",
+	AttrCalibrationMemoryIntensity: "joulie.calibration.memory_intensity",
+
+	AttrSimRunID: "joulie.sim.run.id", AttrSimRunJobs: "joulie.sim.run.jobs",
+	AttrSimRunCompletedJobs: "joulie.sim.run.completed_jobs", AttrSimRunFailedJobs: "joulie.sim.run.failed_jobs",
+	AttrSimRunIncompleteJobs: "joulie.sim.run.incomplete_jobs",
+	AttrSimJobID:             "joulie.sim.job.id", AttrSimWorkloadID: "joulie.sim.workload.id",
+	AttrSimWorkloadType: "joulie.sim.workload.type", AttrSimPodRole: "joulie.sim.pod.role",
+	AttrSimGang: "joulie.sim.gang", AttrSimGPUIndices: "joulie.sim.gpu.indices",
+	AttrSimJobQueueWait: "joulie.sim.job.queue_wait", AttrSimJobDuration: "joulie.sim.job.duration",
+	AttrSimJobRunTime: "joulie.sim.job.run_time", AttrSimJobIdealRunTime: "joulie.sim.job.ideal_run_time",
+	AttrSimJobEnergy: "joulie.sim.job.energy", AttrSimJobOutcome: "joulie.sim.job.outcome", AttrSimJobState: "joulie.sim.job.state",
+	AttrSimWorkCPU: "joulie.sim.work.cpu", AttrSimWorkGPU: "joulie.sim.work.gpu",
+	AttrSimWorkCPURemaining: "joulie.sim.work.cpu_remaining", AttrSimWorkGPURemaining: "joulie.sim.work.gpu_remaining",
+	AttrSimWorkKind: "joulie.sim.work.kind", AttrSimStallReason: "joulie.sim.stall.reason", AttrSimStallAge: "joulie.sim.stall.age",
+	AttrJoulieNodePowerProfile: "joulie.node.power_profile", AttrJoulieNodeSchedulableClass: "joulie.node.schedulable_class",
+	AttrJoulieNodeClassSince: "joulie.node.class_since", AttrJoulieNodeTwinPowerSource: "joulie.nodetwin.power_source",
+	AttrJoulieNodeTwinControlBackend: "joulie.nodetwin.control.backend", AttrJoulieNodeTwinControlResult: "joulie.nodetwin.control.result",
+	AttrJoulieScenarioName: "joulie.scenario.name", AttrJoulieScenarioVariant: "joulie.scenario.variant",
+	AttrJoulieAssertionName: "joulie.assertion.name", AttrJoulieAssertionType: "joulie.assertion.type",
+	AttrJoulieAssertionPassed: "joulie.assertion.passed", AttrJoulieAssertionObserved: "joulie.assertion.observed",
+	AttrJoulieAssertionExpected: "joulie.assertion.expected", AttrJoulieAssertionSource: "joulie.assertion.source",
+	AttrTestSuiteName: "test.suite.name", AttrTestSuiteRunStatus: "test.suite.run.status",
+	AttrTestCaseName: "test.case.name", AttrTestCaseResultStatus: "test.case.result.status",
 }
 
-var frozenValues = map[string]string{
-	HwTypeCPU: "cpu", HwTypeMemory: "memory", HwTypeGPU: "gpu", HwIDHost: "host",
-	LimitTypeMax: "max", LimitTypeThrottled: "throttled",
-	LimitStateRequested: "requested", LimitStateEnforced: "enforced",
-	GPUTaskGeneral: "general",
-	SchemaURL:      "https://opentelemetry.io/schemas/1.44.0",
+// frozenValues pins every value constant: the constant, then its spelling.
+// Two constants may share a spelling, as hw.id host and the GPU I/O path
+// host do.
+var frozenValues = [][2]string{
+	{HwTypeCPU, "cpu"}, {HwTypeMemory, "memory"}, {HwTypeGPU, "gpu"},
+	{HwIDHost, "host"}, {LimitTypeMax, "max"}, {LimitTypeThrottled, "throttled"},
+	{LimitStateRequested, "requested"}, {LimitStateEnforced, "enforced"}, {GPUTaskGeneral, "general"},
+	{SchemaURL, "https://opentelemetry.io/schemas/1.44.0"}, {GPUIOPathPeer, "peer"}, {GPUIOPathHost, "host"},
+	{GPUIOPathNIC, "nic"}, {NetworkIODirectionReceive, "receive"}, {NetworkIODirectionTransmit, "transmit"},
+	{ErrorTypeEINVAL, "einval"}, {ErrorTypeEOPNOTSUPP, "eopnotsupp"}, {ErrorTypeEBUSY, "ebusy"}, {ErrorTypeENODATA, "enodata"},
+	{KnobCPUUtilization, "cpu.utilization"}, {KnobCPUFrequencyMax, "cpu.frequency.max"}, {KnobCPUPowerLimit, "cpu.power.limit"},
+	{KnobGPUUtilization, "gpu.utilization"}, {KnobGPUPowerLimit, "gpu.power.limit"}, {CPUModeIdle, "idle"},
+	{StallReasonGangIncomplete, "gang_incomplete"}, {StallReasonNoProgress, "no_progress"}, {StallReasonAllBlocked, "all_blocked"},
+	{JobOutcomeCompleted, "completed"}, {JobOutcomeFailed, "failed"}, {JobOutcomeIncomplete, "incomplete"},
+	{JobStatePending, "pending"}, {JobStateRunning, "running"}, {JobStateStalled, "stalled"},
+	{AssertionSourceObserved, "observed"}, {AssertionSourceExpected, "expected"}, {TestSuiteRunStatusSuccess, "success"},
+	{TestSuiteRunStatusFailure, "failure"}, {TestSuiteRunStatusAborted, "aborted"}, {TestSuiteRunStatusTimedOut, "timed_out"},
+	{TestCaseResultStatusPass, "pass"}, {TestCaseResultStatusFail, "fail"}, {ErrorTypePodDeleted, "pod_deleted"},
+	{ErrorTypePodFailed, "pod_failed"}, {ErrorTypeCreateRejected, "create_rejected"}, {ErrorTypePatchFailed, "patch_failed"},
+	{ErrorTypeAssertionFailed, "assertion_failed"}, {CaptureMetricPrefix, "joulie.capture."}, {SimclusterSummarySchema, "joulie.simcluster.summary/v1"},
 }
 
-// frozenEvents pins the simulator's node and hardware events.
+// frozenEvents pins every event: the simulator's node and hardware events,
+// a workload run's and the scenario runner's.
 var frozenEvents = []struct {
 	v        Event
 	name     string
@@ -80,6 +157,27 @@ var frozenEvents = []struct {
 	{EventSimSettingApplied, "joulie.sim.setting.applied", 9, []string{"hw.id", "hw.type", "joulie.sim.file", "joulie.sim.outcome", "joulie.sim.value.written", "joulie.sim.value.effective"}},
 	{EventSimWriteRejected, "joulie.sim.write.rejected", 13, []string{"hw.id", "hw.type", "joulie.sim.file", "joulie.sim.outcome", "joulie.sim.value.written", "joulie.sim.value.effective", "error.type"}},
 	{EventSimCapReset, "joulie.sim.cap.reset", 13, []string{"hw.id", "hw.type", "joulie.sim.file", "joulie.sim.outcome", "joulie.sim.value.written", "joulie.sim.value.effective"}},
+
+	{EventSimRunStarted, "joulie.sim.run.started", 9, []string{"joulie.sim.run.jobs"}},
+	{EventSimRunFinished, "joulie.sim.run.finished", 9, []string{"joulie.sim.run.jobs", "joulie.sim.run.completed_jobs", "joulie.sim.run.failed_jobs", "joulie.sim.run.incomplete_jobs"}},
+	{EventSimRunStalled, "joulie.sim.run.stalled", 13, []string{"joulie.sim.stall.reason", "joulie.sim.stall.age"}},
+	{EventSimRunResumed, "joulie.sim.run.resumed", 9, []string{"joulie.sim.stall.reason", "joulie.sim.stall.age"}},
+	{EventSimJobSubmitted, "joulie.sim.job.submitted", 9, withFrozenJob("joulie.sim.gang")},
+	{EventSimJobAdopted, "joulie.sim.job.adopted", 13, withFrozenJob()},
+	{EventSimJobScheduled, "joulie.sim.job.scheduled", 9, withFrozenJob("k8s.node.name", "joulie.node.power_profile",
+		"joulie.node.schedulable_class", "joulie.node.class_since", "joulie.sim.profile", "joulie.sim.job.queue_wait")},
+	{EventSimJobStarted, "joulie.sim.job.started", 9, withFrozenJob("k8s.node.name", "joulie.sim.gpu.indices")},
+	{EventSimJobStalled, "joulie.sim.job.stalled", 13, withFrozenJob("joulie.sim.stall.reason", "joulie.sim.stall.age")},
+	{EventSimJobResumed, "joulie.sim.job.resumed", 9, withFrozenJob("joulie.sim.stall.reason", "joulie.sim.stall.age")},
+	{EventSimJobCompleted, "joulie.sim.job.completed", 9, withFrozenJob("joulie.sim.job.duration", "joulie.sim.job.run_time",
+		"joulie.sim.job.ideal_run_time", "joulie.sim.job.energy", "joulie.sim.work.cpu", "joulie.sim.work.gpu")},
+	{EventSimJobFailed, "joulie.sim.job.failed", 17, withFrozenJob("error.type")},
+	{EventSimJobIncomplete, "joulie.sim.job.incomplete", 13, withFrozenJob("joulie.sim.work.cpu_remaining", "joulie.sim.work.gpu_remaining")},
+	{EventScenarioStarted, "joulie.scenario.started", 9, []string{"joulie.scenario.name", "joulie.scenario.variant"}},
+	{EventScenarioVariantStarted, "joulie.scenario.variant.started", 9, []string{"joulie.scenario.name", "joulie.scenario.variant"}},
+	{EventScenarioFinished, "joulie.scenario.finished", 9, []string{"joulie.scenario.name", "joulie.scenario.variant", "test.suite.run.status"}},
+	{EventScenarioAssertionEvaluated, "joulie.scenario.assertion.evaluated", 9, []string{"joulie.assertion.name", "joulie.assertion.type",
+		"joulie.assertion.passed", "joulie.assertion.observed", "joulie.assertion.expected", "error.type"}},
 }
 
 // semconvDefinitions is what the semantic conventions v1.44.0 define for the
@@ -182,6 +280,9 @@ func TestSV01NamesAreUniqueSortedAndFrozen(t *testing.T) {
 
 	t.Run("frozen metrics", func(t *testing.T) {
 		reg := indexMetrics()
+		if len(frozenMetrics) != len(reg) {
+			t.Errorf("%d frozen metrics, %d registered: pin every metric", len(frozenMetrics), len(reg))
+		}
 		for _, f := range frozenMetrics {
 			if f.v.Name != f.name || f.v.Unit != f.unit || f.v.Kind != f.kind || f.v.Value != f.value || f.v.Owner != f.owner {
 				t.Errorf("%s: got (%q, %q, %v, %v, %q), want (%q, %q, %v, %v, %q)", f.name,
@@ -190,8 +291,8 @@ func TestSV01NamesAreUniqueSortedAndFrozen(t *testing.T) {
 			if !reflect.DeepEqual(sortedCopy(f.v.Attributes), sortedCopy(f.attrs)) {
 				t.Errorf("%s: attributes %v, want %v", f.name, f.v.Attributes, f.attrs)
 			}
-			if f.v.Stability != StabilityDevelopment || f.v.Brief == "" {
-				t.Errorf("%s: stability %q, brief %q; want development and a brief", f.name, f.v.Stability, f.v.Brief)
+			if f.v.Brief == "" {
+				t.Errorf("%s has no brief", f.name)
 			}
 			got, ok := reg[f.name]
 			if !ok {
@@ -217,8 +318,8 @@ func TestSV01NamesAreUniqueSortedAndFrozen(t *testing.T) {
 				t.Errorf("attribute %q is not registered", got)
 			}
 		}
-		for got, want := range frozenValues {
-			if got != want {
+		for _, v := range frozenValues {
+			if got, want := v[0], v[1]; got != want {
 				t.Errorf("value constant %q, want %q", got, want)
 			}
 		}
@@ -228,6 +329,9 @@ func TestSV01NamesAreUniqueSortedAndFrozen(t *testing.T) {
 		reg := map[string]Event{}
 		for _, e := range Events() {
 			reg[e.Name] = e
+		}
+		if len(frozenEvents) != len(reg) {
+			t.Errorf("%d frozen events, %d registered: pin every event", len(frozenEvents), len(reg))
 		}
 		for _, f := range frozenEvents {
 			if f.v.Name != f.name || f.v.SeverityNumber != f.severity {

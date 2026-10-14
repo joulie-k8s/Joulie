@@ -57,7 +57,8 @@ Cases:
   C04                      agent.mode=emulated renders one Deployment per
                            node and no other agent; equals its golden
   C05                      each emulated agent: no host network or
-                           privileges, literal NODE_NAME, PATH, its hwemu
+                           privileges, no CAP_DAC_OVERRIDE, literal
+                           NODE_NAME, PATH, its hwemu
                            tree mounts, /dev/nvidiactl on NVIDIA only,
                            Recreate, labels and annotations
   C06                      agent.mode=none renders no agent
@@ -70,9 +71,12 @@ Cases:
                            are optional, so a bare install starts
   joulie-simulator emulate emulate.enabled with the smoke cluster spec; asserts
                            Recreate, root, the hostPath tree root, the emulate
-                           and OTEL_* env, the spec ConfigMap and the exporter
-                           endpoints, and that replicas=2 and a missing spec
-                           fail
+                           and OTEL_* env, the spec ConfigMap, the exporter
+                           endpoints and the workload run rules, and that
+                           replicas=2 and a missing spec fail
+  rbac.workloadRuns        the workload run rules follow emulate.enabled
+                           unless forced; extraEnv sets a trace path in
+                           emulate mode
   C08 packaged appVersion  packages both charts the way the release does and
                            asserts every image is tagged with the appVersion,
                            also under values/joulie.yaml and for emulated
@@ -577,7 +581,9 @@ render_fails emulated-dupname "${CHART}" '"x" is listed twice' \
 
 # --------------------------------------------------------------------------
 # C05: the contract of each emulated agent pod, on the C04 render: no host
-# network and no privileges, a literal NODE_NAME, the emulated tools first
+# network and no privileges, root without CAP_DAC_OVERRIDE (so a 0444 file
+# of the tree refuses its writes, as kernfs does), a literal NODE_NAME, the
+# emulated tools first
 # on PATH, its node's hwemu tree in place of the host's, /dev/nvidiactl on
 # the NVIDIA node only, Recreate, and the labels and annotations the
 # simcluster scripts select on.
@@ -596,6 +602,7 @@ for i in "${!EMU_NODES[@]}"; do
 	assert_doc emulated has Deployment "${d}" '^            privileged: false$' "not privileged"
 	assert_doc emulated has Deployment "${d}" '^            runAsUser: 0$' "runs as root"
 	assert_doc emulated has Deployment "${d}" '^            runAsGroup: 0$' "runs as root"
+	assert_doc emulated has Deployment "${d}" '^              drop: \["DAC_OVERRIDE"\]$' "drops CAP_DAC_OVERRIDE"
 	assert_doc emulated lacks Deployment "${d}" 'fieldPath: spec\.nodeName' "NODE_NAME from the pod's own node"
 	assert_env emulated "${d}" NODE_NAME "${n}"
 	case "$(env_of emulated "${d}" PATH)" in
@@ -721,6 +728,8 @@ if render simulator "${SIM_CHART}"; then
 	assert_env simulator "${SIM_DEPLOY}" SIM_EMULATE -
 	assert_doc simulator lacks Deployment "${SIM_DEPLOY}" '^ +- name: OTEL_' "OTEL_* outside emulate mode"
 	assert_env simulator "${SIM_DEPLOY}" SIM_WORKLOAD_TRACE_PATH /etc/joulie-sim-trace/trace.jsonl
+	assert_doc simulator lacks ClusterRole joulie-simulator 'resources: \["jobs"\]' "no workload run rules outside emulate mode"
+	assert_doc simulator lacks ClusterRole joulie-simulator 'verbs: \["patch", "deletecollection"\]' "no pod patch outside emulate mode"
 fi
 
 # --------------------------------------------------------------------------
@@ -768,6 +777,9 @@ if render simulator-emulate "${SIM_CHART}" "${EMULATE_ARGS[@]}"; then
 	assert_doc simulator-emulate has ServiceMonitor "${SIM_DEPLOY}" '^ +path: /exporters/kepler-0\.7/metrics$' "scrapes kepler-0.7"
 	assert_doc simulator-emulate has ServiceMonitor "${SIM_DEPLOY}" '^ +path: /exporters/dcgm-4\.8\.4/metrics$' "scrapes dcgm-4.8.4"
 	assert_doc simulator-emulate has ServiceMonitor "${SIM_DEPLOY}" '^ +path: /exporters/amd-dme-1\.5\.2/metrics$' "scrapes amd-dme-1.5.2"
+	assert_doc simulator-emulate has ClusterRole joulie-simulator 'resources: \["jobs"\]' "workload run rules in emulate mode"
+	assert_doc simulator-emulate has ClusterRole joulie-simulator 'verbs: \["patch", "deletecollection"\]' "pod patch in emulate mode"
+	assert_doc simulator-emulate has ClusterRole joulie-simulator 'resources: \["nodetwins"\]' "NodeTwin reads in emulate mode"
 	if [ "$(doc simulator-emulate ServiceMonitor "${SIM_DEPLOY}" | grep -cE '^ +honorLabels: false$')" != 3 ]; then
 		fail "ServiceMonitor/${SIM_DEPLOY}: want honorLabels: false on all three exporter endpoints"
 	fi
@@ -779,6 +791,23 @@ render_fails simulator-emulate-nospec "${SIM_CHART}" 'needs a cluster spec' \
 render_fails simulator-emulate-twospecs "${SIM_CHART}" 'not both' \
 	--set 'emulate.enabled=true' --set 'emulate.clusterSpecConfigMap=existing-spec' \
 	--set 'emulate.clusterSpec=kind: ClusterSpec'
+
+# --------------------------------------------------------------------------
+# rbac.workloadRuns: auto grants the v1 workload run rules with emulate mode,
+# false withholds them there, true grants them outside it, and an unquoted
+# boolean reads as its word. In emulate mode extraEnv still sets a trace path.
+# --------------------------------------------------------------------------
+case_start "joulie-simulator rbac.workloadRuns"
+if render simulator-runs-off "${SIM_CHART}" --set 'emulate.enabled=true' --set 'emulate.clusterSpecConfigMap=existing-spec' \
+	--set 'rbac.workloadRuns=false' --set 'extraEnv.SIM_WORKLOAD_TRACE_PATH=/etc/joulie-sim-trace/trace.jsonl'; then
+	assert_doc simulator-runs-off lacks ClusterRole joulie-simulator 'resources: \["jobs"\]' "no workload run rules with workloadRuns false"
+	assert_doc simulator-runs-off has ClusterRole joulie-simulator 'resources: \["pods", "nodes"\]' "the base rules"
+	assert_env simulator-runs-off "${SIM_DEPLOY}" SIM_WORKLOAD_TRACE_PATH /etc/joulie-sim-trace/trace.jsonl
+fi
+if render simulator-runs-on "${SIM_CHART}" --set 'rbac.workloadRuns=true'; then
+	assert_doc simulator-runs-on has ClusterRole joulie-simulator 'resources: \["jobs"\]' "workload run rules with workloadRuns true"
+fi
+render_fails simulator-runs-bad "${SIM_CHART}" 'rbac.workloadRuns is "maybe"' --set 'rbac.workloadRuns=maybe'
 
 # --------------------------------------------------------------------------
 # Emulate mode with a spec ConfigMap the user manages: the chart mounts it and

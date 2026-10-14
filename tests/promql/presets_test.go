@@ -236,12 +236,12 @@ func hw(hwType, hwID string) map[string]string {
 	return map[string]string{semconv.AttrHwType: hwType, semconv.AttrHwID: hwID}
 }
 
-// nodeData is the evidence E1 data set. Node a: CPU packages at 200 and
+// nodeData is the node power data set. Node a: CPU packages at 200 and
 // 150 W, the first reported by two producers; DRAM at 20 W, which is not
 // counted; a GPU with an energy counter at 400 W (its 395 W gauge is not
 // read) and a GPU with only a 300 W gauge from another producer: 1050 W.
-// Node b: a CPU at 100 W and a GPU gauge at 250 W that share hw.id "0"
-// (E2): 350 W. Host: counters at 1500 and 1450 W from two producers on a
+// Node b: a CPU at 100 W and a GPU gauge at 250 W that share hw.id "0",
+// which hw.type in the key keeps apart: 350 W. Host: counters at 1500 and 1450 W from two producers on a
 // (its gauge is not read), gauges alone at 700 and 650 W from two producers
 // on b; the host scope reads the larger, so a sum or an average of the
 // producers reads another value.
@@ -366,25 +366,44 @@ func dedupe(ss []series) []series {
 }
 
 // TestKeplerPresets evaluates both Kepler presets on the series the two
-// schemas export. Kepler 0.12: packages per RAPL zone path (multi-socket
-// 0.12 aggregates them into path aggregated-package), core and DRAM zones
-// that are not counted, and a GPU. Kepler 0.7: packages and platform per
-// mode, dynamic and idle, which are summed.
+// schemas export. Kepler 0.12 has, per zone, the RAPL counter joules_total
+// and the active and idle counters, which add up to the zone's energy:
+// node a has the package zone summed over its sockets (path
+// aggregated-package), core and DRAM zones that are not counted, and a GPU;
+// node b has one zone per die, each named after its RAPL name file,
+// package-<socket>-die-<die>, and psys and uncore zones that are not
+// counted. Kepler 0.7: packages and platform per mode, dynamic and idle,
+// which are summed.
 func TestKeplerPresets(t *testing.T) {
-	st := load(t, []series{
-		{"kepler_node_cpu_joules_total", map[string]string{"zone": "package", "path": "intel-rapl:0", "node_name": "a"}, "0+12000x10"},
-		{"kepler_node_cpu_joules_total", map[string]string{"zone": "package", "path": "intel-rapl:1", "node_name": "a"}, "0+9000x10"},
-		{"kepler_node_cpu_joules_total", map[string]string{"zone": "core", "path": "intel-rapl:0:0", "node_name": "a"}, "0+6000x10"},
-		{"kepler_node_cpu_joules_total", map[string]string{"zone": "dram", "path": "intel-rapl:0:1", "node_name": "a"}, "0+1200x10"},
-		{"kepler_node_gpu_joules_total", map[string]string{"gpu": "0", "gpu_uuid": "GPU-2", "gpu_name": "H100", "vendor": "nvidia", "node_name": "a"}, "0+24000x10"},
-		{"kepler_node_cpu_joules_total", map[string]string{"zone": "package", "path": "aggregated-package", "node_name": "b"}, "0+6000x10"},
-	})
+	k012 := func(node, zone, path, active, idle string) []series {
+		l := map[string]string{"zone": zone, "path": path, "node_name": node}
+		return []series{
+			{inputs.KeplerCPUActiveJoules, l, active},
+			{inputs.KeplerCPUIdleJoules, l, idle},
+		}
+	}
+	var ss []series
+	for _, zs := range [][]series{
+		k012("a", "package", "aggregated-package", "0+9000x10", "0+3000x10"),
+		k012("a", "core", "aggregated-core", "0+6000x10", "0+600x10"),
+		k012("a", "dram", "aggregated-dram", "0+1200x10", "0+600x10"),
+		k012("b", "package-0-die-0", "/host/sys/class/powercap/intel-rapl:0", "0+3000x10", "0+1500x10"),
+		k012("b", "package-0-die-1", "/host/sys/class/powercap/intel-rapl:1", "0+3000x10", "0+1500x10"),
+		k012("b", "package-1-die-0", "/host/sys/class/powercap/intel-rapl:2", "0+3000x10", "0+1500x10"),
+		k012("b", "package-1-die-1", "/host/sys/class/powercap/intel-rapl:3", "0+3000x10", "0+1500x10"),
+		k012("b", "psys", "/host/sys/class/powercap/intel-rapl:4", "0+30000x10", "0+3000x10"),
+		k012("b", "uncore", "aggregated-uncore", "0+600x10", "0+600x10"),
+	} {
+		ss = append(ss, zs...)
+	}
+	ss = append(ss, series{inputs.KeplerGPUJoules, map[string]string{"gpu": "0", "gpu_uuid": "GPU-2", "gpu_name": "H100", "vendor": "nvidia", "node_name": "a"}, "0+24000x10"})
+	st := load(t, ss)
 	q, _, err := inputs.NodePowerSpec{Preset: inputs.NodePowerPresetKepler}.Query()
 	if err != nil {
 		t.Fatal(err)
 	}
 	got, _ := evalByLabel(t, st, q)
-	assertValues(t, "kepler", got, map[string]float64{"a": 750, "b": 100})
+	assertValues(t, "kepler", got, map[string]float64{"a": 600, "b": 300})
 
 	legacy := func(name, pkg, mode string, values string) series {
 		return series{name, map[string]string{"package": pkg, "exported_instance": "a", "mode": mode, "source": "rapl-msr", "job": "kepler", "instance": "10.0.0.1:9102"}, values}
@@ -409,6 +428,61 @@ func TestKeplerPresets(t *testing.T) {
 	}
 	got, _ = evalByLabel(t, st, q)
 	assertValues(t, "kepler-legacy host", got, map[string]float64{"a": 750})
+}
+
+// TestKeplerPresetReadsAcrossACounterWrap: Kepler 0.12's
+// kepler_node_cpu_joules_total is the RAPL counter, which wraps at
+// max_energy_range_uj (262143 J here, a 61 uJ unit); the active and idle
+// counters accumulate Kepler's wrap-corrected increments. With a wrap inside
+// the window, rate() of the RAPL counter reads it as a reset and loses the
+// energy up to the wrap, while the preset reads the zone's 200 W.
+func TestKeplerPresetReadsAcrossACounterWrap(t *testing.T) {
+	l := map[string]string{"zone": "package", "path": "/host/sys/class/powercap/intel-rapl:0", "node_name": "a"}
+	st := load(t, []series{
+		// 12000 J a minute from 170000 J, wrapping at 262143 J between the
+		// samples at 7 and 8 minutes.
+		{inputs.KeplerCPUJoules, l, "170000 182000 194000 206000 218000 230000 242000 254000 3857 15857 27857"},
+		{inputs.KeplerCPUActiveJoules, l, "0+9000x10"},
+		{inputs.KeplerCPUIdleJoules, l, "0+3000x10"},
+	})
+	q, _, err := inputs.NodePowerSpec{Preset: inputs.NodePowerPresetKepler}.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := evalByLabel(t, st, q)
+	assertValues(t, "kepler across a wrap", got, map[string]float64{"a": 200})
+
+	raw := inputs.Query{GroupLabel: inputs.KeplerNodeLabel, PromQL: fmt.Sprintf(`sum by (%s) (rate(%s{%s="package"}[5m]))`, inputs.KeplerNodeLabel, inputs.KeplerCPUJoules, inputs.KeplerZoneLabel)}
+	got, _ = evalByLabel(t, st, raw)
+	if !(got["a"] < 190) {
+		t.Errorf("rate() of the RAPL counter reads %v W across the wrap, want well under 200 W (the loss this data set exercises)", got["a"])
+	}
+}
+
+// TestKeplerPackageZoneMatcher pins which Kepler 0.12 zone names the kepler
+// preset counts: the package zone and every die zone, nothing else. PromQL
+// anchors a regular expression at both ends.
+func TestKeplerPackageZoneMatcher(t *testing.T) {
+	zones := map[string]bool{
+		"package": true, "package-0-die-0": true, "package-1-die-3": true, "package-12-die-10": true,
+		"psys": false, "dram": false, "core": false, "uncore": false, "package-0": false, "package-0-die-": false,
+		"xpackage": false, "package-0-die-0-x": false,
+	}
+	var ss []series
+	for zone := range zones {
+		ss = append(ss, series{inputs.KeplerCPUActiveJoules, map[string]string{"zone": zone, "path": "p", "node_name": zone}, "0+6000x10"})
+	}
+	st := load(t, ss)
+	q, _, err := inputs.NodePowerSpec{Preset: inputs.NodePowerPresetKepler}.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := evalByLabel(t, st, q)
+	for zone, counted := range zones {
+		if _, ok := got[zone]; ok != counted {
+			t.Errorf("zone %q counted %t, want %t", zone, ok, counted)
+		}
+	}
 }
 
 // TestE3KeplerOrKeepsBothComponents: Kepler 0.7 gives a node's package and
@@ -440,7 +514,7 @@ func TestE3KeplerOrKeepsBothComponents(t *testing.T) {
 
 // TestCustomNodePowerQueries: a custom query with the node placeholder is
 // run for the node and every series it returns is summed (150 + 50, where
-// reading the first series gave 150, D12); without the placeholder the
+// reading the first series alone gave 150); without the placeholder the
 // query is summed by the node label, also when it ends in a comment.
 func TestCustomNodePowerQueries(t *testing.T) {
 	st := load(t, []series{
@@ -655,8 +729,8 @@ func TestForeignTargetInfoLeavesJoinsAlone(t *testing.T) {
 }
 
 // TestNodeInletJoinsOnlyUnlabelledSeries: two nodes reported under one
-// service.instance.id give one job and instance two target_info series
-// (E19). With promotion every inlet series carries its node, the query
+// service.instance.id give one job and instance two target_info series.
+// With promotion every inlet series carries its node, the query
 // never joins target_info and reads both nodes; without promotion it must
 // join, and fails rather than attributing a reading to either node.
 func TestNodeInletJoinsOnlyUnlabelledSeries(t *testing.T) {

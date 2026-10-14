@@ -6,7 +6,7 @@ This page reports results from the homogeneous H100 NVL cluster benchmark experi
 
 - [`experiments/03-homogeneous-h100-benchmark/`](https://github.com/joulie-k8s/Joulie/tree/main/experiments/03-homogeneous-h100-benchmark)
 
-> **Note (2026-10-09):** The results on this page, like the experiment's `REPORT.md` and `REPORT-standalone.md`, were produced with an older simulator model and have not been rerun. Runs made now read the hardware catalog embedded in the simulator, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Model changes]({{< relref "/docs/simulator/model-changes.md" >}}) lists each change and how far it moves the experiment's `configs/benchmark-debug.yaml`.
+> **Note (2026-10-09):** The results on this page, like the experiment's `REPORT.md` and `REPORT-standalone.md`, were produced with an older simulator model and have not been rerun. The simulator reads the hardware catalog embedded in it, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Simulator changes](https://github.com/joulie-k8s/Joulie/blob/main/simulator/CHANGES.md) lists each change and how far it moves the experiment's `configs/benchmark-debug.yaml`.
 
 ## Scope
 

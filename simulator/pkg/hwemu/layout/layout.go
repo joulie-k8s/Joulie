@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"regexp"
 	"strconv"
 )
 
@@ -40,9 +41,6 @@ const (
 	KindFile Kind = iota
 	KindDir
 	KindSymlink
-	// KindRejectingDir is a directory in place of an attribute that rejects
-	// writes, so os.WriteFile on it fails with EISDIR.
-	KindRejectingDir
 )
 
 // FileSpec is one entry of a rendered tree. Rel is relative to the node root;
@@ -80,6 +78,32 @@ const (
 // "devices/virtual/powercap/intel-rapl" (powercap.rst:34-35).
 func PowercapControlDir(ct string) string {
 	return path.Join(powercapDevicesDir, ct)
+}
+
+// raplPackageZoneName matches the name file of a RAPL package zone,
+// package-N, and of one of its dies, package-N-die-M
+// (intel_rapl_common.c, rapl_package_add).
+var raplPackageZoneName = regexp.MustCompile(`^package-([0-9]+)(?:-die-([0-9]+))?$`)
+
+// RAPLPackageZone reads the name file of a RAPL powercap zone: package-N
+// is CPU package N, with die -1, and package-N-die-M die M of it. ok is
+// false for any other name, such as psys, dram, core or uncore.
+func RAPLPackageZone(name string) (socket, die int, ok bool) {
+	m := raplPackageZoneName.FindStringSubmatch(name)
+	if m == nil {
+		return 0, 0, false
+	}
+	socket, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	die = -1
+	if m[2] != "" {
+		if die, err = strconv.Atoi(m[2]); err != nil {
+			return 0, 0, false
+		}
+	}
+	return socket, die, true
 }
 
 // PowercapZoneDir is the directory of the zone at idx under control type ct.
@@ -179,12 +203,6 @@ func GovernorTunablesDir(governor string) string {
 	return path.Join(CPUFreqDir(), governor)
 }
 
-// PolicyGovernorTunablesDir is the directory of a governor's tunables when
-// the driver keeps them per policy: "<PolicyDir>/<governor>".
-func PolicyGovernorTunablesDir(policy int, governor string) string {
-	return path.Join(PolicyDir(policy), governor)
-}
-
 // IntelPstateDir holds the global attributes of intel_pstate in active and
 // passive mode, such as status and no_turbo.
 func IntelPstateDir() string {
@@ -250,7 +268,7 @@ type ToolsManifest struct {
 // ToolEntry is one tool of a ToolsManifest. Requires lists, in order, the
 // files the real tool needs before it runs; fakesmi checks them under
 // Env.RootFS (package smi). A tool without requirements marshals without the
-// key, as before requirements existed (L03, L06).
+// key (L03, L06).
 type ToolEntry struct {
 	Variant  string            `json:"variant"`
 	Requires []ToolRequirement `json:"requires,omitempty"`

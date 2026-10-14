@@ -169,10 +169,8 @@ func fixtureSample(t testing.TB, st hwemu.State, res telemetry.Resource, at time
 	t.Helper()
 	snap := emulate.NodeSnapshot{
 		Name: fixtureNode, StartTime: fixtureStart,
-		Host: emulate.HostReading{Measured: st.Host.Measured, PowerW: st.Host.PowerW, EnergyJ: st.Host.EnergyJ, OtherW: st.Host.OtherW, InletC: 24},
-	}
-	for _, c := range st.Components {
-		snap.Components = append(snap.Components, emulate.ComponentReading(c))
+		Host:       emulate.HostReading{Measured: st.Host.Measured, PowerW: st.Host.PowerW, EnergyJ: st.Host.EnergyJ, OtherW: st.Host.OtherW, InletC: 24},
+		Components: append([]emulate.ComponentReading(nil), st.Components...),
 	}
 	md, dropped := telemetry.NodeRequest(snap, "calib-test", at, res)
 	if dropped != 0 || len(md.ResourceMetrics) != 1 {
@@ -184,7 +182,7 @@ func fixtureSample(t testing.TB, st hwemu.State, res telemetry.Resource, at time
 // stateCPUUtil is the busy share a collector reads on the node: the mean
 // Utilization of its CPU packages in State. It is the load setpoint under
 // performance, and more under a governor that runs the work slower, which
-// counts it in cycles (design D10), as /proc/stat counts busy time.
+// counts it in cycles, as /proc/stat counts busy time.
 func stateCPUUtil(st hwemu.State) float64 {
 	sum, n := 0.0, 0
 	for _, c := range st.Components {
@@ -341,6 +339,16 @@ func csvFromLines(t testing.TB, lines [][]byte) []byte {
 	return buf.Bytes()
 }
 
+// epycAnalytic sets governor on the EPYC profile and makes its CPU the
+// analytic model of the profile's facts, which a fit can give back, in
+// place of the catalog curve the profile runs.
+func epycAnalytic(governor string) func(*hwemu.Profile) {
+	return func(p *hwemu.Profile) {
+		p.CPUFreq.Governor.V = governor
+		p.Physics.CPU.Model = "analytic"
+	}
+}
+
 // The EPYC performance sweep serves several tests, so it is generated once.
 var (
 	epycOnce  sync.Once
@@ -349,7 +357,9 @@ var (
 )
 
 // epycPerformanceSweep is amd-epyc-2s-energy-only under the performance
-// governor: scaling_max_freq at 2.4 GHz (boost to 3.7 GHz), 1.9 and 1.5 GHz,
+// governor, with the analytic model of its own facts in place of its
+// catalog curve, so a fit has a ground truth to give back (epycAnalytic):
+// scaling_max_freq at 2.4 GHz (boost to 3.7 GHz), 1.9 and 1.5 GHz,
 // and at each the CPU load at 0, 0.2, ..., 1, 22 s per setpoint, sampled
 // every 2 s, utilization per logical CPU.
 func epycPerformanceSweep(t *testing.T) sweep {
@@ -366,7 +376,7 @@ func epycPerformanceSweep(t *testing.T) sweep {
 			}()
 			epycSweep = generateSweep(rt, sweepSpec{
 				profile: "amd-epyc-2s-energy-only",
-				mutate:  func(p *hwemu.Profile) { p.CPUFreq.Governor.V = "performance" },
+				mutate:  epycAnalytic("performance"),
 				period:  2 * time.Second,
 				perCPU:  true,
 				steps: grid(semconv.KnobCPUFrequencyMax, []float64{2.4e9, 1.9e9, 1.5e9},

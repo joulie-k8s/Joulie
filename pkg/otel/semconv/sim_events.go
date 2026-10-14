@@ -37,6 +37,7 @@ const (
 	ErrorTypeEINVAL     = "einval"
 	ErrorTypeEOPNOTSUPP = "eopnotsupp"
 	ErrorTypeEBUSY      = "ebusy"
+	ErrorTypeENODATA    = "enodata"
 )
 
 func init() {

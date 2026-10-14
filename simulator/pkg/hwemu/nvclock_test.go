@@ -234,8 +234,9 @@ func TestNV05MemoryLockHoldsTheMemoryClockOnlyWhereItExists(t *testing.T) {
 }
 
 // NV09: -q -d SUPPORTED_CLOCKS on a rendered builtin NVIDIA node lists the
-// profile's memory clocks, each with the profile's graphics clocks, in
-// descending order.
+// profile's memory clocks, each with the profile's graphics clocks up to
+// that memory clock's ceiling (supported.smMaxByMem), all of them under a
+// memory clock without one, in descending order.
 func TestNV09SupportedClocksListsTheProfileClocks(t *testing.T) {
 	t.Parallel()
 	for _, name := range nvclockBuiltinNames() {
@@ -278,10 +279,23 @@ func TestNV09SupportedClocksListsTheProfileClocks(t *testing.T) {
 			if !slices.Equal(mem, desc(c.Supported.MemMHz.V)) {
 				t.Errorf("memory clocks %v, want %v", mem, desc(c.Supported.MemMHz.V))
 			}
+			ceil := map[int64]int64{}
+			for _, x := range c.Supported.SMMaxByMem {
+				ceil[x.MemMHz.V] = x.SMMaxMHz.V
+			}
 			for _, m := range mem {
-				if !slices.Equal(graphics[m], desc(c.Supported.SMMHz.V)) {
-					t.Errorf("graphics clocks under %d MHz: %v, want %v", m, graphics[m], desc(c.Supported.SMMHz.V))
+				var want []int64
+				for _, g := range desc(c.Supported.SMMHz.V) {
+					if top, ok := ceil[m]; !ok || g <= top {
+						want = append(want, g)
+					}
 				}
+				if !slices.Equal(graphics[m], want) {
+					t.Errorf("graphics clocks under %d MHz: %v, want %v", m, graphics[m], want)
+				}
+			}
+			if name == "nvidia-l40s-4gpu" && (len(graphics[405]) != 30 || graphics[405][0] != 645 || len(graphics[9001]) != len(c.Supported.SMMHz.V)) {
+				t.Errorf("L40S lists %d graphics clocks from %v at 405 MHz memory and %d at 9001 MHz, want 30 from 645 and every one", len(graphics[405]), graphics[405][:1], len(graphics[9001]))
 			}
 			if got := nvclockQuery(t, tree, 1, "clocks.max.sm,clocks.max.mem"); got != fmt.Sprintf("%d, %d", c.SM.MaxMHz.V, c.Mem.MaxMHz.V) {
 				t.Errorf("clocks.max.sm, clocks.max.mem = %q, want the profile's %d, %d", got, c.SM.MaxMHz.V, c.Mem.MaxMHz.V)
@@ -537,5 +551,41 @@ func TestNVClockValidation(t *testing.T) {
 	a.GPUs.Clocks = nvclockFacts(true)
 	if err := a.Validate(); err == nil || !strings.Contains(err.Error(), "gpus.clocks is NVIDIA only") {
 		t.Errorf("clocks on an AMD profile: err = %v, want NVIDIA only", err)
+	}
+}
+
+// A lower memory clock offers only the lower graphics clocks
+// (supported.smMaxByMem): on the L40S under load, a memory lock at 405 MHz
+// holds the graphics clock at 645 MHz and one at 810 MHz at 1290 MHz, as
+// clocks.sm and the clock limit State reports show, and the board draws
+// less; without the lock the GPU runs at its sustained maximum again.
+func TestNV13MemoryLockHoldsTheGraphicsClockAtItsCeiling(t *testing.T) {
+	t.Parallel()
+	p := ensureBuiltin(t, "nvidia-l40s-4gpu")
+	tree := renderTestTree(t, p)
+	n := nodeNewNode(t, p, tree)
+	n.SetLoad(Load{GPUUtil: []float64{1}})
+	nodeStep(t, n, time.Second)
+	free := n.State().GPUs[1].PowerW
+	for _, c := range []struct {
+		lock string
+		want int64
+	}{{"405,405", 645}, {"810,810", 1290}, {"", p.GPUs.Clocks.SM.SustainedMaxMHz.V}} {
+		if c.lock == "" {
+			nvclockMustSMI(t, tree, "-i", "1", "-rmc")
+		} else {
+			nvclockMustSMI(t, tree, "-i", "1", "-lmc", c.lock)
+		}
+		nodeStep(t, n, 10*time.Second)
+		if got := nvclockQuery(t, tree, 1, "clocks.sm"); got != strconv.FormatInt(c.want, 10) {
+			t.Errorf("-lmc %q: clocks.sm %s, want %d", c.lock, got, c.want)
+		}
+		g := stateComponent(t, n.State(), "gpu1")
+		if got := g.ClockLimitHz[semconv.ClockDomainGraphics]; got != c.want*1e6 {
+			t.Errorf("-lmc %q: graphics clock limit %d Hz, want %d MHz", c.lock, got, c.want)
+		}
+		if w := n.State().GPUs[1].PowerW; c.lock == "405,405" && w >= free {
+			t.Errorf("-lmc 405: %.1f W, want below the %.1f W of the unlocked GPU", w, free)
+		}
 	}
 }

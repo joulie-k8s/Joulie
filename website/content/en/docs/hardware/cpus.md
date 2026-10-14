@@ -35,8 +35,7 @@ Joulie is designed around standard Linux CPU power/frequency controls:
 - AMD platforms: `amd-pstate`/CPPC semantics
 - Intel platforms: `intel_pstate` semantics
 
-In simulator mode, CPU dynamics include utilization-dependent power curves, cap effects, and DVFS settling behavior.
-They now also include:
+In simulator mode, CPU dynamics include utilization-dependent power curves, cap effects, DVFS settling behavior, and:
 
 - CPU cap application settling (`cpuCapApplyTauMs`)
 - exported telemetry averaging (`cpuTelemetryWindowMs`)
@@ -63,6 +62,7 @@ Rules:
 - A word is used only when `scaling_available_governors` (or `energy_performance_available_preferences`) lists it. `balanced` falls back to `ondemand` and `efficiency` to `schedutil`, and the result is then `equivalent` instead of `applied`; a preset with no usable word is left out of the node's `NodeHardware` `status.cpu.governor.presets`. One exception: under `performance`, amd-pstate-epp lists `performance` alone as an available preference, so there the agent takes the driver's full set (`default`, `performance`, `balance_performance`, `balance_power`, `power`, which it lists under `powersave`), and a preset's result does not change with the governor the node runs.
 - Under `performance` no EPP is written: the kernel rejects a non-zero preference there.
 - Boost is written only when the spec names it: the inverted `intel_pstate/no_turbo` on `intel_pstate` and `intel_cpufreq`, each policy's `boost` on `amd-pstate` and `amd-pstate-epp`, the global `cpufreq/boost` elsewhere, or each policy's `boost` where there is no global file. A node with none of them cannot take a `boost` word.
+- On `acpi-cpufreq`, where the global `cpufreq/boost` and each `policyN/boost` both exist, every policy file reads 0 at boot while `cpufreq/boost` reads 1 and the CPUs boost: a policy file shows the core's per-policy flag, not the boost in effect. A policy write equal to what the file shows changes nothing, and a global write of a new state sets every policy. The agent writes the global file there.
 - On drivers without an EPP file, `balanced` and `efficiency` differ only by `schedutil` against `conservative`.
 - Joulie never writes the driver mode, `scaling_min_freq`, governor tunables, idle states, the uncore clock, EPB or HSMP. `scaling_max_freq` belongs to the DVFS fallback, which works under any governor.
 - A GPU node gets no CPU governor unless the controller manager's `CPU_GOVERNOR_ON_GPU_NODES` is `true`, the rule the CPU cap follows.

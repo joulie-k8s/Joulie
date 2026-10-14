@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"path/filepath"
 	"slices"
 	"sort"
 	"time"
@@ -81,7 +80,7 @@ func (e *Emulator) stepMember(m *member, now time.Time, l hwemu.Load) {
 	st := m.runner.State()
 	if err == nil {
 		m.accrue(st, e.logf)
-		if werr := ledgerWrite(m.tmpDir, ledgerTmpPrefix, m.ledgerPath, m.ledger); werr != nil {
+		if werr := m.ledgerFile.write(m.ledger); werr != nil {
 			err = fmt.Errorf("persist the ledger: %w", werr)
 		}
 	}
@@ -146,11 +145,10 @@ func (m *member) reading(st hwemu.State) NodeSnapshot {
 	}
 	r.Components = make([]ComponentReading, len(st.Components))
 	for i, c := range st.Components {
-		cr := ComponentReading(c)
-		cr.EnergyJ = m.ledger.ComponentsJ[c.ID]
+		c.EnergyJ = m.ledger.ComponentsJ[c.ID]
 		io := m.ledger.GPUIO[c.ID]
-		cr.PeerRxBytes, cr.PeerTxBytes = io.PeerRxBytes, io.PeerTxBytes
-		r.Components[i] = cr
+		c.PeerRxBytes, c.PeerTxBytes = io.PeerRxBytes, io.PeerTxBytes
+		r.Components[i] = c
 	}
 	r.PreviousGovernors = readingPreviousGovernors(m.last, r.Components)
 	return r
@@ -216,8 +214,7 @@ func (e *Emulator) tickFacility(now time.Time, nodes []NodeSnapshot, fac Facilit
 		e.facLedger.RacksJ[r] += d
 	}
 	var err error
-	path := filepath.Join(e.root, FacilityLedgerFile)
-	if werr := ledgerWrite(e.root, facilityLedgerTmpPrefix, path, e.facLedger); werr != nil {
+	if werr := e.facFile.write(e.facLedger); werr != nil {
 		err = fmt.Errorf("emulate: persist the facility ledger: %w", werr)
 		if err.Error() != e.facErr {
 			e.logf("%v; the facility energies stay at their last written values", err)
@@ -355,18 +352,6 @@ func emulatorClamp(v float64) float64 {
 // transfers included, so a member's runner gets every change of load.
 func emulatorLoadEqual(a, b hwemu.Load) bool {
 	return a.CPUClass == b.CPUClass && a.GPUClass == b.GPUClass && a.MemoryIntensity == b.MemoryIntensity &&
-		emulatorFloatsEqual(a.CPUUtil, b.CPUUtil) && emulatorFloatsEqual(a.GPUUtil, b.GPUUtil) &&
+		slices.Equal(a.CPUUtil, b.CPUUtil) && slices.Equal(a.GPUUtil, b.GPUUtil) &&
 		slices.Equal(a.PeerTransfers, b.PeerTransfers)
-}
-
-func emulatorFloatsEqual(a, b []float64) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

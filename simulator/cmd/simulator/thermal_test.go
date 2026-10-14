@@ -344,7 +344,7 @@ func TestThermalThresholdAloneFromEnvKeepsFormerPartner(t *testing.T) {
 // the base profile, which is 0 unless the environment sets the pair. This is
 // the sharp edge that remains, documented in hardware-modeling.md 5.5 and 6.6
 // and in the configuration reference: a start alone fails validation and
-// LoadClasses drops every class of the file, and a full alone throttles
+// ParseClasses drops every class of the file, and a full alone throttles
 // linearly from 0 C, already at idle. A fix in simulator/pkg/hw or in
 // thermalThrottleFraction changes this test and those docs together.
 func TestThermalThresholdAloneInNodeClass(t *testing.T) {

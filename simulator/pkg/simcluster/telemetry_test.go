@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,7 +24,9 @@ import (
 	"github.com/matbun/joulie/pkg/controller/inputs"
 	"github.com/matbun/joulie/pkg/otel/promname"
 	"github.com/matbun/joulie/pkg/otel/semconv"
+	"github.com/matbun/joulie/simulator/pkg/clusterspec"
 	"github.com/matbun/joulie/simulator/pkg/compat"
+	"github.com/matbun/joulie/simulator/pkg/emulate"
 	"github.com/matbun/joulie/simulator/pkg/hwemu"
 )
 
@@ -54,7 +57,7 @@ func testTelemetry(t *testing.T, m Mode, sc Scope, tm Timing) TelemetryParts {
 
 // testScopes returns the scopes mode supports.
 func testScopes(m Mode) []Scope {
-	if telKepler(m) {
+	if !m.hostPower() {
 		return []Scope{ScopeComponents}
 	}
 	return Scopes()
@@ -138,12 +141,17 @@ func TestT01TelemetryGoldens(t *testing.T) {
 // a pinned Kepler name.
 func TestT02QueryNamesComeFromPromname(t *testing.T) {
 	for _, m := range Modes() {
-		s := telStrategy(m)
-		metrics := map[string]bool{promname.TargetInfo: true, keplerCPUJoules: true, keplerGPUJoules: true, kepler07PackageJoules: true, kepler07PlatformJoules: true}
+		s := m.Strategy()
+		metrics := map[string]bool{promname.TargetInfo: true}
+		for _, k := range []string{inputs.KeplerCPUJoules, inputs.KeplerCPUActiveJoules, inputs.KeplerCPUIdleJoules, inputs.KeplerCPUWatts,
+			inputs.KeplerGPUJoules, inputs.KeplerLegacyPackageJoules, inputs.KeplerLegacyPlatformJoules} {
+			metrics[k] = true
+		}
 		for _, sm := range semconv.Metrics() {
 			metrics[s.MetricName(sm)] = true
 		}
-		labels := map[string]bool{promname.LabelJob: true, promname.LabelInstance: true, keplerNodeLabel: true, keplerZoneLabel: true, kepler07NodeLabel: true}
+		labels := map[string]bool{promname.LabelJob: true, promname.LabelInstance: true,
+			inputs.KeplerNodeLabel: true, inputs.KeplerZoneLabel: true, inputs.KeplerLegacyNodeLabel: true}
 		for _, a := range semconv.Attributes() {
 			labels[s.LabelName(a)] = true
 		}
@@ -190,7 +198,7 @@ func TestT02QueryNamesComeFromPromname(t *testing.T) {
 // testPromQLKeywords are the PromQL words the generated queries use that
 // name no metric.
 var testPromQLKeywords = map[string]bool{
-	"sum": true, "max": true, "min": true, "avg": true, "count": true, "rate": true,
+	"sum": true, "max": true, "min": true, "avg": true, "count": true, "rate": true, "label_replace": true,
 	"by": true, "without": true, "on": true, "ignoring": true, "group_left": true, "group_right": true,
 	"or": true, "and": true, "unless": true,
 }
@@ -202,13 +210,19 @@ type testNames struct {
 }
 
 // testPromQLNames lists the metric names, label names and range windows of
-// a query, in order. It reads the PromQL subset the harness writes:
-// selectors with or without a quoted name, label lists after by, on and
-// group_left, ranges, and the operators between them.
+// a query, in order. It reads the PromQL subset the harness and Joulie's
+// presets write: selectors with or without a quoted name, label lists after
+// by, on and group_left, ranges, label_replace, whose string arguments name
+// a label of the query's own and are skipped, and the operators between
+// them.
 func testPromQLNames(q string) (testNames, error) {
 	var out testNames
 	braces, inList, listNext := 0, false, false
 	afterOp := false
+	// depth counts open parentheses; replaceAt holds the depth of each open
+	// label_replace call.
+	depth, replaceNext := 0, false
+	var replaceAt []int
 	i := 0
 	next := func() byte {
 		j := i
@@ -250,6 +264,8 @@ func testPromQLNames(q string) (testNames, error) {
 				out.labels = append(out.labels, s)
 			case braces > 0:
 				out.metrics = append(out.metrics, s)
+			case len(replaceAt) > 0 && depth == replaceAt[len(replaceAt)-1]:
+				// An argument of label_replace.
 			default:
 				return out, fmt.Errorf("string %q outside a selector or label list", s)
 			}
@@ -267,6 +283,7 @@ func testPromQLNames(q string) (testNames, error) {
 				out.labels = append(out.labels, word)
 			case testPromQLKeywords[word]:
 				listNext = testPromQLListWords[word]
+				replaceNext = word == "label_replace"
 			default:
 				out.metrics = append(out.metrics, word)
 			}
@@ -282,9 +299,18 @@ func testPromQLNames(q string) (testNames, error) {
 				inList = true
 			}
 			listNext = false
+			depth++
+			if replaceNext {
+				replaceAt = append(replaceAt, depth)
+			}
+			replaceNext = false
 			i++
 		case c == ')':
 			inList = false
+			if len(replaceAt) > 0 && replaceAt[len(replaceAt)-1] == depth {
+				replaceAt = replaceAt[:len(replaceAt)-1]
+			}
+			depth--
 			i++
 		case c == '{':
 			braces++
@@ -382,30 +408,82 @@ func TestT05PromnameRows(t *testing.T) {
 	}
 }
 
-// The pinned Kepler names are the ones the simulator's compatibility
-// exporters serve: the truth fixture, observed twice 10 s apart, is served
-// by each Kepler mode's exporter, and every metric and label of the mode's
-// queries is in that exposition (exported_instance is Kepler 0.7's instance
-// before the scrape renames it). The Nodes served are those whose Kepler
-// truth is not zero, and Kepler 0.7 serves as many platform series per Node
-// as TruthKepler07PlatformSeries says.
-func TestKeplerNamesMatchTheCompatExporters(t *testing.T) {
-	from := testSnapshot(t)
-	to := testSnapshot(t)
-	to.Seq++
-	to.Time = from.Time.Add(10 * time.Second)
-	for i := range to.Nodes {
-		n := &to.Nodes[i]
-		n.Host.EnergyJ += 10 * n.Host.PowerW
-		for j := range n.Components {
-			n.Components[j].EnergyJ += 10 * n.Components[j].PowerW
-		}
+// testEmulatedSnapshots ticks a real emulator over one Node of each named
+// profile, at half load, and returns the snapshots of two ticks 10 s apart,
+// each node's rendered tree under NodeSnapshot.Root as the compatibility
+// exporters read it. Every package has one core, so the trees stay small;
+// the RAPL zones follow the sockets and dies all the same.
+func testEmulatedSnapshots(t *testing.T, profiles map[string]string) (from, to *emulate.Snapshot) {
+	t.Helper()
+	builtins, err := hwemu.BuiltinProfiles()
+	if err != nil {
+		t.Fatal(err)
 	}
+	names := make([]string, 0, len(profiles))
+	for n := range profiles {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var members []clusterspec.Member
+	for _, name := range names {
+		builtin := builtins[profiles[name]]
+		if builtin == nil {
+			t.Fatalf("no builtin profile %s", profiles[name])
+		}
+		p := *builtin
+		p.CPU.CoresPerSocket.V, p.CPU.ThreadsPerCore.V = 1, 1
+		p.Node.Capacity.CPU.V = int64(p.CPU.Sockets.V)
+		cpu, gpu := 0.5, 0.5
+		members = append(members, clusterspec.Member{Name: name, Pool: profiles[name], Profile: &p, BaseLoad: clusterspec.Load{CPUUtil: &cpu, GPUUtil: &gpu}})
+	}
+	start := time.Unix(1_700_000_000, 0)
+	e, err := emulate.New(emulate.Config{
+		Root: filepath.Join(t.TempDir(), "hwemu"), Cluster: "simcluster-test", Members: members,
+		Start: start, Substep: 10 * time.Second, Logf: func(string, ...any) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.Close() })
+	tick := func(i int) *emulate.Snapshot {
+		snap, err := e.Tick(start.Add(time.Duration(i)*10*time.Second), nil, true, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return snap
+	}
+	return tick(1), tick(2)
+}
+
+// The Kepler names the harness and Joulie's Kepler presets read are the
+// ones the simulator's compatibility exporters serve: two ticks of a real
+// emulator over a CPU-only Node, an NVIDIA Node, an AMD GPU Node, a
+// multi-die Node and a VM are served by each Kepler mode's exporter, with
+// kepler-0.12's GPU series on as the harness turns them on, and every
+// metric and label of the mode's queries is in that exposition
+// (exported_instance is Kepler 0.7's instance before the scrape renames
+// it). The Nodes served are those whose Kepler truth is not zero, and
+// Kepler 0.7 serves as many platform series per Node as
+// TruthKepler07PlatformSeries says.
+func TestKeplerNamesMatchTheCompatExporters(t *testing.T) {
+	from, to := testEmulatedSnapshots(t, map[string]string{
+		"intel-0":    "intel-xeon-2s-rapl",
+		"nvl-0":      "nvidia-h100-nvl-8gpu",
+		"mi300x-0":   "amd-instinct-mi300x-8gpu",
+		"multidie-0": "intel-xeon-2s-multidie",
+		"vm-0":       "vm-no-powercap",
+	})
 	truths := NodeTruths(to)
 	tm := testTimings(t)[0]
 	for _, m := range []Mode{ModeKepler, ModeKeplerLegacy} {
-		name := telExporter(m)
-		set, err := compat.NewSet([]string{name}, compat.Options{})
+		name := telExporters(m)[0]
+		var sim struct {
+			ExtraEnv map[string]string `json:"extraEnv"`
+		}
+		if err := yaml.Unmarshal(testTelemetry(t, m, ScopeComponents, tm).SimValues, &sim); err != nil {
+			t.Fatal(err)
+		}
+		set, err := compat.NewSet([]string{name}, compat.Options{Kepler012GPU: sim.ExtraEnv[telKepler012GPUEnv] == "true"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -441,7 +519,7 @@ func TestKeplerNamesMatchTheCompatExporters(t *testing.T) {
 				}
 			}
 			for _, l := range names.labels {
-				if l == kepler07NodeLabel {
+				if l == inputs.KeplerLegacyNodeLabel {
 					l = promname.LabelInstance
 				}
 				if !labels[l] {
@@ -451,7 +529,7 @@ func TestKeplerNamesMatchTheCompatExporters(t *testing.T) {
 		}
 
 		node := parts.Checks.NodeLabel
-		if node == kepler07NodeLabel {
+		if node == inputs.KeplerLegacyNodeLabel {
 			node = promname.LabelInstance
 		}
 		platform, served := map[string]float64{}, map[string]bool{}
@@ -465,7 +543,7 @@ func TestKeplerNamesMatchTheCompatExporters(t *testing.T) {
 			if want, err := EvalTruth(TruthPackagesNVIDIAGPUs, truths[n]); err != nil || want == 0 {
 				t.Errorf("mode %s: %s serves Node %s, whose Kepler truth is %g (%v)", m, name, n, want, err)
 			}
-			if s.name == kepler07PlatformJoules {
+			if s.name == inputs.KeplerLegacyPlatformJoules {
 				platform[n]++
 			}
 		}
@@ -483,7 +561,7 @@ func TestKeplerNamesMatchTheCompatExporters(t *testing.T) {
 				t.Fatal(err)
 			}
 			if platform[n] != want {
-				t.Errorf("%s serves %g %s series for Node %s, truth %s is %g", name, platform[n], kepler07PlatformJoules, n, TruthKepler07PlatformSeries, want)
+				t.Errorf("%s serves %g %s series for Node %s, truth %s is %g", name, platform[n], inputs.KeplerLegacyPlatformJoules, n, TruthKepler07PlatformSeries, want)
 			}
 		}
 	}
@@ -634,9 +712,10 @@ func testVersion(t *testing.T, key string) string {
 }
 
 // T08: joulie-values maps the timing onto the variables Joulie reads,
-// RECONCILE_INTERVAL and SPEC_READ_TIMEOUT, turns the facility metrics on,
-// reads node power from Prometheus without a custom query, and sets no
-// harness name (CONTROLLER_*, AGENT_*).
+// RECONCILE_INTERVAL and SPEC_READ_TIMEOUT, turns the facility metrics on
+// where the mode carries them and leaves the chart default (off) where it
+// does not, reads node power from Prometheus with the mode's preset and
+// without a custom query, and sets no harness name (CONTROLLER_*, AGENT_*).
 func TestT08JoulieValuesUseRealVariables(t *testing.T) {
 	for _, tm := range testTimings(t) {
 		for _, m := range Modes() {
@@ -657,6 +736,12 @@ func TestT08JoulieValuesUseRealVariables(t *testing.T) {
 				want := map[string]string{
 					"RECONCILE_INTERVAL": telDuration(tm.ControllerReconcile), "ENABLE_FACILITY_METRICS": "true", "NODE_POWER_SOURCE": "prometheus",
 					"FACILITY_POLL_INTERVAL": telDuration(tm.FacilityPoll), "PROMETHEUS_RATE_WINDOW": telDuration(tm.RateWindow),
+				}
+				if !m.Facility() {
+					want["ENABLE_FACILITY_METRICS"], want["FACILITY_POLL_INTERVAL"] = "", ""
+				}
+				if p := m.InputPreset(); p != inputs.NodePowerPresetOTel {
+					want["NODE_POWER_PRESET"] = string(p)
 				}
 				for k, w := range want {
 					if cm[k] != w {
@@ -684,7 +769,7 @@ func TestT08JoulieValuesUseRealVariables(t *testing.T) {
 // The scopes a mode supports, and what each check compares with.
 func TestTelemetryChecksPerModeAndScope(t *testing.T) {
 	tm := testTimings(t)[0]
-	for _, m := range []Mode{ModeKepler, ModeKeplerLegacy} {
+	for _, m := range []Mode{ModeKepler, ModeKeplerLegacy, ModeOTelBridge} {
 		if _, err := Telemetry(m, ScopeHost, tm); err == nil {
 			t.Errorf("mode %s accepts scope host", m)
 		}
@@ -699,6 +784,7 @@ func TestTelemetryChecksPerModeAndScope(t *testing.T) {
 		ModeOTelLabelsUnpromoted: {"k8s_node_name", "", []string{"otel-components-target-info", "otel-host-target-info"}},
 		ModeOTelUTF8:             {"k8s.node.name", TruthPackagesGPUs, []string{"otel-components-labels", "otel-components-target-info", "otel-host-labels", "otel-host-target-info"}},
 		ModeOTelCollector:        {"k8s_node_name", TruthPackagesGPUs, []string{"otel-components-labels", "otel-components-target-info", "otel-host-labels", "otel-host-target-info"}},
+		ModeOTelBridge:           {"k8s_node_name", TruthPackagesGPUs, []string{"otel-components-labels", "otel-components-target-info"}},
 		ModeKepler:               {"node_name", TruthPackagesNVIDIAGPUs, []string{"kepler-0.12-components"}},
 		ModeKeplerLegacy:         {"exported_instance", TruthPackagesNVIDIAGPUs, []string{"kepler-0.7-components", "kepler-0.7-platform-series", "kepler-0.7-platform-sum"}},
 	} {
@@ -716,7 +802,7 @@ func TestTelemetryChecksPerModeAndScope(t *testing.T) {
 		if set.NodeLabel != w.label || set.JoulieTruth != w.joulie || !reflect.DeepEqual(ids, w.ids) {
 			t.Errorf("mode %s: checks %+v, want label %s, Joulie truth %q, ids %v", m, set, w.label, w.joulie, w.ids)
 		}
-		if !telKepler(m) {
+		if m.hostPower() {
 			host := testTelemetry(t, m, ScopeHost, tm).Checks
 			if host.Checks[0].Truth != TruthHost || (m != ModeOTelLabelsUnpromoted && host.JoulieTruth != TruthHost) {
 				t.Errorf("mode %s scope host: Joulie truth %q, first check %+v; want host first", m, host.JoulieTruth, host.Checks[0])
@@ -868,5 +954,155 @@ func TestTelDuration(t *testing.T) {
 	}
 	if !regexp.MustCompile(`^\d+(ms|s|m|h)$`).MatchString(telDuration(telOutOfOrderWindow)) {
 		t.Errorf("out-of-order window %s", telDuration(telOutOfOrderWindow))
+	}
+}
+
+// The mode's strategy and preset are what its parts configure, and
+// ModeForPreset returns the mode a preset needs: its Kepler mode for a
+// Kepler preset, the default mode for any other.
+func TestModeStrategyAndPreset(t *testing.T) {
+	tm := testTimings(t)[0]
+	for _, m := range Modes() {
+		c := testPromConfig(t, testTelemetry(t, m, ScopeComponents, tm))
+		if c.OTLP.TranslationStrategy != string(m.Strategy()) {
+			t.Errorf("mode %s: Prometheus translates with %s, Strategy says %s", m, c.OTLP.TranslationStrategy, m.Strategy())
+		}
+		want := m
+		if !m.kepler() {
+			want = ModeOTel
+		}
+		if got := ModeForPreset(string(m.InputPreset())); got != want {
+			t.Errorf("ModeForPreset(%s), the preset of mode %s, = %s, want %s", m.InputPreset(), m, got, want)
+		}
+	}
+	for _, preset := range []string{"", string(inputs.NodePowerPresetOTel), string(inputs.NodePowerPresetCustom), "bogus"} {
+		if got := ModeForPreset(preset); got != ModeOTel {
+			t.Errorf("ModeForPreset(%q) = %s, want %s", preset, got, ModeOTel)
+		}
+	}
+}
+
+// testBridgeExample is the bridge the otel-bridge mode runs.
+var testBridgeExample = filepath.Join(testRepo, "examples", "11-otel-collector-bridge", "collector.yaml")
+
+// T09: the otel-bridge Collector reads examples/11-otel-collector-bridge's
+// collector.yaml and then the generated file, which replaces only its
+// scrape jobs: the same jobs in the same order, each keeping the series the
+// example keeps, pointed at the simulator's exporter of its format. The
+// example pushes to the harness Prometheus, and the simulator serves every
+// exporter the jobs read.
+func TestT09BridgeConfigFollowsTheExample(t *testing.T) {
+	b, err := os.ReadFile(testBridgeExample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var example struct {
+		Receivers struct {
+			Prometheus struct {
+				Config struct {
+					ScrapeConfigs []struct {
+						JobName              string        `yaml:"job_name"`
+						MetricRelabelConfigs []promRelabel `yaml:"metric_relabel_configs"`
+					} `yaml:"scrape_configs"`
+				} `yaml:"config"`
+			} `yaml:"prometheus"`
+		} `yaml:"receivers"`
+		Exporters map[string]struct {
+			MetricsEndpoint string `yaml:"metrics_endpoint"`
+		} `yaml:"exporters"`
+	}
+	if err := goyaml.Unmarshal(b, &example); err != nil {
+		t.Fatal(err)
+	}
+	jobs := example.Receivers.Prometheus.Config.ScrapeConfigs
+	if len(jobs) != len(telBridgeJobs) {
+		t.Fatalf("the example has %d scrape jobs, the harness %d", len(jobs), len(telBridgeJobs))
+	}
+	for i, j := range telBridgeJobs {
+		if jobs[i].JobName != j.name || !reflect.DeepEqual(jobs[i].MetricRelabelConfigs, []promRelabel{j.keep}) {
+			t.Errorf("scrape job %d: the example has %s keeping %+v, the harness %s keeping %+v", i, jobs[i].JobName, jobs[i].MetricRelabelConfigs, j.name, j.keep)
+		}
+	}
+	endpoints := 0
+	for name, e := range example.Exporters {
+		endpoints++
+		if e.MetricsEndpoint != telPrometheusOTLP {
+			t.Errorf("the example's exporter %s pushes to %s, want the harness Prometheus %s", name, e.MetricsEndpoint, telPrometheusOTLP)
+		}
+	}
+	if endpoints != 1 {
+		t.Errorf("the example has %d exporters, want 1", endpoints)
+	}
+
+	for _, tm := range testTimings(t) {
+		parts := testTelemetry(t, ModeOTelBridge, ScopeComponents, tm)
+		var override struct {
+			Receivers  map[string]any `json:"receivers"`
+			Extensions map[string]any `json:"extensions"`
+			Service    map[string]any `json:"service"`
+		}
+		if err := yaml.UnmarshalStrict(parts.OtelcolConfig, &override); err != nil {
+			t.Errorf("timing %s: the generated file sets more than the scrape jobs and the health check: %v", tm.Name, err)
+		}
+		if len(override.Receivers) != 1 || len(override.Service) != 1 || override.Service["pipelines"] != nil {
+			t.Errorf("timing %s: the generated file sets receivers %v and service %v, want the prometheus receiver and the service's extensions only, the example's pipelines kept", tm.Name, override.Receivers, override.Service)
+		}
+		var sim struct {
+			Otel struct {
+				MetricsEndpoint string `json:"metricsEndpoint"`
+			} `json:"otel"`
+			Emulate struct {
+				Exporters []string `json:"exporters"`
+			} `json:"emulate"`
+		}
+		if err := yaml.Unmarshal(parts.SimValues, &sim); err != nil {
+			t.Fatal(err)
+		}
+		if sim.Otel.MetricsEndpoint != "" || !reflect.DeepEqual(sim.Emulate.Exporters, []string{compat.Kepler012, compat.DCGM484, compat.AMDDME152}) {
+			t.Errorf("timing %s: simulator pushes to %q and serves %v, want no push and the three bridge formats", tm.Name, sim.Otel.MetricsEndpoint, sim.Emulate.Exporters)
+		}
+		known := map[string]bool{}
+		for _, n := range compat.Names() {
+			known[n] = true
+		}
+		for _, j := range telBridgeJobs {
+			if !known[j.exporter] {
+				t.Errorf("job %s reads %s, which the simulator does not serve", j.name, j.exporter)
+			}
+		}
+	}
+}
+
+// T10: with docker and the pinned contrib Collector image present, the
+// Collector validates the example's collector.yaml merged with the
+// generated file of each timing. Skipped otherwise.
+func TestT10ContribCollectorAcceptsTheBridge(t *testing.T) {
+	image := testVersion(t, "OTELCOL_CONTRIB_IMAGE")
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not on PATH")
+	}
+	if err := exec.Command("docker", "image", "inspect", image).Run(); err != nil {
+		t.Skipf("image %s is not present (docker pull %s)", image, image)
+	}
+	example, err := os.ReadFile(testBridgeExample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tm := range testTimings(t) {
+		dir := t.TempDir()
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		parts := testTelemetry(t, ModeOTelBridge, ScopeComponents, tm)
+		for name, b := range map[string][]byte{"collector.yaml": example, "config.yaml": parts.OtelcolConfig} {
+			if err := os.WriteFile(filepath.Join(dir, name), b, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		out, err := exec.Command("docker", "run", "--rm", "-v", dir+":/w:ro", image,
+			"validate", "--config=/w/collector.yaml", "--config=/w/config.yaml").CombinedOutput()
+		if err != nil {
+			t.Errorf("timing %s: %s validate: %v\n%s", tm.Name, image, err, out)
+		}
 	}
 }

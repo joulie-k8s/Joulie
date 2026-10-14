@@ -39,8 +39,13 @@ const (
 	mPrometheusFile  = mManifestsDir + "/prometheus.yaml"
 	mOtelcolFile     = mManifestsDir + "/otelcol.yaml"
 	mSchedulerConfig = mManifestsDir + "/scheduler-config.yaml"
-	mDaggerFile      = "ci/src/joulie_ci/__init__.py"
-	mWorkflowFile    = ".github/workflows/integration-tests.yml"
+	// The scheduler configuration of SIMCLUSTER_EXTENDER=service and the
+	// Joulie values deploy.sh adds with it.
+	mSchedulerConfigService = mManifestsDir + "/scheduler-config-service.yaml"
+	mExtenderServiceValues  = "values/simcluster-extender-service.yaml"
+	mOtelcolBridgeFile      = mManifestsDir + "/otelcol-bridge.yaml"
+	mDaggerFile             = "ci/src/joulie_ci/__init__.py"
+	mWorkflowFile           = ".github/workflows/integration-tests.yml"
 )
 
 // The names the scripts, the generated telemetry configuration and the
@@ -65,7 +70,7 @@ const (
 	mK3sSchedulerConfig = "/etc/rancher/k3s/scheduler-config.yaml"
 )
 
-// mPrometheusArgs are the flags of section 1.4 of the harness plan: the OTLP
+// mPrometheusArgs are the flags the harness Prometheus needs: the OTLP
 // receiver, POST /-/reload for a regenerated configuration, and a retention
 // that covers a nightly run.
 var mPrometheusArgs = []string{"--web.enable-otlp-receiver", "--web.enable-lifecycle", "--storage.tsdb.retention.time=12h"}
@@ -520,7 +525,8 @@ func mPythonDef(t *testing.T, src []byte, name string) ([]string, []byte) {
 // stage-fast.yaml are the KWOK release assets byte for byte, under a
 // directory named for KWOK_VERSION, and that nothing else sits beside them.
 // Harness changes to the KWOK stages go in scripts/simcluster/manifests/
-// stage-*.yaml, which up.sh applies after the vendored files (X13).
+// stage-*.yaml, which up.sh applies after the vendored files, so a Stage of
+// the same name replaces the vendored one.
 func TestM01VendoredKWOKMatchesVersions(t *testing.T) {
 	v := mVersions(t)
 	dir := path.Join(mManifestsDir, "kwok-"+mVersion(t, v, "KWOK_VERSION"))
@@ -585,6 +591,23 @@ func TestM02KWOKImageTagIsKWOKVersion(t *testing.T) {
 	if !controller {
 		t.Errorf("%s runs no %s image; images: %v", file, mKWOKImage, images)
 	}
+	// images.sh imports KWOK_IMAGE, so the cluster never pulls the image
+	// kwok.yaml runs.
+	if want := mVersion(t, v, "KWOK_IMAGE"); !mContainsString(images, want) {
+		t.Errorf("KWOK_IMAGE %s is not the image %s runs (%v)", want, file, images)
+	}
+	if d := mVersion(t, v, "KWOK_DIGEST"); !strings.HasPrefix(d, "sha256:") || len(d) != len("sha256:")+64 {
+		t.Errorf("KWOK_DIGEST %q is not a sha256 digest", d)
+	}
+}
+
+func mContainsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // TestM03K3sImageMatchesDagger checks that the harness and the Dagger
@@ -666,7 +689,7 @@ func TestM04DaggerReadsTheSharedSchedulerConfig(t *testing.T) {
 
 // TestM05PrometheusManifest checks prometheus.yaml: the monitoring
 // namespace; Prometheus by the PROMETHEUS_IMAGE tag with the OTLP receiver
-// and the other section 1.4 flags, its configuration from the generated
+// and the other mPrometheusArgs, its configuration from the generated
 // ConfigMap and its TSDB on an emptyDir; readiness on /-/ready; the Service
 // prometheus-operated:9090 that the Joulie chart's PROMETHEUS_ADDRESS
 // names; and read access for service discovery.
@@ -825,36 +848,138 @@ func TestM07WorkflowPathsListTheSchedulerConfig(t *testing.T) {
 	}
 }
 
-// TestM08SchedulerConfigIsIgnorable checks that every extender in the shared
-// scheduler configuration is ignorable. The extender listens on a host port
-// and rolls out with Recreate (D17), so for a moment no extender answers;
-// with ignorable false, kube-scheduler fails every pod in that window
-// instead of scheduling without it.
+// TestM08SchedulerConfigIsIgnorable checks that every extender in the
+// scheduler configurations is ignorable: the shared one, whose extender
+// listens on a host port and rolls out with Recreate (D17), so for a moment
+// no extender answers, and the one of SIMCLUSTER_EXTENDER=service, whose
+// extender rolls over between pods. With ignorable false, kube-scheduler
+// fails every pod in that window instead of scheduling without it.
 func TestM08SchedulerConfigIsIgnorable(t *testing.T) {
-	b := mRead(t, mSchedulerConfig)
+	for _, file := range []string{mSchedulerConfig, mSchedulerConfigService} {
+		cfg := mSchedulerConfiguration(t, file)
+		if len(cfg.Extenders) == 0 {
+			t.Fatalf("%s registers no extender", file)
+		}
+		for _, e := range cfg.Extenders {
+			if e.Ignorable == nil || !*e.Ignorable {
+				t.Errorf("%s: extender %s is not ignorable", file, e.URLPrefix)
+			}
+		}
+	}
+}
+
+// mSchedulerConfigDoc is the part of a KubeSchedulerConfiguration the tests
+// read.
+type mSchedulerConfigDoc struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Extenders  []struct {
+		URLPrefix string `json:"urlPrefix"`
+		Ignorable *bool  `json:"ignorable"`
+	} `json:"extenders"`
+}
+
+// mSchedulerConfiguration reads a scheduler configuration, which contains
+// ignorable: true literally so a grep finds it, and checks its kind.
+func mSchedulerConfiguration(t *testing.T, file string) mSchedulerConfigDoc {
+	t.Helper()
+	b := mRead(t, file)
 	if !bytes.Contains(b, []byte("ignorable: true")) {
-		t.Errorf("%s does not contain ignorable: true", mSchedulerConfig)
+		t.Errorf("%s does not contain ignorable: true", file)
 	}
-	var cfg struct {
-		APIVersion string `json:"apiVersion"`
-		Kind       string `json:"kind"`
-		Extenders  []struct {
-			URLPrefix string `json:"urlPrefix"`
-			Ignorable *bool  `json:"ignorable"`
-		} `json:"extenders"`
-	}
+	var cfg mSchedulerConfigDoc
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
-		t.Fatalf("%s: %v", mSchedulerConfig, err)
+		t.Fatalf("%s: %v", file, err)
 	}
 	if cfg.APIVersion != "kubescheduler.config.k8s.io/v1" || cfg.Kind != "KubeSchedulerConfiguration" {
-		t.Errorf("%s: apiVersion %q kind %q, want kubescheduler.config.k8s.io/v1 KubeSchedulerConfiguration", mSchedulerConfig, cfg.APIVersion, cfg.Kind)
+		t.Errorf("%s: apiVersion %q kind %q, want kubescheduler.config.k8s.io/v1 KubeSchedulerConfiguration", file, cfg.APIVersion, cfg.Kind)
 	}
-	if len(cfg.Extenders) == 0 {
-		t.Fatalf("%s registers no extender", mSchedulerConfig)
-	}
-	for _, e := range cfg.Extenders {
-		if e.Ignorable == nil || !*e.Ignorable {
-			t.Errorf("%s: extender %s is not ignorable", mSchedulerConfig, e.URLPrefix)
+	return cfg
+}
+
+// TestM09OtelcolBridgeManifest checks otelcol-bridge.yaml: one replica of
+// the OTELCOL_CONTRIB_IMAGE tag in the monitoring namespace, replaced with
+// Recreate on the infra Node, reading the example's collector.yaml and then
+// the generated config.yaml from ConfigMap otelcol-bridge-config, ready
+// once its health check answers. No Service and no Namespace: nothing
+// connects to the bridge, and deleting the file when leaving the mode must
+// leave Prometheus in place.
+func TestM09OtelcolBridgeManifest(t *testing.T) {
+	m := mDecodeTyped(t, mOtelcolBridgeFile)
+	for _, d := range m.Docs {
+		if d.Kind != "Deployment" {
+			t.Errorf("%s: %s; the file holds the bridge Deployment only", m.File, d)
 		}
+	}
+	d := m.deployment(t, "otelcol-bridge")
+	at := m.File + ": Deployment " + d.Name
+	if d.Spec.Replicas == nil || *d.Spec.Replicas != 1 || d.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+		t.Errorf("%s: replicas %v strategy %q, want 1 and Recreate: every replica scrapes every exporter", at, d.Spec.Replicas, d.Spec.Strategy.Type)
+	}
+	pod := d.Spec.Template.Spec
+	if got := pod.NodeSelector; len(got) != 1 || got[mInfraLabel] != "true" {
+		t.Errorf("%s: nodeSelector %v, want only %s: \"true\"", at, got, mInfraLabel)
+	}
+	if len(pod.Containers) != 1 {
+		t.Fatalf("%s: %d containers, want 1", at, len(pod.Containers))
+	}
+	c := &pod.Containers[0]
+	if want := mVersion(t, mVersions(t), "OTELCOL_CONTRIB_IMAGE"); c.Image != want || c.ImagePullPolicy != corev1.PullIfNotPresent {
+		t.Errorf("%s: image %q pull policy %q, want %q from %s and IfNotPresent", at, c.Image, c.ImagePullPolicy, want, mVersionsFile)
+	}
+	volume := ""
+	for _, v := range pod.Volumes {
+		if v.ConfigMap != nil && v.ConfigMap.Name == "otelcol-bridge-config" {
+			volume = v.Name
+		}
+	}
+	if volume == "" {
+		t.Fatalf("%s: no volume from ConfigMap otelcol-bridge-config", at)
+	}
+	dir := mMountPath(t, at, c, volume)
+	if want := []string{"--config=" + path.Join(dir, "collector.yaml"), "--config=" + path.Join(dir, mOtelcolFileName)}; fmt.Sprint(c.Args) != fmt.Sprint(want) {
+		t.Errorf("%s: args %v, want %v: the example first, then the generated file", at, c.Args, want)
+	}
+	if p := c.ReadinessProbe; p == nil || p.HTTPGet == nil {
+		t.Errorf("%s: readiness probe %+v, want an HTTP check of the health_check extension", at, p)
+	} else if port, ok := mPort(c, p.HTTPGet.Port); !ok || port != 13133 {
+		t.Errorf("%s: readiness probe on %s, want container port 13133", at, p.HTTPGet.Port.String())
+	}
+}
+
+// TestM10ExtenderServiceVariant checks SIMCLUSTER_EXTENDER=service: its
+// values take the extender off the host network and give its Service a
+// fixed ClusterIP inside k3s' default service CIDR, 10.43.0.0/16, and the
+// scheduler configuration of the variant calls that address on the
+// extender's port, the chart's schedulerExtender.port.
+func TestM10ExtenderServiceVariant(t *testing.T) {
+	var values struct {
+		SchedulerExtender struct {
+			HostNetwork *bool  `json:"hostNetwork"`
+			ClusterIP   string `json:"clusterIP"`
+		} `json:"schedulerExtender"`
+	}
+	if err := yaml.UnmarshalStrict(mRead(t, mExtenderServiceValues), &values); err != nil {
+		t.Fatalf("%s: %v", mExtenderServiceValues, err)
+	}
+	var chart struct {
+		SchedulerExtender struct {
+			Port int `json:"port"`
+		} `json:"schedulerExtender"`
+	}
+	if err := yaml.Unmarshal(mRead(t, "charts/joulie/values.yaml"), &chart); err != nil {
+		t.Fatal(err)
+	}
+	ext := values.SchedulerExtender
+	if ext.HostNetwork == nil || *ext.HostNetwork {
+		t.Errorf("%s: schedulerExtender.hostNetwork %v, want false", mExtenderServiceValues, ext.HostNetwork)
+	}
+	if !strings.HasPrefix(ext.ClusterIP, "10.43.") {
+		t.Errorf("%s: schedulerExtender.clusterIP %q is not in k3s' service CIDR 10.43.0.0/16", mExtenderServiceValues, ext.ClusterIP)
+	}
+	cfg := mSchedulerConfiguration(t, mSchedulerConfigService)
+	want := fmt.Sprintf("http://%s:%d", ext.ClusterIP, chart.SchedulerExtender.Port)
+	if len(cfg.Extenders) != 1 || cfg.Extenders[0].URLPrefix != want {
+		t.Errorf("%s: extenders %+v, want one at %s", mSchedulerConfigService, cfg.Extenders, want)
 	}
 }

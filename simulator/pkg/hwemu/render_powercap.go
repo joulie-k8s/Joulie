@@ -98,12 +98,14 @@ func renderZoneName(format string, args ...int) string {
 // renderZone writes one zone and its children. Each zone has name (R),
 // enabled (A when a constraint accepts writes, else R; 0644 either way),
 // energy_uj (S, 0400) and max_energy_range_uj (R). Each constraint i has
-// constraint_i_name (R), constraint_i_power_limit_uw (A, or D when the
-// constraint rejects writes), constraint_i_time_window_us (A, or R 0644 when
-// the constraint rejects writes) and constraint_i_max_power_uw (R). No
-// constraint_i_min_power_uw is written: RAPL has no get_min_power op
-// (intel_rapl_common.c:479-486), so the kernel creates none
-// (powercap_sys.c:313).
+// constraint_i_name (R), constraint_i_power_limit_uw and
+// constraint_i_time_window_us (A, 0644) and constraint_i_max_power_uw (R).
+// A constraint that rejects writes, locked or disabled, reads its value as
+// any other, and the Node refuses every write to it with ENODATA, as the
+// powercap store does when the RAPL op fails (powercap_sys.c,
+// store_constraint_*). No constraint_i_min_power_uw is written: RAPL has
+// no get_min_power op (intel_rapl_common.c:479-486), so the kernel creates
+// none (powercap_sys.c:313).
 func renderZone(b *renderBuilder, ct string, idx []int, z ZoneSpec, name string, o RenderOptions) error {
 	dir := renderSys(layout.PowercapZoneDir(ct, idx...))
 	link, target := layout.PowercapClassLink(ct, idx...)
@@ -134,19 +136,12 @@ func renderZone(b *renderBuilder, ct string, idx []int, z ZoneSpec, name string,
 	)
 	for i, c := range z.Constraints {
 		prefix := fmt.Sprintf("constraint_%d_", i)
-		rejects := c.RejectWrites.V != ""
 		entries = append(entries, renderEntry{name: prefix + "name", content: c.Name + "\n", owner: layout.OwnerRender, mode: 0o444})
-		if rejects {
-			entries = append(entries, renderEntry{name: prefix + "power_limit_uw", rejecting: true})
-		} else if c.PowerLimitUW.Src != "" {
+		if c.PowerLimitUW.Src != "" || c.RejectWrites.V != "" {
 			entries = append(entries, renderEntry{name: prefix + "power_limit_uw", content: renderUint(c.PowerLimitUW.V), owner: layout.OwnerAgent, mode: 0o644})
 		}
 		if c.TimeWindowUS.Src != "" {
-			owner := layout.OwnerAgent
-			if rejects {
-				owner = layout.OwnerRender
-			}
-			entries = append(entries, renderEntry{name: prefix + "time_window_us", content: renderUint(c.TimeWindowUS.V), owner: owner, mode: 0o644})
+			entries = append(entries, renderEntry{name: prefix + "time_window_us", content: renderUint(c.TimeWindowUS.V), owner: layout.OwnerAgent, mode: 0o644})
 		}
 		if c.MaxPowerUW.Src != "" {
 			entries = append(entries, renderEntry{name: prefix + "max_power_uw", content: renderUint(c.MaxPowerUW.V), owner: layout.OwnerRender, mode: 0o444})
@@ -166,9 +161,6 @@ func renderZone(b *renderBuilder, ct string, idx []int, z ZoneSpec, name string,
 		for i := range entries {
 			if entries[i].name != n {
 				continue
-			}
-			if entries[i].rejecting {
-				return fmt.Errorf("%s/%s rejects writes and cannot take extraFiles content", key, n)
 			}
 			entries[i].content = z.ExtraFiles[n]
 			found = true

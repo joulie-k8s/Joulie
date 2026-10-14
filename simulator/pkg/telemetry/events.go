@@ -118,10 +118,13 @@ func NodeMismatch(node, errorType, profile, nodeProfile string, at time.Time) Ev
 
 // logsRequest encodes records as one LogsData: one resource per node, in
 // the order nodes first appear, plus the simulator's resource for records
-// with no node. observed is the time of emission.
+// with no node. observed is the time of emission. Each record is
+// otlpjson.EventRecord of its event, and each resource
+// otlpjson.NewLogsData's.
 func logsRequest(recs []EventRecord, cluster string, observed time.Time, r Resource) otlpjson.LogsData {
 	d := otlpjson.LogsData{ResourceLogs: []otlpjson.ResourceLogs{}}
 	index := map[string]int{}
+	scope := otlpjson.Scope{Name: ScopeName, Version: r.ServiceVersion}
 	for _, rec := range recs {
 		i, ok := index[rec.Node]
 		if !ok {
@@ -131,30 +134,10 @@ func logsRequest(recs []EventRecord, cluster string, observed time.Time, r Resou
 			}
 			i = len(d.ResourceLogs)
 			index[rec.Node] = i
-			d.ResourceLogs = append(d.ResourceLogs, otlpjson.ResourceLogs{
-				Resource: res,
-				ScopeLogs: []otlpjson.ScopeLogs{{
-					Scope:      otlpjson.Scope{Name: ScopeName, Version: r.ServiceVersion},
-					LogRecords: []otlpjson.LogRecord{},
-					SchemaURL:  semconv.SchemaURL,
-				}},
-				SchemaURL: semconv.SchemaURL,
-			})
-		}
-		lr := otlpjson.LogRecord{
-			TimeUnixNano:         metricsUnixNano(rec.Time),
-			ObservedTimeUnixNano: metricsUnixNano(observed),
-			SeverityNumber:       rec.Event.SeverityNumber,
-			SeverityText:         rec.Event.SeverityText,
-			Attributes:           rec.Attributes,
-			EventName:            rec.Event.Name,
-		}
-		if rec.Body != "" {
-			body := rec.Body
-			lr.Body = &otlpjson.AnyValue{String: &body}
+			d.ResourceLogs = append(d.ResourceLogs, otlpjson.NewLogsData(res, scope).ResourceLogs[0])
 		}
 		sl := &d.ResourceLogs[i].ScopeLogs[0]
-		sl.LogRecords = append(sl.LogRecords, lr)
+		sl.LogRecords = append(sl.LogRecords, otlpjson.EventRecord(rec.Event, rec.Time, observed, rec.Body, rec.Attributes...))
 	}
 	return d
 }

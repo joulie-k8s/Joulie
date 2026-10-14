@@ -1,6 +1,7 @@
 package emulate
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/matbun/joulie/simulator/pkg/hwemu"
 )
 
 // ledgerSchemaVersion is the schemaVersion of both ledger files.
@@ -26,7 +29,7 @@ const (
 // exports, the energies in J and the GPU bytes. They only grow: each tick
 // adds the increase of the node's own counters since the last tick, so a new
 // Node, whose counters restart at 0, continues them instead of resetting
-// them (DR-32). StartTime is when the ledger was created, the
+// them. StartTime is when the ledger was created, the
 // startTimeUnixNano of every counter it holds. ComponentsJ and GPUIO are
 // keyed by hw.id. A ledger written before GPUIO existed reads as one whose
 // GPUs moved nothing yet, so the field needs no new schemaVersion.
@@ -155,50 +158,105 @@ func ledgerRead(path string, v any) (bool, error) {
 	return true, nil
 }
 
-// ledgerWrite replaces path with v as JSON through a temp file in tmpDir,
-// which must be on the same file system. A reader sees the old ledger or the
-// new one, never a partial write. There is no fsync: the ledger has to
-// survive a restart of the simulator, not of the machine. An error does not
-// name the temp file, whose name is random, so a failure that repeats every
-// tick reads the same and is logged once.
-func ledgerWrite(tmpDir, prefix, path string, v any) error {
+// ledgerInPlaceMax is the largest ledger written in place: one pwrite of at
+// most this many bytes at offset 0 lies in the first page of the file, which
+// the kernel copies whole, so the ledger lands whole or not at all, also
+// when the simulator is killed during the write.
+const ledgerInPlaceMax = 2048
+
+// ledgerFile is a ledger file kept open between ticks and rewritten in
+// place: the JSON and a newline at offset 0, padded with spaces to the
+// length the file had, so no byte of a longer ledger before it stays
+// behind. A ledger longer than ledgerInPlaceMax replaces the file by temp
+// file and rename instead (hwemu.WriteFileAtomic, a temp file in tmpDir
+// named prefix and a random suffix). Only New reads ledgers, under the root
+// lock, so no reader sees a write in progress; a simulator restart reads
+// the last whole one. An error names the ledger, never a temp file, so a
+// failure that repeats every tick reads the same and is logged once.
+type ledgerFile struct {
+	path, tmpDir, prefix string
+
+	f    *os.File
+	fi   os.FileInfo // of f, to tell the file still is the ledger
+	size int64
+}
+
+// ledgerWriteAt writes b at offset 0 of f. A variable so a test can fail a
+// write.
+var ledgerWriteAt = func(f *os.File, b []byte) error {
+	_, err := f.WriteAt(b, 0)
+	return err
+}
+
+// write writes v as JSON, after which the file holds v whole.
+func (l *ledgerFile) write(v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(tmpDir, prefix)
-	if err != nil {
-		return err
+	data = append(data, '\n')
+	if l.f != nil {
+		// A ledger removed or replaced since it was opened is opened
+		// again, so the write never lands in a file the path lost.
+		if fi, err := os.Lstat(l.path); err != nil || !os.SameFile(fi, l.fi) {
+			l.close()
+		}
 	}
-	name := f.Name()
-	_, werr := f.Write(append(data, '\n'))
-	if err := errors.Join(werr, f.Close()); err != nil {
-		_ = os.Remove(name)
-		return ledgerTempErr("write a temp file for", path, err)
+	if l.f == nil {
+		if err := l.open(); err != nil {
+			return err
+		}
 	}
-	if err := os.Chmod(name, 0o644); err != nil {
-		_ = os.Remove(name)
-		return ledgerTempErr("chmod a temp file for", path, err)
+	if max(int64(len(data)), l.size) > ledgerInPlaceMax {
+		l.close()
+		return hwemu.WriteFileAtomic(l.tmpDir, l.prefix, l.path, data, 0o644)
 	}
-	if err := os.Rename(name, path); err != nil {
-		_ = os.Remove(name)
-		return ledgerTempErr("rename a temp file to", path, err)
+	if pad := l.size - int64(len(data)); pad > 0 {
+		data = append(data, bytes.Repeat([]byte{' '}, int(pad))...)
 	}
+	if err := ledgerWriteAt(l.f, data); err != nil {
+		l.close()
+		return fmt.Errorf("write %s: %w", l.path, ledgerErrno(err))
+	}
+	l.size = int64(len(data))
 	return nil
 }
 
-// ledgerTempErr is err of an operation on a temp file for path, with the
-// temp file's name left out.
-func ledgerTempErr(op, path string, err error) error {
-	var le *os.LinkError
-	var pe *fs.PathError
-	switch {
-	case errors.As(err, &le):
-		err = le.Err
-	case errors.As(err, &pe):
-		err = pe.Err
+// open opens the ledger for writing in place, creating it with mode 0644,
+// never through a symbolic link, and learns its length.
+func (l *ledgerFile) open() error {
+	f, err := os.OpenFile(l.path, os.O_RDWR|os.O_CREATE|ledgerNoFollow, 0o644)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", l.path, ledgerErrno(err))
 	}
-	return fmt.Errorf("%s %s: %w", op, path, err)
+	fi, err := f.Stat()
+	if err == nil && fi.Mode().Perm() != 0o644 {
+		err = f.Chmod(0o644)
+	}
+	if err != nil {
+		_ = f.Close()
+		return fmt.Errorf("open %s: %w", l.path, ledgerErrno(err))
+	}
+	l.f, l.fi, l.size = f, fi, fi.Size()
+	return nil
+}
+
+// close closes the file, which the next write opens again.
+func (l *ledgerFile) close() {
+	if l.f != nil {
+		_ = l.f.Close()
+		l.f = nil
+	}
+}
+
+// ledgerErrno is the bare errno of a path error, so a message names the
+// ledger once.
+func ledgerErrno(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
 }
 
 // ledgerRemoveTemps removes the temp files a crash left in dir.

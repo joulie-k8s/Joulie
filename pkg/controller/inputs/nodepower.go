@@ -18,7 +18,7 @@ import (
 // DefaultWindow. A preset other than custom together with CustomQuery is an
 // error, so a query is never silently ignored.
 func (s NodePowerSpec) Query() (primary, fallback Query, err error) {
-	s, err = s.withDefaults()
+	s, err = s.WithDefaults()
 	if err != nil {
 		return Query{}, Query{}, err
 	}
@@ -43,21 +43,29 @@ func (s NodePowerSpec) Query() (primary, fallback Query, err error) {
 		}
 		return labels, targetInfo, nil
 	case NodePowerPresetKepler:
-		node := keplerNodeLabel
+		node := KeplerNodeLabel
 		if s.NodeLabel != "" {
 			node = s.NodeLabel
 		}
-		return Query{PromQL: keplerComponents(node, keplerCPUJoules, []matcher{{keplerZoneLabel, "=", keplerPackageZone}}, window), GroupLabel: node}, Query{}, nil
+		zones := matcher{KeplerZoneLabel, "=~", KeplerPackageZones}
+		return Query{PromQL: keplerComponents(node, window,
+			keplerBranch{selector(KeplerCPUActiveJoules, zones), semconv.HwTypeCPU + "_active"},
+			keplerBranch{selector(KeplerCPUIdleJoules, zones), semconv.HwTypeCPU + "_idle"},
+			keplerBranch{selector(KeplerGPUJoules), semconv.HwTypeGPU},
+		), GroupLabel: node}, Query{}, nil
 	case NodePowerPresetKeplerLegacy:
-		node := keplerLegacyNodeLabel
+		node := KeplerLegacyNodeLabel
 		if s.NodeLabel != "" {
 			node = s.NodeLabel
 		}
 		if s.Scope == ScopeHost {
-			q := fmt.Sprintf("sum by %s (%s)", labelList(node), rate(selector(keplerLegacyPlatform), window))
+			q := fmt.Sprintf("sum by %s (%s)", labelList(node), rate(selector(KeplerLegacyPlatformJoules), window))
 			return Query{PromQL: q, GroupLabel: node}, Query{}, nil
 		}
-		return Query{PromQL: keplerComponents(node, keplerLegacyPackage, nil, window), GroupLabel: node}, Query{}, nil
+		return Query{PromQL: keplerComponents(node, window,
+			keplerBranch{selector(KeplerLegacyPackageJoules), semconv.HwTypeCPU},
+			keplerBranch{selector(KeplerGPUJoules), semconv.HwTypeGPU},
+		), GroupLabel: node}, Query{}, nil
 	}
 	// Custom. With the placeholder the caller runs the query once per node
 	// and sums every series; without it, the query is summed by the node
@@ -73,9 +81,10 @@ func (s NodePowerSpec) Query() (primary, fallback Query, err error) {
 	return Query{PromQL: wrapAggregation("sum", node, s.CustomQuery), GroupLabel: node}, Query{}, nil
 }
 
-// withDefaults fills the zero fields and rejects unknown values and
-// combinations no preset serves.
-func (s NodePowerSpec) withDefaults() (NodePowerSpec, error) {
+// WithDefaults returns s with its zero fields filled and rejects unknown
+// values and combinations no preset serves. An unset preset is otel, or
+// custom when CustomQuery is set; this is the only place that rule lives.
+func (s NodePowerSpec) WithDefaults() (NodePowerSpec, error) {
 	if s.Preset == "" {
 		s.Preset = NodePowerPresetOTel
 		if s.CustomQuery != "" {
@@ -155,17 +164,21 @@ func otelNodePower(n otelNames, node string, scope Scope, window string, targetI
 		key, key, join(selector(n.power, components)))
 }
 
-// keplerComponents sums the CPU package and GPU energy rates of each node.
-// Each branch of the "or" gets its own componentLabel value first, or the
-// GPU series of a node whose label set equals its CPU series' would be
-// dropped.
-func keplerComponents(node, cpuMetric string, cpuMatchers []matcher, window string) string {
-	branch := func(sel, component string) string {
-		return fmt.Sprintf("label_replace(%s, %s, %s, \"\", \"\")", rate(sel, window), strconv.Quote(componentLabel), strconv.Quote(component))
+// keplerBranch is one counter keplerComponents sums: its selector and the
+// componentLabel value that keeps its series apart from the other branches'.
+type keplerBranch struct{ sel, component string }
+
+// keplerComponents sums the energy rates of the branches by node. Each
+// branch of the "or" gets its own componentLabel value first, or a series
+// whose label set, without the metric name, equals one of an earlier branch
+// would be dropped: a node's CPU and GPU series, or a zone's active and idle
+// series.
+func keplerComponents(node, window string, branches ...keplerBranch) string {
+	parts := make([]string, len(branches))
+	for i, b := range branches {
+		parts[i] = fmt.Sprintf("label_replace(%s, %s, %s, \"\", \"\")", rate(b.sel, window), strconv.Quote(componentLabel), strconv.Quote(b.component))
 	}
-	return fmt.Sprintf("sum by %s (%s or %s)", labelList(node),
-		branch(selector(cpuMetric, cpuMatchers...), semconv.HwTypeCPU),
-		branch(selector(keplerGPUJoules), semconv.HwTypeGPU))
+	return fmt.Sprintf("sum by %s (%s)", labelList(node), strings.Join(parts, " or "))
 }
 
 // wrapAggregation writes op by (label) (q), or op(q) without a label. The

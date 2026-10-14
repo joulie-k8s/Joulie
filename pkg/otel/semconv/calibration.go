@@ -60,16 +60,11 @@ func init() {
 	)
 }
 
-// Knobs returns every knob value, in the order of the constants.
-func Knobs() []string {
-	return []string{KnobCPUUtilization, KnobCPUFrequencyMax, KnobCPUPowerLimit, KnobGPUUtilization, KnobGPUPowerLimit}
-}
-
 // Metrics of a sweep. system.cpu.utilization is the conventions' metric
 // (model/system/metrics.yaml); joulie.calibration.setpoint is Joulie's.
 var (
 	SystemCPUUtilization = Register(Metric{
-		Name: "system.cpu.utilization", Unit: "1", Owner: OwnerSemconv, Stability: StabilityDevelopment,
+		Name: "system.cpu.utilization", Unit: "1", Owner: OwnerSemconv,
 		Kind: Gauge, Value: Double, Attributes: []string{AttrCPUMode, AttrCPULogicalNumber},
 		Brief: "For each logical CPU, the utilization is calculated as the change in cumulative CPU time (cpu.time) over a measurement interval, divided by the elapsed time.",
 	})
@@ -77,7 +72,7 @@ var (
 	// at every sample. The unit depends on the knob (see the Knob*
 	// values), hence the annotation.
 	JoulieCalibrationSetpoint = Register(Metric{
-		Name: "joulie.calibration.setpoint", Unit: "{setpoint}", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.calibration.setpoint", Unit: "{setpoint}", Owner: OwnerJoulie,
 		Kind: Gauge, Value: Double, Attributes: []string{AttrCalibrationKnob, AttrCalibrationClass, AttrCalibrationMemoryIntensity},
 		Brief: "A setpoint a calibration sweep holds the node at: the value of the knob joulie.calibration.knob names.",
 	})

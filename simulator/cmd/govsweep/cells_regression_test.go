@@ -1,9 +1,7 @@
 package main
 
-// Regression test of the efficient arm's default ceiling: an efficient arm
-// that names no ceilingPct swept 75 % of the maximum compute clock, a number
-// written into the cell expansion, after the preset's default had moved to
-// governor.DefaultCeilingPctOfMax.
+// The efficient arm's default ceiling is the preset's own,
+// governor.DefaultCeilingPctOfMax, never a number of the cell expansion.
 
 import (
 	"testing"

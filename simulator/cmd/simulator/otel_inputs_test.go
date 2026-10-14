@@ -401,3 +401,64 @@ func TestRegressionQueriesAreTheControllerQueries(t *testing.T) {
 		}
 	}
 }
+
+// Every query the controller manager's facility presets send, under every
+// translation strategy, and the gauge names and words a hand-written query
+// may use, resolve to the facility gauge they always did: the preset
+// queries through inputs.FacilityMetricNames, the rest by the words of the
+// name, and anything else to no data.
+func TestFacilityMetricValueResolvesEveryQuery(t *testing.T) {
+	s := newSimulatorWithRegisterer(simModel{BaseIdleW: 100, DefaultCapW: 5000}, nil, nil, 10, prometheus.NewRegistry())
+	const ambient, it, cooling, pue = 18.25, 3000.5, 512.75, 1.17
+	s.facilityAmbientTemp.Set(ambient)
+	s.facilityITPowerW.Set(it)
+	s.facilityCoolingPowerW.Set(cooling)
+	s.facilityPUE.Set(pue)
+	byInput := map[inputs.FacilityInput]float64{
+		inputs.FacilityInputAmbientTemp:  ambient,
+		inputs.FacilityInputITPower:      it,
+		inputs.FacilityInputCoolingPower: cooling,
+	}
+	type want struct {
+		v  float64
+		ok bool
+	}
+	cases := map[string]want{}
+	for _, preset := range []inputs.FacilityPreset{inputs.FacilityPresetOTel, inputs.FacilityPresetLegacy} {
+		for _, strategy := range promname.Strategies() {
+			queries, err := inputs.FacilitySpec{Preset: preset, Naming: strategy}.Queries()
+			if err != nil {
+				t.Fatalf("%s/%s: %v", preset, strategy, err)
+			}
+			for input, q := range queries {
+				v, ok := byInput[input]
+				cases[q.PromQL] = want{v, ok}
+			}
+		}
+	}
+	for q, w := range map[string]want{
+		"datacenter_ambient_temperature_celsius":     {ambient, true},
+		"datacenter_total_it_power_watts":            {it, true},
+		"datacenter_cooling_power_watts":             {cooling, true},
+		"joulie_sim_facility_ambient_temp_celsius":   {ambient, true},
+		"joulie_sim_facility_it_power_watts":         {it, true},
+		"joulie_sim_facility_cooling_power_watts":    {cooling, true},
+		"joulie_sim_facility_pue":                    {pue, true},
+		"  avg(joulie_sim_facility_pue)  ":           {pue, true},
+		"max(site_ambient_temp_c)":                   {ambient, true},
+		"sum(rack_it_power)":                         {it, true},
+		"sum(chiller_cooling_power_kw)":              {cooling, true},
+		"site_pue_ratio":                             {pue, true},
+		"ambient_humidity":                           {0, false},
+		"node_power_watts":                           {0, false},
+		"joulie_sim_facility_ambient_temp_c and pue": {ambient, true},
+	} {
+		cases[q] = w
+	}
+	for q, w := range cases {
+		v, ok := s.facilityMetricValue(q)
+		if ok != w.ok || v != w.v {
+			t.Errorf("facilityMetricValue(%q) = %v, %v; want %v, %v", q, v, ok, w.v, w.ok)
+		}
+	}
+}

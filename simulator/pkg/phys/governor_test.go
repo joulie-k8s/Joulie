@@ -5,6 +5,20 @@ import (
 	"testing"
 )
 
+// governorTargetKHz is the frequency the governor of in sets after one step
+// with no previous target.
+func governorTargetKHz(in GovernorInput) int64 {
+	_, target := GovernorStep(in, 0)
+	return target
+}
+
+// governorRequestKHz is the request the governor of in keeps after one step
+// with no previous target.
+func governorRequestKHz(in GovernorInput) int64 {
+	request, _ := GovernorStep(in, 0)
+	return request
+}
+
 // epycTable is a 3-entry acpi-cpufreq table under a boost cpuinfo_max_freq,
 // in kHz: the shape of the hwemu profile amd-epyc-2s-energy-only.yaml.
 var epycTable = []int64{2400000, 1900000, 1500000}
@@ -45,11 +59,11 @@ func TestGP01SchedutilResolvesUpOnTheThreeEntryTable(t *testing.T) {
 		{1.00, 2400000},
 	} {
 		in := epycInput("schedutil", tc.util)
-		if got := GovernorTargetKHz(in); got != tc.want {
+		if got := governorTargetKHz(in); got != tc.want {
 			t.Errorf("util %.2f at the maximum: got %d kHz, want %d", tc.util, got, tc.want)
 		}
 		in.CurKHz = 0
-		if got := GovernorTargetKHz(in); got != tc.want {
+		if got := governorTargetKHz(in); got != tc.want {
 			t.Errorf("util %.2f before the first request: got %d kHz, want %d", tc.util, got, tc.want)
 		}
 	}
@@ -60,10 +74,10 @@ func TestGP01SchedutilResolvesUpOnTheThreeEntryTable(t *testing.T) {
 	for _, ran := range []int64{1500000, 1900000, 2400000} {
 		in := epycInput("schedutil", 0.30*epycMaxKHz/float64(ran))
 		in.CurKHz = ran
-		if got := GovernorTargetKHz(in); got != 1500000 {
+		if got := governorTargetKHz(in); got != 1500000 {
 			t.Errorf("demand 0.30 measured at %d kHz: got %d kHz, want 1500000", ran, got)
 		}
-		if got := GovernorRequestKHz(in); got != 1500000 {
+		if got := governorRequestKHz(in); got != 1500000 {
 			t.Errorf("schedutil request at %d kHz: got %d kHz, want its target 1500000", ran, got)
 		}
 	}
@@ -73,42 +87,42 @@ func TestGP01SchedutilResolvesUpOnTheThreeEntryTable(t *testing.T) {
 	// scaling_max_freq says now, so 1.25 x 1.5 GHz.
 	limited := continuousInput("schedutil", 0.5, 3000000)
 	limited.MaxKHz = 2000000
-	if got := GovernorTargetKHz(limited); got != 1875000 {
+	if got := governorTargetKHz(limited); got != 1875000 {
 		t.Errorf("scaling_max_freq lowered below the frequency the policy ran at: got %d kHz, want 1875000", got)
 	}
 
 	// Without a table the request is continuous, within the policy range.
-	if got := GovernorTargetKHz(continuousInput("schedutil", 0.5, 3000000)); got != 1875000 {
+	if got := governorTargetKHz(continuousInput("schedutil", 0.5, 3000000)); got != 1875000 {
 		t.Errorf("continuous schedutil at util 0.5: got %d kHz, want 1875000", got)
 	}
-	if got := GovernorTargetKHz(continuousInput("schedutil", 0.1, 3000000)); got != 1000000 {
+	if got := governorTargetKHz(continuousInput("schedutil", 0.1, 3000000)); got != 1000000 {
 		t.Errorf("continuous schedutil below the minimum: got %d kHz, want 1000000", got)
 	}
 }
 
 func TestGP02PerformanceHoldsTheScalingMaximum(t *testing.T) {
 	for _, util := range []float64{0, 0.3, 1} {
-		if got := GovernorTargetKHz(continuousInput("performance", util, 1000000)); got != 3000000 {
+		if got := governorTargetKHz(continuousInput("performance", util, 1000000)); got != 3000000 {
 			t.Errorf("continuous, util %.1f: got %d kHz, want 3000000", util, got)
 		}
 		lowered := continuousInput("performance", util, 0)
 		lowered.MaxKHz = 2200000
-		if got := GovernorTargetKHz(lowered); got != 2200000 {
+		if got := governorTargetKHz(lowered); got != 2200000 {
 			t.Errorf("scaling_max_freq 2200000, util %.1f: got %d kHz, want 2200000", util, got)
 		}
 		// On a table the maximum is the highest entry at or below it.
-		if got := GovernorTargetKHz(epycInput("performance", util)); got != 2400000 {
+		if got := governorTargetKHz(epycInput("performance", util)); got != 2400000 {
 			t.Errorf("table, util %.1f: got %d kHz, want 2400000", util, got)
 		}
 		in := epycInput("performance", util)
 		in.MaxKHz = 2000000
-		if got := GovernorTargetKHz(in); got != 1900000 {
+		if got := governorTargetKHz(in); got != 1900000 {
 			t.Errorf("table with scaling_max_freq 2000000, util %.1f: got %d kHz, want 1900000", util, got)
 		}
 		// HWP performance ignores EPP.
 		hwp := continuousInput("performance", util, 0)
 		hwp.HWP, hwp.EPP = true, 255
-		if got := GovernorTargetKHz(hwp); got != 3000000 {
+		if got := governorTargetKHz(hwp); got != 3000000 {
 			t.Errorf("HWP performance at EPP 255, util %.1f: got %d kHz, want 3000000", util, got)
 		}
 	}
@@ -116,32 +130,32 @@ func TestGP02PerformanceHoldsTheScalingMaximum(t *testing.T) {
 	// A word Joulie does not model, and none, keep the performance target
 	// the legacy engines imply (D9).
 	for _, gov := range []string{"", "interactive"} {
-		if got := GovernorTargetKHz(continuousInput(gov, 0.1, 1000000)); got != 3000000 {
+		if got := governorTargetKHz(continuousInput(gov, 0.1, 1000000)); got != 3000000 {
 			t.Errorf("governor %q: got %d kHz, want 3000000", gov, got)
 		}
 	}
 	// A policy without frequencies gets none.
-	if got := GovernorTargetKHz(GovernorInput{Governor: "performance"}); got != 0 {
+	if got := governorTargetKHz(GovernorInput{Governor: "performance"}); got != 0 {
 		t.Errorf("no frequencies: got %d kHz, want 0", got)
 	}
 }
 
 func TestGP03GenericPowersaveHoldsTheScalingMinimum(t *testing.T) {
 	for _, util := range []float64{0, 0.5, 1} {
-		if got := GovernorTargetKHz(continuousInput("powersave", util, 3000000)); got != 1000000 {
+		if got := governorTargetKHz(continuousInput("powersave", util, 3000000)); got != 1000000 {
 			t.Errorf("continuous, util %.1f: got %d kHz, want 1000000", util, got)
 		}
 		raised := continuousInput("powersave", util, 3000000)
 		raised.MinKHz = 1400000
-		if got := GovernorTargetKHz(raised); got != 1400000 {
+		if got := governorTargetKHz(raised); got != 1400000 {
 			t.Errorf("scaling_min_freq 1400000, util %.1f: got %d kHz, want 1400000", util, got)
 		}
-		if got := GovernorTargetKHz(epycInput("powersave", util)); got != 1500000 {
+		if got := governorTargetKHz(epycInput("powersave", util)); got != 1500000 {
 			t.Errorf("table, util %.1f: got %d kHz, want 1500000", util, got)
 		}
 		in := epycInput("powersave", util)
 		in.MinKHz = 1600000
-		if got := GovernorTargetKHz(in); got != 1900000 {
+		if got := governorTargetKHz(in); got != 1900000 {
 			t.Errorf("table with scaling_min_freq 1600000, util %.1f: got %d kHz, want 1900000", util, got)
 		}
 	}
@@ -174,7 +188,7 @@ func TestGP04ConservativeStepsByFreqStepPerPeriodWithinTheRange(t *testing.T) {
 		if tc.periods == 0 {
 			in.PeriodS = 0
 		}
-		if got := GovernorTargetKHz(in); got != tc.want {
+		if got := governorTargetKHz(in); got != tc.want {
 			t.Errorf("%s: got %d kHz, want %d", tc.name, got, tc.want)
 		}
 	}
@@ -182,7 +196,7 @@ func TestGP04ConservativeStepsByFreqStepPerPeriodWithinTheRange(t *testing.T) {
 	// Within one call the load follows the frequency: 900 MHz of work at
 	// 1.0 GHz is a load of 90, above up_threshold 80, and one step to
 	// 1.15 GHz makes it 78, between the thresholds, where the governor stays.
-	if got := GovernorTargetKHz(period(continuousInput("conservative", 0.9, 1000000), 50)); got != 1150000 {
+	if got := governorTargetKHz(period(continuousInput("conservative", 0.9, 1000000), 50)); got != 1150000 {
 		t.Errorf("settling: got %d kHz, want 1150000", got)
 	}
 
@@ -193,8 +207,8 @@ func TestGP04ConservativeStepsByFreqStepPerPeriodWithinTheRange(t *testing.T) {
 	in.CurKHz = 1500000
 	var targets, requests []int64
 	for range 9 {
-		requests = append(requests, GovernorRequestKHz(in))
-		targets = append(targets, GovernorTargetKHz(in))
+		requests = append(requests, governorRequestKHz(in))
+		targets = append(targets, governorTargetKHz(in))
 		in.CurKHz = requests[len(requests)-1]
 	}
 	wantRequests := []int64{1620000, 1740000, 1860000, 1980000, 2100000, 2220000, 2340000, 2400000, 2400000}
@@ -205,7 +219,7 @@ func TestGP04ConservativeStepsByFreqStepPerPeriodWithinTheRange(t *testing.T) {
 	// Going down, the policy holds the lowest entry at or above the request.
 	in = period(epycInput("conservative", 0), 1)
 	in.CurKHz = 2400000
-	if req, got := GovernorRequestKHz(in), GovernorTargetKHz(in); req != 2280000 || got != 2400000 {
+	if req, got := governorRequestKHz(in), governorTargetKHz(in); req != 2280000 || got != 2400000 {
 		t.Errorf("table descent: request %d target %d, want 2280000 and 2400000", req, got)
 	}
 
@@ -230,27 +244,27 @@ func TestGP04ConservativeStepsByFreqStepPerPeriodWithinTheRange(t *testing.T) {
 	// Without the previous target, GovernorStep is the pair of the other two.
 	in = period(epycInput("conservative", 0.3), 3)
 	in.CurKHz = 1800000
-	if req, got := GovernorStep(in, 0); req != GovernorRequestKHz(in) || got != GovernorTargetKHz(in) {
-		t.Errorf("GovernorStep without a previous target: %d, %d, want %d, %d", req, got, GovernorRequestKHz(in), GovernorTargetKHz(in))
+	if req, got := GovernorStep(in, 0); req != governorRequestKHz(in) || got != governorTargetKHz(in) {
+		t.Errorf("GovernorStep without a previous target: %d, %d, want %d, %d", req, got, governorRequestKHz(in), governorTargetKHz(in))
 	}
 
 	// Tunables replace the kernel defaults.
 	tuned := period(continuousInput("conservative", 0.5, 2000000), 1)
 	tuned.Tunables.ConservativeFreqStep = 10
 	tuned.Tunables.ConservativeUpThreshold = 40
-	if got := GovernorTargetKHz(tuned); got != 2300000 {
+	if got := governorTargetKHz(tuned); got != 2300000 {
 		t.Errorf("freq_step 10, up_threshold 40, load 50: got %d kHz, want 2300000", got)
 	}
 	tuned.Tunables.ConservativeUpThreshold = 90
 	tuned.Tunables.ConservativeDownThreshold = 60
-	if got := GovernorTargetKHz(tuned); got != 1700000 {
+	if got := governorTargetKHz(tuned); got != 1700000 {
 		t.Errorf("down_threshold 60, load 50: got %d kHz, want 1700000", got)
 	}
 
 	// A request outside the range restarts from the policy's frequency.
 	out := period(continuousInput("conservative", 1, 0), 1)
 	out.CurKHz = 3500000
-	if got := GovernorTargetKHz(out); got != 3000000 {
+	if got := governorTargetKHz(out); got != 3000000 {
 		t.Errorf("request above the maximum: got %d kHz, want 3000000", got)
 	}
 }
@@ -268,7 +282,7 @@ func TestGP05HWPPowersaveFollowsUtilAndEPP(t *testing.T) {
 	for _, epp := range epps {
 		prev := int64(0)
 		for u := 0; u <= 20; u++ {
-			got := GovernorTargetKHz(hwp(float64(u)/20, epp))
+			got := governorTargetKHz(hwp(float64(u)/20, epp))
 			if got < prev {
 				t.Errorf("EPP %d: target falls from %d to %d kHz at util %.2f", epp, prev, got, float64(u)/20)
 			}
@@ -281,31 +295,31 @@ func TestGP05HWPPowersaveFollowsUtilAndEPP(t *testing.T) {
 	for u := 0; u <= 20; u++ {
 		prev := int64(1 << 62)
 		for _, epp := range epps {
-			got := GovernorTargetKHz(hwp(float64(u)/20, epp))
+			got := governorTargetKHz(hwp(float64(u)/20, epp))
 			if got > prev {
 				t.Errorf("util %.2f: target rises from %d to %d kHz at EPP %d", float64(u)/20, prev, got, epp)
 			}
 			prev = got
 		}
 	}
-	if got := GovernorTargetKHz(hwp(0.5, 0)); got != 3000000 {
+	if got := governorTargetKHz(hwp(0.5, 0)); got != 3000000 {
 		t.Errorf("EPP 0 at util 0.5: got %d kHz, want the maximum 3000000", got)
 	}
 	// c(128) = 1 - 0.2 x 128/128 = 0.8 of the range at full load.
-	if got := GovernorTargetKHz(hwp(1, 128)); got != 2600000 {
+	if got := governorTargetKHz(hwp(1, 128)); got != 2600000 {
 		t.Errorf("EPP 128 at util 1: got %d kHz, want 2600000", got)
 	}
 	// c(255) = 1 - 0.2 x 255/128 = 0.6015625 of the range.
-	if got := GovernorTargetKHz(hwp(1, 255)); got != 2203125 {
+	if got := governorTargetKHz(hwp(1, 255)); got != 2203125 {
 		t.Errorf("EPP 255 at util 1: got %d kHz, want 2203125", got)
 	}
 	// The ceiling stops at half the range.
 	steep := hwp(1, 255)
 	steep.EPPCeilingDrop = 0.5
-	if got := GovernorTargetKHz(steep); got != 2000000 {
+	if got := governorTargetKHz(steep); got != 2000000 {
 		t.Errorf("EPP 255 at util 1, eppCeilingDrop 0.5: got %d kHz, want 2000000", got)
 	}
-	if got := GovernorTargetKHz(hwp(0, 0)); got != 1000000 {
+	if got := governorTargetKHz(hwp(0, 0)); got != 1000000 {
 		t.Errorf("idle: got %d kHz, want the minimum 1000000", got)
 	}
 }
@@ -328,20 +342,20 @@ func TestGP06OndemandJumpsToTheMaximumAboveUpThreshold(t *testing.T) {
 	} {
 		in := continuousInput("ondemand", tc.util, 1000000)
 		in.Tunables.OndemandUpThreshold = tc.up
-		if got := GovernorTargetKHz(in); got != tc.want {
+		if got := governorTargetKHz(in); got != tc.want {
 			t.Errorf("%s: got %d kHz, want %d", tc.name, got, tc.want)
 		}
 	}
 	// On a table the proportional frequency goes to the closest entry:
 	// 1500 + 0.50 x 2207 = 2603.5 MHz is closest to 2400.
-	if got := GovernorTargetKHz(epycInput("ondemand", 0.5)); got != 2400000 {
+	if got := governorTargetKHz(epycInput("ondemand", 0.5)); got != 2400000 {
 		t.Errorf("table, load 50: got %d kHz, want 2400000", got)
 	}
 	// 1500 + 0.15 x 2207 = 1831 MHz is closest to 1900.
-	if got := GovernorTargetKHz(epycInput("ondemand", 0.15)); got != 1900000 {
+	if got := governorTargetKHz(epycInput("ondemand", 0.15)); got != 1900000 {
 		t.Errorf("table, load 15: got %d kHz, want 1900000", got)
 	}
-	if got := GovernorTargetKHz(epycInput("ondemand", 0.99)); got != 2400000 {
+	if got := governorTargetKHz(epycInput("ondemand", 0.99)); got != 2400000 {
 		t.Errorf("table, load 99: got %d kHz, want 2400000", got)
 	}
 }

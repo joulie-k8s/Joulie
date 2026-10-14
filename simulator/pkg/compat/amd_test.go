@@ -91,7 +91,7 @@ func TestCP09AMDUnmeasuredAndZeroReadingsAreLeftOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := compatNewCluster(compatMI300X())
+	c := compatNewCluster(t, compatMI300X())
 	snap := c.snap(10, 0.5, 0.5)
 	gpus := map[int]*emulate.ComponentReading{}
 	for i := range snap.Nodes[0].Components {
@@ -133,7 +133,7 @@ func TestCP09AMDRepeatedAndOutOfOrderSnapshotsChangeNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := compatNewCluster(compatMI300X(), compatNVL())
+	c := compatNewCluster(t, compatMI300X(), compatNVL())
 	first := c.snap(0, 0.5, 0.5)
 	late := c.snap(5, 0.5, 1)
 	mid := c.snap(5, 0.5, 0.25)

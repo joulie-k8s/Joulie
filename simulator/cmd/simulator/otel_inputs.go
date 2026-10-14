@@ -278,21 +278,15 @@ func (s *simulator) facilityMetricValue(query string) (float64, bool) {
 			return 0, false
 		}
 	}
+	// The words cover the simulator's own gauges, joulie_sim_facility_*.
 	switch {
-	case strings.Contains(q, "ambient") && strings.Contains(q, "temp"),
-		q == "datacenter_ambient_temperature_celsius",
-		q == "joulie_sim_facility_ambient_temp_celsius":
+	case strings.Contains(q, "ambient") && strings.Contains(q, "temp"):
 		return gaugeValue(s.facilityAmbientTemp), true
-	case strings.Contains(q, "it_power") || strings.Contains(q, "it_power_watts"),
-		q == "datacenter_total_it_power_watts",
-		q == "joulie_sim_facility_it_power_watts":
+	case strings.Contains(q, "it_power"):
 		return gaugeValue(s.facilityITPowerW), true
-	case strings.Contains(q, "cooling") && strings.Contains(q, "power"),
-		q == "datacenter_cooling_power_watts",
-		q == "joulie_sim_facility_cooling_power_watts":
+	case strings.Contains(q, "cooling") && strings.Contains(q, "power"):
 		return gaugeValue(s.facilityCoolingPowerW), true
-	case strings.Contains(q, "pue"),
-		q == "joulie_sim_facility_pue":
+	case strings.Contains(q, "pue"):
 		return gaugeValue(s.facilityPUE), true
 	default:
 		return 0, false

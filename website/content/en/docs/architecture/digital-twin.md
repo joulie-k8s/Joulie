@@ -30,7 +30,7 @@ The `powerMeasurement` block in `NodeTwin.status` provides the scheduler with th
 | Field | Unit | Description |
 |-------|------|-------------|
 | `source` | string | Where the power reading came from (see below) |
-| `measuredNodePowerW` | watts | Current total node power draw |
+| `measuredNodePowerW` | watts | Current power of the CPU packages plus the GPUs (`NODE_POWER_SCOPE=components`, the default) or of the whole host (`NODE_POWER_SCOPE=host`) |
 | `cpuCappedPowerW` | watts | CPU power budget (CPU TDP x cap percentage) |
 | `gpuCappedPowerW` | watts | GPU power budget (GPU TDP x cap percentage) |
 | `nodeCappedPowerW` | watts | Total node power budget (CPU + GPU capped power) |
@@ -48,7 +48,7 @@ The controller manager resolves `measuredNodePowerW` before calling the twin. `N
 | `NODE_POWER_SOURCE` | Behaviour | `source` written |
 |---------------------|-----------|------------------|
 | `prometheus` (chart default) | Runs one grouped query per reconcile against `NODE_POWER_PROMETHEUS_ADDRESS` (default `PROMETHEUS_ADDRESS`) and reads every node from the answer. The default preset `otel` reads the OpenTelemetry metrics `hw.energy` (as a rate) and `hw.power` of the CPU packages and GPUs, keyed by `k8s.node.name`; `NODE_POWER_PRESET` selects Kepler or a custom query instead. See [Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}}). | `prometheus`, or `prometheus-no-data` when there is no address, the query fails, or the answer has no positive reading for the node |
-| `http` | GETs `NODE_POWER_HTTP_ENDPOINT` (with `{node}` substituted) and reads one OTLP JSON document with the same rules, such as the simulator's `/otlp/telemetry/{node}`. The legacy `packagePowerWatts` JSON is read until v0.4.0. | `http`, `http-error`, or `http-no-endpoint` |
+| `http` | GETs `NODE_POWER_HTTP_ENDPOINT` (with `{node}` substituted) and reads one OTLP JSON document with the same rules, such as the simulator's `/otlp/telemetry/{node}`. The legacy `packagePowerWatts` JSON is read until v0.4.0: its power is the first positive of `packagePowerWatts` and `cpu.packagePowerWatts`, whatever `NODE_POWER_SCOPE` says, and 0 W when neither is positive. | `http`; `http-error` when the request fails or the answer is unreadable or over 8 MiB; `http-no-endpoint` |
 | `static` (code default) | Returns 0 watts. | `static` |
 
 `NODE_POWER_SCOPE` sets what the reading covers. The default, `components`, is the CPU packages plus the GPUs: the same boundary as `nodeTdpW` (CPU TDP plus GPU TDP), so headroom and cooling stress compare like with like. `host` reads the whole host's wall power instead, which includes memory, fans and the platform and exceeds `nodeTdpW` under load.
@@ -206,29 +206,9 @@ The twin also drives controller manager decisions:
 
 - **Transition guard**: when a node is transitioning from performance to eco, the twin sets `schedulableClass` to `draining` until all performance pods have completed or been drained.
 
-## Governor fields
+## Governors
 
-A governor is a dimension of its own, separate from caps: one vendor-neutral preset per component, which the agent maps to the native settings of the node's cpufreq driver or GPU family. Only `pkg/governor` turns a preset into a native word; every other component speaks presets, listed in `pkg/api/governor.go`.
-
-| Field | Type | Owner | Description |
-|-------|------|-------|-------------|
-| `spec.cpu.governor.preset` | `performance`, `balanced`, `efficiency` | Controller manager | the CPU governor of every cpufreq policy: highest frequency at any load, demand-driven with a quick ramp, or demand-driven with an energy bias |
-| `spec.cpu.governor.boost` | `on`, `off`, optional | Controller manager | frequency boost (turbo); absent leaves it as it is |
-| `spec.gpu.governor.preset` | `auto`, `sustained`, `efficient`, `low`, `peak` | Controller manager | the GPU clock governor of every GPU: vendor default, data-path clocks held at their maximum with idle gating kept, compute clock under a ceiling, every clock at its minimum, every clock at its maximum with idle gating off |
-| `spec.gpu.governor.computeClockCeilingPctOfMax` | number in (0, 100] | Controller manager | the compute clock ceiling of `efficient`, in percent of the maximum compute clock |
-| `status.controlStatus.cpuGovernor`, `status.controlStatus.gpuGovernor` | `ControlResult` | Agent | outcome of the last governor write: `backend` (`cpufreq`, `amdgpu-sysfs`, `nvidia-smi`), `result`, `message`, and `applied`, the native setting in effect |
-| `NodeHardware.status.cpu.governor` | object | Agent | `driver`, `driverMode`, `current`, `available`, `epp`, `boost` (`state` `on` or `off`; `scope` `global` for `cpufreq/boost`, `per-cpu` for each policy's `boost`, `no-turbo` for the inverted `intel_pstate/no_turbo`), `presets` (each with the result it gives, `applied` or `equivalent`), `baseline`, `writable` |
-| `NodeHardware.status.gpu.governor` | object | Agent | `mechanism`, `current`, `presets`, `clockRangesMHz` (`graphics`, `memory`, `fabric`), `baseline` (per GPU, keyed by PCI bus id), `writable`, `uniform` |
-
-A preset a node cannot express is left out of its `presets`. Beside the governor block the agent publishes the cpufreq frequency landmarks in `NodeHardware.status.cpu.landmarks` (`minFreqMHz`, `nominalFreqMHz`, `maxBoostMHz`).
-
-`kubectl get nodetwins` shows the presets in the columns `CPU-Gov` and `GPU-Gov`; an empty column means no preset, so the agent changes nothing there, or puts back its baseline if it changed something earlier.
-
-The controller manager writes the presets only with `GOVERNOR_CONTROL` on, and the agent writes the native settings only with `GOVERNOR_WRITES` on; both are off by default (see [Governor presets]({{< relref "/docs/architecture/controller-manager.md#governor-presets" >}}) and [Governor control]({{< relref "/docs/architecture/agent.md#governor-control" >}})). When a preset disappears, or writes are turned off, the agent puts back the `baseline` it recorded and reports `restored`.
-
-The result values are `applied`, `applied-unverified`, `equivalent`, `unsupported`, `not-applied`, `refused`, `drift`, `contended`, `disabled`, `restored` and `error`. `ControlResult` is shared with the cap results, so the CRD does not enumerate them.
-
-The twin reads none of these fields: a governor moves measured power, which the twin already reads through `measuredNodePowerW`.
+The twin reads no governor field: a governor moves the measured power, which the twin reads through `measuredNodePowerW`. The governor fields, and which node gets which preset, are under [Governor policy]({{< relref "/docs/architecture/policy.md#governor-policy" >}}).
 
 ## Implementation
 

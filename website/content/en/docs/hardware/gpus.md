@@ -67,35 +67,15 @@ NVIDIA GPUs (`nvidia-smi`): every command is `nvidia-smi -i <pci bus id>`, as ro
 | `low` | `-lgc <min>,<min>` and `-lmc <min>,<min>` | `-lgc <min>,<min>` |
 | `peak` | `-lgc <max>,<max>` and `-lmc <max>,<max>` | `-lgc <max>,<max>` |
 
+A memory clock lock also bounds the graphics clock: at a lower memory clock a GPU offers only the lower graphics clocks (`SUPPORTED_CLOCKS` lists them per memory clock), so a lock at a low memory clock also holds the graphics clock at or below that memory clock's ceiling. The emulated GPUs model it (`gpus.clocks.supported.smMaxByMem`), in their power and speed and in `clocks.sm`.
+
 A lock cannot be read back, so the result is `applied-unverified` until busy samples of the clock query show the clocks within it. An operator's own lock is never reset. Application clocks (`-ac`, `-rac`) and `--auto-boost-default` are never used. A GPU older than Ampere has no mapping and gets no governor.
 
 No default selects `sustained`: opt a GPU model in through the controller manager's `GPU_GOVERNOR_MODEL_PRESETS_JSON` once a measurement on that model shows the gain. The mappings are tested against emulated GPUs (`simulator/pkg/hwemu` profiles and the fake `nvidia-smi` and `rocm-smi`), not yet on hardware.
 
 ## Simulator mode
 
-Simulator control endpoint accepts `gpu.set_power_cap_watts` with `capWattsPerGpu`.
-
-Simulator telemetry includes:
-
-- `gpu.present`
-- `gpu.vendor`
-- `gpu.count`
-- `gpu.powerWattsTotal`
-- `gpu.avgPowerWattsTotal`
-- `gpu.capWattsPerGpuApplied`
-- `gpu.utilization`
-
-Per-device entries also expose:
-
-- `temperatureC`
-- `thermalThrottle`
-- `avgPowerWatts`
-
-This makes it easier to compare:
-
-- internal power-cap dynamics,
-- exported averaged telemetry,
-- and sustained thermal behavior during long runs.
+The simulator's `/control/{node}` accepts `gpu.set_power_cap_watts` with `capWattsPerGpu`, and `/otlp/telemetry/{node}` reports each GPU as an `hw.power` gauge with `hw.type=gpu` (see [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}})). In [emulate mode]({{< relref "/docs/simulator/emulate-mode.md" >}}) the agent caps emulated GPUs through the same `nvidia-smi` and `rocm-smi` calls it runs on a real node.
 
 ## Scheduling guidance
 
@@ -107,8 +87,17 @@ Workload placement intent is expressed via the `joulie.io/workload-class` pod an
 GPU resource requests (`nvidia.com/gpu`, `amd.com/gpu`) are independent from Joulie workload classes.
 Joulie GPU capping is node-level and not a GPU slicing API.
 
+## Known limitations
+
+- **Shared and MIG GPUs get no GPU cap.** The controller manager counts a node's GPUs from its allocatable resources `nvidia.com/gpu`, `amd.com/gpu`, `gpu.intel.com/i915` and any other resource named `<vendor>/gpu`. A node that exposes its GPUs only as `nvidia.com/mig-<profile>` or `nvidia.com/gpu.shared` (MIG, or time-slicing with renamed resources) counts as a CPU-only node: it gets no GPU cap intent and, in eco, a CPU percent cap.
+- **AMD GPU caps fail with current `rocm-smi`.** The agent lists AMD GPUs and their caps with `rocm-smi --showpowercap --showproductname --json`. Current `rocm-smi` releases have no `--showpowercap` and reject the call (`unrecognized arguments: --showpowercap`), so on an AMD GPU node the GPU control status is `error` with a message starting `gpu inventory failed`, and the GPUs keep their power limits. AMD governor presets do not use `rocm-smi`: they are written through amdgpu sysfs.
+
+Check the GPU control status of every GPU node with:
+
+```bash
+kubectl get nodetwins -o custom-columns=NODE:.spec.nodeName,GPU:.status.controlStatus.gpu.result,MESSAGE:.status.controlStatus.gpu.message
+```
+
 ## Example
 
-See:
-
-- [Example 07: simulator-gpu-powercaps](https://github.com/joulie-k8s/Joulie/tree/main/examples/07%20-%20simulator-gpu-powercaps)
+- [Example 07: simulator-gpu-powercaps](https://github.com/joulie-k8s/Joulie/tree/main/examples/07-simulator-gpu-powercaps)

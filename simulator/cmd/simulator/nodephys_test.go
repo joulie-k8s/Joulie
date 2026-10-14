@@ -208,6 +208,43 @@ func TestPhysicsLoopNonPositiveTickTakesDefault(t *testing.T) {
 	}
 }
 
+// In Kubernetes mode without SIM_WORKLOAD_TRACE_PATH no workload loop runs,
+// so the loop that always runs, the physics tick, keeps the facility gauges
+// (joulie_sim_facility_*) and the fake Prometheus answers that read them
+// current. They stayed at 0, an ambient of 0 C and no IT power, because
+// only the workload loop, emulate mode and standalone mode set them.
+func TestPhysicsLoopWithoutATraceUpdatesFacilityGauges(t *testing.T) {
+	s := newSimulatorWithRegisterer(lagTestModel(), nil, nil, 0, prometheus.NewRegistry())
+	s.facilityBaseAmbientTempC, s.facilityTempAmplitudeC, s.facilityTempPeriodH = 22, 5, 24
+	s.getNode("n1")
+	if s.workload != nil {
+		t.Fatal("test setup: a simulator without a trace has a workload engine")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.runPhysicsLoop(ctx, 5*time.Millisecond)
+	}()
+	defer func() { cancel(); <-done }()
+	deadline := time.Now().Add(5 * time.Second)
+	for gaugeValue(s.facilityITPowerW) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := gaugeValue(s.facilityAmbientTemp); math.Abs(got-22) > 0.1 {
+		t.Errorf("ambient %v C after the physics loop ran for up to 5 s without a trace, want about 22", got)
+	}
+	if got := gaugeValue(s.facilityITPowerW); got <= 0 {
+		t.Errorf("IT power %v W with one node, want above 0", got)
+	}
+	if got := gaugeValue(s.facilityPUE); got < 1 {
+		t.Errorf("PUE %v, want at least 1", got)
+	}
+	if v, ok := s.facilityMetricValue("datacenter_ambient_temperature_celsius"); !ok || math.Abs(v-22) > 0.1 {
+		t.Errorf("the fake Prometheus answers the ambient query with %v, %v; want about 22", v, ok)
+	}
+}
+
 // The physics tick and every reader and writer of the node state run at
 // once. Under -race this fails if any of them touches a node outside s.mu:
 // /state and /debug/nodes encode a node after taking it, so they take a

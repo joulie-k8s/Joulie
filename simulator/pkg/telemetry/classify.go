@@ -18,7 +18,7 @@ import (
 //     with error.type reverted_out_of_range, parse_error and restored;
 //   - rejected, a value the real driver refuses with an errno, is
 //     write.rejected with error.type the errno in lower case (einval,
-//     eopnotsupp, ebusy);
+//     eopnotsupp, ebusy, enodata);
 //   - reset-persistence-off is cap.reset.
 //
 // An unknown kind gives the zero Event, which callers skip.
@@ -54,6 +54,8 @@ func classifyErrno(errno string) string {
 		return semconv.ErrorTypeEOPNOTSUPP
 	case hwemu.ErrnoEBUSY:
 		return semconv.ErrorTypeEBUSY
+	case hwemu.ErrnoENODATA:
+		return semconv.ErrorTypeENODATA
 	}
 	return strings.ToLower(errno)
 }

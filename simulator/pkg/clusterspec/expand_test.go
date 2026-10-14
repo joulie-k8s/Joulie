@@ -321,6 +321,44 @@ func TestCS07LocalProfiles(t *testing.T) {
 	testWantErr(t, "file as directory", err, "local profiles: "+file+" is not a directory")
 }
 
+// CS07b: a local profile that extends a builtin one, as every hwcalib fit
+// writes it, expands like the builtin with its own facts: Profiles loads the
+// local directory by the rules of hwemu.LoadProfileSet.
+func TestCS07bLocalProfileExtendsABuiltin(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	const local = `schemaVersion: 1
+name: lab-xeon
+extends: intel-xeon-2s-rapl
+description: Test fixture, the builtin Intel host with a local idle figure.
+physics:
+  cpu:
+    idlePkgW: {v: 55, src: "assumed:clusterspec test fixture"}
+`
+	if err := os.WriteFile(filepath.Join(dir, "lab-xeon.yaml"), []byte(local), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	members, err := testOnePool(t, "lab-xeon").Expand(Profiles(dir))
+	if err != nil {
+		t.Fatalf("a local profile extending intel-xeon-2s-rapl: %v", err)
+	}
+	builtins, err := hwemu.BuiltinProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := builtins["intel-xeon-2s-rapl"]
+	m := testMember(t, members, "lab-0")
+	if m.Profile.Name != "lab-xeon" || m.Node.Annotations[AnnotationProfile] != "lab-xeon" {
+		t.Errorf("lab-0 profile %s, annotation %s, want lab-xeon", m.Profile.Name, m.Node.Annotations[AnnotationProfile])
+	}
+	if m.Profile.Physics.CPU.IdlePkgW.V != 55 {
+		t.Errorf("lab-0 idlePkgW %v, want the local 55", m.Profile.Physics.CPU.IdlePkgW.V)
+	}
+	if !reflect.DeepEqual(m.Profile.CPU, parent.CPU) || !reflect.DeepEqual(m.Profile.Powercap, parent.Powercap) {
+		t.Error("lab-0: want the CPU and powercap facts of intel-xeon-2s-rapl, which lab-xeon does not write")
+	}
+}
+
 // CS08: smoke.yaml validates and expands to 8 members, 7 of them bare
 // metal; intel-tainted-0, and only it, carries the example.com/dedicated
 // taint.

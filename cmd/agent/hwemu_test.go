@@ -87,12 +87,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -529,8 +531,9 @@ func TestHwemuA03RAPLCapsEachPackage(t *testing.T) {
 	}
 
 	packages := []string{"intel-rapl:0", "intel-rapl:1"}
-	// A write to a DRAM limit fails on its directory and leaves no trace,
-	// so check what the agent aims at: the package PL1 files, nothing else.
+	// A write to a DRAM limit is refused and reverted, so check what the
+	// agent aims at, the package PL1 files and nothing else, and that the
+	// emulator saw no write to a DRAM limit.
 	targets, err := dvfs.RAPLCapFiles()
 	if err != nil {
 		t.Fatal(err)
@@ -546,14 +549,10 @@ func TestHwemuA03RAPLCapsEachPackage(t *testing.T) {
 		if got := readTrimmed(t, filepath.Join(zoneDir(e, zone), "constraint_0_power_limit_uw")); got != "120000000" {
 			t.Errorf("%s PL1 = %s, want 120000000", zone, got)
 		}
-		// The DRAM sub-zone's limit is a directory, as on the machine where
-		// it is disabled; writing it would have failed.
-		dram := filepath.Join(zoneDir(e, zone+":0"), "constraint_0_power_limit_uw")
-		fi, err := os.Stat(dram)
-		if err != nil || !fi.IsDir() {
-			t.Errorf("%s is no longer the write-rejecting directory: %v", dram, err)
-		} else if entries, _ := os.ReadDir(dram); len(entries) > 0 {
-			t.Errorf("%s gained entries %v", dram, entries)
+		// The DRAM sub-zone's limit is disabled, as on the machine the
+		// profile comes from: it reads 0 and refuses writes.
+		if got := readTrimmed(t, filepath.Join(zoneDir(e, zone+":0"), "constraint_0_power_limit_uw")); got != "0" {
+			t.Errorf("%s:0 DRAM limit reads %s, want 0 untouched", zone, got)
 		}
 	}
 	if s := controlStatus(t, dyn, e.name, "cpu"); s["backend"] != "rapl" || s["result"] != "applied" {
@@ -562,6 +561,11 @@ func TestHwemuA03RAPLCapsEachPackage(t *testing.T) {
 
 	if err := n.Step(5 * time.Second); err != nil {
 		t.Fatal(err)
+	}
+	for _, ev := range n.State().Events {
+		if zone := path.Base(path.Dir(ev.File)); strings.Count(zone, ":") == 2 {
+			t.Errorf("the agent wrote a limit of the sub-zone %s: %+v", zone, ev)
+		}
 	}
 	total := 0.0
 	for _, pk := range n.State().Packages {
@@ -605,17 +609,18 @@ func TestHwemuA03RAPLCapsEachPackage(t *testing.T) {
 // would then read about twice the true power and throttle to the floor.
 //
 // The loop runs on the node's simulated clock, one reading every 25 ms, and
-// never on the wall clock. It used to: the host reader turns energy_uj deltas
-// into watts over its own time.Now interval (dvfs readPowerWatts), and the
-// cooldown compares time.Now with LastAction, so the test slept until each
-// simulated moment and let the agent read late by however long its reconcile
-// took before the energy files. That lag varies with host load, so each
-// reading was off by the change in lag over its 25 ms interval, and a loaded
-// run once averaged 552.6 W under a 572.1 W cap. A test cannot set that
-// clock, so after one host reading, which shows the agent reads every
-// package counter, the agent reads the same counters through its telemetry
-// endpoint, as an OTLP hw.energy export stamped with simulated time, which
-// its reader turns into watts over those stamps (otlpjson.PowerReader). The
+// never on the wall clock: the host reader turns energy_uj deltas into watts
+// over its own time.Now interval (dvfs readPowerWatts), and the cooldown
+// compares time.Now with LastAction, so a test that slept until each
+// simulated moment would let the agent read late by however long its
+// reconcile took before the energy files. That lag varies with host load,
+// so each reading would be off by the change in lag over its 25 ms
+// interval; a loaded run averaged 552.6 W under a 572.1 W cap. A test
+// cannot set that clock, so after one host reading, which shows the agent
+// reads every package counter, the agent reads the same counters through
+// its telemetry endpoint, as an OTLP hw.energy export stamped with
+// simulated time, which its reader turns into watts over those stamps
+// (otlpjson.PowerReader). The
 // cooldown is kept in simulated time too: before each reconcile LastAction
 // is set to the zero time when the cooldown has run out since the last
 // action, and far ahead when it has not.
@@ -1184,8 +1189,39 @@ func TestHwemuA09VMCapIsBlocked(t *testing.T) {
 	}
 }
 
+// checkWritesThroughNode routes the agent's attribute writes
+// (writeSysfsAttr) and its RAPL limit writes (writeRAPLLimit) under tree
+// through n's CheckWrite before they land, so a value the driver refuses
+// fails with its errno at the write, as on the real host, instead of
+// landing in the tree until the emulator's next step reverts it. A write
+// the driver takes is in effect at once and then lands.
+func checkWritesThroughNode(t *testing.T, n *hwemu.Node, tree *hwemu.Tree) {
+	t.Helper()
+	check := func(path, value string) error {
+		if rel, err := filepath.Rel(tree.Root, path); err == nil && !strings.HasPrefix(rel, "..") {
+			return n.CheckWrite(filepath.ToSlash(rel), value)
+		}
+		return nil
+	}
+	oldAttr, oldRAPL := writeSysfsAttr, writeRAPLLimit
+	writeSysfsAttr = func(path, value string) error {
+		if err := check(path, value); err != nil {
+			return err
+		}
+		return oldAttr(path, value)
+	}
+	writeRAPLLimit = func(path string, data []byte) error {
+		if err := check(path, string(data)); err != nil {
+			return err
+		}
+		return oldRAPL(path, data)
+	}
+	t.Cleanup(func() { writeSysfsAttr, writeRAPLLimit = oldAttr, oldRAPL })
+}
+
 // A10: on the Intel host at full load with both package PL1 limits locked by
-// the BIOS, every RAPL write fails, reconcileOnce returns the error, no DVFS
+// the BIOS, every RAPL write fails with the kernel's ENODATA (the writes go
+// through the node's CheckWrite), reconcileOnce returns the error, no DVFS
 // fallback touches scaling_max_freq, and NodeTwin gets no CPU control status:
 // the cap is never enforced and nothing says so (D10).
 //
@@ -1195,6 +1231,7 @@ func TestHwemuA09VMCapIsBlocked(t *testing.T) {
 // of one: a fallback would throttle from the second reconcile on.
 func TestHwemuA10LockedRAPLLeavesTheCapUnenforced(t *testing.T) {
 	n, tree, p := hwemutest.NewNode(t, "intel-xeon-2s-rapl", withLockedPL1)
+	checkWritesThroughNode(t, n, tree)
 	n.SetLoad(hwemu.Load{CPUUtil: []float64{1}})
 	e := useEmulatedNode(t, tree, map[string]string{"DVFS_COOLDOWN": "0s", "DVFS_TRIP_COUNT": "1"})
 	before, _ := policyMaxFreqs(t, e)
@@ -1206,9 +1243,21 @@ func TestHwemuA10LockedRAPLLeavesTheCapUnenforced(t *testing.T) {
 			t.Fatal(err)
 		}
 		err := reconcileOnce(context.Background(), reader, dyn, nc)
-		if err == nil || !strings.Contains(err.Error(), "write rapl cap") {
-			t.Fatalf("reconcile %d returned %v; today a locked PL1 fails every write and the error ends the reconcile (D10)", i+1, err)
+		if err == nil || !strings.Contains(err.Error(), "write rapl cap") || !strings.Contains(err.Error(), syscall.ENODATA.Error()) {
+			t.Fatalf("reconcile %d returned %v; today a locked PL1 fails every write with the kernel's ENODATA and the error ends the reconcile (D10)", i+1, err)
 		}
+	}
+	if err := n.Step(0); err != nil {
+		t.Fatal(err)
+	}
+	refused := 0
+	for _, ev := range n.State().Events {
+		if ev.Kind == hwemu.EventRejected && ev.Errno == hwemu.ErrnoENODATA {
+			refused++
+		}
+	}
+	if refused != 2 {
+		t.Errorf("%d writes refused with ENODATA at the last reconcile, want one per locked package limit", refused)
 	}
 	after, _ := policyMaxFreqs(t, e)
 	for policy, khz := range before {
@@ -1911,10 +1960,18 @@ func TestHwemuA29L40SSustainedReissuedWithoutPersistence(t *testing.T) {
 	}
 }
 
-// A30: on a W7900 whose driver refuses high, the write lands, reads back,
-// and the emulator reverts it at its next step: not-applied, the silent
-// no-op path, and no retry at the next reconcile.
-func TestHwemuA30W7900RevertedLevelIsNotApplied(t *testing.T) {
+// checkWritesThroughNode routes the agent's writes through the node's
+// CheckWrite (the function of that name).
+func (g *govEmu) checkWritesThroughNode(t *testing.T) {
+	t.Helper()
+	checkWritesThroughNode(t, g.n, g.e.tree)
+}
+
+// A30: on a W7900 whose driver refuses high, the first write of the level
+// fails with the driver's EINVAL, which the agent's errno classification
+// turns into unsupported; no device reads high, the emulator records the
+// refusal, and the next reconciles write nothing.
+func TestHwemuA30W7900RefusedLevelIsUnsupported(t *testing.T) {
 	g := emulatedGovernorNode(t, "amd-radeon-pro-w7900-4gpu", func(p *hwemu.Profile) {
 		var accept []string
 		for _, l := range p.GPUs.DPM.Levels.Accept.V {
@@ -1924,21 +1981,36 @@ func TestHwemuA30W7900RevertedLevelIsNotApplied(t *testing.T) {
 		}
 		p.GPUs.DPM.Levels.Accept = hwemu.Fact[[]string]{V: accept, Src: variantSrc}
 	})
+	g.checkWritesThroughNode(t)
 	writes := watchWrites(t, g.e.tree.SysRoot)
 	r := g.rig(t, nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetSustained})
 	r.reconcile()
-	if s := r.status(componentGPUGovernor); s == nil || s.Result != joulie.GovernorResultApplied {
-		t.Fatalf("status %+v right after the write, want applied (it read back)", s)
+	s := r.status(componentGPUGovernor)
+	if s == nil || s.Result != joulie.GovernorResultUnsupported || !strings.Contains(s.Message, "EINVAL") {
+		t.Fatalf("status %+v right after the write, want unsupported with the driver's EINVAL", s)
+	}
+	for bus, f := range amdLevelFiles(t, g) {
+		if got := readTrimmed(t, f); got == "high" {
+			t.Errorf("%s reads high, a level the driver refused", bus)
+		}
+	}
+	if w := writes.take(); len(w) != 1 || !strings.HasSuffix(w[0], "=high") {
+		t.Errorf("writes %v, want the one refused write of high", w)
 	}
 	g.step(t)
-	writes.take()
-	r.reconcile()
-	if s := r.status(componentGPUGovernor); s == nil || s.Result != joulie.GovernorResultNotApplied {
-		t.Fatalf("status %+v after the emulator reverted the level, want not-applied", s)
+	var refused []hwemu.Event
+	for _, e := range g.n.State().Events {
+		if e.Kind == hwemu.EventRejected {
+			refused = append(refused, e)
+		}
+	}
+	if len(refused) != 1 || refused[0].Errno != hwemu.ErrnoEINVAL || refused[0].Written != "high" {
+		t.Errorf("rejected events %+v, want the one refused write of high with EINVAL", refused)
 	}
 	r.reconcile()
+	r.reconcile()
 	if w := writes.take(); len(w) != 0 {
-		t.Errorf("a level the driver did not take was written again at once: %v", w)
+		t.Errorf("a level the driver refused was written again at once: %v", w)
 	}
 }
 

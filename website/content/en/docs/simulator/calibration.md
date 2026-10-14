@@ -1,6 +1,6 @@
 ---
 title: "Hardware Calibration"
-weight: 37
+weight: 26
 ---
 
 `hwcalib fit` (`simulator/cmd/hwcalib`, package `simulator/pkg/calib`) fits the physics of a hardware profile to a sweep measured on one of your nodes, and writes the result as a local profile the simulator loads from `SIM_PROFILES_DIR`. The builtin profiles keep vendor figures and placeholders; a calibrated profile replaces them with what your machine draws. `hwcalib sweep` records such a sweep on the node itself (see [Recording on the node](#recording-on-the-node-with-hwcalib-sweep)).
@@ -84,7 +84,7 @@ A CPU's package is its `topology/physical_package_id`, else the `physical id` of
 | `-sys-root`, `-proc-root` | `/sys`, `/proc` | the trees to read and write; the load still runs on this machine's CPUs |
 | `-out` | `-` | the file to write, `-` for standard output; an existing file is never replaced |
 
-It exits 0 when the sweep completes, 1 when the host cannot be read, a file cannot be written or the sweep is interrupted (the lines written so far stay whole, and a file with no sample is removed), and 2 on a usage error. The tests run it over an emulated node's tree, with the emulated node in place of the load, and fit the result back to the profile (CB11).
+It exits 0 when the sweep completes, 1 when the host cannot be read, a file cannot be written or the sweep is interrupted (the lines written so far stay whole, and a file with no sample is removed), and 2 on a usage error.
 
 ## Running a fit
 
@@ -141,4 +141,8 @@ The fit is written as `<name>.yaml`, a local profile that `extends` the base and
 - **Never replaced.** An existing file of that name is an error; remove it or pick another `-name`.
 - **Checked.** The profile is loaded back with the others of its directory (`hwemu.LoadProfileSet`) and removed when it does not load. A local base profile must therefore live in the output directory too.
 
-Point the simulator at the directory with `SIM_PROFILES_DIR` and name the profile in a cluster spec pool, as for any local profile (see [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md#simulator-hardware-profiles" >}})).
+Point the simulator at the directory with `SIM_PROFILES_DIR` and name the profile in a cluster spec pool, as for any local profile (see [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md#simulator-hardware-profiles" >}})). `clusterspec` and `simcluster` read the same directory through their `-profiles-dir` flag, which defaults to `SIM_PROFILES_DIR`:
+
+```bash
+go run ./simulator/cmd/clusterspec validate -spec <spec.yaml> -profiles-dir /srv/joulie/profiles
+```

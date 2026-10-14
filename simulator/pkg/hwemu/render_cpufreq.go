@@ -97,9 +97,10 @@ func renderCPUList(ids []int) string {
 // that recorded the driver only, has scaling_driver alone.
 //
 // With the governor facts (cpuGovModeled), intel_pstate in either mode adds
-// the EPP pair when hwp is true, scaling_setspeed is A where userspace is
-// available, and this function writes the one copy of boost where the
-// driver keeps it (cpuGovBoostScope): each policy's boost on amd-pstate
+// the EPP pair and base_frequency when hwp is true, scaling_setspeed is A
+// where userspace is available, cpuinfo_max_freq is S where turbo off
+// lowers it (renderTracksTurbo), and this function writes the one copy of
+// boost where the driver keeps it (cpuGovBoostScope): each policy's boost on amd-pstate
 // (v6.12 cpufreq.c:616-650), the global cpufreq/boost on the others, none
 // on intel_pstate, which has no_turbo instead. Where the driver has
 // set_boost (cpuGovSetBoost: amd-pstate, and acpi-cpufreq and the generic
@@ -115,7 +116,7 @@ func renderCPUFreq(b *renderBuilder, p *Profile, o RenderOptions) error {
 		dir := renderSys(layout.PolicyDir(pol.ID))
 		entries := []renderEntry{{name: "scaling_driver", content: f.Driver.V + "\n", owner: layout.OwnerRender, mode: 0o444}}
 		if !f.Minimal {
-			entries = append(entries, renderPolicyEntries(f, pol)...)
+			entries = append(entries, renderPolicyEntries(p, pol)...)
 		}
 		if err := b.writeEntries(dir, entries); err != nil {
 			return err
@@ -136,7 +137,28 @@ func renderCPUFreq(b *renderBuilder, p *Profile, o RenderOptions) error {
 	return nil
 }
 
-func renderPolicyEntries(f *CPUFreqSpec, pol renderPolicy) []renderEntry {
+// renderTracksTurbo reports whether cpuinfo_max_freq of p's policies
+// follows turbo: the kernel lowers it to the top non-turbo frequency while
+// intel_pstate/no_turbo is set (intel_pstate_update_max_freq in
+// intel_pstate.c) or an amd-pstate policy's boost is off
+// (amd_pstate_cpu_boost_update, amd-pstate.c:665-702), and raises it back
+// when turbo comes on. The emulator then owns the file (S); elsewhere it is
+// render-owned.
+func renderTracksTurbo(p *Profile) bool {
+	f := p.CPUFreq
+	if !cpuGovModeled(f) {
+		return false
+	}
+	switch cpuGovBoostScope(f) {
+	case cpuGovBoostNoTurbo, cpuGovBoostPerCPU:
+		base := cpuGovBaseKHz(p)
+		return base > 0 && base < f.CPUInfoMaxKHz.V
+	}
+	return false
+}
+
+func renderPolicyEntries(p *Profile, pol renderPolicy) []renderEntry {
+	f := p.CPUFreq
 	govs := strings.Fields(f.AvailableGovernors.V)
 	available := strings.Join(govs, " ") + "\n"
 	if !renderSetpolicyDrivers[f.Driver.V] {
@@ -167,11 +189,18 @@ func renderPolicyEntries(f *CPUFreqSpec, pol renderPolicy) []renderEntry {
 	// applies the same rule (nodePolicy.freqHandler), so the rendered values
 	// are what the first step reads back and no write is seen.
 	boot := &nodePolicy{minKHz: f.CPUInfoMinKHz.V, maxKHz: f.CPUInfoMaxKHz.V, table: f.AvailableKHz.V, reqMinKHz: f.CPUInfoMinKHz.V, reqMaxKHz: f.CPUInfoMaxKHz.V}
+	cpuinfoMax, cpuinfoMaxOwner := f.CPUInfoMaxKHz.V, layout.OwnerRender
+	if renderTracksTurbo(p) {
+		cpuinfoMaxOwner = layout.OwnerEmulator
+		if cpuGovBootBoost(f) == 0 {
+			cpuinfoMax = cpuGovBaseKHz(p)
+		}
+	}
 	entries := []renderEntry{
 		{name: "scaling_available_governors", content: available, owner: layout.OwnerRender, mode: 0o444},
 		{name: "scaling_governor", content: f.Governor.V + "\n", owner: layout.OwnerAgent, mode: 0o644},
 		{name: "cpuinfo_min_freq", content: renderUint(f.CPUInfoMinKHz.V), owner: layout.OwnerRender, mode: 0o444},
-		{name: "cpuinfo_max_freq", content: renderUint(f.CPUInfoMaxKHz.V), owner: layout.OwnerRender, mode: 0o444},
+		{name: "cpuinfo_max_freq", content: renderUint(cpuinfoMax), owner: cpuinfoMaxOwner, mode: 0o444},
 		{name: "cpuinfo_transition_latency", content: renderUint(renderTransitionLatencyNS[f.Driver.V]), owner: layout.OwnerRender, mode: 0o444},
 		{name: "scaling_min_freq", content: renderUint(boot.effMinKHz()), owner: layout.OwnerAgent, mode: 0o644},
 		{name: "scaling_max_freq", content: renderUint(boot.effMaxKHz()), owner: layout.OwnerAgent, mode: 0o644},
@@ -213,6 +242,12 @@ func renderPolicyEntries(f *CPUFreqSpec, pol renderPolicy) []renderEntry {
 			renderEntry{name: "energy_performance_preference", content: epp, owner: layout.OwnerAgent, mode: 0o644},
 			renderEntry{name: "energy_performance_available_preferences", content: prefs, owner: prefsOwner, mode: 0o444},
 		)
+	}
+	if modeled && f.HWP.V && cpuGovIntel(f.Driver.V) && f.BaseKHz.Src != "" {
+		// intel_pstate with HWP, in either mode, shows the guaranteed
+		// performance as base_frequency (hwp_cpufreq_attrs and
+		// show_base_frequency in v6.12 intel_pstate.c).
+		entries = append(entries, renderEntry{name: "base_frequency", content: renderUint(f.BaseKHz.V), owner: layout.OwnerRender, mode: 0o444})
 	}
 	if modeled && cpuGovBoostScope(f) == cpuGovBoostPerCPU {
 		// cpufreq_policy.boost_enabled, 0644 (v6.12 cpufreq.c:616-650).

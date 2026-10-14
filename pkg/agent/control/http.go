@@ -5,9 +5,9 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -30,9 +30,10 @@ type HTTPControlClient struct {
 // The endpoint answers with one OTLP JSON ExportMetricsServiceRequest, such
 // as the simulator's /otlp/telemetry/{node}, and the reader returns the power
 // of the node's CPU packages (hw.type=cpu): the RAPL path it stands in for
-// measures packages only, so GPU power never enters it. A body without a
-// top-level resourceMetrics key is the legacy {"packagePowerWatts": ...}
-// JSON, read until v0.4.0 with one deprecation warning per endpoint and node.
+// measures packages only, so GPU power never enters it. Any other JSON
+// object is the legacy packagePowerWatts JSON, read until
+// otlpjson.LegacyRemovedIn with one deprecation warning per endpoint and
+// node (otlpjson.ReadPower).
 //
 // The agent builds a new reader on every reconcile, so what must outlive one
 // read, the previous energy points and the warning, is kept per Endpoint and
@@ -68,56 +69,23 @@ func (h *HTTPPowerReader) state() *httpPowerState {
 	return st.(*httpPowerState)
 }
 
-// maxTelemetryBody bounds the body the reader decodes. One node's export is
-// a few kilobytes.
-const maxTelemetryBody = 8 << 20
-
 // ReadPowerWatts fetches the current CPU package power from the telemetry
 // endpoint. With an OTLP body it is not ok while a CPU energy series without
 // a power gauge warms up (otlpjson.PowerReader.Watts).
 func (h *HTTPPowerReader) ReadPowerWatts() (float64, bool, error) {
-	url := strings.ReplaceAll(h.Endpoint, "{node}", h.NodeName)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	body, err := otlpjson.FetchTelemetry(context.Background(), h.Client, strings.ReplaceAll(h.Endpoint, "{node}", h.NodeName))
 	if err != nil {
 		return 0, false, err
 	}
-	resp, err := h.Client.Do(req)
-	if err != nil {
-		return 0, false, err
+	st := h.state()
+	w, ok, legacy, err := otlpjson.ReadPower(body, &st.otlp, otlpjson.Selector{Node: h.NodeName, HwTypes: []string{semconv.HwTypeCPU}})
+	if legacy {
+		st.legacyWarn.Do(func() {
+			log.Printf("warning: telemetry endpoint %s answered with the legacy packagePowerWatts JSON, which is deprecated and read until %s; serve an OTLP JSON metrics export with %s or %s points of %s=%s instead",
+				h.Endpoint, otlpjson.LegacyRemovedIn, semconv.HwEnergy.Name, semconv.HwPower.Name, semconv.AttrHwType, semconv.HwTypeCPU)
+		})
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, false, fmt.Errorf("telemetry endpoint status=%d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTelemetryBody))
-	if err != nil {
-		return 0, false, err
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return 0, false, err
-	}
-	if _, ok := payload["resourceMetrics"]; ok {
-		var md otlpjson.MetricsData
-		if err := json.Unmarshal(body, &md); err != nil {
-			return 0, false, fmt.Errorf("telemetry endpoint OTLP body: %w", err)
-		}
-		w, ok := h.state().otlp.Watts(md, otlpjson.Selector{Node: h.NodeName, HwTypes: []string{semconv.HwTypeCPU}})
-		return w, ok, nil
-	}
-	h.state().legacyWarn.Do(func() {
-		log.Printf("warning: telemetry endpoint %s answered with the legacy packagePowerWatts JSON, which is deprecated and read until v0.4.0; serve an OTLP JSON metrics export with %s or %s points of %s=%s instead",
-			h.Endpoint, semconv.HwEnergy.Name, semconv.HwPower.Name, semconv.AttrHwType, semconv.HwTypeCPU)
-	})
-	if v, ok := extractFloat(payload, "packagePowerWatts"); ok {
-		return v, true, nil
-	}
-	if cpuRaw, ok := payload["cpu"].(map[string]any); ok {
-		if v, ok := extractFloat(cpuRaw, "packagePowerWatts"); ok {
-			return v, true, nil
-		}
-	}
-	return 0, false, nil
+	return w, ok, err
 }
 
 // ApplyCPUControl sends a CPU control command to the control endpoint.
@@ -177,23 +145,4 @@ func (h *HTTPControlClient) ApplyGPUControl(action string, capWattsPerGPU float6
 		return fmt.Errorf("control endpoint status=%d", resp.StatusCode)
 	}
 	return nil
-}
-
-func extractFloat(m map[string]any, key string) (float64, bool) {
-	v, ok := m[key]
-	if !ok {
-		return 0, false
-	}
-	switch val := v.(type) {
-	case float64:
-		return val, true
-	case int:
-		return float64(val), true
-	case int64:
-		return float64(val), true
-	case json.Number:
-		f, err := val.Float64()
-		return f, err == nil
-	}
-	return 0, false
 }

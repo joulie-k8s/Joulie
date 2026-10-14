@@ -263,25 +263,16 @@ func snapshotTime(b []byte, path string) time.Time {
 func CaptureNodeTwins(twins []v1alpha1.NodeTwin, at, start time.Time) []otlpjson.Metric {
 	twins = append([]v1alpha1.NodeTwin(nil), twins...)
 	sort.Slice(twins, func(i, j int) bool { return twins[i].Spec.NodeName < twins[j].Spec.NodeName })
-	power := &otlpjson.Gauge{}
-	class := &otlpjson.Sum{AggregationTemporality: otlpjson.AggregationTemporalityCumulative}
-	control := &otlpjson.Sum{AggregationTemporality: otlpjson.AggregationTemporalityCumulative}
-	ts, st := otlpjson.Uint64String(at.UnixNano()), otlpjson.Uint64String(start.UnixNano())
-	one := otlpjson.Int64String(1)
+	var power, class, control []otlpjson.NumberDataPoint
 	for _, t := range twins {
 		node := otlpjson.String(semconv.AttrK8sNodeName, t.Spec.NodeName)
 		if m := t.Status.PowerMeasurement; m != nil {
-			w := m.MeasuredNodePowerW
-			power.DataPoints = append(power.DataPoints, otlpjson.NumberDataPoint{
-				Attributes:   []otlpjson.KeyValue{node, otlpjson.String(semconv.AttrJoulieNodeTwinPowerSource, m.Source)},
-				TimeUnixNano: ts, AsDouble: &w,
-			})
+			power = append(power, otlpjson.DoublePoint(time.Time{}, at, m.MeasuredNodePowerW,
+				node, otlpjson.String(semconv.AttrJoulieNodeTwinPowerSource, m.Source)))
 		}
 		if c := t.Status.SchedulableClass; c != "" {
-			class.DataPoints = append(class.DataPoints, otlpjson.NumberDataPoint{
-				Attributes:        []otlpjson.KeyValue{node, otlpjson.String(semconv.AttrJoulieNodeSchedulableClass, c)},
-				StartTimeUnixNano: st, TimeUnixNano: ts, AsInt: &one,
-			})
+			class = append(class, otlpjson.IntPoint(start, at, 1,
+				node, otlpjson.String(semconv.AttrJoulieNodeSchedulableClass, c)))
 		}
 		if cs := t.Status.ControlStatus; cs != nil {
 			for _, comp := range []struct {
@@ -291,24 +282,22 @@ func CaptureNodeTwins(twins []v1alpha1.NodeTwin, at, start time.Time) []otlpjson
 				if comp.r == nil {
 					continue
 				}
-				control.DataPoints = append(control.DataPoints, otlpjson.NumberDataPoint{
-					Attributes: []otlpjson.KeyValue{node, otlpjson.String(semconv.AttrHwType, comp.hw),
-						otlpjson.String(semconv.AttrJoulieNodeTwinControlBackend, comp.r.Backend),
-						otlpjson.String(semconv.AttrJoulieNodeTwinControlResult, comp.r.Result)},
-					StartTimeUnixNano: st, TimeUnixNano: ts, AsInt: &one,
-				})
+				control = append(control, otlpjson.IntPoint(start, at, 1,
+					node, otlpjson.String(semconv.AttrHwType, comp.hw),
+					otlpjson.String(semconv.AttrJoulieNodeTwinControlBackend, comp.r.Backend),
+					otlpjson.String(semconv.AttrJoulieNodeTwinControlResult, comp.r.Result)))
 			}
 		}
 	}
 	var out []otlpjson.Metric
-	if len(power.DataPoints) > 0 {
-		out = append(out, otlpjson.Metric{Name: semconv.JoulieCaptureNodeTwinMeasuredPower.Name, Unit: semconv.JoulieCaptureNodeTwinMeasuredPower.Unit, Gauge: power})
+	if m := otlpjson.GaugeMetric(semconv.JoulieCaptureNodeTwinMeasuredPower, power...); len(m.Gauge.DataPoints) > 0 {
+		out = append(out, m)
 	}
-	if len(class.DataPoints) > 0 {
-		out = append(out, otlpjson.Metric{Name: semconv.JoulieCaptureNodeTwinSchedulableClass.Name, Unit: semconv.JoulieCaptureNodeTwinSchedulableClass.Unit, Sum: class})
+	if m := otlpjson.SumMetric(semconv.JoulieCaptureNodeTwinSchedulableClass, class...); len(m.Sum.DataPoints) > 0 {
+		out = append(out, m)
 	}
-	if len(control.DataPoints) > 0 {
-		out = append(out, otlpjson.Metric{Name: semconv.JoulieCaptureNodeTwinControlResult.Name, Unit: semconv.JoulieCaptureNodeTwinControlResult.Unit, Sum: control})
+	if m := otlpjson.SumMetric(semconv.JoulieCaptureNodeTwinControlResult, control...); len(m.Sum.DataPoints) > 0 {
+		out = append(out, m)
 	}
 	return out
 }
@@ -317,8 +306,9 @@ func CaptureNodeTwins(twins []v1alpha1.NodeTwin, at, start time.Time) []otlpjson
 // scheduler extender and the simulator whole, each agent's last lines.
 const agentLogLines = 500
 
-// agentNodeLabel names the Node an emulated agent stands in for.
-const agentNodeLabel = "sim.joulie.io/node"
+// agentNodeKey names the Node an emulated agent stands in for: a pod
+// annotation, as the Joulie chart sets it (agent-emulated.yaml), or a label.
+const agentNodeKey = "sim.joulie.io/node"
 
 // CollectLogs writes the logs of the Joulie and simulator pods under
 // dir/LogsDir: controller-manager.log, scheduler.log, simulator.log and
@@ -362,7 +352,12 @@ func logFileName(p corev1.Pod) (string, int64) {
 	case strings.Contains(p.Name, "scheduler"):
 		return "scheduler.log", 0
 	case strings.Contains(p.Name, "agent"):
-		node := p.Labels[agentNodeLabel]
+		// Every emulated agent runs on the infra Node, so spec.nodeName is
+		// the last resort: the Node the pod stands in for comes first.
+		node := p.Annotations[agentNodeKey]
+		if node == "" {
+			node = p.Labels[agentNodeKey]
+		}
 		if node == "" {
 			node = p.Spec.NodeName
 		}

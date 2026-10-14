@@ -97,14 +97,17 @@ const (
 )
 
 // nvPersistenceWords are the persistence_mode contents -pm writes, by the
-// value it takes: 0 disables persistence mode, 1 enables it.
-var nvPersistenceWords = map[string]string{"0": "Disabled", "1": "Enabled"}
+// value it takes: 0 or DISABLED disables persistence mode, 1 or ENABLED
+// enables it (nvidia-smi -h: "-pm ... 0/DISABLED, 1/ENABLED").
+var nvPersistenceWords = map[string]string{"0": "Disabled", "1": "Enabled", "DISABLED": "Disabled", "ENABLED": "Enabled"}
 
 // runNvidiaSMI emulates nvidia-smi -L, --query-gpu, -q -d SUPPORTED_CLOCKS,
 // -pl, -pm, the clock locks -lgc (with --mode), -rgc, -lmc and -rmc, and
-// the deprecated -ac and -rac, optionally restricted by -i. Anything else is
-// an invalid combination, exit 2. The option syntax is nvidia-smi -h's at
-// driver 590.48.01 (the capture of nvFields, lines 164 to 194).
+// the deprecated -ac and -rac, optionally restricted by -i. An option it
+// does not have exits 255 (nvUnknownOption); a known option without its
+// value, or a bad combination, is an invalid combination, exit 2. The
+// option syntax is nvidia-smi -h's at driver 590.48.01 (the capture of
+// nvFields, lines 164 to 194).
 func runNvidiaSMI(c *call) int {
 	if c.variant != nvVariantDefault {
 		return c.unknownVariant()
@@ -171,7 +174,7 @@ func runNvidiaSMI(c *call) int {
 		case "-rac", "--reset-applications-clocks":
 			ok = flag(&rac)
 		default:
-			ok = false
+			return nvUnknownOption(c)
 		}
 		if !ok {
 			return nvInvalidArguments(c)
@@ -329,8 +332,16 @@ func runNvidiaSMI(c *call) int {
 	return nvSetPowerLimit(c, gpus, watts)
 }
 
-// nvInvalidArguments is nvidia-smi's answer to an unknown option or a bad
-// combination (text assumed).
+// nvUnknownOption is nvidia-smi's answer to an option it does not have: the
+// invalid-combination line on stdout and exit 255, as driver R525 answers
+// it (text assumed).
+func nvUnknownOption(c *call) int {
+	fmt.Fprintln(c.stdout, "Invalid combination of input arguments. Please run 'nvidia-smi -h' for help.")
+	return nvExitOther
+}
+
+// nvInvalidArguments is nvidia-smi's answer to a known option without its
+// value or a bad combination (text assumed).
 func nvInvalidArguments(c *call) int {
 	fmt.Fprintln(c.stderr, "Invalid combination of input arguments. Please run 'nvidia-smi -h' for help.")
 	return nvExitInvalidArgument
@@ -385,15 +396,19 @@ func nvSelect(gpus []nvGPU, ids string) ([]nvGPU, error) {
 // event reasons verbatim. A value the device does not support prints its
 // token, such as [N/A]. The header and the unit suffixes (" W", " %",
 // " MHz", and " [W]", " [%]", " [MHz]" in the header) are those of the
-// capture of nvFields (lines 1740 to 1741); the header names the fields as
-// the call asked for them (assumed). Output is printed only once every value
-// has been read, so a missing file leaves stdout empty.
+// capture of nvFields (lines 1740 to 1741); the header names each field by
+// its canonical name, whichever alias the call asked for (nvCanonical).
+// Output is printed only once every value has been read, so a missing file
+// leaves stdout empty.
 func nvQuery(c *call, gpus []nvGPU, fields []string, header, units bool) int {
 	var out strings.Builder
 	if header {
 		names := make([]string, len(fields))
 		for i, f := range fields {
 			names[i] = f
+			if canonical, ok := nvCanonical[f]; ok {
+				names[i] = canonical
+			}
 			if units {
 				switch nvFields[f].kind {
 				case nvWatts:
@@ -445,6 +460,17 @@ func nvQuery(c *call, gpus []nvGPU, fields []string, header, units bool) int {
 	}
 	io.WriteString(c.stdout, out.String())
 	return 0
+}
+
+// nvCanonical is the name the CSV header prints for a field asked for by
+// an alias: nvidia-smi --help-query-gpu lists each field as "<name>" or
+// "<alias>", and the header carries the name (the capture of nvFields,
+// lines 328 to 1064).
+var nvCanonical = map[string]string{
+	"clocks.sm":                      "clocks.current.sm",
+	"clocks.mem":                     "clocks.current.memory",
+	"clocks.max.mem":                 "clocks.max.memory",
+	"clocks_throttle_reasons.active": "clocks_event_reasons.active",
 }
 
 // nvSetPowerLimit is -pl: it writes power_limit_mw = round(W*1000) for every
@@ -653,8 +679,10 @@ func nvApplicationsClocks(c *call, gpus []nvGPU, reset bool) int {
 }
 
 // nvSupportedClocks is -q -d SUPPORTED_CLOCKS: the -q header, then per
-// selected GPU each supported memory clock with every supported graphics
-// clock under it, both in descending order. The header lines, their value
+// selected GPU each supported memory clock with the graphics clocks it
+// offers under it, both in descending order: every one, or those up to the
+// memory clock's ceiling in supported_clocks, as a lower memory clock
+// offers only the lower graphics clocks. The header lines, their value
 // column and the GPU line are those of nvidia-smi -q at driver 590.48.01
 // (the capture of nvFields, lines 1479 to 1487), without the CUDA Version
 // line, which the NVML state does not hold; attached counts every GPU, as
@@ -681,15 +709,18 @@ func nvSupportedClocks(c *call, attached int, gpus []nvGPU) int {
 		if err != nil {
 			return nvStateError(c, err)
 		}
-		mem, graphics, err := nvParseSupported(s)
+		mem, graphics, ceil, err := nvParseSupported(s)
 		if err != nil {
 			return nvStateError(c, fmt.Errorf("%s: %w", filepath.Join(g.Dir, nvClockSupportedFile), err))
 		}
 		fmt.Fprintf(&out, "GPU %s\n    Supported Clocks\n", bus)
 		for _, m := range mem {
-			nvLogLine(&out, 8, "Memory", m+" MHz")
+			nvLogLine(&out, 8, "Memory", strconv.FormatInt(m, 10)+" MHz")
+			top, capped := ceil[m]
 			for _, gr := range graphics {
-				nvLogLine(&out, 12, "Graphics", gr+" MHz")
+				if !capped || gr <= top {
+					nvLogLine(&out, 12, "Graphics", strconv.FormatInt(gr, 10)+" MHz")
+				}
 			}
 		}
 		out.WriteString("\n")
@@ -705,29 +736,40 @@ func nvLogLine(b *strings.Builder, indent int, key, value string) {
 }
 
 // nvParseSupported reads supported_clocks: a memory line and a graphics
-// line, each listing whole MHz.
-func nvParseSupported(s string) (mem, graphics []string, err error) {
+// line, each listing whole MHz, and a graphics-max line, "graphics-max
+// <memory MHz> <graphics MHz>", for each memory clock that offers only the
+// graphics clocks up to a ceiling, which ceil maps.
+func nvParseSupported(s string) (mem, graphics []int64, ceil map[int64]int64, err error) {
+	ceil = map[int64]int64{}
 	for _, line := range strings.Split(s, "\n") {
 		f := strings.Fields(line)
 		if len(f) == 0 {
 			continue
 		}
+		vals := make([]int64, 0, len(f)-1)
 		for _, v := range f[1:] {
-			if _, perr := strconv.ParseInt(v, 10, 64); perr != nil {
-				return nil, nil, fmt.Errorf("clock %q is not whole MHz", v)
+			x, perr := strconv.ParseInt(v, 10, 64)
+			if perr != nil {
+				return nil, nil, nil, fmt.Errorf("clock %q is not whole MHz", v)
 			}
+			vals = append(vals, x)
 		}
 		switch f[0] {
 		case "memory":
-			mem = f[1:]
+			mem = vals
 		case "graphics":
-			graphics = f[1:]
+			graphics = vals
+		case "graphics-max":
+			if len(vals) != 2 {
+				return nil, nil, nil, fmt.Errorf("line %q is not graphics-max <memory MHz> <graphics MHz>", line)
+			}
+			ceil[vals[0]] = vals[1]
 		default:
-			return nil, nil, fmt.Errorf("line %q is neither memory nor graphics", line)
+			return nil, nil, nil, fmt.Errorf("line %q is neither memory, graphics nor graphics-max", line)
 		}
 	}
 	if len(mem) == 0 || len(graphics) == 0 {
-		return nil, nil, errors.New("no memory or no graphics clocks")
+		return nil, nil, nil, errors.New("no memory or no graphics clocks")
 	}
-	return mem, graphics, nil
+	return mem, graphics, ceil, nil
 }

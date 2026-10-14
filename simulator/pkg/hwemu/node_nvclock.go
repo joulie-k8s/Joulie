@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/governor"
+	"github.com/matbun/joulie/pkg/governor/discover"
 	"github.com/matbun/joulie/pkg/otel/semconv"
 	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 	"github.com/matbun/joulie/simulator/pkg/phys"
@@ -28,12 +30,34 @@ import (
 // lower bound of a lock above them while gpus.clocks.lockFloorAtIdle holds
 // (assumed, default true). A busy GPU is in P0; an idle one in idlePState,
 // or in P0 while a lock floor holds a clock above its idle clock (assumed).
+// The preset the locks map to is the one pkg/governor names for them
+// (ReverseNvidia), on the facts the agent discovers for the GPU: the
+// architecture from the node's labels and product name, and the supported
+// clocks.
 
 // nvclockLock is one lock as nvidia-smi was told it, in MHz; set is false
 // while no lock holds.
 type nvclockLock struct {
 	set      bool
 	min, max int64
+}
+
+// lock is l as a pkg/governor lock, [min, max] in MHz, nil while none
+// holds.
+func (l nvclockLock) lock() *[2]int {
+	if !l.set {
+		return nil
+	}
+	return &[2]int{int(l.min), int(l.max)}
+}
+
+// nvclockInts is a list of clocks in MHz as pkg/governor takes them.
+func nvclockInts(xs []int64) []int {
+	out := make([]int, len(xs))
+	for i, x := range xs {
+		out[i] = int(x)
+	}
+	return out
 }
 
 // text is the lock file's content for l, without the newline.
@@ -47,8 +71,11 @@ func (l nvclockLock) text() string {
 // nodeGPUNVClock is the clock state of one NVIDIA GPU that gpuClockState
 // does not hold: the facts, the locks as written and the files behind them.
 // spec is nil for a GPU without gpus.clocks, which then has no clock model.
+// facts are the pkg/governor facts the agent discovers for the GPU, which
+// name the preset its locks map to.
 type nodeGPUNVClock struct {
 	spec             *NVClocksSpec
+	facts            governor.NVFacts
 	gpu, mem         nvclockLock
 	gpuFile, memFile *nodeAFile
 
@@ -68,12 +95,14 @@ func (n *Node) buildNVClock() error {
 	if gs == nil || gs.Vendor != "nvidia" || gs.Clocks == nil {
 		return nil
 	}
+	arch := discover.NvidiaArch(renderNodeLabels(n.profile, ""), gs.Product.V)
+	facts := discover.NvidiaFacts(arch, nvclockInts(gs.Clocks.Supported.SMMHz.V), nvclockInts(gs.Clocks.Supported.MemMHz.V))
 	for _, g := range n.gpus {
 		if !g.nvml {
 			continue
 		}
 		v := &g.nvclock
-		v.spec = gs.Clocks
+		v.spec, v.facts = gs.Clocks, facts
 		dir := filepath.Join(n.stateRoot, filepath.FromSlash(layout.NVMLGPUDir(g.index)))
 		file := func(name string) string { return filepath.Join(dir, name) }
 		h, cur := nvclockLockHandler(&v.gpu)
@@ -128,18 +157,20 @@ func (n *Node) deriveNVClock() {
 }
 
 // deriveGPUNVClock sets g.clock, the performance state and the event
-// reasons of one GPU. The reasons are GPU idle on an idle GPU; on a busy
-// one SW power cap while the natural power exceeds the cap in effect, and
-// applications clocks setting while a graphics lock holds the clock below
-// the sustained maximum (assumed: which reason a lock raises is not
-// documented).
+// reasons of one GPU. The graphics clock stays at or below the ceiling of
+// the memory clock in effect (supported.smMaxByMem), so a low -lmc lock
+// holds it down as a lower memory clock offers only lower graphics clocks.
+// The reasons are GPU idle on an idle GPU; on a busy one SW power cap while
+// the natural power exceeds the cap in effect, and applications clocks
+// setting while a graphics lock holds the clock below the sustained maximum
+// (assumed: which reason a lock raises is not documented).
 func (n *Node) deriveGPUNVClock(g *nodeGPU) {
 	v := &g.nvclock
 	c := v.spec
 	busy := n.gpuUtil(g.index) > 0
 	floor := nvclockLockFloorAtIdle(c)
-	sm := nvclockRun(v.gpu, busy, floor, c.SM.MinMHz.V, c.SM.IdleMHz.V, c.SM.SustainedMaxMHz.V)
 	mem := nvclockRun(v.mem, busy, floor, c.Mem.MinMHz.V, c.Mem.IdleMHz.V, c.Mem.MaxMHz.V)
+	sm := nvclockMemBound(c, mem, nvclockRun(v.gpu, busy, floor, c.SM.MinMHz.V, c.SM.IdleMHz.V, c.SM.SustainedMaxMHz.V))
 
 	v.pstate = c.IdlePState.V
 	if busy || sm > c.SM.IdleMHz.V || mem > c.Mem.IdleMHz.V {
@@ -160,8 +191,13 @@ func (n *Node) deriveGPUNVClock(g *nodeGPU) {
 
 	k := &g.clock
 	k.native = nvclockNative(v.gpu, v.mem)
-	k.preset = nvclockPreset(c, v.gpu, v.mem)
+	k.preset, _ = governor.ReverseNvidia(v.facts, v.gpu.lock(), v.mem.lock())
+	memTop := nvclockRun(v.mem, true, floor, c.Mem.MinMHz.V, c.Mem.IdleMHz.V, c.Mem.MaxMHz.V)
 	k.computeFloorMHz, k.computeCeilMHz = nvclockBounds(v.gpu)
+	if ceil := float64(nvclockSMCeilMHz(c, memTop)); ceil > 0 && (k.computeCeilMHz == 0 || ceil < k.computeCeilMHz) {
+		k.computeCeilMHz = math.Max(ceil, float64(c.SM.MinMHz.V))
+		k.computeFloorMHz = math.Min(k.computeFloorMHz, k.computeCeilMHz)
+	}
 	k.memFloorMHz, k.memCeilMHz = nvclockBounds(v.mem)
 	k.dataPathAuto = !v.mem.set && c.Mem.MinMHz.V < c.Mem.MaxMHz.V
 	switch {
@@ -174,10 +210,19 @@ func (n *Node) deriveGPUNVClock(g *nodeGPU) {
 	}
 	// The maximum in effect is the clock a busy GPU runs at within its
 	// locks; the hardware maximum is NVML's maximum clock.
-	smTop := nvclockRun(v.gpu, true, floor, c.SM.MinMHz.V, c.SM.IdleMHz.V, c.SM.SustainedMaxMHz.V)
-	memTop := nvclockRun(v.mem, true, floor, c.Mem.MinMHz.V, c.Mem.IdleMHz.V, c.Mem.MaxMHz.V)
+	smTop := nvclockMemBound(c, memTop, nvclockRun(v.gpu, true, floor, c.SM.MinMHz.V, c.SM.IdleMHz.V, c.SM.SustainedMaxMHz.V))
 	k.setDomain(semconv.ClockDomainGraphics, float64(sm), float64(c.SM.MaxMHz.V), float64(smTop))
 	k.setDomain(semconv.ClockDomainMemory, float64(mem), float64(c.Mem.MaxMHz.V), float64(memTop))
+}
+
+// nvclockMemBound is the graphics clock sm held at or below the ceiling of
+// memory clock mem (nvclockSMCeilMHz), and never below the lowest graphics
+// clock.
+func nvclockMemBound(c *NVClocksSpec, mem, sm int64) int64 {
+	if ceil := nvclockSMCeilMHz(c, mem); ceil > 0 {
+		return max(c.SM.MinMHz.V, min(sm, ceil))
+	}
+	return sm
 }
 
 // nvclockRun is the clock of one domain: top, the highest it sustains,
@@ -240,38 +285,6 @@ func nvclockNative(gpu, mem nvclockLock) string {
 		return api.GovernorStateUnlocked
 	}
 	return strings.Join(parts, " ")
-}
-
-// nvclockPreset is the preset the locks map to, as the NVIDIA mapping
-// writes each one: auto with no lock (also sustained on a GPU whose memory
-// clock cannot be locked, where sustained changes nothing); sustained a
-// memory lock at its maximum alone; efficient a graphics lock from the
-// minimum to a ceiling below the maximum; low and peak both domains locked
-// at their minimum or maximum, the memory lock only where it exists. Any
-// other combination maps to no single preset.
-func nvclockPreset(c *NVClocksSpec, gpu, mem nvclockLock) string {
-	at := func(l nvclockLock, lo, hi int64) bool { return l.set && l.min == lo && l.max == hi }
-	smMin, smMax := c.SM.MinMHz.V, c.SM.MaxMHz.V
-	memMin, memMax := c.Mem.MinMHz.V, c.Mem.MaxMHz.V
-	memAt := func(v int64) bool {
-		if c.Mem.RuntimeLock.V && memMin < memMax {
-			return at(mem, v, v)
-		}
-		return !mem.set
-	}
-	switch {
-	case !gpu.set && !mem.set:
-		return api.GPUGovernorPresetAuto
-	case !gpu.set && at(mem, memMax, memMax):
-		return api.GPUGovernorPresetSustained
-	case at(gpu, smMin, smMin) && memAt(memMin):
-		return api.GPUGovernorPresetLow
-	case at(gpu, smMax, smMax) && memAt(memMax):
-		return api.GPUGovernorPresetPeak
-	case gpu.set && gpu.min == smMin && gpu.max < smMax && !mem.set:
-		return api.GPUGovernorPresetEfficient
-	}
-	return ""
 }
 
 // substepNVClock advances the clock state by one substep of h seconds.

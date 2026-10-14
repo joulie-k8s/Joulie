@@ -56,7 +56,7 @@ func writeQuery(b *strings.Builder, role string, q Query) {
 	}
 }
 
-// The node power queries of section 1.6 of the OTEL-IN plan, verbatim: the
+// The node power queries the telemetry contract names, verbatim: the
 // default naming and window, labels form, target_info form, host scope and
 // both Kepler presets. promqltest evaluates each of them in tests/promql.
 // One change: the target_info of each join is restricted with "and on (job,
@@ -85,7 +85,7 @@ var nodePowerContract = []struct {
 	{
 		name:      "kepler",
 		spec:      NodePowerSpec{Preset: NodePowerPresetKepler},
-		primary:   `sum by (node_name) (label_replace(rate(kepler_node_cpu_joules_total{zone="package"}[5m]), "joulie_component", "cpu", "", "") or label_replace(rate(kepler_node_gpu_joules_total[5m]), "joulie_component", "gpu", "", ""))`,
+		primary:   `sum by (node_name) (label_replace(rate(kepler_node_cpu_active_joules_total{zone=~"package(-[0-9]+-die-[0-9]+)?"}[5m]), "joulie_component", "cpu_active", "", "") or label_replace(rate(kepler_node_cpu_idle_joules_total{zone=~"package(-[0-9]+-die-[0-9]+)?"}[5m]), "joulie_component", "cpu_idle", "", "") or label_replace(rate(kepler_node_gpu_joules_total[5m]), "joulie_component", "gpu", "", ""))`,
 		wantGroup: "node_name",
 	},
 	{

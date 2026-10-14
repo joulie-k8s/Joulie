@@ -32,7 +32,7 @@ var (
 	allEPPs          = []string{"default", "performance", "balance_performance", "balance_power", "power"}
 )
 
-// cpuRow is one row of the CPU mapping table (design section 1.4): a node
+// cpuRow is one row of the CPU mapping table of pkg/governor: a node
 // with two policies, the native state each preset must map to, and the
 // boost writes per boost word (nil when the node has no boost file).
 type cpuRow struct {
@@ -96,7 +96,7 @@ func wantCPUPlan(row cpuRow, preset, boost string) Plan {
 	if c.result == joulie.GovernorResultUnsupported || (boost != "" && row.boost == nil) {
 		return Plan{Result: joulie.GovernorResultUnsupported}
 	}
-	p := Plan{Native: c.governor, Result: c.result}
+	p := Plan{State: State{Governor: c.governor, EPP: c.epp, Boost: boost}, Native: c.governor, Result: c.result}
 	for _, n := range []string{"0", "1"} {
 		p.Writes = append(p.Writes, Write{"devices/system/cpu/cpufreq/policy" + n + "/scaling_governor", c.governor})
 	}
@@ -152,6 +152,7 @@ func TestGA02FallbackWordsAreEquivalent(t *testing.T) {
 	}
 	want := Plan{
 		Writes: []Write{{"devices/system/cpu/cpufreq/policy0/scaling_governor", "schedutil"}},
+		State:  State{Governor: "schedutil"},
 		Native: "schedutil", Result: joulie.GovernorResultEquivalent,
 	}
 	if !reflect.DeepEqual(got, want) {

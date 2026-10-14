@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -45,7 +46,7 @@ func emuFacility(specW float64, _ time.Time) facility.Values {
 // EM03: across Close and a second New on the same root, whose runners start
 // their counters at 0 again, every exported energy (host, component, IT,
 // cooling, rack) continues from its value before the restart, and every
-// counter keeps its start time (DR-32). No energy is counted for the time
+// counter keeps its start time. No energy is counted for the time
 // the emulator was down, the known deviation.
 func TestEM03CountersSurviveARestart(t *testing.T) {
 	root := t.TempDir()
@@ -107,24 +108,43 @@ func TestEM03CountersSurviveARestart(t *testing.T) {
 	}
 }
 
-// EM04: each tick replaces each ledger with a new file, renamed into place,
-// so a reader never sees a partial write, and leaves no temp file behind.
-func TestEM04LedgersAreReplacedEveryTick(t *testing.T) {
+// EM04: each tick rewrites each ledger in place, in one write of the whole
+// ledger at offset 0: the file keeps its inode, holds that tick's ledger
+// whole after every tick, and no temp file is left behind.
+func TestEM04LedgersAreRewrittenInPlaceEveryTick(t *testing.T) {
 	root := t.TempDir()
 	e := emuNew(t, emuConfig(root, newEmuFakes(), &emuLog{}, emuMember("a", "rack-1", "", 1, 0)))
 	paths := []string{filepath.Join(root, "a", layout.StateDir, LedgerFile), filepath.Join(root, FacilityLedgerFile)}
-	last := make([]os.FileInfo, len(paths))
+	first := make([]os.FileInfo, len(paths))
 	for i := 1; i <= 3; i++ {
-		emuTick(t, e, time.Duration(i)*time.Second, nil, true, nil)
+		s := emuTick(t, e, time.Duration(i)*time.Second, nil, true, nil)
 		for j, p := range paths {
 			fi, err := os.Stat(p)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if last[j] != nil && os.SameFile(last[j], fi) {
-				t.Errorf("tick %d: %s kept its inode; it was written in place", i, p)
+			if first[j] == nil {
+				first[j] = fi
+			} else if !os.SameFile(first[j], fi) {
+				t.Errorf("tick %d: %s has a new inode; it is written in place", i, p)
 			}
-			last[j] = fi
+			if fi.Mode().Perm() != 0o644 {
+				t.Errorf("%s mode %v, want 0644", p, fi.Mode().Perm())
+			}
+		}
+		node, err := loadNodeLedger(paths[0], "a", emuStart)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a := emuNode(t, s, "a"); node.HostJ != a.Host.EnergyJ {
+			t.Errorf("tick %d: ledger host energy %v, published %v", i, node.HostJ, a.Host.EnergyJ)
+		}
+		fac, err := loadFacilityLedger(paths[1], "test", emuStart, func(string, ...any) {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fac.ITJ <= 0 {
+			t.Errorf("tick %d: facility ledger IT energy %v", i, fac.ITJ)
 		}
 	}
 	for dir, prefix := range map[string]string{filepath.Join(root, "a", layout.StateDir, layout.TmpDir): ledgerTmpPrefix, root: facilityLedgerTmpPrefix} {
@@ -137,6 +157,75 @@ func TestEM04LedgersAreReplacedEveryTick(t *testing.T) {
 				t.Errorf("temp file %s left in %s", en.Name(), dir)
 			}
 		}
+	}
+}
+
+// A ledger rewritten in place with a shorter one is padded with spaces to
+// the length the file had, so it reads back whole and exact; a ledger
+// longer than ledgerInPlaceMax goes through a temp file and a rename, as
+// does the next short one, which a write in place could not shrink the file
+// to; after it, writes are in place again.
+func TestLedgerFileShorterLedgerAndTheRenameFallback(t *testing.T) {
+	dir := t.TempDir()
+	l := ledgerFile{path: filepath.Join(dir, "ledger.json"), tmpDir: dir, prefix: "ledger-"}
+	defer l.close()
+	read := func() nodeLedger {
+		t.Helper()
+		var got nodeLedger
+		if found, err := ledgerRead(l.path, &got); err != nil || !found {
+			t.Fatalf("read back: %v, found %v", err, found)
+		}
+		return got
+	}
+	long := nodeLedger{SchemaVersion: 1, Node: "a", ComponentsJ: map[string]float64{"cpu0": 1.25, "cpu1": 2.5, "memory0": 3, "memory1": 4}}
+	short := nodeLedger{SchemaVersion: 1, Node: "a", ComponentsJ: map[string]float64{"cpu0": 7}}
+	for _, v := range []nodeLedger{long, short} {
+		if err := l.write(v); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(); !reflect.DeepEqual(got.ComponentsJ, v.ComponentsJ) {
+			t.Errorf("read back %v, want %v", got.ComponentsJ, v.ComponentsJ)
+		}
+	}
+	before, err := os.Stat(l.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	huge := nodeLedger{SchemaVersion: 1, Node: "a", ComponentsJ: map[string]float64{}}
+	for i := 0; i < 200; i++ {
+		huge.ComponentsJ[fmt.Sprintf("gpu%d", i)] = float64(i)
+	}
+	if err := l.write(huge); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(l.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) || after.Size() <= ledgerInPlaceMax {
+		t.Errorf("a ledger of %d bytes was written in place, want a rename", after.Size())
+	}
+	if got := read(); len(got.ComponentsJ) != 200 {
+		t.Errorf("read back %d components, want 200", len(got.ComponentsJ))
+	}
+	if err := l.write(short); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); !reflect.DeepEqual(got.ComponentsJ, short.ComponentsJ) {
+		t.Errorf("after the rename, read back %v, want %v", got.ComponentsJ, short.ComponentsJ)
+	}
+	small, err := os.Stat(l.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.write(long); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := os.Stat(l.path); err != nil || !os.SameFile(small, again) {
+		t.Errorf("a short ledger after the shrink was not written in place: %v", err)
+	}
+	if got := read(); !reflect.DeepEqual(got.ComponentsJ, long.ComponentsJ) {
+		t.Errorf("read back %v, want %v", got.ComponentsJ, long.ComponentsJ)
 	}
 }
 
@@ -198,22 +287,17 @@ func TestLedgerUnreadableStopsNew(t *testing.T) {
 // A ledger that cannot be written leaves the node's published readings at
 // those of its last persisted step, with Err set, so a published counter is
 // never ahead of the disk; the energy is published once a write succeeds.
-// A failure that repeats is logged once, though each try uses another temp
-// file.
+// A failure that repeats is logged once.
 func TestLedgerWriteFailureKeepsThePublishedEnergy(t *testing.T) {
 	root := t.TempDir()
 	log := &emuLog{}
 	e := emuNew(t, emuConfig(root, newEmuFakes(), log, emuMember("a", "", "", 1, 0)))
 	s1 := emuTick(t, e, time.Second, nil, true, nil)
 
-	tmp := filepath.Join(root, "a", layout.StateDir, layout.TmpDir)
-	if err := os.Remove(tmp); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(tmp, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	old := ledgerWriteAt
+	ledgerWriteAt = func(*os.File, []byte) error { return syscall.EIO }
 	s2, err := e.Tick(emuStart.Add(2*time.Second), nil, true, nil)
+	ledgerWriteAt = old
 	if err == nil || !strings.Contains(err.Error(), "persist the ledger") {
 		t.Errorf("Tick with an unwritable ledger: %v", err)
 	}
@@ -229,12 +313,6 @@ func TestLedgerWriteFailureKeepsThePublishedEnergy(t *testing.T) {
 		t.Errorf("published host energy %v, on disk %v", a2.Host.EnergyJ, onDisk.HostJ)
 	}
 
-	if err := os.Remove(tmp); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(tmp, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	s3 := emuTick(t, e, 3*time.Second, nil, true, nil)
 	if a3 := emuNode(t, s3, "a"); a3.Err != "" {
 		t.Errorf("Err after a good write = %q", a3.Err)
@@ -242,7 +320,7 @@ func TestLedgerWriteFailureKeepsThePublishedEnergy(t *testing.T) {
 		emuNear(t, "host energy once written again", a3.Host.EnergyJ, 160*3)
 	}
 
-	// A directory where the ledger goes makes every rename fail.
+	// A directory where the ledger goes makes every open fail.
 	ledger := filepath.Join(root, "a", layout.StateDir, LedgerFile)
 	if err := os.Remove(ledger); err != nil {
 		t.Fatal(err)

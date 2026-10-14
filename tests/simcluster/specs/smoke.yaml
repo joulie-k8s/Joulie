@@ -26,4 +26,8 @@ spec:
     rack: rack-1
     coolingZone: zone-a
     taints: [{key: example.com/dedicated, value: batch, effect: NoSchedule}]
-  harness: {pools: {}}
+  # The GPU pools get the GPU tools a node with the driver installed has (a
+  # driver stub at each path the tools need). A pool left out follows the
+  # Joulie install, which by default delivers none (agent.runtimeClassName and
+  # agent.extraVolumes unset), so its agent's GPU inventory fails.
+  harness: {pools: {nvl: {toolDelivery: mounted}, sxm-nopm: {toolDelivery: mounted}, mi300x: {toolDelivery: mounted}}}

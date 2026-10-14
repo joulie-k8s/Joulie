@@ -7,16 +7,13 @@ package main
 // /otlp/telemetry/{node}. The node is read from it with the rules of the
 // prometheus source (otlpjson.PowerReader): energy first, as a rate, the
 // power gauge as the fallback, one value per component, under
-// NODE_POWER_SCOPE. A body without a top-level resourceMetrics key is the
-// legacy packagePowerWatts JSON, read until inputAliasesRemovedIn with one
-// deprecation warning per endpoint.
+// NODE_POWER_SCOPE. Any other JSON object is the legacy packagePowerWatts
+// JSON, read until otlpjson.LegacyRemovedIn with one deprecation warning per
+// endpoint (otlpjson.ReadPower).
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -25,10 +22,6 @@ import (
 	"github.com/matbun/joulie/pkg/otel/otlpjson"
 	"github.com/matbun/joulie/pkg/otel/semconv"
 )
-
-// nodePowerHTTPMaxBody bounds the body read from the endpoint. One node's
-// export is a few kilobytes.
-const nodePowerHTTPMaxBody = 8 << 20
 
 // nodePowerHTTPKey identifies the readers that share energy points: one
 // endpoint read with one rate window.
@@ -69,62 +62,30 @@ func nodePowerHTTPSelector(nodeName string, scope inputs.Scope) otlpjson.Selecto
 // the answer holds no reading of the node: an OTLP body that selects
 // nothing, or that has an energy series without a power gauge still warming
 // up, or a legacy body without a positive packagePowerWatts.
+//
+// The legacy body's packagePowerWatts is read whatever NODE_POWER_SCOPE
+// says, and holds what its producer put there: the simulator puts every CPU
+// package and GPU of the node there (a modelled node's power, for a node
+// outside the cluster spec), and the packages alone under cpu.
 func queryNodePowerHTTP(ctx context.Context, nodeName string) (float64, error) {
 	url := strings.ReplaceAll(nodePowerHTTPEndpoint, "{node}", nodeName)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	body, err := otlpjson.FetchTelemetry(ctx, nodePowerHTTPClient, url)
 	if err != nil {
 		return 0, err
 	}
-	resp, err := nodePowerHTTPClient.Do(req)
+	r := nodePowerHTTPReader(nodePowerHTTPEndpoint, nodePowerSpec.Window)
+	w, ok, legacy, err := otlpjson.ReadPower(body, r, nodePowerHTTPSelector(nodeName, nodePowerSpec.Scope))
+	if legacy {
+		warnDeprecatedOnce("legacy-http-json:"+nodePowerHTTPEndpoint, fmt.Sprintf(
+			"NODE_POWER_HTTP_ENDPOINT %s answered with the legacy packagePowerWatts JSON, whose power is whatever its producer put in packagePowerWatts, whatever NODE_POWER_SCOPE says; it is deprecated and will be removed in %s: serve one OTLP JSON metrics export with %s or %s points of %s %s and %s, or %s or %s points for NODE_POWER_SCOPE=%s",
+			nodePowerHTTPEndpoint, otlpjson.LegacyRemovedIn, semconv.HwEnergy.Name, semconv.HwPower.Name, semconv.AttrHwType,
+			semconv.HwTypeCPU, semconv.HwTypeGPU, semconv.HwHostEnergy.Name, semconv.HwHostPower.Name, inputs.ScopeHost))
+	}
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("telemetry from %s: %w", url, err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, nodePowerHTTPMaxBody))
-	if err != nil {
-		return 0, err
-	}
-
-	if otlpjson.IsMetricsData(body) {
-		md, err := otlpjson.DecodeMetrics(body)
-		if err != nil {
-			return 0, fmt.Errorf("OTLP body from %s: %w", url, err)
-		}
-		r := nodePowerHTTPReader(nodePowerHTTPEndpoint, nodePowerSpec.Window)
-		if w, ok := r.Watts(md, nodePowerHTTPSelector(nodeName, nodePowerSpec.Scope)); ok {
-			return w, nil
-		}
+	if !ok {
 		return 0, nil
 	}
-	return legacyNodePowerHTTP(body)
-}
-
-// legacyNodePowerHTTP reads the legacy JSON body: top-level
-// "packagePowerWatts" or nested "cpu.packagePowerWatts". It holds the CPU
-// packages only, whatever NODE_POWER_SCOPE says.
-func legacyNodePowerHTTP(body []byte) (float64, error) {
-	var data map[string]interface{}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return 0, err
-	}
-	warnDeprecatedOnce("legacy-http-json:"+nodePowerHTTPEndpoint, fmt.Sprintf(
-		"NODE_POWER_HTTP_ENDPOINT %s answered with the legacy packagePowerWatts JSON, which holds the CPU packages only; it is deprecated and will be removed in %s: serve one OTLP JSON metrics export with %s or %s points of %s %s and %s, or %s or %s points for NODE_POWER_SCOPE=%s",
-		nodePowerHTTPEndpoint, inputAliasesRemovedIn, semconv.HwEnergy.Name, semconv.HwPower.Name, semconv.AttrHwType,
-		semconv.HwTypeCPU, semconv.HwTypeGPU, semconv.HwHostEnergy.Name, semconv.HwHostPower.Name, inputs.ScopeHost))
-
-	// Try top-level packagePowerWatts first, then nested cpu.packagePowerWatts.
-	if v, ok := data["packagePowerWatts"].(float64); ok && v > 0 {
-		return v, nil
-	}
-	if cpu, ok := data["cpu"].(map[string]interface{}); ok {
-		if v, ok := cpu["packagePowerWatts"].(float64); ok && v > 0 {
-			return v, nil
-		}
-	}
-	return 0, nil
+	return w, nil
 }

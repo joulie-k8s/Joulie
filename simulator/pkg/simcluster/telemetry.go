@@ -1,7 +1,6 @@
 package simcluster
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -30,8 +29,8 @@ import (
 const (
 	// PartPromConfig is Prometheus' configuration file.
 	PartPromConfig = "prom-config"
-	// PartOtelcolConfig is the Collector's configuration file, mode
-	// otel-collector only.
+	// PartOtelcolConfig is the Collector's configuration file, modes
+	// otel-collector and otel-bridge only.
 	PartOtelcolConfig = "otelcol-config"
 	// PartSimValues is a values file of the joulie-simulator chart.
 	PartSimValues = "sim-values"
@@ -62,21 +61,56 @@ const (
 // service.namespace/service.name.
 const telJob = telemetry.ServiceNamespace + "/" + telemetry.DefaultServiceName
 
-// Kepler names, pinned to the Kepler releases the simulator's compatibility
-// exporters reproduce (simulator/pkg/compat): v0.12.0 labels node series
-// with node_name and RAPL zones with zone; v0.7.12 labels them with
-// instance, which Prometheus stores as exported_instance since the scrape
-// keeps honor_labels false. Both name the GPU counter the same.
-const (
-	keplerCPUJoules        = "kepler_node_cpu_joules_total"
-	keplerGPUJoules        = "kepler_node_gpu_joules_total"
-	keplerNodeLabel        = "node_name"
-	keplerZoneLabel        = "zone"
-	keplerPackageZone      = "package"
-	kepler07PackageJoules  = "kepler_node_package_joules_total"
-	kepler07PlatformJoules = "kepler_node_platform_joules_total"
-	kepler07NodeLabel      = "exported_instance"
-)
+// telBridgeJob is one scrape job of the bridge of
+// examples/11-otel-collector-bridge (collector.yaml): its name, which
+// becomes the job label of the series it pushes, the compatibility
+// exporter of the simulator that serves its format, and the series it
+// keeps, as the example writes them.
+type telBridgeJob struct {
+	name, exporter string
+	keep           promRelabel
+}
+
+// telBridgeJobs are the bridge's scrape jobs; the Kepler one carries the
+// power of the CPU package zones, the others the GPUs.
+var telBridgeJobs = []telBridgeJob{
+	{"kepler", compat.Kepler012, promRelabel{SourceLabels: []string{"__name__", inputs.KeplerZoneLabel}, Regex: inputs.KeplerCPUWatts + ";" + inputs.KeplerPackageZones, Action: "keep"}},
+	{"dcgm-exporter", compat.DCGM484, promRelabel{SourceLabels: []string{"__name__"}, Regex: "DCGM_FI_DEV_(TOTAL_ENERGY_CONSUMPTION|POWER_USAGE)", Action: "keep"}},
+	{"amd-device-metrics-exporter", compat.AMDDME152, promRelabel{SourceLabels: []string{"__name__"}, Regex: "gpu_(energy_consumed|power_usage)", Action: "keep"}},
+}
+
+// Jobs returns the job label values of the node power series of mode m:
+// the simulator's own in the otel modes, the bridge's scrape jobs in mode
+// otel-bridge, the compatibility exporter's scrape job in a Kepler mode.
+func (m Mode) Jobs() []string {
+	switch {
+	case m == ModeOTelBridge:
+		out := make([]string, len(telBridgeJobs))
+		for i, j := range telBridgeJobs {
+			out[i] = j.name
+		}
+		return out
+	case m.kepler():
+		return telExporters(m)
+	}
+	return []string{telJob}
+}
+
+// telJobMatcher is the matcher of the job label that selects mode m's node
+// power series.
+func telJobMatcher(m Mode) [3]string {
+	jobs := m.Jobs()
+	if len(jobs) == 1 {
+		return [3]string{promname.LabelJob, "=", jobs[0]}
+	}
+	return [3]string{promname.LabelJob, "=~", strings.Join(jobs, "|")}
+}
+
+// telKepler012GPUEnv makes the simulator's kepler-0.12 exporter serve the
+// kepler_node_gpu_* series, as Kepler's experimental GPU feature does. The
+// modes that serve kepler-0.12 turn it on: the kepler preset reads the GPUs
+// from it, and the bridge drops them, as it must on such an install.
+const telKepler012GPUEnv = "SIM_KEPLER012_GPU"
 
 // telMinRateIntervals is how many samples a rate() window must cover.
 const telMinRateIntervals = 4
@@ -105,7 +139,7 @@ type Wait struct {
 }
 
 // TelemetryParts is everything one mode, scope and timing set up.
-// OtelcolConfig is nil outside ModeOTelCollector, and Wait.Nodes is empty
+// OtelcolConfig is nil outside the Collector modes, and Wait.Nodes is empty
 // until the caller sets it from the spec.
 type TelemetryParts struct {
 	Mode          Mode
@@ -127,22 +161,29 @@ type TelemetryParts struct {
 //   - prom-config: the timing's scrape interval, a 30 minute out-of-order
 //     window, the OTLP receiver's promotion of k8s.node.name and host.name
 //     (none in the two unpromoted modes) and translation strategy
-//     (NoUTF8EscapingWithSuffixes in otel-utf8, the default otherwise), a
-//     scrape of the Joulie Services that carry prometheus.io/scrape, and per
-//     mode a scrape of the Collector (honor_labels true) or of the
-//     simulator's Kepler exporter (honor_labels false).
-//   - otelcol-config: an OTLP receiver and a prometheus exporter that puts
-//     k8s.node.name and host.name on every series.
-//   - sim-values: the OTLP endpoint (Prometheus, or the Collector), the
-//     export interval and the compatibility exporters.
+//     (Mode.Strategy), a scrape of the Joulie Services that carry
+//     prometheus.io/scrape, and per mode a scrape of the Collector
+//     (honor_labels true) or of the simulator's Kepler exporter
+//     (honor_labels false).
+//   - otelcol-config: in mode otel-collector, an OTLP receiver and a
+//     prometheus exporter that puts k8s.node.name and host.name on every
+//     series; in mode otel-bridge, the file the Collector reads after
+//     examples/11-otel-collector-bridge/collector.yaml: the bridge's scrape
+//     jobs pointed at the simulator's compatibility exporters at the
+//     timing's scrape interval.
+//   - sim-values: the OTLP endpoint (Prometheus, the Collector, or none in
+//     mode otel-bridge), the export interval and the compatibility
+//     exporters.
 //   - joulie-values: the timing on the controller manager and the agent,
-//     NODE_POWER_SOURCE=prometheus, ENABLE_FACILITY_METRICS=true, and the
-//     input settings of the mode and scope beyond Joulie's defaults.
+//     NODE_POWER_SOURCE=prometheus, ENABLE_FACILITY_METRICS=true where the
+//     mode carries facility metrics (Mode.Facility), and the input settings
+//     of the mode and scope beyond Joulie's defaults.
 //   - checks and wait: see CheckSet and Wait.
 //
-// Scope host needs an otel mode (doc of ScopeHost): Joulie reads no host
-// power from Kepler 0.12, and mode kepler-legacy checks Kepler 0.7's
-// platform power against the host truth under scope components already.
+// Scope host needs a mode that carries whole-node power: Joulie reads no
+// host power from Kepler 0.12 or from the bridge, and mode kepler-legacy
+// checks Kepler 0.7's platform power against the host truth under scope
+// components already.
 func Telemetry(mode Mode, scope Scope, timing Timing) (TelemetryParts, error) {
 	if _, err := ParseMode(string(mode)); err != nil {
 		return TelemetryParts{}, err
@@ -150,10 +191,10 @@ func Telemetry(mode Mode, scope Scope, timing Timing) (TelemetryParts, error) {
 	if _, err := ParseScope(string(scope)); err != nil {
 		return TelemetryParts{}, err
 	}
-	if scope == ScopeHost && telKepler(mode) {
-		return TelemetryParts{}, fmt.Errorf("power scope %s needs an otel mode, not %s", scope, mode)
+	if scope == ScopeHost && !mode.hostPower() {
+		return TelemetryParts{}, fmt.Errorf("power scope %s needs an otel mode that carries whole-node power, not %s", scope, mode)
 	}
-	if err := timing.validate(telScraped(mode)); err != nil {
+	if err := timing.validate(mode.scraped()); err != nil {
 		return TelemetryParts{}, err
 	}
 	window, err := inputs.PromDuration(timing.RateWindow)
@@ -167,8 +208,13 @@ func Telemetry(mode Mode, scope Scope, timing Timing) (TelemetryParts, error) {
 	if t.PromConfig, err = telYAML(head(PartPromConfig), telPromConfig(mode, timing)); err != nil {
 		return TelemetryParts{}, err
 	}
-	if mode == ModeOTelCollector {
+	switch mode {
+	case ModeOTelCollector:
 		if t.OtelcolConfig, err = telYAML(head(PartOtelcolConfig), telOtelcolConfig()); err != nil {
+			return TelemetryParts{}, err
+		}
+	case ModeOTelBridge:
+		if t.OtelcolConfig, err = telYAML(head(PartOtelcolConfig), telBridgeConfig(timing)); err != nil {
 			return TelemetryParts{}, err
 		}
 	}
@@ -178,7 +224,9 @@ func Telemetry(mode Mode, scope Scope, timing Timing) (TelemetryParts, error) {
 	if t.JoulieValues, err = telYAML(head(PartJoulieValues), telJoulieValues(mode, scope, timing)); err != nil {
 		return TelemetryParts{}, err
 	}
-	t.Checks = telChecks(mode, scope, window)
+	if t.Checks, err = telChecks(mode, scope, timing.RateWindow, window); err != nil {
+		return TelemetryParts{}, err
+	}
 	t.Wait = telWait(mode)
 	return t, nil
 }
@@ -191,7 +239,7 @@ func (t TelemetryParts) Part(name string) ([]byte, error) {
 		return t.PromConfig, nil
 	case PartOtelcolConfig:
 		if t.OtelcolConfig == nil {
-			return nil, fmt.Errorf("mode %s runs no Collector; %s is for mode %s", t.Mode, PartOtelcolConfig, ModeOTelCollector)
+			return nil, fmt.Errorf("mode %s runs no Collector; %s is for modes %s and %s", t.Mode, PartOtelcolConfig, ModeOTelCollector, ModeOTelBridge)
 		}
 		return t.OtelcolConfig, nil
 	case PartSimValues:
@@ -253,35 +301,21 @@ func measuredCPU(p *hwemu.Profile) bool {
 
 var telPackageZone = regexp.MustCompile(`^package-[0-9]+(-die-[0-9]+)?$`)
 
-// telKepler reports whether mode reads Kepler series.
-func telKepler(mode Mode) bool { return mode == ModeKepler || mode == ModeKeplerLegacy }
-
-// telScraped reports whether mode's node power reaches Prometheus by a
-// scrape, whose interval then bounds the rate window too.
-func telScraped(mode Mode) bool { return telKepler(mode) || mode == ModeOTelCollector }
-
-// telPromoted reports whether Prometheus promotes the node attributes.
-func telPromoted(mode Mode) bool {
-	return mode != ModeOTelUnpromoted && mode != ModeOTelLabelsUnpromoted
-}
-
-// telStrategy is the translation strategy of mode.
-func telStrategy(mode Mode) promname.Strategy {
-	if mode == ModeOTelUTF8 {
-		return promname.NoUTF8EscapingWithSuffixes
-	}
-	return promname.Default
-}
-
-// telExporter is the compatibility exporter mode needs, "" for none.
-func telExporter(mode Mode) string {
+// telExporters are the compatibility exporters mode serves.
+func telExporters(mode Mode) []string {
 	switch mode {
 	case ModeKepler:
-		return compat.Kepler012
+		return []string{compat.Kepler012}
 	case ModeKeplerLegacy:
-		return compat.Kepler07
+		return []string{compat.Kepler07}
+	case ModeOTelBridge:
+		out := make([]string, len(telBridgeJobs))
+		for i, j := range telBridgeJobs {
+			out[i] = j.exporter
+		}
+		return out
 	}
-	return ""
+	return []string{}
 }
 
 // telDuration writes d as Prometheus and Go both read it: whole hours,
@@ -339,12 +373,14 @@ type promOTLP struct {
 }
 
 type promScrape struct {
-	JobName             string        `yaml:"job_name"`
-	HonorLabels         *bool         `yaml:"honor_labels,omitempty"`
-	MetricsPath         string        `yaml:"metrics_path,omitempty"`
-	StaticConfigs       []promStatic  `yaml:"static_configs,omitempty"`
-	KubernetesSDConfigs []promKubeSD  `yaml:"kubernetes_sd_configs,omitempty"`
-	RelabelConfigs      []promRelabel `yaml:"relabel_configs,omitempty"`
+	JobName              string        `yaml:"job_name"`
+	ScrapeInterval       string        `yaml:"scrape_interval,omitempty"`
+	HonorLabels          *bool         `yaml:"honor_labels,omitempty"`
+	MetricsPath          string        `yaml:"metrics_path,omitempty"`
+	StaticConfigs        []promStatic  `yaml:"static_configs,omitempty"`
+	KubernetesSDConfigs  []promKubeSD  `yaml:"kubernetes_sd_configs,omitempty"`
+	RelabelConfigs       []promRelabel `yaml:"relabel_configs,omitempty"`
+	MetricRelabelConfigs []promRelabel `yaml:"metric_relabel_configs,omitempty"`
 }
 
 type promStatic struct {
@@ -374,10 +410,10 @@ func telPromConfig(mode Mode, timing Timing) promConfig {
 		Storage: promStorage{TSDB: promTSDB{OutOfOrderTimeWindow: telDuration(telOutOfOrderWindow)}},
 		OTLP: promOTLP{
 			PromoteResourceAttributes: []string{},
-			TranslationStrategy:       string(telStrategy(mode)),
+			TranslationStrategy:       string(mode.Strategy()),
 		},
 	}
-	if telPromoted(mode) {
+	if mode.promoted() {
 		c.OTLP.PromoteResourceAttributes = []string{semconv.AttrK8sNodeName, semconv.AttrHostName}
 	}
 	// The Joulie Services that ask for a scrape (the chart's
@@ -404,14 +440,15 @@ func telPromConfig(mode Mode, timing Timing) promConfig {
 			HonorLabels:   &honor,
 			StaticConfigs: []promStatic{{Targets: []string{telOtelcolScrape}}},
 		})
-	case telKepler(mode):
+	case mode.kepler():
 		// honor_labels false: Kepler 0.7's instance label becomes
 		// exported_instance, as on a real install.
 		honor := false
+		exporter := telExporters(mode)[0]
 		c.ScrapeConfigs = append(c.ScrapeConfigs, promScrape{
-			JobName:       telExporter(mode),
+			JobName:       exporter,
 			HonorLabels:   &honor,
-			MetricsPath:   compat.Path(telExporter(mode)),
+			MetricsPath:   compat.Path(exporter),
 			StaticConfigs: []promStatic{{Targets: []string{telSimulatorTarget}}},
 		})
 	}
@@ -457,41 +494,95 @@ func telOtelcolConfig() otelcolConfig {
 	return c
 }
 
+// The bridge's Collector configuration: what the harness changes in
+// examples/11-otel-collector-bridge/collector.yaml, and the health check
+// the readiness probe of the bridge's Deployment reads. The Collector
+// merges this file over the example and replaces a list whole, so each job
+// repeats the example's metric_relabel_configs.
+type bridgeConfig struct {
+	Receivers struct {
+		Prometheus struct {
+			Config struct {
+				ScrapeConfigs []promScrape `yaml:"scrape_configs"`
+			} `yaml:"config"`
+		} `yaml:"prometheus"`
+	} `yaml:"receivers"`
+	Extensions struct {
+		HealthCheck struct {
+			Endpoint string `yaml:"endpoint"`
+		} `yaml:"health_check"`
+	} `yaml:"extensions"`
+	Service struct {
+		Extensions []string `yaml:"extensions,flow"`
+	} `yaml:"service"`
+}
+
+// telBridgeHealth is where the bridge Collector answers its health check
+// (scripts/simcluster/manifests/otelcol-bridge.yaml probes it).
+const telBridgeHealth = "0.0.0.0:13133"
+
+// telBridgeConfig points the bridge's scrape jobs at the simulator's
+// compatibility exporters, in place of the example's pod discovery, at the
+// timing's scrape interval, and turns on the health check.
+func telBridgeConfig(timing Timing) bridgeConfig {
+	var c bridgeConfig
+	c.Extensions.HealthCheck.Endpoint = telBridgeHealth
+	c.Service.Extensions = []string{"health_check"}
+	for _, j := range telBridgeJobs {
+		c.Receivers.Prometheus.Config.ScrapeConfigs = append(c.Receivers.Prometheus.Config.ScrapeConfigs, promScrape{
+			JobName:              j.name,
+			ScrapeInterval:       telDuration(timing.ScrapeInterval),
+			MetricsPath:          compat.Path(j.exporter),
+			StaticConfigs:        []promStatic{{Targets: []string{telSimulatorTarget}}},
+			MetricRelabelConfigs: []promRelabel{j.keep},
+		})
+	}
+	return c
+}
+
 func telSimValues(mode Mode, timing Timing) map[string]any {
-	endpoint := telPrometheusOTLP
-	if mode == ModeOTelCollector {
+	var endpoint string
+	switch mode {
+	case ModeOTelCollector:
 		endpoint = telOtelcolOTLP
+	case ModeOTelBridge:
+		// The bridge alone feeds Prometheus.
+	default:
+		endpoint = telPrometheusOTLP
 	}
-	exporters := []string{}
-	if e := telExporter(mode); e != "" {
-		exporters = append(exporters, e)
-	}
-	return map[string]any{
+	v := map[string]any{
 		"otel": map[string]any{
 			"metricsEndpoint":      endpoint,
 			"exportIntervalMillis": timing.OTLPExportInterval.Milliseconds(),
 		},
-		"emulate": map[string]any{"exporters": exporters},
+		"emulate": map[string]any{"exporters": telExporters(mode)},
 	}
+	for _, e := range telExporters(mode) {
+		if e == compat.Kepler012 {
+			v["extraEnv"] = map[string]any{telKepler012GPUEnv: "true"}
+		}
+	}
+	return v
 }
 
 func telJoulieValues(mode Mode, scope Scope, timing Timing) map[string]any {
 	cm := map[string]string{
-		"RECONCILE_INTERVAL":      telDuration(timing.ControllerReconcile),
-		"NODE_POWER_SOURCE":       "prometheus",
-		"PROMETHEUS_RATE_WINDOW":  telDuration(timing.RateWindow),
-		"ENABLE_FACILITY_METRICS": "true",
-		"FACILITY_POLL_INTERVAL":  telDuration(timing.FacilityPoll),
+		"RECONCILE_INTERVAL":     telDuration(timing.ControllerReconcile),
+		"NODE_POWER_SOURCE":      "prometheus",
+		"PROMETHEUS_RATE_WINDOW": telDuration(timing.RateWindow),
 	}
-	switch mode {
-	case ModeOTelLabelsUnpromoted:
+	if mode.Facility() {
+		cm["ENABLE_FACILITY_METRICS"] = "true"
+		cm["FACILITY_POLL_INTERVAL"] = telDuration(timing.FacilityPoll)
+	}
+	if mode == ModeOTelLabelsUnpromoted {
 		cm["PROMETHEUS_RESOURCE_ATTRIBUTES"] = string(inputs.ResourceAttributesLabels)
-	case ModeOTelUTF8:
-		cm["PROMETHEUS_NAME_TRANSLATION"] = string(promname.NoUTF8EscapingWithSuffixes)
-	case ModeKepler:
-		cm["NODE_POWER_PRESET"] = string(inputs.NodePowerPresetKepler)
-	case ModeKeplerLegacy:
-		cm["NODE_POWER_PRESET"] = string(inputs.NodePowerPresetKeplerLegacy)
+	}
+	if s := mode.Strategy(); s != promname.Default {
+		cm["PROMETHEUS_NAME_TRANSLATION"] = string(s)
+	}
+	if p := mode.InputPreset(); p != inputs.NodePowerPresetOTel {
+		cm["NODE_POWER_PRESET"] = string(p)
 	}
 	if scope == ScopeHost {
 		cm["NODE_POWER_SCOPE"] = string(inputs.ScopeHost)
@@ -508,13 +599,14 @@ func telJoulieValues(mode Mode, scope Scope, timing Timing) map[string]any {
 
 // telNames is the Prometheus spelling of what the otel checks read.
 type telNames struct {
-	energy, hostEnergy string
-	node, hwType, hwID string
+	energy, power, hostEnergy string
+	node, hwType, hwID        string
 }
 
 func telNamesFor(s promname.Strategy) telNames {
 	return telNames{
 		energy:     s.MetricName(semconv.HwEnergy),
+		power:      s.MetricName(semconv.HwPower),
 		hostEnergy: s.MetricName(semconv.HwHostEnergy),
 		node:       s.LabelName(semconv.AttrK8sNodeName),
 		hwType:     s.LabelName(semconv.AttrHwType),
@@ -566,43 +658,44 @@ func telSelector(metric string, matchers ...[3]string) string {
 func telRate(sel, window string) string { return fmt.Sprintf("rate(%s[%s])", sel, window) }
 
 // telJoin attaches the node label from target_info to x by job and
-// instance. The max by collapses target_info series of one target that
-// differ in another attribute, as after a simulator restart with a new
-// service.version.
-func telJoin(x, node string) string {
-	jobMatch := [3]string{promname.LabelJob, "=", telJob}
+// instance, target_info of the jobs job matches. The max by collapses
+// target_info series of one target that differ in another attribute, as
+// after a simulator restart with a new service.version.
+func telJoin(x, node string, job [3]string) string {
 	return fmt.Sprintf("%s * on %s group_left %s max by %s (%s)",
 		x, telLabels(promname.LabelJob, promname.LabelInstance), telLabels(node),
-		telLabels(promname.LabelJob, promname.LabelInstance, node), telSelector(promname.TargetInfo, jobMatch))
+		telLabels(promname.LabelJob, promname.LabelInstance, node), telSelector(promname.TargetInfo, job))
 }
 
 // telOTelComponents is Σ cpu packages + Σ gpus per node from the energy
-// counters, each component once.
-func telOTelComponents(n telNames, window string, join bool) string {
+// counters of the jobs job matches, each component once.
+func telOTelComponents(n telNames, window string, job [3]string, join bool) string {
 	x := telRate(telSelector(n.energy,
-		[3]string{n.hwType, "=~", semconv.HwTypeCPU + "|" + semconv.HwTypeGPU},
-		[3]string{promname.LabelJob, "=", telJob}), window)
+		[3]string{n.hwType, "=~", semconv.HwTypeCPU + "|" + semconv.HwTypeGPU}, job), window)
 	if join {
-		x = telJoin(x, n.node)
+		x = telJoin(x, n.node, job)
 	}
 	return fmt.Sprintf("sum by %s (max by %s (%s))", telLabels(n.node), telLabels(n.node, n.hwType, n.hwID), x)
 }
 
 // telOTelHost is whole-node power per node from the host energy counter.
-func telOTelHost(n telNames, window string, join bool) string {
-	x := telRate(telSelector(n.hostEnergy, [3]string{promname.LabelJob, "=", telJob}), window)
+func telOTelHost(n telNames, window string, job [3]string, join bool) string {
+	x := telRate(telSelector(n.hostEnergy, job), window)
 	if join {
-		x = telJoin(x, n.node)
+		x = telJoin(x, n.node, job)
 	}
 	return fmt.Sprintf("max by %s (%s)", telLabels(n.node), x)
 }
 
-// telKeplerComponents is the CPU package energy rate plus the GPU energy
-// rate per node, or the package rate alone for a node without GPU series.
-func telKeplerComponents(node, cpu string, window string) string {
-	pk := fmt.Sprintf("sum by %s (%s)", telLabels(node), telRate(cpu, window))
-	gpu := fmt.Sprintf("sum by %s (%s)", telLabels(node), telRate(keplerGPUJoules, window))
-	return fmt.Sprintf("(%s + on %s %s) or %s", pk, telLabels(node), gpu, pk)
+// telPresetQuery is the node power query Joulie runs with spec: the check
+// of a mode whose series only Joulie's own preset reads right, such as the
+// Kepler counters that wrap or the bridge's CPU power gauges.
+func telPresetQuery(spec inputs.NodePowerSpec) (string, error) {
+	q, _, err := spec.Query()
+	if err != nil {
+		return "", fmt.Errorf("node power preset %s: %w", spec.Preset, err)
+	}
+	return q.PromQL, nil
 }
 
 func telCheck(id, query, truth string) Check {
@@ -610,30 +703,55 @@ func telCheck(id, query, truth string) Check {
 }
 
 // telChecks is the CheckSet of a mode and scope over window. An otel mode
-// checks both scopes, Joulie's form of each query first (the labels form
+// checks both scopes where it carries whole-node power, otherwise the
+// components only, Joulie's form of each query first (the labels form
 // where Prometheus promotes, else the target_info join) and, where it
-// promotes, the target_info join as well. Kepler modes check the
-// components the release reports; kepler-legacy also checks the data shape
-// of E07c: two platform series per node (idle and dynamic) summing to the
-// host power.
-func telChecks(mode Mode, scope Scope, window string) CheckSet {
+// promotes, the target_info join as well. Mode otel-bridge checks Joulie's
+// otel preset itself, in both forms: the bridge carries the CPU packages as
+// power gauges, which only the preset's fallback to hw.power reads. Kepler
+// modes check the components with the Kepler preset Joulie runs;
+// kepler-legacy also checks the data shape of E07c: two platform series per
+// node (idle and dynamic) summing to the host power.
+func telChecks(mode Mode, scope Scope, rateWindow time.Duration, window string) (CheckSet, error) {
 	switch mode {
 	case ModeKepler:
-		return CheckSet{NodeLabel: keplerNodeLabel, JoulieTruth: TruthPackagesNVIDIAGPUs, Checks: []Check{
-			telCheck("kepler-0.12-components", telKeplerComponents(keplerNodeLabel,
-				telSelector(keplerCPUJoules, [3]string{keplerZoneLabel, "=", keplerPackageZone}), window), TruthPackagesNVIDIAGPUs),
-		}}
+		q, err := telPresetQuery(inputs.NodePowerSpec{Preset: inputs.NodePowerPresetKepler, Window: rateWindow})
+		if err != nil {
+			return CheckSet{}, err
+		}
+		return CheckSet{NodeLabel: inputs.KeplerNodeLabel, JoulieTruth: TruthPackagesNVIDIAGPUs, Checks: []Check{
+			telCheck("kepler-0.12-components", q, TruthPackagesNVIDIAGPUs),
+		}}, nil
 	case ModeKeplerLegacy:
-		platform := telRate(kepler07PlatformJoules, window)
-		series := telCheck("kepler-0.7-platform-series", fmt.Sprintf("count by %s (%s)", telLabels(kepler07NodeLabel), platform), TruthKepler07PlatformSeries)
+		q, err := telPresetQuery(inputs.NodePowerSpec{Preset: inputs.NodePowerPresetKeplerLegacy, Window: rateWindow})
+		if err != nil {
+			return CheckSet{}, err
+		}
+		node := inputs.KeplerLegacyNodeLabel
+		platform := telRate(inputs.KeplerLegacyPlatformJoules, window)
+		series := telCheck("kepler-0.7-platform-series", fmt.Sprintf("count by %s (%s)", telLabels(node), platform), TruthKepler07PlatformSeries)
 		series.Tolerance, series.AbsFloorW = 0, 0
-		return CheckSet{NodeLabel: kepler07NodeLabel, JoulieTruth: TruthPackagesNVIDIAGPUs, Checks: []Check{
-			telCheck("kepler-0.7-components", telKeplerComponents(kepler07NodeLabel, kepler07PackageJoules, window), TruthPackagesNVIDIAGPUs),
+		return CheckSet{NodeLabel: node, JoulieTruth: TruthPackagesNVIDIAGPUs, Checks: []Check{
+			telCheck("kepler-0.7-components", q, TruthPackagesNVIDIAGPUs),
 			series,
-			telCheck("kepler-0.7-platform-sum", fmt.Sprintf("sum by %s (%s)", telLabels(kepler07NodeLabel), platform), TruthKepler07Host),
-		}}
+			telCheck("kepler-0.7-platform-sum", fmt.Sprintf("sum by %s (%s)", telLabels(node), platform), TruthKepler07Host),
+		}}, nil
+	case ModeOTelBridge:
+		n := telNamesFor(mode.Strategy())
+		set := CheckSet{NodeLabel: n.node, JoulieTruth: TruthPackagesGPUs}
+		for _, f := range []struct {
+			form  string
+			attrs inputs.ResourceAttributes
+		}{{"labels", inputs.ResourceAttributesLabels}, {"target-info", inputs.ResourceAttributesTargetInfo}} {
+			q, err := telPresetQuery(inputs.NodePowerSpec{Preset: inputs.NodePowerPresetOTel, Naming: mode.Strategy(), ResourceAttributes: f.attrs, Window: rateWindow})
+			if err != nil {
+				return CheckSet{}, err
+			}
+			set.Checks = append(set.Checks, telCheck("otel-components-"+f.form, q, TruthPackagesGPUs))
+		}
+		return set, nil
 	}
-	n := telNamesFor(telStrategy(mode))
+	n := telNamesFor(mode.Strategy())
 	set := CheckSet{NodeLabel: n.node, JoulieTruth: TruthPackagesGPUs}
 	if scope == ScopeHost {
 		set.JoulieTruth = TruthHost
@@ -644,19 +762,23 @@ func telChecks(mode Mode, scope Scope, window string) CheckSet {
 	type form struct {
 		scope Scope
 		truth string
-		query func(telNames, string, bool) string
+		query func(telNames, string, [3]string, bool) string
 	}
-	forms := []form{{ScopeComponents, TruthPackagesGPUs, telOTelComponents}, {ScopeHost, TruthHost, telOTelHost}}
+	forms := []form{{ScopeComponents, TruthPackagesGPUs, telOTelComponents}}
+	if mode.hostPower() {
+		forms = append(forms, form{ScopeHost, TruthHost, telOTelHost})
+	}
 	if scope == ScopeHost {
 		forms[0], forms[1] = forms[1], forms[0]
 	}
+	job := telJobMatcher(mode)
 	for _, f := range forms {
-		if telPromoted(mode) {
-			set.Checks = append(set.Checks, telCheck("otel-"+string(f.scope)+"-labels", f.query(n, window, false), f.truth))
+		if mode.promoted() {
+			set.Checks = append(set.Checks, telCheck("otel-"+string(f.scope)+"-labels", f.query(n, window, job, false), f.truth))
 		}
-		set.Checks = append(set.Checks, telCheck("otel-"+string(f.scope)+"-target-info", f.query(n, window, true), f.truth))
+		set.Checks = append(set.Checks, telCheck("otel-"+string(f.scope)+"-target-info", f.query(n, window, job, true), f.truth))
 	}
-	return set
+	return set, nil
 }
 
 // telWait is the wait query of mode: every node with a measured CPU
@@ -664,12 +786,18 @@ func telChecks(mode Mode, scope Scope, window string) CheckSet {
 func telWait(mode Mode) Wait {
 	switch mode {
 	case ModeKepler:
-		return Wait{Query: fmt.Sprintf("count by %s (%s)", telLabels(keplerNodeLabel), keplerCPUJoules), Label: keplerNodeLabel}
+		return Wait{Query: fmt.Sprintf("count by %s (%s)", telLabels(inputs.KeplerNodeLabel), inputs.KeplerCPUJoules), Label: inputs.KeplerNodeLabel}
 	case ModeKeplerLegacy:
-		return Wait{Query: fmt.Sprintf("count by %s (%s)", telLabels(kepler07NodeLabel), kepler07PackageJoules), Label: kepler07NodeLabel}
+		return Wait{Query: fmt.Sprintf("count by %s (%s)", telLabels(inputs.KeplerLegacyNodeLabel), inputs.KeplerLegacyPackageJoules), Label: inputs.KeplerLegacyNodeLabel}
 	}
-	n := telNamesFor(telStrategy(mode))
-	sel := telSelector(n.energy, [3]string{n.hwType, "=", semconv.HwTypeCPU}, [3]string{promname.LabelJob, "=", telJob})
+	// The CPU packages come from the first job: the simulator's energy
+	// counters, or the power gauges of the bridge's Kepler job.
+	n := telNamesFor(mode.Strategy())
+	metric := n.energy
+	if mode == ModeOTelBridge {
+		metric = n.power
+	}
+	sel := telSelector(metric, [3]string{n.hwType, "=", semconv.HwTypeCPU}, [3]string{promname.LabelJob, "=", mode.Jobs()[0]})
 	return Wait{Query: fmt.Sprintf("count by %s (%s)", telLabels(promname.LabelInstance), sel), Label: promname.LabelInstance}
 }
 
@@ -710,10 +838,11 @@ func ReadTiming(repoRoot, name string) (Timing, error) {
 }
 
 // ParseTiming parses a timing file: KEY=VALUE lines, # comments and blank
-// lines, as the scripts source it. Every key of Timing must be set once and
-// no other key may appear; durations are Go durations (10s, 1m), and
-// OTLP_EXPORT_INTERVAL_MS is whole milliseconds. Every value must be above
-// zero, and RATE_WINDOW must cover at least four export intervals.
+// lines, as the scripts source it (ParseEnvFile). Every key of Timing must
+// be set once, to one word, and no other key may appear; durations are Go
+// durations (10s, 1m), and OTLP_EXPORT_INTERVAL_MS is whole milliseconds.
+// Every value must be above zero, and RATE_WINDOW must cover at least four
+// export intervals.
 func ParseTiming(name string, b []byte) (Timing, error) {
 	t := Timing{Name: name}
 	durations := map[string]*time.Duration{
@@ -724,25 +853,24 @@ func ParseTiming(name string, b []byte) (Timing, error) {
 		timingRateWindow:          &t.RateWindow,
 		timingFacilityPoll:        &t.FacilityPoll,
 	}
+	vars, err := ParseEnvFile(b)
+	if err != nil {
+		return Timing{}, err
+	}
 	seen := map[string]bool{}
 	var errs []error
-	sc := bufio.NewScanner(bytes.NewReader(b))
-	for line := 1; sc.Scan(); line++ {
-		text := strings.TrimSpace(sc.Text())
-		if text == "" || strings.HasPrefix(text, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(text, "=")
-		if !ok {
-			errs = append(errs, fmt.Errorf("line %d: %q is not KEY=VALUE", line, text))
-			continue
-		}
-		value = timingUnquote(value)
+	for _, v := range vars {
+		line, key := v.Line, v.Key
 		if seen[key] {
 			errs = append(errs, fmt.Errorf("line %d: %s is set twice", line, key))
 			continue
 		}
 		seen[key] = true
+		if v.Array || len(v.Words) != 1 {
+			errs = append(errs, fmt.Errorf("line %d: %s=%s is not one word", line, key, v.Value))
+			continue
+		}
+		value := v.Words[0]
 		if key == timingOTLPExportMS {
 			ms, err := strconv.ParseInt(value, 10, 64)
 			if err != nil || ms <= 0 {
@@ -764,9 +892,6 @@ func ParseTiming(name string, b []byte) (Timing, error) {
 		}
 		*dst = d
 	}
-	if err := sc.Err(); err != nil {
-		return Timing{}, err
-	}
 	keys := append(agentSortedKeys(durations), timingOTLPExportMS)
 	sort.Strings(keys)
 	for _, k := range keys {
@@ -781,14 +906,6 @@ func ParseTiming(name string, b []byte) (Timing, error) {
 		return Timing{}, err
 	}
 	return t, nil
-}
-
-// timingUnquote strips one pair of matching quotes, as the shell would.
-func timingUnquote(v string) string {
-	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
-		return v[1 : len(v)-1]
-	}
-	return v
 }
 
 // validate checks what Telemetry needs of a timing: positive values, and a

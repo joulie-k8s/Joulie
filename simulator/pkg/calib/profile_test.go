@@ -16,7 +16,16 @@ import (
 func TestCB05OutputLoadsThroughLoadProfileSet(t *testing.T) {
 	t.Parallel()
 	sw := epycPerformanceSweep(t)
-	r := fit(t, sw, Options{})
+	// The base is the builtin profile, which runs its catalog curve: the fit
+	// selects the analytic model its facts describe.
+	profiles, err := hwemu.BuiltinProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := Fit(sw.data(t), profiles[sw.profile.Name], Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	b, err := LocalProfile(r, "epyc-calibrated", "hwcalib fit of a test sweep", "18 segments")
 	if err != nil {
 		t.Fatal(err)

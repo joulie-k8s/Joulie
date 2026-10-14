@@ -20,8 +20,9 @@ import (
 // ensureMetaFile is state/hwemu.json, relative to the node root.
 var ensureMetaFile = path.Join(layout.StateDir, "hwemu.json")
 
-// ensureScratchPrefix names the directory under state/.tmp that holds the
-// fresh render a resume takes missing entries from.
+// ensureScratchPrefix names a directory under state/.tmp that held a whole
+// fresh render, which a resume removes: a resume creates the entries the
+// root lacks from the layout and needs no such directory.
 const ensureScratchPrefix = "ensure-"
 
 // Ensure makes root hold the tree of node o.NodeName of profile p, and says
@@ -35,16 +36,15 @@ const ensureScratchPrefix = "ensure-"
 //     differs. A tree without a digest predates it and gets the same error.
 //   - A root that is not a directory, or that has no readable
 //     state/hwemu.json, is not a tree hwemu rendered: ErrTreeConflict.
-//   - The profile is rendered afresh into state/.tmp/ensure-*, and every
-//     entry of that render the root lacks is moved in, by rename, and listed
-//     in EnsureReport.Added; a directory moved in is listed with every entry
-//     in it, and a missing state/.tmp, created first, is listed too. Nothing
-//     the root has is replaced, rewritten or touched: limits the agent
-//     wrote, counters the emulator wrote and entries of its own, such as an
-//     energy ledger, stay as they are.
+//   - The profile is laid out afresh without writing (renderPlan), and every
+//     entry of that layout the root lacks is created, a directory before
+//     what it holds, and listed in EnsureReport.Added. Nothing the root has
+//     is replaced, rewritten or touched: limits the agent wrote, counters
+//     the emulator wrote and entries of its own, such as an energy ledger,
+//     stay as they are.
 //   - An entry of another kind than the render's (a directory for a file, a
 //     file for a link, a link to another target) is ErrTreeConflict, found
-//     before anything is moved.
+//     before anything is created.
 //
 // The caller holds the root: no other Ensure, and no Node, runs on it
 // meanwhile. With no agent mounting the node, removing its root and calling
@@ -131,42 +131,16 @@ func ensureCheckMeta(p *Profile, root, node string) error {
 	return nil
 }
 
-// ensureResume renders p into a scratch directory under state/.tmp, checks
-// every entry the root already has against it, then moves in the ones the
-// root lacks.
+// ensureResume lays p out without writing, checks every entry the root
+// already has against the layout, then creates the ones the root lacks.
 func ensureResume(p *Profile, root string, o RenderOptions) (*Tree, EnsureReport, error) {
-	tmpDir := filepath.Join(root, layout.StateDir, layout.TmpDir)
-	createdTmp := false
-	switch fi, err := os.Lstat(tmpDir); {
-	case errors.Is(err, fs.ErrNotExist):
-		if err := os.Mkdir(tmpDir, 0o755); err != nil {
-			return nil, EnsureReport{}, err
-		}
-		createdTmp = true
-	case err != nil:
-		return nil, EnsureReport{}, err
-	case !fi.IsDir():
-		return nil, EnsureReport{}, fmt.Errorf("%w: %s/%s is not a directory", ErrTreeConflict, root, path.Join(layout.StateDir, layout.TmpDir))
-	}
-	// A scratch render left by a resume that crashed is no one's.
-	if old, err := filepath.Glob(filepath.Join(tmpDir, ensureScratchPrefix+"*")); err == nil {
-		for _, d := range old {
-			_ = os.RemoveAll(d)
-		}
-	}
-	scratch, err := os.MkdirTemp(tmpDir, ensureScratchPrefix)
+	plan, _, err := renderPlan(p, root, o)
 	if err != nil {
 		return nil, EnsureReport{}, err
 	}
-	defer os.RemoveAll(scratch)
-	fresh, err := Render(p, scratch, o)
-	if err != nil {
-		return nil, EnsureReport{}, err
-	}
-
 	var missing []layout.FileSpec
 	var conflicts []string
-	for _, f := range fresh.Files {
+	for _, f := range plan.files {
 		live := filepath.Join(root, filepath.FromSlash(f.Rel))
 		fi, err := os.Lstat(live)
 		if errors.Is(err, fs.ErrNotExist) {
@@ -181,45 +155,33 @@ func ensureResume(p *Profile, root string, o RenderOptions) (*Tree, EnsureReport
 		}
 	}
 	if len(conflicts) > 0 {
-		if createdTmp {
-			_ = os.RemoveAll(tmpDir)
-		}
 		return nil, EnsureReport{}, fmt.Errorf("%w: %s: %s", ErrTreeConflict, root, strings.Join(conflicts, "; "))
+	}
+	// A scratch render a resume left there is no one's.
+	tmpDir := filepath.Join(root, layout.StateDir, layout.TmpDir)
+	if old, err := filepath.Glob(filepath.Join(tmpDir, ensureScratchPrefix+"*")); err == nil {
+		for _, d := range old {
+			_ = os.RemoveAll(d)
+		}
 	}
 
 	var rep EnsureReport
-	if createdTmp {
-		rep.Added = append(rep.Added, path.Join(layout.StateDir, layout.TmpDir))
-	}
-	var moved []string // directories moved in whole, with their entries
-	for _, f := range missing {
-		if ensureUnder(f.Rel, moved) {
-			rep.Added = append(rep.Added, f.Rel)
-			continue
-		}
-		live := filepath.Join(root, filepath.FromSlash(f.Rel))
-		if _, err := os.Lstat(live); err == nil {
-			return nil, rep, fmt.Errorf("ensure %s: %s appeared during the resume; nothing live is replaced", root, f.Rel)
-		} else if !errors.Is(err, fs.ErrNotExist) {
+	var umask fs.FileMode
+	if len(missing) > 0 {
+		if umask, err = renderUmask(root); err != nil {
 			return nil, rep, err
 		}
-		if err := os.Rename(filepath.Join(scratch, filepath.FromSlash(f.Rel)), live); err != nil {
+	}
+	for _, f := range missing {
+		if err := renderCreate(root, f, plan.content[f.Rel], umask); errors.Is(err, fs.ErrExist) {
+			return nil, rep, fmt.Errorf("ensure %s: %s appeared during the resume; nothing live is replaced", root, f.Rel)
+		} else if err != nil {
 			return nil, rep, fmt.Errorf("ensure %s: %w", root, err)
-		}
-		if f.Kind == layout.KindDir || f.Kind == layout.KindRejectingDir {
-			moved = append(moved, f.Rel)
 		}
 		rep.Added = append(rep.Added, f.Rel)
 	}
 	sort.Strings(rep.Added)
-	return &Tree{
-		Root:        root,
-		NodeName:    o.NodeName,
-		SysRoot:     filepath.Join(root, layout.SysDir),
-		CPUInfoPath: filepath.Join(root, layout.CPUInfoFile),
-		StateRoot:   filepath.Join(root, layout.StateDir),
-		Files:       fresh.Files,
-	}, rep, nil
+	return plan.tree(root, o), rep, nil
 }
 
 // ensureKindConflict says how the live entry at abs differs in kind from f,
@@ -231,7 +193,7 @@ func ensureKindConflict(f layout.FileSpec, abs string, fi fs.FileInfo) string {
 		if !fi.Mode().IsRegular() {
 			return "want a file, found " + found
 		}
-	case layout.KindDir, layout.KindRejectingDir:
+	case layout.KindDir:
 		if !fi.IsDir() {
 			return "want a directory, found " + found
 		}
@@ -256,16 +218,6 @@ func ensureKindName(m fs.FileMode) string {
 		return "link"
 	}
 	return "special file"
-}
-
-// ensureUnder reports whether rel lies inside one of dirs.
-func ensureUnder(rel string, dirs []string) bool {
-	for _, d := range dirs {
-		if strings.HasPrefix(rel, d+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 // ensureProfileDigest is the digest of p's values that state/hwemu.json

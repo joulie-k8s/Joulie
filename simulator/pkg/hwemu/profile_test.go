@@ -2,6 +2,7 @@ package hwemu
 
 import (
 	"bytes"
+	"fmt"
 	"io/fs"
 	"reflect"
 	"sort"
@@ -467,5 +468,65 @@ func TestGPULimitsAreOrdered(t *testing.T) {
 	}
 	if err := renderBuiltin(t, "nvidia-h100-nvl-8gpu").Validate(); err != nil {
 		t.Fatalf("the builtin profile must validate: %v", err)
+	}
+}
+
+// Every GPU profile lists, for every tool, the files the real tool needs
+// before it runs, so a node without the driver or the interpreter
+// (simcluster toolDelivery none) fails as a real one does. nvidia-smi needs
+// its ELF loader, then the shared libraries it links, in the order the
+// loader reports the first missing one, then NVML: each missing one exits
+// 127 but NVML, 12.
+func TestEveryGPUProfileListsItsToolRequirements(t *testing.T) {
+	t.Parallel()
+	profiles, err := BuiltinProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nvidiaSMI := []struct {
+		first string
+		exit  int
+	}{
+		{"/lib64/ld-linux-x86-64.so.2", 127},
+		{"/lib/x86_64-linux-gnu/libpthread.so.0", 127},
+		{"/lib/x86_64-linux-gnu/libm.so.6", 127},
+		{"/lib/x86_64-linux-gnu/libdl.so.2", 127},
+		{"/lib/x86_64-linux-gnu/librt.so.1", 127},
+		{"/lib/x86_64-linux-gnu/libc.so.6", 127},
+		{"/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1", 12},
+	}
+	gpuProfiles := 0
+	for name, p := range profiles {
+		g := p.GPUs
+		if g == nil || g.Count.V == 0 {
+			continue
+		}
+		gpuProfiles++
+		if len(g.Tools) == 0 {
+			t.Errorf("%s has GPUs and no tool", name)
+		}
+		for _, tool := range g.Tools {
+			if len(tool.Requires) == 0 {
+				t.Errorf("%s: %s lists no requirement", name, tool.Name)
+				continue
+			}
+			if tool.Name != "nvidia-smi" {
+				continue
+			}
+			var got []string
+			for _, r := range tool.Requires {
+				got = append(got, fmt.Sprintf("%s %d", r.Paths[0], r.Exit))
+			}
+			var want []string
+			for _, r := range nvidiaSMI {
+				want = append(want, fmt.Sprintf("%s %d", r.first, r.exit))
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("%s: nvidia-smi requires\n%s\nwant\n%s", name, strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+		}
+	}
+	if gpuProfiles < 6 {
+		t.Errorf("found %d GPU profiles, want every builtin one", gpuProfiles)
 	}
 }

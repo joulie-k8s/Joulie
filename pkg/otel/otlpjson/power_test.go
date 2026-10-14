@@ -1,9 +1,14 @@
 package otlpjson
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -512,4 +517,70 @@ func TestPowerReaderConcurrentUse(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// ReadPower reads an OTLP export through the PowerReader with the selector,
+// and any other JSON object as the legacy format: the first positive
+// packagePowerWatts, top level before cpu, whatever the selector says. A
+// body that is no JSON object is an error and is not legacy.
+func TestReadPowerOTLPAndLegacy(t *testing.T) {
+	sel := Selector{Node: "node-a", HwTypes: []string{semconv.HwTypeCPU}}
+	otlp, err := json.Marshal(powerTDoc(t, powerTRes{attrs: powerTNode("node-a"), metrics: []Metric{
+		powerTGauge(semconv.HwPower.Name,
+			powerTPoint(powerTComp(semconv.HwTypeCPU, "cpu0"), 0, 5*powerTSec, 100),
+			powerTPoint(powerTComp(semconv.HwTypeGPU, "gpu0"), 0, 5*powerTSec, 300),
+		),
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name       string
+		body       string
+		watts      float64
+		ok, legacy bool
+		wantErr    bool
+	}{
+		{name: "otlp", body: string(otlp), watts: 100, ok: true},
+		{name: "otlp next to a legacy key", body: strings.TrimSuffix(string(otlp), "}") + `,"packagePowerWatts":999}`, watts: 100, ok: true},
+		{name: "legacy top level", body: `{"packagePowerWatts": 125.5, "cpu": {"packagePowerWatts": 80}}`, watts: 125.5, ok: true, legacy: true},
+		{name: "legacy under cpu", body: `{"cpu": {"packagePowerWatts": 200}}`, watts: 200, ok: true, legacy: true},
+		{name: "legacy zero top level", body: `{"packagePowerWatts": 0, "cpu": {"packagePowerWatts": 90}}`, watts: 90, ok: true, legacy: true},
+		{name: "legacy without power", body: `{"node": "node-a"}`, legacy: true},
+		{name: "legacy with a string", body: `{"packagePowerWatts": "125"}`, legacy: true},
+		{name: "not json", body: `<html>bad gateway</html>`, wantErr: true},
+		{name: "json array", body: `[1, 2]`, wantErr: true},
+	} {
+		var r PowerReader
+		w, ok, legacy, err := ReadPower([]byte(c.body), &r, sel)
+		if (err != nil) != c.wantErr || ok != c.ok || legacy != c.legacy || w != c.watts {
+			t.Errorf("%s: ReadPower = (%v, %v, %v, %v), want (%v, %v, %v, error %v)", c.name, w, ok, legacy, err, c.watts, c.ok, c.legacy, c.wantErr)
+		}
+	}
+}
+
+// FetchTelemetry returns the body of a 2xx answer and fails on another
+// status and on a body over MaxTelemetryBody.
+func TestFetchTelemetry(t *testing.T) {
+	big := bytes.Repeat([]byte(" "), MaxTelemetryBody+1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ok":
+			fmt.Fprint(w, `{"packagePowerWatts": 1}`)
+		case "/big":
+			_, _ = w.Write(big)
+		default:
+			http.Error(w, "no", http.StatusServiceUnavailable)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	if b, err := FetchTelemetry(context.Background(), srv.Client(), srv.URL+"/ok"); err != nil || string(b) != `{"packagePowerWatts": 1}` {
+		t.Errorf("GET /ok = %q, %v", b, err)
+	}
+	if _, err := FetchTelemetry(context.Background(), srv.Client(), srv.URL+"/down"); err == nil || !strings.Contains(err.Error(), "HTTP 503") {
+		t.Errorf("GET /down: %v, want an HTTP 503 error", err)
+	}
+	if _, err := FetchTelemetry(context.Background(), srv.Client(), srv.URL+"/big"); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("GET /big: %v, want a size error", err)
+	}
 }

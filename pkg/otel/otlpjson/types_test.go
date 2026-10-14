@@ -146,3 +146,51 @@ func TestOJ02LogRecordMarshalsEventName(t *testing.T) {
 		t.Errorf("round trip changed the export:\n got %+v\nwant %+v", back, data)
 	}
 }
+
+// A point's value reads as a float64 from either field; a point without one
+// has none.
+func TestNumberDataPointFloat64(t *testing.T) {
+	i := Int64String(-7)
+	d := 2.5
+	for _, c := range []struct {
+		p    NumberDataPoint
+		want float64
+		ok   bool
+	}{
+		{NumberDataPoint{AsInt: &i}, -7, true},
+		{NumberDataPoint{AsDouble: &d}, 2.5, true},
+		{NumberDataPoint{}, 0, false},
+	} {
+		if v, ok := c.p.Float64(); v != c.want || ok != c.ok {
+			t.Errorf("%+v: Float64 = (%v, %v), want (%v, %v)", c.p, v, ok, c.want, c.ok)
+		}
+	}
+}
+
+// An attribute value reads as text and as a Go value from whichever field
+// is set, arrays included; a value without a field has neither.
+func TestAnyValueTextAndAny(t *testing.T) {
+	arr := IntArray("k", 1, 2).Value
+	for _, c := range []struct {
+		v    AnyValue
+		text string
+		any  any
+		ok   bool
+	}{
+		{String("k", "x").Value, "x", "x", true},
+		{Bool("k", true).Value, "true", true, true},
+		{Int("k", -3).Value, "-3", int64(-3), true},
+		{Double("k", 0.5).Value, "0.5", 0.5, true},
+		{arr, "[1,2]", []any{int64(1), int64(2)}, true},
+		{AnyValue{}, "", nil, false},
+	} {
+		text, ok := c.v.Text()
+		if text != c.text || ok != c.ok {
+			t.Errorf("Text = (%q, %v), want (%q, %v)", text, ok, c.text, c.ok)
+		}
+		got, ok := c.v.Any()
+		if !reflect.DeepEqual(got, c.any) || ok != c.ok {
+			t.Errorf("Any = (%#v, %v), want (%#v, %v)", got, ok, c.any, c.ok)
+		}
+	}
+}

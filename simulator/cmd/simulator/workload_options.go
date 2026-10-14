@@ -90,8 +90,8 @@ var (
 // loadWorkloadOptions reads the workload settings from getenv. emulate is
 // SIM_EMULATE: SIM_WORKLOAD_MODEL defaults to v1 with it and to legacy
 // without it, and the other pairing is an error either way, since the v1
-// engine needs the emulated nodes and a legacy trace cannot drive them
-// (X10). An invalid value is an error naming its variable; all of them are
+// engine needs the emulated nodes and a legacy trace cannot drive them.
+// An invalid value is an error naming its variable; all of them are
 // reported together. The warnings name each variable set that the chosen
 // model does not read.
 func loadWorkloadOptions(getenv func(string) string, emulate bool) (workloadOptions, []string, error) {
@@ -173,15 +173,11 @@ func loadWorkloadOptions(getenv func(string) string, emulate bool) (workloadOpti
 	o.OTLPFileInterval = durationSetting(get, workload.EnvOTLPFileInterval, workload.DefaultOTLPFileInterval, false, &errs)
 	o.RunsDir = get(workload.EnvRunsDir)
 	if o.RunsDir == "" {
-		root := get(envHwemuRoot)
-		if root == "" {
-			root = defaultHwemuRoot
-		}
-		o.RunsDir = filepath.Join(root, workload.RunsDirName)
+		o.RunsDir = filepath.Join(hwemuRoot(get), workload.RunsDirName)
 	}
 	if id := get(workload.EnvRunID); id != "" {
-		if id == "." || id == ".." || strings.ContainsAny(id, `/\`) {
-			errs = append(errs, fmt.Errorf("%s=%q: a run id names a directory under %s, so it may not contain a slash or be . or ..", workload.EnvRunID, id, workload.EnvRunsDir))
+		if err := checkRunID(id); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", workload.EnvRunID, err))
 		}
 		o.RunID = id
 	}

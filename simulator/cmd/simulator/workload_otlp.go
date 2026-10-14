@@ -1,8 +1,8 @@
 package main
 
 // The run recorder: the results of a v1 run as OTLP JSON Lines, in the
-// format of the OTel file exporter, under <runs dir>/<runId>/otlp/ (D10,
-// D12). simulator.logs.jsonl holds one LogsData per tick that has records:
+// format of the OTel file exporter, under <runs dir>/<runId>/otlp/.
+// simulator.logs.jsonl holds one LogsData per tick that has records:
 // the run's and its jobs' events on the run's resource, and copies of the
 // emulated nodes' hardware events on each node's resource. Every resource
 // carries joulie.sim.run.id. simulator.metrics.jsonl holds one MetricsData

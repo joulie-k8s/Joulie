@@ -9,7 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/governor"
+	"github.com/matbun/joulie/pkg/governor/discover"
 	"github.com/matbun/joulie/pkg/otel/semconv"
 	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 	"github.com/matbun/joulie/simulator/pkg/phys"
@@ -33,7 +34,7 @@ const (
 	dpmBusyUtil = 0.05
 	// dpmMemoryActive is the utilization times memory intensity from which
 	// a GPU's own work raises the data path under a demand-driven level
-	// (assumed, design section 3.4).
+	// (assumed).
 	dpmMemoryActive = 0.1
 )
 
@@ -132,15 +133,14 @@ func (s *dpmState) setLevel(d *DPMSpec, w string) {
 
 // dpmView is what one GPU shows and the physics reads at one load: the
 // clock of each domain in MHz as the pp_dpm_* stars show it, the data-path
-// level and whether it follows demand, idle gating, the compute and memory
-// clock bounds of gpuClockState and the vendor-neutral preset.
+// level and whether it follows demand, idle gating, and the compute and
+// memory clock bounds of gpuClockState.
 type dpmView struct {
 	sclk, mclk, fclk, socclk  int64
 	dataPath                  phys.DataPathLevel
 	dataPathAuto, gatingOff   bool
 	floorMHz, ceilMHz, maxMHz float64
 	memFloorMHz, memCeilMHz   float64
-	preset                    string
 }
 
 // view is the state of a GPU under s at a load: busy when it runs work of
@@ -148,11 +148,12 @@ type dpmView struct {
 // work or the hold after it. The levels follow smu_v13_0_set_performance_level
 // (smu_v13_0.c:1611-1665) and, on SMU 13.0.6, the overdrive range under
 // manual and perf_determinism. An idle compute clock with idle gating kept
-// reads its minimum (design GD03; the deep-sleep clock below it is not
-// shown); with gating off (profile_* levels, amdgpu_smu.c:2293-2301) it stays
-// at the clock the level holds, its maximum when no clock is pinned
-// (assumed). profile_min_sclk and profile_min_mclk pin one domain and leave
-// the others to demand (assumed: the kernel leaves their earlier range).
+// reads its minimum (the deep-sleep clock below it is not shown;
+// TestGD03HighHoldsTheDataPathAndKeepsIdleGating); with gating off
+// (profile_* levels, amdgpu_smu.c:2293-2301) it stays at the clock the level
+// holds, its maximum when no clock is pinned (assumed). profile_min_sclk and
+// profile_min_mclk pin one domain and leave the others to demand (assumed:
+// the kernel leaves their earlier range).
 func (s *dpmState) view(d *DPMSpec, busy, dataUp bool) dpmView {
 	t := d.Tables
 	sMin, sMax := t.Sclk.MinMHz.V, t.Sclk.MaxMHz.V
@@ -198,19 +199,16 @@ func (s *dpmState) view(d *DPMSpec, busy, dataUp bool) dpmView {
 		v.sclk = idle(sMax)
 		v.floorMHz = float64(sMax)
 		v.memFloorMHz = float64(v.mclk)
-		v.preset = api.GPUGovernorPresetSustained
 	case dpmLow:
 		v.dataPath = phys.DataPathMin
 		v.mclk, v.fclk, v.socclk = dpmFirst(t.Mclk.V), dpmFirst(t.Fclk.V), dpmFirst(t.Socclk.V)
 		v.sclk = sMin
 		v.floorMHz, v.ceilMHz = float64(sMin), float64(sMin)
 		v.memCeilMHz = float64(v.mclk)
-		v.preset = api.GPUGovernorPresetLow
 	case dpmProfileStandard:
 		pin(d.PState.Standard)
 	case dpmProfilePeak:
 		pin(d.PState.Peak)
-		v.preset = api.GPUGovernorPresetPeak
 	case dpmProfileMinSclk:
 		demand(dpmLast(t.Mclk.V))
 		v.sclk = sMin
@@ -230,9 +228,6 @@ func (s *dpmState) view(d *DPMSpec, busy, dataUp bool) dpmView {
 		}
 		if ceil < sMax {
 			v.ceilMHz = float64(ceil)
-			if s.od.sclkMin <= sMin {
-				v.preset = api.GPUGovernorPresetEfficient
-			}
 		}
 		if s.od.uclkMax > 0 && s.od.uclkMax < dpmLast(t.Mclk.V) {
 			v.memCeilMHz = float64(s.od.uclkMax)
@@ -240,7 +235,6 @@ func (s *dpmState) view(d *DPMSpec, busy, dataUp bool) dpmView {
 	default: // auto
 		demand(dpmLast(t.Mclk.V))
 		v.sclk = idle(sMax)
-		v.preset = api.GPUGovernorPresetAuto
 	}
 	return v
 }
@@ -367,7 +361,10 @@ func dpmPolicyText(a *PMPolicyAttrSpec, cur int) string {
 // hold: the device's state, the hold of its data path after its own
 // memory-active work, and the pp_dpm_* files the emulator writes.
 type nodeGPUDPM struct {
-	on        bool
+	on bool
+	// facts are the pkg/governor facts the agent discovers for the device,
+	// which name the preset its level and overdrive range map to.
+	facts     governor.AMDFacts
 	st        dpmState
 	view      dpmView
 	memActive bool
@@ -398,11 +395,17 @@ func (n *Node) buildGPUDPM() error {
 		}
 		dp := &g.dpm
 		dp.on, dp.st, dp.files = true, newDPMState(d), map[string]*nodeSFile{}
+		dp.facts = governor.AMDFacts{
+			DeviceID: gs.PCI.Device.V,
+			Family:   discover.AMDFamily(gs.PCI.Device.V),
+			OD:       d.OD != nil && d.OD.Enabled.V,
+			SclkMHz:  [2]int{int(d.Tables.Sclk.MinMHz.V), int(d.Tables.Sclk.MaxMHz.V)},
+		}
 		st := &dp.st
-		if s, ok := nodeReadString(file(layout.AMDGPUODFile)); ok {
+		if s, ok := n.readString(file(layout.AMDGPUODFile)); ok {
 			dpmParseOD(s, &st.od)
 		}
-		if s, ok := nodeReadString(file(layout.AMDGPUPowerProfileFile)); ok && d.PowerProfiles != nil {
+		if s, ok := n.readString(file(layout.AMDGPUPowerProfileFile)); ok && d.PowerProfiles != nil {
 			if i, ok := dpmStarIndex(s, "*:"); ok && i < len(d.PowerProfiles.Modes.V) {
 				st.profile = i
 			}
@@ -415,7 +418,7 @@ func (n *Node) buildGPUDPM() error {
 			if p.spec == nil {
 				continue
 			}
-			if s, ok := nodeReadString(file("pm_policy/" + p.name)); ok {
+			if s, ok := n.readString(file("pm_policy/" + p.name)); ok {
 				if i, ok := dpmStarIndex(s, "*"); ok && i < len(p.spec.Policies.V) {
 					*p.cur = i
 				}
@@ -741,7 +744,8 @@ func (n *Node) deriveGPUDPM() {
 		v := dp.view
 		c := &g.clock
 		c.modelled = true
-		c.native, c.preset = dp.st.level, v.preset
+		c.native = dp.st.level
+		c.preset, _ = governor.ReverseAMD(dp.facts, dp.st.level, [2]int{int(dp.st.od.sclkMin), int(dp.st.od.sclkMax)})
 		c.computeFloorMHz, c.computeCeilMHz, c.computeMaxMHz = v.floorMHz, v.ceilMHz, v.maxMHz
 		c.memFloorMHz, c.memCeilMHz = v.memFloorMHz, v.memCeilMHz
 		c.dataPath, c.dataPathAuto, c.holdS, c.gatingOff = v.dataPath, v.dataPathAuto, d.AutoHoldS.V, v.gatingOff

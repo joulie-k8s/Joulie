@@ -28,6 +28,12 @@
 #   SIMCLUSTER_POWER_SCOPE   node power scope Joulie reads: components or host
 #                            (components)
 #   SIMCLUSTER_TIMING        scripts/simcluster/timing/<name>.env (dev)
+#   SIMCLUSTER_EXTENDER      how kube-scheduler reaches the extender, as
+#                            up.sh created the cluster: hostnet (on
+#                            127.0.0.1, the extender on the host network) or
+#                            service (the Service's fixed ClusterIP, the
+#                            extender off the host network); service adds
+#                            values/simcluster-extender-service.yaml
 #   SIMCLUSTER_PROFILES_DIR  local hardware profiles, read by the host tools
 #                            only: the in-cluster simulator reads its
 #                            built-in profiles, and up.sh refuses a spec that
@@ -105,7 +111,7 @@ sim_wait 300 "the simulator's /readyz" sim_sim readyz
 # sets agent.emulated.nodes, which the DaemonSet render does not read.
 sim_cli telemetry "${SIM_TELEMETRY_FLAGS[@]}" --part joulie-values >"$vals/joulie-values.yaml"
 [[ -s $vals/agent-nodes.yaml ]] || printf '{}\n' >"$vals/agent-nodes.yaml"
-files=("$SIM_REPO/values/simcluster.yaml" "$vals/agent-nodes.yaml" "$vals/joulie-values.yaml" "${extra[@]}")
+files=("$SIM_REPO/values/simcluster.yaml" "${SIM_EXTENDER_VALUES[@]}" "$vals/agent-nodes.yaml" "$vals/joulie-values.yaml" "${extra[@]}")
 sim_agents "$vals/agent-nodes.yaml" "${files[@]}"
 agents=$(sim_count_agents "$vals/agent-nodes.yaml")
 sim_check_pod_capacity "$agents"
@@ -114,11 +120,10 @@ sim_check_pod_capacity "$agents"
 sim_log "installing Joulie with $agents emulated agents"
 sim_helm_joulie "${files[@]}"
 
-# 7. Rollouts, then what each component publishes.
+# 7. Rollouts, all at once, then what each component publishes.
 for ns in "$SIM_NS_JOULIE" "$SIM_NS_SIM"; do
-  for obj in $(kubectl -n "$ns" get deployments,daemonsets,statefulsets -o name); do
-    kubectl -n "$ns" rollout status "$obj" --timeout=300s >/dev/null
-  done
+  mapfile -t objs < <(kubectl -n "$ns" get deployments,daemonsets,statefulsets -o name)
+  sim_rollouts "$ns" ${objs[@]+"${objs[@]}"}
 done
 mapfile -t nodes < <(sim_agent_nodes)
 ((${#nodes[@]} == agents)) ||
@@ -129,11 +134,12 @@ series_s=$(($(sim_seconds "$RATE_WINDOW") + (4 * OTLP_EXPORT_INTERVAL_MS + 999) 
 if ((${#nodes[@]})); then
   sim_wait $((120 + 3 * agent_s)) "a NodeHardware for every emulated agent" sim_none sim_missing_nodehardware "${nodes[@]}"
 fi
-wait_json=$(sim_cli telemetry "${SIM_TELEMETRY_FLAGS[@]}" --part wait --spec "$spec" "${SIM_PROFILES_CLI[@]}")
+wait_json=$(sim_cli telemetry "${SIM_TELEMETRY_FLAGS[@]}" --part wait --spec "$spec" "${SIM_PROFILES[@]}")
 sim_wait $((120 + series_s)) "every measured Node's series in Prometheus" sim_none sim_missing_series "$wait_json"
 sim_wait $((120 + 3 * controller_s)) "a written NodeTwin for every managed Node" sim_none sim_missing_twins
 
-# 8. Every pod runs what images.sh imported (DR-21).
+# 8. Every pod runs what images.sh imported, by image ID, so no stale image
+# with the same tag passes.
 sim_verify_images
 join() {
   local IFS=,
@@ -141,7 +147,7 @@ join() {
 }
 {
   printf 'DEPLOYED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf 'TELEMETRY=%s\nPOWER_SCOPE=%s\nTIMING=%s\n' "$SIMCLUSTER_TELEMETRY" "$SIMCLUSTER_POWER_SCOPE" "$SIMCLUSTER_TIMING"
+  printf 'TELEMETRY=%s\nPOWER_SCOPE=%s\nTIMING=%s\nEXTENDER=%s\n' "$SIMCLUSTER_TELEMETRY" "$SIMCLUSTER_POWER_SCOPE" "$SIMCLUSTER_TIMING" "$SIMCLUSTER_EXTENDER"
   printf 'AGENTS=%s\n' "$agents"
   printf 'JOULIE_VALUES=%s\n' "$(join "${files[@]}")"
   printf 'SIM_VALUES=%s\n' "$(join "${sim_files[@]}" "${sim_extra[@]}")"

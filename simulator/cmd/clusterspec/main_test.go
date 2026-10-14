@@ -66,7 +66,7 @@ func TestCS09RenderNodesDecodesIntoExpandedNodes(t *testing.T) {
 	} {
 		args := []string{"render-nodes", "-spec", c.spec}
 		if c.profiles != "" {
-			args = append(args, "-profiles", c.profiles)
+			args = append(args, "-profiles-dir", c.profiles)
 		}
 		code, stdout, stderr := testRun(args...)
 		if code != 0 {
@@ -113,10 +113,10 @@ func TestValidateExitStatus(t *testing.T) {
 	}
 	code, _, stderr = testRun("validate", "-spec", filepath.Join(testdata, "local.yaml"))
 	if code != 1 || !strings.Contains(stderr, `profile "lab-vm-4cpu" is not known`) {
-		t.Errorf("local.yaml without -profiles: exit %d, stderr %q", code, stderr)
+		t.Errorf("local.yaml without -profiles-dir: exit %d, stderr %q", code, stderr)
 	}
-	if code, _, stderr := testRun("validate", "-spec", filepath.Join(testdata, "local.yaml"), "-profiles", testProfiles(t)); code != 0 {
-		t.Errorf("local.yaml with -profiles: exit %d, stderr %q", code, stderr)
+	if code, _, stderr := testRun("validate", "-spec", filepath.Join(testdata, "local.yaml"), "-profiles-dir", testProfiles(t)); code != 0 {
+		t.Errorf("local.yaml with -profiles-dir: exit %d, stderr %q", code, stderr)
 	}
 	if code, _, _ := testRun("validate", "-spec", filepath.Join(testdata, "missing.yaml")); code != 1 {
 		t.Errorf("missing spec file: exit %d, want 1", code)
@@ -127,6 +127,7 @@ func TestValidateExitStatus(t *testing.T) {
 		{"validate"},
 		{"validate", "-spec", testSmokeSpec, "extra"},
 		{"list", "-bogus", "x"},
+		{"validate", "-spec", testSmokeSpec, "-profiles", "x"},
 	} {
 		if code, _, stderr := testRun(args...); code != 2 || stderr == "" {
 			t.Errorf("%v: exit %d, stderr %q; want 2 and a message", args, code, stderr)
@@ -158,5 +159,18 @@ func TestListPrintsOneLinePerNode(t *testing.T) {
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("list:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// -profiles-dir defaults to SIM_PROFILES_DIR, the directory the simulator
+// reads, and an empty -profiles-dir means the builtins only.
+func TestProfilesDirDefaultsToTheSimulatorsVariable(t *testing.T) {
+	local := filepath.Join(testdata, "local.yaml")
+	t.Setenv(envProfilesDir, testProfiles(t))
+	if code, _, stderr := testRun("validate", "-spec", local); code != 0 {
+		t.Errorf("local.yaml with %s set: exit %d, stderr %q", envProfilesDir, code, stderr)
+	}
+	if code, _, stderr := testRun("validate", "-spec", local, "-profiles-dir", ""); code != 1 || !strings.Contains(stderr, `profile "lab-vm-4cpu" is not known`) {
+		t.Errorf("local.yaml with -profiles-dir \"\": exit %d, stderr %q; want 1, the profile unknown", code, stderr)
 	}
 }

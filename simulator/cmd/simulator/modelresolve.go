@@ -78,10 +78,16 @@ func (s *simulator) applyCatalogModelDefaults(model simModel, nodeLabels map[str
 			nodeLabels["feature.node.kubernetes.io/cpu-model.name"],
 		),
 		CPUSockets: hwinv.ParseIntString(nodeLabels["joulie.io/hw.cpu-sockets"]),
+		// After the simulator's own label, the controller manager's
+		// GPU_PRODUCT_LABEL_KEYS default, in its order: the AMD node
+		// labeller names the board in gpu.product-name, under both of its
+		// prefixes, and the family code, read last, names no board.
 		GPUModelRaw: firstNonEmpty(
 			nodeLabels["joulie.io/hw.gpu-model"],
 			nodeLabels["joulie.io/gpu.product"],
 			nodeLabels["nvidia.com/gpu.product"],
+			nodeLabels["amd.com/gpu.product-name"],
+			nodeLabels["beta.amd.com/gpu.product-name"],
 			nodeLabels["amd.com/gpu.product"],
 			nodeLabels["amd.com/gpu.family"],
 		),

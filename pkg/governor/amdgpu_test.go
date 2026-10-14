@@ -3,6 +3,7 @@ package governor
 import (
 	"reflect"
 	"slices"
+	"strconv"
 	"testing"
 
 	joulie "github.com/matbun/joulie/pkg/api"
@@ -17,23 +18,25 @@ func amdFacts(family string, od bool) AMDFacts {
 }
 
 func levelPlan(level string) Plan {
-	return Plan{Writes: []Write{{amdDir + "power_dpm_force_performance_level", level}}, Native: level, Result: joulie.GovernorResultApplied}
+	return Plan{Writes: []Write{{amdDir + "power_dpm_force_performance_level", level}}, State: State{Level: level}, Native: level, Result: joulie.GovernorResultApplied}
 }
 
-func odPlan(mhz string) Plan {
+func odPlan(mhz int) Plan {
+	v := strconv.Itoa(mhz)
 	return Plan{
 		Writes: []Write{
 			{amdDir + "power_dpm_force_performance_level", "manual"},
-			{amdDir + "pp_od_clk_voltage", "s 1 " + mhz},
+			{amdDir + "pp_od_clk_voltage", "s 1 " + v},
 			{amdDir + "pp_od_clk_voltage", "c"},
 		},
-		Native: "manual sclk_max=" + mhz, Result: joulie.GovernorResultApplied,
+		State:  State{Level: "manual", SclkMaxMHz: mhz},
+		Native: "manual sclk_max=" + v, Result: joulie.GovernorResultApplied,
 	}
 }
 
 var amdUnsupported = Plan{Result: joulie.GovernorResultUnsupported}
 
-// GA06: every row of the AMD table (design section 1.5) at the default
+// GA06: every row of the AMD table (the mapping in pkg/governor) at the default
 // 80 % ceiling, to files the driver spells that way.
 func TestGA06EveryAMDTableRowPlansItsNativeWords(t *testing.T) {
 	rows := []struct {
@@ -51,14 +54,14 @@ func TestGA06EveryAMDTableRowPlansItsNativeWords(t *testing.T) {
 		{"MI210/MI250X (aldebaran)", amdFacts(AMDFamilyAldebaran, true), map[string]Plan{
 			joulie.GPUGovernorPresetAuto:      levelPlan("auto"),
 			joulie.GPUGovernorPresetSustained: levelPlan("high"),
-			joulie.GPUGovernorPresetEfficient: odPlan("1200"),
+			joulie.GPUGovernorPresetEfficient: odPlan(1200),
 			joulie.GPUGovernorPresetLow:       levelPlan("low"),
 			joulie.GPUGovernorPresetPeak:      levelPlan("profile_peak"),
 		}},
 		{"MI300X (mi300)", amdFacts(AMDFamilyMI300, true), map[string]Plan{
 			joulie.GPUGovernorPresetAuto:      levelPlan("auto"),
 			joulie.GPUGovernorPresetSustained: amdUnsupported,
-			joulie.GPUGovernorPresetEfficient: odPlan("1200"),
+			joulie.GPUGovernorPresetEfficient: odPlan(1200),
 			joulie.GPUGovernorPresetLow:       amdUnsupported,
 			joulie.GPUGovernorPresetPeak:      amdUnsupported,
 		}},
@@ -93,19 +96,19 @@ func TestGA06EveryAMDTableRowPlansItsNativeWords(t *testing.T) {
 			}
 			requireWritesExist(t, got)
 		}
-		if got := PresetsAMD(row.facts); !slices.Equal(got, wantPresets) {
-			t.Errorf("%s: PresetsAMD = %v, want %v", row.name, got, wantPresets)
+		if got := presetsAMD(row.facts); !slices.Equal(got, wantPresets) {
+			t.Errorf("%s: presetsAMD = %v, want %v", row.name, got, wantPresets)
 		}
 	}
 
 	f := amdFacts(AMDFamilyAldebaran, true)
-	for pct, mhz := range map[float64]string{100: "1500", 75: "1125", 66.7: "1000", 10: "500"} {
+	for pct, mhz := range map[float64]int{100: 1500, 75: 1125, 66.7: 1000, 10: 500} {
 		got, err := PlanAMD(f, joulie.GPUGovernorPresetEfficient, pct)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if want := odPlan(mhz); !reflect.DeepEqual(got, want) {
-			t.Errorf("efficient at %v%%: got %+v, want sclk_max=%s (rounded down, never below the lowest sclk)", pct, got, mhz)
+			t.Errorf("efficient at %v%%: got %+v, want sclk_max=%d (rounded down, never below the lowest sclk)", pct, got, mhz)
 		}
 	}
 	f.BusID = "0000:C1:00.0"
@@ -126,8 +129,8 @@ func TestGA07MI300XRejectsSustainedLowPeak(t *testing.T) {
 			t.Errorf("MI300X %s = %+v, want unsupported with no writes", preset, got)
 		}
 	}
-	if got := PresetsAMD(f); !slices.Equal(got, []string{joulie.GPUGovernorPresetAuto, joulie.GPUGovernorPresetEfficient}) {
-		t.Errorf("PresetsAMD(MI300X) = %v, want auto and efficient", got)
+	if got := presetsAMD(f); !slices.Equal(got, []string{joulie.GPUGovernorPresetAuto, joulie.GPUGovernorPresetEfficient}) {
+		t.Errorf("presetsAMD(MI300X) = %v, want auto and efficient", got)
 	}
 }
 

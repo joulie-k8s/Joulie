@@ -49,8 +49,12 @@ func ckAgentFile(t *testing.T, tr *Tree, rel string) {
 // a policy's boost refuses any write with EINVAL while the global one is
 // off (cpufreq.c:621-648). amd-pstate-epp (amd-pstate.c:1753) caps a policy
 // with boost off at the 2.6 GHz base; acpi-cpufreq (acpi-cpufreq.c:963-969)
-// takes away the boost above its 2.4 GHz top entry. The W1 tree rendered
-// no global boost for amd-pstate and no policy boost for acpi-cpufreq.
+// takes away the boost above its 2.4 GHz top entry. The tree renders both
+// files for amd-pstate and for acpi-cpufreq. acpi-cpufreq's policies show
+// the core's per-policy flag, 0 at boot while the global boost is on and
+// the CPUs boost, as on the captured nodes, and a write equal to the flag
+// changes nothing (store_local_boost): a 0 leaves the policy boosting, a 1
+// then a 0 turns it off.
 func TestCK01SetBoostDriversHaveGlobalAndPolicyBoost(t *testing.T) {
 	t.Parallel()
 	t.Run("amd-pstate-epp", func(t *testing.T) {
@@ -103,15 +107,30 @@ func TestCK01SetBoostDriversHaveGlobalAndPolicyBoost(t *testing.T) {
 		n, tr := cgNode(t, p)
 		global := ckGlobalBoost()
 		ckAgentFile(t, tr, global)
+		if got := nodeRead(t, tr, global); got != "1\n" {
+			t.Fatalf("global boost at boot %q, want 1", got)
+		}
 		for _, k := range cgPolicies(n) {
 			ckAgentFile(t, tr, nodePolicyFile(k, "boost"))
-			if got := nodeRead(t, tr, nodePolicyFile(k, "boost")); got != "1\n" {
-				t.Fatalf("policy%d boost at boot %q, want the global 1", k, got)
+			if got := nodeRead(t, tr, nodePolicyFile(k, "boost")); got != "0\n" {
+				t.Fatalf("policy%d boost at boot %q, want the per-policy flag 0", k, got)
+			}
+			if got, want := ckPolicy(t, n, k).ceilingKHz(), int64(3707812); got != want {
+				t.Fatalf("policy%d ceiling at boot %d kHz, want %d: the global boost is on", k, got, want)
 			}
 		}
-		cgWriteStep(t, n, tr, nodePolicyFile(1, "boost"), "0")
+		pol1 := nodePolicyFile(1, "boost")
+		cgWriteStep(t, n, tr, pol1, "0")
+		if e := cgOneEvent(t, n, pol1); e.Kind != EventAccepted || nodeRead(t, tr, pol1) != "0\n" {
+			t.Fatalf("policy1 boost 0 at boot: %+v, file %q, want accepted and 0", e, nodeRead(t, tr, pol1))
+		}
+		if got, want := ckPolicy(t, n, 1).ceilingKHz(), int64(3707812); got != want {
+			t.Errorf("policy1 boost 0, equal to its flag: ceiling %d kHz, want %d: the write changes nothing", got, want)
+		}
+		cgWriteStep(t, n, tr, pol1, "1")
+		cgWriteStep(t, n, tr, pol1, "0")
 		if got, want := ckPolicy(t, n, 1).ceilingKHz(), int64(2400000); got != want {
-			t.Errorf("policy1 boost 0: ceiling %d kHz, want the top entry %d", got, want)
+			t.Errorf("policy1 boost 1 then 0: ceiling %d kHz, want the top entry %d", got, want)
 		}
 		if got, want := ckPolicy(t, n, 0).ceilingKHz(), int64(3707812); got != want {
 			t.Errorf("policy0 ceiling %d kHz, want %d: boost is per policy", got, want)
@@ -138,10 +157,11 @@ func TestCK01SetBoostDriversHaveGlobalAndPolicyBoost(t *testing.T) {
 // CK03: a Node started over a tree with turbo off still restores the
 // uncapped maximum when turbo comes back on, where the kernel keeps the
 // policy's request under the cap (intel_pstate.c:1351-1361,
-// amd-pstate.c:665-702): the W1 Node took the capped scaling_max_freq for
-// the request, so after a restart with no_turbo=1 or an amd-pstate policy's
-// boost 0 the policies stayed at the base for good. A request written
-// below the cap is still kept, and the restart itself reverts nothing.
+// amd-pstate.c:665-702): the Node keeps the request, not the capped
+// scaling_max_freq, so after a restart with no_turbo=1 or an amd-pstate
+// policy's boost 0 the policies leave the base once turbo is back. A
+// request written below the cap is still kept, and the restart itself
+// reverts nothing.
 func TestCK03RestartWithTurboOffRestoresTheUncappedMaximum(t *testing.T) {
 	t.Parallel()
 	t.Run("intel_pstate no_turbo", func(t *testing.T) {
@@ -190,4 +210,29 @@ func TestCK03RestartWithTurboOffRestoresTheUncappedMaximum(t *testing.T) {
 			t.Fatalf("boost 1 after a restart: scaling_max_freq %q, want 4500000", got)
 		}
 	})
+}
+
+// CK05: the policyBoost fact sets what acpi-cpufreq's policy files show at
+// boot; a profile that sets 1 renders 1 in every policy, and a Node over a
+// tree whose policy files were turned off by a write keeps them off, while
+// one at the boot value takes the global state.
+func TestCK05PolicyBoostFactSetsThePolicyFilesAtBoot(t *testing.T) {
+	t.Parallel()
+	p := ensureBuiltin(t, "amd-epyc-2s-energy-only")
+	p.CPUFreq.PolicyBoost = Fact[int]{V: 1, Src: "assumed:test fixture"}
+	n, tr := cgNode(t, p)
+	if got := nodeRead(t, tr, nodePolicyFile(2, "boost")); got != "1\n" {
+		t.Fatalf("policy2 boost at boot %q with policyBoost 1, want 1", got)
+	}
+	cgWriteStep(t, n, tr, nodePolicyFile(2, "boost"), "0")
+	if got := ckPolicy(t, n, 2).ceilingKHz(); got != 2400000 {
+		t.Fatalf("policy2 boost 0 from 1: ceiling %d kHz, want 2400000", got)
+	}
+	m := nodeNewNode(t, p, tr)
+	if got := ckPolicy(t, m, 2).ceilingKHz(); got != 2400000 {
+		t.Errorf("a Node resumed with policy2 off: ceiling %d kHz, want 2400000", got)
+	}
+	if got := ckPolicy(t, m, 3).ceilingKHz(); got != 3707812 {
+		t.Errorf("a Node resumed with policy3 at its boot value: ceiling %d kHz, want 3707812", got)
+	}
 }

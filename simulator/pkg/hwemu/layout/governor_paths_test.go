@@ -9,7 +9,6 @@ func TestGovernorPaths(t *testing.T) {
 	for _, tc := range []struct{ got, want string }{
 		{CPUFreqDir(), "devices/system/cpu/cpufreq"},
 		{GovernorTunablesDir("conservative"), "devices/system/cpu/cpufreq/conservative"},
-		{PolicyGovernorTunablesDir(4, "schedutil"), "devices/system/cpu/cpufreq/policy4/schedutil"},
 		{IntelPstateDir(), "devices/system/cpu/intel_pstate"},
 		{AMDPstateDir(), "devices/system/cpu/amd_pstate"},
 		{IntelUncoreDieDir(1, 0), "devices/system/cpu/intel_uncore_frequency/package_01_die_00"},

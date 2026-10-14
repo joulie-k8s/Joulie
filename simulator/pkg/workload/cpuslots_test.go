@@ -92,7 +92,7 @@ func TestCPUSlotsShareSlowsContendedJobs(t *testing.T) {
 		t.Errorf("Util of eight 0.5-CPU jobs at 0.9 = %v, want every CPU at 0.9", got)
 	}
 	for id := range util {
-		if got := s.Share(id, util); got != 1 {
+		if got := jobShare(s, id, util); got != 1 {
 			t.Errorf("Share(%s) = %v with 3.6 of 4 CPUs asked, want 1", id, got)
 		}
 	}
@@ -108,7 +108,7 @@ func TestCPUSlotsShareSlowsContendedJobs(t *testing.T) {
 		t.Errorf("Util = %v, want CPU 0 at 1 and its 0.25 over spread on the others", got)
 	}
 	for id := range util {
-		if got := s.Share(id, util); got != 1 {
+		if got := jobShare(s, id, util); got != 1 {
 			t.Errorf("Share(%s) = %v with 3.5 of 4 CPUs asked, want 1", id, got)
 		}
 	}
@@ -124,23 +124,32 @@ func TestCPUSlotsShareSlowsContendedJobs(t *testing.T) {
 		t.Errorf("Util of eight 1-CPU jobs at 0.9 = %v, want every CPU at 1", got)
 	}
 	for id := range util {
-		if got := s.Share(id, util); math.Abs(got-4/7.2) > 1e-12 {
+		if got := jobShare(s, id, util); math.Abs(got-4/7.2) > 1e-12 {
 			t.Errorf("Share(%s) = %v with 7.2 of 4 CPUs asked, want 4/7.2", id, got)
 		}
 	}
-	if got := s.Share("idle", util); got != 1 {
+	if got := jobShare(s, "idle", util); got != 1 {
 		t.Errorf("Share of a job holding no CPUs = %v, want 1", got)
 	}
 	for _, id := range []string{"a", "b", "c", "d"} {
 		s.Release(id)
 	}
-	if got := s.Share("e", util); got != 1 {
+	if got := jobShare(s, "e", util); got != 1 {
 		t.Errorf("Share(e) = %v after half the jobs ended, want 1", got)
 	}
 
 	s = workload.NewCPUSlots(4)
 	s.Assign("big", 64)
-	if got := s.Share("big", map[string]float64{"big": 1}); math.Abs(got-1.0/16) > 1e-12 {
+	if got := jobShare(s, "big", map[string]float64{"big": 1}); math.Abs(got-1.0/16) > 1e-12 {
 		t.Errorf("Share(big) = %v asking 64 of 4 CPUs, want 1/16", got)
 	}
+}
+
+// jobShare is the CPU share of job as the v1 engine applies it: Share for a
+// job holding CPUs, 1 for one holding none.
+func jobShare(s *workload.CPUSlots, job string, util map[string]float64) float64 {
+	if !s.Holds(job) {
+		return 1
+	}
+	return s.Share(util)
 }

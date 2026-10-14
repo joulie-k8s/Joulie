@@ -262,8 +262,8 @@ func TestH33EventsNameTheirComponent(t *testing.T) {
 	t.Run("intel host with NVIDIA GPUs", func(t *testing.T) {
 		t.Parallel()
 		// Two sockets of two cores and two threads: cpu k sits on socket
-		// (k mod 4) / 2. The DRAM zones reject writes, so their files are
-		// render-owned.
+		// (k mod 4) / 2. The DRAM zones reject writes: their limits refuse
+		// every write, and their enabled is render-owned.
 		check(t, nodeNVLProfile(), map[string]stateWrite{
 			nodeZoneFile("constraint_0_power_limit_uw", 1):                               {value: "100000000", component: "cpu1"},
 			nodeZoneFile("constraint_0_time_window_us", 0):                               {value: "2000000", component: "cpu0"},
@@ -271,7 +271,8 @@ func TestH33EventsNameTheirComponent(t *testing.T) {
 			nodePolicyFile(5, "scaling_max_freq"):                                        {value: "2000000", component: "cpu0"},
 			nodeNVMLFile(3, "power_limit_mw"):                                            {value: "300000", component: "gpu3"},
 			path.Join(layout.SysDir, layout.PowercapControlDir("intel-rapl"), "enabled"): {value: "1"},
-			nodeZoneFile("constraint_0_time_window_us", 0, 0):                            {value: "5000", component: "memory0", restored: true},
+			nodeZoneFile("constraint_0_time_window_us", 0, 0):                            {value: "5000", component: "memory0"},
+			nodeZoneFile("enabled", 1, 0):                                                {value: "1", component: "memory1", restored: true},
 			nodePolicyFile(2, "scaling_driver"):                                          {value: "acpi-cpufreq", component: "cpu1", restored: true},
 			nodeNVMLFile(3, "power_default_limit_mw"):                                    {value: "350000", component: "gpu3", restored: true},
 			layout.CPUInfoFile:                                                           {value: "processor\t: 0\n", restored: true},
@@ -367,13 +368,13 @@ func TestH36RenderCheckInterval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	window := nodeZoneFile("constraint_0_time_window_us", 0, 0)
+	enabled := nodeZoneFile("enabled", 0, 0)
 	pl1 := nodeZoneFile("constraint_0_power_limit_uw", 0)
-	nodeWrite(t, tr, window, "5000")
+	nodeWrite(t, tr, enabled, "1")
 	for second := 1; second <= 9; second++ {
 		nodeWrite(t, tr, pl1, fmt.Sprintf("%d", 100000000+second*1000000))
 		nodeStep(t, n, time.Second)
-		if got := nodeRead(t, tr, window); got != "5000" {
+		if got := nodeRead(t, tr, enabled); got != "1" {
 			t.Fatalf("t+%ds: render-owned file reads %q, want the overwrite kept until t+10s", second, got)
 		}
 		if e := nodeOneEvent(t, n, pl1); e.Kind != EventAccepted {
@@ -381,21 +382,21 @@ func TestH36RenderCheckInterval(t *testing.T) {
 		}
 	}
 	nodeStep(t, n, time.Second)
-	if got := nodeRead(t, tr, window); got != "976\n" {
-		t.Fatalf("t+10s: render-owned file reads %q, want 976 restored", got)
+	if got := nodeRead(t, tr, enabled); got != "0\n" {
+		t.Fatalf("t+10s: render-owned file reads %q, want 0 restored", got)
 	}
-	if e := nodeOneEvent(t, n, window); e.Kind != EventRestored || e.Written != "5000" {
-		t.Errorf("t+10s: event %+v, want restored 5000", e)
+	if e := nodeOneEvent(t, n, enabled); e.Kind != EventRestored || e.Written != "1" {
+		t.Errorf("t+10s: event %+v, want restored 1", e)
 	}
 	// The next check is 10 s after this one.
-	nodeWrite(t, tr, window, "7000")
+	nodeWrite(t, tr, enabled, "1")
 	nodeStep(t, n, 9500*time.Millisecond)
-	if got := nodeRead(t, tr, window); got != "7000" {
+	if got := nodeRead(t, tr, enabled); got != "1" {
 		t.Errorf("t+19.5s: render-owned file reads %q, want the overwrite kept until t+20s", got)
 	}
 	nodeStep(t, n, 500*time.Millisecond)
-	if got := nodeRead(t, tr, window); got != "976\n" {
-		t.Errorf("t+20s: render-owned file reads %q, want 976 restored", got)
+	if got := nodeRead(t, tr, enabled); got != "0\n" {
+		t.Errorf("t+20s: render-owned file reads %q, want 0 restored", got)
 	}
 }
 

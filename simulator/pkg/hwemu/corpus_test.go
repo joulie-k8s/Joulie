@@ -80,7 +80,7 @@ func TestH21FromCorpusReplaysEveryMachine(t *testing.T) {
 				t.Errorf("cpuinfo differs from the capture")
 			}
 
-			renderCheckCorpusPowercap(t, dir, tree, meta.WriteRejectingZones)
+			renderCheckCorpusPowercap(t, dir, p, tree, meta.WriteRejectingZones)
 
 			driver, err := os.ReadFile(filepath.Join(dir, "cpufreq-driver"))
 			policy0 := filepath.Join(tree.SysRoot, layout.PolicyDir(0), "scaling_driver")
@@ -139,8 +139,10 @@ func TestH21FromCorpusReplaysEveryMachine(t *testing.T) {
 }
 
 // renderCheckCorpusPowercap compares the capture's flat powercap tree with
-// the rendered class/powercap view of it.
-func renderCheckCorpusPowercap(t *testing.T, dir string, tree *Tree, rejecting []string) {
+// the rendered class/powercap view of it, tree rendered from p. The limit of
+// a zone the capture lists as rejecting writes is a file the Node refuses
+// writes to.
+func renderCheckCorpusPowercap(t *testing.T, dir string, p *Profile, tree *Tree, rejecting []string) {
 	t.Helper()
 	captured := filepath.Join(dir, "powercap")
 	zones, err := os.ReadDir(captured)
@@ -168,7 +170,11 @@ func renderCheckCorpusPowercap(t *testing.T, dir string, tree *Tree, rejecting [
 			capturedFiles[f.Name()] = true
 			got := filepath.Join(class, z.Name(), f.Name())
 			if rejects[z.Name()] && f.Name() == "constraint_0_power_limit_uw" {
-				if !renderIsEISDIR(got) {
+				rel, err := filepath.Rel(tree.Root, got)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !renderRefusesWrites(t, p, tree, filepath.ToSlash(rel)) {
 					t.Errorf("%s/%s accepts writes; machine.yaml lists the zone as rejecting", z.Name(), f.Name())
 				}
 				continue

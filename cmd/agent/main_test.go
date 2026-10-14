@@ -1464,3 +1464,35 @@ func TestObjectNameSharedWithOperator(t *testing.T) {
 		}
 	}
 }
+
+// A cap above a zone's constraint maximum is written as that maximum: the
+// kernel keeps the limit in the zone's power unit and masks it to the
+// register's width, so 4100 W at a 1/8 W unit would wrap to about 4 W on
+// hardware. A zone without a readable maximum takes the cap as given.
+func TestApplyRAPLPackageCapClampsToTheZoneMaximum(t *testing.T) {
+	root := raplFixture(t, []struct {
+		Dir, Name    string
+		MaxUW, MinUW int64
+	}{
+		{"intel-rapl:0", "package-0", 165_000_000, 90_000_000},
+		{"intel-rapl:1", "package-1", 0, 90_000_000},
+		{"intel-rapl:2", "package-2", -1, 90_000_000},
+	})
+	applied, count, err := applyRAPLPackageCap(HardwareInfo{CPUVendor: "GenuineIntel"}, 4100)
+	if err != nil || !applied || count != 3 {
+		t.Fatalf("applied=%v count=%d err=%v, want all three zones written", applied, count, err)
+	}
+	for zone, want := range map[string]string{
+		"intel-rapl:0": "165000000",  // clamped to constraint_0_max_power_uw
+		"intel-rapl:1": "4100000000", // a maximum of 0 states none
+		"intel-rapl:2": "4100000000", // no maximum file
+	} {
+		b, err := os.ReadFile(filepath.Join(root, zone, "constraint_0_power_limit_uw"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(string(b)); got != want {
+			t.Errorf("%s limit=%s, want %s", zone, got, want)
+		}
+	}
+}

@@ -2,7 +2,9 @@ package scenario
 
 import (
 	"encoding/json"
+	"os/exec"
 	"path"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -183,6 +185,21 @@ func (s Summary) MarshalJSON() ([]byte, error) {
 type Git struct {
 	SHA   string `json:"sha"`
 	Dirty bool   `json:"dirty"`
+}
+
+// ReadGit returns the commit of the working tree at repo and whether the
+// tree has changes, as the scripts name a run directory (sim_git_state in
+// scripts/simcluster/lib.sh); the zero Git outside a git checkout.
+func ReadGit(repo string) Git {
+	sha, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return Git{}
+	}
+	g := Git{SHA: strings.TrimSpace(string(sha))}
+	if status, err := exec.Command("git", "-C", repo, "status", "--porcelain").Output(); err == nil {
+		g.Dirty = len(strings.TrimSpace(string(status))) > 0
+	}
+	return g
 }
 
 // KnownDefect is a check that reproduced a registered defect: ID is the

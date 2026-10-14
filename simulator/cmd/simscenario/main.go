@@ -30,11 +30,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
-	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -135,17 +133,6 @@ func cmdValidate(_ context.Context, args []string, stdout, stderr io.Writer) int
 	return scenario.ExitPass
 }
 
-// gitState returns the commit of repo and whether its tree has changes; an
-// empty sha when git cannot tell.
-func gitState(repo string) (string, bool) {
-	sha, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
-	if err != nil {
-		return "", false
-	}
-	status, err := exec.Command("git", "-C", repo, "status", "--porcelain").Output()
-	return strings.TrimSpace(string(sha)), err == nil && len(strings.TrimSpace(string(status))) > 0
-}
-
 func cmdPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
 	repo := fs.String("repo", ".", "repository root the scenario's paths are relative to")
@@ -163,8 +150,8 @@ func cmdPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "plan", err)
 	}
-	sha, dirty := gitState(*repo)
-	p, err := scenario.MakePlan(ctx, s, scenario.PlanOptions{RepoRoot: *repo, RunDir: *out, Workloadgen: *wg, GitSHA: sha, GitDirty: dirty})
+	git := scenario.ReadGit(*repo)
+	p, err := scenario.MakePlan(ctx, s, scenario.PlanOptions{RepoRoot: *repo, RunDir: *out, Workloadgen: *wg, GitSHA: git.SHA, GitDirty: git.Dirty})
 	if p != nil {
 		printPlan(stdout, *out, p)
 	}
@@ -220,7 +207,7 @@ func cmdEvaluate(_ context.Context, args []string, stdout, stderr io.Writer) int
 		runErr = fmt.Errorf("no %s: the run never started", scenario.RunStatusFile)
 	}
 	sum.Finish(runErr)
-	h := scenario.Harness{Dir: dir, ClusterName: env.ClusterName, RunID: env.RunID, Scenario: env.Scenario, Variant: env.Variant}
+	h := scenario.Recorder{Dir: dir, ClusterName: env.ClusterName, RunID: env.RunID, Scenario: env.Scenario, Variant: env.Variant}
 	skip := map[string]bool{}
 	for _, a := range rd.Scenario.Assertions {
 		if a.Type == scenario.AssertPromQL {
@@ -425,7 +412,7 @@ func runVariant(ctx context.Context, dir string, c *cluster, stdout, stderr io.W
 	if err := scenario.CheckPodCompleteStage(stage); err != nil {
 		return err
 	}
-	h := scenario.Harness{Dir: dir, ClusterName: env.ClusterName, RunID: env.RunID, Scenario: env.Scenario, Variant: env.Variant}
+	h := scenario.Recorder{Dir: dir, ClusterName: env.ClusterName, RunID: env.RunID, Scenario: env.Scenario, Variant: env.Variant}
 	start := time.Now()
 	var recs []otlpjson.LogRecord
 	if names := eff.RunVariants(); names[0] == env.Variant {
@@ -487,7 +474,7 @@ func runVariant(ctx context.Context, dir string, c *cluster, stdout, stderr io.W
 // run until it ends, its deadline passes, it stays stalled for
 // abortOnRunStalled, or ctx ends. It returns the last status and the
 // scenario.RunEnd reason.
-func captureLoop(ctx context.Context, s scenario.Scenario, h scenario.Harness, kc client.Reader, sim *scenario.SimClient,
+func captureLoop(ctx context.Context, s scenario.Scenario, h scenario.Recorder, kc client.Reader, sim *scenario.SimClient,
 	start time.Time, stdout, stderr io.Writer) (workload.RunStatus, string, error) {
 	interval := scenario.DefaultCaptureInterval
 	if s.Capture.Interval != nil {
@@ -544,7 +531,7 @@ func captureLoop(ctx context.Context, s scenario.Scenario, h scenario.Harness, k
 // recordPrometheus records the scenario's Prometheus captures over the run
 // and the end value of each promql assertion. A query that fails is a
 // warning: the assertions that need it report no data.
-func recordPrometheus(ctx context.Context, s scenario.Scenario, h scenario.Harness, prom *scenario.PromClient, start, end time.Time, stderr io.Writer) {
+func recordPrometheus(ctx context.Context, s scenario.Scenario, h scenario.Recorder, prom *scenario.PromClient, start, end time.Time, stderr io.Writer) {
 	step := scenario.DefaultCaptureInterval
 	if s.Capture.Interval != nil {
 		step = s.Capture.Interval.Duration

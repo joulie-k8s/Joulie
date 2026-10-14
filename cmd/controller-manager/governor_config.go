@@ -65,10 +65,7 @@ func defaultGovernorConfig() governorConfig {
 		cpuPerformancePreset: joulie.CPUGovernorPresetPerformance,
 		cpuEcoPreset:         joulie.CPUGovernorPresetEfficiency,
 		gpuEcoPreset:         joulie.GPUGovernorPresetEfficient,
-		// The agent's default (pkg/governor), provisional until measured: the
-		// best energy per job of the published sweeps sits between 61 and 76 %
-		// of the maximum clock, and the constant power of the rest of the node
-		// moves the node optimum up.
+		// The agent's default; its rationale is at the constant.
 		gpuCeilingPctOfMax: governor.DefaultCeilingPctOfMax,
 		gpuModelPresets:    map[string]gpuGovernorModelPresets{},
 	}
@@ -102,7 +99,7 @@ func loadGovernorConfig() governorConfig {
 				boost, strings.Join(joulie.CPUGovernorBoostValues, " or "))
 		}
 	}
-	cfg.cpuOnGPUNodes = governorBoolEnv("CPU_GOVERNOR_ON_GPU_NODES", cfg.cpuOnGPUNodes)
+	cfg.cpuOnGPUNodes = boolEnv("CPU_GOVERNOR_ON_GPU_NODES", cfg.cpuOnGPUNodes)
 
 	// An empty GPU preset is a valid choice (write none), so a variable set
 	// to "" is not the same as one left unset.
@@ -152,23 +149,6 @@ func presetList(accepted []string) string {
 		out = append(out, p)
 	}
 	return strings.Join(out, ", ")
-}
-
-// governorBoolEnv reads a boolean variable with the spellings boolEnv
-// accepts, but a value that is neither true nor false logs a warning and
-// keeps def instead of reading as false.
-func governorBoolEnv(key string, def bool) bool {
-	v := strings.TrimSpace(os.Getenv(key))
-	switch strings.ToLower(v) {
-	case "":
-		return def
-	case "true", "1", "yes":
-		return true
-	case "false", "0", "no":
-		return false
-	}
-	log.Printf("warning: %s=%q is not true or false; using %t", key, v, def)
-	return def
 }
 
 func validCeilingPct(pct float64) bool {
@@ -295,7 +275,9 @@ func (c governorConfig) gpuPresetFor(profile string, keys ...string) (string, fl
 // profile it runs at (a draining node keeps performance). A preset the node
 // does not list in NodeHardware status.{cpu,gpu}.governor.presets is not
 // written, with one warning: falling back to another preset, auto included,
-// would override a setting the node's operator chose.
+// would override a setting the node's operator chose. A GPU governor block
+// in a discovery gap (GPUGovernorGap) lists nothing about the node, and the
+// configured GPU preset is written as usual.
 //
 // GPU nodes get no CPU governor unless CPU_GOVERNOR_ON_GPU_NODES is set, the
 // rule the CPU cap follows; only GPU nodes get a GPU governor.
@@ -329,10 +311,14 @@ func (c governorConfig) governorIntents(nodeName, profile string, hasGPU bool, n
 		preset, ceiling := c.gpuPresetFor(profile, gpuProduct, nh.GPUModel, nh.GPURawModel)
 		switch {
 		case preset == "":
-		case !slices.Contains(nh.GPUGovernorPresets, preset):
+		case !slices.Contains(nh.GPUGovernorPresets, preset) && !nh.GPUGovernorGap:
 			warnGovernorOnce(nodeName, "gpu", fmt.Sprintf(
 				"GPU governor preset %q is not in NodeHardware status.gpu.governor.presets %v; writing no GPU governor", preset, nh.GPUGovernorPresets))
 		default:
+			// A block in a discovery gap lists no presets for a reconcile;
+			// dropping the intent then would make the agent restore the
+			// baseline and set the preset again a reconcile later, so the
+			// preset is written, and the agent holds it until it can plan.
 			gpu = &joulie.GPUGovernorIntent{Preset: preset}
 			if preset == joulie.GPUGovernorPresetEfficient {
 				gpu.ComputeClockCeilingPctOfMax = floatPtr(ceiling)

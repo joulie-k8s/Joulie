@@ -57,30 +57,6 @@ type facilityMetrics struct {
 	lastUpdated time.Time
 }
 
-func (f *facilityMetrics) get() (ambientC, itPowerW, coolingW float64) {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.readings.ambientC, f.readings.itPowerW, f.readings.coolingPowerW
-}
-
-// set stores the three cluster-wide readings, all known.
-func (f *facilityMetrics) set(ambientC, itPowerW, coolingW float64) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.readings.ambientC, f.readings.ambientKnown = ambientC, true
-	f.readings.itPowerW, f.readings.itKnown = itPowerW, true
-	f.readings.coolingPowerW, f.readings.coolingKnown = coolingW, true
-	f.lastUpdated = time.Now()
-}
-
-// setTopology stores per-zone ambient temperatures and per-rack power.
-func (f *facilityMetrics) setTopology(zoneTemps map[string]float64, rackPower map[string]float64) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.readings.zoneAmbientC = cloneFloatMap(zoneTemps)
-	f.readings.rackPowerW = cloneFloatMap(rackPower)
-}
-
 // store replaces every reading with those of one poll.
 func (f *facilityMetrics) store(s facilitySnapshot) {
 	f.mu.Lock()
@@ -312,11 +288,16 @@ func noteFacilityResult(input inputs.FacilityInput, preset string, q inputs.Quer
 }
 
 // facilityHint is a hint for a failed facility query, naming the variable
-// that overrides it.
+// that overrides it, and, when the otel preset found nothing for an input
+// the legacy preset also reads, FACILITY_PRESET=legacy.
 func facilityHint(input inputs.FacilityInput, preset string, err error) string {
 	env := facilityQueryEnv(input)
 	if errors.Is(err, inputs.ErrNoData) && preset == string(inputs.FacilityPresetOTel) {
-		return fmt.Sprintf(" (producers that push OTLP need Prometheus' --web.enable-otlp-receiver, and PROMETHEUS_NAME_TRANSLATION must equal its otlp.translation_strategy; %s overrides the query)", env)
+		legacy := ""
+		if q, _ := (inputs.FacilitySpec{Preset: inputs.FacilityPresetLegacy}).Queries(); q[input].PromQL != "" {
+			legacy = fmt.Sprintf("; a Prometheus that holds the datacenter_* metrics is read with FACILITY_PRESET=%s", inputs.FacilityPresetLegacy)
+		}
+		return fmt.Sprintf(" (producers that push OTLP need Prometheus' --web.enable-otlp-receiver, and PROMETHEUS_NAME_TRANSLATION must equal its otlp.translation_strategy; %s overrides the query%s)", env, legacy)
 	}
 	return fmt.Sprintf(" (%s overrides the query)", env)
 }

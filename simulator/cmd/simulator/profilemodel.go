@@ -6,13 +6,12 @@ package main
 import (
 	"fmt"
 	"math"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/matbun/joulie/simulator/pkg/hw"
 	"github.com/matbun/joulie/simulator/pkg/hwemu"
+	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 )
 
 const (
@@ -32,13 +31,8 @@ const (
 	profileGPUTelemetryWindowMS = 1000
 )
 
-var (
-	profilePackageZone    = regexp.MustCompile(`^package-(\d+)$`)
-	profilePackageDieZone = regexp.MustCompile(`^package-(\d+)-die-\d+$`)
-)
-
 // simModelFromProfile is the legacy model of a node of profile p, and the
-// only adapter from an hwemu profile to the legacy model (X10). The profile
+// only adapter from an hwemu profile to the legacy model. The profile
 // sets the CPU and GPU power, the frequency range, the caps and their
 // settling times; base sets what a profile has no fact for: the RAPL
 // headroom, the CPU telemetry window and the thermal constants. Thermal
@@ -313,14 +307,12 @@ func profilePackageZones(zs hwemu.ZoneSpec, sockets, dies int) []profileZone {
 		}
 	case "once", "":
 		name := strings.ReplaceAll(zs.NameFormat, "%d", "0")
-		if m := profilePackageZone.FindStringSubmatch(name); m != nil {
-			if s, err := strconv.Atoi(m[1]); err == nil && s < sockets {
-				out = append(out, profileZone{socket: s, mult: 1})
+		if s, die, ok := layout.RAPLPackageZone(name); ok && s < sockets {
+			mult := 1.0
+			if die >= 0 {
+				mult = float64(dies)
 			}
-		} else if m := profilePackageDieZone.FindStringSubmatch(name); m != nil {
-			if s, err := strconv.Atoi(m[1]); err == nil && s < sockets {
-				out = append(out, profileZone{socket: s, mult: float64(dies)})
-			}
+			out = append(out, profileZone{socket: s, mult: mult})
 		}
 	}
 	return out

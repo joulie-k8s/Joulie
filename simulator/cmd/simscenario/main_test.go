@@ -334,7 +334,8 @@ func testRunVariant(t *testing.T, mode string) {
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "intel-0"}}).Build()
 	logs := k8sfake.NewSimpleClientset(
 		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "joulie-controller-manager-0", Namespace: scenario.NamespaceJoulie}},
-		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "joulie-agent-intel-0-x", Namespace: scenario.NamespaceJoulie, Labels: map[string]string{"sim.joulie.io/node": "intel-0"}}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "joulie-agent-emu-0-x", Namespace: scenario.NamespaceJoulie, Annotations: map[string]string{"sim.joulie.io/node": "intel-0"}},
+			Spec: corev1.PodSpec{NodeName: "joulie-sim-infra"}},
 		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "joulie-telemetry-sim-0", Namespace: scenario.NamespaceSimulator}},
 	)
 

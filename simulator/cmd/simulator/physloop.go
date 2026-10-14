@@ -2,8 +2,9 @@ package main
 
 // The physics tick of the modelled (non-emulated) nodes in Kubernetes mode.
 // In emulate mode the emulator's tick runs it (publishEmulateSnapshot); with
-// no emulator, runPhysicsLoop does, every SIM_PHYSICS_TICK. Standalone mode
-// steps its nodes itself, on its virtual clock.
+// no emulator, runPhysicsLoop does, every SIM_PHYSICS_TICK, and keeps the
+// facility gauges current when no workload loop does. Standalone mode steps
+// its nodes itself, on its virtual clock.
 
 import (
 	"context"
@@ -54,6 +55,10 @@ func (s *simulator) addEnergyLocked(node string, cpuJ, gpuJ float64) {
 // runPhysicsLoop steps the modelled nodes every interval of wall time, by the
 // time that passed since the last step, until ctx ends. An interval of 0 or
 // less, which time.NewTicker rejects with a panic, takes the default.
+//
+// Without a legacy trace it also updates the facility gauges after each
+// step, since no workload loop runs to do it; with one, the workload loop
+// updates them once per workload tick, before its timeseries row.
 func (s *simulator) runPhysicsLoop(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		log.Printf("warning: %s=%s is not positive, using %s", envPhysicsTick, interval, defaultPhysicsTick)
@@ -69,6 +74,9 @@ func (s *simulator) runPhysicsLoop(ctx context.Context, interval time.Duration) 
 		case now := <-ticker.C:
 			s.stepLegacyNodes(now.Sub(last))
 			last = now
+			if s.workload == nil {
+				s.updateFacilityMetrics(now.UTC())
+			}
 		}
 	}
 }

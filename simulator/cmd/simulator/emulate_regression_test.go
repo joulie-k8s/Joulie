@@ -11,8 +11,7 @@ import (
 // SE05: the facility gauges are computed without a workload trace. Before,
 // updateFacilityMetrics took the start of its temperature cycle from the
 // workload engine, which is nil without a trace, and panicked; emulate mode
-// runs without a trace and computes the facility every tick. Only names
-// that already existed at a94f345 are used, so the test fails there.
+// runs without a trace and computes the facility every tick.
 func TestSE05FacilityMetricsWithoutATrace(t *testing.T) {
 	s := newSimulatorWithRegisterer(defaultBaseModelFromEnv(), nil, nil, 10, prometheus.NewRegistry())
 	s.facilityBaseAmbientTempC, s.facilityTempAmplitudeC, s.facilityTempPeriodH = 22, 5, 24

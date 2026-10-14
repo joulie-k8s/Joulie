@@ -80,20 +80,17 @@ const (
 	OwnerJoulie  = "joulie"
 )
 
-// StabilityDevelopment is the stability of every name in the table: the
-// semantic conventions mark all hw.* names Development, and Joulie's own
-// names carry no stronger promise.
-const StabilityDevelopment = "development"
-
 // Metric is one metric of the table. Unit is a UCUM unit as the semantic
 // conventions write it (J, W, Cel, Hz, 1, s, or an annotation such as
 // {job}). Attributes lists the point attributes the metric may carry; a
-// producer sets a subset of them and never a resource attribute.
+// producer sets a subset of them and never a resource attribute. Every name
+// in the table is at Development stability: the semantic conventions mark
+// all hw.* names so, and Joulie's own names carry no stronger promise.
 type Metric struct {
-	Name, Unit, Brief, Stability, Owner string
-	Kind                                Kind
-	Value                               ValueType
-	Attributes                          []string
+	Name, Unit, Brief, Owner string
+	Kind                     Kind
+	Value                    ValueType
+	Attributes               []string
 }
 
 // HasAttribute reports whether a point of m may carry attribute a.
@@ -326,42 +323,42 @@ func init() {
 // docs/hardware/host.md), so the two never overlap in a sum.
 var (
 	HwHostEnergy = Register(Metric{
-		Name: "hw.host.energy", Unit: "J", Owner: OwnerSemconv, Stability: StabilityDevelopment,
+		Name: "hw.host.energy", Unit: "J", Owner: OwnerSemconv,
 		Kind: Counter, Value: Int, Attributes: []string{AttrHwID},
 		Brief: "Total energy consumed by the entire physical host, in joules.",
 	})
 	HwHostPower = Register(Metric{
-		Name: "hw.host.power", Unit: "W", Owner: OwnerSemconv, Stability: StabilityDevelopment,
+		Name: "hw.host.power", Unit: "W", Owner: OwnerSemconv,
 		Kind: Gauge, Value: Double, Attributes: []string{AttrHwID},
 		Brief: "Instantaneous power consumed by the entire physical host in Watts (hw.host.energy is preferred).",
 	})
 	HwHostAmbientTemperature = Register(Metric{
-		Name: "hw.host.ambient_temperature", Unit: "Cel", Owner: OwnerSemconv, Stability: StabilityDevelopment,
+		Name: "hw.host.ambient_temperature", Unit: "Cel", Owner: OwnerSemconv,
 		Kind: Gauge, Value: Double, Attributes: []string{AttrHwID},
 		Brief: "Ambient (external) temperature of the physical host.",
 	})
 	HwEnergy = Register(Metric{
-		Name: "hw.energy", Unit: "J", Owner: OwnerSemconv, Stability: StabilityDevelopment,
+		Name: "hw.energy", Unit: "J", Owner: OwnerSemconv,
 		Kind: Counter, Value: Double, Attributes: []string{AttrHwID, AttrHwType, AttrHwName, AttrHwParent},
 		Brief: "Energy consumed by the component.",
 	})
 	HwPower = Register(Metric{
-		Name: "hw.power", Unit: "W", Owner: OwnerSemconv, Stability: StabilityDevelopment,
+		Name: "hw.power", Unit: "W", Owner: OwnerSemconv,
 		Kind: Gauge, Value: Double, Attributes: []string{AttrHwID, AttrHwType, AttrHwName, AttrHwParent},
 		Brief: "Instantaneous power consumed by the component.",
 	})
 	HwCPUSpeed = Register(Metric{
-		Name: "hw.cpu.speed", Unit: "Hz", Owner: OwnerSemconv, Stability: StabilityDevelopment,
+		Name: "hw.cpu.speed", Unit: "Hz", Owner: OwnerSemconv,
 		Kind: Gauge, Value: Int, Attributes: []string{AttrHwID, AttrHwName, AttrHwVendor, AttrHwModel},
 		Brief: "CPU current frequency.",
 	})
 	HwCPUSpeedLimit = Register(Metric{
-		Name: "hw.cpu.speed.limit", Unit: "Hz", Owner: OwnerSemconv, Stability: StabilityDevelopment,
+		Name: "hw.cpu.speed.limit", Unit: "Hz", Owner: OwnerSemconv,
 		Kind: Gauge, Value: Int, Attributes: []string{AttrHwID, AttrHwName, AttrHwVendor, AttrHwModel, AttrHwLimitType},
 		Brief: "CPU maximum frequency.",
 	})
 	HwGPUUtilization = Register(Metric{
-		Name: "hw.gpu.utilization", Unit: "1", Owner: OwnerSemconv, Stability: StabilityDevelopment,
+		Name: "hw.gpu.utilization", Unit: "1", Owner: OwnerSemconv,
 		Kind: Gauge, Value: Double, Attributes: []string{AttrHwID, AttrHwName, AttrHwVendor, AttrHwModel, AttrHwGPUTask},
 		Brief: "Fraction of time spent in a specific task.",
 	})
@@ -372,52 +369,52 @@ var (
 // on a resource of their own with no point attributes.
 var (
 	JoulieHwPowerLimit = Register(Metric{
-		Name: "joulie.hw.power.limit", Unit: "W", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.hw.power.limit", Unit: "W", Owner: OwnerJoulie,
 		Kind: Gauge, Value: Double, Attributes: []string{AttrHwID, AttrHwType, AttrJoulieLimitState},
 		Brief: "Power limit of a component: the limit as written, and the limit the hardware enforces.",
 	})
 	JoulieFacilityAmbientTemperature = Register(Metric{
-		Name: "joulie.facility.ambient_temperature", Unit: "Cel", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.facility.ambient_temperature", Unit: "Cel", Owner: OwnerJoulie,
 		Kind: Gauge, Value: Double,
 		Brief: "Outdoor ambient temperature at the facility.",
 	})
 	JoulieFacilityITEnergy = Register(Metric{
-		Name: "joulie.facility.it.energy", Unit: "J", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.facility.it.energy", Unit: "J", Owner: OwnerJoulie,
 		Kind: Counter, Value: Double,
 		Brief: "Energy consumed by the facility's IT equipment.",
 	})
 	JoulieFacilityITPower = Register(Metric{
-		Name: "joulie.facility.it.power", Unit: "W", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.facility.it.power", Unit: "W", Owner: OwnerJoulie,
 		Kind: Gauge, Value: Double,
 		Brief: "Instantaneous power consumed by the facility's IT equipment.",
 	})
 	JoulieFacilityCoolingEnergy = Register(Metric{
-		Name: "joulie.facility.cooling.energy", Unit: "J", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.facility.cooling.energy", Unit: "J", Owner: OwnerJoulie,
 		Kind: Counter, Value: Double,
 		Brief: "Energy consumed by the facility's cooling.",
 	})
 	JoulieFacilityCoolingPower = Register(Metric{
-		Name: "joulie.facility.cooling.power", Unit: "W", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.facility.cooling.power", Unit: "W", Owner: OwnerJoulie,
 		Kind: Gauge, Value: Double,
 		Brief: "Instantaneous power consumed by the facility's cooling.",
 	})
 	JoulieFacilityPUE = Register(Metric{
-		Name: "joulie.facility.pue", Unit: "1", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.facility.pue", Unit: "1", Owner: OwnerJoulie,
 		Kind: Gauge, Value: Double,
 		Brief: "Power usage effectiveness: facility power over IT power.",
 	})
 	JoulieCoolingZoneAmbientTemperature = Register(Metric{
-		Name: "joulie.cooling_zone.ambient_temperature", Unit: "Cel", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.cooling_zone.ambient_temperature", Unit: "Cel", Owner: OwnerJoulie,
 		Kind: Gauge, Value: Double, Attributes: []string{AttrJoulieCoolingZoneName},
 		Brief: "Ambient temperature of a cooling zone, the inlet temperature of its nodes.",
 	})
 	JoulieRackEnergy = Register(Metric{
-		Name: "joulie.rack.energy", Unit: "J", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.rack.energy", Unit: "J", Owner: OwnerJoulie,
 		Kind: Counter, Value: Double, Attributes: []string{AttrJoulieRackName},
 		Brief: "Energy consumed by the hosts of a rack.",
 	})
 	JoulieRackPower = Register(Metric{
-		Name: "joulie.rack.power", Unit: "W", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.rack.power", Unit: "W", Owner: OwnerJoulie,
 		Kind: Gauge, Value: Double, Attributes: []string{AttrJoulieRackName},
 		Brief: "Instantaneous power consumed by the hosts of a rack.",
 	})

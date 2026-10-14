@@ -6,8 +6,6 @@ package phys
 // low data-path level while a copy lands in it. The rate a cold receiver
 // gives is a property of the (source, receiver) pair, not of the node.
 
-func init() { receiverGateFraction = gatedFraction }
-
 // gatedFraction is the fraction of the link recv lets through on the pair
 // (src, dst) when the gate is on:
 //

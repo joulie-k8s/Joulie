@@ -11,9 +11,9 @@ import (
 	"github.com/matbun/joulie/pkg/otel/semconv"
 )
 
-// The facility queries of section 1.6 of the OTEL-IN plan, verbatim, under
-// the default naming and window, except the node inlet: section 1.6 reads
-// only the promoted node label, which leaves the inlet empty on a
+// The facility queries the telemetry contract names, verbatim, under the
+// default naming and window, except the node inlet: the contract read only
+// the promoted node label, which leaves the inlet empty on a
 // Prometheus that does not promote k8s.node.name, so the query also joins
 // target_info for series without it, as the node power target_info form
 // does.

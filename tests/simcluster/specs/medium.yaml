@@ -36,4 +36,17 @@ spec:
   - {name: vm, profile: vm-no-powercap, count: 4}
   # Not managed: no agent and no NodeTwin, while the simulator still reports their power.
   - {name: unmanaged, profile: intel-xeon-2s-rapl, count: 2, labels: {joulie.io/managed: "false"}}
-  harness: {pools: {nvl-nodriver: {toolDelivery: none}}}
+  # Every GPU pool but nvl-nodriver gets the GPU tools a node with the driver
+  # installed has (a driver stub at each path the tools need). A pool left out follows the
+  # Joulie install, which by default delivers none (agent.runtimeClassName and
+  # agent.extraVolumes unset), so its agent's GPU inventory fails.
+  harness:
+    pools:
+      nvl: {toolDelivery: mounted}
+      nvl-mig: {toolDelivery: mounted}
+      nvl-nodriver: {toolDelivery: none}
+      nvl-tainted: {toolDelivery: mounted}
+      sxm: {toolDelivery: mounted}
+      sxm-shared: {toolDelivery: mounted}
+      mi300x: {toolDelivery: mounted}
+      w7900: {toolDelivery: mounted}

@@ -109,12 +109,17 @@ type ControlTypeSpec struct {
 // ZoneSpec is a powercap zone. Repeat is per-package, per-die or once.
 // NameFormat fills the zone's name file, such as package-%d; a format without
 // verbs is the name itself, as for psys and the dram and core children.
+// LimitBits is the width of the power limit field of the zone's registers,
+// in raw power units: unset, the MSR interface's, 15 bits for PL1 and PL2,
+// 17 on psys and 13 for PL4; 18 on TPMI (intel_rapl_common.c, the
+// *_POWER_LIMIT*_MASK values). A limit written past it wraps.
 type ZoneSpec struct {
 	Repeat           string            `json:"repeat"`
 	NameFormat       string            `json:"nameFormat"`
 	Enabled          Fact[int]         `json:"enabled"`
 	EnergyUnitNJ     Fact[int64]       `json:"energyUnitNJ"`
 	PowerUnitUW      Fact[int64]       `json:"powerUnitUW"`
+	LimitBits        Fact[int]         `json:"limitBits"`
 	MaxEnergyRangeUJ *Fact[int64]      `json:"maxEnergyRangeUJ"`
 	Constraints      []ConstraintSpec  `json:"constraints"`
 	Children         []ZoneSpec        `json:"children"`
@@ -142,7 +147,11 @@ type ConstraintSpec struct {
 // (intel_pstate/no_turbo, inverted); Tunables are the governors' own
 // attributes; Uncore, when set, renders intel_uncore_frequency. BaseKHz is
 // the base frequency, the top non-turbo one: the maximum a policy keeps
-// with turbo off.
+// with turbo off. PolicyBoost is what every policyN/boost shows at boot
+// where the boost switch is global and the driver has set_boost
+// (acpi-cpufreq): 0 when unset, as on the acpi-cpufreq nodes captured,
+// which show 1 in cpufreq/boost and 0 in every policy's file while the
+// CPUs boost.
 type CPUFreqSpec struct {
 	Driver             Fact[string]  `json:"driver"`
 	Governor           Fact[string]  `json:"governor"`
@@ -154,13 +163,14 @@ type CPUFreqSpec struct {
 	Boost              Fact[int]     `json:"boost"`
 	Minimal            bool          `json:"minimal"`
 
-	DriverMode Fact[string]          `json:"driverMode"`
-	HWP        Fact[bool]            `json:"hwp"`
-	EPP        *EPPSpec              `json:"epp"`
-	BoostScope Fact[string]          `json:"boostScope"`
-	Tunables   *GovernorTunablesSpec `json:"tunables"`
-	Uncore     *UncoreSpec           `json:"uncore"`
-	BaseKHz    Fact[int64]           `json:"baseKHz"`
+	DriverMode  Fact[string]          `json:"driverMode"`
+	HWP         Fact[bool]            `json:"hwp"`
+	EPP         *EPPSpec              `json:"epp"`
+	BoostScope  Fact[string]          `json:"boostScope"`
+	Tunables    *GovernorTunablesSpec `json:"tunables"`
+	Uncore      *UncoreSpec           `json:"uncore"`
+	BaseKHz     Fact[int64]           `json:"baseKHz"`
+	PolicyBoost Fact[int]             `json:"policyBoost"`
 }
 
 // EPPSpec is energy_performance_available_preferences (Available, the words
@@ -365,7 +375,11 @@ type PMPolicyAttrSpec struct {
 // for SM, the highest it sustains under load (a higher lock is clamped);
 // Mem.RuntimeLock says -lmc takes effect at run time. IdlePState is the
 // performance state at idle; Supported lists the clocks -q -d
-// SUPPORTED_CLOCKS prints. LockFloorAtIdle says an idle GPU sits at the
+// SUPPORTED_CLOCKS prints, and SMMaxByMem the memory clocks under which the
+// GPU offers only the lower graphics clocks, each with the highest one (a
+// T4 lists 87 graphics clocks at its 5001 MHz memory clock and 24 at
+// 405 MHz); a memory clock it does not list offers every graphics clock.
+// LockFloorAtIdle says an idle GPU sits at the
 // lower bound of its lock (default true); LocksResetOnDeinit says the locks
 // go when the driver deinitializes the GPU with persistence off (default
 // false).
@@ -384,11 +398,19 @@ type NVClocksSpec struct {
 	} `json:"mem"`
 	IdlePState Fact[string] `json:"idlePState"`
 	Supported  struct {
-		SMMHz  Fact[[]int64] `json:"smMHz"`
-		MemMHz Fact[[]int64] `json:"memMHz"`
+		SMMHz      Fact[[]int64]        `json:"smMHz"`
+		MemMHz     Fact[[]int64]        `json:"memMHz"`
+		SMMaxByMem []NVClockCeilingSpec `json:"smMaxByMem"`
 	} `json:"supported"`
 	LockFloorAtIdle    *Fact[bool] `json:"lockFloorAtIdle"`
 	LocksResetOnDeinit *Fact[bool] `json:"locksResetOnDeinit"`
+}
+
+// NVClockCeilingSpec is the highest graphics clock, SMMaxMHz, a GPU offers
+// at memory clock MemMHz.
+type NVClockCeilingSpec struct {
+	MemMHz   Fact[int64] `json:"memMHz"`
+	SMMaxMHz Fact[int64] `json:"smMaxMHz"`
 }
 
 // GPUTransferSpec is the peer link between the GPUs of a node, in GB/s per
@@ -475,8 +497,8 @@ type PhysicsSpec struct {
 }
 
 // Tree is a rendered node. Root holds sys/, cpuinfo, state/ and bin/; Files
-// lists every entry Render created. NodeName is the node the tree was
-// rendered for.
+// lists every entry Render created, sorted by Rel. NodeName is the node the
+// tree was rendered for.
 type Tree struct {
 	Root        string
 	NodeName    string
@@ -484,6 +506,10 @@ type Tree struct {
 	CPUInfoPath string
 	StateRoot   string
 	Files       []layout.FileSpec
+
+	// rendered is the content of every file of a tree Render or Ensure laid
+	// out, by Rel; nil for a tree assembled otherwise.
+	rendered map[string]string
 }
 
 // RenderOptions are the per-node inputs of Render.
@@ -577,34 +603,50 @@ type State struct {
 // level or lock state) and GovernorPreset the preset it maps to, empty when
 // no single one does. PeerRxBytes and PeerTxBytes count the peer transfer
 // bytes a GPU received and sent since the Node started.
+//
+// The JSON names are the wire format of the emulator's snapshots
+// (emulate.ComponentReading is this type).
 type ComponentState struct {
-	ID              string
-	Type            string
-	Name            string
-	Vendor          string
-	Model           string
-	UUID            string
-	PCIBusID        string
-	SysfsPath       string
-	Parent          string
-	Index           int
-	Measured        bool
-	PowerW          float64
-	EnergyJ         float64
-	DeviceEnergyJ   float64
-	LimitW          float64
-	RequestedLimitW float64
-	SpeedHz         float64
-	SpeedMaxHz      float64
-	SpeedLimitHz    float64
-	Utilization     float64
-	ClockHz         map[string]int64
-	ClockMaxHz      map[string]int64
-	ClockLimitHz    map[string]int64
-	GovernorNative  string
-	GovernorPreset  string
-	PeerRxBytes     uint64
-	PeerTxBytes     uint64
+	ID              string           `json:"id"`
+	Type            string           `json:"type"`
+	Name            string           `json:"name"`
+	Vendor          string           `json:"vendor,omitempty"`
+	Model           string           `json:"model,omitempty"`
+	UUID            string           `json:"uuid,omitempty"`
+	PCIBusID        string           `json:"pciBusId,omitempty"`
+	SysfsPath       string           `json:"sysfsPath,omitempty"`
+	Parent          string           `json:"parent,omitempty"`
+	Index           int              `json:"index"`
+	Measured        bool             `json:"measured"`
+	PowerW          float64          `json:"powerW"`
+	EnergyJ         float64          `json:"energyJ"`
+	DeviceEnergyJ   float64          `json:"deviceEnergyJ,omitempty"`
+	LimitW          float64          `json:"limitW,omitempty"`
+	RequestedLimitW float64          `json:"requestedLimitW,omitempty"`
+	SpeedHz         float64          `json:"speedHz,omitempty"`
+	SpeedMaxHz      float64          `json:"speedMaxHz,omitempty"`
+	SpeedLimitHz    float64          `json:"speedLimitHz,omitempty"`
+	Utilization     float64          `json:"utilization"`
+	ClockHz         map[string]int64 `json:"clockHz,omitempty"`
+	ClockMaxHz      map[string]int64 `json:"clockMaxHz,omitempty"`
+	ClockLimitHz    map[string]int64 `json:"clockLimitHz,omitempty"`
+	GovernorNative  string           `json:"governorNative,omitempty"`
+	GovernorPreset  string           `json:"governorPreset,omitempty"`
+	PeerRxBytes     uint64           `json:"peerRxBytes,omitempty"`
+	PeerTxBytes     uint64           `json:"peerTxBytes,omitempty"`
+}
+
+// GovernorState is the governor state of a CPU package or a GPU: Native in
+// the driver's own words and Preset, the preset it maps to, empty when no
+// single one does. The zero value is a component without a governor.
+type GovernorState struct {
+	Native string `json:"native"`
+	Preset string `json:"preset,omitempty"`
+}
+
+// Governor is the governor state of c.
+func (c ComponentState) Governor() GovernorState {
+	return GovernorState{Native: c.GovernorNative, Preset: c.GovernorPreset}
 }
 
 // HostState is the whole node: PowerW is the sum of every package, DRAM

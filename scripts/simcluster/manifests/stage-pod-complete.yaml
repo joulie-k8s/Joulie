@@ -1,6 +1,7 @@
 # The KWOK Stage that ends a v1 workload pod. It replaces the vendored
-# pod-complete Stage of the same name (X13) and is applied by up.sh after
-# the vendored Stages. Adapted from the pod-complete Stage of KWOK v0.8.0
+# pod-complete Stage of the same name, which only a Stage of that name
+# applied later can do, and so is applied by up.sh after the vendored
+# Stages. Adapted from the pod-complete Stage of KWOK v0.8.0
 # (kustomize/stage/pod/general/pod-complete.yaml; the status template is
 # the one of the vendored kwok-v0.8.0/stage-fast.yaml), Copyright The
 # Kubernetes Authors, Apache License 2.0.

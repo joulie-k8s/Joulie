@@ -24,12 +24,7 @@ func PeerRate(demandBps, linkBps float64, recv GPUClock, gate ReceiverGate, src,
 	}
 	g := 1.0
 	if gate.Enabled && src >= 0 && dst >= 0 {
-		g = clamp01(receiverGateFraction(recv, gate, src, dst))
+		g = clamp01(gatedFraction(recv, gate, src, dst))
 	}
 	return math.Min(demandBps, linkBps*g)
 }
-
-// receiverGateFraction is the fraction of the link an enabled receiver gate
-// lets into recv on the pair (src, dst). transfer_gate.go sets it; without
-// that file an enabled gate lets the whole link through.
-var receiverGateFraction = func(GPUClock, ReceiverGate, int, int) float64 { return 1 }

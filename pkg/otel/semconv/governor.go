@@ -55,9 +55,6 @@ func init() {
 	)
 }
 
-// GPUIOPaths returns every joulie.hw.gpu.io.path value.
-func GPUIOPaths() []string { return []string{GPUIOPathPeer, GPUIOPathHost, GPUIOPathNIC} }
-
 // ClockDomains returns every joulie.hw.clock.domain value.
 func ClockDomains() []string {
 	return []string{ClockDomainGraphics, ClockDomainMemory, ClockDomainFabric, ClockDomainSoC}
@@ -66,25 +63,25 @@ func ClockDomains() []string {
 // Metrics of the governor stage.
 var (
 	HwGPUIO = Register(Metric{
-		Name: "hw.gpu.io", Unit: "By", Owner: OwnerSemconv, Stability: StabilityDevelopment,
+		Name: "hw.gpu.io", Unit: "By", Owner: OwnerSemconv,
 		Kind: Counter, Value: Int,
 		Attributes: []string{AttrHwID, AttrHwName, AttrHwVendor, AttrHwModel, AttrNetworkIODirection, AttrJoulieGPUIOPath},
 		Brief:      "Received and transmitted bytes by the GPU.",
 	})
 	JoulieHwGPUSpeed = Register(Metric{
-		Name: "joulie.hw.gpu.speed", Unit: "Hz", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.hw.gpu.speed", Unit: "Hz", Owner: OwnerJoulie,
 		Kind: Gauge, Value: Int, Attributes: []string{AttrHwID, AttrHwVendor, AttrHwModel, AttrJoulieClockDomain},
 		Brief: "Current frequency of a GPU clock domain.",
 	})
 	JoulieHwGPUSpeedLimit = Register(Metric{
-		Name: "joulie.hw.gpu.speed.limit", Unit: "Hz", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.hw.gpu.speed.limit", Unit: "Hz", Owner: OwnerJoulie,
 		Kind: Gauge, Value: Int, Attributes: []string{AttrHwID, AttrHwVendor, AttrHwModel, AttrJoulieClockDomain, AttrHwLimitType},
 		Brief: "Maximum frequency of a GPU clock domain: the hardware maximum, and the maximum in effect after limits and locks.",
 	})
 	// JoulieHwGovernor is 1 for the governor state a component is in and 0
 	// for the one it left, as hw.status reports a state.
 	JoulieHwGovernor = Register(Metric{
-		Name: "joulie.hw.governor", Unit: "1", Owner: OwnerJoulie, Stability: StabilityDevelopment,
+		Name: "joulie.hw.governor", Unit: "1", Owner: OwnerJoulie,
 		Kind: UpDownCounter, Value: Int, Attributes: []string{AttrHwID, AttrHwType, AttrJoulieGovernorPreset, AttrJoulieGovernorNative},
 		Brief: "Governor state of a component: 1 for the state it is in, 0 for the state it left.",
 	})

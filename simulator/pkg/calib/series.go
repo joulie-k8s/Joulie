@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -266,9 +265,9 @@ func otlpResourceNode(attrs []otlpjson.KeyValue, node string) (string, bool) {
 	for _, kv := range attrs {
 		switch kv.Key {
 		case semconv.AttrK8sNodeName:
-			k8s, _ = attrText(kv.Value)
+			k8s, _ = kv.Value.Text()
 		case semconv.AttrHostName:
-			host, _ = attrText(kv.Value)
+			host, _ = kv.Value.Text()
 		}
 	}
 	name := k8s
@@ -327,13 +326,13 @@ func otlpAddMetric(bd *dataBuilder, m otlpjson.Metric) {
 		return
 	}
 	for _, p := range points {
-		v, ok := otlpPointValue(p)
+		v, ok := p.Float64()
 		if !ok || p.TimeUnixNano == 0 {
 			continue
 		}
 		attrs := map[string]string{}
 		for _, kv := range p.Attributes {
-			if s, ok := attrText(kv.Value); ok {
+			if s, ok := kv.Value.Text(); ok {
 				attrs[kv.Key] = s
 			}
 		}
@@ -343,31 +342,6 @@ func otlpAddMetric(bd *dataBuilder, m otlpjson.Metric) {
 		}
 		bd.add(m.Name, m.Unit, attrs, counter, counter && delta, pt)
 	}
-}
-
-func otlpPointValue(p otlpjson.NumberDataPoint) (float64, bool) {
-	switch {
-	case p.AsDouble != nil:
-		return *p.AsDouble, true
-	case p.AsInt != nil:
-		return float64(*p.AsInt), true
-	}
-	return 0, false
-}
-
-// attrText is an attribute value as text; arrays have none.
-func attrText(v otlpjson.AnyValue) (string, bool) {
-	switch {
-	case v.String != nil:
-		return *v.String, true
-	case v.Int != nil:
-		return strconv.FormatInt(int64(*v.Int), 10), true
-	case v.Double != nil:
-		return strconv.FormatFloat(*v.Double, 'g', -1, 64), true
-	case v.Bool != nil:
-		return strconv.FormatBool(*v.Bool), true
-	}
-	return "", false
 }
 
 // unixNano is ns nanoseconds since the epoch.

@@ -1,6 +1,7 @@
 package scenario
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,7 +76,9 @@ func ReadRunData(dir string) (*RunData, VariantEnv, error) {
 	}
 	if b, err := os.ReadFile(filepath.Join(dir, RunStatusFile)); err == nil {
 		var st workload.RunStatus
-		if err := json.Unmarshal(b, &st); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(b))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&st); err != nil {
 			return nil, env, fmt.Errorf("%s: %w", RunStatusFile, err)
 		}
 		rd.Status = &st
@@ -164,10 +167,13 @@ func readJSONL(rd *RunData, rel string, fn func(line int, b []byte) error) error
 	return nil
 }
 
+// readMetricsFile reads a metrics file the simulator or the harness wrote.
+// The format is Joulie's own, so it is decoded strictly: a key the model
+// does not have is an error, not a field silently lost.
 func readMetricsFile(rd *RunData, rel string) error {
 	return readJSONL(rd, rel, func(line int, b []byte) error {
-		var md otlpjson.MetricsData
-		if err := json.Unmarshal(b, &md); err != nil {
+		md, err := otlpjson.DecodeMetricsStrict(b)
+		if err != nil {
 			return fmt.Errorf("line %d: %w", line, err)
 		}
 		rd.Points = append(rd.Points, FlattenMetrics(md, rel)...)
@@ -175,10 +181,12 @@ func readMetricsFile(rd *RunData, rel string) error {
 	})
 }
 
+// readLogsFile reads a logs file the simulator or the harness wrote,
+// strictly as readMetricsFile does.
 func readLogsFile(rd *RunData, rel string) error {
 	return readJSONL(rd, rel, func(line int, b []byte) error {
-		var ld otlpjson.LogsData
-		if err := json.Unmarshal(b, &ld); err != nil {
+		ld, err := otlpjson.DecodeLogsStrict(b)
+		if err != nil {
 			return fmt.Errorf("line %d: %w", line, err)
 		}
 		rd.Events = append(rd.Events, FlattenLogs(ld, rel)...)
@@ -274,33 +282,11 @@ func unixNano(v otlpjson.Uint64String) time.Time {
 func attributes(kvs []otlpjson.KeyValue) Attributes {
 	out := Attributes{}
 	for _, kv := range kvs {
-		if v, ok := anyValue(kv.Value); ok {
+		if v, ok := kv.Value.Any(); ok {
 			out[kv.Key] = v
 		}
 	}
 	return out
-}
-
-func anyValue(v otlpjson.AnyValue) (any, bool) {
-	switch {
-	case v.String != nil:
-		return *v.String, true
-	case v.Bool != nil:
-		return *v.Bool, true
-	case v.Int != nil:
-		return int64(*v.Int), true
-	case v.Double != nil:
-		return *v.Double, true
-	case v.Array != nil:
-		out := make([]any, 0, len(v.Array.Values))
-		for _, x := range v.Array.Values {
-			if y, ok := anyValue(x); ok {
-				out = append(out, y)
-			}
-		}
-		return out, true
-	}
-	return nil, false
 }
 
 // observation is what one check of an assertion saw: Value is nil when

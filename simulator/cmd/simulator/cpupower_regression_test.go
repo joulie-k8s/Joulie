@@ -1,13 +1,11 @@
 package main
 
-// Regression tests for F2 (D13 in cmd/agent/hwemu_test.go): cpuPowerWithModel
-// used to evaluate a measured curve with the cap passed in, and the curve
-// clamps its power to that cap, so p > capW never held. A curve node under a
-// cap therefore kept full frequency and full throughput, and was never marked
-// cap-saturated. The analytic model must come out of F2 unchanged: its golden
-// was written before the change, and F2 regenerates it byte for byte; only
-// the FC04 fix later moved its activity cases (cpupowerGoldenPath). The
-// curve and clearSimEnv come from thermal_test.go.
+// Regression tests of the CPU cap solver on a measured curve. A curve
+// clamps its power to any cap it is given, so cpuPowerWithModel evaluates it
+// uncapped: evaluated with the cap, p > capW never holds, and a curve node
+// under a cap keeps full frequency and full throughput and is never marked
+// cap-saturated. The analytic model's output is pinned by a golden
+// (cpupowerGoldenPath). The curve and clearSimEnv come from thermal_test.go.
 
 import (
 	"encoding/json"
@@ -22,11 +20,10 @@ import (
 )
 
 // cpupowerGoldenPath holds cpuPowerWithModel's output over the grid of
-// cpupowerGoldenCases for the analytic model, written on the pre-F2 tree with
-// -update (golden_flag_test.go). The FC04 fix regenerated it: the 20 cases
-// with memory or IO intensity under a cap they reach now land on the cap,
-// times the thermal factor, at a higher scale (TestFC04 in
-// fxcode_regression_test.go); every other case is unchanged.
+// cpupowerGoldenCases for the analytic model; -update regenerates it
+// (golden_flag_test.go). The cases with memory or IO intensity under a cap
+// they reach land on the cap, times the thermal factor (TestFC04 in
+// loop_and_model_regression_test.go).
 var cpupowerGoldenPath = filepath.Join("testdata", "physics", "analytic-cpu-power.golden.json")
 
 // 500 W on the SPEC result 01203 curve (spec01203Curve) is load 70.25 %. A
@@ -49,11 +46,11 @@ func TestSolveFreqScaleForCapCurveThrottles(t *testing.T) {
 }
 
 // The solver must see the node's whole state, not only its utilization and
-// class. The pre-F2 curve solver did not: it bisected on utilization and class
-// alone, so with memory or IO intensity it settled at a scale where the node
-// draws more than the cap (505 W, cap plus headroom, at memory intensity 0.8),
-// and with a thermal throttle at one where it draws far less (about 430 W at
-// 0.2). Each variant must land on the cap.
+// class. A curve solver that bisects on utilization and class alone settles,
+// with memory or IO intensity, at a scale where the node draws more than the
+// cap (505 W, cap plus headroom, at memory intensity 0.8), and with a thermal
+// throttle at one where it draws far less (about 430 W at 0.2). Each variant
+// must land on the cap.
 func TestSolveFreqScaleForCapCurveSeesTheFullState(t *testing.T) {
 	clearSimEnv(t)
 	model := defaultBaseModelFromEnv()
@@ -276,17 +273,16 @@ func cpupowerEncodeGolden(g cpupowerGolden) ([]byte, error) {
 }
 
 // cpupowerClose compares at a relative 1e-9, so that a platform that fuses
-// multiply-adds still matches a golden written on amd64. On amd64, F2
-// regenerates the golden byte for byte.
+// multiply-adds still matches a golden written on amd64. On amd64 the
+// golden regenerates byte for byte.
 func cpupowerClose(got, want float64) bool {
 	return math.Abs(got-want) <= 1e-9*math.Max(1, math.Abs(want))
 }
 
-// F2 moves only the curve branch. The analytic branch keeps its closed-form
-// solve and its thermal-free CapSaturated, so its power, scale and saturation
-// over the grid equal what the pre-F2 code wrote into the golden, apart from
-// the activity cases the FC04 fix moved (cpupowerGoldenPath).
-func TestAnalyticCPUPowerUnchangedByF2(t *testing.T) {
+// The analytic branch keeps its closed-form solve and its thermal-free
+// CapSaturated: its power, scale and saturation over the grid equal the
+// golden (cpupowerGoldenPath).
+func TestAnalyticCPUPowerMatchesGolden(t *testing.T) {
 	model := cpupowerGoldenModel()
 	got := cpupowerGolden{
 		Description: "cpuPowerWithModel for the analytic CPU model (no curve), one call per case from a fresh node state, with TargetThrottlePct 0 except in the last cases. Regenerate with: go test ./simulator/cmd/simulator/ -run AnalyticCPUPower -update",

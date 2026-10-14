@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -45,8 +46,16 @@ func kubeconfigSources(rules *clientcmd.ClientConfigLoadingRules) string {
 	return files
 }
 
-// newKubeClient is a clientset over newKubeConfig with qps and burst as its
-// client-side rate limit and timeout per request.
+// kubeProtobufAccept is what the typed clientset accepts: protobuf, which
+// the API server encodes and the client decodes at a fraction of JSON's
+// cost for large pod and Node lists, and JSON for what has no protobuf
+// encoding, such as custom resources.
+const kubeProtobufAccept = runtime.ContentTypeProtobuf + "," + runtime.ContentTypeJSON
+
+// newKubeClient is a typed clientset over newKubeConfig with qps and burst
+// as its client-side rate limit and timeout per request, speaking protobuf
+// (kubeProtobufAccept). A dynamic or unstructured client must not take this
+// configuration: it decodes JSON only.
 func newKubeClient(qps float32, burst int, timeout time.Duration) (kubernetes.Interface, error) {
 	cfg, err := newKubeConfig()
 	if err != nil {
@@ -55,5 +64,7 @@ func newKubeClient(qps float32, burst int, timeout time.Duration) (kubernetes.In
 	cfg.QPS = qps
 	cfg.Burst = burst
 	cfg.Timeout = timeout
+	cfg.ContentType = runtime.ContentTypeProtobuf
+	cfg.AcceptContentTypes = kubeProtobufAccept
 	return kubernetes.NewForConfig(cfg)
 }

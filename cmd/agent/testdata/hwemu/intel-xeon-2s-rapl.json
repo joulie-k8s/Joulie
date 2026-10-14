@@ -67,7 +67,8 @@
     },
     "landmarks": {
       "maxBoostMHz": 3900,
-      "minFreqMHz": 1000
+      "minFreqMHz": 1000,
+      "nominalFreqMHz": 2400
     },
     "model": "INTEL_XEON_PLATINUM_8260",
     "rawModel": "Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz",

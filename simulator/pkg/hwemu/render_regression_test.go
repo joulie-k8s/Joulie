@@ -12,11 +12,11 @@ import (
 
 // RR01: a freshly rendered tree already shows what the emulated kernel and
 // devices read back, so the first step of a new node emits no event for any
-// builtin profile. Before the fix, a table cpufreq driver with boost
-// (acpi-cpufreq on the energy-only EPYC hosts) was rendered with
-// scaling_max_freq at cpuinfo_max_freq, above the table, which the first
-// readback resolved to the top entry with one setting.applied event per
-// policy, as if an agent had written it: 384 events per node at simulator
+// builtin profile. A table cpufreq driver with boost (acpi-cpufreq on the
+// energy-only EPYC hosts) rendered with scaling_max_freq at
+// cpuinfo_max_freq, above the table, would be resolved to the top entry by
+// the first readback with one setting.applied event per policy, as if an
+// agent had written it: 384 events per node at simulator
 // start, and a value no real node shows (cpufreq.c resolves policy->max to
 // the table on every policy update, the first one included).
 func TestRR01FirstStepOfAFreshTreeEmitsNoEvent(t *testing.T) {

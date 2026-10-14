@@ -2,7 +2,7 @@
 
 This experiment packages the heterogeneous-cluster inventory and the asset-generation path used by the new hardware-aware control model.
 
-> **Note (2026-10-09):** `REPORT.md` and `REPORT-standalone.md` were produced with an older simulator model and have not been rerun. Runs made now read the hardware catalog embedded in the simulator, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Model changes](../../website/content/en/docs/simulator/model-changes.md) lists each change and how far it moves `configs/benchmark-debug.yaml`.
+> **Note (2026-10-09):** `REPORT.md` and `REPORT-standalone.md` were produced with an older simulator model and have not been rerun. Runs made now read the hardware catalog embedded in the simulator, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Simulator changes](../../simulator/CHANGES.md) lists each change and how far it moves `configs/benchmark-debug.yaml`.
 
 It is centered on four things:
 

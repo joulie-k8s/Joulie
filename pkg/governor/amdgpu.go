@@ -5,20 +5,12 @@ import (
 	"math"
 	"slices"
 	"strconv"
-	"strings"
 
 	joulie "github.com/matbun/joulie/pkg/api"
 )
 
-// amdgpu sysfs attributes of a device, under bus/pci/devices/<bus id>/.
+// amdgpu performance levels; AMDLevelAuto is in paths.go.
 const (
-	amdLevelFile = "power_dpm_force_performance_level"
-	amdODFile    = "pp_od_clk_voltage"
-)
-
-// amdgpu performance levels.
-const (
-	amdLevelAuto        = "auto"
 	amdLevelHigh        = "high"
 	amdLevelLow         = "low"
 	amdLevelManual      = "manual"
@@ -31,19 +23,19 @@ const (
 // manual and perf_determinism; any other level is -EOPNOTSUPP.
 var amdLevels = map[string]map[string]string{
 	AMDFamilyNavi31: {
-		joulie.GPUGovernorPresetAuto:      amdLevelAuto,
+		joulie.GPUGovernorPresetAuto:      AMDLevelAuto,
 		joulie.GPUGovernorPresetSustained: amdLevelHigh,
 		joulie.GPUGovernorPresetLow:       amdLevelLow,
 		joulie.GPUGovernorPresetPeak:      amdLevelProfilePeak,
 	},
 	AMDFamilyAldebaran: {
-		joulie.GPUGovernorPresetAuto:      amdLevelAuto,
+		joulie.GPUGovernorPresetAuto:      AMDLevelAuto,
 		joulie.GPUGovernorPresetSustained: amdLevelHigh,
 		joulie.GPUGovernorPresetLow:       amdLevelLow,
 		joulie.GPUGovernorPresetPeak:      amdLevelProfilePeak,
 	},
 	AMDFamilyMI300: {
-		joulie.GPUGovernorPresetAuto: amdLevelAuto,
+		joulie.GPUGovernorPresetAuto: AMDLevelAuto,
 	},
 }
 
@@ -113,30 +105,54 @@ func PlanAMD(f AMDFacts, preset string, ceilingPct float64) (Plan, error) {
 	if !c.ok {
 		return Plan{Result: joulie.GovernorResultUnsupported}, nil
 	}
-	dir := "bus/pci/devices/" + strings.ToLower(f.BusID) + "/"
 	p := Plan{
-		Writes: []Write{{RelPath: dir + amdLevelFile, Value: c.level}},
+		Writes: []Write{PlanAMDLevel(f.BusID, c.level)},
+		State:  State{Level: c.level, SclkMaxMHz: c.sclkMax},
 		Native: c.level,
 		Result: joulie.GovernorResultApplied,
 	}
 	if c.sclkMax > 0 {
 		mhz := strconv.Itoa(c.sclkMax)
-		p.Writes = append(p.Writes,
-			Write{RelPath: dir + amdODFile, Value: "s 1 " + mhz},
-			Write{RelPath: dir + amdODFile, Value: "c"})
+		od := AMDDeviceRelPath(f.BusID, AMDODFile)
+		p.Writes = append(p.Writes, Write{RelPath: od, Value: "s 1 " + mhz}, Write{RelPath: od, Value: "c"})
 		p.Native += " sclk_max=" + mhz
 	}
 	return p, nil
 }
 
-// PresetsAMD lists the GPU presets the amdgpu device f can express, judging
-// efficient at DefaultCeilingPctOfMax.
-func PresetsAMD(f AMDFacts) []string {
-	var out []string
+// PlanAMDLevel is the write that sets the performance level of the amdgpu
+// device at busID.
+func PlanAMDLevel(busID, level string) Write {
+	return Write{RelPath: AMDDeviceRelPath(busID, AMDLevelFile), Value: level}
+}
+
+// PlanAMDODReset is the overdrive reset of the amdgpu device at busID: "r"
+// puts the range back to its defaults and "c" commits it. A level change to
+// auto resets the range by itself.
+func PlanAMDODReset(busID string) []Write {
+	od := AMDDeviceRelPath(busID, AMDODFile)
+	return []Write{{RelPath: od, Value: "r"}, {RelPath: od, Value: "c"}}
+}
+
+// ReverseAMD names the preset whose plan on f, at some ceiling, gives the
+// performance level and the overdrive sclk range odSclkMHz ([min, max] as
+// OD_SCLK lists it, zero when the device has no overdrive table). ok is
+// false when no preset does. The range counts only under manual, the one
+// level PlanAMD edits it under: efficient is manual with the sclk minimum
+// left at the table's lowest clock and a ceiling within the table.
+func ReverseAMD(f AMDFacts, level string, odSclkMHz [2]int) (preset string, ok bool) {
 	for _, p := range joulie.GPUGovernorPresetValues {
-		if chooseAMD(f, p, DefaultCeilingPctOfMax).ok {
-			out = append(out, p)
+		if p == joulie.GPUGovernorPresetEfficient {
+			continue
+		}
+		if c := chooseAMD(f, p, DefaultCeilingPctOfMax); c.ok && c.level == level {
+			return p, true
 		}
 	}
-	return out
+	lo, hi := f.SclkMHz[0], f.SclkMHz[1]
+	if c := chooseAMD(f, joulie.GPUGovernorPresetEfficient, 100); c.ok && c.level == level &&
+		odSclkMHz[0] <= lo && lo <= odSclkMHz[1] && odSclkMHz[1] <= hi {
+		return joulie.GPUGovernorPresetEfficient, true
+	}
+	return "", false
 }

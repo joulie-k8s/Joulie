@@ -352,19 +352,6 @@ func physicsWriteGovernor(t *testing.T, n *Node, tr *Tree, gov string) {
 	}
 }
 
-// physicsCPU is the State component of CPU package socket.
-func physicsCPU(t *testing.T, n *Node, socket int) ComponentState {
-	t.Helper()
-	id := stateID(semconv.HwTypeCPU, socket)
-	for _, c := range n.State().Components {
-		if c.ID == id {
-			return c
-		}
-	}
-	t.Fatalf("no component %s", id)
-	return ComponentState{}
-}
-
 // CG15: schedutil on the acpi-cpufreq EPYC, a three-entry table, at a
 // demand of 0.3 asks 1.25 x 0.3 x cpuinfo_max_freq, below the lowest entry,
 // and sits there. Work is counted in cycles: the same work at 1.5 GHz keeps
@@ -395,7 +382,7 @@ func TestCG15SchedutilAtLightLoadSitsAtTheLowestEntryAndRunsBusier(t *testing.T)
 	}
 	want := demand * float64(cf.CPUInfoMaxKHz.V) / float64(lowest)
 	for s := 0; s < p.CPU.Sockets.V; s++ {
-		if got := physicsCPU(t, n, s).Utilization; math.Abs(got-want) > 1e-9 || got <= demand {
+		if got := stateComponent(t, n.State(), stateID(semconv.HwTypeCPU, s)).Utilization; math.Abs(got-want) > 1e-9 || got <= demand {
 			t.Errorf("package %d utilization %v, want %v, above the demand %v", s, got, want, demand)
 		}
 	}
@@ -455,6 +442,7 @@ func TestCG17IdleGovernorDeltaOnlyUnderPerformance(t *testing.T) {
 			t.Run(gov+"/"+strconv.FormatFloat(delta, 'f', -1, 64), func(t *testing.T) {
 				t.Parallel()
 				n, _, p := physicsNode(t, "amd-epyc-2s-energy-only", func(p *Profile) {
+					p.Physics.CPU.Model = "analytic" // idlePkgW, in place of the catalog curve's idle
 					physicsGovernor(gov)(p)
 					p.Physics.CPU.IdleGovernorDeltaW = Fact[float64]{V: delta, Src: "assumed:test fixture"}
 				})
@@ -536,7 +524,7 @@ func TestCG19GovernorPresetOnlyWhenTheReverseMappingIsUnique(t *testing.T) {
 		}
 		nodeStep(t, n, time.Second)
 		for s := 0; s < p.CPU.Sockets.V; s++ {
-			if c := physicsCPU(t, n, s); c.GovernorNative != step.native || c.GovernorPreset != step.preset {
+			if c := stateComponent(t, n.State(), stateID(semconv.HwTypeCPU, s)); c.GovernorNative != step.native || c.GovernorPreset != step.preset {
 				t.Errorf("after writing %q: package %d governor %q, preset %q; want %q and %q", step.write, s, c.GovernorNative, c.GovernorPreset, step.native, step.preset)
 			}
 		}
@@ -625,5 +613,29 @@ func TestGPUClockLockLowersPowerAndThroughputThroughTheClockModel(t *testing.T) 
 	}
 	if got := n.GPUThroughput(1); math.Abs(got-1) > 1e-9 {
 		t.Errorf("GPU 1 unlocked: throughput %v, want 1", got)
+	}
+}
+
+// The EPYC 9654 hosts run the SPECpower curve of the catalog's
+// AMD_EPYC_9654 entry (SPECpower_ssj2008 result 01203), split over the two
+// packages: under performance the packages draw the curve's 128 W idle,
+// 257 W at 10 % and 817 W at full load, where the analytic model of the
+// same facts drew 80, 125.3 and 720 W, adding 7.1 % of the range at 10 %
+// load against the curve's 18.7 %.
+func TestEPYC9654RunsItsSPECpowerCurve(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"amd-epyc-2s-energy-only", "amd-instinct-mi300x-8gpu"} {
+		n, _, _ := physicsNode(t, name, physicsGovernor("performance"))
+		for _, c := range []struct{ util, want float64 }{{0, 128}, {0.1, 257}, {1, 817}} {
+			n.SetLoad(Load{CPUUtil: []float64{c.util}})
+			nodeStep(t, n, time.Minute)
+			got := 0.0
+			for _, pk := range n.State().Packages {
+				got += pk.PowerW
+			}
+			if math.Abs(got-c.want) > 0.5 {
+				t.Errorf("%s at load %.1f: packages draw %.1f W, want the curve's %.0f W", name, c.util, got, c.want)
+			}
+		}
 	}
 }

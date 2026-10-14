@@ -18,7 +18,8 @@ sys/devices/system/cpu R dir 0755
 sys/devices/system/cpu/cpufreq R dir 0755
 sys/devices/system/cpu/cpufreq/policy{N} R dir 0755 [N=0-95]
 sys/devices/system/cpu/cpufreq/policy{N}/affected_cpus R file 0444 [N=0-95]
-sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_max_freq R file 0444 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/base_frequency R file 0444 [N=0-95]
+sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_max_freq S file 0444 [N=0-95]
 sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_min_freq R file 0444 [N=0-95]
 sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_transition_latency R file 0444 [N=0-95]
 sys/devices/system/cpu/cpufreq/policy{N}/energy_performance_available_preferences R file 0444 [N=0-95]
@@ -59,8 +60,8 @@ sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj S file 0400
 sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0 R dir 0755
 sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/constraint_0_max_power_uw R file 0444
 sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/constraint_0_name R file 0444
-sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/constraint_0_power_limit_uw R rejectdir 0755
-sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/constraint_0_time_window_us R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/constraint_0_power_limit_uw A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/constraint_0_time_window_us A file 0644
 sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/enabled R file 0644
 sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/energy_uj S file 0400
 sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/max_energy_range_uj R file 0444
@@ -81,8 +82,8 @@ sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/energy_uj S file 0400
 sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0 R dir 0755
 sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/constraint_0_max_power_uw R file 0444
 sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/constraint_0_name R file 0444
-sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/constraint_0_power_limit_uw R rejectdir 0755
-sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/constraint_0_time_window_us R file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/constraint_0_power_limit_uw A file 0644
+sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/constraint_0_time_window_us A file 0644
 sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/enabled R file 0644
 sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/energy_uj S file 0400
 sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/max_energy_range_uj R file 0444

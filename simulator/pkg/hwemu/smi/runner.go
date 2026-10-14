@@ -45,11 +45,17 @@ func (r Runner) Run(ctx context.Context, name string, args ...string) ([]byte, e
 
 // ExitError is a non-zero exit of a fake tool run by Runner. Its text is the
 // text of the *exec.ExitError the fakesmi binary gives for the same exit, so
-// the agent's error messages read the same either way.
+// the agent's error messages read the same either way, and like that error
+// it carries the code in ExitCode, which pkg/governor.Classify reads.
 type ExitError struct {
 	Code int
 }
 
 func (e *ExitError) Error() string {
 	return "exit status " + strconv.Itoa(e.Code)
+}
+
+// ExitCode is the tool's exit code, as (*exec.ExitError).ExitCode gives it.
+func (e *ExitError) ExitCode() int {
+	return e.Code
 }

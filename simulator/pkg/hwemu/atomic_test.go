@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -386,5 +387,36 @@ func TestH14ConcurrentAgentWritesLastOneWins(t *testing.T) {
 		if lost > 0 {
 			t.Errorf("newline %v: %d of %d trials lost the agent's last write", newline, lost, trials)
 		}
+	}
+}
+
+// WriteFileAtomic replaces a file whole with the mode asked for, leaves no
+// temp file behind, and on a failure names the destination and the step,
+// never the temp file, whose name is random.
+func TestWriteFileAtomicReplacesWholeAndNamesThePath(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, "tmp")
+	if err := os.Mkdir(tmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "ledger.json")
+	if err := os.WriteFile(dst, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(tmp, "ledger-", dst, []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(dst)
+	if b, _ := os.ReadFile(dst); err != nil || string(b) != "new\n" || fi.Mode().Perm() != 0o644 {
+		t.Errorf("%s = %q, mode %v (%v); want new and 0644", dst, b, fi.Mode().Perm(), err)
+	}
+	missing := filepath.Join(dir, "absent", "ledger.json")
+	err = WriteFileAtomic(tmp, "ledger-", missing, []byte("x"), 0o644)
+	if err == nil || !strings.Contains(err.Error(), "rename a temp file to "+missing) || strings.Contains(err.Error(), "ledger-") {
+		t.Errorf("rename into a missing directory: %v; want the step and the destination, not the temp file", err)
+	}
+	if entries, _ := os.ReadDir(tmp); len(entries) != 0 {
+		t.Errorf("temp files left behind: %v", entries)
 	}
 }

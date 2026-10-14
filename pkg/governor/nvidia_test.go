@@ -1,6 +1,7 @@
 package governor
 
 import (
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -26,7 +27,27 @@ func hbm(arch string) NVFacts {
 
 func smi(a ...string) []string { return append([]string{"-i", nvBus}, a...) }
 
-// The rows of the NVIDIA table (design section 1.5) at the default ceiling,
+// withLockState is p with the State its -lgc and -lmc commands set, read
+// from the commands rather than from Native.
+func withLockState(p Plan) Plan {
+	for _, a := range p.Args {
+		for i := 0; i+1 < len(a); i++ {
+			var lo, hi int
+			if _, err := fmt.Sscanf(a[i+1], "%d,%d", &lo, &hi); err != nil {
+				continue
+			}
+			switch a[i] {
+			case "-lgc":
+				p.GPULockMHz = &[2]int{lo, hi}
+			case "-lmc":
+				p.MemLockMHz = &[2]int{lo, hi}
+			}
+		}
+	}
+	return p
+}
+
+// The rows of the NVIDIA table (the mapping in pkg/governor) at the default ceiling,
 // without and with locks in the agent's record.
 func TestNvidiaTableRows(t *testing.T) {
 	applied, equivalent := joulie.GovernorResultApplied, joulie.GovernorResultEquivalent
@@ -97,7 +118,7 @@ func TestNvidiaTableRows(t *testing.T) {
 	for _, row := range rows {
 		var wantPresets []string
 		for _, preset := range joulie.GPUGovernorPresetValues {
-			want := row.want[preset]
+			want := withLockState(row.want[preset])
 			if want.Result != joulie.GovernorResultUnsupported {
 				wantPresets = append(wantPresets, preset)
 			}
@@ -109,8 +130,8 @@ func TestNvidiaTableRows(t *testing.T) {
 				t.Errorf("%s %s:\n got %+v\nwant %+v", row.name, preset, got, want)
 			}
 		}
-		if got := PresetsNvidia(row.facts); !slices.Equal(got, wantPresets) {
-			t.Errorf("%s: PresetsNvidia = %v, want %v", row.name, got, wantPresets)
+		if got := presetsNvidia(row.facts); !slices.Equal(got, wantPresets) {
+			t.Errorf("%s: presetsNvidia = %v, want %v", row.name, got, wantPresets)
 		}
 	}
 }
@@ -150,7 +171,7 @@ func TestGA10NvidiaEfficientLocksToTheSupportedClockBelowTheCeiling(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := Plan{Args: [][]string{smi("-lgc", tc.want)}, Native: "-lgc " + tc.want, Result: joulie.GovernorResultApplied}
+		want := withLockState(Plan{Args: [][]string{smi("-lgc", tc.want)}, Native: "-lgc " + tc.want, Result: joulie.GovernorResultApplied})
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("efficient at %v%%:\n got %+v\nwant %+v", tc.pct, got, want)
 		}

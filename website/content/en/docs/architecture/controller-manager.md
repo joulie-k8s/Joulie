@@ -30,7 +30,7 @@ In addition to the reconcile loop, the controller manager runs a background cont
 
 ## Reads, writes and leader election
 
-All reads (nodes, pods, `NodeHardware`, `NodeTwin`) come from an informer cache maintained by a controller-runtime manager, so a reconcile touches the API server only when it writes. The pod informer keeps only the fields the policy needs (node name, node selector, affinity, annotations, phase); container specs and statuses are dropped before they reach memory. Writes use the same clients as before, carry the `joulie-controller-manager` field manager, and are skipped when nothing changed.
+All reads (nodes, pods, `NodeHardware`, `NodeTwin`) come from an informer cache maintained by a controller-runtime manager, so a reconcile touches the API server only when it writes. The pod informer keeps only the fields the policy needs (node name, node selector, affinity, annotations, phase); container specs and statuses are dropped before they reach memory. Writes carry the `joulie-controller-manager` field manager and are skipped when nothing changed.
 
 The reconcile loop and the facility poller run as manager runnables: they start once the cache has synced and, with `LEADER_ELECT=true` (Helm `controllerManager.leaderElection.enabled`), only on the holder of the `joulie-controller-manager` lease. Leader election is off by default, which matches the single replica the chart deploys.
 
@@ -109,22 +109,11 @@ This is why GPU `NodeTwin.spec` objects may contain both normalized intent and r
 
 Off by default. With `GOVERNOR_CONTROL` set to `cpu`, `gpu` or `all`, the reconcile that writes a node's caps also writes a vendor-neutral governor preset per component into its `NodeTwin.spec`, `spec.cpu.governor` and `spec.gpu.governor` (`governorIntents` in `cmd/controller-manager/governor_config.go`). The controller manager never turns a preset into a native setting: the agent does, through `pkg/governor`, and only with its own `GOVERNOR_WRITES` on.
 
-| Profile | CPU preset | GPU preset |
-|---|---|---|
-| `performance` | `CPU_GOVERNOR_PERFORMANCE_PRESET` (default `performance`), boost left alone | `GPU_GOVERNOR_PERFORMANCE_PRESET` (default none) |
-| `eco` | `CPU_GOVERNOR_ECO_PRESET` (default `efficiency`), with `CPU_GOVERNOR_ECO_BOOST` when set | `GPU_GOVERNOR_ECO_PRESET` (default `efficient`, at `GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX`, default 80 % of the maximum compute clock) |
-
-- A draining node keeps the performance presets until its performance pods finish, as it keeps the performance caps (`TestGC04DrainingNodeKeepsPerformancePresets`).
-- A node gets only a preset its agent lists in `NodeHardware` `status.cpu.governor.presets` or `status.gpu.governor.presets`. Any other preset is not written and nothing replaces it, `auto` included, so a setting the node's operator chose stays; one warning per node is logged (`TestGC05UnlistedPresetIsNotWritten`).
-- A GPU node gets no CPU governor unless `CPU_GOVERNOR_ON_GPU_NODES` is `true`, the rule the CPU cap follows; only GPU nodes get a GPU governor (`TestGC03GPUNodeGetsNoCPUGovernorByDefault`).
-- `GPU_GOVERNOR_MODEL_PRESETS_JSON` overrides the GPU presets and the ceiling per GPU model, keyed like `GPU_MODEL_CAPS_JSON` by the GPU product label (`GPU_PRODUCT_LABEL_KEYS`) and matched against the model the agent reports. It is how a model is opted in to `sustained`, which no default selects.
-- Turning `GOVERNOR_CONTROL` off removes the fields at the next reconcile (`TestGC09SwitchingOffRemovesTheGovernors`); the agent then puts back the state it recorded before its first write.
-
-The defaults are provisional until measured on hardware. See [Governor presets]({{< relref "/docs/hardware/hardware-modeling.md#69-governor-presets" >}}) for what each preset means and [Governor control]({{< relref "/docs/getting-started/05-configuration-reference.md#governor-control" >}}) for the variables.
+Which node gets which preset, and the rules for presets a node does not list, are under [Governor policy]({{< relref "/docs/architecture/policy.md#governor-policy" >}}).
 
 ## Heterogeneous planning
 
-The controller manager is now inventory-aware.
+The controller manager is inventory-aware.
 
 `static_partition` and `queue_aware_v1` decide how many nodes stay in `performance` (`hpCount`); `policy.PerformanceSet` (`pkg/controller/policy/policy.go`) decides which ones. It groups eligible nodes into hardware families (`policy.NodeFamily`): `gpu:<model>` when the node has GPUs, otherwise `cpu:<model>`. The `hpCount` slots are then split across families in proportion to family size, with at least one per family.
 
@@ -135,7 +124,7 @@ The controller manager is now inventory-aware.
 
 Within a family, nodes whose current `joulie.io/power-profile` label is `performance` are kept first, so a reconcile at constant demand moves nothing; the node name orders the rest. The result does not depend on the order of the input list.
 
-**Example**: the exp02 5k inventory (`experiments/02-heterogeneous-benchmark/configs/cluster-nodes-5k.yaml`) with 1000 performance slots gives h100-nvl 290 of 1450, h100-sxm 146 of 730, l40s 170 of 850, mi300x 48 of 240, w7900 146 of 730, cpu-highcore 50 of 250, cpu-highfreq 50 of 250 and cpu-intensive 100 of 500. `TestPerformanceSetMatchesDocumentedExp02Split` pins this split.
+**Example**: the exp02 5k inventory (`experiments/02-heterogeneous-benchmark/configs/cluster-nodes-5k.yaml`) with 1000 performance slots gives h100-nvl 290 of 1450, h100-sxm 146 of 730, l40s 170 of 850, mi300x 48 of 240, w7900 146 of 730, cpu-highcore 50 of 250, cpu-highfreq 50 of 250 and cpu-intensive 100 of 500.
 
 The `joulie_policy_family_nodes` and `joulie_policy_family_performance_nodes` gauges export the split per family (see [Metrics]({{< relref "/docs/architecture/metrics.md" >}})).
 

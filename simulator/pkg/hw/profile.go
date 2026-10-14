@@ -2,7 +2,6 @@ package hw
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"sigs.k8s.io/yaml"
@@ -589,17 +588,6 @@ func ValidateClasses(base Profile, classes []Class) error {
 		}
 	}
 	return nil
-}
-
-func LoadClasses(path string, base Profile) ([]Class, error) {
-	if strings.TrimSpace(path) == "" {
-		return nil, nil
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return ParseClasses(b, base)
 }
 
 // ParseClasses decodes a node class file, drops the classes without a name

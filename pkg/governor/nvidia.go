@@ -121,22 +121,18 @@ func PlanNvidia(f NVFacts, busID, preset string, ceilingPct float64) (Plan, erro
 	}
 	cmd := func(a ...string) []string { return append([]string{"-i", busID}, a...) }
 	var args [][]string
-	var locks []string
 	if c.gpu != nil {
-		v := fmt.Sprintf("%d,%d", c.gpu[0], c.gpu[1])
-		args = append(args, cmd("-lgc", v))
-		locks = append(locks, "-lgc "+v)
+		args = append(args, cmd("-lgc", lockArg(c.gpu)))
 	} else if f.LockedGPU {
 		args = append(args, cmd("-rgc"))
 	}
 	if c.mem != nil {
-		v := fmt.Sprintf("%d,%d", c.mem[0], c.mem[1])
-		args = append(args, cmd("-lmc", v))
-		locks = append(locks, "-lmc "+v)
+		args = append(args, cmd("-lmc", lockArg(c.mem)))
 	} else if f.LockedMem && nvMemLockable(f) {
 		args = append(args, cmd("-rmc"))
 	}
-	p := Plan{Args: args, Native: strings.Join(locks, " "), Result: c.result}
+	st := State{GPULockMHz: c.gpu, MemLockMHz: c.mem}
+	p := Plan{Args: args, State: st, Native: nvidiaNative(st), Result: c.result}
 	if p.Native == "" {
 		p.Native = joulie.GovernorStateUnknown
 		if len(args) > 0 {
@@ -149,14 +145,56 @@ func PlanNvidia(f NVFacts, busID, preset string, ceilingPct float64) (Plan, erro
 	return p, nil
 }
 
-// PresetsNvidia lists the GPU presets the NVIDIA GPU f can express, judging
-// efficient at DefaultCeilingPctOfMax.
-func PresetsNvidia(f NVFacts) []string {
-	var out []string
+// lockArg is a lock as nvidia-smi is told it, "<min>,<max>".
+func lockArg(l *[2]int) string {
+	return fmt.Sprintf("%d,%d", l[0], l[1])
+}
+
+// nvidiaNative spells the locks of s as nvidia-smi is told them, such as
+// "-lgc 300,1100 -lmc 405,405"; empty without a lock.
+func nvidiaNative(s State) string {
+	var locks []string
+	if s.GPULockMHz != nil {
+		locks = append(locks, "-lgc "+lockArg(s.GPULockMHz))
+	}
+	if s.MemLockMHz != nil {
+		locks = append(locks, "-lmc "+lockArg(s.MemLockMHz))
+	}
+	return strings.Join(locks, " ")
+}
+
+// ReverseNvidia names the preset whose plan on f, at some ceiling, gives the
+// graphics and memory locks gpu and mem (nil for a domain without a lock).
+// ok is false when no preset does. A preset that sets the state as its own
+// (applied) names it before one that falls back to it (equivalent): no lock
+// is auto, also where sustained changes nothing. The efficient preset locks
+// the graphics clock from its lowest supported clock to a supported clock at
+// or below the ceiling, so it names such a lock that no other preset sets;
+// the lowest clock alone is low's.
+func ReverseNvidia(f NVFacts, gpu, mem *[2]int) (preset string, ok bool) {
+	same := func(a, b *[2]int) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
+	equivalent := ""
 	for _, p := range joulie.GPUGovernorPresetValues {
-		if chooseNvidia(f, p, DefaultCeilingPctOfMax).result != joulie.GovernorResultUnsupported {
-			out = append(out, p)
+		if p == joulie.GPUGovernorPresetEfficient {
+			continue
+		}
+		c := chooseNvidia(f, p, DefaultCeilingPctOfMax)
+		if c.result == joulie.GovernorResultUnsupported || !same(c.gpu, gpu) || !same(c.mem, mem) {
+			continue
+		}
+		if c.result == joulie.GovernorResultApplied {
+			return p, true
+		}
+		if equivalent == "" {
+			equivalent = p
 		}
 	}
-	return out
+	if equivalent != "" {
+		return equivalent, true
+	}
+	sm := distinctMHz(f.SupportedSMMHz)
+	if nvKnownArch(f.Arch) && mem == nil && gpu != nil && len(sm) > 0 && gpu[0] == sm[0] && slices.Contains(sm, gpu[1]) {
+		return joulie.GPUGovernorPresetEfficient, true
+	}
+	return "", false
 }

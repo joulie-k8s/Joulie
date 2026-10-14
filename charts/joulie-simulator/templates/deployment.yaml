@@ -16,7 +16,9 @@
 {{- $_ := set $env $key ($val | toString) }}
 {{- end }}
 {{- if $emulate.enabled }}
-{{- /* checkModes rejects a legacy trace together with emulate mode. */}}
+{{- /* In emulate mode a trace path starts an implicit v1 run at startup and
+runs come through the run API, so env's default path is dropped; extraEnv,
+applied below, still sets one. */}}
 {{- $_ := unset $env "SIM_WORKLOAD_TRACE_PATH" }}
 {{- $_ := set $env "SIM_EMULATE" "true" }}
 {{- $_ := set $env "SIM_HWEMU_ROOT" ($emulate.root | toString) }}

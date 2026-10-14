@@ -41,7 +41,7 @@ func testGolden(t *testing.T, path string, got []byte) {
 }
 
 // testRequirementTools is the GPU tools section of a profile with the
-// requirements S3-WP5 gives the builtin profiles, in its JSON form.
+// requirements the builtin profiles give them, in its JSON form.
 const testRequirementTools = `[
   {"name": "nvidia-smi", "variant": "v", "requires": [
     {"paths": ["/lib64/ld-linux-x86-64.so.2"], "exit": 127},
@@ -53,7 +53,7 @@ const testRequirementTools = `[
 
 // G01: DevNvidiactl is set on the agents of NVIDIA Nodes only.
 func TestG01DevNvidiactlOnNVIDIAOnly(t *testing.T) {
-	agents, err := EmulatedAgents(testExpand(t, testSmokeSpec), Harness{}, testRoot)
+	agents, err := EmulatedAgents(testExpand(t, testSmokeSpec), Harness{}, ToolDeliveryMounted, testRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestG02StubMountsPerRequirement(t *testing.T) {
 		t.Errorf("a tool without requirements mounts %v %v, want nothing", vols, mounts)
 	}
 
-	// The chart reads these keys (S3-WP0's EmulatedAgent contract).
+	// The chart reads these keys (agent.emulated.nodes entries).
 	b, err := json.Marshal(EmulatedAgent{Name: "n", Profile: "p", ExtraVolumes: vols, ExtraVolumeMounts: mounts})
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func TestG02StubMountsPerRequirement(t *testing.T) {
 	// Every builtin GPU profile's tools decode; a pool under none gets no
 	// mount whatever its profile has.
 	members := testExpand(t, testSmokeSpec)
-	agents, err := EmulatedAgents(members, Harness{Pools: map[string]HarnessPool{"nvl": {ToolDelivery: ToolDeliveryNone}}}, testRoot)
+	agents, err := EmulatedAgents(members, Harness{Pools: map[string]HarnessPool{"nvl": {ToolDelivery: ToolDeliveryNone}}}, ToolDeliveryMounted, testRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestG02StubMountsPerRequirement(t *testing.T) {
 			t.Errorf("nvl-0 under tool delivery none mounts %v %v", a.ExtraVolumes, a.ExtraVolumeMounts)
 		}
 	}
-	if _, err := EmulatedAgents(members, Harness{}, "var/lib/joulie-hwemu"); err == nil {
+	if _, err := EmulatedAgents(members, Harness{}, ToolDeliveryMounted, "var/lib/joulie-hwemu"); err == nil {
 		t.Error("a relative hwemu root is accepted")
 	}
 }
@@ -142,7 +142,7 @@ func TestG03AgentsSortedByName(t *testing.T) {
 	for i, m := range members {
 		reversed[len(members)-1-i] = m
 	}
-	agents, err := EmulatedAgents(reversed, Harness{}, testRoot)
+	agents, err := EmulatedAgents(reversed, Harness{}, ToolDeliveryMounted, testRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,8 +197,11 @@ func TestParseHarness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.ToolDelivery("a") != ToolDeliveryNone || h.ToolDelivery("b") != ToolDeliveryMounted || h.ToolDelivery("c") != ToolDeliveryMounted {
-		t.Errorf("tool deliveries %s %s %s, want none mounted mounted", h.ToolDelivery("a"), h.ToolDelivery("b"), h.ToolDelivery("c"))
+	for _, install := range []string{ToolDeliveryMounted, ToolDeliveryNone} {
+		if h.ToolDelivery("a", install) != ToolDeliveryNone || h.ToolDelivery("b", install) != install || h.ToolDelivery("c", install) != install {
+			t.Errorf("install %s: tool deliveries %s %s %s, want none, then the install's for the pool that leaves it empty and the one not listed",
+				install, h.ToolDelivery("a", install), h.ToolDelivery("b", install), h.ToolDelivery("c", install))
+		}
 	}
 	for raw, want := range map[string]string{
 		`{"pool": {}}`:                                 "unknown field",
@@ -217,5 +220,56 @@ func TestParseHarness(t *testing.T) {
 	}}
 	if _, err := SpecHarness(s); err == nil || !strings.Contains(err.Error(), "spec.harness.pools.z names no pool of spec x") {
 		t.Errorf("SpecHarness: error %v, want one naming pool z", err)
+	}
+}
+
+// G05: a GPU pool the spec leaves to the install gets the install's tool
+// delivery: none under the chart's default render, which has no runtime
+// class and no extra volume, so the agents of the GPU Nodes mount no driver
+// stub; the stub where the render has an extra volume or a runtime class.
+// A pool the spec sets keeps its own setting under either.
+func TestG05ToolDeliveryFollowsTheInstall(t *testing.T) {
+	s, err := clusterspec.LoadFile(testSmokeSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members, err := s.Expand(clusterspec.Profiles(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := Harness{Pools: map[string]HarnessPool{"mi300x": {ToolDelivery: ToolDeliveryMounted}}}
+	mounts := func(p Placement) map[string]bool {
+		t.Helper()
+		agents, _, err := Agents(members, p, h, testRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, a := range agents {
+			out[a.Name] = len(a.ExtraVolumes) > 0
+		}
+		return out
+	}
+	// The chart's default tolerations, so the agent reaches the GPU Nodes.
+	p := testRenderPlacement(t)
+	for _, key := range []string{"nvidia.com/gpu", "amd.com/gpu"} {
+		p.Tolerations = append(p.Tolerations, corev1.Toleration{Key: key, Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule})
+	}
+	if got := p.ToolDelivery(); got != ToolDeliveryNone {
+		t.Errorf("the chart's default render delivers tools %q, want %s", got, ToolDeliveryNone)
+	}
+	if got := mounts(p); got["nvl-0"] || got["sxm-nopm-0"] || !got["mi300x-0"] {
+		t.Errorf("under the default render: driver stub per Node %v, want only mi300x-0, which the spec sets", got)
+	}
+	for name, q := range map[string]Placement{
+		"runtime class": {NodeSelector: p.NodeSelector, Tolerations: p.Tolerations, ImageArch: p.ImageArch, RuntimeClassName: "nvidia"},
+		"extra volume":  {NodeSelector: p.NodeSelector, Tolerations: p.Tolerations, ImageArch: p.ImageArch, ExtraVolumes: []string{"nvidia-driver"}},
+	} {
+		if got := q.ToolDelivery(); got != ToolDeliveryMounted {
+			t.Errorf("%s: the install delivers tools %q, want %s", name, got, ToolDeliveryMounted)
+		}
+		if got := mounts(q); !got["nvl-0"] || !got["sxm-nopm-0"] || !got["mi300x-0"] {
+			t.Errorf("%s: driver stub per Node %v, want every GPU Node", name, got)
+		}
 	}
 }

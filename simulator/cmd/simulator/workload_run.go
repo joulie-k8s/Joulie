@@ -1,6 +1,6 @@
 package main
 
-// A v1 workload run (D12): one trace driven through the cluster as
+// A v1 workload run: one trace driven through the cluster as
 // batch/v1 Jobs, its results written as OTLP JSON Lines under
 // <SIM_RUNS_DIR>/<runId>/. A run starts from POST /sim/v1/runs, or from
 // SIM_WORKLOAD_TRACE_PATH at startup as an implicit run, and ends when every
@@ -9,8 +9,8 @@ package main
 //
 // The run's state is guarded by its lock. The emulator's goroutine takes it
 // for each tick (workload_v1.go), the run API for a status or a finish.
-// Kubernetes I/O runs on the run's own goroutine (runKube) and never touches
-// the run's state.
+// Kubernetes I/O runs on the run's own goroutines (runKube) and never
+// touches the run's state.
 
 import (
 	"bufio"
@@ -30,6 +30,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -131,7 +132,7 @@ type runSettings struct {
 }
 
 // v1NodeObs is what the run has seen of a Node and its NodeTwin. It only
-// observes them (D14).
+// observes them.
 type v1NodeObs struct {
 	powerProfile string
 	class        string
@@ -190,7 +191,7 @@ func (r *workloadRun) active() bool {
 }
 
 // nodeLoads returns the loads of the next emulator step, and false once
-// the run has ended, when the nodes' base load applies again (X9).
+// the run has ended, when the nodes' base load applies again.
 func (r *workloadRun) nodeLoads() (map[string]hwemu.Load, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -315,14 +316,7 @@ func checkRunID(id string) error {
 // it is in. A trace with no job, or one jobId on two jobs, is an error.
 func loadRunTrace(path string, opts workloadOptions) (*workloadEngine, error) {
 	opts.Model = workload.ModelV1
-	engine := &workloadEngine{
-		startTime:      time.Now().UTC(),
-		baseSpeedCore:  floatEnv(workload.EnvBaseSpeedPerCore, 1.0),
-		jobs:           []*simJob{},
-		jobByID:        map[string]*simJob{},
-		jobsByWorkload: map[string][]*simJob{},
-		opts:           opts,
-	}
+	engine := newWorkloadEngine(opts)
 	paths, err := resolveTracePaths(path)
 	if err != nil {
 		return nil, &workload.RunError{Message: err.Error()}
@@ -557,6 +551,11 @@ func (rs *runService) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeRunError(w, status, fmt.Errorf("run request: %w", err))
 		return
 	}
+	if err := rs.checkRequestTrace(req.Trace); err != nil {
+		status = http.StatusBadRequest
+		writeRunError(w, status, err)
+		return
+	}
 	started, code, err := rs.start(req)
 	if err != nil {
 		status = code
@@ -608,6 +607,28 @@ func (rs *runService) handleFinish(w http.ResponseWriter, r *http.Request) {
 	writeRunJSON(w, status, run.finish(cleanup))
 }
 
+// runsDir is the directory that holds one directory per run.
+func (rs *runService) runsDir() string {
+	if rs.opts.RunsDir != "" {
+		return rs.opts.RunsDir
+	}
+	return filepath.Join(defaultHwemuRoot, workload.RunsDirName)
+}
+
+// checkRequestTrace refuses a trace path from an HTTP request that is not
+// inside the runs directory: the run API has no authentication, and the
+// simulator would otherwise read any file it can open.
+func (rs *runService) checkRequestTrace(trace string) error {
+	if trace == "" {
+		return nil
+	}
+	rel, err := filepath.Rel(rs.runsDir(), filepath.Clean(trace))
+	if err != nil || !filepath.IsLocal(rel) {
+		return fmt.Errorf("trace %s: want a path inside %s", trace, rs.runsDir())
+	}
+	return nil
+}
+
 // start starts the run req asks for, and returns its answer, or the status
 // code and error of a refusal.
 func (rs *runService) start(req workload.RunRequest) (workload.RunStarted, int, error) {
@@ -623,11 +644,7 @@ func (rs *runService) start(req workload.RunRequest) (workload.RunStarted, int, 
 	if cluster == "" {
 		cluster = rs.s.emu.cluster
 	}
-	runsDir := rs.opts.RunsDir
-	if runsDir == "" {
-		runsDir = filepath.Join(defaultHwemuRoot, workload.RunsDirName)
-	}
-	dir := filepath.Join(runsDir, req.RunID)
+	dir := filepath.Join(rs.runsDir(), req.RunID)
 	for _, f := range []string{workload.SimulatorMetricsFile, workload.SimulatorLogsFile} {
 		if _, err := os.Stat(filepath.Join(dir, workload.OTLPDir, f)); err == nil {
 			return workload.RunStarted{}, http.StatusConflict, fmt.Errorf("run %s already has results in %s; use another runId", req.RunID, dir)
@@ -873,7 +890,7 @@ func (r *workloadRun) idealRunTime(j *v1Job) float64 {
 		BaseSpeed: r.set.baseSpeed, CPURequest: j.sim.RequestedCPUCores, GPURequest: j.sim.RequestedGPUs,
 		CPUUtil: j.sim.CPUUtilTarget, MemoryIntensity: j.sim.MemoryIntensity, IOIntensity: j.sim.IOIntensity,
 		CPUFeedIntensity: j.sim.CPUFeedIntensity, SensitivityCPU: 1, SensitivityGPU: 1,
-		CPUMul: 1, GPUMul: 1, GPUCapFactor: 1, CPUShare: 1, GPUShare: 1,
+		CPUMul: 1, GPUMul: 1, CPUShare: 1, GPUShare: 1,
 	})
 	ideal := 0.0
 	if j.sim.CPUUnitsTotal > 0 && cpuRate > 0 {
@@ -951,41 +968,72 @@ func (r *workloadRun) release(j *v1Job) {
 	}
 }
 
-// cleanupObjects lists the run's objects in namespaces and deletes them,
-// in the background of a finish. Job objects go with their pods.
+// cleanupObjects deletes the run's objects in namespaces, in the background
+// of a finish: one DeleteCollection per namespace with the run's label
+// selector, of the Job objects, whose pods go with them (propagation
+// Background), or of the bare pods. One call per namespace, rather than one
+// per object, keeps a large run's cleanup within its timeout at the
+// client's QPS. A role without the deletecollection verb, as a kubeconfig
+// may give from a workstation, gets the objects deleted one at a time.
 func cleanupObjects(ctx context.Context, k *runKube, runID string, namespaces []string, jobs bool) {
 	sel := metav1.ListOptions{LabelSelector: workload.LabelRunID + "=" + workload.RunLabelValue(runID)}
 	bg := metav1.DeletePropagationBackground
 	del := metav1.DeleteOptions{PropagationPolicy: &bg}
+	what := "pods"
+	if jobs {
+		what = "Jobs"
+	}
 	n := 0
 	for _, ns := range namespaces {
+		var err error
 		if jobs {
-			list, err := k.kube.BatchV1().Jobs(ns).List(ctx, sel)
-			if err != nil {
-				log.Printf("warning: run %s cleanup: list Jobs in %s: %v", runID, ns, err)
-				continue
-			}
-			for _, item := range list.Items {
-				if err := k.kube.BatchV1().Jobs(ns).Delete(ctx, item.Name, del); err != nil {
-					log.Printf("warning: run %s cleanup: delete Job %s/%s: %v", runID, ns, item.Name, err)
-					continue
-				}
-				n++
-			}
+			err = k.kube.BatchV1().Jobs(ns).DeleteCollection(ctx, del, sel)
+		} else {
+			err = k.kube.CoreV1().Pods(ns).DeleteCollection(ctx, del, sel)
+		}
+		if apierrors.IsForbidden(err) || apierrors.IsMethodNotSupported(err) {
+			err = deleteRunObjects(ctx, k, ns, jobs, del, sel)
+		}
+		if err != nil {
+			log.Printf("warning: run %s cleanup: delete %s in %s: %v", runID, what, ns, err)
 			continue
 		}
-		list, err := k.kube.CoreV1().Pods(ns).List(ctx, sel)
+		n++
+	}
+	log.Printf("run %s cleanup deleted its %s in %d of %d namespaces", runID, what, n, len(namespaces))
+}
+
+// deleteRunObjects lists the objects sel selects in ns, Job objects or bare
+// pods, and deletes them one at a time with del; the first error ends it.
+func deleteRunObjects(ctx context.Context, k *runKube, ns string, jobs bool, del metav1.DeleteOptions, sel metav1.ListOptions) error {
+	var names []string
+	if jobs {
+		list, err := k.kube.BatchV1().Jobs(ns).List(ctx, sel)
 		if err != nil {
-			log.Printf("warning: run %s cleanup: list pods in %s: %v", runID, ns, err)
-			continue
+			return err
 		}
 		for _, item := range list.Items {
-			if err := k.kube.CoreV1().Pods(ns).Delete(ctx, item.Name, del); err != nil {
-				log.Printf("warning: run %s cleanup: delete pod %s/%s: %v", runID, ns, item.Name, err)
-				continue
-			}
-			n++
+			names = append(names, item.Name)
+		}
+	} else {
+		list, err := k.kube.CoreV1().Pods(ns).List(ctx, sel)
+		if err != nil {
+			return err
+		}
+		for _, item := range list.Items {
+			names = append(names, item.Name)
 		}
 	}
-	log.Printf("run %s cleanup deleted %d objects", runID, n)
+	for _, name := range names {
+		var err error
+		if jobs {
+			err = k.kube.BatchV1().Jobs(ns).Delete(ctx, name, del)
+		} else {
+			err = k.kube.CoreV1().Pods(ns).Delete(ctx, name, del)
+		}
+		if err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }

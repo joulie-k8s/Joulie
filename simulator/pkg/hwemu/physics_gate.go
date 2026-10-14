@@ -14,8 +14,6 @@ import (
 // fractions slows nothing. The pair hash is seeded with the node name, so
 // each node keeps its own fast and slow pairs from run to run.
 
-func init() { nodeReceiverGate = (*Node).profileReceiverGate }
-
 // profileReceiverGate is the receiver gate of n, off without gpus.transfer.
 func (n *Node) profileReceiverGate() phys.ReceiverGate {
 	gs := n.profile.GPUs

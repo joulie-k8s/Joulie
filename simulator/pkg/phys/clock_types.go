@@ -5,8 +5,9 @@ import "fmt"
 // Types of the governor and GPU clock models. The pure functions over them
 // live beside them, one file per model, with these signatures:
 //
-//	// governor.go: the frequency a cpufreq governor requests for one policy.
-//	func GovernorTargetKHz(in GovernorInput) int64
+//	// governor.go: the request a cpufreq governor keeps for one policy and
+//	// the frequency it sets.
+//	func GovernorStep(in GovernorInput, prevTargetKHz int64) (requestKHz, targetKHz int64)
 //
 //	// gpuclock.go: GPU board power and the throughput multiplier of a
 //	// workload class at clock c. At the maximum compute clock, the data path

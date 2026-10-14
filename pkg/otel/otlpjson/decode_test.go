@@ -1,6 +1,7 @@
 package otlpjson
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,8 +87,8 @@ func TestOJ03UpstreamExamplesDecode(t *testing.T) {
 	if IsMetricsData(b) {
 		t.Error("IsMetricsData(logs.json) = true")
 	}
-	ld, err := DecodeLogs(b)
-	if err != nil {
+	var ld LogsData
+	if err := json.Unmarshal(b, &ld); err != nil {
 		t.Fatal(err)
 	}
 	r := ld.ResourceLogs[0].ScopeLogs[0].LogRecords[0]
@@ -113,8 +114,8 @@ func TestOJ03UpstreamExamplesDecode(t *testing.T) {
 		t.Errorf("map.attribute (a kvlist) should decode to an empty value, got %+v", v)
 	}
 
-	ed, err := DecodeLogs(decodeTestRead(t, "events.json"))
-	if err != nil {
+	var ed LogsData
+	if err := json.Unmarshal(decodeTestRead(t, "events.json"), &ed); err != nil {
 		t.Fatal(err)
 	}
 	ev := ed.ResourceLogs[0].ScopeLogs[0].LogRecords[0]
@@ -157,8 +158,9 @@ func TestOJ06StrictDecodersRefuseWhatLenientAccept(t *testing.T) {
 		if _, err := DecodeLogsStrict([]byte(tc.logs)); err == nil {
 			t.Errorf("%s: DecodeLogsStrict(%s) accepted it", tc.name, tc.logs)
 		}
-		if _, err := DecodeLogs([]byte(tc.logs)); err != nil {
-			t.Errorf("%s: DecodeLogs(%s) = %v", tc.name, tc.logs, err)
+		var ld LogsData
+		if err := json.Unmarshal([]byte(tc.logs), &ld); err != nil {
+			t.Errorf("%s: the model does not read %s leniently: %v", tc.name, tc.logs, err)
 		}
 	}
 	if _, err := DecodeMetricsStrict([]byte(`{"resourceMetrics":[]} {}`)); err == nil {

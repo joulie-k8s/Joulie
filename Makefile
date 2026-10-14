@@ -71,7 +71,10 @@ print-images:
 		echo "$(REGISTRY)/$$img:$(TAG)"; \
 	done
 
+# install and rollout apply the chart's CRDs first: Helm installs crds/ only
+# once and never upgrades them, so a new CRD field would be pruned.
 install:
+	kubectl apply --server-side --force-conflicts -f "$(CHART_CRD_DIR)/"
 	helm upgrade --install "$(HELM_RELEASE)" "$(HELM_CHART)" \
 		-n "$(NAMESPACE)" --create-namespace \
 		-f "$(HELM_VALUES)" \
@@ -106,6 +109,7 @@ build-push-all: build-push simulator-build-push
 
 rollout:
 	@echo "Rolling out helm release $(HELM_RELEASE) in namespace $(NAMESPACE)"
+	kubectl apply --server-side --force-conflicts -f "$(CHART_CRD_DIR)/"
 	helm upgrade --install "$(HELM_RELEASE)" "$(HELM_CHART)" \
 		-n "$(NAMESPACE)" --create-namespace \
 		-f "$(HELM_VALUES)" \

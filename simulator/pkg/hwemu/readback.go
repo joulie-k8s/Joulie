@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -36,7 +38,9 @@ const nodeEmptyRestoreAge = 2 * time.Second
 // Node last handled or wrote it, so any other content is a new write.
 // emptyMTime is the modification time of the truncation already reported,
 // when emptySeen. component is the hw.id of the component the file belongs
-// to, which its events carry.
+// to, which its events carry. stamp is what the file showed when the
+// readback last read it, by which the next readback skips a file nobody
+// changed.
 type nodeAFile struct {
 	rel        string
 	path       string
@@ -44,6 +48,7 @@ type nodeAFile struct {
 	held       string
 	emptySeen  bool
 	emptyMTime time.Time
+	stamp      nodeFileStamp
 	handle     func(v string) (kind, effective string)
 	current    func() string
 }
@@ -70,7 +75,7 @@ func (n *Node) addAFile(abs, component string, handle func(string) (string, stri
 	if !n.agentWritable(abs) {
 		return nil
 	}
-	if b, err := os.ReadFile(abs); err == nil && len(b) > 0 {
+	if b, err := n.readFile(abs); err == nil && len(b) > 0 {
 		handle(strings.TrimSuffix(string(b), "\n"))
 	}
 	f := &nodeAFile{rel: n.relPath(abs), path: abs, component: component, held: current(), handle: handle, current: current}
@@ -92,8 +97,10 @@ func (n *Node) agentWritable(abs string) bool {
 }
 
 // snapshotRenderFiles records the content of every R file and marks it with
-// nodeRenderMTime. It runs after every model is built, so each file gets the
-// component of its directory.
+// nodeRenderMTime. A file of a laid-out tree (Tree.rendered) that still
+// holds what the render wrote (nodeRenderedAsIs) is not read; any other is
+// read, and what it holds is the content to keep. It runs after every model
+// is built, so each file gets the component of its directory.
 func (n *Node) snapshotRenderFiles() error {
 	components := n.rfileComponents()
 	for _, f := range n.tree.Files {
@@ -105,15 +112,18 @@ func (n *Node) snapshotRenderFiles() error {
 		if err != nil {
 			return fmt.Errorf("hwemu: render-owned %s: %w", f.Rel, err)
 		}
-		b, err := os.ReadFile(abs)
-		if err != nil {
+		r := &nodeRFile{rel: f.Rel, path: abs, component: components[path.Dir(f.Rel)], mode: fi.Mode().Perm()}
+		n.rfiles = append(n.rfiles, r)
+		if c, ok := n.tree.rendered[f.Rel]; ok && nodeRenderedAsIs(fi, c) {
+			r.content = []byte(c)
+			continue
+		}
+		if r.content, err = os.ReadFile(abs); err != nil {
 			return fmt.Errorf("hwemu: render-owned %s: %w", f.Rel, err)
 		}
-		r := &nodeRFile{rel: f.Rel, path: abs, component: components[path.Dir(f.Rel)], mode: fi.Mode().Perm(), content: b}
 		if os.Chtimes(abs, nodeRenderMTime, nodeRenderMTime) != nil {
 			r.compare = true
 		}
-		n.rfiles = append(n.rfiles, r)
 	}
 	return nil
 }
@@ -140,9 +150,14 @@ func (n *Node) rfileComponents() map[string]string {
 	return dirs
 }
 
-// readback is step 1 of a Step: every A file is read and handled, then every
-// file whose content is not the model's readback is rewritten, which
-// normalizes a write and moves a value another write changed, as a
+// readback is step 1 of a Step: every A file changed since its last read
+// is read (readAFile), and those whose content changed are handled in the
+// order they were written, by ascending modification time and, for equal
+// times, in the order the Node registered them (scaling_governor before
+// energy_performance_preference), because the kernel checks each write
+// against the state the writes before it left.
+// Then every file whose content is not the model's readback is rewritten,
+// which normalizes a write and moves a value another write changed, as a
 // scaling_max_freq below scaling_min_freq moves the minimum
 // (cpufreq.c:2668-2681). With checkRender, changed R files are restored.
 // The power in effect is then recomputed from the new inputs.
@@ -150,26 +165,68 @@ func (n *Node) rfileComponents() map[string]string {
 // A rewrite happens only while the file still holds what the Node handled
 // (nodeRewriteInPlace). A write the agent made since stays, and the next
 // readback handles it, even when its bytes equal the readback: the readback
-// of a clamped request is not that request.
+// of a clamped request is not that request. What an A file shows changes
+// only through a handler, so the files are compared with the model only
+// after one ran (afilesDirty), and again while a rewrite is still due.
+//
+// Fidelity gap: a write lands in the file and takes effect at the next
+// readback, so until then the file reads back the value written even when
+// the driver would refuse it, and two writes to one file between readbacks
+// count as the last. CheckWrite answers each write as the kernel would, for
+// a writer that can call it.
 func (n *Node) readback(checkRender bool) error {
 	var errs []error
-	for _, f := range n.afiles {
-		if err := n.readAFile(f); err != nil {
+	changed := n.changedBuf[:0]
+	readAt := time.Now()
+	for i, f := range n.afiles {
+		if n.unobserved {
+			break // nobody wrote the tree since the last step (StepUnobserved)
+		}
+		w, err := n.readAFile(f, readAt)
+		if err != nil {
 			errs = append(errs, err)
 		}
+		if w.content != "" {
+			w.order = i
+			changed = append(changed, w)
+		}
 	}
-	for _, f := range n.afiles {
-		if c := f.current(); c != f.held && !f.emptySeen {
-			ok, err := nodeRewriteInPlace(f.path, []byte(f.held), []byte(c), time.Time{}, n.leases)
-			if err != nil {
-				errs = append(errs, err)
+	if len(changed) > 1 {
+		sort.Slice(changed, func(i, j int) bool {
+			if a, b := changed[i].mtime, changed[j].mtime; !a.Equal(b) {
+				return a.Before(b)
 			}
-			if ok {
-				f.held = c
+			return changed[i].order < changed[j].order
+		})
+	}
+	for _, w := range changed {
+		f := w.f
+		kind, eff := f.handle(strings.TrimSuffix(w.content, "\n"))
+		n.event(f.rel, f.component, kind, w.content, eff)
+		f.held = w.content
+	}
+	if len(changed) > 0 {
+		n.afilesDirty = true
+	}
+	clear(changed)
+	n.changedBuf = changed[:0]
+	if n.afilesDirty {
+		n.afilesDirty = false
+		for _, f := range n.afiles {
+			if c := f.current(); c != f.held && !f.emptySeen {
+				ok, err := nodeRewriteInPlace(f.path, []byte(f.held), []byte(c), time.Time{}, n.leases)
+				if err != nil {
+					errs = append(errs, err)
+				}
+				if ok {
+					f.held = c
+				} else {
+					n.afilesDirty = true
+				}
 			}
 		}
 	}
-	if checkRender {
+	if checkRender && !n.unobserved {
 		for _, r := range n.rfiles {
 			if err := n.checkRFile(r); err != nil {
 				errs = append(errs, err)
@@ -181,9 +238,20 @@ func (n *Node) readback(checkRender bool) error {
 	return errors.Join(errs...)
 }
 
-// readAFile reads one A file and hands new content to its handler; content
-// equal to what the Node last handled or wrote is not new. readback then
-// rewrites the file with the normalized value.
+// nodeAWrite is new content readback found in an A file: the file, what it
+// holds, its modification time and the file's place in Node.afiles.
+type nodeAWrite struct {
+	f       *nodeAFile
+	content string
+	mtime   time.Time
+	order   int
+}
+
+// readAFile reads one A file and returns new content for readback to hand
+// to its handler, or a zero nodeAWrite; content equal to what the Node last
+// handled or wrote is not new. readback then rewrites the file with the
+// normalized value. A file whose stamp shows no change since the last read
+// (nodeFileStamp, readAt taken before this readback's reads) is not read.
 //
 // Empty content is a writer caught between truncate and write (os.WriteFile,
 // as applyRAPLPackageCap in cmd/agent writes): it keeps the previous value,
@@ -201,19 +269,22 @@ func (n *Node) readback(checkRender bool) error {
 // never writes reads empty until the restore, where sysfs keeps showing the
 // value. A writer that puts back the exact bytes the file holds is not seen.
 // Exact write semantics need FUSE.
-func (n *Node) readAFile(f *nodeAFile) error {
-	b, mtime, err := nodeReadWithMTime(f.path)
+func (n *Node) readAFile(f *nodeAFile, readAt time.Time) (nodeAWrite, error) {
+	if !f.emptySeen && f.stamp.unchanged(f.path) {
+		return nodeAWrite{}, nil
+	}
+	b, mtime, err := nodeReadA(f.path, &n.readBuf, &f.stamp, readAt)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+		return nodeAWrite{}, nil
 	}
 	if err != nil {
-		return err
+		return nodeAWrite{}, err
+	}
+	if string(b) == f.held {
+		f.emptySeen = false
+		return nodeAWrite{}, nil
 	}
 	content := string(b)
-	if content == f.held {
-		f.emptySeen = false
-		return nil
-	}
 	if content == "" {
 		if !f.emptySeen || !mtime.Equal(f.emptyMTime) {
 			f.emptySeen, f.emptyMTime = true, mtime
@@ -221,7 +292,7 @@ func (n *Node) readAFile(f *nodeAFile) error {
 			n.event(f.rel, f.component, EventParseError, "", eff)
 		}
 		if time.Since(mtime) < nodeEmptyRestoreAge {
-			return nil
+			return nodeAWrite{}, nil
 		}
 		// Skipped when the file changed or is open: the next readback sees.
 		c := f.current()
@@ -229,13 +300,10 @@ func (n *Node) readAFile(f *nodeAFile) error {
 		if ok {
 			f.held, f.emptySeen = c, false
 		}
-		return err
+		return nodeAWrite{}, err
 	}
 	f.emptySeen = false
-	kind, eff := f.handle(strings.TrimSuffix(content, "\n"))
-	n.event(f.rel, f.component, kind, content, eff)
-	f.held = content
-	return nil
+	return nodeAWrite{f: f, content: content, mtime: mtime}, nil
 }
 
 // checkRFile restores an R file whose content changed, in place, with a
@@ -388,18 +456,21 @@ func nodeFlagHandler(dst *int) (func(string) (string, string), func() string) {
 	return handle, func() string { return strconv.Itoa(*dst) + "\n" }
 }
 
-// nodeEnumHandler is an attribute that takes one word from a list, such as
-// scaling_governor or energy_performance_preference. The first word is read,
-// as the kernel's sscanf("%15s") does (cpufreq.c:802); an unlisted word is
-// reverted. An empty list takes any word.
-func nodeEnumHandler(dst *string, allowed []string) (func(string) (string, string), func() string) {
+// nodeEnumHandler is the attribute at abs that takes one word from a list,
+// such as scaling_governor or energy_performance_preference. The first word
+// is read, as the kernel's sscanf("%15s") does (cpufreq.c:802); an unlisted
+// word is refused with EINVAL (store_scaling_governor, cpufreq.c:796-830;
+// store_energy_performance_preference, intel_pstate.c:826-870). An empty
+// list takes any word.
+func (n *Node) nodeEnumHandler(abs string, dst *string, allowed []string) (func(string) (string, string), func() string) {
+	rel := n.relPath(abs)
 	handle := func(v string) (string, string) {
 		words := strings.Fields(v)
 		if len(words) == 0 {
 			return EventParseError, *dst
 		}
 		if len(allowed) > 0 && !slices.Contains(allowed, words[0]) {
-			return EventRevertedOutOfRange, *dst
+			return n.rejectWrite(rel, ErrnoEINVAL), *dst
 		}
 		*dst = words[0]
 		return EventAccepted, words[0]
@@ -407,20 +478,33 @@ func nodeEnumHandler(dst *string, allowed []string) (func(string) (string, strin
 	return handle, func() string { return *dst + "\n" }
 }
 
-// limitHandler is constraint_N_power_limit_uw. The kernel stores whole power
-// units and does not clamp (intel_rapl_common.c:558-563, 744), so the
-// readback is QuantizeUW of the value and may sit above max_power_uw; the
-// package enforces min(limit, max) (assumed: hardware clamp).
-func (c *nodeConstraint) limitHandler(unitUW int64) (func(string) (string, string), func() string) {
+// limitHandler is constraint_N_power_limit_uw at abs, parsed as kstrtoull
+// (powercap_sys.c, store_constraint_power_limit_uw). The kernel converts
+// the value to whole power units of unitUW, shifts it into the register
+// field and masks it there (intel_rapl_common.c, rapl_write_data_raw), so
+// the readback is the raw value times the unit: floored to the unit, and a
+// value past the field wraps, 4100 W reading about 4 W in a 15-bit field of
+// 1/8 W. It does not clamp, so the readback may sit above max_power_uw; the
+// package enforces min(limit, max) (assumed: hardware clamp). A
+// constraint that rejects writes refuses any number with ENODATA, the
+// errno the store returns when the op fails, and keeps its limit.
+func (n *Node) limitHandler(c *nodeConstraint, abs string, unitUW int64) (func(string) (string, string), func() string) {
+	rel := n.relPath(abs)
 	handle := func(v string) (string, string) {
-		u, ok := nodeKstrtou(v, 10, 63)
+		u, ok := nodeKstrtou(v, 10, 64)
 		if !ok {
 			return EventParseError, nodeItoa(c.enforcedUW())
 		}
-		written := int64(u)
-		c.limitUW = QuantizeUW(written, unitUW)
+		if c.rejectWrites != "" {
+			if n.seeding {
+				c.limitUW = int64(min(u, math.MaxInt64))
+				return EventAccepted, nodeItoa(c.limitUW)
+			}
+			return n.rejectWrite(rel, ErrnoENODATA), nodeItoa(c.enforcedUW())
+		}
+		c.limitUW = nodeRAPLLimitUW(u, unitUW, c.mask)
 		kind := EventAccepted
-		if c.limitUW != written {
+		if uint64(c.limitUW) != u {
 			kind = EventQuantized
 		}
 		if c.enforcedUW() != c.limitUW {
@@ -431,14 +515,34 @@ func (c *nodeConstraint) limitHandler(unitUW int64) (func(string) (string, strin
 	return handle, func() string { return nodeItoa(c.limitUW) + "\n" }
 }
 
-// windowHandler is constraint_N_time_window_us: any positive value is kept, and
-// it is the settling time constant of PL1. The kernel's Y/F encoding of the
-// window is not modelled (powercap.rst).
-func (c *nodeConstraint) windowHandler() (func(string) (string, string), func() string) {
+// nodeRAPLLimitUW is the limit a RAPL constraint holds after u uW is
+// written, with a power unit of unitUW and a limit field of mask raw units
+// (rapl_unit_xlate, rapl_write_data_raw): floor(u / unit), masked, times
+// the unit. A unit of zero or less keeps u, and a mask of zero is no mask.
+func nodeRAPLLimitUW(u uint64, unitUW, mask int64) int64 {
+	if unitUW <= 0 {
+		return int64(min(u, math.MaxInt64))
+	}
+	raw := u / uint64(unitUW)
+	if mask > 0 {
+		raw &= uint64(mask)
+	}
+	return int64(min(raw, uint64(math.MaxInt64/unitUW))) * unitUW
+}
+
+// windowHandler is constraint_N_time_window_us at abs: any positive value is
+// kept, and it is the settling time constant of PL1. The kernel's Y/F
+// encoding of the window is not modelled (powercap.rst). A constraint that
+// rejects writes refuses any number with ENODATA, as limitHandler does.
+func (n *Node) windowHandler(c *nodeConstraint, abs string) (func(string) (string, string), func() string) {
+	rel := n.relPath(abs)
 	handle := func(v string) (string, string) {
 		u, ok := nodeKstrtou(v, 10, 63)
 		if !ok {
 			return EventParseError, nodeItoa(c.windowUS)
+		}
+		if c.rejectWrites != "" && !n.seeding {
+			return n.rejectWrite(rel, ErrnoENODATA), nodeItoa(c.windowUS)
 		}
 		if u == 0 {
 			return EventRevertedOutOfRange, nodeItoa(c.windowUS)
@@ -528,11 +632,12 @@ func (h *nodeHSMP) capHandler() (func(string) (string, string), func() string) {
 	return handle, func() string { return nodeItoa(h.capUW) + "\n" }
 }
 
-// amdgpuCapHandler is amdgpu power1_cap: decimal uW parsed with kstrtou32,
-// truncated to whole watts, and refused outside [power1_cap_min,
-// power1_cap_max] (amdgpu_pm.c:3469-3496; the refusal is EINVAL, assumed, and
-// modelled as a revert).
-func (g *nodeGPU) amdgpuCapHandler() (func(string) (string, string), func() string) {
+// amdgpuCapHandler is amdgpu power1_cap at abs: decimal uW parsed with
+// kstrtou32, truncated to whole watts, and refused outside
+// [power1_cap_min, power1_cap_max] with EINVAL (amdgpu_pm.c:3469-3496; the
+// errno is assumed).
+func (n *Node) amdgpuCapHandler(g *nodeGPU, abs string) (func(string) (string, string), func() string) {
+	rel := n.relPath(abs)
 	handle := func(v string) (string, string) {
 		u, ok := nodeKstrtou(v, 10, 32)
 		if !ok {
@@ -540,7 +645,7 @@ func (g *nodeGPU) amdgpuCapHandler() (func(string) (string, string), func() stri
 		}
 		w := int64(u / 1000000)
 		if float64(w) < g.minW || float64(w) > g.maxW {
-			return EventRevertedOutOfRange, nodeItoa(g.limitRaw)
+			return n.rejectWrite(rel, ErrnoEINVAL), nodeItoa(g.limitRaw)
 		}
 		g.limitRaw = w * 1000000
 		if g.limitRaw != int64(u) {
@@ -571,8 +676,8 @@ func (g *nodeGPU) nvmlLimitHandler() (func(string) (string, string), func() stri
 
 // persistReset puts the limit of every NVIDIA GPU that has persistence mode
 // Disabled and no client back to its default, as the driver does when it
-// tears the GPU down with the last client gone (DR-34; assumed: a load of 0
-// stands for no client). It runs after the readback, so a limit written to
+// tears the GPU down with the last client gone (assumed: a load of 0 stands
+// for no client). It runs after the readback, so a limit written to
 // an idle GPU is accepted and then reset within the same step. The file is
 // rewritten in place, as the readback rewrites it, and the reset is a
 // reset-persistence-off event with the old limit as written and the default

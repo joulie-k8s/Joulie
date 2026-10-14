@@ -259,7 +259,7 @@ func VariantSummary(rd *RunData, env VariantEnv, results []AssertionResult) Summ
 		s.DurationsSeconds = map[string]float64{"run": rd.Status.ElapsedSeconds}
 	}
 	if b, err := os.ReadFile(filepath.Join(rd.Dir, ImagesEnvFile)); err == nil {
-		if kv, err := parseEnvFile(b); err == nil {
+		if kv, err := envWords(b); err == nil {
 			s.Images = map[string]string{}
 			for k, v := range kv {
 				s.Images[k] = strings.Join(v, " ")
@@ -399,9 +399,10 @@ func TopSummary(s Scenario, variants map[string]*Summary) Summary {
 	return top
 }
 
-// Harness is the runner's telemetry identity: the resource of its records
-// in a variant's harness files.
-type Harness struct {
+// Recorder writes the runner's own records into a variant's harness files
+// (HarnessMetricsFile, HarnessLogsFile), under the runner's telemetry
+// identity: the resource of each line.
+type Recorder struct {
 	// Dir is the variant directory.
 	Dir string
 	// ClusterName is the cluster spec's name, RunID the simulator run id.
@@ -411,7 +412,7 @@ type Harness struct {
 
 // resource is the harness resource: the runner's service identity, the
 // cluster and the run.
-func (h Harness) resource() otlpjson.Resource {
+func (h Recorder) resource() otlpjson.Resource {
 	host, _ := os.Hostname()
 	version := "unknown"
 	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" {
@@ -427,7 +428,7 @@ func (h Harness) resource() otlpjson.Resource {
 	}}
 }
 
-func (h Harness) appendLine(file string, v any) error {
+func (h Recorder) appendLine(file string, v any) error {
 	dir := filepath.Join(h.Dir, workload.OTLPDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -449,45 +450,30 @@ func (h Harness) appendLine(file string, v any) error {
 
 // WriteMetrics appends one MetricsData line holding metrics to the
 // variant's HarnessMetricsFile.
-func (h Harness) WriteMetrics(metrics ...otlpjson.Metric) error {
+func (h Recorder) WriteMetrics(metrics ...otlpjson.Metric) error {
 	if len(metrics) == 0 {
 		return nil
 	}
-	return h.appendLine(HarnessMetricsFile, otlpjson.MetricsData{ResourceMetrics: []otlpjson.ResourceMetrics{{
-		Resource: h.resource(), SchemaURL: semconv.SchemaURL,
-		ScopeMetrics: []otlpjson.ScopeMetrics{{Scope: otlpjson.Scope{Name: ScopeName}, SchemaURL: semconv.SchemaURL, Metrics: metrics}},
-	}}})
+	return h.appendLine(HarnessMetricsFile, otlpjson.NewMetricsData(h.resource(), otlpjson.Scope{Name: ScopeName}, metrics...))
 }
 
 // WriteLogs appends one LogsData line holding records to the variant's
 // HarnessLogsFile.
-func (h Harness) WriteLogs(records ...otlpjson.LogRecord) error {
+func (h Recorder) WriteLogs(records ...otlpjson.LogRecord) error {
 	if len(records) == 0 {
 		return nil
 	}
-	return h.appendLine(HarnessLogsFile, otlpjson.LogsData{ResourceLogs: []otlpjson.ResourceLogs{{
-		Resource: h.resource(), SchemaURL: semconv.SchemaURL,
-		ScopeLogs: []otlpjson.ScopeLogs{{Scope: otlpjson.Scope{Name: ScopeName}, SchemaURL: semconv.SchemaURL, LogRecords: records}},
-	}}})
-}
-
-// EventRecord is one record of event e that occurred at, with attrs.
-func EventRecord(e semconv.Event, at time.Time, body string, attrs ...otlpjson.KeyValue) otlpjson.LogRecord {
-	return otlpjson.LogRecord{
-		TimeUnixNano: otlpjson.Uint64String(at.UnixNano()), ObservedTimeUnixNano: otlpjson.Uint64String(time.Now().UnixNano()),
-		SeverityNumber: e.SeverityNumber, SeverityText: e.SeverityText, Body: &otlpjson.AnyValue{String: &body},
-		Attributes: attrs, EventName: e.Name,
-	}
+	return h.appendLine(HarnessLogsFile, otlpjson.NewLogsData(h.resource(), otlpjson.Scope{Name: ScopeName}, records...))
 }
 
 // ScenarioEvent is a joulie.scenario.* event of h's scenario and variant,
 // with extra attributes.
-func (h Harness) ScenarioEvent(e semconv.Event, at time.Time, extra ...otlpjson.KeyValue) otlpjson.LogRecord {
+func (h Recorder) ScenarioEvent(e semconv.Event, at time.Time, extra ...otlpjson.KeyValue) otlpjson.LogRecord {
 	attrs := append([]otlpjson.KeyValue{
 		otlpjson.String(semconv.AttrJoulieScenarioName, h.Scenario),
 		otlpjson.String(semconv.AttrJoulieScenarioVariant, h.Variant),
 	}, extra...)
-	return EventRecord(e, at, fmt.Sprintf("%s %s", e.Name, SuiteName(h.Scenario, h.Variant)), attrs...)
+	return otlpjson.EventRecord(e, at, time.Now(), fmt.Sprintf("%s %s", e.Name, SuiteName(h.Scenario, h.Variant)), attrs...)
 }
 
 // ResultRecords returns, for each result, one
@@ -498,14 +484,11 @@ func (h Harness) ScenarioEvent(e semconv.Event, at time.Time, extra ...otlpjson.
 // already recorded, as a promql assertion's is.
 func ResultRecords(results []AssertionResult, at time.Time, skipObserved map[string]bool) ([]otlpjson.LogRecord, *otlpjson.Metric) {
 	var recs []otlpjson.LogRecord
-	gauge := &otlpjson.Gauge{}
-	ts := otlpjson.Uint64String(at.UnixNano())
+	var points []otlpjson.NumberDataPoint
 	point := func(name, source string, v float64) {
-		gauge.DataPoints = append(gauge.DataPoints, otlpjson.NumberDataPoint{
-			Attributes: []otlpjson.KeyValue{otlpjson.String(semconv.AttrJoulieAssertionName, name),
-				otlpjson.String(semconv.AttrJoulieAssertionSource, source)},
-			TimeUnixNano: ts, AsDouble: &v,
-		})
+		points = append(points, otlpjson.DoublePoint(time.Time{}, at, v,
+			otlpjson.String(semconv.AttrJoulieAssertionName, name),
+			otlpjson.String(semconv.AttrJoulieAssertionSource, source)))
 	}
 	for _, r := range results {
 		passed := r.Status == semconv.TestCaseResultStatusPass
@@ -523,7 +506,7 @@ func ResultRecords(results []AssertionResult, at time.Time, skipObserved map[str
 			attrs = append(attrs, otlpjson.String(semconv.AttrErrorType, semconv.ErrorTypeAssertionFailed))
 			ev.SeverityNumber, ev.SeverityText = semconv.SeverityError, semconv.SeverityTextError
 		}
-		recs = append(recs, EventRecord(ev, at, checkLine(r.Name, r.Observed, r.Expected, r.Message), attrs...))
+		recs = append(recs, otlpjson.EventRecord(ev, at, time.Now(), checkLine(r.Name, r.Observed, r.Expected, r.Message), attrs...))
 		if r.Observed != nil && !skipObserved[r.Name] {
 			point(r.Name, semconv.AssertionSourceObserved, *r.Observed)
 		}
@@ -531,9 +514,9 @@ func ResultRecords(results []AssertionResult, at time.Time, skipObserved map[str
 			point(r.Name, semconv.AssertionSourceExpected, e.Value)
 		}
 	}
-	if len(gauge.DataPoints) == 0 {
+	m := otlpjson.GaugeMetric(semconv.JoulieScenarioAssertionValue, points...)
+	if len(m.Gauge.DataPoints) == 0 {
 		return recs, nil
 	}
-	m := semconv.JoulieScenarioAssertionValue
-	return recs, &otlpjson.Metric{Name: m.Name, Unit: m.Unit, Gauge: gauge}
+	return recs, &m
 }

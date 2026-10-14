@@ -10,6 +10,9 @@ import (
 	"syscall"
 )
 
+// ledgerNoFollow keeps a ledger open from following a symbolic link.
+const ledgerNoFollow = syscall.O_NOFOLLOW
+
 // lockRoot takes an exclusive flock(2) on <root>/LockFile, so two simulators
 // never step the same trees: both would write every counter, and the ledgers
 // would count the same energy twice. The lock belongs to the open file, so a

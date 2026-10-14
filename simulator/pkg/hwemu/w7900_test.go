@@ -55,8 +55,8 @@ func TestH43W7900CapIsPinnedAt241W(t *testing.T) {
 		if got := nodeRead(t, tr, capf); got != w7900CapUW+"\n" {
 			t.Errorf("a write of %s reads back %q, want %s", v, got, w7900CapUW)
 		}
-		if e := nodeOneEvent(t, n, capf); e.Kind != EventRevertedOutOfRange || e.Written != v || e.Effective != w7900CapUW {
-			t.Errorf("a write of %s: event %+v, want %s keeping %s", v, e, EventRevertedOutOfRange, w7900CapUW)
+		if e := nodeOneEvent(t, n, capf); e.Kind != EventRejected || e.Errno != ErrnoEINVAL || e.Written != v || e.Effective != w7900CapUW {
+			t.Errorf("a write of %s: event %+v, want %s with %s keeping %s", v, e, EventRejected, ErrnoEINVAL, w7900CapUW)
 		}
 	}
 	nodeWrite(t, tr, capf, w7900CapUW)

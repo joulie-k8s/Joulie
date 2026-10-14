@@ -193,3 +193,31 @@ func TestL03ToolsManifestHasOneEnvelopeForEveryFamily(t *testing.T) {
 		}
 	}
 }
+
+// RAPLPackageZone reads a zone's name file as the kernel spells it: the
+// package and its dies, and nothing else, so psys, dram, core and uncore
+// zones, and a name that only starts like one, are never a package.
+func TestRAPLPackageZoneReadsPackageAndDieNames(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		socket, die int
+		ok          bool
+	}{
+		{"package-0", 0, -1, true},
+		{"package-12", 12, -1, true},
+		{"package-1-die-3", 1, 3, true},
+		{"psys", 0, 0, false},
+		{"dram", 0, 0, false},
+		{"core", 0, 0, false},
+		{"package-", 0, 0, false},
+		{"package-1-die-", 0, 0, false},
+		{"package-1 ", 0, 0, false},
+		{"xpackage-1", 0, 0, false},
+		{"package-99999999999999999999", 0, 0, false},
+	} {
+		socket, die, ok := RAPLPackageZone(tc.name)
+		if ok != tc.ok || ok && (socket != tc.socket || die != tc.die) {
+			t.Errorf("RAPLPackageZone(%q) = %d, %d, %v, want %d, %d, %v", tc.name, socket, die, ok, tc.socket, tc.die, tc.ok)
+		}
+	}
+}

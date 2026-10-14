@@ -1526,11 +1526,18 @@ func loadLikeSimulator(t *testing.T, rec map[string]any) loadedJob {
 }
 
 // fullSpeedRates is the simulator's progress rate with no cap, throttle or
-// sharing (advanceJobProgress in simulator/cmd/simulator/main.go): requested
-// cores times base speed for CPU work, max(0.1, GPUs) times base speed for
-// GPU work.
+// sharing: workload.Rates with every multiplier and share at 1, the
+// sensitivities at 1 and no peer transfers. Both models give the same rates
+// at full speed.
 func fullSpeedRates(j loadedJob, baseSpeed float64) (cpuRate, gpuRate float64) {
-	return j.cpuCores * baseSpeed, math.Max(0.1, j.gpus) * baseSpeed
+	return workload.Rates(workload.ModelV1, workload.RateInputs{
+		BaseSpeed:      baseSpeed,
+		CPURequest:     j.cpuCores,
+		GPURequest:     j.gpus,
+		SensitivityCPU: 1, SensitivityGPU: 1,
+		CPUMul: 1, GPUMul: 1,
+		CPUShare: 1, GPUShare: 1,
+	})
 }
 
 // checkIdealRuntimes checks that every pod of every workload, CPU and GPU

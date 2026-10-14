@@ -9,6 +9,9 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+
+	"github.com/matbun/joulie/pkg/controller/inputs"
+	"github.com/matbun/joulie/pkg/otel/promname"
 )
 
 // Mode is a telemetry mode: how the emulated Nodes' power reaches
@@ -33,6 +36,14 @@ const (
 	// ModeOTelCollector: the simulator pushes OTLP to an OpenTelemetry
 	// Collector, whose prometheus exporter Prometheus scrapes.
 	ModeOTelCollector Mode = "otel-collector"
+	// ModeOTelBridge: the simulator pushes no OTLP of its own and serves
+	// the Kepler 0.12, dcgm-exporter 4.8.4 and AMD device-metrics-exporter
+	// 1.5.2 formats instead; an OpenTelemetry Collector (contrib) runs the
+	// bridge of examples/11-otel-collector-bridge, which scrapes them and
+	// pushes hw.* over OTLP to Prometheus. Joulie runs with its defaults,
+	// facility metrics off as the chart has them, since no facility series
+	// reaches Prometheus in this mode.
+	ModeOTelBridge Mode = "otel-bridge"
 	// ModeKepler: the simulator also serves Kepler 0.12 series, and Joulie
 	// reads them with its kepler preset.
 	ModeKepler Mode = "kepler"
@@ -43,8 +54,67 @@ const (
 
 // Modes returns every mode, the default first.
 func Modes() []Mode {
-	return []Mode{ModeOTel, ModeOTelUnpromoted, ModeOTelLabelsUnpromoted, ModeOTelUTF8, ModeOTelCollector, ModeKepler, ModeKeplerLegacy}
+	return []Mode{ModeOTel, ModeOTelUnpromoted, ModeOTelLabelsUnpromoted, ModeOTelUTF8, ModeOTelCollector, ModeOTelBridge, ModeKepler, ModeKeplerLegacy}
 }
+
+// Strategy is the translation strategy Prometheus stores the OTLP names
+// with in mode m, and Joulie reads them with: NoUTF8EscapingWithSuffixes in
+// otel-utf8, the default otherwise.
+func (m Mode) Strategy() promname.Strategy {
+	if m == ModeOTelUTF8 {
+		return promname.NoUTF8EscapingWithSuffixes
+	}
+	return promname.Default
+}
+
+// InputPreset is the node power preset Joulie runs with in mode m: the
+// Kepler preset of a Kepler mode, the default otel preset otherwise.
+func (m Mode) InputPreset() inputs.NodePowerPreset {
+	switch m {
+	case ModeKepler:
+		return inputs.NodePowerPresetKepler
+	case ModeKeplerLegacy:
+		return inputs.NodePowerPresetKeplerLegacy
+	}
+	return inputs.NodePowerPresetOTel
+}
+
+// ModeForPreset is the mode a run with Joulie's node power preset needs: a
+// Kepler preset reads series only its Kepler mode serves, and every other
+// preset reads what the default mode exports. It inverts InputPreset.
+func ModeForPreset(preset string) Mode {
+	for _, m := range []Mode{ModeKepler, ModeKeplerLegacy} {
+		if string(m.InputPreset()) == preset {
+			return m
+		}
+	}
+	return ModeOTel
+}
+
+// kepler reports whether m reads Kepler series.
+func (m Mode) kepler() bool { return m == ModeKepler || m == ModeKeplerLegacy }
+
+// scraped reports whether m's node power reaches Prometheus by a scrape,
+// whose interval then bounds the rate window too.
+func (m Mode) scraped() bool {
+	return m.kepler() || m == ModeOTelCollector || m == ModeOTelBridge
+}
+
+// promoted reports whether Prometheus promotes the node attributes.
+func (m Mode) promoted() bool {
+	return m != ModeOTelUnpromoted && m != ModeOTelLabelsUnpromoted
+}
+
+// hostPower reports whether m carries whole-node power (hw.host.*), which
+// scope host reads: the simulator's own OTLP does, the Kepler releases and
+// the bridge do not.
+func (m Mode) hostPower() bool { return !m.kepler() && m != ModeOTelBridge }
+
+// Facility reports whether Joulie reads facility metrics in mode m
+// (ENABLE_FACILITY_METRICS=true): they come from the simulator's own OTLP,
+// which mode otel-bridge turns off, so there Joulie keeps the chart default,
+// off, and every twin runs with the ambient unknown.
+func (m Mode) Facility() bool { return m != ModeOTelBridge }
 
 // ParseMode returns the mode named s; an unknown name is an error that
 // lists the modes.
@@ -70,7 +140,7 @@ const (
 	// the twin's power budget.
 	ScopeComponents Scope = "components"
 	// ScopeHost is whole-node power (hw.host.*), which exceeds the budget
-	// under load. The otel modes only.
+	// under load. The otel modes that carry it only, otel-bridge not.
 	ScopeHost Scope = "host"
 )
 
@@ -124,15 +194,31 @@ type Timing struct {
 	FacilityPoll        time.Duration
 }
 
-// Placement is what decides where the agent DaemonSet runs, read from its
-// render: the pod's node selector and its own tolerations (the DaemonSet
-// controller adds its automatic ones), whether it uses the host network,
-// and the architecture of its image.
+// Placement is what the agent DaemonSet render says about where the agent
+// runs and what it finds there: the pod's node selector and its own
+// tolerations (the DaemonSet controller adds its automatic ones), whether it
+// uses the host network, the architecture of its image, and how the GPU
+// tools reach it: a runtime class (agent.runtimeClassName) and the volumes
+// beyond the chart's own (agent.extraVolumes).
 type Placement struct {
-	NodeSelector map[string]string
-	Tolerations  []corev1.Toleration
-	HostNetwork  bool
-	ImageArch    string
+	NodeSelector     map[string]string
+	Tolerations      []corev1.Toleration
+	HostNetwork      bool
+	ImageArch        string
+	RuntimeClassName string
+	ExtraVolumes     []string
+}
+
+// ToolDelivery is the tool delivery of a pool the spec says nothing about:
+// what the install gives the agent on a real node. The agent image ships no
+// GPU tools, so they reach it only through a runtime class or an extra
+// volume; with neither, the default install, the agent's GPU inventory
+// fails, and so the emulated agent gets ToolDeliveryNone.
+func (p Placement) ToolDelivery() string {
+	if p.RuntimeClassName != "" || len(p.ExtraVolumes) > 0 {
+		return ToolDeliveryMounted
+	}
+	return ToolDeliveryNone
 }
 
 // Exclusion is a spec Node the agent DaemonSet would not reach, and why,
@@ -159,7 +245,6 @@ type EmulatedAgent struct {
 const (
 	// ToolDeliveryMounted mounts a stub at the first path of each tool
 	// requirement, so the tools run as on a node with the driver installed.
-	// The default.
 	ToolDeliveryMounted = "mounted"
 	// ToolDeliveryNone mounts nothing, so the tools fail as on a node
 	// without the driver, and the agent's GPU inventory fails with them.
@@ -173,7 +258,7 @@ type Harness struct {
 }
 
 // HarnessPool is the harness setting of one pool. An empty ToolDelivery
-// means ToolDeliveryMounted.
+// follows the install (Placement.ToolDelivery).
 type HarnessPool struct {
 	ToolDelivery string `json:"toolDelivery,omitempty"`
 }
@@ -207,13 +292,14 @@ func ParseHarness(raw json.RawMessage) (Harness, error) {
 	return h, nil
 }
 
-// ToolDelivery returns the tool delivery of pool, ToolDeliveryMounted when
-// the pool is not listed or leaves it empty.
-func (h Harness) ToolDelivery(pool string) string {
+// ToolDelivery returns the tool delivery of pool: its own setting, or
+// install, the tool delivery of the Joulie install (Placement.ToolDelivery),
+// when the pool is not listed or leaves it empty.
+func (h Harness) ToolDelivery(pool, install string) string {
 	if d := h.Pools[pool].ToolDelivery; d != "" {
 		return d
 	}
-	return ToolDeliveryMounted
+	return install
 }
 
 // The truths a Check compares with, each computed per Node from the
@@ -256,11 +342,4 @@ type NodeTruth struct {
 	DRAMW          float64   `json:"dramW"`
 	PlatformOtherW float64   `json:"platformOtherW"`
 	HostW          float64   `json:"hostW"`
-}
-
-// FacilityTruth is the facility as the emulator saw it.
-type FacilityTruth struct {
-	AmbientC      float64 `json:"ambientC"`
-	ITPowerW      float64 `json:"itPowerW"`
-	CoolingPowerW float64 `json:"coolingPowerW"`
 }

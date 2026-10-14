@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -48,15 +47,10 @@ const (
 // are the tolerations the agent DaemonSet carries by default.
 var spChartValues = filepath.Join("..", "..", "charts", "joulie", "values.yaml")
 
-// spNameRE is the rule for pool names and Node names: a DNS-1123 label of at
-// most 63 characters, so that api.ObjectNameForNode keeps a Node's name and
-// a pool name is a valid label value.
-var spNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
-
 // spSmokeProfiles are the profiles the smoke spec covers, one untainted pool
 // each: one Node per hardware family. The list is pinned, not read from the
-// builtins, so smoke keeps its size as profiles are added; the agent's
-// TestHwemuA02 (cmd/agent) runs every builtin profile.
+// builtins, so smoke keeps its size as profiles are added; profiles.yaml
+// runs every builtin profile (TestSP05ProfilesCoversEveryBuiltin).
 var spSmokeProfiles = []string{
 	"amd-epyc-2s-energy-only",
 	"amd-epyc-2s-hsmp",
@@ -77,63 +71,29 @@ var spMIGInstances = map[string]map[string]int{
 	"NVIDIA H100 NVL":       {"1g.12gb": 7, "1g.12gb+me": 1, "1g.24gb": 4, "2g.24gb": 3, "3g.47gb": 2, "4g.47gb": 1, "7g.94gb": 1},
 }
 
-// spSkipWithoutSpec skips while the spec file name is not in the tree.
-// smoke.yaml comes with the loader of package clusterspec; until it lands,
-// the smoke checks skip, and this helper goes when it does. A spec of the
-// same metadata.name under another file name fails instead, so a rename
-// never leaves the checks skipping.
-func spSkipWithoutSpec(t *testing.T, name string) {
+// spLoadSpec loads the committed spec name with the loader the simulator
+// and the harness run, clusterspec.LoadFile then Expand with the builtin
+// profiles, and checks each pool's MIG profile against its GPU
+// (spCheckMIG), which the loader does not know. It returns the spec and each
+// pool's profile, overrides applied, by pool name.
+func spLoadSpec(t *testing.T, name string) (*clusterspec.Spec, map[string]*hwemu.Profile) {
 	t.Helper()
-	path := filepath.Join(spSpecsDir, name)
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		return
-	}
-	others, err := filepath.Glob(filepath.Join(spSpecsDir, "*.yaml"))
+	s, err := clusterspec.LoadFile(filepath.Join(spSpecsDir, name))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, other := range others {
-		if s := spDecodeSpec(t, other); s.Metadata.Name == strings.TrimSuffix(name, ".yaml") {
-			t.Fatalf("spec %s is in %s, where these tests do not look; move it to %s", s.Metadata.Name, other, path)
-		}
-	}
-	t.Skipf("%s does not exist yet", path)
-}
-
-// spLoadSpec stands in for clusterspec's Load and Validate until they exist.
-// It decodes the spec file name strictly, checks the spec rules (spCheckSpec)
-// and checks each pool against the builtin profiles: the profile exists, and
-// with the pool's overrides applied it still validates and sets only MIG
-// profiles its GPU holds. It returns the spec and each pool's profile,
-// overrides applied, by pool name.
-func spLoadSpec(t *testing.T, name string) (*clusterspec.Spec, map[string]*hwemu.Profile) {
-	t.Helper()
-	s := spDecodeSpec(t, filepath.Join(spSpecsDir, name))
-	for _, err := range spCheckSpec(s) {
-		t.Errorf("%s: %v", name, err)
+	members, err := s.Expand(clusterspec.Profiles(""))
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
 	}
 	profiles := map[string]*hwemu.Profile{}
+	for _, m := range members {
+		profiles[m.Pool] = m.Profile
+	}
 	for _, pool := range s.Spec.Pools {
-		// BuiltinProfiles parses on every call, so one pool's overrides
-		// never reach another pool's profile.
-		builtins, err := hwemu.BuiltinProfiles()
-		if err != nil {
-			t.Fatal(err)
-		}
-		p, ok := builtins[pool.Profile]
-		if !ok {
-			t.Errorf("%s: pool %s: profile %q is not builtin; builtins are %s", name, pool.Name, pool.Profile, strings.Join(spSortedKeys(builtins), ", "))
-			continue
-		}
-		if err := spApplyOverrides(p, s.Metadata.Name, pool); err != nil {
+		if err := spCheckMIG(profiles[pool.Name]); err != nil {
 			t.Errorf("%s: pool %s: %v", name, pool.Name, err)
-			continue
 		}
-		if err := spCheckMIG(p); err != nil {
-			t.Errorf("%s: pool %s: %v", name, pool.Name, err)
-			continue
-		}
-		profiles[pool.Name] = p
 	}
 	return s, profiles
 }
@@ -156,113 +116,14 @@ func spDecodeSpec(t *testing.T, path string) *clusterspec.Spec {
 	return &s
 }
 
-// spCheckSpec returns every violation of the rules package clusterspec
-// validates beyond the profiles: pool and Node names follow spNameRE and are
-// unique (a Node is named <prefix>-<startIndex+i>, the prefix defaulting to
-// the pool name); labels set neither kubernetes.io/hostname nor a
-// sim.joulie.io/ key, which the spec itself owns; each cooling zone is
-// declared under facility.coolingZones; each baseLoad value is in 0..1.
-func spCheckSpec(s *clusterspec.Spec) []error {
-	var errs []error
-	checkLabels := func(at string, labels map[string]string) {
-		for _, k := range spSortedKeys(labels) {
-			if k == corev1.LabelHostname || strings.HasPrefix(k, "sim.joulie.io/") {
-				errs = append(errs, fmt.Errorf("%s: label %s is set by the spec itself", at, k))
-			}
-		}
-	}
-	checkLoad := func(at string, l *clusterspec.Load) {
-		if l == nil {
-			return
-		}
-		for _, v := range []struct {
-			key string
-			v   *float64
-		}{{"cpuUtil", l.CPUUtil}, {"gpuUtil", l.GPUUtil}, {"memoryIntensity", l.MemoryIntensity}} {
-			if v.v != nil && (*v.v < 0 || *v.v > 1) {
-				errs = append(errs, fmt.Errorf("%s: baseLoad.%s %g is not in 0..1", at, v.key, *v.v))
-			}
-		}
-	}
-	checkName := func(at, name string) {
-		if len(name) > 63 || !spNameRE.MatchString(name) {
-			errs = append(errs, fmt.Errorf("%s: name %q is not a DNS-1123 label of at most 63 characters", at, name))
-		}
-	}
-	checkLabels("defaults", s.Spec.Defaults.Labels)
-	checkLoad("defaults", s.Spec.Defaults.BaseLoad)
-	zones := map[string]bool{}
-	for _, z := range s.Spec.Facility.CoolingZones {
-		zones[z.Name] = true
-	}
-	pools, nodes := map[string]bool{}, map[string]string{}
-	for _, pool := range s.Spec.Pools {
-		at := "pool " + pool.Name
-		checkName(at, pool.Name)
-		if pools[pool.Name] {
-			errs = append(errs, fmt.Errorf("%s: a second pool has this name", at))
-		}
-		pools[pool.Name] = true
-		checkLabels(at, pool.Labels)
-		checkLoad(at, pool.BaseLoad)
-		if pool.CoolingZone != "" && !zones[pool.CoolingZone] {
-			errs = append(errs, fmt.Errorf("%s: cooling zone %q is not declared under facility.coolingZones", at, pool.CoolingZone))
-		}
-		prefix := pool.Prefix
-		if prefix == "" {
-			prefix = pool.Name
-		}
-		for i := 0; i < pool.Count; i++ {
-			node := fmt.Sprintf("%s-%d", prefix, pool.StartIndex+i)
-			checkName(at, node)
-			if other, ok := nodes[node]; ok {
-				errs = append(errs, fmt.Errorf("%s: Node %s is also in pool %s", at, node, other))
-			}
-			nodes[node] = pool.Name
-		}
-	}
-	return errs
-}
-
-// spApplyOverrides sets a pool's overrides on its profile with the
-// provenance package clusterspec gives them, then validates the result.
-func spApplyOverrides(p *hwemu.Profile, spec string, pool clusterspec.Pool) error {
-	o := pool.Overrides
-	if o == nil {
-		return nil
-	}
-	src := fmt.Sprintf("assumed:cluster spec %s pool %s override", spec, pool.Name)
-	if o.NFD != "" {
-		p.Node.NFD = o.NFD
-	}
-	if g := o.GPUs; g != nil {
-		if p.GPUs == nil {
-			return fmt.Errorf("overrides gpus, but profile %s has no GPUs", p.Name)
-		}
-		if g.PersistenceMode != "" {
-			p.GPUs.PersistenceMode = hwemu.Fact[string]{V: g.PersistenceMode, Src: src}
-		}
-		if g.Exposure != "" {
-			p.GPUs.Exposure = hwemu.Fact[string]{V: g.Exposure, Src: src}
-		}
-		if g.MIGProfile != "" {
-			p.GPUs.MIGProfile = g.MIGProfile
-		}
-		if g.MIGDevicesPerGPU != nil {
-			p.GPUs.MIGDevicesPerGPU = *g.MIGDevicesPerGPU
-		}
-		if g.TimesliceReplicas != nil {
-			p.GPUs.TimesliceReplicas = *g.TimesliceReplicas
-		}
-	}
-	return p.Validate()
-}
-
 // spCheckMIG checks a profile that exposes MIG devices against
 // spMIGInstances: its GPU product supports the MIG profile, and one GPU
 // holds that many instances of it. Profile.Validate does not know which MIG
 // profiles a GPU has.
 func spCheckMIG(p *hwemu.Profile) error {
+	if p == nil {
+		return nil
+	}
 	g := p.GPUs
 	if g == nil || (g.Exposure.V != "mig-single" && g.Exposure.V != "mig-mixed") {
 		return nil
@@ -369,38 +230,32 @@ func spSortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// TestSP01SpecsLoadWithBuiltinProfiles checks that smoke.yaml and medium.yaml
-// load and expand with clusterspec and the builtin profiles, decode strictly
-// and follow the spec rules, that every pool's profile is
-// builtin and validates with the pool's overrides, and that the harness
-// section parses, names only pools of the spec and leaves every other pool
-// on the mounted tool delivery (U7). The harness subtest checks the harness
-// parser on sections the committed specs do not have.
+// TestSP01SpecsLoadWithBuiltinProfiles checks that every committed spec
+// loads and expands with clusterspec and the builtin profiles, decodes
+// strictly, and that its harness section parses, names only pools of the
+// spec and sets the tool delivery of every GPU pool: a pool left out
+// follows the install, which delivers no GPU tools by default, so a spec
+// says which of its GPU pools have them. The harness subtest checks the
+// harness parser on sections the committed specs do not have.
 func TestSP01SpecsLoadWithBuiltinProfiles(t *testing.T) {
-	for _, name := range []string{"smoke.yaml", "medium.yaml"} {
+	paths, err := filepath.Glob(filepath.Join(spSpecsDir, "*.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		name := filepath.Base(path)
 		t.Run(name, func(t *testing.T) {
-			spSkipWithoutSpec(t, name)
 			s, profiles := spLoadSpec(t, name)
 			if len(s.Spec.Pools) == 0 {
 				t.Fatalf("%s has no pools", name)
-			}
-			// The loader the simulator and the harness run also checks
-			// what spLoadSpec does not, such as a pool taint that repeats
-			// the key and effect of its profile's taint.
-			loaded, err := clusterspec.LoadFile(filepath.Join(spSpecsDir, name))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := loaded.Expand(clusterspec.Profiles("")); err != nil {
-				t.Errorf("%s: %v", name, err)
 			}
 			if len(profiles) != len(s.Spec.Pools) {
 				t.Errorf("%s: %d of %d pools have a valid builtin profile", name, len(profiles), len(s.Spec.Pools))
 			}
 			h := spParseHarness(t, s)
 			for _, pool := range s.Spec.Pools {
-				if _, listed := h.Pools[pool.Name]; !listed && h.ToolDelivery(pool.Name) != simcluster.ToolDeliveryMounted {
-					t.Errorf("%s: pool %s is not under spec.harness.pools, and its tool delivery is %q, want %s", name, pool.Name, h.ToolDelivery(pool.Name), simcluster.ToolDeliveryMounted)
+				if p := profiles[pool.Name]; p != nil && p.GPUs != nil && h.Pools[pool.Name].ToolDelivery == "" {
+					t.Errorf("%s: GPU pool %s sets no spec.harness.pools.%s.toolDelivery, so it follows the install, which delivers no GPU tools by default", name, pool.Name, pool.Name)
 				}
 			}
 		})
@@ -417,20 +272,25 @@ func TestSP01SpecsLoadWithBuiltinProfiles(t *testing.T) {
 			}
 			return simcluster.ParseHarness(s.Spec.Harness)
 		}
-		for _, section := range []string{"", "null", "{}", "{pools: {}}", "{pools: {a: {}}}", "{pools: {a: {toolDelivery: mounted}}}"} {
+		for _, section := range []string{"", "null", "{}", "{pools: {}}", "{pools: {a: {}}}"} {
 			h, err := parse(section)
 			if err != nil {
 				t.Errorf("harness %q: %v", section, err)
 				continue
 			}
 			for _, pool := range []string{"a", "unlisted"} {
-				if got := h.ToolDelivery(pool); got != simcluster.ToolDeliveryMounted {
-					t.Errorf("harness %q: pool %s has tool delivery %q, want %s", section, pool, got, simcluster.ToolDeliveryMounted)
+				for _, install := range []string{simcluster.ToolDeliveryMounted, simcluster.ToolDeliveryNone} {
+					if got := h.ToolDelivery(pool, install); got != install {
+						t.Errorf("harness %q: pool %s has tool delivery %q under an install that delivers %s, want the install's", section, pool, got, install)
+					}
 				}
 			}
 		}
-		if h, err := parse("{pools: {a: {toolDelivery: none}}}"); err != nil || h.ToolDelivery("a") != simcluster.ToolDeliveryNone {
-			t.Errorf("harness toolDelivery none: tool delivery %q, error %v; want %s", h.ToolDelivery("a"), err, simcluster.ToolDeliveryNone)
+		for _, d := range []string{simcluster.ToolDeliveryMounted, simcluster.ToolDeliveryNone} {
+			h, err := parse("{pools: {a: {toolDelivery: " + d + "}}}")
+			if err != nil || h.ToolDelivery("a", "") != d {
+				t.Errorf("harness toolDelivery %s: tool delivery %q, error %v", d, h.ToolDelivery("a", ""), err)
+			}
 		}
 		for section, want := range map[string]string{
 			"{pools: {a: {toolDelivery: bogus}}}":          `spec.harness.pools.a.toolDelivery "bogus"`,
@@ -453,7 +313,6 @@ func TestSP01SpecsLoadWithBuiltinProfiles(t *testing.T) {
 // NoSchedule taint the agent does not tolerate: a Node Joulie plans for and
 // no agent reaches.
 func TestSP02SmokeCoversEachFamilyOnce(t *testing.T) {
-	spSkipWithoutSpec(t, "smoke.yaml")
 	s, profiles := spLoadSpec(t, "smoke.yaml")
 	tolerations := spAgentTolerations(t)
 	builtins, err := hwemu.BuiltinProfiles()
@@ -528,7 +387,7 @@ func TestSP03MediumCoversTheHarnessCases(t *testing.T) {
 				cases[o.GPUs.Exposure] = append(cases[o.GPUs.Exposure], pool.Name)
 			}
 		}
-		if p.GPUs != nil && h.ToolDelivery(pool.Name) == simcluster.ToolDeliveryNone {
+		if p.GPUs != nil && h.Pools[pool.Name].ToolDelivery == simcluster.ToolDeliveryNone {
 			cases["toolDelivery: none"] = append(cases["toolDelivery: none"], pool.Name)
 		}
 		taints := spUntolerated(t, pool, p, tolerations)
@@ -585,6 +444,45 @@ func TestSP04SpecsUseNoLocalProfileOrMeasurement(t *testing.T) {
 			if _, ok := builtins[pool.Profile]; !ok {
 				t.Errorf("%s: pool %s uses profile %q, which is not builtin; a profile from SIM_PROFILES_DIR stays local", path, pool.Name, pool.Profile)
 			}
+		}
+	}
+}
+
+// TestSP05ProfilesCoversEveryBuiltin checks profiles.yaml: one managed Node
+// of every builtin profile and of nothing else, each one the agent
+// DaemonSet reaches with the chart's default tolerations, so a run of it
+// takes every builtin profile end to end; a new builtin profile fails here
+// until it is added.
+func TestSP05ProfilesCoversEveryBuiltin(t *testing.T) {
+	s, profiles := spLoadSpec(t, "profiles.yaml")
+	builtins, err := hwemu.BuiltinProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tolerations := spAgentTolerations(t)
+	pools := map[string][]string{}
+	for _, pool := range s.Spec.Pools {
+		pools[pool.Profile] = append(pools[pool.Profile], pool.Name)
+		if pool.Count != 1 {
+			t.Errorf("pool %s has %d Nodes, want 1", pool.Name, pool.Count)
+		}
+		if !spManaged(s, pool) {
+			t.Errorf("pool %s is not managed", pool.Name)
+		}
+		if p := profiles[pool.Name]; p != nil {
+			if taints := spUntolerated(t, pool, p, tolerations); len(taints) > 0 {
+				t.Errorf("pool %s: the agent DaemonSet does not tolerate %v", pool.Name, taints)
+			}
+		}
+	}
+	for _, name := range spSortedKeys(builtins) {
+		if len(pools[name]) != 1 {
+			t.Errorf("builtin profile %s is used by profiles.yaml pools %v, want exactly one", name, pools[name])
+		}
+	}
+	for _, name := range spSortedKeys(pools) {
+		if _, ok := builtins[name]; !ok {
+			t.Errorf("profiles.yaml pools %v use %s, which is not builtin", pools[name], name)
 		}
 	}
 }

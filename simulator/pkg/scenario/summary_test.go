@@ -155,7 +155,7 @@ func jsonNum(v float64) string {
 // back through the same path as the simulator's files.
 func TestHarnessWritesOTLPLines(t *testing.T) {
 	dir := t.TempDir()
-	h := scenario.Harness{Dir: dir, ClusterName: "smoke", RunID: "r1", Scenario: "s", Variant: "v"}
+	h := scenario.Recorder{Dir: dir, ClusterName: "smoke", RunID: "r1", Scenario: "s", Variant: "v"}
 	at := time.Date(2026, 10, 4, 20, 0, 0, 0, time.UTC)
 	if err := h.WriteLogs(h.ScenarioEvent(semconv.EventScenarioVariantStarted, at)); err != nil {
 		t.Fatal(err)

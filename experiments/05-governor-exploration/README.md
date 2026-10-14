@@ -43,7 +43,7 @@ flip its sign.
 | `configs/tier-a-sensitivity.yaml` | Q5: each assumed fact at a low, mid and high value, one at a time, on a smaller grid; the receiver gate forced on |
 | `configs/tier-b-*.yaml` | Joulie values of each Tier B arm, after `tier-b-common.yaml` |
 | `scripts/run_tier_a.sh` | builds `simulator/cmd/govsweep`, runs a config, summarises it |
-| `scripts/run_tier_b.sh` | one arm on a fresh simulated cluster, the harness checks GS01 to GS04, then removes the cluster |
+| `scripts/run_tier_b.sh` | one arm on a fresh simulated cluster, the governor checks of the harness, then removes the cluster |
 | `analysis/summarize.py` | the Markdown summary of a Tier A run (standard library only) |
 | `analysis/test_summarize.py` | its tests: `python3 -B -m unittest experiments/05-governor-exploration/analysis/test_summarize.py` |
 
@@ -112,7 +112,7 @@ The cluster spec is `tests/simcluster/specs/governor.yaml`: two Nodes per
 CPU driver and per GPU family, so that with `STATIC_HP_FRAC=0.1` every
 family has one Node in performance and one in eco. The script creates the
 cluster itself, refuses any kube context but the one it created, runs the
-harness checks GS01 to GS04 of `tests/simcluster/e2e_test.go` (presets per
+governor checks of `tests/simcluster/e2e_test.go` (presets per
 profile in NodeHardware, the result each preset gives, the native word in
 the emulated files, and the baseline back after an upgrade to
 `GOVERNOR_CONTROL=off`), and removes the cluster unless `SIMCLUSTER_KEEP=1`.

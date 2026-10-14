@@ -1,7 +1,9 @@
 // Command simcluster computes, for the simulated cluster scripts
 // (scripts/simcluster), what they cannot compute in shell. It reads a
 // cluster spec (package clusterspec) with the builtin hardware profiles
-// plus, with --profiles-dir, the local ones in a directory:
+// plus the local ones in the directory --profiles-dir names,
+// SIM_PROFILES_DIR by default, as the simulator and the clusterspec command
+// read them:
 //
 //	simcluster validate   --spec FILE [--profiles-dir DIR]
 //	simcluster agents     --spec FILE --daemonset FILE --image-arch ARCH --root DIR [--profiles-dir DIR]
@@ -36,6 +38,10 @@ import (
 	"github.com/matbun/joulie/simulator/pkg/clusterspec"
 	"github.com/matbun/joulie/simulator/pkg/simcluster"
 )
+
+// envProfilesDir is the simulator's variable of the local profiles
+// directory, the default of --profiles-dir.
+const envProfilesDir = "SIM_PROFILES_DIR"
 
 const usage = `usage:
   simcluster validate   --spec FILE [--profiles-dir DIR]
@@ -138,7 +144,7 @@ func expand(path, profilesDir string) (*clusterspec.Spec, []clusterspec.Member, 
 func runValidate(args []string, stdout, stderr io.Writer) error {
 	flags := newFlags("validate", stderr)
 	spec := flags.String("spec", "", "cluster spec file (required)")
-	profilesDir := flags.String("profiles-dir", "", "directory of local hardware profiles (*.yaml), added to the builtin ones")
+	profilesDir := profilesDirFlag(flags)
 	if err := parse(flags, args); err != nil {
 		return err
 	}
@@ -153,21 +159,21 @@ func runValidate(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", *spec, err)
 	}
-	var none []string
+	var set []string
 	for _, p := range s.Spec.Pools {
-		if h.ToolDelivery(p.Name) == simcluster.ToolDeliveryNone {
-			none = append(none, p.Name)
+		if d := h.ToolDelivery(p.Name, ""); d != "" {
+			set = append(set, p.Name+": "+d)
 		}
 	}
-	fmt.Fprintf(stdout, "%s: harness section of cluster spec %s is valid: %d Nodes, %d with measured CPU packages, tool delivery %s for pools [%s]\n",
-		*spec, s.Metadata.Name, len(members), len(simcluster.WaitNodes(members)), simcluster.ToolDeliveryNone, strings.Join(none, ", "))
+	fmt.Fprintf(stdout, "%s: harness section of cluster spec %s is valid: %d Nodes, %d with measured CPU packages, tool delivery set for pools [%s], the install's for the others\n",
+		*spec, s.Metadata.Name, len(members), len(simcluster.WaitNodes(members)), strings.Join(set, ", "))
 	return nil
 }
 
 func runAgents(args []string, stdout, stderr io.Writer) error {
 	flags := newFlags("agents", stderr)
 	spec := flags.String("spec", "", "cluster spec file (required)")
-	profilesDir := flags.String("profiles-dir", "", "directory of local hardware profiles (*.yaml), added to the builtin ones")
+	profilesDir := profilesDirFlag(flags)
 	daemonset := flags.String("daemonset", "", "the agent DaemonSet render, helm template --show-only templates/agent-daemonset.yaml (required)")
 	imageArch := flags.String("image-arch", "", "architecture the agent image is built for, such as amd64 (required)")
 	root := flags.String("root", "", "hwemu root on the infra Node, an absolute path (required)")
@@ -219,7 +225,7 @@ func runTelemetry(args []string, stdout, stderr io.Writer) error {
 	scope := flags.String("scope", string(simcluster.ScopeComponents), "power scope")
 	timing := flags.String("timing", simcluster.TimingDev, "timing, scripts/simcluster/timing/<name>.env")
 	spec := flags.String("spec", "", "cluster spec file (required for --part wait)")
-	profilesDir := flags.String("profiles-dir", "", "directory of local hardware profiles (*.yaml), added to the builtin ones")
+	profilesDir := profilesDirFlag(flags)
 	if err := parse(flags, args); err != nil {
 		return err
 	}
@@ -289,7 +295,7 @@ func runScaleSpec(args []string, stdout, stderr io.Writer) error {
 	flags := newFlags("scale-spec", stderr)
 	nodes := flags.Int("nodes", 0, "number of Nodes, at least 1 (required)")
 	profile := flags.String("profile", defaultScaleProfile, "hardware profile of every Node")
-	profilesDir := flags.String("profiles-dir", "", "directory of local hardware profiles (*.yaml), added to the builtin ones")
+	profilesDir := profilesDirFlag(flags)
 	if err := parse(flags, args); err != nil {
 		return err
 	}
@@ -309,4 +315,11 @@ func runScaleSpec(args []string, stdout, stderr io.Writer) error {
 	}
 	_, err = stdout.Write(b)
 	return err
+}
+
+// profilesDirFlag defines --profiles-dir, the local profiles directory,
+// SIM_PROFILES_DIR by default; an empty value means the builtins only.
+func profilesDirFlag(flags *flag.FlagSet) *string {
+	return flags.String("profiles-dir", os.Getenv(envProfilesDir),
+		"directory of local hardware profiles (*.yaml), added to the builtin ones; empty for the builtins only (default "+envProfilesDir+")")
 }

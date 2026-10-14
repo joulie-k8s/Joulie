@@ -1,5 +1,7 @@
 package compat
 
+import "github.com/matbun/joulie/pkg/controller/inputs"
+
 // The names, labels and constant labels each exporter reproduces, pinned to
 // one upstream release. Every value cites the file and line it was read
 // from at that release's tag, so a version bump is a diff of this file.
@@ -70,17 +72,20 @@ const (
 var k07Families = []string{k07Package, k07Core, k07Uncore, k07DRAM, k07Other, k07GPU, k07Platform}
 
 // Kepler v0.12.0, github.com/sustainable-computing-io/kepler at tag
-// v0.12.0. Paths are under internal/ unless they say otherwise.
+// v0.12.0. Paths are under internal/ unless they say otherwise. The names
+// the kepler preset reads are package inputs' constants, so the reader and
+// this writer share one spelling; the comment on each cites where upstream
+// spells it.
 const (
 	// exporter/prometheus/collector/build_info.go:12.
 	k012Namespace = "kepler"
 
 	// exporter/prometheus/collector/power_collector.go:17: the constant
 	// label of every family.
-	k012LabelNodeName = "node_name"
+	k012LabelNodeName = inputs.KeplerNodeLabel
 
 	// power_collector.go:118,129-136: the labels of the node cpu families.
-	k012LabelZone = "zone"
+	k012LabelZone = inputs.KeplerZoneLabel
 	k012LabelPath = "path"
 
 	// power_collector.go:164-178: the labels of the node gpu families.
@@ -89,19 +94,25 @@ const (
 	k012LabelGPUName = "gpu_name"
 	k012LabelVendor  = "vendor"
 
-	// device/energy_zone.go:16,18: zone names, from the RAPL name file
-	// with the socket index stripped (prometheus/procfs v0.19.2
-	// sysfs/class_powercap.go, getIndexAndName).
-	k012ZonePackage = "package"
-	k012ZoneDRAM    = "dram"
-
-	// device/energy_zone.go:90-93: the path of a zone aggregated over
-	// sockets. A single zone's path is its class/powercap directory under
-	// the host sysfs mount (procfs sysfs/class_powercap.go, GetRaplZones),
-	// which the upstream chart mounts at /host/sys
-	// (manifests/helm/kepler/values.yaml:94).
+	// device/energy_zone.go:90-93: the path of a zone aggregated over the
+	// zones that share its name. A single zone's path is its class/powercap
+	// entry under the host sysfs mount (prometheus/procfs v0.19.2
+	// sysfs/class_powercap.go, GetRaplZones), which the upstream chart
+	// mounts at /host/sys (manifests/helm/kepler/values.yaml:94).
 	k012AggregatedPrefix = "aggregated-"
 	k012PowercapDir      = "/host/sys/class/powercap/"
+
+	// procfs sysfs/class_powercap.go, GetRaplZones: the directory it lists,
+	// under the sysfs root, and the files it reads in each entry.
+	k012ClassPowercap = "class/powercap"
+	k012NameFile      = "name"
+	k012EnergyFile    = "energy_uj"
+	k012MaxEnergyFile = "max_energy_range_uj"
+
+	// device/rapl_sysfs_power_meter.go:230-233: a zone whose path holds
+	// this is standard; it replaces a zone of the same name and index read
+	// through another control type, such as intel-rapl-mmio.
+	k012StandardPath = "/intel-rapl:"
 
 	// device/gpu/types.go:12, returned by the NVIDIA collector
 	// (device/gpu/nvidia/collector.go:178-179).
@@ -111,15 +122,16 @@ const (
 // The Kepler v0.12.0 node families and their help texts
 // (power_collector.go:78-104 build the names and texts; 129-136 and
 // 164-178 instantiate them). GPU series need the experimental GPU feature,
-// which is off by default (config/config.go:788-792).
+// which is off by default (config/config.go:505,
+// manifests/helm/kepler/values.yaml:149).
 const (
-	k012CPUJoules       = "kepler_node_cpu_joules_total"
-	k012CPUWatts        = "kepler_node_cpu_watts"
-	k012CPUActiveJoules = "kepler_node_cpu_active_joules_total"
-	k012CPUIdleJoules   = "kepler_node_cpu_idle_joules_total"
+	k012CPUJoules       = inputs.KeplerCPUJoules
+	k012CPUWatts        = inputs.KeplerCPUWatts
+	k012CPUActiveJoules = inputs.KeplerCPUActiveJoules
+	k012CPUIdleJoules   = inputs.KeplerCPUIdleJoules
 	k012CPUActiveWatts  = "kepler_node_cpu_active_watts"
 	k012CPUIdleWatts    = "kepler_node_cpu_idle_watts"
-	k012GPUJoules       = "kepler_node_gpu_joules_total"
+	k012GPUJoules       = inputs.KeplerGPUJoules
 	k012GPUActiveJoules = "kepler_node_gpu_active_joules_total"
 	k012GPUIdleJoules   = "kepler_node_gpu_idle_joules_total"
 	k012GPUWatts        = "kepler_node_gpu_watts"

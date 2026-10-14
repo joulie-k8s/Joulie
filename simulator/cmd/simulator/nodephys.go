@@ -310,7 +310,7 @@ func cpuPowerWithModel(st *nodeState, model simModel) float64 {
 // the cap, the scale that meets it, which is otherwise scale itself. The
 // natural power is computed uncapped on the node's own model (cpuPowerModel),
 // so that a measured curve, which clamps to any cap it is given, still shows
-// the solver its excess (D13). saturated marks a cap that even the minimum
+// the solver its excess. saturated marks a cap that even the minimum
 // scale exceeds; the power is then the power at that scale, not the cap. The
 // throttle target plays no part. It changes nothing.
 func cpuPower(st *nodeState, model simModel, scale float64) (powerW, solvedScale float64, saturated bool) {
@@ -344,7 +344,7 @@ func cpuPower(st *nodeState, model simModel, scale float64) (powerW, solvedScale
 	floorW := 0.0
 	if p > capW {
 		// A curve's floor is its own power at the minimum scale. The
-		// analytic floor stays thermal-free, as before F2: with the thermal
+		// analytic floor stays thermal-free: with the thermal
 		// factor, util 0.3 under a 100 W cap would no longer be saturated
 		// (102.7 against 84.7 W; cpupower_regression_test.go).
 		floor := cpuState

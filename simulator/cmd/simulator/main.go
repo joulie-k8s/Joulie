@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,9 +37,14 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-var podListFunc = listRunningPodsByNode
-var podDetailFunc = listRunningPodsDetailed
-var nodeListFunc = listNodeLabels
+// The Kubernetes reads of the loops; tests replace them. podPollFunc and
+// nodeListFunc are the pod poll's one list of pods and one list of Nodes;
+// podDetailFunc is the legacy workload loop's list of pods.
+var (
+	podPollFunc   = listPodsForPoll
+	podDetailFunc = listRunningPodsDetailed
+	nodeListFunc  = listNodeMeta
+)
 
 type nodeState struct {
 	CapWatts                float64          `json:"capWatts"`
@@ -212,9 +218,12 @@ type simulator struct {
 	energyLastTs  time.Time
 	persistDir    string
 	persistMu     sync.Mutex
-	tsFile        *os.File
-	tsWriter      *bufio.Writer
-	tsPath        string
+	// journal is events.ndjson under persistDir, open from
+	// configurePersistence until closePersistence; nil without one.
+	journal  *os.File
+	tsFile   *os.File
+	tsWriter *bufio.Writer
+	tsPath   string
 	// energyJByHwType is the modelled nodes' energy by hw.type (cpu, gpu),
 	// as stepNode returns it; an emulated node's energy is its host's.
 	// addEnergyLocked creates it.
@@ -313,7 +322,7 @@ func main() {
 
 	// A legacy trace loads into the legacy engine here; a v1 trace starts
 	// an implicit run once emulate mode is up.
-	tracePath := strings.TrimSpace(os.Getenv("SIM_WORKLOAD_TRACE_PATH"))
+	tracePath := strings.TrimSpace(os.Getenv(workload.EnvTracePath))
 	if tracePath != "" && workloadOpts.model() == workload.ModelLegacy {
 		if err := s.initWorkloadEngineWithOptions(tracePath, workloadOpts); err != nil {
 			log.Printf("warning: workload trace disabled: %v", err)
@@ -359,8 +368,8 @@ func main() {
 		runs.startImplicitRun(tracePath)
 	}
 
-	addr := envOrDefault("SIM_ADDR", ":18080")
-	srv := &http.Server{Addr: addr, Handler: mux}
+	addr := envOrDefault("SIM_ADDR", defaultSimAddr())
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: time.Minute, IdleTimeout: 2 * time.Minute}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -378,6 +387,7 @@ func main() {
 	if r := s.run.Load(); r != nil && r.active() {
 		r.finish(false)
 	}
+	s.closePersistence()
 }
 
 // newMux routes the simulator's HTTP API. Emulate mode adds the
@@ -539,6 +549,12 @@ func (s *simulator) configurePersistence(dir string) {
 	}
 	s.persistDir = dir
 	s.snapshotDebugState()
+	journalPath := filepath.Join(dir, eventJournalFile)
+	if f, err := os.OpenFile(journalPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err != nil {
+		log.Printf("warning: events journal disabled path=%s err=%v", journalPath, err)
+	} else {
+		s.journal = f
+	}
 	// Open time-series CSV for append.
 	tsPath := filepath.Join(dir, "timeseries.csv")
 	f, err := os.OpenFile(tsPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
@@ -625,7 +641,7 @@ func (s *simulator) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 // handleTelemetry serves /telemetry/{node}: by default the OTLP JSON of
 // /otlp/telemetry/{node}, and with ?format=legacy the legacy JSON,
-// deprecated until legacyTelemetryRemovedIn (telemetry_route.go).
+// deprecated until otlpjson.LegacyRemovedIn (telemetry_route.go).
 func (s *simulator) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	status := http.StatusOK
@@ -741,7 +757,7 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 		ThrottlePct    int     `json:"throttlePct"`
 		CapWattsPerGpu float64 `json:"capWattsPerGpu"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&payload); err != nil {
 		status = http.StatusBadRequest
 		http.Error(w, "invalid json", status)
 		return
@@ -1003,7 +1019,24 @@ func (s *simulator) handleDebugTimeseries(w http.ResponseWriter, r *http.Request
 	http.ServeFile(w, r, s.tsPath)
 }
 
+// defaultSimAddr is the listen address without SIM_ADDR: every interface in
+// a pod, where a Service reaches it, and the loopback interface elsewhere,
+// since the HTTP API has no authentication.
+func defaultSimAddr() string {
+	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+		return ":18080"
+	}
+	return "127.0.0.1:18080"
+}
+
+// observeRequest counts a request. Methods outside the standard set share
+// one label value, so a client cannot grow the series without bound.
 func (s *simulator) observeRequest(route, method string, status *int, start time.Time) {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions:
+	default:
+		method = "other"
+	}
 	s.requestsTotal.WithLabelValues(route, method, strconv.Itoa(*status)).Inc()
 	s.requestDuration.WithLabelValues(route, method).Observe(time.Since(start).Seconds())
 }
@@ -1110,15 +1143,24 @@ func (s *simulator) appendTimeseriesRow(now time.Time) {
 	s.persistMu.Unlock()
 }
 
-// flushTimeseries flushes and closes the time-series CSV file.
-func (s *simulator) flushTimeseries() {
+// closePersistence flushes and closes the time-series CSV file and the
+// events journal, on a clean stop. Events recorded after it are kept in
+// memory only.
+func (s *simulator) closePersistence() {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
 	if s.tsWriter != nil {
-		s.persistMu.Lock()
 		_ = s.tsWriter.Flush()
-		s.persistMu.Unlock()
 	}
 	if s.tsFile != nil {
 		_ = s.tsFile.Close()
+		s.tsFile = nil
+	}
+	if s.journal != nil {
+		if err := s.journal.Close(); err != nil {
+			log.Printf("warning: events journal close failed: %v", err)
+		}
+		s.journal = nil
 	}
 }
 
@@ -1320,25 +1362,31 @@ func (s *simulator) persistJSONAtomic(name string, payload any) {
 	}
 }
 
-func (s *simulator) persistEventJournal(e simEvent) {
-	if strings.TrimSpace(s.persistDir) == "" {
+// eventJournalFile is the journal of every recorded event, one JSON object
+// per line, under SIM_DEBUG_PERSIST_DIR.
+const eventJournalFile = "events.ndjson"
+
+// persistEventJournal appends evs to the journal, in order, with one write.
+func (s *simulator) persistEventJournal(evs []simEvent) {
+	if len(evs) == 0 {
 		return
 	}
-	line, err := json.Marshal(e)
-	if err != nil {
-		log.Printf("warning: persist events journal marshal failed: %v", err)
-		return
+	var buf bytes.Buffer
+	for _, e := range evs {
+		line, err := json.Marshal(e)
+		if err != nil {
+			log.Printf("warning: persist events journal marshal failed: %v", err)
+			continue
+		}
+		buf.Write(line)
+		buf.WriteByte('\n')
 	}
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
-	path := filepath.Join(s.persistDir, "events.ndjson")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		log.Printf("warning: persist events journal open failed: %v", err)
+	if s.journal == nil {
 		return
 	}
-	defer f.Close()
-	if _, err := f.Write(append(line, '\n')); err != nil {
+	if _, err := s.journal.Write(buf.Bytes()); err != nil {
 		log.Printf("warning: persist events journal write failed: %v", err)
 	}
 }
@@ -1364,72 +1412,73 @@ func (s *simulator) startPodPolling(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		counts, err := podListFunc(ctx, kube)
-		podsDetailed, detailErr := podDetailFunc(ctx, kube)
-		nodes, nodeErr := nodeListFunc(ctx, kube)
-		cancel()
-		if err != nil {
-			log.Printf("warning: pod polling list failed: %v", err)
-			<-ticker.C
-			continue
-		}
-		if detailErr != nil {
-			log.Printf("warning: detailed pod list failed: %v", detailErr)
-			<-ticker.C
-			continue
-		}
-		if nodeErr != nil {
-			log.Printf("warning: node polling list failed: %v", nodeErr)
-			<-ticker.C
-			continue
-		}
-
-		s.refreshNodeStateFromKubeData(counts, podsDetailed, nodes)
-
-		// Compute power for all selected nodes in a single lock hold to
-		// reduce lock acquisition overhead.
-		type pollSnap struct {
-			node                 string
-			power, capW, cpuUtil float64
-			throttlePct          int
-			podsRunning          int
-			freqScale            float64
-		}
-		var pollSnaps []pollSnap
-		s.mu.Lock()
-		for node, labels := range nodes {
-			// An emulated node's power comes from its snapshot.
-			if !s.nodeSelected(labels) || s.emulated(node) {
-				continue
-			}
-			st := s.state[node]
-			if st == nil {
-				continue
-			}
-			power := observe(st).powerW
-			pollSnaps = append(pollSnaps, pollSnap{
-				node: node, power: power, capW: st.CapWatts,
-				cpuUtil: st.CPUUtil, throttlePct: st.ThrottlePct,
-				podsRunning: st.PodsRunning, freqScale: st.FreqScale,
-			})
-		}
-		s.mu.Unlock()
-		for _, ps := range pollSnaps {
-			s.nodeCapW.WithLabelValues(ps.node).Set(ps.capW)
-			s.nodeThrottlePct.WithLabelValues(ps.node).Set(float64(ps.throttlePct))
-			s.nodePowerW.WithLabelValues(ps.node).Set(ps.power)
-			s.nodePods.WithLabelValues(ps.node).Set(float64(ps.podsRunning))
-			s.nodeUtilCPU.WithLabelValues(ps.node).Set(ps.cpuUtil)
-			s.nodeFreqScale.WithLabelValues(ps.node).Set(ps.freqScale)
-			s.nodeRaplCapW.WithLabelValues(ps.node).Set(ps.capW)
-		}
-		if s.emu != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			s.checkEmulatedNodes(ctx, kube)
-			cancel()
-		}
+		s.pollOnce(kube)
 		<-ticker.C
+	}
+}
+
+// pollOnce is one pod poll: one list of the pods and one of the Nodes,
+// from which the node state, the per-node gauges and, in emulate mode, the
+// check of the spec nodes' Nodes are all taken.
+func (s *simulator) pollOnce(kube kubernetes.Interface) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	counts, podsDetailed, err := podPollFunc(ctx, kube)
+	var nodes, nodeAnnotations map[string]map[string]string
+	var nodeErr error
+	if err == nil {
+		nodes, nodeAnnotations, nodeErr = nodeListFunc(ctx, kube)
+	}
+	cancel()
+	if err != nil {
+		log.Printf("warning: pod polling list failed: %v", err)
+		return
+	}
+	if nodeErr != nil {
+		log.Printf("warning: node polling list failed: %v", nodeErr)
+		return
+	}
+
+	s.refreshNodeStateFromKubeData(counts, podsDetailed, nodes)
+
+	// Compute power for all selected nodes in a single lock hold to
+	// reduce lock acquisition overhead.
+	type pollSnap struct {
+		node                 string
+		power, capW, cpuUtil float64
+		throttlePct          int
+		podsRunning          int
+		freqScale            float64
+	}
+	var pollSnaps []pollSnap
+	s.mu.Lock()
+	for node, labels := range nodes {
+		// An emulated node's power comes from its snapshot.
+		if !s.nodeSelected(labels) || s.emulated(node) {
+			continue
+		}
+		st := s.state[node]
+		if st == nil {
+			continue
+		}
+		power := observe(st).powerW
+		pollSnaps = append(pollSnaps, pollSnap{
+			node: node, power: power, capW: st.CapWatts,
+			cpuUtil: st.CPUUtil, throttlePct: st.ThrottlePct,
+			podsRunning: st.PodsRunning, freqScale: st.FreqScale,
+		})
+	}
+	s.mu.Unlock()
+	for _, ps := range pollSnaps {
+		s.nodeCapW.WithLabelValues(ps.node).Set(ps.capW)
+		s.nodeThrottlePct.WithLabelValues(ps.node).Set(float64(ps.throttlePct))
+		s.nodePowerW.WithLabelValues(ps.node).Set(ps.power)
+		s.nodePods.WithLabelValues(ps.node).Set(float64(ps.podsRunning))
+		s.nodeUtilCPU.WithLabelValues(ps.node).Set(ps.cpuUtil)
+		s.nodeFreqScale.WithLabelValues(ps.node).Set(ps.freqScale)
+		s.nodeRaplCapW.WithLabelValues(ps.node).Set(ps.capW)
+	}
+	if s.emu != nil {
+		s.checkEmulatedNodes(nodeAnnotations)
 	}
 }
 
@@ -1581,13 +1630,21 @@ func (s *simulator) nodeSelected(nodeLabels map[string]string) bool {
 	return s.selector.Matches(labels.Set(nodeLabels))
 }
 
-func listRunningPodsByNode(ctx context.Context, kube kubernetes.Interface) (map[string]int, error) {
+// listPodsForPoll lists every pod once and returns the Running pods per
+// node and the Running or Pending pods bound to a node.
+func listPodsForPoll(ctx context.Context, kube kubernetes.Interface) (map[string]int, []runningPodInfo, error) {
 	pods, err := kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	return runningPodsByNode(pods.Items), runningPodDetails(pods.Items), nil
+}
+
+// runningPodsByNode counts the Running pods of each node, deleted ones
+// aside.
+func runningPodsByNode(pods []corev1.Pod) map[string]int {
 	counts := map[string]int{}
-	for _, p := range pods.Items {
+	for _, p := range pods {
 		if p.Spec.NodeName == "" {
 			continue
 		}
@@ -1599,7 +1656,7 @@ func listRunningPodsByNode(ctx context.Context, kube kubernetes.Interface) (map[
 		}
 		counts[p.Spec.NodeName]++
 	}
-	return counts, nil
+	return counts
 }
 
 func listRunningPodsDetailed(ctx context.Context, kube kubernetes.Interface) ([]runningPodInfo, error) {
@@ -1607,8 +1664,14 @@ func listRunningPodsDetailed(ctx context.Context, kube kubernetes.Interface) ([]
 	if err != nil {
 		return nil, err
 	}
-	out := make([]runningPodInfo, 0, len(pods.Items))
-	for _, p := range pods.Items {
+	return runningPodDetails(pods.Items), nil
+}
+
+// runningPodDetails is every Running or Pending pod bound to a node,
+// deleted ones aside.
+func runningPodDetails(pods []corev1.Pod) []runningPodInfo {
+	out := make([]runningPodInfo, 0, len(pods))
+	for _, p := range pods {
 		if p.Spec.NodeName == "" {
 			continue
 		}
@@ -1623,42 +1686,54 @@ func listRunningPodsDetailed(ctx context.Context, kube kubernetes.Interface) ([]
 			Name:        p.Name,
 			Node:        p.Spec.NodeName,
 			IntentClass: classifyClassFromPodSpec(&p.Spec),
-			JobID:       p.Annotations["sim.joulie.io/jobId"],
+			JobID:       p.Annotations[workload.AnnotationJobID],
 		})
 	}
-	return out, nil
+	return out
 }
 
-func listNodeLabels(ctx context.Context, kube kubernetes.Interface) (map[string]map[string]string, error) {
+// listNodeMeta lists the Nodes once and returns the labels and the
+// annotations of each, by name.
+func listNodeMeta(ctx context.Context, kube kubernetes.Interface) (labels, annotations map[string]map[string]string, err error) {
 	nodes, err := kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := make(map[string]map[string]string, len(nodes.Items))
+	labels = make(map[string]map[string]string, len(nodes.Items))
+	annotations = make(map[string]map[string]string, len(nodes.Items))
 	for _, n := range nodes.Items {
-		labelsCopy := map[string]string{}
-		for k, v := range n.GetLabels() {
-			labelsCopy[k] = v
+		l := make(map[string]string, len(n.Labels))
+		for k, v := range n.Labels {
+			l[k] = v
 		}
-		out[n.GetName()] = labelsCopy
+		a := make(map[string]string, len(n.Annotations))
+		for k, v := range n.Annotations {
+			a[k] = v
+		}
+		labels[n.Name], annotations[n.Name] = l, a
 	}
-	return out, nil
+	return labels, annotations, nil
+}
+
+// newSimEvent is an event of kind on node, stamped now.
+func newSimEvent(kind, node string, payload map[string]any) simEvent {
+	return simEvent{Timestamp: time.Now().UTC(), Kind: kind, Node: node, Payload: payload}
 }
 
 func (s *simulator) recordEvent(kind, node string, payload map[string]any) {
-	ev := simEvent{
-		Timestamp: time.Now().UTC(),
-		Kind:      kind,
-		Node:      node,
-		Payload:   payload,
-	}
-	s.persistEventJournal(ev)
+	s.recordEvents([]simEvent{newSimEvent(kind, node, payload)})
+}
+
+// recordEvents keeps evs, in order, for /debug/events and appends them to
+// the events journal with one write.
+func (s *simulator) recordEvents(evs []simEvent) {
+	s.persistEventJournal(evs)
 	if s.eventMax <= 0 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.events = append(s.events, ev)
+	s.events = append(s.events, evs...)
 	if len(s.events) > s.eventMax {
 		s.events = s.events[len(s.events)-s.eventMax:]
 	}
@@ -1682,14 +1757,9 @@ func parsePositiveFloatString(raw string) float64 {
 	return v
 }
 
-// initWorkloadEngineFromTrace loads the trace at path into a legacy engine
-// with the legacy defaults.
-func (s *simulator) initWorkloadEngineFromTrace(path string) error {
-	return s.initWorkloadEngineWithOptions(path, workloadOptions{})
-}
-
 // initWorkloadEngineWithOptions loads the trace at path, a file or a
-// directory of .jsonl parts, into the simulator's engine with opts.
+// directory of .jsonl parts, into the simulator's legacy engine with opts.
+// A v1 trace loads per run instead (loadRunTrace).
 func (s *simulator) initWorkloadEngineWithOptions(path string, opts workloadOptions) error {
 	engine, parts, err := newWorkloadEngineFromTrace(path, opts)
 	if err != nil {
@@ -1700,21 +1770,27 @@ func (s *simulator) initWorkloadEngineWithOptions(path string, opts workloadOpti
 	return nil
 }
 
-// newWorkloadEngineFromTrace returns an engine holding the jobs of the trace
-// at path in submit order, and the number of files read. Legacy sorts with
-// sort.Slice, as it always has, so the order of jobs due at the same offset
-// stays what the experiments ran; v1 sorts stably and keeps them in trace
-// order. Legacy names each pod after its jobId, and a name two jobs share in
-// one namespace gets a suffix (suffixCollidingPodNames).
-func newWorkloadEngineFromTrace(path string, opts workloadOptions) (*workloadEngine, int, error) {
-	engine := &workloadEngine{
+// newWorkloadEngine returns an engine with no jobs, started now, with opts
+// and the base speed of SIM_BASE_SPEED_PER_CORE.
+func newWorkloadEngine(opts workloadOptions) *workloadEngine {
+	return &workloadEngine{
 		startTime:      time.Now().UTC(),
-		baseSpeedCore:  floatEnv("SIM_BASE_SPEED_PER_CORE", 1.0),
+		baseSpeedCore:  floatEnv(workload.EnvBaseSpeedPerCore, 1.0),
 		jobs:           []*simJob{},
 		jobByID:        map[string]*simJob{},
 		jobsByWorkload: map[string][]*simJob{},
 		opts:           opts,
 	}
+}
+
+// newWorkloadEngineFromTrace returns a legacy engine holding the jobs of the
+// trace at path in submit order, and the number of files read. It sorts with
+// sort.Slice, as legacy always has, so the order of jobs due at the same
+// offset stays what the experiments ran. Each pod is named after its jobId,
+// and a name two jobs share in one namespace gets a suffix
+// (suffixCollidingPodNames).
+func newWorkloadEngineFromTrace(path string, opts workloadOptions) (*workloadEngine, int, error) {
+	engine := newWorkloadEngine(opts)
 	tracePaths, err := resolveTracePaths(path)
 	if err != nil {
 		return nil, 0, err
@@ -1725,13 +1801,8 @@ func newWorkloadEngineFromTrace(path string, opts workloadOptions) (*workloadEng
 			return nil, 0, err
 		}
 	}
-	bySubmit := func(i, j int) bool { return engine.jobs[i].SubmitOffsetSec < engine.jobs[j].SubmitOffsetSec }
-	if opts.model() == workload.ModelV1 {
-		sort.SliceStable(engine.jobs, bySubmit)
-	} else {
-		suffixCollidingPodNames(engine.jobs)
-		sort.Slice(engine.jobs, bySubmit)
-	}
+	suffixCollidingPodNames(engine.jobs)
+	sort.Slice(engine.jobs, func(i, j int) bool { return engine.jobs[i].SubmitOffsetSec < engine.jobs[j].SubmitOffsetSec })
 	return engine, len(tracePaths), nil
 }
 
@@ -2114,17 +2185,17 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 				Name:      j.PodName,
 				Namespace: j.Namespace,
 				Labels: map[string]string{
-					"app.kubernetes.io/part-of": "joulie-sim-workload",
+					workload.LabelPartOf: workload.PartOfWorkload,
 				},
 				Annotations: map[string]string{
-					"sim.joulie.io/jobId":               j.JobID,
-					"sim.joulie.io/workloadId":          j.WorkloadID,
-					"sim.joulie.io/workloadType":        j.WorkloadType,
-					"sim.joulie.io/podRole":             j.PodRole,
-					"sim.joulie.io/cpu-util-pct":        strconv.FormatFloat(j.CPUUtilTarget*100, 'f', 1, 64),
-					"sim.joulie.io/gpu-util-pct":        strconv.FormatFloat(j.GPUUtilTarget*100, 'f', 1, 64),
-					"sim.joulie.io/memory-pressure-pct": strconv.FormatFloat(j.MemoryIntensity*100, 'f', 1, 64),
-					"sim.joulie.io/io-intensity":        strconv.FormatFloat(j.IOIntensity, 'f', 2, 64),
+					workload.AnnotationJobID:             j.JobID,
+					workload.AnnotationWorkloadID:        j.WorkloadID,
+					workload.AnnotationWorkloadType:      j.WorkloadType,
+					workload.AnnotationPodRole:           j.PodRole,
+					workload.AnnotationCPUUtilPct:        strconv.FormatFloat(j.CPUUtilTarget*100, 'f', 1, 64),
+					workload.AnnotationGPUUtilPct:        strconv.FormatFloat(j.GPUUtilTarget*100, 'f', 1, 64),
+					workload.AnnotationMemoryPressurePct: strconv.FormatFloat(j.MemoryIntensity*100, 'f', 1, 64),
+					workload.AnnotationIOIntensity:       strconv.FormatFloat(j.IOIntensity, 'f', 2, 64),
 				},
 			},
 			Spec: corev1.PodSpec{
@@ -2132,8 +2203,8 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 				Affinity:      affinityForIntentClass(j.Class),
 				Containers: []corev1.Container{
 					{
-						Name:  "work",
-						Image: envOrDefault("SIM_WORKLOAD_IMAGE", "registry.k8s.io/pause:3.9"),
+						Name:  workload.ContainerName,
+						Image: envOrDefault(workload.EnvImage, workload.DefaultImage),
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
 								corev1.ResourceCPU:    resource.MustParse(strconv.FormatFloat(j.RequestedCPUCores, 'f', -1, 64)),
@@ -2142,24 +2213,17 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 						},
 					},
 				},
-				Tolerations: []corev1.Toleration{
-					{
-						Key:      "kwok.x-k8s.io/node",
-						Operator: corev1.TolerationOpEqual,
-						Value:    "fake",
-						Effect:   corev1.TaintEffectNoSchedule,
-					},
-				},
+				Tolerations: []corev1.Toleration{workload.KWOKToleration()},
 				NodeSelector: map[string]string{
 					"type": "kwok",
 				},
 			},
 		}
 		if j.WorkloadType != "" {
-			pod.ObjectMeta.Labels["sim.joulie.io/workload-type"] = sanitizeK8sName(j.WorkloadType)
+			pod.ObjectMeta.Labels[workload.LabelWorkloadType] = sanitizeK8sName(j.WorkloadType)
 		}
 		if j.PodRole != "" {
-			pod.ObjectMeta.Labels["sim.joulie.io/pod-role"] = sanitizeK8sName(j.PodRole)
+			pod.ObjectMeta.Labels[workload.LabelPodRole] = sanitizeK8sName(j.PodRole)
 		}
 		if j.RequestedGPUs > 0 {
 			gpuResourceName := j.GPUResourceName
@@ -2198,7 +2262,7 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 
 func affinityForIntentClass(intent string) *corev1.Affinity {
 	switch intent {
-	case "performance":
+	case workload.ClassPerformance:
 		return &corev1.Affinity{
 			NodeAffinity: &corev1.NodeAffinity{
 				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
@@ -2206,7 +2270,7 @@ func affinityForIntentClass(intent string) *corev1.Affinity {
 						{
 							MatchExpressions: []corev1.NodeSelectorRequirement{
 								{
-									Key:      "joulie.io/power-profile",
+									Key:      workload.LabelPowerProfile,
 									Operator: corev1.NodeSelectorOpNotIn,
 									Values:   []string{"eco"},
 								},
@@ -2235,7 +2299,7 @@ func classifyClassFromPodSpec(spec *corev1.PodSpec) string {
 		termPerf := true
 		termEco := true
 		for _, expr := range term.MatchExpressions {
-			if expr.Key != "joulie.io/power-profile" {
+			if expr.Key != workload.LabelPowerProfile {
 				continue
 			}
 			switch expr.Operator {
@@ -2477,36 +2541,15 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			}
 			jobThermalThrottle := snapThermalThrottle
 			jobCPUMul := cpuThroughputMultiplier(freqScale, j.CPUWorkClass, model, j.MemoryIntensity, j.IOIntensity, jobThermalThrottle)
+			cpuSpeed, gpuSpeed := legacyJobRates(j, model, s.workload.baseSpeedCore, jobCPUMul, cpuShareFactor, gpuShareFactor, snapGPUCapPerGpu, snapThermalThrottle)
 			if j.CPUUnitsRemaining > 0 {
-				cpuThrottleFactor := cpuThrottleImpactFactor(jobCPUMul, j)
-				speed := j.RequestedCPUCores * s.workload.baseSpeedCore * cpuThrottleFactor * cpuShareFactor
-				if speed < 0 {
-					speed = 0
-				}
 				prev := j.CPUUnitsRemaining
-				j.CPUUnitsRemaining -= speed * dt
+				j.CPUUnitsRemaining -= cpuSpeed * dt
 				if j.CPUUnitsRemaining < prev {
 					j.LastProgressAt = now
 				}
 			}
 			if j.GPUUnitsRemaining > 0 {
-				gpuModel := phys.CappedBoardGPUModel{
-					IdleW:         model.GPU.IdleWattsPerGPU,
-					MaxW:          model.GPU.MaxWattsPerGPU,
-					ComputeGamma:  model.GPU.ComputeGamma,
-					MemoryEpsilon: model.GPU.MemoryEpsilon,
-					MemoryGamma:   model.GPU.MemoryGamma,
-				}
-				gpuMul := gpuModel.ThroughputMultiplier(phys.DeviceState{
-					Utilization:      clamp01(j.GPUUtilTarget),
-					CapWatts:         snapGPUCapPerGpu,
-					MaxCapWatts:      model.GPU.MaxWattsPerGPU,
-					MemoryIntensity:  j.MemoryIntensity,
-					CPUFeedIntensity: j.CPUFeedIntensity,
-					ThermalThrottle:  snapThermalThrottle,
-					Class:            j.GPUWorkClass,
-				}, j.GPUWorkClass)
-				_, gpuSpeed := workload.Rates(workload.ModelLegacy, legacyRateInputs(j, s.workload.baseSpeedCore, jobCPUMul, gpuMul, cpuShareFactor, gpuShareFactor))
 				prev := j.GPUUnitsRemaining
 				j.GPUUnitsRemaining -= gpuSpeed * dt
 				if j.GPUUnitsRemaining < prev {
@@ -2529,10 +2572,38 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 
 }
 
+// legacyJobRates is legacy job j's CPU and GPU progress, in work units per
+// second, on a node of model whose CPUs run at cpuMul of full speed and whose
+// GPUs are capped at gpuCapPerGPU watts each, with the node's CPU and GPU
+// shares and thermal throttle: workload.Rates of ModelLegacy. The GPU
+// throughput comes from the capped board model only while j has GPU work
+// left; the GPU rate is 0 otherwise and must not be applied.
+func legacyJobRates(j *simJob, model simModel, baseSpeed, cpuMul, cpuShare, gpuShare, gpuCapPerGPU, thermalThrottle float64) (cpuRate, gpuRate float64) {
+	gpuMul := 0.0
+	if j.GPUUnitsRemaining > 0 {
+		board := phys.CappedBoardGPUModel{
+			IdleW:         model.GPU.IdleWattsPerGPU,
+			MaxW:          model.GPU.MaxWattsPerGPU,
+			ComputeGamma:  model.GPU.ComputeGamma,
+			MemoryEpsilon: model.GPU.MemoryEpsilon,
+			MemoryGamma:   model.GPU.MemoryGamma,
+		}
+		gpuMul = board.ThroughputMultiplier(phys.DeviceState{
+			Utilization:      clamp01(j.GPUUtilTarget),
+			CapWatts:         gpuCapPerGPU,
+			MaxCapWatts:      model.GPU.MaxWattsPerGPU,
+			MemoryIntensity:  j.MemoryIntensity,
+			CPUFeedIntensity: j.CPUFeedIntensity,
+			ThermalThrottle:  thermalThrottle,
+			Class:            j.GPUWorkClass,
+		}, j.GPUWorkClass)
+	}
+	return workload.Rates(workload.ModelLegacy, legacyRateInputs(j, baseSpeed, cpuMul, gpuMul, cpuShare, gpuShare))
+}
+
 // legacyRateInputs are the workload.RateInputs of legacy job j on a node
 // whose CPUs and GPUs run at cpuMul and gpuMul of full speed, for
-// workload.Rates(workload.ModelLegacy, ...). It leaves GPUCapFactor unset:
-// gpuMul already holds what a GPU cap costs.
+// workload.Rates(workload.ModelLegacy, ...).
 func legacyRateInputs(j *simJob, baseSpeed, cpuMul, gpuMul, cpuShare, gpuShare float64) workload.RateInputs {
 	return workload.RateInputs{
 		BaseSpeed: baseSpeed, CPURequest: j.RequestedCPUCores, GPURequest: j.RequestedGPUs,
@@ -2821,9 +2892,33 @@ func floatEnv(key string, def float64) float64 {
 	return def
 }
 
+// boolEnvWords are the spellings a boolean variable takes, in any case.
+var boolEnvWords = map[string]bool{
+	"true": true, "1": true, "yes": true, "on": true,
+	"false": false, "0": false, "no": false, "off": false,
+}
+
+// boolEnvWarned holds the values already warned about, by variable.
+var boolEnvWarned sync.Map
+
+// boolEnv reads a boolean variable: true, 1, yes or on, false, 0, no or off,
+// in any case. Unset or empty gives def; any other value gives def with one
+// warning naming the variable, so a typo never flips a switch.
 func boolEnv(key string, def bool) bool {
-	if s := strings.TrimSpace(os.Getenv(key)); s != "" {
-		return strings.EqualFold(s, "true") || s == "1" || strings.EqualFold(s, "yes")
+	return boolEnvFrom(os.Getenv, key, def)
+}
+
+// boolEnvFrom is boolEnv over get instead of the process environment.
+func boolEnvFrom(get func(string) string, key string, def bool) bool {
+	raw := strings.TrimSpace(get(key))
+	if raw == "" {
+		return def
+	}
+	if v, ok := boolEnvWords[strings.ToLower(raw)]; ok {
+		return v
+	}
+	if _, seen := boolEnvWarned.LoadOrStore(key+"="+raw, true); !seen {
+		log.Printf("warning: %s=%q is not true, 1, yes, on, false, 0, no or off; using %t", key, raw, def)
 	}
 	return def
 }

@@ -73,14 +73,17 @@ func regSeries(labels, value string) string {
 }
 
 // regWithNodePowerVars sets the node power variables for one test and
-// restores them after it.
+// restores them after it; promQuery becomes the spec's custom query.
 func regWithNodePowerVars(t *testing.T, source, httpEndpoint, promAddress, promQuery string) {
 	t.Helper()
-	prev := []string{nodePowerSource, nodePowerHTTPEndpoint, nodePowerPromAddress, nodePowerPromQuery}
+	prev := []string{nodePowerSource, nodePowerHTTPEndpoint, nodePowerPromAddress}
+	prevSpec := nodePowerSpec
 	t.Cleanup(func() {
-		nodePowerSource, nodePowerHTTPEndpoint, nodePowerPromAddress, nodePowerPromQuery = prev[0], prev[1], prev[2], prev[3]
+		nodePowerSource, nodePowerHTTPEndpoint, nodePowerPromAddress = prev[0], prev[1], prev[2]
+		nodePowerSpec = prevSpec
 	})
-	nodePowerSource, nodePowerHTTPEndpoint, nodePowerPromAddress, nodePowerPromQuery = source, httpEndpoint, promAddress, promQuery
+	nodePowerSource, nodePowerHTTPEndpoint, nodePowerPromAddress = source, httpEndpoint, promAddress
+	nodePowerSpec.CustomQuery = promQuery
 }
 
 // regZoneNode is a managed CPU-only node in cooling zone z1, 200 W of TDP.

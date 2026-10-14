@@ -70,6 +70,8 @@ spec:
             runAsUser: 0
             runAsGroup: 0
             allowPrivilegeEscalation: true
+            capabilities:
+              drop: ["DAC_OVERRIDE"]
           volumeMounts:
             - name: host-sys
               mountPath: /host-sys
@@ -177,6 +179,8 @@ spec:
             runAsUser: 0
             runAsGroup: 0
             allowPrivilegeEscalation: true
+            capabilities:
+              drop: ["DAC_OVERRIDE"]
           volumeMounts:
             - name: host-sys
               mountPath: /host-sys
@@ -284,6 +288,8 @@ spec:
             runAsUser: 0
             runAsGroup: 0
             allowPrivilegeEscalation: true
+            capabilities:
+              drop: ["DAC_OVERRIDE"]
           volumeMounts:
             - name: host-sys
               mountPath: /host-sys

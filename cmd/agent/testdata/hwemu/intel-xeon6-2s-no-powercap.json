@@ -62,7 +62,8 @@
     },
     "landmarks": {
       "maxBoostMHz": 3800,
-      "minFreqMHz": 800
+      "minFreqMHz": 800,
+      "nominalFreqMHz": 2000
     },
     "model": "",
     "rawModel": "Intel(R) Xeon(R) 6787P",

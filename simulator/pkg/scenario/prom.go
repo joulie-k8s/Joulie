@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -14,7 +12,9 @@ import (
 
 	"k8s.io/client-go/rest"
 
+	"github.com/matbun/joulie/pkg/controller/inputs"
 	"github.com/matbun/joulie/pkg/otel/otlpjson"
+	"github.com/matbun/joulie/pkg/otel/semconv"
 )
 
 // PromClient queries the Prometheus HTTP API (GET /api/v1/query and
@@ -85,92 +85,57 @@ func (c *PromClient) get(ctx context.Context, path string, v url.Values) (PromRe
 		return PromResult{}, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	body, err := inputs.ReadResponseBody(resp.Body)
 	if err != nil {
 		return PromResult{}, err
 	}
 	return ParsePromResponse(body, resp.StatusCode)
 }
 
-// ParsePromResponse decodes a Prometheus API response body: an error status
-// or error body is an error naming Prometheus' errorType and error.
+// ParsePromResponse decodes a Prometheus API response body with the
+// controller manager's decoder (package inputs): an error status or error
+// body is an *inputs.Error naming Prometheus' errorType and error; a vector
+// or scalar is read as inputs reads an instant query, and a matrix series by
+// series, each sample with inputs.ParseSample.
 func ParsePromResponse(body []byte, status int) (PromResult, error) {
-	var r struct {
-		Status    string `json:"status"`
-		ErrorType string `json:"errorType"`
-		Error     string `json:"error"`
-		Data      struct {
-			ResultType string          `json:"resultType"`
-			Result     json.RawMessage `json:"result"`
-		} `json:"data"`
+	r, err := inputs.DecodeResponse(status, body)
+	if err != nil {
+		return PromResult{}, err
 	}
-	if err := json.Unmarshal(body, &r); err != nil {
-		return PromResult{}, fmt.Errorf("prometheus: HTTP %d: %w", status, err)
-	}
-	if r.Status != "success" {
-		return PromResult{}, fmt.Errorf("prometheus: HTTP %d: %s: %s", status, r.ErrorType, r.Error)
-	}
-	out := PromResult{Type: r.Data.ResultType}
-	switch out.Type {
-	case "scalar":
-		var pair []json.RawMessage
-		if err := json.Unmarshal(r.Data.Result, &pair); err != nil {
-			return out, err
-		}
-		s, err := promSample(pair)
-		if err != nil {
-			return out, err
-		}
-		out.Series = []PromSeries{{Labels: map[string]string{}, Samples: []PromSample{s}}}
-	case "vector", "matrix":
+	out := PromResult{Type: r.ResultType}
+	if r.ResultType == "matrix" {
 		var series []struct {
 			Metric map[string]string   `json:"metric"`
-			Value  []json.RawMessage   `json:"value"`
 			Values [][]json.RawMessage `json:"values"`
 		}
-		if err := json.Unmarshal(r.Data.Result, &series); err != nil {
-			return out, err
+		if err := json.Unmarshal(r.Result, &series); err != nil {
+			return out, fmt.Errorf("prometheus: decoding a matrix result: %w", err)
 		}
 		for _, s := range series {
 			ps := PromSeries{Labels: s.Metric}
-			pairs := s.Values
-			if s.Value != nil {
-				pairs = [][]json.RawMessage{s.Value}
-			}
-			for _, pair := range pairs {
-				sample, err := promSample(pair)
+			for _, pair := range s.Values {
+				t, v, err := inputs.ParseSample(pair)
 				if err != nil {
 					return out, err
 				}
-				ps.Samples = append(ps.Samples, sample)
+				ps.Samples = append(ps.Samples, PromSample{Time: t, Value: v})
 			}
 			out.Series = append(out.Series, ps)
 		}
-	default:
-		return out, fmt.Errorf("prometheus: result type %q", out.Type)
+		return out, nil
+	}
+	res, err := r.Instant()
+	if err != nil {
+		return out, err
+	}
+	for _, s := range res.Samples {
+		labels := s.Labels
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		out.Series = append(out.Series, PromSeries{Labels: labels, Samples: []PromSample{{Time: s.Time, Value: s.Value}}})
 	}
 	return out, nil
-}
-
-// promSample decodes [<unix seconds>, "<value>"].
-func promSample(pair []json.RawMessage) (PromSample, error) {
-	if len(pair) != 2 {
-		return PromSample{}, fmt.Errorf("prometheus: sample %v is not [time, value]", pair)
-	}
-	var ts float64
-	var text string
-	if err := json.Unmarshal(pair[0], &ts); err != nil {
-		return PromSample{}, err
-	}
-	if err := json.Unmarshal(pair[1], &text); err != nil {
-		return PromSample{}, err
-	}
-	v, err := strconv.ParseFloat(text, 64)
-	if err != nil {
-		return PromSample{}, err
-	}
-	sec, frac := math.Modf(ts)
-	return PromSample{Time: time.Unix(int64(sec), int64(math.Round(frac*1e9))).UTC(), Value: v}, nil
 }
 
 // promNameLabel is the metric name label, which a capture's own name
@@ -180,10 +145,10 @@ const promNameLabel = "__name__"
 // RangeToGauge re-encodes a query result as the OTel Gauge name: one point
 // per sample, with the series' labels (except __name__) as attributes,
 // sorted by key. A sample that is NaN or infinite has no JSON form and is
-// left out. The labels keep their Prometheus spelling, since the query
-// chose them.
+// left out (otlpjson.GaugeMetric). The labels keep their Prometheus
+// spelling, since the query chose them.
 func RangeToGauge(name, unit string, r PromResult) otlpjson.Metric {
-	g := &otlpjson.Gauge{DataPoints: []otlpjson.NumberDataPoint{}}
+	var points []otlpjson.NumberDataPoint
 	for _, s := range r.Series {
 		keys := make([]string, 0, len(s.Labels))
 		for k := range s.Labels {
@@ -197,14 +162,8 @@ func RangeToGauge(name, unit string, r PromResult) otlpjson.Metric {
 			attrs[i] = otlpjson.String(k, s.Labels[k])
 		}
 		for _, p := range s.Samples {
-			if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) {
-				continue
-			}
-			v := p.Value
-			g.DataPoints = append(g.DataPoints, otlpjson.NumberDataPoint{
-				Attributes: attrs, TimeUnixNano: otlpjson.Uint64String(p.Time.UnixNano()), AsDouble: &v,
-			})
+			points = append(points, otlpjson.DoublePoint(time.Time{}, p.Time, p.Value, attrs...))
 		}
 	}
-	return otlpjson.Metric{Name: name, Unit: unit, Gauge: g}
+	return otlpjson.GaugeMetric(semconv.Metric{Name: name, Unit: unit}, points...)
 }

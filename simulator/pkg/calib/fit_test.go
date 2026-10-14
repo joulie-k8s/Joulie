@@ -10,14 +10,16 @@ import (
 	"github.com/matbun/joulie/simulator/pkg/hwemu"
 )
 
-// param returns a fitted parameter or fails.
+// param returns the parameter of r at path or fails.
 func param(t *testing.T, r *Result, path string) Param {
 	t.Helper()
-	p, ok := r.Param(path)
-	if !ok {
-		t.Fatalf("the fit has no %s", path)
+	for _, p := range r.Params {
+		if p.Path == path {
+			return p
+		}
 	}
-	return p
+	t.Fatalf("the fit has no %s", path)
+	return Param{}
 }
 
 // within checks a fitted value against want within a relative tolerance.
@@ -87,11 +89,10 @@ func TestCB01EPYCPerformanceSweepGivesBackTheProfile(t *testing.T) {
 
 // CB04: beta is not fitted when frequency cannot be told from load, and is
 // fitted when the governor holds frequency while load varies. The sweep
-// reports the node's own utilization, which counts work in cycles (design
-// D10), so a governor below the maximum raises it.
+// reports the node's own utilization, which counts work in cycles, so a
+// governor below the maximum raises it.
 //   - intel-xeon-2s-rapl without its governor facts: frequency scales
-//     linearly with load, as before governors were modelled, and the fit
-//     cannot tell the exponents apart.
+//     linearly with load, and the fit cannot tell the exponents apart.
 //   - amd-epyc-2s-energy-only under acpi-cpufreq powersave: frequency stays
 //     at the minimum.
 //   - intel-xeon-2s-rapl as shipped, intel_pstate powersave with EPP 128:
@@ -123,12 +124,12 @@ func TestCB04BetaIsNotFittedWhenFrequencyFollowsLoadOrStands(t *testing.T) {
 		reason string
 	}{
 		{"intel_pstate powersave without governor facts", "intel-xeon-2s-rapl", withoutGovernorFacts, "frequency followed load"},
-		{"acpi-cpufreq powersave", "amd-epyc-2s-energy-only", func(p *hwemu.Profile) { p.CPUFreq.Governor.V = "powersave" }, "one frequency"},
+		{"acpi-cpufreq powersave", "amd-epyc-2s-energy-only", epycAnalytic("powersave"), "one frequency"},
 		// A base beta of 0 is 1 to the analytic model, and to the profile
 		// the fit writes, which inherits it. Fitting with 0 left
 		// ln(F_min) in the intercept: a maximum of 169 W, not 360 W.
 		{"acpi-cpufreq powersave, base beta 0", "amd-epyc-2s-energy-only", func(p *hwemu.Profile) {
-			p.CPUFreq.Governor.V = "powersave"
+			epycAnalytic("powersave")(p)
 			p.Physics.CPU.BetaFreq.V = 0
 		}, "one frequency"},
 		{"intel_pstate powersave with EPP 128", "intel-xeon-2s-rapl", nil, ""},
@@ -239,7 +240,7 @@ func TestCB08SettlingNeedsTheSubstepCorrection(t *testing.T) {
 			return sweepStep{knobs: map[string]float64{semconv.KnobCPUUtilization: 0.5, semconv.KnobCPUFrequencyMax: hz}, samples: n}
 		}
 		sw := generateSweep(t, sweepSpec{
-			profile: "amd-epyc-2s-energy-only", mutate: func(p *hwemu.Profile) { p.CPUFreq.Governor.V = "performance" },
+			profile: "amd-epyc-2s-energy-only", mutate: epycAnalytic("performance"),
 			period: h, steps: []sweepStep{step(2.4e9, 10), step(1.5e9, 50), step(2.4e9, 50)},
 		})
 		within(t, fit(t, sw, Options{Substep: h}), pathCPUFreqRamp, float64(sw.profile.Physics.CPU.FreqRampMS.V), 0.05)

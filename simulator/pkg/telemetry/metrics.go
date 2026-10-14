@@ -1,7 +1,6 @@
 package telemetry
 
 import (
-	"math"
 	"time"
 
 	"github.com/matbun/joulie/pkg/otel/otlpjson"
@@ -82,17 +81,9 @@ func metricsRequests(s *emulate.Snapshot, r Resource, maxNodes int, at time.Time
 }
 
 // metricsResource wraps the metrics of one resource in the telemetry scope,
-// with the semantic conventions schema on both.
+// with the semantic conventions schema on both (otlpjson.NewMetricsData).
 func metricsResource(res otlpjson.Resource, r Resource, ms []otlpjson.Metric) otlpjson.ResourceMetrics {
-	return otlpjson.ResourceMetrics{
-		Resource: res,
-		ScopeMetrics: []otlpjson.ScopeMetrics{{
-			Scope:     otlpjson.Scope{Name: ScopeName, Version: r.ServiceVersion},
-			Metrics:   ms,
-			SchemaURL: semconv.SchemaURL,
-		}},
-		SchemaURL: semconv.SchemaURL,
-	}
+	return otlpjson.NewMetricsData(res, otlpjson.Scope{Name: ScopeName, Version: r.ServiceVersion}, ms...).ResourceMetrics[0]
 }
 
 // nodeMetrics maps one node to the hardware metrics of the semantic
@@ -110,14 +101,14 @@ func nodeMetrics(n emulate.NodeSnapshot, at time.Time) ([]otlpjson.Metric, int) 
 		return nil, 0
 	}
 	b := newMetricsBuilder(at)
-	start := metricsUnixNano(n.StartTime)
+	start := n.StartTime
 
 	// Whole-host readings carry hw.id=host and no hw.type, and the whole
 	// host is never an hw.energy component (docs/hardware/host.md).
 	host := otlpjson.String(semconv.AttrHwID, semconv.HwIDHost)
 	b.add(semconv.HwHostEnergy, start, n.Host.EnergyJ, host)
-	b.add(semconv.HwHostPower, 0, n.Host.PowerW, host)
-	b.add(semconv.HwHostAmbientTemperature, 0, n.Host.InletC, host)
+	b.add(semconv.HwHostPower, time.Time{}, n.Host.PowerW, host)
+	b.add(semconv.HwHostAmbientTemperature, time.Time{}, n.Host.InletC, host)
 
 	comps := make([]emulate.ComponentReading, 0, len(n.Components))
 	for _, c := range n.Components {
@@ -140,23 +131,23 @@ func nodeMetrics(n emulate.NodeSnapshot, at time.Time) ([]otlpjson.Metric, int) 
 			attrs = append(attrs, otlpjson.String(semconv.AttrHwParent, c.Parent))
 		}
 		b.add(semconv.HwEnergy, start, c.EnergyJ, attrs...)
-		b.add(semconv.HwPower, 0, c.PowerW, attrs...)
+		b.add(semconv.HwPower, time.Time{}, c.PowerW, attrs...)
 	}
 	for _, c := range comps {
 		if c.Type != semconv.HwTypeCPU || c.SpeedMaxHz <= 0 {
 			continue
 		}
 		attrs := metricsDeviceAttrs(c)
-		b.add(semconv.HwCPUSpeed, 0, c.SpeedHz, attrs...)
-		b.add(semconv.HwCPUSpeedLimit, 0, c.SpeedMaxHz, append(attrs, otlpjson.String(semconv.AttrHwLimitType, semconv.LimitTypeMax))...)
-		b.add(semconv.HwCPUSpeedLimit, 0, c.SpeedLimitHz, append(attrs, otlpjson.String(semconv.AttrHwLimitType, semconv.LimitTypeThrottled))...)
+		b.add(semconv.HwCPUSpeed, time.Time{}, c.SpeedHz, attrs...)
+		b.add(semconv.HwCPUSpeedLimit, time.Time{}, c.SpeedMaxHz, append(attrs, otlpjson.String(semconv.AttrHwLimitType, semconv.LimitTypeMax))...)
+		b.add(semconv.HwCPUSpeedLimit, time.Time{}, c.SpeedLimitHz, append(attrs, otlpjson.String(semconv.AttrHwLimitType, semconv.LimitTypeThrottled))...)
 	}
 	for _, c := range comps {
 		if c.Type != semconv.HwTypeGPU {
 			continue
 		}
 		attrs := append(metricsDeviceAttrs(c), otlpjson.String(semconv.AttrHwGPUTask, semconv.GPUTaskGeneral))
-		b.add(semconv.HwGPUUtilization, 0, c.Utilization, attrs...)
+		b.add(semconv.HwGPUUtilization, time.Time{}, c.Utilization, attrs...)
 	}
 	// hw.gpu.io counts only the peer link: the emulator moves no host or
 	// NIC bytes. The counters are ledger values, so they start at the
@@ -178,7 +169,7 @@ func nodeMetrics(n emulate.NodeSnapshot, at time.Time) ([]otlpjson.Metric, int) 
 		}
 		for _, d := range semconv.ClockDomains() {
 			if hz, ok := c.ClockHz[d]; ok {
-				b.add(semconv.JoulieHwGPUSpeed, 0, float64(hz), metricsGPUClockAttrs(c, d)...)
+				b.add(semconv.JoulieHwGPUSpeed, time.Time{}, float64(hz), metricsGPUClockAttrs(c, d)...)
 			}
 		}
 	}
@@ -195,7 +186,7 @@ func nodeMetrics(n emulate.NodeSnapshot, at time.Time) ([]otlpjson.Metric, int) 
 				hz  map[string]int64
 			}{{semconv.LimitTypeMax, c.ClockMaxHz}, {semconv.LimitTypeThrottled, c.ClockLimitHz}} {
 				if hz, ok := l.hz[d]; ok {
-					b.add(semconv.JoulieHwGPUSpeedLimit, 0, float64(hz), append(metricsGPUClockAttrs(c, d), otlpjson.String(semconv.AttrHwLimitType, l.typ))...)
+					b.add(semconv.JoulieHwGPUSpeedLimit, time.Time{}, float64(hz), append(metricsGPUClockAttrs(c, d), otlpjson.String(semconv.AttrHwLimitType, l.typ))...)
 				}
 			}
 		}
@@ -208,7 +199,7 @@ func nodeMetrics(n emulate.NodeSnapshot, at time.Time) ([]otlpjson.Metric, int) 
 			state string
 			w     float64
 		}{{semconv.LimitStateRequested, c.RequestedLimitW}, {semconv.LimitStateEnforced, c.LimitW}} {
-			b.add(semconv.JoulieHwPowerLimit, 0, p.w,
+			b.add(semconv.JoulieHwPowerLimit, time.Time{}, p.w,
 				otlpjson.String(semconv.AttrHwID, c.ID),
 				otlpjson.String(semconv.AttrHwType, c.Type),
 				otlpjson.String(semconv.AttrJoulieLimitState, p.state))
@@ -225,7 +216,7 @@ func nodeMetrics(n emulate.NodeSnapshot, at time.Time) ([]otlpjson.Metric, int) 
 			b.add(semconv.JoulieHwGovernor, start, 0, metricsGovernorAttrs(c, left)...)
 		}
 	}
-	return b.metrics, b.dropped
+	return b.build(), b.dropped
 }
 
 // metricsGPUClockAttrs are the attributes of a GPU clock point of domain d:
@@ -274,97 +265,81 @@ func metricsDeviceAttrs(c emulate.ComponentReading) []otlpjson.KeyValue {
 // facility ledger's start.
 func facilityMetrics(f emulate.FacilitySnapshot, at time.Time) ([]otlpjson.Metric, int) {
 	b := newMetricsBuilder(at)
-	start := metricsUnixNano(f.StartTime)
-	b.add(semconv.JoulieFacilityAmbientTemperature, 0, f.AmbientC)
+	start := f.StartTime
+	b.add(semconv.JoulieFacilityAmbientTemperature, time.Time{}, f.AmbientC)
 	b.add(semconv.JoulieFacilityITEnergy, start, f.ITEnergyJ)
-	b.add(semconv.JoulieFacilityITPower, 0, f.ITPowerW)
+	b.add(semconv.JoulieFacilityITPower, time.Time{}, f.ITPowerW)
 	b.add(semconv.JoulieFacilityCoolingEnergy, start, f.CoolingEnergyJ)
-	b.add(semconv.JoulieFacilityCoolingPower, 0, f.CoolingPowerW)
-	b.add(semconv.JoulieFacilityPUE, 0, f.PUE)
+	b.add(semconv.JoulieFacilityCoolingPower, time.Time{}, f.CoolingPowerW)
+	b.add(semconv.JoulieFacilityPUE, time.Time{}, f.PUE)
 	for _, z := range f.Zones {
-		b.add(semconv.JoulieCoolingZoneAmbientTemperature, 0, z.AmbientC, otlpjson.String(semconv.AttrJoulieCoolingZoneName, z.Name))
+		b.add(semconv.JoulieCoolingZoneAmbientTemperature, time.Time{}, z.AmbientC, otlpjson.String(semconv.AttrJoulieCoolingZoneName, z.Name))
 	}
 	for _, rk := range f.Racks {
 		name := otlpjson.String(semconv.AttrJoulieRackName, rk.Name)
 		b.add(semconv.JoulieRackEnergy, start, rk.EnergyJ, name)
-		b.add(semconv.JoulieRackPower, 0, rk.PowerW, name)
+		b.add(semconv.JoulieRackPower, time.Time{}, rk.PowerW, name)
 	}
-	return b.metrics, b.dropped
+	return b.build(), b.dropped
 }
 
-// metricsBuilder collects the points of one resource, one Metric per name
-// in the order names first appear.
+// metricsBuilder collects the points of one resource, one metric per name
+// in the order names first appear, and builds them with otlpjson's
+// SumMetric and GaugeMetric.
 type metricsBuilder struct {
-	at      otlpjson.Uint64String
-	metrics []otlpjson.Metric
+	at      time.Time
+	defs    []semconv.Metric
+	points  [][]otlpjson.NumberDataPoint
 	index   map[string]int
 	dropped int
 }
 
 func newMetricsBuilder(at time.Time) *metricsBuilder {
-	return &metricsBuilder{at: metricsUnixNano(at), index: map[string]int{}}
+	return &metricsBuilder{at: at, index: map[string]int{}}
 }
 
-// add appends one point of m with value v. A counter is a cumulative,
-// monotonic Sum starting at start; an up-down counter is a cumulative
-// non-monotonic Sum; a gauge is a Gauge. An Int metric is written as asInt:
-// counters round down, as a whole-joule reading of a finer counter does,
-// and gauges round to the nearest. A value that cannot be encoded is
-// dropped and counted. Histograms are not built here.
-func (b *metricsBuilder) add(m semconv.Metric, start otlpjson.Uint64String, v float64, attrs ...otlpjson.KeyValue) {
+// add appends one point of m with value v at the builder's time. A counter
+// or up-down counter is a cumulative Sum whose points start at start; a
+// gauge's points have no start. The point is encoded as otlpjson writes
+// it (otlpjson.EncodeNumberPoint: an Int counter rounds down, an Int gauge
+// to the nearest); a value it cannot encode is dropped and counted, and a
+// metric with no point is left out. Histograms are not built here.
+func (b *metricsBuilder) add(m semconv.Metric, start time.Time, v float64, attrs ...otlpjson.KeyValue) {
 	if m.Kind == semconv.Histogram {
 		return
 	}
-	p := otlpjson.NumberDataPoint{TimeUnixNano: b.at}
-	if len(attrs) > 0 {
-		p.Attributes = append([]otlpjson.KeyValue(nil), attrs...)
+	if !metricsIsSum(m) {
+		start = time.Time{}
 	}
-	if math.IsNaN(v) || math.IsInf(v, 0) {
+	p, ok := otlpjson.EncodeNumberPoint(m, otlpjson.DoublePoint(start, b.at, v, attrs...))
+	if !ok {
 		b.dropped++
 		return
 	}
-	if m.Value == semconv.Int {
-		if m.Kind == semconv.Counter {
-			v = math.Floor(v)
-		} else {
-			v = math.Round(v)
-		}
-		// 2^63 is the first float64 beyond int64.
-		if v >= math.MaxInt64 || v < math.MinInt64 {
-			b.dropped++
-			return
-		}
-		i := otlpjson.Int64String(int64(v))
-		p.AsInt = &i
-	} else {
-		p.AsDouble = &v
-	}
-	i, ok := b.index[m.Name]
-	if !ok {
-		i = len(b.metrics)
+	i, seen := b.index[m.Name]
+	if !seen {
+		i = len(b.defs)
 		b.index[m.Name] = i
-		om := otlpjson.Metric{Name: m.Name, Description: m.Brief, Unit: m.Unit}
-		switch m.Kind {
-		case semconv.Counter, semconv.UpDownCounter:
-			om.Sum = &otlpjson.Sum{AggregationTemporality: otlpjson.AggregationTemporalityCumulative, IsMonotonic: m.Kind == semconv.Counter}
-		default:
-			om.Gauge = &otlpjson.Gauge{}
-		}
-		b.metrics = append(b.metrics, om)
+		b.defs = append(b.defs, m)
+		b.points = append(b.points, nil)
 	}
-	if om := &b.metrics[i]; om.Sum != nil {
-		p.StartTimeUnixNano = start
-		om.Sum.DataPoints = append(om.Sum.DataPoints, p)
-	} else {
-		om.Gauge.DataPoints = append(om.Gauge.DataPoints, p)
-	}
+	b.points[i] = append(b.points[i], p)
 }
 
-// metricsUnixNano is t in nanoseconds since the epoch, 0 for the zero time
-// or a time before the epoch.
-func metricsUnixNano(t time.Time) otlpjson.Uint64String {
-	if t.IsZero() || t.UnixNano() < 0 {
-		return 0
+// build is the collected metrics.
+func (b *metricsBuilder) build() []otlpjson.Metric {
+	out := make([]otlpjson.Metric, len(b.defs))
+	for i, m := range b.defs {
+		if metricsIsSum(m) {
+			out[i] = otlpjson.SumMetric(m, b.points[i]...)
+		} else {
+			out[i] = otlpjson.GaugeMetric(m, b.points[i]...)
+		}
 	}
-	return otlpjson.Uint64String(t.UnixNano())
+	return out
+}
+
+// metricsIsSum reports whether m is written as a Sum.
+func metricsIsSum(m semconv.Metric) bool {
+	return m.Kind == semconv.Counter || m.Kind == semconv.UpDownCounter
 }

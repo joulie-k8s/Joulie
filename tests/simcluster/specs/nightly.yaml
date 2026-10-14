@@ -19,4 +19,8 @@ spec:
   - {name: sxm,    profile: nvidia-h100-sxm-8gpu,     count: 4}
   - {name: mi300x, profile: amd-instinct-mi300x-8gpu, count: 4}
   - {name: vm,     profile: vm-no-powercap,           count: 2}
-  harness: {pools: {}}
+  # The GPU pools get the GPU tools a node with the driver installed has (a
+  # driver stub at each path the tools need). A pool left out follows the
+  # Joulie install, which by default delivers none (agent.runtimeClassName and
+  # agent.extraVolumes unset), so its agent's GPU inventory fails.
+  harness: {pools: {nvl: {toolDelivery: mounted}, sxm: {toolDelivery: mounted}, mi300x: {toolDelivery: mounted}}}

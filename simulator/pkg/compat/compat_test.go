@@ -19,6 +19,8 @@ import (
 
 	"github.com/matbun/joulie/pkg/otel/semconv"
 	"github.com/matbun/joulie/simulator/pkg/emulate"
+	"github.com/matbun/joulie/simulator/pkg/hwemu"
+	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 )
 
 // compatUpdateGolden rewrites testdata/*.prom from the exporters:
@@ -33,7 +35,8 @@ var compatStart = time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 // power follows the load, and its energy grows by that power times the step,
 // so the energy of an interval is exactly the PowerW the snapshot reports at
 // its end times its length. Ledgers start above zero, as after an earlier
-// run.
+// run. A node with RAPL also has a sysfs tree under root, written at every
+// step as Kepler v0.12.0 reads it (compatFake.writeZones).
 type compatFake struct {
 	name      string
 	sockets   int
@@ -44,12 +47,62 @@ type compatFake struct {
 	energy    map[string]float64
 	device    map[string]float64
 	hostJ     float64
+
+	t     *testing.T
+	root  string // the node's tree, set by compatNewCluster
+	maxUJ uint64 // max_energy_range_uj of every zone; 0 is compatMaxUJ
 }
+
+// compatMaxUJ is the counter range of a RAPL zone with a 61035 nJ energy
+// unit, the most common one.
+var compatMaxUJ = uint64(hwemu.MaxEnergyRangeUJ(61035))
 
 func compatNewFake(name string, sockets int, rapl, dram bool, gpus int, gpuVendor string) *compatFake {
 	return &compatFake{
 		name: name, sockets: sockets, rapl: rapl, dram: dram, gpus: gpus, gpuVendor: gpuVendor,
 		energy: map[string]float64{}, device: map[string]float64{}, hostJ: 50000,
+	}
+}
+
+// writeZones writes the node's RAPL zones under root as the kernel lays out
+// class/powercap: the control type intel-rapl, which has no name file, and
+// per socket intel-rapl:<s> (package-<s>) and, with DRAM energy,
+// intel-rapl:<s>:0 (dram). energy_uj is the component's ledger in uJ,
+// wrapped at max_energy_range_uj, as a RAPL counter wraps.
+func (f *compatFake) writeZones(n *emulate.NodeSnapshot) {
+	if f.root == "" || !f.rapl {
+		return
+	}
+	maxUJ := f.maxUJ
+	if maxUJ == 0 {
+		maxUJ = compatMaxUJ
+	}
+	class := filepath.Join(f.root, layout.SysDir, "class", "powercap")
+	write := func(entry, file, content string) {
+		dir := filepath.Join(class, entry)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			f.t.Fatal(err)
+		}
+		if file == "" {
+			return
+		}
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(content+"\n"), 0o644); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	write("intel-rapl", "", "")
+	zone := func(entry, name string, energyJ float64) {
+		write(entry, "name", name)
+		write(entry, "max_energy_range_uj", strconv.FormatUint(maxUJ, 10))
+		write(entry, "energy_uj", strconv.FormatUint(uint64(math.Floor(energyJ*1e6))%maxUJ, 10))
+	}
+	for _, c := range n.Components {
+		switch {
+		case c.Type == semconv.HwTypeCPU && c.Measured:
+			zone(fmt.Sprintf("intel-rapl:%d", c.Index), c.Name, c.EnergyJ)
+		case c.Type == semconv.HwTypeMemory && c.Measured:
+			zone(fmt.Sprintf("intel-rapl:%d:0", c.Index), c.Name, c.EnergyJ)
+		}
 	}
 }
 
@@ -70,7 +123,7 @@ func compatNoRAPL() *compatFake { return compatNewFake("gpu-norapl-0", 2, false,
 // (plus 1 W per index), an AMD GPU 150 + 550 x load, and the platform 80.
 func (f *compatFake) step(dt, cpuUtil, gpuUtil float64) emulate.NodeSnapshot {
 	n := emulate.NodeSnapshot{
-		Name: f.name, Pool: f.name, Profile: f.name, Root: "/var/lib/joulie-hwemu/" + f.name,
+		Name: f.name, Pool: f.name, Profile: f.name, Root: f.root,
 		StartTime: compatStart.Add(-time.Hour),
 		Host:      emulate.HostReading{Measured: f.rapl, OtherW: 80, InletC: 22},
 	}
@@ -121,6 +174,7 @@ func (f *compatFake) step(dt, cpuUtil, gpuUtil float64) emulate.NodeSnapshot {
 	}
 	f.hostJ += hostW * dt
 	n.Host.PowerW, n.Host.EnergyJ = hostW, f.hostJ
+	f.writeZones(&n)
 	return n
 }
 
@@ -131,8 +185,25 @@ type compatCluster struct {
 	nodes []*compatFake
 }
 
-func compatNewCluster(nodes ...*compatFake) *compatCluster {
+// compatNewCluster gives every node a tree in a directory of t.
+func compatNewCluster(t *testing.T, nodes ...*compatFake) *compatCluster {
+	t.Helper()
+	dir := t.TempDir()
+	for _, f := range nodes {
+		f.t, f.root = t, filepath.Join(dir, f.name)
+	}
 	return &compatCluster{now: compatStart, nodes: nodes}
+}
+
+// observe writes each node's tree from snap, as the emulator's tick leaves
+// it when the snapshot is published, and observes snap. A test that steps
+// several snapshots before it observes them needs it; the tree otherwise
+// holds the last step.
+func (c *compatCluster) observe(set *Set, snap *emulate.Snapshot) {
+	for i, f := range c.nodes {
+		f.writeZones(&snap.Nodes[i])
+	}
+	set.Observe(snap)
 }
 
 // snap advances every node by dt seconds and returns the snapshot.
@@ -161,11 +232,11 @@ func compatRun(t *testing.T, names []string, o Options, nodes ...*compatFake) (*
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := compatNewCluster(nodes...)
+	c := compatNewCluster(t, nodes...)
 	var snaps []*emulate.Snapshot
 	for _, s := range compatScript {
 		snap := c.snap(s.dt, s.cpu, s.gpu)
-		set.Observe(snap)
+		c.observe(set, snap)
 		snaps = append(snaps, snap)
 	}
 	return set, snaps
@@ -334,7 +405,7 @@ func TestCP07HandlerServesOnlyEnabledExporters(t *testing.T) {
 	if got, want := strings.Join(set.Enabled(), ","), "kepler-0.7,dcgm-4.8.4"; got != want {
 		t.Fatalf("Enabled() = %s, want %s", got, want)
 	}
-	set.Observe(compatNewCluster(compatNVL()).snap(0, 0.5, 0.5))
+	set.Observe(compatNewCluster(t, compatNVL()).snap(0, 0.5, 0.5))
 
 	for _, c := range []struct {
 		path string
@@ -382,7 +453,7 @@ func TestCP07HandlerServesOnlyEnabledExporters(t *testing.T) {
 	}
 	empty.Observe(nil)
 	var none *Set
-	none.Observe(compatNewCluster(compatNVL()).snap(0, 0.5, 0.5))
+	none.Observe(compatNewCluster(t, compatNVL()).snap(0, 0.5, 0.5))
 	for _, name := range Names() {
 		if code, _ := compatScrape(t, empty, Path(name)); code != http.StatusNotFound {
 			t.Errorf("an empty Set serves %s with %d", name, code)
@@ -400,7 +471,7 @@ func TestCP07ObserveAndScrapeConcurrently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := compatNewCluster(compatIntel(), compatNVL())
+	c := compatNewCluster(t, compatIntel(), compatNVL())
 	set.Observe(c.snap(0, 0.2, 0.2))
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
@@ -535,10 +606,10 @@ func TestCP08NodeWithoutPackageEnergyEmitsNoKeplerSeries(t *testing.T) {
 		}
 	}
 	k012 := compatGather(t, set, Kepler012)
-	if got := compatFind(k012, k012CPUJoules, map[string]string{k012LabelZone: k012ZoneDRAM}); len(got) != 0 {
+	if got := compatFind(k012, k012CPUJoules, map[string]string{k012LabelZone: "dram"}); len(got) != 0 {
 		t.Errorf("kepler-0.12 serves a dram zone for a host without DRAM energy: %v", got)
 	}
-	if got := compatFind(k012, k012CPUJoules, map[string]string{k012LabelZone: k012ZonePackage, k012LabelNodeName: "epyc-0"}); len(got) != 1 {
+	if got := compatFind(k012, k012CPUJoules, map[string]string{k012LabelZone: "package", k012LabelNodeName: "epyc-0"}); len(got) != 1 {
 		t.Errorf("kepler-0.12 serves %d package zones for epyc-0, want 1", len(got))
 	}
 }

@@ -2,6 +2,9 @@ package scenario_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +12,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -128,5 +132,42 @@ func TestCheckPodCompleteStage(t *testing.T) {
 	both := strings.Replace(good, `]}}}`, `,{"key":".metadata.ownerReferences.[].kind","operator":"In","values":["Job"]}]}}}`, 1)
 	if err := scenario.CheckPodCompleteStage([]byte(both)); err == nil || !strings.Contains(err.Error(), "ownerReferences") {
 		t.Errorf("owner selector: %v", err)
+	}
+}
+
+// Every emulated agent pod runs on the infra Node, and the Node it stands
+// in for is the pod annotation sim.joulie.io/node, which the chart sets:
+// CollectLogs writes one agent log per stood-in Node, read from the
+// annotation first, then the label, then spec.nodeName.
+func TestCollectLogsNamesEachAgentByItsNode(t *testing.T) {
+	const infra = "joulie-sim-infra"
+	agent := func(name string, annotations, labels map[string]string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: scenario.NamespaceJoulie, Annotations: annotations, Labels: labels},
+			Spec:       corev1.PodSpec{NodeName: infra},
+		}
+	}
+	cs := k8sfake.NewSimpleClientset(
+		agent("joulie-agent-emu-0-a", map[string]string{"sim.joulie.io/node": "intel-0"}, nil),
+		agent("joulie-agent-emu-1-b", map[string]string{"sim.joulie.io/node": "nvl-0"}, nil),
+		agent("joulie-agent-emu-2-c", nil, map[string]string{"sim.joulie.io/node": "epyc-0"}),
+		agent("joulie-agent-x", nil, nil),
+	)
+	dir := t.TempDir()
+	if err := scenario.CollectLogs(context.Background(), cs, dir); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, scenario.LogsDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	sort.Strings(got)
+	want := []string{"agent-epyc-0.log", "agent-intel-0.log", "agent-" + infra + ".log", "agent-nvl-0.log"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("log files %v, want %v: one per Node an agent stands in for", got, want)
 	}
 }

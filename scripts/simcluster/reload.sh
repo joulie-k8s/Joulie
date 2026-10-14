@@ -79,14 +79,6 @@ fi
 members() { [[ $1 == "$SIM_RELEASE_SIM" ]] && echo simulator || echo agent controller-manager scheduler; }
 namespace() { [[ $1 == simulator ]] && echo "$SIM_NS_SIM" || echo "$SIM_NS_JOULIE"; }
 asked() { [[ " ${components[*]} " == *" $1 "* ]]; }
-tag_key() {
-  case $1 in
-    agent) echo agent.image.tag ;;
-    controller-manager) echo controllerManager.image.tag ;;
-    scheduler) echo schedulerExtender.image.tag ;;
-    simulator) echo image.tag ;;
-  esac
-}
 new_image() {
   case $1 in
     agent) echo "$IMAGE_AGENT" ;;
@@ -120,7 +112,7 @@ for rel in "$SIM_RELEASE_JOULIE" "$SIM_RELEASE_SIM"; do
   current=$(helm get values "$rel" -n "$(namespace "${mine%% *}")" -o json)
   changed=0
   for c in $mine; do
-    key=$(tag_key "$c")
+    key=$(sim_image_tag_key "$c")
     tag=$(sim_tag "$(new_image "$c")")
     have=$(jq -r --arg k "$key" 'getpath($k | split(".")) // empty' <<<"$current")
     if [[ $have != "$tag" ]]; then
@@ -148,13 +140,14 @@ fi
 stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 for c in "${restart[@]}"; do
   ns=$(namespace "$c")
-  for obj in $(workloads "$c"); do
-    if ((force)); then
+  mapfile -t objs < <(workloads "$c")
+  if ((force)); then
+    for obj in ${objs[@]+"${objs[@]}"}; do
       kubectl -n "$ns" patch "$obj" --type=merge \
         -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"sim.joulie.io/reload\":\"$stamp\"}}}}}" >/dev/null
-    fi
-    kubectl -n "$ns" rollout status "$obj" --timeout=300s >/dev/null
-  done
+    done
+  fi
+  sim_rollouts "$ns" ${objs[@]+"${objs[@]}"}
 done
 sim_verify_images
 sim_log "reloaded ${restart[*]} in $((SECONDS - start)) s"

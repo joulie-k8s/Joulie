@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/matbun/joulie/simulator/pkg/scenario"
+	"github.com/matbun/joulie/simulator/pkg/simcluster"
 )
 
 // scRepo is the repository root, seen from this package's directory.
@@ -91,7 +93,12 @@ exec)
   case $1 in
   cat) printf 'apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:6443\n  name: default\n' ;;
   ctr)
+    [[ " $* " == *" version "* ]] && exit 0
     if [[ " $* " == *" ls "* ]]; then
+      if [[ $last != name==* ]]; then
+        cat "$S/ctr-images" 2>/dev/null
+        exit 0
+      fi
       ref=${last#name==}
       if grep -qxF "$ref" "$S/ctr-images" 2>/dev/null; then echo "$ref"; fi
       exit 0
@@ -207,6 +214,8 @@ get)
     if [[ $out == json ]]; then
       [[ -f $f ]] || exit 1
       cat "$f"
+    elif [[ $out == name && -f $f ]]; then
+      jq -r '"\(.kind | ascii_downcase)/\(.metadata.name)"' "$f"
     fi
     exit 0
   fi
@@ -227,7 +236,13 @@ get)
 apply)
   if [[ $out == name ]]; then cat "$K/apply-names-$(basename "$file")" 2>/dev/null; fi
   ;;
-create) printf 'apiVersion: v1\nkind: Fake\n' ;;
+create)
+  if [[ $out == json ]]; then
+    cat "$FAKE_STATE/fake-create-configmap.json" 2>/dev/null || echo '{"apiVersion":"v1","kind":"ConfigMap","data":{}}'
+  else
+    printf 'apiVersion: v1\nkind: Fake\n'
+  fi
+  ;;
 esac
 exit 0
 `
@@ -311,6 +326,19 @@ build)
   ;;
 env) echo go1.22.9 ;;
 test)
+  # go test -c -o <file>: the test binary, which records its run like
+  # go test does and exits $FAKE_GO_TEST_RC.
+  out=
+  args=("$@")
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ ${args[i]} == -o ]]; then out=${args[i+1]}; fi
+  done
+  if [[ " $* " == *" -c "* && -n $out ]]; then
+    mkdir -p "$(dirname "$out")"
+    printf '#!/usr/bin/env bash\nsource "$FAKE_BIN/fake-common.sh"\nfake_record simcluster.test "$@"\nprintf %%s\\\\n "${SIMCLUSTER_RUN_DIR:-}" >>"$FAKE_STATE/go-test-run-dir"\nexit "${FAKE_GO_TEST_RC:-0}"\n' >"$out"
+    chmod +x "$out"
+    exit 0
+  fi
   printf '%s\n' "${SIMCLUSTER_RUN_DIR:-}" >>"$FAKE_STATE/go-test-run-dir"
   exit "${FAKE_GO_TEST_RC:-0}"
   ;;
@@ -320,16 +348,22 @@ exit 0
 
 const scFakeSimcluster = `#!/usr/bin/env bash
 # Fake simcluster: agents prints $FAKE_STATE/agents.yaml (one agent by
-# default), telemetry prints $FAKE_STATE/telemetry-<part>.
+# default), telemetry prints $FAKE_STATE/telemetry-<part>. With
+# FAKE_LOCAL_PROFILE, validate fails unless --profiles-dir names a directory.
 source "$FAKE_BIN/fake-common.sh"
 fake_record simcluster "$@"
 sub=$1
 shift
-part=
+part= profiles=
 while (($#)); do
   if [[ $1 == --part ]]; then part=$2; fi
+  if [[ $1 == --profiles-dir ]]; then profiles=$2; fi
   shift
 done
+if [[ $sub == validate && -n ${FAKE_LOCAL_PROFILE:-} && -z $profiles ]]; then
+  echo "unknown profile $FAKE_LOCAL_PROFILE" >&2
+  exit 1
+fi
 case $sub in
 agents)
   cat "$FAKE_STATE/agents.yaml" 2>/dev/null || printf 'agent:\n  emulated:\n    nodes:\n    - name: intel-0\n      profile: intel-xeon-2s-rapl\n'
@@ -352,11 +386,6 @@ exit 0
 const scFakeClusterspec = `#!/usr/bin/env bash
 source "$FAKE_BIN/fake-common.sh"
 fake_record clusterspec "$@"
-# With FAKE_LOCAL_PROFILE the spec needs that profile from -profiles.
-if [[ $1 == validate && -n ${FAKE_LOCAL_PROFILE:-} && " $* " != *" -profiles "* ]]; then
-  echo "unknown profile $FAKE_LOCAL_PROFILE" >&2
-  exit 1
-fi
 if [[ $1 == render-nodes ]]; then
   printf 'apiVersion: v1\nkind: List\nitems:\n- apiVersion: v1\n  kind: Node\n  metadata: {name: intel-0}\n'
 fi
@@ -490,22 +519,26 @@ func scNew(t *testing.T) *scEnv {
 		"go.mod",
 		"values/simcluster.yaml",
 		"values/simcluster-simulator.yaml",
+		"values/simcluster-extender-service.yaml",
 	} {
 		e.copyIn(filepath.Join(scRepo, f), f)
 	}
 	// Stubs for files other packages own: the scripts only pass their paths
 	// to the fakes, and hash the scheduler configuration.
 	for f, content := range map[string]string{
-		"scripts/simcluster/manifests/prometheus.yaml":             "# stub\n",
-		"scripts/simcluster/manifests/otelcol.yaml":                "# stub\n",
-		"scripts/simcluster/manifests/scheduler-config.yaml":       "ignorable: true\n",
-		"scripts/simcluster/manifests/kwok-v0.8.0/kwok.yaml":       "# stub\n",
-		"scripts/simcluster/manifests/kwok-v0.8.0/stage-fast.yaml": "# stub\n",
-		"charts/joulie/crds/joulie.io_nodetwins.yaml":              "# stub\n",
-		"charts/joulie/Chart.yaml":                                 "name: joulie\n",
-		"charts/joulie-simulator/Chart.yaml":                       "name: joulie-simulator\n",
-		"tests/simcluster/specs/smoke.yaml":                        "metadata: {name: smoke}\n",
-		"tests/simcluster/smoke-values.yaml":                       "{}\n",
+		"scripts/simcluster/manifests/prometheus.yaml":               "# stub\n",
+		"scripts/simcluster/manifests/otelcol.yaml":                  "# stub\n",
+		"scripts/simcluster/manifests/otelcol-bridge.yaml":           "# stub\n",
+		"scripts/simcluster/manifests/scheduler-config.yaml":         "ignorable: true\n",
+		"scripts/simcluster/manifests/scheduler-config-service.yaml": "ignorable: true\nurl: service\n",
+		"examples/11-otel-collector-bridge/collector.yaml":           "# stub\n",
+		"scripts/simcluster/manifests/kwok-v0.8.0/kwok.yaml":         "# stub\n",
+		"scripts/simcluster/manifests/kwok-v0.8.0/stage-fast.yaml":   "# stub\n",
+		"charts/joulie/crds/joulie.io_nodetwins.yaml":                "# stub\n",
+		"charts/joulie/Chart.yaml":                                   "name: joulie\n",
+		"charts/joulie-simulator/Chart.yaml":                         "name: joulie-simulator\n",
+		"tests/simcluster/specs/smoke.yaml":                          "metadata: {name: smoke}\n",
+		"tests/simcluster/smoke-values.yaml":                         "{}\n",
 	} {
 		e.write(filepath.Join(e.repo, f), content)
 	}
@@ -576,10 +609,11 @@ func (e *scEnv) seedCluster() {
 		"get-deployments-joulie-system.json": `{"items":[{"kind":"Deployment","metadata":{"name":"joulie-agent-emu-0",
 			"annotations":{"sim.joulie.io/node":"intel-0"}},
 			"spec":{"template":{"metadata":{"labels":{"app.kubernetes.io/name":"joulie-agent"}}}}}]}`,
-		"prom.json":                   `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"instance":"intel-0"},"value":[0,"1"]}]}}`,
-		"apply-names-prometheus.yaml": "namespace/monitoring\ndeployment.apps/prometheus\nservice/prometheus-operated\n",
-		"apply-names-otelcol.yaml":    "deployment.apps/otelcol\n",
-		"apply-names-nodes.yaml":      "node/intel-0\n",
+		"prom.json":                       `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"instance":"intel-0"},"value":[0,"1"]}]}}`,
+		"apply-names-prometheus.yaml":     "namespace/monitoring\ndeployment.apps/prometheus\nservice/prometheus-operated\n",
+		"apply-names-otelcol.yaml":        "deployment.apps/otelcol\n",
+		"apply-names-otelcol-bridge.yaml": "deployment.apps/otelcol-bridge\n",
+		"apply-names-nodes.yaml":          "node/intel-0\n",
 	}
 	for name, content := range files {
 		e.write(filepath.Join(k, name), content)
@@ -892,7 +926,7 @@ func TestSC03PodCapacityFlagsAndRecreate(t *testing.T) {
 		e.mustRun("up.sh", nil)
 		e.write(filepath.Join(e.repo, "scripts/simcluster/manifests/scheduler-config.yaml"), "ignorable: false\n")
 		out := e.mustFail("up.sh", nil)
-		if !strings.Contains(out, "recreate with simcluster-down") || !strings.Contains(out, "scheduler-config.yaml changed") {
+		if !strings.Contains(out, "recreate with simcluster-down") || !strings.Contains(out, "the scheduler configuration is not scheduler-config.yaml") {
 			t.Errorf("want the recreate message naming the scheduler configuration:\n%s", out)
 		}
 	})
@@ -1097,9 +1131,6 @@ func TestSC08MakeTargetsOnlyRunTheScripts(t *testing.T) {
 	}
 	probe := exec.Command("make", "-n", "-C", scRepo, "simcluster-up")
 	if out, err := probe.CombinedOutput(); err != nil {
-		if strings.Contains(string(out), "No rule to make target") {
-			t.Skip("the Makefile has no simcluster targets yet (S3-WP6 adds them)")
-		}
 		t.Fatalf("make -n simcluster-up: %v\n%s", err, out)
 	}
 	for _, x := range []string{"up", "images", "deploy", "reload", "status", "tree", "logs", "smoke", "down"} {
@@ -1749,6 +1780,25 @@ func TestSCUpRefusesSpecsThatNeedLocalProfiles(t *testing.T) {
 	if runs := e.callsOf("docker", "run"); len(runs) != 0 {
 		t.Errorf("docker run was issued for a spec the simulator cannot resolve: %v", runs)
 	}
+
+	// Both host tools get the profiles directory under one flag, and
+	// validate runs once, through simcluster, which loads the spec as
+	// clusterspec does and checks its harness section too.
+	e = scNew(t)
+	e.mustRun("up.sh", map[string]string{"SIMCLUSTER_PROFILES_DIR": profiles})
+	validates, renders := e.callsOf("simcluster", "validate"), e.callsOf("clusterspec", "render-nodes")
+	if len(e.callsOf("clusterspec", "validate")) != 0 || len(validates) != 2 || len(renders) != 1 {
+		t.Fatalf("up.sh ran simcluster validate %v and clusterspec %v, want simcluster validate with and without the profiles and one clusterspec render-nodes",
+			validates, e.callsOf("clusterspec"))
+	}
+	for _, c := range []scCall{validates[0], renders[0]} {
+		if got := c.after("--profiles-dir"); len(got) != 1 || got[0] != profiles {
+			t.Errorf("%s: --profiles-dir %v, want %s", c, got, profiles)
+		}
+	}
+	if got := validates[1].after("--profiles-dir"); len(got) != 1 || got[0] != "" {
+		t.Errorf("%s: --profiles-dir %v, want an empty one, the builtins only", validates[1], got)
+	}
 }
 
 func TestSCSmokeRunsTheE2ETestInARunDirectory(t *testing.T) {
@@ -1789,9 +1839,12 @@ func TestSCSmokeRunsTheE2ETestInARunDirectory(t *testing.T) {
 	if got := strings.TrimSpace(string(b)); got != runDir {
 		t.Errorf("TestSimclusterE2E ran with SIMCLUSTER_RUN_DIR %q, want %q", got, runDir)
 	}
-	if c := e.callsOf("go", "test"); len(c) != 1 ||
-		!c[0].has("-tags", "simcluster", "-count=1", "./tests/simcluster/", "-run", "TestSimclusterE2E") {
-		t.Errorf("go test calls = %v, want one run of TestSimclusterE2E with -tags simcluster", c)
+	// Compiled with the simcluster tag while up.sh ran, then run once.
+	if c := e.callsOf("go", "test"); len(c) != 1 || !c[0].has("-c", "-tags", "simcluster", "./tests/simcluster/") {
+		t.Errorf("go test calls = %v, want one compile of the test with -tags simcluster", c)
+	}
+	if c := e.callsOf("simcluster.test"); len(c) != 1 || !c[0].has("-test.count=1", "-test.run", "TestSimclusterE2E") {
+		t.Errorf("test binary calls = %v, want one run of TestSimclusterE2E", c)
 	}
 	for _, f := range []string{"smoke.log", "images.env", "deploy.env", "cluster.env", "k8s/nodetwins-end.yaml"} {
 		if !scExists(filepath.Join(runDir, f)) {
@@ -1901,7 +1954,7 @@ func TestSC18SmokeRunsTheScenarioOnTheSameCluster(t *testing.T) {
 		}
 		return -1
 	}
-	goTest, plan, summarize, rm := first("go", "test"), first("simscenario", "plan"), first("simscenario", "summarize"), first("docker", "rm")
+	goTest, plan, summarize, rm := first("simcluster.test"), first("simscenario", "plan"), first("simscenario", "summarize"), first("docker", "rm")
 	if goTest < 0 || plan < goTest || summarize < plan || rm < summarize {
 		t.Errorf("call order go test %d, simscenario plan %d, simscenario summarize %d, docker rm %d: want increasing", goTest, plan, summarize, rm)
 	}
@@ -1917,5 +1970,336 @@ func TestSC18SmokeRunsTheScenarioOnTheSameCluster(t *testing.T) {
 	e.mustRun("smoke.sh", nil)
 	if c := e.callsOf("simscenario"); len(c) != 0 {
 		t.Errorf("smoke.sh without SIMCLUSTER_SCENARIOS ran %v", c)
+	}
+}
+
+// TestSC19ScenarioExitErrorIsTheLibrarys: scenario.sh exits with
+// scenario_exit_error for a variant it could not run, the code simscenario
+// gives a run it could not carry out, scenario.ExitError.
+func TestSC19ScenarioExitErrorIsTheLibrarys(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(scRepo, "scripts/simcluster/scenario.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^scenario_exit_error=([0-9]+)$`).FindSubmatch(b)
+	if m == nil {
+		t.Fatal("scenario.sh sets no scenario_exit_error=<code>")
+	}
+	if got, err := strconv.Atoi(string(m[1])); err != nil || got != scenario.ExitError {
+		t.Errorf("scenario.sh scenario_exit_error=%s, scenario.ExitError is %d", m[1], scenario.ExitError)
+	}
+}
+
+// TestSC20SmokeTimeoutFollowsTheTiming: smoke.sh gives the end-to-end test
+// ten rate windows of the timing, at least 20 minutes: 20 m in dev timing,
+// 50 m in production, whose 5 m windows make a NodeTwin take up to 17 m to
+// follow a change; SIMCLUSTER_TEST_TIMEOUT replaces it.
+func TestSC20SmokeTimeoutFollowsTheTiming(t *testing.T) {
+	for _, tc := range []struct {
+		vars map[string]string
+		want string
+	}{
+		{nil, "1200s"},
+		{map[string]string{"SIMCLUSTER_TIMING": "production"}, "3000s"},
+		{map[string]string{"SIMCLUSTER_TIMING": "production", "SIMCLUSTER_TEST_TIMEOUT": "90m"}, "90m"},
+	} {
+		e := scNew(t)
+		e.mustRun("smoke.sh", tc.vars)
+		c := e.callsOf("simcluster.test")
+		if len(c) != 1 {
+			t.Fatalf("%v: test binary calls %v, want one", tc.vars, c)
+		}
+		if got := c[0].after("-test.timeout"); len(got) != 1 || got[0] != tc.want {
+			t.Errorf("%v: -test.timeout %v, want %s", tc.vars, got, tc.want)
+		}
+	}
+}
+
+// TestSC21ModesAgree: lib.sh accepts exactly the telemetry modes of
+// simcluster.Modes, and the nightly job runs each of them.
+func TestSC21ModesAgree(t *testing.T) {
+	var want []string
+	for _, m := range simcluster.Modes() {
+		want = append(want, string(m))
+	}
+	b, err := os.ReadFile(filepath.Join(scRepo, "scripts/simcluster/lib.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`case \$SIMCLUSTER_TELEMETRY in\n\s*([a-z0-9 |-]+)\) ;;`).FindSubmatch(b)
+	if m == nil {
+		t.Fatal("lib.sh has no case of SIMCLUSTER_TELEMETRY listing the modes")
+	}
+	var got []string
+	for _, f := range strings.Split(string(m[1]), "|") {
+		got = append(got, strings.TrimSpace(f))
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("lib.sh accepts the modes %v, simcluster.Modes is %v", got, want)
+	}
+
+	wf, err := os.ReadFile(filepath.Join(scRepo, ".github/workflows/simcluster.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Jobs map[string]struct {
+			Strategy struct {
+				Matrix struct {
+					Include []map[string]string `json:"include"`
+				} `json:"matrix"`
+			} `json:"strategy"`
+		} `json:"jobs"`
+	}
+	if err := yaml.Unmarshal(wf, &doc); err != nil {
+		t.Fatal(err)
+	}
+	run := map[string]bool{}
+	for _, inc := range doc.Jobs["nightly"].Strategy.Matrix.Include {
+		run[inc["telemetry"]] = true
+	}
+	for _, mode := range want {
+		if !run[mode] {
+			t.Errorf("the nightly job of .github/workflows/simcluster.yml runs no telemetry %s", mode)
+		}
+	}
+}
+
+// TestSC22ExtenderVariant: with SIMCLUSTER_EXTENDER=service, up.sh mounts
+// the scheduler configuration that reaches the extender through its
+// Service, deploy.sh installs Joulie with the values that take the extender
+// off the host network, and deploy.env records the variant; hostnet, the
+// default, mounts the loopback configuration and adds no values. Any other
+// value is refused.
+func TestSC22ExtenderVariant(t *testing.T) {
+	for _, tc := range []struct {
+		extender, config string
+		values           bool
+	}{
+		{"", "scheduler-config.yaml", false},
+		{"service", "scheduler-config-service.yaml", true},
+	} {
+		e := scNew(t)
+		vars := map[string]string{"SIMCLUSTER_EXTENDER": tc.extender}
+		e.mustRun("up.sh", vars)
+		e.mustRun("deploy.sh", vars)
+		runs := e.callsOf("docker", "run")
+		mount := filepath.Join(e.repo, "scripts/simcluster/manifests", tc.config) + ":/etc/rancher/k3s/scheduler-config.yaml:ro"
+		if len(runs) != 1 || !runs[0].has(mount) {
+			t.Errorf("extender %q: docker run %v, want the mount %s", tc.extender, runs, mount)
+		}
+		values := filepath.Join(e.repo, "values/simcluster-extender-service.yaml")
+		for _, c := range e.callsOf("helm", "upgrade") {
+			if c.has("joulie") && c.has(values) != tc.values {
+				t.Errorf("extender %q: Joulie installed with %v, want %s among the values files: %v", tc.extender, c.after("-f"), values, tc.values)
+			}
+		}
+		want := tc.extender
+		if want == "" {
+			want = "hostnet"
+		}
+		if got := scEnvFile(t, filepath.Join(e.dir, "deploy.env"))["EXTENDER"]; got != want {
+			t.Errorf("extender %q: deploy.env EXTENDER=%s, want %s", tc.extender, got, want)
+		}
+	}
+	out := scNew(t).mustFail("up.sh", map[string]string{"SIMCLUSTER_EXTENDER": "loopback"})
+	if !strings.Contains(out, "SIMCLUSTER_EXTENDER=loopback is not hostnet or service") {
+		t.Errorf("an unknown extender variant: want it refused:\n%s", out)
+	}
+}
+
+// TestSC23BridgeCollector: in mode otel-bridge the backend runs the bridge
+// Collector with the example's collector.yaml and the generated
+// configuration, in that order of keys of one ConfigMap, and pulls the
+// contrib image; in any other mode a bridge Collector left from an earlier
+// run is deleted, since it would go on pushing into Prometheus.
+func TestSC23BridgeCollector(t *testing.T) {
+	e := scNew(t)
+	vars := map[string]string{"SIMCLUSTER_TELEMETRY": "otel-bridge"}
+	e.mustRun("up.sh", vars)
+	example := filepath.Join(e.repo, "examples/11-otel-collector-bridge/collector.yaml")
+	var created scCall
+	for _, c := range e.callsOf("kubectl", "-n", "monitoring", "create", "configmap", "otelcol-bridge-config") {
+		created = c
+	}
+	if created == nil || !created.has("--from-file=collector.yaml="+example) ||
+		!created.has("--from-file=config.yaml="+filepath.Join(e.dir, "render/otelcol-bridge.yaml")) {
+		t.Errorf("ConfigMap otelcol-bridge-config created with %v, want the example as collector.yaml and the generated file as config.yaml", created)
+	}
+	if c := e.callsOf("simcluster", "telemetry"); len(c) == 0 || !e.anyHas(c, "--mode", "otel-bridge", "--part", "otelcol-config") {
+		t.Errorf("simcluster telemetry calls %v, want the otelcol-config part of mode otel-bridge", c)
+	}
+	versions := mVersions(t)
+	pulled := false
+	for _, c := range e.callsOf("docker", "pull") {
+		pulled = pulled || c.has(strings.TrimSuffix(versions["OTELCOL_CONTRIB_IMAGE"], ":0.162.0")+"@"+versions["OTELCOL_CONTRIB_DIGEST"])
+	}
+	if !pulled {
+		t.Errorf("up.sh in mode otel-bridge pulled %v, want the contrib Collector by its digest", e.callsOf("docker", "pull"))
+	}
+	if d := e.callsOf("kubectl", "delete"); len(d) != 0 {
+		t.Errorf("mode otel-bridge deleted %v", d)
+	}
+
+	// Back to mode otel with the bridge Collector still there.
+	e.write(filepath.Join(e.state, "kube", "get-deployment-otelcol-bridge-monitoring.json"),
+		`{"kind":"Deployment","metadata":{"name":"otelcol-bridge","namespace":"monitoring"}}`)
+	e.resetCalls()
+	e.mustRun("up.sh", nil)
+	bridge := filepath.Join(e.repo, "scripts/simcluster/manifests/otelcol-bridge.yaml")
+	if d := e.callsOf("kubectl", "delete"); len(d) != 1 || !d[0].has(bridge) {
+		t.Errorf("mode otel after otel-bridge: deletes %v, want the bridge manifest's objects", d)
+	}
+}
+
+// anyHas reports whether one of calls has every one of args.
+func (e *scEnv) anyHas(calls []scCall, args ...string) bool {
+	for _, c := range calls {
+		if c.has(args...) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSC24MakeAppliesTheCRDsBeforeHelm: make install and make rollout apply
+// the chart's CRDs before helm upgrade, since Helm installs crds/ once and
+// never upgrades them, so a field added to a CRD would be pruned from every
+// object written after the upgrade.
+func TestSC24MakeAppliesTheCRDsBeforeHelm(t *testing.T) {
+	if _, err := exec.LookPath("make"); err != nil {
+		t.Skip("make is not on PATH")
+	}
+	for _, target := range []string{"install", "rollout"} {
+		cmd := exec.Command("make", "-n", "-C", scRepo, target)
+		cmd.Env = append(os.Environ(), "KUBECONFIG=/dev/null")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("make -n %s: %v\n%s", target, err, out)
+		}
+		text := string(out)
+		crds, helm := strings.Index(text, "kubectl apply --server-side"), strings.Index(text, "helm upgrade --install")
+		if crds < 0 || helm < 0 || crds > helm || !strings.Contains(text[crds:helm], "charts/joulie/crds/") {
+			t.Errorf("make %s does not apply charts/joulie/crds/ before helm upgrade:\n%s", target, text)
+		}
+	}
+}
+
+// TestSC25BackendStartsOnceOnAFreshCluster: the backend's ConfigMap goes in
+// before its Deployment, so a fresh cluster starts Prometheus once, with its
+// configuration; a later run restarts it only when the configuration
+// changed.
+func TestSC25BackendStartsOnceOnAFreshCluster(t *testing.T) {
+	e := scNew(t)
+	e.mustRun("up.sh", nil)
+	cm, manifest := -1, -1
+	for i, c := range e.calls() {
+		if c.tool() != "kubectl" || len(c.args()) == 0 || c.args()[0] != "apply" {
+			continue
+		}
+		if cm < 0 && c.has("-f", "-") {
+			cm = i
+		}
+		if manifest < 0 && c.has(filepath.Join(e.repo, "scripts/simcluster/manifests/prometheus.yaml")) {
+			manifest = i
+		}
+	}
+	if cm < 0 || manifest < 0 || cm > manifest {
+		t.Errorf("the ConfigMap was applied at call %d, prometheus.yaml at call %d: want the ConfigMap first", cm, manifest)
+	}
+	if r := e.callsOf("kubectl", "-n", "monitoring", "rollout", "restart"); len(r) != 0 {
+		t.Errorf("a fresh cluster restarted %v", r)
+	}
+
+	// The same configuration again: no restart. Another one: a restart.
+	data := func(cfg string) string {
+		b, err := json.Marshal(map[string]any{"kind": "ConfigMap", "metadata": map[string]string{"name": "prometheus-config"}, "data": map[string]string{"prometheus.yml": cfg}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	k := filepath.Join(e.state, "kube")
+	e.write(filepath.Join(k, "get-configmap-prometheus-config-monitoring.json"), data(""))
+	e.write(filepath.Join(e.state, "fake-create-configmap.json"), data(""))
+	e.resetCalls()
+	e.mustRun("up.sh", nil)
+	if r := e.callsOf("kubectl", "-n", "monitoring", "rollout", "restart"); len(r) != 0 {
+		t.Errorf("an unchanged configuration restarted %v", r)
+	}
+	e.write(filepath.Join(e.state, "fake-create-configmap.json"), data("global: {}\n"))
+	e.resetCalls()
+	e.mustRun("up.sh", nil)
+	if r := e.callsOf("kubectl", "-n", "monitoring", "rollout", "restart"); len(r) != 1 {
+		t.Errorf("a changed configuration restarted %v, want one restart", r)
+	}
+}
+
+// TestSC26ImportsOncePerImage: up.sh imports the pinned third-party images,
+// KWOK's included, in the background while the cluster starts and before
+// KWOK is applied; each images.sh run lists containerd once, probes docker
+// save once and inspects each image it imports once.
+func TestSC26ImportsOncePerImage(t *testing.T) {
+	e := scNew(t)
+	e.mustRun("up.sh", nil)
+	v := mVersions(t)
+	kwok := v["KWOK_IMAGE"]
+	saved, applied := -1, -1
+	for i, c := range e.calls() {
+		if saved < 0 && c.tool() == "docker" && len(c.args()) > 0 && c.args()[0] == "save" && c.has(kwok) {
+			saved = i
+		}
+		if applied < 0 && c.tool() == "kubectl" && c.has(filepath.Join(e.repo, "scripts/simcluster/manifests/kwok-"+v["KWOK_VERSION"]+"/kwok.yaml")) {
+			applied = i
+		}
+	}
+	if saved < 0 || applied < 0 || saved > applied {
+		t.Errorf("KWOK's image was imported at call %d and kwok.yaml applied at call %d: want the import first", saved, applied)
+	}
+	if got := scEnvFile(t, filepath.Join(e.dir, "images.env"))["IMAGE_KWOK"]; got != kwok+"@"+v["KWOK_DIGEST"] {
+		t.Errorf("images.env IMAGE_KWOK=%q, want %s@%s", got, kwok, v["KWOK_DIGEST"])
+	}
+
+	e.resetCalls()
+	e.mustRun("images.sh", nil, "--joulie")
+	var lists, probes int
+	inspected := map[string]int{}
+	for _, c := range e.callsOf("docker") {
+		switch {
+		case c.has("ctr", "ls"):
+			lists++
+		case c.has("save", "--help"):
+			probes++
+		case c.has("crictl", "inspecti"):
+			inspected[c.args()[len(c.args())-1]]++
+		}
+	}
+	if lists != 1 || probes != 1 {
+		t.Errorf("images.sh listed containerd %d times and probed docker save %d times, want once each", lists, probes)
+	}
+	if len(inspected) != 4 {
+		t.Errorf("images.sh inspected %v, want the 4 Joulie images", inspected)
+	}
+	for ref, n := range inspected {
+		if n != 1 {
+			t.Errorf("images.sh inspected %s %d times, want once", ref, n)
+		}
+	}
+}
+
+// TestSC27SmokeBuildsTheHostToolsOnce: smoke.sh builds simcluster and
+// clusterspec once for up.sh and deploy.sh, and compiles the test before
+// it runs it.
+func TestSC27SmokeBuildsTheHostToolsOnce(t *testing.T) {
+	e := scNew(t)
+	e.mustRun("smoke.sh", nil)
+	builds := 0
+	for _, c := range e.callsOf("go", "build") {
+		if c.has("./simulator/cmd/simcluster") {
+			builds++
+		}
+	}
+	if builds != 1 {
+		t.Errorf("the host tools were built %d times, want once", builds)
 	}
 }

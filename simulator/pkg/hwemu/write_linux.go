@@ -13,6 +13,11 @@ import (
 // O_NONBLOCK an open that would wait, such as on a FIFO.
 const nodeWriteFlags = syscall.O_WRONLY | syscall.O_NOFOLLOW | syscall.O_NONBLOCK | syscall.O_CLOEXEC
 
+// nodeNoFollow is added to every in-place open of a file the agent can
+// write (an A file): the agent could put a link or a FIFO in its place, and
+// the emulator must neither write through the link nor wait on the FIFO.
+const nodeNoFollow = syscall.O_NOFOLLOW | syscall.O_NONBLOCK
+
 // nodeWriteLeased writes content over the file at path, in one write at
 // offset 0, and reports whether it did. It writes only under a write lease
 // (F_SETLEASE, as nodeLease takes) and only while the file is a regular file

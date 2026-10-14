@@ -81,7 +81,13 @@ cpufreq:
       down_threshold: {v: 20, src: "published:govkernel#cpufreq_conservative.c:32,293"}
 physics:
   cpu:
-    model: analytic
+    # The SPECpower curve of the hardware catalog's AMD_EPYC_9654 entry
+    # (spec01203, 2x EPYC 9654), split over the two sockets: at 10 % load
+    # it adds 18.7 % of the idle to full-load range, where the analytic
+    # model of the facts below adds 7.1 % under performance. maxPkgW,
+    # idlePkgW, alphaUtil and betaFreq are kept for the profiles that
+    # extend this one with the analytic model.
+    model: catalog-curve
     maxPkgW: {v: 360, src: "published:amd9654#Default TDP"}
     idlePkgW: {v: 40, src: "assumed:bounded by spec01203 Active Idle 128 W for the whole node"}
     alphaUtil: {v: 1.15, src: "assumed:simulator default SIM_ALPHA_UTIL"}

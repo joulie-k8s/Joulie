@@ -6,8 +6,15 @@
 # Usage: scripts/simcluster/smoke.sh
 #
 # Runs up.sh, deploy.sh -f tests/simcluster/smoke-values.yaml and
-# TestSimclusterE2E (go test -tags simcluster) with SIMCLUSTER_RUN_DIR set to
-# $SIMCLUSTER_DIR/runs/<UTC>-<spec>-<mode>-<sha12>[-dirty]. Then collects the
+# TestSimclusterE2E with SIMCLUSTER_RUN_DIR set to
+# $SIMCLUSTER_DIR/runs/<UTC>-<spec>-<mode>-<sha12>[-dirty], and a test
+# timeout of ten rate windows of the timing, at least 20 minutes (20 m in
+# dev timing, 50 m in production): the checks wait on the rate window, up to
+# three of them for a NodeTwin to follow a change of power. While up.sh
+# creates the cluster, the host tools are built once for every script, the
+# test is compiled (go test -c -tags simcluster) and the Joulie images are
+# built and imported as soon as the container runs (images.sh
+# --wait-container), so deploy.sh skips images.sh. Then collects the
 # Nodes, NodeHardware and NodeTwin objects, the pods and events, the logs,
 # images.env and the Helm values into the run directory, points runs/latest
 # at it and deletes the cluster, unless SIMCLUSTER_KEEP=1. The run directory
@@ -19,8 +26,9 @@
 # scenario's, or 1 when the cluster could not be set up.
 #
 # Defaults: SIMCLUSTER_NAME=joulie-sim-smoke,
-# SIMCLUSTER_SPEC=tests/simcluster/specs/smoke.yaml; every other setting as
-# for up.sh and deploy.sh.
+# SIMCLUSTER_SPEC=tests/simcluster/specs/smoke.yaml; SIMCLUSTER_TEST_TIMEOUT,
+# a Go duration, replaces the test timeout; every other setting as for up.sh
+# and deploy.sh.
 #
 set -euo pipefail
 export SIMCLUSTER_NAME=${SIMCLUSTER_NAME:-joulie-sim-smoke}
@@ -44,16 +52,15 @@ if [[ -n ${SIMCLUSTER_NODES:-} ]]; then
 else
   spec_name=$(basename "$SIMCLUSTER_SPEC" .yaml)
 fi
-# Exactly 12 characters, as scenario.RunDirName writes them (--short=12 may
-# print more to stay unambiguous).
-sha=$(git -C "$SIM_REPO" rev-parse HEAD 2>/dev/null | cut -c1-12) || true
-sha=${sha:-nogit}
-dirty=
-if [[ $sha != nogit && -n $(git -C "$SIM_REPO" status --porcelain 2>/dev/null) ]]; then
-  dirty=-dirty
+# The test timeout, from the timing sim_init read.
+test_timeout=${SIMCLUSTER_TEST_TIMEOUT:-}
+if [[ -z $test_timeout ]]; then
+  test_timeout=$((10 * $(sim_seconds "$RATE_WINDOW")))
+  ((test_timeout >= 1200)) || test_timeout=1200
+  test_timeout=${test_timeout}s
 fi
 runs=$SIMCLUSTER_DIR/runs
-run_name=$(date -u +%Y%m%dT%H%M%SZ)-$spec_name-$SIMCLUSTER_TELEMETRY-$sha$dirty
+run_name=$(date -u +%Y%m%dT%H%M%SZ)-$spec_name-$SIMCLUSTER_TELEMETRY-$(sim_git_state)
 run_dir=$runs/$run_name
 mkdir -p "$run_dir"
 exec > >(tee -a "$run_dir/smoke.log") 2>&1
@@ -70,11 +77,14 @@ collect() {
   for res in nodes nodehardwares nodetwins pods events; do
     kubectl get "$res" -A -o yaml >"$k/$res-end.yaml" 2>/dev/null || true
   done
+  local pids=()
   for ns in "$SIM_NS_JOULIE" "$SIM_NS_SIM" "$SIM_NS_MONITORING"; do
     for pod in $(kubectl -n "$ns" get pods -o name 2>/dev/null || true); do
-      kubectl -n "$ns" logs "$pod" --all-containers --prefix >"$l/$ns.${pod#pod/}.log" 2>&1 || true
+      kubectl -n "$ns" logs "$pod" --all-containers --prefix >"$l/$ns.${pod#pod/}.log" 2>&1 &
+      pids+=($!)
     done
   done
+  wait ${pids[@]+"${pids[@]}"} || true
   helm get values "$SIM_RELEASE_JOULIE" -n "$SIM_NS_JOULIE" -o yaml >"$run_dir/values.effective.yaml" 2>/dev/null || true
   helm get values "$SIM_RELEASE_SIM" -n "$SIM_NS_SIM" -o yaml >"$run_dir/values.simulator.effective.yaml" 2>/dev/null || true
 }
@@ -94,6 +104,7 @@ collect_once() {
   done
 }
 
+# shellcheck disable=SC2317 # called by the EXIT trap
 finish() {
   local rc=$?
   set +e
@@ -109,11 +120,28 @@ finish() {
 }
 trap finish EXIT
 
-bash "$SIM_SCRIPTS/up.sh"
-bash "$SIM_SCRIPTS/deploy.sh" -f "$SIM_REPO/tests/simcluster/smoke-values.yaml"
-sim_log "running TestSimclusterE2E"
+# The host tools once, for every script below; the test binary and the
+# Joulie images while up.sh creates the cluster: the images go in as soon as
+# the container runs.
+sim_host_tools
+test_bin=$SIM_HOST_BIN/simcluster.test
+(cd "$SIM_REPO" && "$GO" test -c -tags simcluster -o "$test_bin" ./tests/simcluster/) &
+compile=$!
+bash "$SIM_SCRIPTS/images.sh" --joulie --wait-container &
+joulie_images=$!
+up=0
+bash "$SIM_SCRIPTS/up.sh" || up=$?
+if ((up != 0)); then
+  kill "$joulie_images" "$compile" 2>/dev/null || true
+  exit "$up"
+fi
+wait "$joulie_images" || sim_die "building and importing the Joulie images failed"
+bash "$SIM_SCRIPTS/deploy.sh" --skip-images -f "$SIM_REPO/tests/simcluster/smoke-values.yaml"
+wait "$compile" || sim_die "compiling the end-to-end test failed"
+sim_log "running TestSimclusterE2E (timeout $test_timeout)"
 rc=0
-(cd "$SIM_REPO" && SIMCLUSTER_RUN_DIR=$run_dir "$GO" test -tags simcluster -count=1 -timeout 20m ./tests/simcluster/ -run TestSimclusterE2E -v) || rc=$?
+# The test reads its package's files by relative path, as go test runs it.
+(cd "$SIM_REPO/tests/simcluster" && SIMCLUSTER_RUN_DIR=$run_dir "$test_bin" -test.count=1 -test.timeout "$test_timeout" -test.run TestSimclusterE2E -test.v) || rc=$?
 if [[ ${SIMCLUSTER_SCENARIOS:-0} == 1 ]]; then
   collect_once || true
   sim_log "running the workload scenario smoke on the same cluster (SIMCLUSTER_SCENARIOS=1)"

@@ -38,7 +38,7 @@ sys/devices/system/cpu/cpufreq/boost A file 0644
 sys/devices/system/cpu/cpufreq/policy{N} R dir 0755 [N=0-383]
 sys/devices/system/cpu/cpufreq/policy{N}/affected_cpus R file 0444 [N=0-383]
 sys/devices/system/cpu/cpufreq/policy{N}/boost A file 0644 [N=0-383]
-sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_max_freq R file 0444 [N=0-383]
+sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_max_freq S file 0444 [N=0-383]
 sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_min_freq R file 0444 [N=0-383]
 sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_transition_latency R file 0444 [N=0-383]
 sys/devices/system/cpu/cpufreq/policy{N}/energy_performance_available_preferences S file 0444 [N=0-383]

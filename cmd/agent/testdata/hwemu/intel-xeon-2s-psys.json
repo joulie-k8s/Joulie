@@ -67,7 +67,8 @@
     },
     "landmarks": {
       "maxBoostMHz": 4000,
-      "minFreqMHz": 800
+      "minFreqMHz": 800,
+      "nominalFreqMHz": 2100
     },
     "model": "INTEL_XEON_GOLD_6530",
     "rawModel": "INTEL(R) XEON(R) GOLD 6530",

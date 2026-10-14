@@ -9,11 +9,11 @@ import (
 
 // WS01: where the Node has leases, an emulator-owned (S) file that nobody
 // holds open is rewritten in place: same inode, same mode, the new value
-// whole. Before the fix every changed S file went through a new temp file
-// and a rename, an inode created and one freed per file per step: about
-// 20000 of each per tick for 200 two socket Intel nodes (96 scaling_cur_freq
-// and 4 energy_uj each), which put the BenchmarkEM01Tick intel-200 median at
-// 1.4 s as root and 2.6 s as another user on a disk-backed (xfs) root.
+// whole. A temp file and a rename for every changed S file would create
+// and free an inode per file per step: about 20000 of each per tick for 200
+// two socket Intel nodes (96 scaling_cur_freq and 4 energy_uj each), which
+// puts the BenchmarkEM01Tick intel-200 median at 1.4 s as root and 2.6 s
+// as another user on a disk-backed (xfs) root.
 //
 // It does not call t.Parallel, because nodeNewNode reads nodeLeases, which
 // other tests of the package toggle.
@@ -66,5 +66,26 @@ func TestWS01UnopenedSFileIsRewrittenInPlace(t *testing.T) {
 	}
 	if got := nodeInode(t, abs); got != inode {
 		t.Errorf("%s changed inode from %d to %d in a step, want it rewritten in place", rel, inode, got)
+	}
+}
+
+// TestAFileReplacedByALinkIsNotWrittenThrough: an agent that puts a symbolic
+// link where one of its files was cannot make the emulator write into the
+// link's target, neither by an in-place write nor by a readback rewrite.
+// The old opens followed the link.
+func TestAFileReplacedByALinkIsNotWrittenThrough(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "constraint_0_power_limit_uw")
+	if err := os.Symlink(sentinel, link); err != nil {
+		t.Fatal(err)
+	}
+	_ = nodeWriteInPlace(link, []byte("1\n"), 0o644)
+	_, _ = nodeRewriteInPlace(link, nil, []byte("2\n"), time.Time{}, false)
+	if got, _ := os.ReadFile(sentinel); string(got) != "keep\n" {
+		t.Fatalf("the link target holds %q, want it untouched", got)
 	}
 }

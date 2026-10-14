@@ -1,6 +1,6 @@
 package main
 
-// The v1 workload engine (S4). A run's tick runs on the emulator's
+// The v1 workload engine. A run's tick runs on the emulator's
 // goroutine, in the publish callback, right after each emulator step, and
 // takes the snapshot's time as now and the time since the last snapshot
 // as dt. Its steps, in order:
@@ -13,25 +13,27 @@ package main
 //  3. GPU slots: a job whose pod became Running takes its CPUs and GPU
 //     units (whole GPUs 1 per GPU, MIG slices migDevicesPerGPU, time-slice
 //     replicas timesliceReplicas);
-//  4. load: each node's load for the next emulator step, from the jobs
-//     that hold its CPUs and GPUs;
-//  5. progress: each job Running since an earlier tick does work at the
+//  4. progress: each job Running since an earlier tick does work at the
 //     rates of workload.Rates, with the throughput its node's controls
 //     leave it (CPUs and GPUs it holds) over the step that just ended;
-//  6. complete: a job whose work is done is marked complete on its pod
+//  5. complete: a job whose work is done is marked complete on its pod
 //     (the KWOK Stage pod-complete then ends the pod) or, with
 //     SIM_WORKLOAD_COMPLETION=delete, its pod is deleted; its event, the
 //     legacy log line and counters follow once the call succeeds;
+//  6. load: each node's load for the next emulator step, from the jobs
+//     that still hold its CPUs and GPUs;
 //  7. energy: each node's ledger deltas over the step that just ended are
 //     attributed to the jobs that loaded it (workload.Attribute);
 //  8. stalls: a Running job with no progress, and the whole run when every
 //     submitted job is blocked, are reported after SIM_WORKLOAD_STALL_REPORT,
-//     never completed by force (D5);
+//     never completed by force;
 //  9. run end: once every job is terminal the run ends.
 //
 // Kubernetes calls (creates, the completion patch, deletes) and the
-// informers run on the run's own goroutine (runKube); the two exchange
-// state only through runKube's lock.
+// informers run on the run's own goroutines (runKube); the two exchange
+// state only through runKube's lock. A call's result reaches the first tick
+// after it returns, so a job's submit, start and end are stamped within a
+// tick of when the API server took them.
 
 import (
 	"context"
@@ -74,8 +76,8 @@ const (
 	// v1CompletionAttempts is how often a completion call is tried before
 	// the job fails with patch_failed.
 	v1CompletionAttempts = 3
-	// runKubeWorkers is how many Kubernetes calls run at once; the
-	// client's QPS and burst still limit them.
+	// runKubeWorkers is how many Kubernetes calls run at once, each on a
+	// worker of its own; the client's QPS and burst still limit them.
 	runKubeWorkers = 8
 	// runKubeTwinPoll is how often NodeTwins are listed. assumed: a
 	// schedulable class changes over minutes, so the time a class took
@@ -156,22 +158,32 @@ type kubeIn struct {
 	classes  map[string]string
 }
 
-// runKube is a run's Kubernetes side: its calls and its informers, on a
-// goroutine of their own. A tick hands it commands with push and takes
-// results and observations with take.
+// runKube is a run's Kubernetes side: its calls, on runKubeWorkers
+// workers, and its informers, on goroutines of their own. A tick hands it
+// commands with push and takes results and observations with take. Each
+// result is there for the next take as soon as its call returns, so a
+// burst of creates delays no other result, and completion calls run ahead
+// of queued creates.
 type runKube struct {
 	kube      kubernetes.Interface
 	runLabel  string
 	listTwins func(context.Context) ([]v1alpha1.NodeTwin, error)
 
-	mu       sync.Mutex
-	cmds     []kubeCmd
-	results  []kubeResult
-	pods     map[string]podObs
-	profiles map[string]string
-	classes  map[string]string
-	lastTwin map[string]string
-	wake     chan struct{}
+	mu sync.Mutex
+	// completions holds the queued completion calls (patches and
+	// deletes), creates the queued creates; a worker takes the first
+	// completion, else the first create.
+	completions []kubeCmd
+	creates     []kubeCmd
+	results     []kubeResult
+	pods        map[string]podObs
+	profiles    map[string]string
+	classes     map[string]string
+	lastTwin    map[string]string
+	// queued holds a token per command pushed while every worker may be
+	// waiting, up to one per worker, so a worker that found the queues
+	// empty wakes for the next push.
+	queued chan struct{}
 
 	cancel   context.CancelFunc
 	done     chan struct{}
@@ -185,11 +197,11 @@ func newRunKube(kube kubernetes.Interface, runLabel string) *runKube {
 		kube: kube, runLabel: runLabel, listTwins: listNodeTwinsREST(kube),
 		pods: map[string]podObs{}, profiles: map[string]string{}, classes: map[string]string{},
 		lastTwin: map[string]string{},
-		wake:     make(chan struct{}, 1),
+		queued:   make(chan struct{}, runKubeWorkers),
 	}
 }
 
-// start runs the informers and the command loop until stop.
+// start runs the informers, the NodeTwin poll and the workers until stop.
 func (k *runKube) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	k.cancel, k.done = cancel, make(chan struct{})
@@ -199,8 +211,8 @@ func (k *runKube) start() {
 	}()
 }
 
-// stop ends the goroutine of start, if it runs. Commands still queued are
-// dropped.
+// stop ends the goroutines of start, if they run. Commands still queued
+// are dropped.
 func (k *runKube) stop() {
 	k.stopOnce.Do(func() {
 		if k.cancel != nil {
@@ -228,8 +240,16 @@ func (k *runKube) loop(ctx context.Context) {
 	defer pods.Shutdown()
 	defer nodes.Shutdown()
 
-	beat := time.NewTicker(time.Second)
-	defer beat.Stop()
+	var workers sync.WaitGroup
+	for i := 0; i < runKubeWorkers; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			k.work(ctx)
+		}()
+	}
+	defer workers.Wait()
+
 	twinBeat := time.NewTicker(runKubeTwinPoll)
 	defer twinBeat.Stop()
 	k.pollTwins(ctx)
@@ -237,40 +257,49 @@ func (k *runKube) loop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-k.wake:
-		case <-beat.C:
 		case <-twinBeat.C:
 			k.pollTwins(ctx)
 		}
-		k.process(ctx)
 	}
 }
 
-// process runs every queued command, up to runKubeWorkers at once, and
-// keeps their results for the next take.
-func (k *runKube) process(ctx context.Context) {
-	k.mu.Lock()
-	cmds := k.cmds
-	k.cmds = nil
-	k.mu.Unlock()
-	if len(cmds) == 0 {
-		return
+// work runs queued commands one at a time until ctx ends, and keeps each
+// result for the next take as soon as its call returns.
+func (k *runKube) work(ctx context.Context) {
+	for {
+		c, ok := k.next()
+		if !ok {
+			select {
+			case <-ctx.Done():
+				return
+			case <-k.queued:
+			}
+			continue
+		}
+		k.keep(c, k.exec(ctx, c))
 	}
-	results := make([]kubeResult, len(cmds))
-	sem := make(chan struct{}, runKubeWorkers)
-	var wg sync.WaitGroup
-	for i := range cmds {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			results[i] = kubeResult{cmd: cmds[i], err: k.exec(ctx, cmds[i])}
-		}(i)
-	}
-	wg.Wait()
+}
+
+// next takes the first queued completion call, else the first queued
+// create; false when both queues are empty.
+func (k *runKube) next() (kubeCmd, bool) {
 	k.mu.Lock()
-	k.results = append(k.results, results...)
+	defer k.mu.Unlock()
+	for _, q := range []*[]kubeCmd{&k.completions, &k.creates} {
+		if len(*q) > 0 {
+			c := (*q)[0]
+			(*q)[0] = kubeCmd{}
+			*q = (*q)[1:]
+			return c, true
+		}
+	}
+	return kubeCmd{}, false
+}
+
+// keep stores the result of command c for the next take.
+func (k *runKube) keep(c kubeCmd, err error) {
+	k.mu.Lock()
+	k.results = append(k.results, kubeResult{cmd: c, err: err})
 	k.mu.Unlock()
 }
 
@@ -308,17 +337,27 @@ func (k *runKube) exec(ctx context.Context, c kubeCmd) error {
 	return fmt.Errorf("unknown command %d", c.kind)
 }
 
-// push queues cmds and wakes the loop.
+// push queues cmds and wakes a waiting worker for each, up to all of
+// them. It never blocks, so a tick never waits for the API server.
 func (k *runKube) push(cmds ...kubeCmd) {
 	if len(cmds) == 0 {
 		return
 	}
 	k.mu.Lock()
-	k.cmds = append(k.cmds, cmds...)
+	for _, c := range cmds {
+		if c.kind == cmdCreate {
+			k.creates = append(k.creates, c)
+		} else {
+			k.completions = append(k.completions, c)
+		}
+	}
 	k.mu.Unlock()
-	select {
-	case k.wake <- struct{}{}:
-	default:
+	for range cmds {
+		select {
+		case k.queued <- struct{}{}:
+		default:
+			return
+		}
 	}
 }
 
@@ -470,16 +509,14 @@ func (r *workloadRun) tick(now time.Time, dt time.Duration, snap *emulate.Snapsh
 	started := r.observePods(in.pods, now, nodes)
 	// 3. GPU slots.
 	r.startJobs(started, now, nodes, &act)
-	// 4. load.
-	r.computeLoads()
-	// 5. progress.
+	// 4. progress, over the step that just ended: it reads the loads that
+	// step ran with (r.loaded), never the next step's.
 	r.progress(now, dt, &act)
-	// 6. complete.
-	done := r.complete(now, &act)
-	if len(done) > 0 {
-		r.computeLoads()
-	}
-	cmds = append(cmds, done...)
+	// 5. complete.
+	cmds = append(cmds, r.complete(now, &act)...)
+	// 6. load, once: progress changes nothing it reads, and complete frees
+	// the jobs that leave it.
+	r.computeLoads()
 	// 7. energy.
 	r.attribute(now, snap, nodes)
 	// 8. stalls.
@@ -936,7 +973,7 @@ func (r *workloadRun) progress(now time.Time, dt time.Duration, act *tickActivit
 	}
 	for node, jobs := range r.runningOn() {
 		n := r.nodes[node]
-		util := cpuUtilOf(jobs)
+		cpuShare := n.cpu.Share(cpuUtilOf(jobs))
 		peer := r.peerMuls(node, n)
 		for _, j := range jobs {
 			if !j.runningAt.Before(now) {
@@ -960,8 +997,11 @@ func (r *workloadRun) progress(now time.Time, dt time.Duration, act *tickActivit
 				BaseSpeed: r.set.baseSpeed, CPURequest: j.sim.RequestedCPUCores, GPURequest: j.sim.RequestedGPUs,
 				CPUUtil: j.sim.CPUUtilTarget, MemoryIntensity: j.sim.MemoryIntensity, IOIntensity: j.sim.IOIntensity,
 				CPUFeedIntensity: j.sim.CPUFeedIntensity, SensitivityCPU: j.sim.SensitivityCPU, SensitivityGPU: j.sim.SensitivityGPU,
-				CPUMul: cpuMul, GPUMul: gpuMul, GPUCapFactor: 1,
-				CPUShare: n.cpu.Share(id, util), GPUShare: n.gpu.Share(id),
+				CPUMul: cpuMul, GPUMul: gpuMul,
+				CPUShare: 1, GPUShare: n.gpu.Share(id),
+			}
+			if n.cpu.Holds(id) {
+				in.CPUShare = cpuShare
 			}
 			if g, ok := peer[id]; ok {
 				in.PeerTransferIntensity, in.PeerMul = j.sim.PeerTransferIntensity, g
@@ -1053,7 +1093,7 @@ func (r *workloadRun) attribute(now time.Time, snap *emulate.Snapshot, nodes emu
 }
 
 // stalls reports Running jobs that made no progress for the stall report
-// interval, their resumption, and the run stall (D5). Nothing is completed.
+// interval, their resumption, and the run stall. Nothing is completed.
 func (r *workloadRun) stalls(now time.Time, act *tickActivity) {
 	report := r.set.stallReport
 	submitted, blocked := false, true

@@ -13,12 +13,21 @@ env:
   SIM_POLL_INTERVAL: "8s"
   SIM_NODE_SELECTOR: "joulie.io/managed=true"
   SIM_NODE_CLASS_CONFIG: "/etc/joulie-sim/node-classes.yaml"
-  # Not rendered in emulate mode: a legacy trace cannot drive emulated nodes.
+  # Not rendered in emulate mode, where a trace starts an implicit run on the
+  # v1 engine at startup and runs come through the run API; set it in
+  # extraEnv to start one there.
   SIM_WORKLOAD_TRACE_PATH: "/etc/joulie-sim-trace/trace.jsonl"
   SIM_HARDWARE_CATALOG_PATH: "/etc/joulie-sim-catalog/hardware.generated.yaml"
 
 # Extra env vars merged on top of env (useful for optional overrides)
 extraEnv: {}
+
+rbac:
+  # The ClusterRole rules a v1 workload run needs: patch pods (the completion
+  # annotation), create and delete Jobs, and read NodeTwins. auto grants them
+  # with emulate.enabled, the only mode that runs v1 workloads; true or false
+  # forces them.
+  workloadRuns: auto
 
 # Mounted as optional volumes: when one does not exist the simulator starts
 # without that file and uses its defaults.

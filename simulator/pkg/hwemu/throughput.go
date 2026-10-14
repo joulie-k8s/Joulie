@@ -16,9 +16,9 @@ import (
 
 // CPUThroughput is the throughput of a job on the logical CPUs cpus, of
 // workload class class with memory intensity mem and IO intensity io,
-// relative to a governor-independent reference (decision D10): the mean,
-// over cpus, of TM(controlled scale) / TM(reference scale), where TM is the
-// CPU model's ThroughputMultiplier.
+// relative to a governor-independent reference, work counted in cycles:
+// the mean, over cpus, of TM(controlled scale) / TM(reference scale), where
+// TM is the CPU model's ThroughputMultiplier.
 //
 //   - The controlled scale is the frequency scaling_cur_freq shows, the
 //     governor's choice, boost and a package cap included, over

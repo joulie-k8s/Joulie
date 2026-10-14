@@ -1,6 +1,6 @@
 ---
 title: "Workload Scenarios"
-weight: 13
+weight: 12
 ---
 
 A workload scenario runs a workload through the [simulated cluster]({{< relref "/docs/simulator/simulated-cluster.md" >}}) and checks what happened: whether the jobs completed, where they were placed, how long they took, what energy they used, and how Joulie's settings compare with each other or with no Joulie at all. The jobs are real Kubernetes Jobs, scheduled by the real scheduler and the Joulie extender onto KWOK Nodes, and the simulator's v1 workload engine drives them on the emulated hardware, so a cap the agent writes slows the jobs on that Node.
@@ -33,19 +33,18 @@ go run ./simulator/cmd/simscenario plan tests/simcluster/scenarios/nightly-mixed
 |---|---|---|---|
 | `smoke` | `smoke`, dev; about 7 minutes | 9 inline jobs: CPU and GPU, both classes, NVIDIA and AMD | every job completes through KWOK; no stall; no Job left incomplete and no stray pod on a fake Node; 9 `joulie.sim.job.completed` events; energy above 0 J |
 | `perf-isolation` | `policy`, dev | performance and standard CPU jobs, and one standard job pinned to the eco Node `intel-2` | no performance pod is bound to a Node that was eco for longer than the placement grace; standard jobs completed on an eco Node and `intel-2` drew CPU energy, so the check is not vacuous |
-| `cap-cost` | `policy`, dev | CPU jobs that nearly fill an intel Node; GPU jobs with no CPU feed | the median slowdown of CPU jobs on the eco Node exceeds that on performance Nodes by more than 5 %; the median slowdown of the GPU jobs stays within 2 % |
+| `cap-cost` | `policy`, dev | CPU jobs that nearly fill an intel Node; GPU jobs with no CPU feed | `cpu-cap-cost`: the median slowdown of CPU jobs on the eco Node exceeds that on performance Nodes by more than 5 %; `gpu-unaffected-by-cpu-cap`: the median slowdown of the GPU jobs stays within 2 % |
 | `deadlock-visible` | `smoke`, dev | one gang of 2 pods of 8 GPUs, both pinned to `nvl-0`, which has 8 | the run reports `joulie.sim.run.stalled` and a `gang_incomplete` stall, and the gang never completes |
 | `nightly-mixed` | `nightly`, production; 60 minutes of arrivals, 20 to drain | workloadgen seed 7, offered load 0.5 to 0.8 of CPUs and both GPU kinds | at least 95 % of the due jobs complete; no performance pod on eco; no run stall; the NodeTwins' measured power within 15 % of the emulated energy rate at p95 (warning) |
 | `weekly-compare` | `nightly`, production | the nightly workload, three variants on fresh clusters: `joulie-off`, `queue-aware`, `kepler-compat` | per variant as nightly; Joulie spends no more energy than `joulie-off`, and its performance jobs take at most 10 % longer at p95 (warnings) |
 
-`cap-cost` sets `GPU_ECO_CAP_PCT_OF_MAX=100`. The controller never caps the CPU of a GPU Node, so with the eco GPU cap at 100 % nothing on a GPU Node is capped, and the GPU check measures what the eco profile costs a GPU job whose CPU feed intensity is 0: nothing. `perf-isolation` and `cap-cost` pin `static_partition` with `STATIC_HP_FRAC=0.5`, which on the `policy` spec puts `intel-2`, `epyc-1` and `nvl-1` in eco; `TestEcoNodesTheScenariosNameAreEco` checks that against `policy.BuildStaticPlan`.
+`cap-cost` sets `GPU_ECO_CAP_PCT_OF_MAX=100`, so every GPU is uncapped and the eco CPU cap is the only cap in play. The controller manager gives the CPU of a GPU Node the performance cap whatever its profile, and a GPU job whose CPU feed intensity is 0 would not feel a CPU cap anyway, so `gpu-unaffected-by-cpu-cap` checks that the CPU cap costs such a job nothing. No GPU cap is measured. `perf-isolation` and `cap-cost` pin `static_partition` with `STATIC_HP_FRAC=0.5`, which on the `policy` spec puts `intel-2`, `epyc-1` and `nvl-1` in eco.
 
 The specs the library adds, in `tests/simcluster/specs/`, carry no `baseLoad`, so a Node idles until a run's jobs load it:
 
 - `policy.yaml`: 3 `intel-xeon-2s-rapl`, 2 `amd-epyc-2s-energy-only`, 2 `nvidia-h100-nvl-8gpu`. Every family has more than one Node, so the policy keeps an eco Node in each.
 - `nightly.yaml`: 16 `intel-xeon-2s-rapl`, 12 `amd-epyc-2s-energy-only`, 4 `amd-epyc-2s-hsmp`, 8 `nvidia-h100-nvl-8gpu`, 4 `nvidia-h100-sxm-8gpu`, 4 `amd-instinct-mi300x-8gpu`, 2 `vm-no-powercap`.
 
-The tests in `simulator/pkg/scenario/scenarios_test.go` check the library without a cluster: every scenario validates and plans under the load limit, every job fits some Node of its spec (resources, node selector and taints), the nightly load stays between 0.5 and 0.8, and the deadlock gang fits its Node one pod at a time but never whole.
 
 ## How a run works
 
@@ -131,16 +130,15 @@ With `SIMCLUSTER_VALIDATE_OTLP=1`, every line of every OTLP file is also posted 
 
 ## Settings
 
-Besides those of `up.sh` and `deploy.sh` ([Simulated Cluster]({{< relref "/docs/simulator/simulated-cluster.md#settings" >}})); each variant's `variant.env` sets the spec, timing, telemetry mode and power scope.
+`scenario.sh` reads these besides the settings of `up.sh` and `deploy.sh` ([Simulated Cluster]({{< relref "/docs/simulator/simulated-cluster.md#settings" >}})). Each variant's `variant.env` sets the spec, timing, telemetry mode and power scope, and `scenario.sh` passes a scenario's `simulator.set` to `deploy.sh` through `SIMCLUSTER_SIM_EXTRA_VALUES`.
 
-| Variable | Effect |
-|---|---|
-| `SCENARIO` | the scenario file, for `make simcluster-scenario` |
-| `SCENARIO_VARIANTS` | run only these variants, space separated. The run is then not summarized, so the variants can run on separate machines and `simscenario summarize` can compare them afterwards |
-| `SCENARIO_RUN_DIR` | the run directory, instead of a new one under `runs/`; `runs/latest` is then left alone |
-| `SIMCLUSTER_VALIDATE_OTLP` | `1` posts the run's OTLP files to a Collector, above |
-| `SIMCLUSTER_SIM_EXTRA_VALUES` | simulator values files, space separated, after the generated ones; `scenario.sh` sets it for `simulator.set` |
-| `SIMCLUSTER_SCENARIOS` | `1` makes `make simcluster-smoke` also run the `smoke` scenario on its cluster after `TestSimclusterE2E`, into the smoke run's `scenario-smoke/` |
+| Variable | Default | Effect |
+|---|---|---|
+| `SCENARIO` | (none) | The scenario file, for `make simcluster-scenario` |
+| `SCENARIO_VARIANTS` | (empty: all) | Run only these variants, space separated. The run is then not summarized, so the variants can run on separate machines and `simscenario summarize` can compare them afterwards |
+| `SCENARIO_RUN_DIR` | a new `$SIMCLUSTER_DIR/runs/<UTC>-<scenario>-<sha12>[-dirty]` | The run directory; `runs/latest` is left alone when it is set |
+| `SIMCLUSTER_VALIDATE_OTLP` | (unset) | `1` posts the run's OTLP files to a Collector, above |
+| `SIMCLUSTER_SCENARIOS` | (unset) | `1` makes `make simcluster-smoke` also run the `smoke` scenario on its cluster after the end-to-end test, into the smoke run's `scenario-smoke/` |
 
 ## simscenario
 
@@ -156,8 +154,4 @@ Exit codes: 0 success, 1 a failed assertion or comparison of severity `fail`, 2 
 
 ## CI
 
-`.github/workflows/simcluster-nightly.yml` runs the library on a schedule, with `permissions: contents: read`, and never cancels a run in progress. Every job uploads its run directory, kept 14 days.
-
-- Monday to Saturday at 03:17 UTC: `nightly-mixed` (130 minute timeout) and `deadlock-visible` with the OTLP check, as separate jobs.
-- Sunday at 03:17 UTC: `weekly-compare`, one variant per runner (150 minute timeout) into a run directory named once for all of them, then a job that plans the same directory, collects the variants and runs `simscenario summarize`.
-- On demand (`workflow_dispatch`, which works once the file is on the default branch): `nightly` or `weekly`.
+CI runs `nightly-mixed` and `deadlock-visible` Monday to Saturday and `weekly-compare` on Sundays; the schedule is in [`tests/simcluster/README.md`](https://github.com/joulie-k8s/Joulie/blob/main/tests/simcluster/README.md#ci).

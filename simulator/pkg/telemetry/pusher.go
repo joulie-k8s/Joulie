@@ -99,7 +99,7 @@ func (p *Pusher) Run(ctx context.Context) {
 }
 
 // PushOnce exports the latest snapshot, unless there is none yet, with
-// every point at the time it builds the export (E16): points stamped with
+// every point at the time it builds the export: points stamped with
 // the snapshot time reach the receiver up to a tick old, and Prometheus
 // then extrapolates rate() less far past the newest sample, so a pushed
 // counter reads low. Counters keep their ledger's start. Each request goes

@@ -79,7 +79,7 @@ func cpuUtil(t *testing.T, snap *emulate.Snapshot, node string) float64 {
 // with its defaults, a trace with the model unset passes the mode check,
 // and the legacy model is refused there.
 func TestEmulateDefaultModelIsV1(t *testing.T) {
-	env := map[string]string{envEmulate: "true", envClusterSpec: "spec.yaml", envWorkloadTrace: "trace.jsonl"}
+	env := map[string]string{envEmulate: "true", envClusterSpec: "spec.yaml", workload.EnvTracePath: "trace.jsonl"}
 	o, _, err := loadWorkloadOptions(func(k string) string { return env[k] }, true)
 	if err != nil {
 		t.Fatal(err)
@@ -128,6 +128,7 @@ func TestRunAPILifecycle(t *testing.T) {
 	}
 
 	fake := k8sfake.NewSimpleClientset()
+	withDeleteCollection(t, fake)
 	prev := kubeClientFactory
 	kubeClientFactory = func(float32, int, time.Duration) (kubernetes.Interface, error) { return fake, nil }
 	t.Cleanup(func() { kubeClientFactory = prev })
@@ -222,8 +223,8 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 // cpufreq policy of node, as an agent would, before the first tick. The
 // tests that call it are about the workload engine and caps, not governors:
 // the shipped Intel profile runs intel_pstate powersave with EPP 128, below
-// the reference frequency, and the emulator counts work in cycles (design
-// D10), so a 0.6 load would read about 0.705 and a job would run at about
+// the reference frequency, and the emulator counts work in cycles, so a 0.6
+// load would read about 0.705 and a job would run at about
 // 0.88 of its ideal rate. Under performance the work runs at the reference
 // and the load reads as set.
 func runUnderPerformance(t *testing.T, et *emulateTest, node string) {
@@ -241,7 +242,7 @@ func runUnderPerformance(t *testing.T, et *emulateTest, node string) {
 
 // TestV1BaseLoadSuppressedDuringRun: the spec's base load drives the nodes
 // until a run starts; while it is active only its jobs load them, and the
-// base load returns once it ends (X9). The host runs performance
+// base load returns once it ends. The host runs performance
 // (runUnderPerformance), so its utilization is the load.
 func TestV1BaseLoadSuppressedDuringRun(t *testing.T) {
 	et := newEmulateTest(t, emulateTestConfig{})
@@ -484,5 +485,37 @@ func TestRunTraceErrorsNameTheLineOfTheirFile(t *testing.T) {
 	_, err = loadRunTrace(same, opts)
 	if !errors.As(err, &re) || re.Line != 3 {
 		t.Errorf("jobId x repeated on line 3 of the same part: %v, want a RunError on line 3", err)
+	}
+}
+
+// TestRunRequestTraceStaysInsideTheRunsDirectory: the run API has no
+// authentication, so a request may name a trace only inside the runs
+// directory. The old handler read any path the simulator could open.
+func TestRunRequestTraceStaysInsideTheRunsDirectory(t *testing.T) {
+	runs := t.TempDir()
+	rs := &runService{opts: workloadOptions{RunsDir: runs}}
+	for trace, ok := range map[string]bool{
+		"":                                       true,
+		filepath.Join(runs, "r1", "trace.jsonl"): true,
+		filepath.Join(runs, "..", "etc"):         false,
+		"/etc/passwd":                            false,
+		"relative/trace.jsonl":                   false,
+	} {
+		if err := rs.checkRequestTrace(trace); (err == nil) != ok {
+			t.Errorf("checkRequestTrace(%q) = %v, want ok=%v", trace, err, ok)
+		}
+	}
+}
+
+// TestDefaultSimAddrIsLoopbackOutsideAPod: without SIM_ADDR the simulator
+// listens on every interface only in a pod.
+func TestDefaultSimAddrIsLoopbackOutsideAPod(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	if got := defaultSimAddr(); got != "127.0.0.1:18080" {
+		t.Errorf("outside a pod: %q", got)
+	}
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+	if got := defaultSimAddr(); got != ":18080" {
+		t.Errorf("in a pod: %q", got)
 	}
 }

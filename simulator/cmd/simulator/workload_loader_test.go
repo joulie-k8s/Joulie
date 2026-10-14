@@ -1,16 +1,17 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -60,27 +61,40 @@ func injectionOrder(t *testing.T, s *simulator, ticks int) []string {
 }
 
 // TestLegacyInjectionOrderUnchanged pins the order and the per-tick split in
-// which the legacy engine creates pods. The golden was captured from the code
-// before the per-tick caps became settings, and legacy keeps sort.Slice, so
-// the order of jobs due at the same offset must not move either.
+// which the legacy engine creates pods. Legacy keeps sort.Slice, whose order
+// for jobs due at the same offset depends on the Go release, so the expected
+// order is sort.Slice applied to the trace on the running toolchain. The
+// per-tick counts were captured from the code before the per-tick caps became
+// settings.
 func TestLegacyInjectionOrderUnchanged(t *testing.T) {
+	trace := legacyOrderTrace()
 	s := newLoaderTestSimulator()
-	if err := s.initWorkloadEngineFromTrace(writeTrace(t, legacyOrderTrace()...)); err != nil {
-		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	if err := s.initWorkloadEngineWithOptions(writeTrace(t, trace...), workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
 	}
-	got := []byte(strings.Join(injectionOrder(t, s, 7), "\n") + "\n")
-	golden := filepath.Join("testdata", "legacy-injection-order.golden")
-	if *updateGoldens {
-		if err := os.WriteFile(golden, got, 0o644); err != nil {
+	got := injectionOrder(t, s, 7)
+
+	type rec struct {
+		JobID     string  `json:"jobId"`
+		Namespace string  `json:"namespace"`
+		Offset    float64 `json:"submitTimeOffsetSec"`
+	}
+	recs := make([]rec, len(trace))
+	for i, line := range trace {
+		if err := json.Unmarshal([]byte(line), &recs[i]); err != nil {
 			t.Fatal(err)
 		}
 	}
-	want, err := os.ReadFile(golden)
-	if err != nil {
-		t.Fatalf("read golden (regenerate with -update): %v", err)
+	sort.Slice(recs, func(i, j int) bool { return recs[i].Offset < recs[j].Offset })
+	ticks := []struct{ tick, pods int }{{0, 20}, {1, 12}, {2, 16}, {5, 16}}
+	var want []string
+	for _, tk := range ticks {
+		for _, r := range recs[len(want) : len(want)+tk.pods] {
+			want = append(want, fmt.Sprintf("%d %s/sim-%s %s", tk.tick, r.Namespace, r.JobID, r.JobID))
+		}
 	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("legacy injection order moved:\n got:\n%s\nwant:\n%s", got, want)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("legacy injection order moved:\n got:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
@@ -101,8 +115,8 @@ func TestLoadTraceReadsV3Fields(t *testing.T) {
 		rec("v2-mig", workload.TraceSchemaV2, `"nvidia.com/mig-1g.10gb":"1"`, `,"sensitivity":{"cpu":0.4,"gpu":0.5}`),
 	)
 	s := newLoaderTestSimulator()
-	if err := s.initWorkloadEngineFromTrace(path); err != nil {
-		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
 	}
 	byID := map[string]*simJob{}
 	for _, j := range s.workload.jobs {
@@ -137,21 +151,20 @@ func TestLoadTraceReadsV3Fields(t *testing.T) {
 
 	t.Run("a misspelled placement field is an error", func(t *testing.T) {
 		path := writeTrace(t, `{"type":"job","schemaVersion":"v3","jobId":"bad","podTemplate":{"requests":{"cpu":"1"},"nodeSelector":{"a":"b"},"tolerations":[{"keey":"x"}]}}`)
-		err := newLoaderTestSimulator().initWorkloadEngineFromTrace(path)
+		err := newLoaderTestSimulator().initWorkloadEngineWithOptions(path, workloadOptions{})
 		if err == nil || !strings.Contains(err.Error(), "trace line 1") || !strings.Contains(err.Error(), "keey") {
 			t.Fatalf("error = %v, want one naming trace line 1 and the field", err)
 		}
 	})
 }
 
-// TestV1LoaderKeepsTraceOrderAndNames: v1 sorts stably, so jobs due at the
-// same offset stay in trace order, and leaves pod names alone; its pods are
-// named by their Job objects.
-func TestV1LoaderKeepsTraceOrderAndNames(t *testing.T) {
+// TestV1LoaderKeepsTraceOrder: the v1 loader, loadRunTrace, sorts stably,
+// so jobs due at the same offset stay in trace order.
+func TestV1LoaderKeepsTraceOrder(t *testing.T) {
 	path := writeTrace(t, legacyOrderTrace()...)
-	engine, parts, err := newWorkloadEngineFromTrace(path, workloadOptions{Model: workload.ModelV1})
-	if err != nil || parts != 1 {
-		t.Fatalf("newWorkloadEngineFromTrace: parts %d, %v", parts, err)
+	engine, err := loadRunTrace(path, workloadOptions{})
+	if err != nil {
+		t.Fatalf("loadRunTrace: %v", err)
 	}
 	var want []string
 	for _, off := range []float64{0, 2, 5} {
@@ -168,5 +181,80 @@ func TestV1LoaderKeepsTraceOrderAndNames(t *testing.T) {
 	}
 	if engine.opts.model() != workload.ModelV1 {
 		t.Fatalf("engine model = %s, want v1", engine.opts.model())
+	}
+}
+
+// TestLegacyPodKeysUnchanged: a legacy pod carries the label, annotation,
+// container, image, toleration, node selector and affinity keys the legacy
+// experiments ran with, byte for byte. They are spelled out here, not taken
+// from simulator/pkg/workload, so a change to those constants fails here.
+func TestLegacyPodKeysUnchanged(t *testing.T) {
+	t.Setenv(workload.EnvImage, "")
+	path := writeTrace(t, `{"type":"job","jobId":"j-1","namespace":"team-a","workloadId":"w-1","workloadType":"Training Run","podRole":"Worker_0",`+
+		`"intentClass":"performance","podTemplate":{"requests":{"cpu":"2","memory":"512Mi","nvidia.com/gpu":"1"}},`+
+		`"workloadProfile":{"cpuUtilization":0.25,"gpuUtilization":0.875,"memoryIntensity":0.5,"ioIntensity":0.125},"work":{"cpuUnits":100,"gpuUnits":100}}`)
+	s := newLoaderTestSimulator()
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
+	}
+	kube := k8sfake.NewSimpleClientset()
+	s.injectTraceJobs(context.Background(), kube, time.Now().Add(time.Minute))
+	pod, err := kube.CoreV1().Pods("team-a").Get(context.Background(), "sim-j-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("legacy pod: %v", err)
+	}
+	wantLabels := map[string]string{
+		"app.kubernetes.io/part-of":   "joulie-sim-workload",
+		"sim.joulie.io/workload-type": "training-run",
+		"sim.joulie.io/pod-role":      "worker-0",
+	}
+	wantAnnotations := map[string]string{
+		"sim.joulie.io/jobId":               "j-1",
+		"sim.joulie.io/workloadId":          "w-1",
+		"sim.joulie.io/workloadType":        "Training Run",
+		"sim.joulie.io/podRole":             "Worker_0",
+		"sim.joulie.io/cpu-util-pct":        "25.0",
+		"sim.joulie.io/gpu-util-pct":        "87.5",
+		"sim.joulie.io/memory-pressure-pct": "50.0",
+		"sim.joulie.io/io-intensity":        "0.12",
+	}
+	if !reflect.DeepEqual(pod.Labels, wantLabels) {
+		t.Errorf("labels %v, want %v", pod.Labels, wantLabels)
+	}
+	if !reflect.DeepEqual(pod.Annotations, wantAnnotations) {
+		t.Errorf("annotations %v, want %v", pod.Annotations, wantAnnotations)
+	}
+	if c := pod.Spec.Containers; len(c) != 1 || c[0].Name != "work" || c[0].Image != "registry.k8s.io/pause:3.9" {
+		t.Errorf("containers %+v, want one named work running registry.k8s.io/pause:3.9", c)
+	}
+	wantTol := []corev1.Toleration{{Key: "kwok.x-k8s.io/node", Operator: corev1.TolerationOpEqual, Value: "fake", Effect: corev1.TaintEffectNoSchedule}}
+	if !reflect.DeepEqual(pod.Spec.Tolerations, wantTol) {
+		t.Errorf("tolerations %+v, want %+v", pod.Spec.Tolerations, wantTol)
+	}
+	wantSel := map[string]string{"type": "kwok", "feature.node.kubernetes.io/pci-10de.present": "true"}
+	if !reflect.DeepEqual(pod.Spec.NodeSelector, wantSel) {
+		t.Errorf("node selector %v, want %v", pod.Spec.NodeSelector, wantSel)
+	}
+	wantAff := &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+		NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{
+			{Key: "joulie.io/power-profile", Operator: corev1.NodeSelectorOpNotIn, Values: []string{"eco"}},
+		}}},
+	}}}
+	if !reflect.DeepEqual(pod.Spec.Affinity, wantAff) {
+		t.Errorf("affinity %+v, want %+v", pod.Spec.Affinity, wantAff)
+	}
+	if got := classifyClassFromPodSpec(&pod.Spec); got != "performance" {
+		t.Errorf("the pod reads back as class %q, want performance", got)
+	}
+
+	t.Setenv(workload.EnvImage, "example.org/work:1")
+	s = newLoaderTestSimulator()
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	kube = k8sfake.NewSimpleClientset()
+	s.injectTraceJobs(context.Background(), kube, time.Now().Add(time.Minute))
+	if pod, err := kube.CoreV1().Pods("team-a").Get(context.Background(), "sim-j-1", metav1.GetOptions{}); err != nil || pod.Spec.Containers[0].Image != "example.org/work:1" {
+		t.Errorf("with SIM_WORKLOAD_IMAGE set: pod %v, err %v; want the image example.org/work:1", pod, err)
 	}
 }

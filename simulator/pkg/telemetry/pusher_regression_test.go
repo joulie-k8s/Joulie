@@ -12,7 +12,7 @@ import (
 	"github.com/matbun/joulie/simulator/pkg/emulate"
 )
 
-// TM12 (E16): the Pusher stamps every point with the time it collects the
+// TM12: the Pusher stamps every point with the time it collects the
 // export, as a periodic reader that collects and exports at once does, not
 // with the time of the snapshot it reads. A point stamped with the snapshot
 // time reached Prometheus up to one emulation tick plus the tick's own
@@ -43,9 +43,9 @@ func TestTM12PusherStampsTheCollectionTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	starts := map[string]otlpjson.Uint64String{
-		"intel-0":        metricsUnixNano(testNodeStart),
-		"nvl-0":          metricsUnixNano(testNodeStart.Add(time.Minute)),
-		FacilityInstance: metricsUnixNano(testFacStart),
+		"intel-0":        testUnixNano(testNodeStart),
+		"nvl-0":          testUnixNano(testNodeStart.Add(time.Minute)),
+		FacilityInstance: testUnixNano(testFacStart),
 	}
 	lo, hi := otlpjson.Uint64String(before.UnixNano()), otlpjson.Uint64String(after.UnixNano())
 	points := 0
@@ -55,7 +55,7 @@ func TestTM12PusherStampsTheCollectionTime(t *testing.T) {
 				points++
 				if pt.TimeUnixNano < lo || pt.TimeUnixNano > hi {
 					t.Errorf("%s %s: timeUnixNano %d, want the push time, in [%d, %d] (the snapshot time is %d)",
-						id, name, pt.TimeUnixNano, lo, hi, metricsUnixNano(snap.Time))
+						id, name, pt.TimeUnixNano, lo, hi, testUnixNano(snap.Time))
 				}
 				if m.Sum != nil && pt.StartTimeUnixNano != starts[id] {
 					t.Errorf("%s %s: startTimeUnixNano %d, want the ledger start %d", id, name, pt.StartTimeUnixNano, starts[id])

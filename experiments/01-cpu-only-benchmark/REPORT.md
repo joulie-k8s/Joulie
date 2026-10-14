@@ -4,7 +4,7 @@ This page reports results from the CPU-only KWOK benchmark experiment:
 
 - [`experiments/01-cpu-only-benchmark/`](.)
 
-> **Note (2026-10-09):** Section 1.3 does not describe the CPU model these runs used. With the scripts in this repository, from the commit that added this report to v0.2.3, the installer pointed the simulator at a hardware catalog generated from the inventory, which holds no measured curves, so every CPU ran the analytic fallback model, not a SPECpower curve; the RAPL caps the agent wrote were enforced on that model by lowering the frequency. Thermal throttling was on by default (85 to 97 °C) and is opt-in now. These results have not been rerun with the current model; [Model changes](../../website/content/en/docs/simulator/model-changes.md) lists every change to the simulated numbers since v0.2.3 and how far each one moves this experiment's `configs/benchmark-debug.yaml`.
+> **Note (2026-10-09):** Section 1.3 does not describe the CPU model these runs used. With the scripts in this repository, from the commit that added this report to v0.2.3, the installer pointed the simulator at a hardware catalog generated from the inventory, which holds no measured curves, so every CPU ran the analytic fallback model, not a SPECpower curve; the RAPL caps the agent wrote were enforced on that model by lowering the frequency. Thermal throttling was on by default (85 to 97 °C) and is opt-in now. These results have not been rerun with the current model; [Simulator changes](../../simulator/CHANGES.md) lists every change to the simulated numbers since v0.2.3 and how far each one moves this experiment's `configs/benchmark-debug.yaml`.
 
 ## Scope
 

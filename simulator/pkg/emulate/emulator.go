@@ -41,9 +41,8 @@ const (
 	renderCheckTicks = 10
 	// maxDefaultWorkers caps the workers of a Config with Workers 0. A step
 	// is mostly system calls on the node's files, and past about 12 workers
-	// they contend in the kernel and the Go runtime: BenchmarkEM01Tick
-	// intel-200 on a 28-thread host took 205 ms with 8 or 12 workers, 240 ms
-	// with 16 and 290 ms with 28, on disk and on tmpfs alike.
+	// they contend in the kernel and the Go runtime (BenchmarkEM01Tick
+	// measures it), on disk and on tmpfs alike.
 	maxDefaultWorkers = 12
 )
 
@@ -114,7 +113,7 @@ type FacilityFunc func(specITPowerW float64, now time.Time) facility.Values
 
 // LoadFunc returns the job load of each node for the next tick, by node
 // name, and whether each member's BaseLoad is added to it. applyBase is
-// false while a workload run drives the nodes (X9).
+// false while a workload run drives the nodes.
 type LoadFunc func() (loads map[string]hwemu.Load, applyBase bool)
 
 // Emulator steps the emulated nodes of a cluster spec on one tick and
@@ -150,6 +149,7 @@ type Emulator struct {
 	lastTick     time.Time
 	peakITPowerW float64
 	facLedger    facilityLedger // accumulated
+	facFile      ledgerFile     // the facility ledger, kept open between ticks
 	facPublished facilityLedger // as last persisted, what snapshots show
 	facErr       string
 }
@@ -164,6 +164,7 @@ type member struct {
 	gpus       int
 	ledgerPath string
 	tmpDir     string
+	ledgerFile ledgerFile // the ledger, kept open between ticks
 
 	ledger    nodeLedger         // accumulated
 	hostBase  float64            // runner host counter at the last tick, 0 at New
@@ -277,6 +278,7 @@ func New(c Config) (*Emulator, error) {
 		return fail(fmt.Errorf("emulate: %w", err))
 	}
 	e.facLedger, e.facPublished = fl, fl.clone()
+	e.facFile = ledgerFile{path: filepath.Join(root, FacilityLedgerFile), tmpDir: root, prefix: facilityLedgerTmpPrefix}
 
 	names := make([]string, len(members))
 	for i, m := range members {
@@ -375,6 +377,7 @@ func (e *Emulator) startMember(m *member, c Config, opts hwemu.Options) error {
 	if m.ledger, err = loadNodeLedger(m.ledgerPath, name, c.Start); err != nil {
 		return err
 	}
+	m.ledgerFile = ledgerFile{path: m.ledgerPath, tmpDir: m.tmpDir, prefix: ledgerTmpPrefix}
 	m.compBase = map[string]float64{}
 	m.last = NodeSnapshot{
 		Name:        name,
@@ -454,6 +457,10 @@ func (e *Emulator) Close() error {
 	}
 	e.closed = true
 	e.metrics.unregister()
+	for _, m := range e.members {
+		m.ledgerFile.close()
+	}
+	e.facFile.close()
 	return e.unlock()
 }
 

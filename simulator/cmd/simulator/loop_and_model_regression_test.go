@@ -1,8 +1,9 @@
 package main
 
-// Regression tests FC01 to FC05: the workload tick, cap ranges, GPU counts,
-// the analytic cap solver and the emulated clock. Each one fails on the code
-// before its fix. FC07 is in pkg/hwinv/catalog_test.go.
+// Regression tests of the loops and the node model: the workload and pod
+// polling ticks (FC01, FC08), cap ranges (FC02), GPU counts (FC03), the
+// analytic cap solver (FC04) and the emulated clock (FC05). FC07 is in
+// pkg/hwinv/catalog_test.go.
 
 import (
 	"bytes"
@@ -218,9 +219,11 @@ func TestFC08PodPollingSurvivesANonPositiveInterval(t *testing.T) {
 				return k8sfake.NewSimpleClientset(), nil
 			}
 			t.Cleanup(func() { kubeClientFactory = prev })
-			prevList := podListFunc
-			podListFunc = func(context.Context, kubernetes.Interface) (map[string]int, error) { panic(fcStopLoop{}) }
-			t.Cleanup(func() { podListFunc = prevList })
+			prevList := podPollFunc
+			podPollFunc = func(context.Context, kubernetes.Interface) (map[string]int, []runningPodInfo, error) {
+				panic(fcStopLoop{})
+			}
+			t.Cleanup(func() { podPollFunc = prevList })
 
 			done := make(chan any, 1)
 			go func() {

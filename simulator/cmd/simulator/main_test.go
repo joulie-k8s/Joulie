@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/matbun/joulie/simulator/pkg/hw"
+	"github.com/matbun/joulie/simulator/pkg/workload"
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -41,9 +42,9 @@ func TestListRunningPodsByNode(t *testing.T) {
 			Status:     corev1.PodStatus{Phase: corev1.PodRunning},
 		},
 	)
-	counts, err := listRunningPodsByNode(context.Background(), client)
+	counts, _, err := listPodsForPoll(context.Background(), client)
 	if err != nil {
-		t.Fatalf("listRunningPodsByNode error: %v", err)
+		t.Fatalf("listPodsForPoll error: %v", err)
 	}
 	if counts["node-a"] != 1 || counts["node-b"] != 1 {
 		t.Fatalf("unexpected counts: %#v", counts)
@@ -672,8 +673,8 @@ func TestInitWorkloadEngineFromTraceParsesGPUResourceKey(t *testing.T) {
 		200,
 		prometheus.NewRegistry(),
 	)
-	if err := s.initWorkloadEngineFromTrace(path); err != nil {
-		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
 	}
 	if len(s.workload.jobs) != 3 {
 		t.Fatalf("jobs=%d want=3", len(s.workload.jobs))
@@ -715,8 +716,8 @@ func TestInitWorkloadEngineFromTraceReadsDirectoryOfParts(t *testing.T) {
 		200,
 		prometheus.NewRegistry(),
 	)
-	if err := s.initWorkloadEngineFromTrace(dir); err != nil {
-		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	if err := s.initWorkloadEngineWithOptions(dir, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
 	}
 	if len(s.workload.jobs) != 2 {
 		t.Fatalf("jobs=%d want=2", len(s.workload.jobs))
@@ -740,8 +741,8 @@ func TestInitWorkloadEngineFromTraceRejectsNonIntegerGPURequest(t *testing.T) {
 		200,
 		prometheus.NewRegistry(),
 	)
-	if err := s.initWorkloadEngineFromTrace(path); err != nil {
-		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
 	}
 	if len(s.workload.jobs) != 1 {
 		t.Fatalf("jobs=%d want=1", len(s.workload.jobs))
@@ -768,8 +769,8 @@ func TestInitWorkloadEngineFromTraceParsesWorkloadProfile(t *testing.T) {
 		200,
 		prometheus.NewRegistry(),
 	)
-	if err := s.initWorkloadEngineFromTrace(path); err != nil {
-		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
 	}
 	job := s.workload.jobs[0]
 	if job.CPUUtilTarget != 0.25 || job.GPUUtilTarget != 0.7 || job.MemoryIntensity != 0.8 || job.IOIntensity != 0.9 || job.CPUFeedIntensity != 0.6 {
@@ -780,19 +781,24 @@ func TestInitWorkloadEngineFromTraceParsesWorkloadProfile(t *testing.T) {
 	}
 }
 
+// A CPU cap slows a compute-bound job more than an I/O-bound one, and a GPU
+// job whose GPUs wait more on the CPU loses more GPU progress to it.
 func TestThrottleImpactHelpers(t *testing.T) {
-	compute := &simJob{CPUUtilTarget: 0.95, MemoryIntensity: 0.1, IOIntensity: 0.05, SensitivityCPU: 1.0}
-	ioBound := &simJob{CPUUtilTarget: 0.2, MemoryIntensity: 0.2, IOIntensity: 0.95, SensitivityCPU: 1.0}
-	computeFactor := cpuThrottleImpactFactor(0.5, compute)
-	ioFactor := cpuThrottleImpactFactor(0.5, ioBound)
+	rate := func(j *simJob) (float64, float64) {
+		return workload.Rates(workload.ModelLegacy, legacyRateInputs(j, 1, 0.5, 1, 1, 1))
+	}
+	compute := &simJob{RequestedCPUCores: 1, CPUUtilTarget: 0.95, MemoryIntensity: 0.1, IOIntensity: 0.05, SensitivityCPU: 1.0}
+	ioBound := &simJob{RequestedCPUCores: 1, CPUUtilTarget: 0.2, MemoryIntensity: 0.2, IOIntensity: 0.95, SensitivityCPU: 1.0}
+	computeFactor, _ := rate(compute)
+	ioFactor, _ := rate(ioBound)
 	if ioFactor <= computeFactor {
 		t.Fatalf("expected io-bound helper to degrade less: io=%f compute=%f", ioFactor, computeFactor)
 	}
 
-	gpuFed := &simJob{CPUFeedIntensity: 0.8, SensitivityCPU: 1.0}
-	gpuLoose := &simJob{CPUFeedIntensity: 0.2, SensitivityCPU: 1.0}
-	fedFactor := cpuFeedThrottleFactor(0.5, gpuFed)
-	looseFactor := cpuFeedThrottleFactor(0.5, gpuLoose)
+	gpuFed := &simJob{RequestedGPUs: 1, CPUFeedIntensity: 0.8, SensitivityCPU: 1.0}
+	gpuLoose := &simJob{RequestedGPUs: 1, CPUFeedIntensity: 0.2, SensitivityCPU: 1.0}
+	_, fedFactor := rate(gpuFed)
+	_, looseFactor := rate(gpuLoose)
 	if fedFactor >= looseFactor {
 		t.Fatalf("expected stronger cpu feed dependence to degrade more: fed=%f loose=%f", fedFactor, looseFactor)
 	}
@@ -1138,8 +1144,8 @@ func TestLoadTraceReadsExplicitIntentClass(t *testing.T) {
 		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil, nil, 200, prometheus.NewRegistry(),
 	)
-	if err := s.initWorkloadEngineFromTrace(path); err != nil {
-		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
 	}
 	if len(s.workload.jobs) != 1 {
 		t.Fatalf("jobs=%d want=1", len(s.workload.jobs))
@@ -1160,8 +1166,8 @@ func TestLoadTraceInfersIntentFromAffinityWhenNoExplicitField(t *testing.T) {
 		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil, nil, 200, prometheus.NewRegistry(),
 	)
-	if err := s.initWorkloadEngineFromTrace(path); err != nil {
-		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
 	}
 	if got := s.workload.jobs[0].Class; got != "performance" {
 		t.Fatalf("expected Class='performance' inferred from affinity, got %q", got)
@@ -1178,8 +1184,8 @@ func TestLoadTraceDefaultsToStandardWithNoAffinityNoField(t *testing.T) {
 		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil, nil, 200, prometheus.NewRegistry(),
 	)
-	if err := s.initWorkloadEngineFromTrace(path); err != nil {
-		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
 	}
 	if got := s.workload.jobs[0].Class; got != "standard" {
 		t.Fatalf("expected Class='standard', got %q", got)
@@ -1202,8 +1208,8 @@ func TestLoadTraceNeverProducesStaleClassNames(t *testing.T) {
 		simModel{BaseIdleW: 80, RaplHeadW: 5, DefaultCapW: 5000},
 		nil, nil, 200, prometheus.NewRegistry(),
 	)
-	if err := s.initWorkloadEngineFromTrace(path); err != nil {
-		t.Fatalf("initWorkloadEngineFromTrace: %v", err)
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
 	}
 	for _, j := range s.workload.jobs {
 		for _, stale := range staleNames {

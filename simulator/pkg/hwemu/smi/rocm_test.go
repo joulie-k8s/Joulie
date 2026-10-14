@@ -517,8 +517,8 @@ func TestSG04SetProfileSwitchesToManualFirst(t *testing.T) {
 	}
 }
 
-// SG08: the DPM options that printed "not emulated" with exit 2 now work;
-// every option still unmodelled exits 2 as before.
+// SG08: the DPM options are modelled and work; every option still
+// unmodelled exits 2.
 func TestSG08ModelledFlagsWorkOthersStillExit2(t *testing.T) {
 	t.Parallel()
 	n := newMI300XNode(t, rocmVariantCurrent, amdsmiVariant72)

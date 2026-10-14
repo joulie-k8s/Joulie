@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/csv"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -235,12 +236,13 @@ gpu:
 	}
 	i := slices.Index(gpuColumns, "native")
 	native := rows[gridGPU][i]
-	if !strings.HasPrefix(native, "-lgc ") {
-		t.Fatalf("the GPU row's native state is %q, want the plan's -lgc lock", native)
+	lock := governor.ParseNative(joulie.GovernorBackendNvidiaSMI, native).GPULockMHz
+	if lock == nil {
+		t.Fatalf("the GPU row's native state is %q, want the plan's graphics lock", native)
 	}
 	for _, l := range locks {
-		if got := readWord(l); got != strings.TrimPrefix(native, "-lgc ") {
-			t.Errorf("%s holds %q, the plan locks %q", l, got, native)
+		if got, want := readWord(l), fmt.Sprintf("%d,%d", lock[0], lock[1]); got != want {
+			t.Errorf("%s holds %q, the plan locks %q", l, got, want)
 		}
 	}
 }

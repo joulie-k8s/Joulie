@@ -223,7 +223,7 @@ func TestPL08SmokeTaintedNodeExcluded(t *testing.T) {
 
 // PL09: the agent DaemonSet the chart renders today, with the values of the
 // simulated cluster, reaches 46 of medium's 50 Nodes. It renders the chart
-// with helm, as the scripts do (R8), and skips without helm. A medium.yaml
+// with helm, as the scripts do, and skips without helm. A medium.yaml
 // that does not expand fails it: up.sh and simcluster validate refuse such
 // a spec too, and no other test loads it through clusterspec.
 func TestPL09MediumGives46EligibleNodes(t *testing.T) {
@@ -242,6 +242,7 @@ func TestPL09MediumGives46EligibleNodes(t *testing.T) {
 	cmd := exec.Command(helm, "template", "joulie", filepath.Join(testRepo, "charts", "joulie"), "-n", "joulie-system",
 		"-f", filepath.Join(testRepo, "values", "simcluster.yaml"),
 		"--set", "agent.mode=daemonset", "--show-only", "templates/agent-daemonset.yaml")
+	cmd.Env = append(os.Environ(), "KUBECONFIG=/dev/null")
 	render, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("helm template: %v", err)
@@ -279,6 +280,15 @@ func TestPlacementFromRender(t *testing.T) {
 	if len(got.Tolerations) != 1 || got.Tolerations[0].Key != "k" || got.ImageArch != "arm64" {
 		t.Errorf("placement %+v, want the toleration k and arch arm64", got)
 	}
+	// The runtime class and the volumes beyond the chart's own: the GPU
+	// tools reach the agent through either.
+	got, err = PlacementFromRender([]byte(ds("      runtimeClassName: nvidia\n      volumes: [{name: host-sys, emptyDir: {}}, {name: hardware-catalog, emptyDir: {}}, {name: nvidia-driver, emptyDir: {}}]\n")), "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RuntimeClassName != "nvidia" || !reflect.DeepEqual(got.ExtraVolumes, []string{"nvidia-driver"}) {
+		t.Errorf("placement %+v, want runtime class nvidia and the extra volume nvidia-driver only", got)
+	}
 	for name, tc := range map[string]struct{ render, arch, want string }{
 		"no arch":    {ds(""), "", "no image architecture"},
 		"none":       {"apiVersion: v1\nkind: ConfigMap\nmetadata: {name: x}\n", "amd64", "holds 0 DaemonSets"},
@@ -288,6 +298,42 @@ func TestPlacementFromRender(t *testing.T) {
 	} {
 		if _, err := PlacementFromRender([]byte(tc.render), tc.arch); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: error %v, want one containing %q", name, err, tc.want)
+		}
+	}
+}
+
+// PL10: the chart's agent DaemonSet, rendered with helm, delivers the GPU
+// tools exactly when agent.runtimeClassName or agent.extraVolumes is set;
+// its own volumes, the hardware catalog's included, deliver none.
+func TestPL10ToolDeliveryFromTheChartRender(t *testing.T) {
+	helm, err := exec.LookPath("helm")
+	if err != nil {
+		t.Skip("helm is not on PATH")
+	}
+	for name, tc := range map[string]struct {
+		args []string
+		want string
+	}{
+		"defaults":          {nil, ToolDeliveryNone},
+		"hardware catalog":  {[]string{"--set", "hardwareCatalog.enabled=true"}, ToolDeliveryNone},
+		"runtime class":     {[]string{"--set", "agent.runtimeClassName=nvidia"}, ToolDeliveryMounted},
+		"extra volumes":     {[]string{"--set-json", `agent.extraVolumes=[{"name":"nvidia-driver","hostPath":{"path":"/usr/lib/nvidia"}}]`}, ToolDeliveryMounted},
+		"simcluster values": {[]string{"-f", filepath.Join(testRepo, "values", "simcluster.yaml")}, ToolDeliveryNone},
+	} {
+		args := append([]string{"template", "joulie", filepath.Join(testRepo, "charts", "joulie"), "-n", "joulie-system",
+			"--set", "agent.mode=daemonset", "--show-only", "templates/agent-daemonset.yaml"}, tc.args...)
+		cmd := exec.Command(helm, args...)
+		cmd.Env = append(os.Environ(), "KUBECONFIG=/dev/null")
+		render, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: helm template: %v", name, err)
+		}
+		p, err := PlacementFromRender(render, "amd64")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := p.ToolDelivery(); got != tc.want {
+			t.Errorf("%s: tool delivery %s (runtime class %q, extra volumes %v), want %s", name, got, p.RuntimeClassName, p.ExtraVolumes, tc.want)
 		}
 	}
 }

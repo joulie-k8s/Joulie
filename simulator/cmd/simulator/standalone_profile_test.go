@@ -70,7 +70,7 @@ func TestStandaloneHonoursInventoryGPUCapRange(t *testing.T) {
 	log.SetOutput(io.Discard)
 	defer log.SetOutput(prev)
 	s := newSimulatorWithRegisterer(defaultBaseModelFromEnv(), nil, nil, 0, prometheus.NewRegistry())
-	if err := s.initWorkloadEngineFromTrace(trace); err != nil {
+	if err := s.initWorkloadEngineWithOptions(trace, workloadOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	runStandalone(s)
@@ -157,12 +157,13 @@ var profileModelFacts = map[string]struct {
 	// 2 x 400 W HSMP settling over hsmp.settleTauMS; the agent has no HSMP
 	// path, so eco scales the frequency.
 	"amd-epyc-2s-hsmp": {capMaxW: 800, capDefaultW: 800, capTauMS: 1000},
-	// Energy only, or no powercap: capped at the peak, 2 x maxPkgW. The tau
-	// stays the base model's 250 ms.
-	"amd-epyc-2s-energy-only":      {capMaxW: 720, capDefaultW: 720, capTauMS: 250},
+	// Energy only, or no powercap: capped at the peak, 2 x maxPkgW, or the
+	// curve's peak, 817 W for the 9654's catalog curve. The tau stays the
+	// base model's 250 ms.
+	"amd-epyc-2s-energy-only":      {capMaxW: 817, capDefaultW: 817, capTauMS: 250},
 	"amd-epyc-9534-2s-energy-only": {capMaxW: 560, capDefaultW: 560, capTauMS: 250},
 	"intel-xeon6-2s-no-powercap":   {capMaxW: 700, capDefaultW: 700, capTauMS: 250},
-	"amd-instinct-mi300x-8gpu":     {capMaxW: 720, capDefaultW: 720, capTauMS: 250, gpuMinW: 1, gpuMaxW: 750},
+	"amd-instinct-mi300x-8gpu":     {capMaxW: 817, capDefaultW: 817, capTauMS: 250, gpuMinW: 1, gpuMaxW: 750},
 	"nvidia-l40s-4gpu":             {capMaxW: 560, capDefaultW: 560, capTauMS: 250, gpuMinW: 100, gpuMaxW: 350},
 	"nvidia-h100-nvl-8gpu":         {capMaxW: 330, capDefaultW: 330, capTauMS: 999, ecoPowerCap: true, gpuMinW: 200, gpuMaxW: 400},
 	"nvidia-h100-sxm-8gpu":         {capMaxW: 330, capDefaultW: 330, capTauMS: 999, ecoPowerCap: true, gpuMinW: 200, gpuMaxW: 700},
@@ -247,7 +248,10 @@ func TestProfileModelMatchesProfileFacts(t *testing.T) {
 			if m.Defaulted != (hw.Defaulted{}) {
 				t.Errorf("Defaulted = %+v, want none: the profile sets every field", m.Defaulted)
 			}
-			if len(m.CPUPowerCurve) != 0 {
+			switch curve := cpu.Model == "catalog-curve"; {
+			case curve && len(m.CPUPowerCurve) == 0:
+				t.Errorf("a catalog-curve profile has no curve")
+			case !curve && len(m.CPUPowerCurve) != 0:
 				t.Errorf("an analytic profile has a curve of %d points", len(m.CPUPowerCurve))
 			}
 			if got := profileHasWritablePL1(p); got != facts.ecoPowerCap {

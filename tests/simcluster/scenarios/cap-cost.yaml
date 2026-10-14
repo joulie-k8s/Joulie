@@ -1,13 +1,16 @@
-# What the eco profile costs in run time. CPU jobs are pinned to the intel
+# What the eco CPU cap costs in run time. CPU jobs are pinned to the intel
 # pool (2 performance Nodes, intel-2 in eco under a 60 % CPU cap) and load a
 # Node almost fully, so the cap binds: their median slowdown on eco must
 # exceed the median on performance by more than 5 %. GPU jobs are pinned to
-# the nvl pool with a CPU feed intensity of 0: the controller never caps the
-# CPU of a GPU Node, and GPU_ECO_CAP_PCT_OF_MAX=100 leaves the eco GPUs
-# uncapped too, so their median slowdown must stay within 2 % of the ideal.
+# the nvl pool with a CPU feed intensity of 0, and GPU_ECO_CAP_PCT_OF_MAX=100
+# leaves every GPU uncapped on purpose, so the CPU cap is the only cap in
+# play: the controller never caps the CPU of a GPU Node, and a GPU job
+# without CPU feed would not feel it anyway, so their median slowdown must
+# stay within 2 % of the ideal (gpu-unaffected-by-cpu-cap). No GPU cap is
+# measured here.
 schemaVersion: 1
 name: cap-cost
-description: The eco CPU cap slows CPU jobs by more than 5 % and leaves GPU jobs without CPU feed at their ideal speed.
+description: The eco CPU cap slows CPU jobs by more than 5 % and leaves GPU jobs without CPU feed, on uncapped GPUs, at their ideal speed.
 cluster: {spec: tests/simcluster/specs/policy.yaml, timing: dev}
 seed: 1
 duration: 6m
@@ -50,5 +53,5 @@ assertions:
   quantile: 0.5
   reference: {workload: cpu, nodeProfile: performance}
   expect: "> 1.05"
-- {name: gpu-cap-cost, type: latency, workload: gpu, metric: slowdown, quantile: 0.5, expect: "<= 1.02"}
+- {name: gpu-unaffected-by-cpu-cap, type: latency, workload: gpu, metric: slowdown, quantile: 0.5, expect: "<= 1.02"}
 - {name: jobs, type: jobs, expect: {completedFraction: "== 1"}}

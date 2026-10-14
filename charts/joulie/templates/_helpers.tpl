@@ -114,6 +114,12 @@ containers:
       runAsUser: 0
       runAsGroup: 0
       allowPrivilegeEscalation: true
+      {{- if $emu }}
+      {{- /* Root without CAP_DAC_OVERRIDE gets EACCES writing a 0444 file,
+      as on kernfs, and still writes the 0644 files root owns in the tree. */}}
+      capabilities:
+        drop: ["DAC_OVERRIDE"]
+      {{- end }}
     volumeMounts:
       - name: host-sys
         mountPath: /host-sys

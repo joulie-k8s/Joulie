@@ -177,7 +177,7 @@ func TestLegacyInjectCapConfigurable(t *testing.T) {
 }
 
 // TestEmulateWithLegacyIsAnError: emulate mode runs the v1 engine, which
-// needs emulate mode (X10). The model defaults to v1 with SIM_EMULATE and to
+// needs emulate mode. The model defaults to v1 with SIM_EMULATE and to
 // legacy without it; the other pairing is an error, and checkModes lets a
 // trace through in emulate mode unless the model is legacy.
 func TestEmulateWithLegacyIsAnError(t *testing.T) {
@@ -197,13 +197,13 @@ func TestEmulateWithLegacyIsAnError(t *testing.T) {
 		t.Errorf("emulate with the model unset: model %s, %v; want v1", o.model(), err)
 	}
 
-	spec := map[string]string{envEmulate: "true", envClusterSpec: "/s.yaml", envWorkloadTrace: "/t.jsonl"}
+	spec := map[string]string{envEmulate: "true", envClusterSpec: "/s.yaml", workload.EnvTracePath: "/t.jsonl"}
 	if err := checkModes(envMap(spec)); err != nil {
 		t.Errorf("checkModes with a v1 trace: %v", err)
 	}
 	spec[workload.EnvModel] = "legacy"
-	if err := checkModes(envMap(spec)); err == nil || !strings.Contains(err.Error(), envWorkloadTrace) {
-		t.Errorf("checkModes with a legacy trace: error = %v, want one naming %s", err, envWorkloadTrace)
+	if err := checkModes(envMap(spec)); err == nil || !strings.Contains(err.Error(), workload.EnvTracePath) {
+		t.Errorf("checkModes with a legacy trace: error = %v, want one naming %s", err, workload.EnvTracePath)
 	}
 }
 

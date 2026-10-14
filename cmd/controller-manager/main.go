@@ -103,6 +103,11 @@ type NodeHardware struct {
 	CPUGovernorPresets []string
 	GPUGovernorPresets []string
 	CPUBoostAvailable  bool
+	// GPUGovernorGap is true when status.gpu.governor holds a baseline and
+	// no mechanism: the agent kept the baseline through a discovery a tool
+	// did not answer, so the block lists no presets without the node having
+	// lost any.
+	GPUGovernorGap bool
 }
 
 var (
@@ -1049,6 +1054,7 @@ func parseNodeHardware(obj *v1alpha1.NodeHardware) NodeHardware {
 		nh.GPUControlAvailable = gpu.ControlAvailable
 		if g := gpu.Governor; g != nil {
 			nh.GPUGovernorPresets = governorPresetNames(g.Presets)
+			nh.GPUGovernorGap = g.Mechanism == "" && g.Baseline != nil
 		}
 	}
 	if q := obj.Status.Quality; q != nil {
@@ -1212,9 +1218,28 @@ func intEnv(key string, def int) int {
 	return def
 }
 
+// boolEnvWords are the spellings a boolean variable takes, in any case.
+var boolEnvWords = map[string]bool{
+	"true": true, "1": true, "yes": true, "on": true,
+	"false": false, "0": false, "no": false, "off": false,
+}
+
+// boolEnvWarned holds the values already warned about, by variable.
+var boolEnvWarned sync.Map
+
+// boolEnv reads a boolean variable: true, 1, yes or on, false, 0, no or off,
+// in any case. Unset or empty gives def; any other value gives def with one
+// warning naming the variable, so a typo never flips a switch.
 func boolEnv(key string, def bool) bool {
-	if s := strings.TrimSpace(os.Getenv(key)); s != "" {
-		return strings.EqualFold(s, "true") || s == "1" || strings.EqualFold(s, "yes")
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	if v, ok := boolEnvWords[strings.ToLower(raw)]; ok {
+		return v
+	}
+	if _, seen := boolEnvWarned.LoadOrStore(key+"="+raw, true); !seen {
+		log.Printf("warning: %s=%q is not true, 1, yes, on, false, 0, no or off; using %t", key, raw, def)
 	}
 	return def
 }

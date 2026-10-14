@@ -11,7 +11,8 @@ sys/devices/system/cpu R dir 0755
 sys/devices/system/cpu/cpufreq R dir 0755
 sys/devices/system/cpu/cpufreq/policy{N} R dir 0755 [N=0-343]
 sys/devices/system/cpu/cpufreq/policy{N}/affected_cpus R file 0444 [N=0-343]
-sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_max_freq R file 0444 [N=0-343]
+sys/devices/system/cpu/cpufreq/policy{N}/base_frequency R file 0444 [N=0-343]
+sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_max_freq S file 0444 [N=0-343]
 sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_min_freq R file 0444 [N=0-343]
 sys/devices/system/cpu/cpufreq/policy{N}/cpuinfo_transition_latency R file 0444 [N=0-343]
 sys/devices/system/cpu/cpufreq/policy{N}/energy_performance_available_preferences R file 0444 [N=0-343]

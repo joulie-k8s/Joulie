@@ -10,22 +10,41 @@ import (
 	"github.com/matbun/joulie/pkg/otel/semconv"
 )
 
-// Names of the compatibility presets. Kepler 0.10 and later label node
-// series with node_name and RAPL zones with zone; Kepler 0.7 to 0.9 label
-// them with instance, which Prometheus renames exported_instance when it
-// scrapes with honor_labels false. Both name the GPU counter the same. The
-// datacenter_* names are what the controller manager read before the otel
-// facility preset existed.
+// The Kepler names the kepler and kepler-legacy presets read. The
+// simulator's compatibility exporters (simulator/pkg/compat) write the same
+// constants, so a reader and its writer cannot drift apart.
+//
+// Kepler 0.10 and later label node series with node_name and RAPL zones with
+// zone. A zone is named after the RAPL name file with a trailing socket index
+// stripped, so package-0 and package-1 are one zone "package" summed over the
+// sockets, while a die zone such as package-0-die-1 keeps its name and is a
+// zone of its own (prometheus/procfs sysfs/class_powercap.go,
+// getIndexAndName). KeplerPackageZones matches both. kepler_node_cpu_joules_total
+// is the RAPL counter as the kernel shows it and wraps at
+// max_energy_range_uj; the active and idle counters accumulate Kepler's own
+// wrap-corrected increments and never wrap, so the kepler preset reads those.
+//
+// Kepler 0.7 to 0.9 label node series with instance, which Prometheus
+// renames exported_instance when it scrapes with honor_labels false. Both
+// name the GPU counter the same.
 const (
-	keplerCPUJoules       = "kepler_node_cpu_joules_total"
-	keplerGPUJoules       = "kepler_node_gpu_joules_total"
-	keplerNodeLabel       = "node_name"
-	keplerZoneLabel       = "zone"
-	keplerPackageZone     = "package"
-	keplerLegacyPackage   = "kepler_node_package_joules_total"
-	keplerLegacyPlatform  = "kepler_node_platform_joules_total"
-	keplerLegacyNodeLabel = "exported_instance"
+	KeplerCPUJoules       = "kepler_node_cpu_joules_total"
+	KeplerCPUActiveJoules = "kepler_node_cpu_active_joules_total"
+	KeplerCPUIdleJoules   = "kepler_node_cpu_idle_joules_total"
+	KeplerCPUWatts        = "kepler_node_cpu_watts"
+	KeplerGPUJoules       = "kepler_node_gpu_joules_total"
+	KeplerNodeLabel       = "node_name"
+	KeplerZoneLabel       = "zone"
+	KeplerPackageZones    = `package(-[0-9]+-die-[0-9]+)?`
 
+	KeplerLegacyPackageJoules  = "kepler_node_package_joules_total"
+	KeplerLegacyPlatformJoules = "kepler_node_platform_joules_total"
+	KeplerLegacyNodeLabel      = "exported_instance"
+)
+
+// The names the legacy facility preset reads, the datacenter_* metrics the
+// controller manager read before the otel facility preset existed.
+const (
 	legacyAmbientTemp  = "datacenter_ambient_temperature_celsius"
 	legacyITPower      = "datacenter_total_it_power_watts"
 	legacyCoolingPower = "datacenter_cooling_power_watts"

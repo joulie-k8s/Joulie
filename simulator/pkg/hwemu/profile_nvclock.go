@@ -1,6 +1,7 @@
 package hwemu
 
 import (
+	"cmp"
 	"fmt"
 	"path"
 	"regexp"
@@ -74,9 +75,10 @@ func nvclockLocksResetOnDeinit(c *NVClocksSpec) bool {
 // renderValidateNVClock returns every problem with p.GPUs.Clocks: clocks on
 // a GPU that is not NVIDIA, a range that is not 0 < min <= idle <= max, a
 // sustained maximum outside [min, max], an idle performance state that is
-// not P0 to P15, and a supported list that is empty, repeats a clock, or
-// does not span exactly [min, max] of its domain, which -q -d
-// SUPPORTED_CLOCKS would then contradict.
+// not P0 to P15, a supported list that is empty, repeats a clock, or does
+// not span exactly [min, max] of its domain, which -q -d SUPPORTED_CLOCKS
+// would then contradict, and a graphics ceiling of a memory clock that is
+// not a supported pair or that a lower memory clock exceeds.
 func renderValidateNVClock(p *Profile) []error {
 	if p.GPUs == nil || p.GPUs.Clocks == nil {
 		return nil
@@ -115,7 +117,65 @@ func renderValidateNVClock(p *Profile) []error {
 	if !renderPStateRegex.MatchString(c.IdlePState.V) {
 		fail("idlePState %q is not P0 to P15", c.IdlePState.V)
 	}
+	pairs := nvclockCeilings(c)
+	for i, pr := range pairs {
+		if !slices.Contains(c.Supported.MemMHz.V, pr[0]) || !slices.Contains(c.Supported.SMMHz.V, pr[1]) {
+			fail("supported.smMaxByMem: memory %d MHz, graphics %d MHz is not a supported memory clock and a supported graphics clock", pr[0], pr[1])
+		}
+		if i > 0 && (pr[0] == pairs[i-1][0] || pr[1] > pairs[i-1][1]) {
+			fail("supported.smMaxByMem lists memory clock %d MHz twice, or gives it a higher graphics clock than memory clock %d MHz", pr[0], pairs[i-1][0])
+		}
+	}
 	return errs
+}
+
+// nvclockCeilings is supported.smMaxByMem as [memory MHz, graphics MHz]
+// pairs, highest memory clock first.
+func nvclockCeilings(c *NVClocksSpec) [][2]int64 {
+	pairs := make([][2]int64, 0, len(c.Supported.SMMaxByMem))
+	for _, x := range c.Supported.SMMaxByMem {
+		pairs = append(pairs, [2]int64{x.MemMHz.V, x.SMMaxMHz.V})
+	}
+	slices.SortStableFunc(pairs, func(a, b [2]int64) int { return cmp.Compare(b[0], a[0]) })
+	return pairs
+}
+
+// nvclockSMCeilMHz is the highest graphics clock the GPU offers while its
+// memory runs at memMHz (supported.smMaxByMem): the ceiling of the highest
+// supported memory clock at or below memMHz, or of the lowest one when
+// memMHz is below them all, and 0, none, for a memory clock without one.
+func nvclockSMCeilMHz(c *NVClocksSpec, memMHz int64) int64 {
+	if len(c.Supported.SMMaxByMem) == 0 || len(c.Supported.MemMHz.V) == 0 {
+		return 0
+	}
+	level := slices.Min(c.Supported.MemMHz.V)
+	for _, m := range c.Supported.MemMHz.V {
+		if m <= memMHz && m > level {
+			level = m
+		}
+	}
+	for _, x := range c.Supported.SMMaxByMem {
+		if x.MemMHz.V == level {
+			return x.SMMaxMHz.V
+		}
+	}
+	return 0
+}
+
+// nvclockSupportedText is supported_clocks: one line per domain, the clocks
+// in descending order as -q -d SUPPORTED_CLOCKS prints them, then one
+// graphics-max line per memory clock that offers only the graphics clocks up
+// to a ceiling, highest memory clock first:
+//
+//	memory 1500 800 300
+//	graphics 1500 1485 ... 300
+//	graphics-max 300 645
+func nvclockSupportedText(c *NVClocksSpec) string {
+	s := "memory " + nvclockMHzList(c.Supported.MemMHz.V) + "\ngraphics " + nvclockMHzList(c.Supported.SMMHz.V) + "\n"
+	for _, pr := range nvclockCeilings(c) {
+		s += fmt.Sprintf("graphics-max %d %d\n", pr[0], pr[1])
+	}
+	return s
 }
 
 // renderNVClock writes the clock files of every NVIDIA GPU of p that has
@@ -123,19 +183,15 @@ func renderValidateNVClock(p *Profile) []error {
 // idle performance state and the GPU-idle event reason (S), the maximum and
 // supported clocks (R), and the hidden locks, unlocked (A). A GPU whose
 // memory clock has no run-time lock gets the not-supported token in
-// locked_mem_clocks, render-owned. supported_clocks holds one line per
-// domain, the clocks in descending order as -q -d SUPPORTED_CLOCKS prints
-// them:
-//
-//	memory 1500 800 300
-//	graphics 1500 1485 ... 300
+// locked_mem_clocks, render-owned. supported_clocks is
+// nvclockSupportedText.
 func renderNVClock(b *renderBuilder, p *Profile, o RenderOptions) error {
 	g := p.GPUs
 	if g == nil || g.Vendor != "nvidia" || g.Clocks == nil {
 		return nil
 	}
 	c := g.Clocks
-	supported := "memory " + nvclockMHzList(c.Supported.MemMHz.V) + "\ngraphics " + nvclockMHzList(c.Supported.SMMHz.V) + "\n"
+	supported := nvclockSupportedText(c)
 	memLock := renderEntry{name: layout.NVMLLockedMemClocksFile, content: nvclockUnlocked + "\n", owner: layout.OwnerAgent, mode: 0o644}
 	if !c.Mem.RuntimeLock.V {
 		memLock = renderEntry{name: layout.NVMLLockedMemClocksFile, content: nvclockNotSupported + "\n", owner: layout.OwnerRender, mode: 0o444}

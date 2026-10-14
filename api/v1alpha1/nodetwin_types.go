@@ -131,7 +131,9 @@ type PowerMeasurement struct {
 	// The enum must accept every value in joulie.PowerSourceValues
 	// (pkg/api/types.go); tests/contracts enforces it.
 
-	// Measurement source: kepler, utilization, or static
+	// Where measuredNodePowerW came from: prometheus, prometheus-no-data,
+	// http, http-error, http-no-endpoint or static; kepler and utilization
+	// are reserved.
 	// +kubebuilder:validation:Enum=kepler;utilization;static;http;http-error;http-no-endpoint;prometheus;prometheus-no-data
 	Source string `json:"source,omitempty"`
 	// Measured node power draw in watts: the CPU packages plus the GPUs, or

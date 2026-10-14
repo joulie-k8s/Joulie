@@ -24,14 +24,10 @@ type RateInputs struct {
 	SensitivityCPU float64
 	SensitivityGPU float64
 	// CPUMul and GPUMul are the throughput of the job's CPUs and GPUs
-	// relative to full speed: 1 while no cap binds.
+	// relative to full speed: 1 while no cap binds. GPUMul holds all a GPU
+	// cap costs; no other input charges the cap.
 	CPUMul float64
 	GPUMul float64
-	// GPUCapFactor is the GPU cap over the board's maximum power. No model
-	// reads it: GPUMul already holds what the cap costs, and ModelLegacy
-	// charging this factor as well counted the cap twice. It stays so that
-	// existing callers keep compiling.
-	GPUCapFactor float64
 	// CPUShare and GPUShare are the job's share of the node's CPUs and of
 	// its GPUs when they are oversubscribed or time-sliced: in ModelV1,
 	// CPUSlots.Share and GPUSlots.Share.
@@ -58,16 +54,12 @@ type RateInputs struct {
 // with impact = clamp01(0.6 cpuUtil + 0.25 (1 - mem) + 0.15 (1 - io)): a
 // compute-bound job loses more of a CPU cap than a memory- or I/O-bound one.
 //
-// GPU, ModelLegacy, the simulator's formula before S4 with the GPU cap
-// counted once:
+// GPU, ModelLegacy:
 //
 //	max(0.1, G) x base x GPUMul x feed x GPUShare
 //
-// The formula before S4 multiplied this by 1 - (1 - GPUCapFactor) x S_gpu as
-// well, which charged the cap a second time, even when the cap was above
-// what the job draws. Without that factor S_gpu does not enter the legacy
-// GPU rate, and the result is bit-identical to the old one whenever S_gpu is
-// 0 or the GPU is uncapped.
+// GPUMul is the whole cost of a GPU cap, so a cap the job's power never
+// reaches costs nothing, and S_gpu does not enter the legacy GPU rate.
 //
 // GPU, ModelV1 (and any model other than ModelLegacy):
 //
@@ -86,8 +78,9 @@ type RateInputs struct {
 //
 // It is thr when p is 0, bit for bit, and 0 when thr or g is 0.
 //
-// ModelLegacy keeps the operand order of the old code, so its CPU rate is
-// bit-identical to it.
+// The CPU rate keeps the operand order the legacy experiments ran with, so
+// their numbers stay bit-identical; reordering it moves them in the last
+// bits.
 func Rates(model Model, in RateInputs) (cpuRate, gpuRate float64) {
 	cpuRate = in.CPURequest * in.BaseSpeed * cpuThrottleFactor(in) * in.CPUShare
 	if cpuRate < 0 {
@@ -120,7 +113,8 @@ func peerFactor(thr float64, in RateInputs) float64 {
 	return 1.0 / ((1.0-p)/thr + p/g)
 }
 
-// cpuThrottleFactor is the simulator's cpuThrottleImpactFactor.
+// cpuThrottleFactor is the CPU throughput factor of Rates' CPU rate:
+// clamp01(1 - S_cpu x impact x (1 - CPUMul)).
 func cpuThrottleFactor(in RateInputs) float64 {
 	baseImpact := clamp01(0.60*clamp01(in.CPUUtil) + 0.25*(1.0-clamp01(in.MemoryIntensity)) + 0.15*(1.0-clamp01(in.IOIntensity)))
 	effective := 1.0 - baseImpact*(1.0-clamp01(in.CPUMul))
@@ -128,7 +122,8 @@ func cpuThrottleFactor(in RateInputs) float64 {
 	return clamp01(effective)
 }
 
-// cpuFeedFactor is the simulator's cpuFeedThrottleFactor.
+// cpuFeedFactor is the feed factor of Rates' GPU rate, 1 for a job with no
+// CPU feed.
 func cpuFeedFactor(in RateInputs) float64 {
 	feed := clamp01(in.CPUFeedIntensity)
 	if feed <= 0 {
