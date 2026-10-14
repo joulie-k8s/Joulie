@@ -806,18 +806,13 @@ func TestGPUResourceNamesConsistent(t *testing.T) {
 	// The workloadgen defaults to "nvidia.com/gpu" (simulator/cmd/workloadgen/main.go:761-766).
 	// The simulator's loadTraceFileIntoEngine recognizes: "nvidia.com/gpu", "amd.com/gpu", "gpu"
 	// (simulator/cmd/simulator/main.go:1947-1953).
-	// The scheduler's powerest.ExtractPodDemand checks: "nvidia.com/gpu", "amd.com/gpu", "gpu.intel.com/i915"
-	// (pkg/scheduler/powerest/extract.go).
+	// The scheduler's powerest.ExtractPodDemand counts every resource
+	// pkg/api.GPUResourceKind classifies (gpu_resources_test.go, GR02).
 	jobs, _ := generateTrace(t, 50)
 	simulatorKnown := map[string]bool{
 		"nvidia.com/gpu": true,
 		"amd.com/gpu":    true,
 		"gpu":            true,
-	}
-	schedulerKnown := map[string]bool{
-		"nvidia.com/gpu":     true,
-		"amd.com/gpu":        true,
-		"gpu.intel.com/i915": true,
 	}
 	for _, j := range jobs {
 		for key := range j.PodTemplate.Requests {
@@ -829,7 +824,7 @@ func TestGPUResourceNamesConsistent(t *testing.T) {
 				t.Errorf("job %s requests GPU resource %q which simulator does not recognize "+
 					"(simulator knows: nvidia.com/gpu, amd.com/gpu, gpu)", j.JobID, key)
 			}
-			if !schedulerKnown[key] {
+			if joulie.GPUResourceKind(key) == "" {
 				t.Errorf("job %s requests GPU resource %q which scheduler ExtractPodDemand "+
 					"does not recognize", j.JobID, key)
 			}

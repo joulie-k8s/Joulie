@@ -476,7 +476,7 @@ var renderToolVariants = map[string]struct {
 	variants map[string]bool
 }{
 	"nvidia-smi": {"nvidia", map[string]bool{"default": true}},
-	"rocm-smi":   {"amd", map[string]bool{"current": true, "legacy-agent-contract": true}},
+	"rocm-smi":   {"amd", map[string]bool{"current": true}},
 	"amd-smi":    {"amd", map[string]bool{"7.1": true, "7.2": true}},
 }
 

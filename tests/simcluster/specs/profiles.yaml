@@ -33,7 +33,7 @@ spec:
   # The GPU pools get the GPU tools a node with the driver installed has (a
   # driver stub at each path the tools need). A pool left out follows the
   # Joulie install, which by default delivers none (agent.runtimeClassName and
-  # agent.extraVolumes unset), so its agent's GPU inventory fails.
+  # agent.extraVolumes unset), so its agent's NVIDIA GPU inventory fails.
   harness:
     pools:
       mi300x: {toolDelivery: mounted}

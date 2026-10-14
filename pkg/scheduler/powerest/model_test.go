@@ -122,7 +122,7 @@ func TestExtractPodDemand_GPUNvidia(t *testing.T) {
 	}
 	d := ExtractPodDemand(pod, "standard")
 	if d.GPUCount != 2 {
-		t.Errorf("expected 2 GPUs, got %d", d.GPUCount)
+		t.Errorf("expected 2 GPUs, got %g", d.GPUCount)
 	}
 	if d.GPUVendor != "nvidia" {
 		t.Errorf("expected nvidia vendor, got %s", d.GPUVendor)
@@ -143,7 +143,7 @@ func TestExtractPodDemand_GPUAMD(t *testing.T) {
 	}
 	d := ExtractPodDemand(pod, "standard")
 	if d.GPUCount != 1 || d.GPUVendor != "amd" {
-		t.Errorf("expected 1 AMD GPU, got %d %s", d.GPUCount, d.GPUVendor)
+		t.Errorf("expected 1 AMD GPU, got %g %s", d.GPUCount, d.GPUVendor)
 	}
 }
 
@@ -161,7 +161,7 @@ func TestExtractPodDemand_GPUIntel(t *testing.T) {
 	}
 	d := ExtractPodDemand(pod, "standard")
 	if d.GPUCount != 1 || d.GPUVendor != "intel" {
-		t.Errorf("expected 1 Intel GPU, got %d %s", d.GPUCount, d.GPUVendor)
+		t.Errorf("expected 1 Intel GPU, got %g %s", d.GPUCount, d.GPUVendor)
 	}
 }
 

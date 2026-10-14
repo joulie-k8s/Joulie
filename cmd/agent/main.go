@@ -178,6 +178,14 @@ type GPUDevice struct {
 	CurrentCapWatts float64
 	MinCapWatts     float64
 	MaxCapWatts     float64
+	// BusID and HwmonDir are set for AMD devices only: the PCI bus id and
+	// the amdgpu hwmon directory the cap is read from and written to.
+	// CapUnknown marks an AMD device that refused to read its cap (runtime
+	// suspended or in reset) and that the agent has neither read nor
+	// written: its cap and range are 0, and a cap is written to it.
+	BusID      string
+	HwmonDir   string
+	CapUnknown bool
 }
 
 type GPUTelemetry struct {
@@ -727,9 +735,9 @@ func reconcileOnce(
 		}
 	} else {
 		msg := "no GPU cap intent"
-		if allocatableGPUCount(node) > 0 {
+		if hw.GPUCount > 0 {
 			msg = "no GPU cap intent for GPU node; leaving current GPU state unchanged"
-			log.Printf("warning: node=%s has allocatable GPUs but NodeTwin has no gpu.powerCap; leaving GPU state unchanged", nodeName)
+			log.Printf("warning: node=%s has GPUs but NodeTwin has no gpu.powerCap; leaving GPU state unchanged", nodeName)
 		}
 		_ = updateTelemetryGPUStatus(ctx, dyn, telemetry, nodeName, "none", "none", msg, nil)
 	}
@@ -1036,7 +1044,10 @@ func applyGPUIntentFrom(
 		nodeName = node.Name
 		nodeLabels = node.Labels
 	}
-	if allocatableGPUCount(node) <= 0 {
+	// A node is a GPU node when its labels or resources say so
+	// (nodeGPUCount), or when the inventory listed GPUs, as on a DRA node.
+	listed := inv != nil && inv.err == nil && len(inv.devices) > 0
+	if nodeGPUCount(node) <= 0 && !listed {
 		return "none", "blocked", "node has no allocatable GPU resources", map[string]any{
 			"node":               nodeName,
 			"allocatableGPUs":    0,
@@ -1073,7 +1084,14 @@ func applyGPUIntentFrom(
 	if len(devices) == 0 {
 		return "none", "blocked", "no GPU devices discovered", map[string]any{"vendor": vendor}, nil
 	}
-	capPerGPU, msg, ok := resolveGPUCapPerDevice(intent, devices)
+	resolveFrom := devices
+	if vendor == "amd" {
+		devices, resolveFrom = amdgpuCapSets(devices)
+		if len(devices) == 0 {
+			return "none", "blocked", "no amdgpu device has a power cap of its own", map[string]any{"vendor": vendor}, nil
+		}
+	}
+	capPerGPU, msg, ok := resolveGPUCapPerDevice(intent, resolveFrom)
 	if !ok {
 		return "none", "blocked", msg, map[string]any{"vendor": vendor, "deviceCount": len(devices)}, nil
 	}
@@ -1098,7 +1116,7 @@ func applyGPUIntentFrom(
 		}
 		return "host-nvidia", "applied", fmt.Sprintf("applied gpu cap %.1fW on %d devices", capPerGPU, len(devices)), observed, nil
 	case "amd":
-		if err := applyAmdGPUCap(ctx, devices, capPerGPU); err != nil {
+		if err := applyAmdGPUCap(devices, capPerGPU); err != nil {
 			return "host-amd", "error", err.Error(), observed, nil
 		}
 		return "host-amd", "applied", fmt.Sprintf("applied gpu cap %.1fW on %d devices", capPerGPU, len(devices)), observed, nil
@@ -1107,18 +1125,34 @@ func applyGPUIntentFrom(
 	}
 }
 
+// allocatableGPUCount is the number of GPU units the node advertises, of
+// any kind joulie.GPUResourceKind knows: whole GPUs, MIG devices,
+// partitions and shared replicas.
 func allocatableGPUCount(node *corev1.Node) int64 {
 	if node == nil {
 		return 0
 	}
 	var total int64
 	for k, q := range node.Status.Allocatable {
-		key := strings.ToLower(string(k))
-		if key == "nvidia.com/gpu" || key == "amd.com/gpu" || key == "gpu.intel.com/i915" || strings.HasSuffix(key, "/gpu") {
+		if joulie.GPUResourceKind(string(k)) != "" {
 			total += q.Value()
 		}
 	}
 	return total
+}
+
+// nodeGPUCount is the node's GPU count from its own object: the physical
+// count its labels state (joulie.GPUCountFromLabels), else its GPU units
+// (allocatableGPUCount), which are the physical count only for whole GPUs
+// without sharing.
+func nodeGPUCount(node *corev1.Node) int64 {
+	if node == nil {
+		return 0
+	}
+	if n, ok := joulie.GPUCountFromLabels(node.Labels); ok {
+		return int64(n)
+	}
+	return allocatableGPUCount(node)
 }
 
 func resolveGPUCapPerDevice(intent *GPUPowerCap, devices []GPUDevice) (float64, string, bool) {
@@ -1173,6 +1207,9 @@ func detectGPUVendor(ctx context.Context, nodeLabels map[string]string) string {
 	if _, err := runCommand(ctx, "rocm-smi", "--showproductname"); err == nil {
 		return "amd"
 	}
+	if amdgpuSysfsPresent() {
+		return "amd"
+	}
 	return "none"
 }
 
@@ -1181,7 +1218,7 @@ func listGPUDevices(ctx context.Context, vendor string) ([]GPUDevice, error) {
 	case "nvidia":
 		return listNvidiaDevices(ctx)
 	case "amd":
-		return listAmdDevices(ctx)
+		return listAmdDevices()
 	default:
 		return nil, nil
 	}
@@ -1218,48 +1255,6 @@ func listNvidiaDevices(ctx context.Context) ([]GPUDevice, error) {
 	return devices, nil
 }
 
-func listAmdDevices(ctx context.Context) ([]GPUDevice, error) {
-	out, err := runCommand(ctx, "rocm-smi", "--showpowercap", "--showproductname", "--json")
-	if err != nil {
-		return nil, err
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(out, &raw); err != nil {
-		// v1 fallback: no JSON support, rely on command success and unknown limits.
-		return []GPUDevice{{Index: 0, Vendor: "amd"}}, nil
-	}
-	devices := make([]GPUDevice, 0, len(raw))
-	for k, v := range raw {
-		if !strings.HasPrefix(strings.ToLower(k), "card") {
-			continue
-		}
-		idx, _ := strconv.Atoi(strings.TrimPrefix(strings.ToLower(k), "card"))
-		d := GPUDevice{Index: idx, Vendor: "amd"}
-		if m, ok := v.(map[string]any); ok {
-			if name, ok := extractStringAny(m, "Card SKU"); ok {
-				d.Product = name
-			}
-			if maxW, ok := extractFloatAny(m, "Max Graphics Package Power (W)"); ok {
-				d.MaxCapWatts = maxW
-			}
-			if minW, ok := extractFloatAny(m, "Min Graphics Package Power (W)"); ok {
-				d.MinCapWatts = minW
-			}
-			if curW, ok := extractFloatAny(m, "Current Power Cap (W)"); ok {
-				d.CurrentCapWatts = curW
-			}
-			if pwr, ok := extractFloatAny(m, "Average Graphics Package Power (W)"); ok {
-				d.PowerWatts = pwr
-			}
-		}
-		devices = append(devices, d)
-	}
-	if len(devices) == 0 {
-		devices = append(devices, GPUDevice{Index: 0, Vendor: "amd"})
-	}
-	return devices, nil
-}
-
 // applyNvidiaGPUCap sets the power limit of every device to capWatts,
 // rounded to whole watts as -pl takes it. A device whose listed limit
 // already rounds to that value is left alone: the listing is this
@@ -1273,15 +1268,6 @@ func applyNvidiaGPUCap(ctx context.Context, devices []GPUDevice, capWatts float6
 		}
 		if _, err := runCommand(ctx, "nvidia-smi", "-i", strconv.Itoa(d.Index), "-pl", strconv.Itoa(int(target))); err != nil {
 			return fmt.Errorf("nvidia-smi set cap gpu=%d: %w", d.Index, err)
-		}
-	}
-	return nil
-}
-
-func applyAmdGPUCap(ctx context.Context, devices []GPUDevice, capWatts float64) error {
-	for _, d := range devices {
-		if _, err := runCommand(ctx, "rocm-smi", "-d", strconv.Itoa(d.Index), "--setpoweroverdrive", strconv.Itoa(int(math.Round(capWatts)))); err != nil {
-			return fmt.Errorf("rocm-smi set cap gpu=%d: %w", d.Index, err)
 		}
 	}
 	return nil
@@ -1449,28 +1435,41 @@ func discoverHardwareWith(ctx context.Context, node *corev1.Node, gpuFacts *nvid
 	hw.GPUDevices, hw.GPUListErr = gpuDevices, listErr
 	hw.GPUCount = len(gpuDevices)
 	if hw.GPUCount == 0 {
-		hw.GPUCount = int(allocatableGPUCount(node))
+		hw.GPUCount = int(nodeGPUCount(node))
 	}
+	// The AMD node labeller names the board in gpu.product-name (under both
+	// of its prefixes); amd.com/gpu.product is the older key, and the family
+	// code (GC_11_0_0, AI), read last, names no board. The labels name the
+	// model whenever the listing does not, as amdgpu sysfs never does.
+	labelModel := firstNonEmpty(
+		nodeLabels["joulie.io/gpu.product"],
+		joulie.GPUProductBase(nodeLabels["nvidia.com/gpu.product"]),
+		nodeLabels["amd.com/gpu.product-name"],
+		nodeLabels["beta.amd.com/gpu.product-name"],
+		nodeLabels["amd.com/gpu.product"],
+		nodeLabels["amd.com/gpu.family"],
+	)
 	if len(gpuDevices) > 0 {
-		hw.GPURawModel = gpuDevices[0].Product
-		hw.GPUCurrentCapW = gpuDevices[0].CurrentCapWatts
-		hw.GPUCapMinWatts = gpuDevices[0].MinCapWatts
-		hw.GPUCapMaxWatts = gpuDevices[0].MaxCapWatts
-		hw.GPUCapKnown = gpuDevices[0].MaxCapWatts > 0
+		// On AMD the range, the cap and control come from the first device
+		// with a cap of its own whose range is known: a secondary die, or a
+		// GPU asleep since the agent started, may come first, and a node
+		// with none has no control.
+		ref := gpuDevices[0]
+		if hw.GPUVendor == "amd" {
+			ref = GPUDevice{}
+			if _, ranged := amdgpuCapSets(gpuDevices); len(ranged) > 0 {
+				ref = ranged[0]
+			}
+		}
+		hw.GPURawModel = firstNonEmpty(gpuDevices[0].Product, labelModel)
+		hw.GPUCurrentCapW = ref.CurrentCapWatts
+		hw.GPUCapMinWatts = ref.MinCapWatts
+		hw.GPUCapMaxWatts = ref.MaxCapWatts
+		hw.GPUCapKnown = ref.MaxCapWatts > 0
 		hw.GPUControl = hw.GPUCapKnown
 		hw.GPUTelemetry = true
 	} else {
-		// The AMD node labeller names the board in gpu.product-name (under
-		// both of its prefixes); amd.com/gpu.product is the older key, and
-		// the family code (GC_11_0_0, AI), read last, names no board.
-		hw.GPURawModel = firstNonEmpty(
-			nodeLabels["joulie.io/gpu.product"],
-			nodeLabels["nvidia.com/gpu.product"],
-			nodeLabels["amd.com/gpu.product-name"],
-			nodeLabels["beta.amd.com/gpu.product-name"],
-			nodeLabels["amd.com/gpu.product"],
-			nodeLabels["amd.com/gpu.family"],
-		)
+		hw.GPURawModel = labelModel
 		hw.GPUControl = false
 		hw.GPUTelemetry = hw.GPUCount > 0
 	}
@@ -2090,46 +2089,6 @@ func extractFloat(m map[string]any, key string) (float64, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func extractFloatAny(m map[string]any, key string) (float64, bool) {
-	v, ok := m[key]
-	if !ok {
-		return 0, false
-	}
-	switch vv := v.(type) {
-	case float64:
-		return vv, true
-	case int:
-		return float64(vv), true
-	case int64:
-		return float64(vv), true
-	case string:
-		s := strings.TrimSpace(strings.TrimSuffix(vv, "W"))
-		f, err := strconv.ParseFloat(s, 64)
-		if err != nil {
-			return 0, false
-		}
-		return f, true
-	default:
-		return 0, false
-	}
-}
-
-func extractStringAny(m map[string]any, key string) (string, bool) {
-	v, ok := m[key]
-	if !ok {
-		return "", false
-	}
-	s, ok := v.(string)
-	if !ok {
-		return "", false
-	}
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "", false
-	}
-	return s, true
 }
 
 func readInt64(path string) (int64, error) {

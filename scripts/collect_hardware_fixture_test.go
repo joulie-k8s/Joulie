@@ -1,9 +1,9 @@
 package scripts
 
 // Tests of collect-hardware-fixture.sh, run against a synthetic host: a sysfs
-// and a procfs tree in a temporary directory, and fake nvidia-smi, rocm-smi
-// and kubectl first on PATH, so the run never reads the machine it runs on
-// beyond its host name and never reaches a cluster. Every value is neutral.
+// and a procfs tree in a temporary directory, and fake nvidia-smi and kubectl
+// first on PATH, so the run never reads the machine it runs on beyond its
+// host name and never reaches a cluster. Every value is neutral.
 
 import (
 	"errors"
@@ -109,8 +109,8 @@ func collectHostFiles() map[string]string {
 }
 
 // collectTools writes the fake tools and returns their directory: nvidia-smi
-// answers the agent's inventory query and the clock query, rocm-smi and
-// kubectl fail as on a node without them.
+// answers the agent's inventory query and the clock query, kubectl fails as
+// on a node without it.
 func collectTools(t *testing.T) string {
 	t.Helper()
 	bin := t.TempDir()
@@ -123,8 +123,7 @@ func collectTools(t *testing.T) string {
 			"\"-q -d CLOCK,SUPPORTED_CLOCKS,PERFORMANCE\") cat '" + clocks + "' ;;\n" +
 			"--query-gpu=*) printf '0, 100.00, 300.00, 300.00, 50.00, Neutral GPU\\n' ;;\n" +
 			"*) exit 9 ;;\nesac\n",
-		"rocm-smi": "#!/bin/sh\nexit 1\n",
-		"kubectl":  "#!/bin/sh\nexit 1\n",
+		"kubectl": "#!/bin/sh\nexit 1\n",
 	}
 	for name, body := range scripts {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
@@ -345,4 +344,76 @@ func TestGF03CheckRejectsIdentifiersInGovernorFiles(t *testing.T) {
 			t.Fatalf("exit %d, want 0:\n%s", code, out)
 		}
 	})
+}
+
+// The capture copies power1_cap, power1_cap_min, power1_cap_max and
+// power1_cap_default of the amdgpu hwmon device of each amdgpu device, in bus
+// id order under its position, and nothing else of it: not its power
+// reading, and nothing of the GPU's HD audio function, of a device whose
+// hwmon is another driver's, or of a device bound to another driver.
+// machine.yaml counts the devices as amd.com/gpu.
+func TestCaptureCopiesTheAMDGPUPowerCap(t *testing.T) {
+	host := collectHostFiles()
+	amdgpu := func(bus, hwmon, capUW string) {
+		h := "sys/bus/pci/devices/" + bus + "/hwmon/" + hwmon + "/"
+		host[h+"name"] = "amdgpu\n"
+		host[h+"power1_cap"] = capUW + "\n"
+		host[h+"power1_cap_min"] = "0\n"
+		host[h+"power1_cap_max"] = "750000000\n"
+		host[h+"power1_cap_default"] = "750000000\n"
+		host[h+"power1_input"] = "131000000\n"
+	}
+	amdgpu("0000:c1:00.0", "hwmon3", "500000000")
+	amdgpu("0000:03:00.0", "hwmon2", "600000000")
+	amdgpu("0000:50:00.0", "hwmon4", "1000000")
+	host["sys/bus/pci/devices/0000:50:00.0/vendor"] = "0x1002\n"
+	host["sys/bus/pci/devices/0000:03:00.1/vendor"] = "0x1002\n"
+	host["sys/bus/pci/devices/0000:40:00.0/vendor"] = "0x1002\n"
+	host["sys/bus/pci/devices/0000:40:00.0/hwmon/hwmon9/name"] = "k10temp\n"
+	host["sys/bus/pci/devices/0000:40:00.0/hwmon/hwmon9/power1_cap"] = "1000000\n"
+	root := t.TempDir()
+	collectFiles(t, root, host)
+	for bus, driver := range map[string]string{"0000:c1:00.0": "amdgpu", "0000:50:00.0": "snd_hda_intel"} {
+		if err := os.Symlink("../../../bus/pci/drivers/"+driver, filepath.Join(root, "sys/bus/pci/devices", bus, "driver")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// No nvidia-smi query answers, so machine.yaml counts the AMD GPUs.
+	bin := collectTools(t)
+	if err := os.WriteFile(filepath.Join(bin, "nvidia-smi"), []byte("#!/bin/sh\nexit 9\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(t.TempDir(), "out")
+	out, code := runCollect(t, bin, "--name", "amd", "--out", outDir, "--sysfs", filepath.Join(root, "sys"), "--procfs", filepath.Join(root, "proc"))
+	if code != 0 {
+		t.Fatalf("exit %d, want 0:\n%s", code, out)
+	}
+	dir := filepath.Join(outDir, "amd")
+
+	// 0000:03:00.0 sorts before 0000:c1:00.0, so it is gpu0.
+	want := map[string]string{}
+	for gpu, bus := range map[string]string{"gpu0": "0000:03:00.0", "gpu1": "0000:c1:00.0"} {
+		for _, f := range []string{"power1_cap", "power1_cap_min", "power1_cap_max", "power1_cap_default"} {
+			want[gpu+"/"+f] = host["sys/bus/pci/devices/"+bus+"/hwmon/"+map[string]string{"gpu0": "hwmon2", "gpu1": "hwmon3"}[gpu]+"/"+f]
+		}
+	}
+	var got []string
+	_ = filepath.WalkDir(filepath.Join(dir, "amdgpu-hwmon"), func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			rel, _ := filepath.Rel(filepath.Join(dir, "amdgpu-hwmon"), p)
+			got = append(got, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if len(got) != len(want) {
+		t.Errorf("amdgpu-hwmon/ holds %v, want exactly %d files", got, len(want))
+	}
+	for rel, body := range want {
+		if b, err := os.ReadFile(filepath.Join(dir, "amdgpu-hwmon", rel)); err != nil || string(b) != body {
+			t.Errorf("amdgpu-hwmon/%s = %q (%v), want the host's %q", rel, b, err, body)
+		}
+	}
+	if y := collectRead(t, filepath.Join(dir, "machine.yaml")); !strings.Contains(y, "  gpu:\n    amd.com/gpu: \"2\"\n") {
+		t.Errorf("machine.yaml does not count 2 amd.com/gpu:\n%s", y)
+	}
 }

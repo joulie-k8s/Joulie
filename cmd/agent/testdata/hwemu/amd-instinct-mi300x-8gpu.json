@@ -2,7 +2,7 @@
   "capabilities": {
     "cpuControl": true,
     "cpuTelemetry": true,
-    "gpuControl": false,
+    "gpuControl": true,
     "gpuTelemetry": true
   },
   "cpu": {
@@ -65,9 +65,14 @@
     "warnings": null
   },
   "gpu": {
-    "controlAvailable": false,
+    "capRangePerGpu": {
+      "defaultWatts": 750,
+      "maxWatts": 750,
+      "minWatts": 0
+    },
+    "controlAvailable": true,
     "count": 8,
-    "currentCapWatts": 0,
+    "currentCapWatts": 750,
     "governor": {
       "baseline": {
         "devices": [
@@ -137,6 +142,7 @@
       "writable": true
     },
     "model": "AMD_INSTINCT_MI300X",
+    "present": true,
     "rawModel": "AMD_Instinct_MI300X_OAM",
     "telemetryAvailable": true,
     "vendor": "amd",

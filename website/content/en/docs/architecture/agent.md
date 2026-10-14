@@ -217,7 +217,7 @@ The agent also supports node-level GPU cap intents:
 Host backends are vendor-aware:
 
 - NVIDIA path (NVIDIA tooling/NVML-compatible power limits): `nvidia-smi -pl` runs only for a GPU whose current limit, rounded to whole watts, differs from the cap. The limit comes from this reconcile's listing, so a limit the driver put back after a reset is set again.
-- AMD path (ROCm SMI power-limit controls).
+- AMD path (amdgpu sysfs, no tool): the cap range is `power1_cap_min` to `power1_cap_max` of each GPU's amdgpu hwmon device under `/host-sys/bus/pci/devices/<pci bus id>/hwmon/`, the bound the driver enforces. `power1_cap_default` is not read: the driver sets it from the cap in force whenever it initialises the GPU, so after a resume or a reset it reads the agent's own last cap. `power1_cap` is written in whole watts only for a GPU whose cap differs, and read back: a write the driver refuses or drops is `error` naming the bus id, while the other GPUs are still capped. A device whose `power1_cap` reads 0, the secondary die of a package, is never written, and an amdgpu device without `power1_cap`, such as the integrated GPU of an APU, is not counted as a GPU. The driver refuses these reads while a GPU is runtime suspended or in reset, and sets its cap again when it resumes; the agent then uses the cap and range it last read or wrote, and a GPU it has never read gets the cap resolved from the others, the write waking it. This needs a root agent and a writable `/host-sys`, which the chart gives.
 
 If backend support is unavailable on a node, the result is reported as `blocked`.
 

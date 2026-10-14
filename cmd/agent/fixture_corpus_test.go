@@ -5,8 +5,9 @@ package main
 // The agent reads hardware only through files and command output, so a captured
 // machine replays exactly. Each directory under cmd/agent/testdata/hardware is one real
 // machine: its powercap tree, its /proc/cpuinfo, its governor state, the stdout
-// of the GPU queries the agent runs, its node labels, hand written metadata,
-// and the golden NodeHardware status the agent publishes for it.
+// of the NVIDIA query the agent runs, the power cap attributes of its amdgpu
+// hwmon devices, its node labels, hand written metadata, and the golden
+// NodeHardware status the agent publishes for it.
 //
 // Regenerate every golden after reviewing a new capture:
 //
@@ -67,13 +68,11 @@ type corpusMachine struct {
 	WriteRejectingZones []string `json:"writeRejectingZones"`
 }
 
-// corpusCommandRunner answers the GPU queries from the captured stdout in the
-// fixture and fails every other command, the way an absent tool does.
+// corpusCommandRunner answers the NVIDIA queries from the captured stdout in
+// the fixture and fails every other command, the way an absent tool does.
 type corpusCommandRunner struct {
 	nvidiaQuery string
 	hasNvidia   bool
-	rocmQuery   string
-	hasRocm     bool
 }
 
 func (r corpusCommandRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -92,14 +91,6 @@ func (r corpusCommandRunner) Run(_ context.Context, name string, args ...string)
 	case "nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits":
 		if r.hasNvidia {
 			return []byte(r.nvidiaQuery), nil
-		}
-	case "rocm-smi --showproductname":
-		if r.hasRocm {
-			return nil, nil
-		}
-	case "rocm-smi --showpowercap --showproductname --json":
-		if r.hasRocm {
-			return []byte(r.rocmQuery), nil
 		}
 	}
 	return nil, fmt.Errorf("command not present on this machine: %s", key)
@@ -329,10 +320,6 @@ func pointAgentAtFixture(t *testing.T, dir, powercapRoot string) {
 		runner.hasNvidia = true
 		runner.nvidiaQuery = string(b)
 	}
-	if b, err := os.ReadFile(filepath.Join(dir, "rocm-smi.txt")); err == nil {
-		runner.hasRocm = true
-		runner.rocmQuery = string(b)
-	}
 	oldRunner := commandRunner
 	commandRunner = runner
 	t.Cleanup(func() { commandRunner = oldRunner })
@@ -349,16 +336,17 @@ var corpusGovernorSysfs = []struct{ capture, sys string }{
 	{"cpuidle", "devices/system/cpu/cpu0/cpuidle"},
 }
 
-// corpusHostSys builds a writable /sys tree from the capture's governor/
-// directory and returns its root. Every captured policy also gets the
-// scaling_driver of cpufreq-driver, which the capture keeps once. A capture
-// with no governor state gets an empty tree.
+// corpusHostSys builds a writable /sys tree from the capture's governor/ and
+// amdgpu-hwmon/ directories and returns its root. Every captured policy also
+// gets the scaling_driver of cpufreq-driver, which the capture keeps once. A
+// capture with neither gets an empty tree.
 func corpusHostSys(t *testing.T, dir string) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "host-sys")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	corpusReplayAMDGPU(t, dir, root)
 	for _, m := range corpusGovernorSysfs {
 		src := filepath.Join(dir, "governor", m.capture)
 		if _, err := os.Stat(src); err != nil {
@@ -397,6 +385,47 @@ func corpusHostSys(t *testing.T, dir string) string {
 		}
 	}
 	return root
+}
+
+// corpusReplayAMDGPU lays each captured amdgpu-hwmon/gpuN out under root as
+// the Nth amdgpu PCI function: vendor 0x1002 and a hwmon device named amdgpu
+// holding the captured attributes. The capture keeps no bus id; the replay
+// uses the ones hwemu renders, 0000:10:00.0 on, so the agent lists the
+// devices in the captured order, as on the emulated replay (TestHwemuA01).
+func corpusReplayAMDGPU(t *testing.T, dir, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(dir, corpusAMDGPUDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range entries {
+		src := filepath.Join(dir, corpusAMDGPUDir, fmt.Sprintf("gpu%d", i))
+		files, err := os.ReadDir(src)
+		if err != nil {
+			t.Fatalf("replay %s: %v (the validator wants gpu0 to gpu%d)", corpusAMDGPUDir, err, len(entries)-1)
+		}
+		dev := filepath.Join(root, "bus", "pci", "devices", fmt.Sprintf("0000:%02x:00.0", 0x10+i))
+		hwmon := filepath.Join(dev, "hwmon", fmt.Sprintf("hwmon%d", i+2))
+		if err := os.MkdirAll(hwmon, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		attrs := map[string]string{filepath.Join(dev, "vendor"): "0x1002\n", filepath.Join(hwmon, "name"): "amdgpu\n"}
+		for _, f := range files {
+			b, err := os.ReadFile(filepath.Join(src, f.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			attrs[filepath.Join(hwmon, f.Name())] = string(b)
+		}
+		for p, content := range attrs {
+			if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 }
 
 // corpusNode builds the Node object the agent would see: the captured labels

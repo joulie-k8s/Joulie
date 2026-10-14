@@ -406,12 +406,22 @@ func reconcileWithCatalog(
 	if err != nil {
 		return fmt.Errorf("list node hardware: %w", err)
 	}
+	// The family split (policy.NodeFamily) and the caps below read one GPU
+	// count per node: the agent's NodeHardware, else the node's labels and
+	// GPU resources (discoverGPUCount).
 	for _, nodeName := range eligible {
-		if _, ok := nodeHardwareByName[nodeName]; ok {
+		n := nodeObjs[nodeName]
+		if n == nil {
 			continue
 		}
-		if n := nodeObjs[nodeName]; n != nil {
+		nh, ok := nodeHardwareByName[nodeName]
+		if !ok {
 			nodeHardwareByName[nodeName] = nodeHardwareFromLabels(*n, hardwareCatalog, gpuProductLabelKeys)
+			continue
+		}
+		if nh.GPUCount <= 0 {
+			nh.GPUCount = int(discoverGPUCount(*n))
+			nodeHardwareByName[nodeName] = nh
 		}
 	}
 	plan := buildPlanByPolicy(ctx, reader, policyType, eligible, nodeHardwareByName, nodesByName, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
@@ -433,10 +443,7 @@ func reconcileWithCatalog(
 		// Skip CPU cap on GPU nodes: CPU is ~6% of GPU node power; capping it
 		// saves ~1.2% but slows GPU data feed by ~4.5%, costing 3.8x more energy
 		// than saved (exp-03 finding). GPU nodes get only GPU caps.
-		hasGPU := false
-		if n := nodeObjs[plan[i].NodeName]; n != nil {
-			hasGPU = discoverGPUCount(*n) > 0
-		}
+		hasGPU := nodeHardwareByName[plan[i].NodeName].GPUCount > 0
 		// The policy set CapWatts from the planned profile; reset it from the
 		// profile the node runs at. The spec writes it whenever no percent cap
 		// is set: on GPU nodes, and on the absolute path below when it cannot
@@ -465,7 +472,7 @@ func reconcileWithCatalog(
 		}
 		if n := nodeObjs[plan[i].NodeName]; n != nil {
 			plan[i].GPU = computeGPUIntentForNodeWithHardware(*n, capProfile, gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, nodeHardwareByName[plan[i].NodeName], hardwareCatalog)
-			if discoverGPUCount(*n) > 0 && plan[i].GPU == nil {
+			if hasGPU && plan[i].GPU == nil {
 				reason := "no GPU cap configured"
 				if capProfile == profilePerformance && gpuPerfCapPct <= 0 {
 					reason = "GPU_PERFORMANCE_CAP_PCT_OF_MAX <= 0"
@@ -843,7 +850,7 @@ func computeGPUIntentForNodeWithHardware(
 	nh NodeHardware,
 	catalog *hwinv.Catalog,
 ) *GPUCapIntent {
-	if discoverGPUCount(node) <= 0 {
+	if nh.GPUCount <= 0 && discoverGPUCount(node) <= 0 {
 		return nil
 	}
 	capPct := gpuEcoCapPct
@@ -925,24 +932,33 @@ func computeInventoryGPUCap(profile string, nh NodeHardware, catalog *hwinv.Cata
 	return abs, true
 }
 
+// discoverGPUCount is the GPU count of a node from its own object: the
+// physical count its labels state (joulie.GPUCountFromLabels), else the GPU
+// units it advertises, of any kind joulie.GPUResourceKind knows. Units are
+// the physical count only for whole GPUs without sharing; for MIG devices,
+// partitions and replicas they only tell that the node has GPUs.
 func discoverGPUCount(node corev1.Node) int64 {
+	if n, ok := joulie.GPUCountFromLabels(node.Labels); ok {
+		return int64(n)
+	}
 	var total int64
 	for k, q := range node.Status.Allocatable {
-		key := strings.ToLower(string(k))
-		if key == "nvidia.com/gpu" || key == "amd.com/gpu" || key == "gpu.intel.com/i915" || strings.HasSuffix(key, "/gpu") {
+		if joulie.GPUResourceKind(string(k)) != "" {
 			total += q.Value()
 		}
 	}
 	return total
 }
 
+// resolveGPUProduct is the GPU product of the first of keys the labels set,
+// without the suffixes GPU feature discovery appends (joulie.GPUProductBase).
 func resolveGPUProduct(nodeLabels map[string]string, keys []string) string {
 	for _, k := range keys {
 		key := strings.TrimSpace(k)
 		if key == "" {
 			continue
 		}
-		if v := strings.TrimSpace(nodeLabels[key]); v != "" {
+		if v := joulie.GPUProductBase(nodeLabels[key]); v != "" {
 			return v
 		}
 	}
@@ -1086,13 +1102,8 @@ func nodeHardwareFromLabels(node corev1.Node, catalog *hwinv.Catalog, gpuProduct
 			}
 			return 0
 		}(),
-		GPURawModel: resolveGPUProduct(node.Labels, append([]string{"joulie.io/hw.gpu-model"}, gpuProductLabelKeys...)),
-		GPUCount: func() int {
-			if v := hwinv.ParseIntString(node.Labels["joulie.io/hw.gpu-count"]); v > 0 {
-				return v
-			}
-			return int(discoverGPUCount(node))
-		}(),
+		GPURawModel:         resolveGPUProduct(node.Labels, append([]string{"joulie.io/hw.gpu-model"}, gpuProductLabelKeys...)),
+		GPUCount:            int(discoverGPUCount(node)),
 		CPUControlAvailable: false,
 		GPUControlAvailable: false,
 	}
@@ -1151,7 +1162,7 @@ func warnNoGPUIntentOnce(nodeName, profile, reason string) {
 	}
 	gpuIntentWarningSeen[key] = struct{}{}
 	gpuIntentWarningMu.Unlock()
-	log.Printf("warning: node=%s profile=%s has allocatable GPUs but no gpu.powerCap intent (%s); continuing without GPU control", nodeName, profile, reason)
+	log.Printf("warning: node=%s profile=%s has GPUs but no gpu.powerCap intent (%s); continuing without GPU control", nodeName, profile, reason)
 }
 
 // upsertNodeProfile is replaced by upsertNodeTwinSpec in twinstate.go

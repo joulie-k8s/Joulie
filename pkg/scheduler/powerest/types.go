@@ -15,7 +15,7 @@ package powerest
 type PodDemand struct {
 	CPUCores      float64 // effective CPU cores (requests preferred, then limits, then fallback)
 	MemoryBytes   float64 // effective memory bytes
-	GPUCount      int     // number of GPUs requested (any vendor)
+	GPUCount      float64 // GPUs requested, in physical GPUs: a MIG device or partition counts its share (pkg/api.GPUResourceShare)
 	GPUVendor     string  // "nvidia", "amd", "intel", or ""
 	WorkloadClass string  // "performance", "standard", or ""
 }

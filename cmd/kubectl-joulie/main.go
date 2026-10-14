@@ -15,6 +15,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	joulie "github.com/matbun/joulie/pkg/api"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -100,6 +101,10 @@ type nodeState struct {
 	psuStress     float64
 	cpuCapPct     float64
 	gpuCapPct     float64
+	// gpuCapPlanned is set when the twin's spec carries a GPU power cap,
+	// which the controller manager writes only for GPU nodes, a node with
+	// no GPU resource (DRA) included.
+	gpuCapPlanned bool
 	lastUpdated   string
 	// Resource allocation
 	cpuAllocPct float64
@@ -129,12 +134,12 @@ func fetchTwinStates(client dynamic.Interface) []nodeState {
 
 // nodeResources holds allocatable and requested resources for a node.
 type nodeResources struct {
-	cpuAllocatable int64 // millicores
-	memAllocatable int64 // bytes
-	gpuAllocatable int64 // count
+	cpuAllocatable int64   // millicores
+	memAllocatable int64   // bytes
+	gpuAllocatable float64 // GPUs, weighted as gpuUnits weighs them
 	cpuRequested   int64
 	memRequested   int64
-	gpuRequested   int64
+	gpuRequested   float64
 	pods           int
 }
 
@@ -157,12 +162,7 @@ func fetchNodeResources(kube kubernetes.Interface) map[string]*nodeResources {
 		if mem, ok := n.Status.Allocatable[corev1.ResourceMemory]; ok {
 			nr.memAllocatable = mem.Value()
 		}
-		if gpu, ok := n.Status.Allocatable["nvidia.com/gpu"]; ok {
-			nr.gpuAllocatable = gpu.Value()
-		}
-		if gpu, ok := n.Status.Allocatable["amd.com/gpu"]; ok {
-			nr.gpuAllocatable += gpu.Value()
-		}
+		nr.gpuAllocatable = gpuUnits(n.Status.Allocatable)
 		res[n.Name] = nr
 	}
 
@@ -190,16 +190,25 @@ func fetchNodeResources(kube kubernetes.Interface) map[string]*nodeResources {
 			if mem, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
 				nr.memRequested += mem.Value()
 			}
-			if gpu, ok := c.Resources.Requests["nvidia.com/gpu"]; ok {
-				nr.gpuRequested += gpu.Value()
-			}
-			if gpu, ok := c.Resources.Requests["amd.com/gpu"]; ok {
-				nr.gpuRequested += gpu.Value()
-			}
+			nr.gpuRequested += gpuUnits(c.Resources.Requests)
 		}
 	}
 
 	return res
+}
+
+// gpuUnits is the GPUs in list: the units of every GPU resource pkg/api
+// classifies (whole GPUs, MIG devices, partitions, shared replicas), each
+// weighted by the share of a GPU it stands for (joulie.GPUResourceShare),
+// so a node mixing MIG profiles adds up in GPUs. A replica weighs as the
+// device it shares, so requested over allocatable is the share of replicas
+// taken.
+func gpuUnits(list corev1.ResourceList) float64 {
+	var gpus float64
+	for name, q := range list {
+		gpus += float64(q.Value()) * joulie.GPUResourceShare(string(name))
+	}
+	return gpus
 }
 
 // nestedNumber extracts a numeric value from an unstructured object,
@@ -221,12 +230,13 @@ func nestedNumber(obj map[string]interface{}, fields ...string) float64 {
 }
 
 func parseNodeState(u unstructured.Unstructured) nodeState {
+	ns := nodeState{name: u.GetName()}
+	_, ns.gpuCapPlanned, _ = unstructured.NestedMap(u.Object, "spec", "gpu", "powerCap")
 	status, _, _ := unstructured.NestedMap(u.Object, "status")
 	if status == nil {
-		return nodeState{name: u.GetName()}
+		return ns
 	}
 
-	ns := nodeState{name: u.GetName()}
 	ns.class, _, _ = unstructured.NestedString(u.Object, "status", "schedulableClass")
 	ns.headroom = math.Max(0, nestedNumber(u.Object, "status", "predictedPowerHeadroomScore"))
 	ns.coolingStress = nestedNumber(u.Object, "status", "predictedCoolingStressScore")
@@ -256,7 +266,10 @@ func enrichWithResources(states []nodeState, resources map[string]*nodeResources
 		}
 		states[i].cpuAllocPct = pct(nr.cpuRequested, nr.cpuAllocatable)
 		states[i].memAllocPct = pct(nr.memRequested, nr.memAllocatable)
-		states[i].gpuAllocPct = pct(nr.gpuRequested, nr.gpuAllocatable)
+		states[i].gpuAllocPct = 0
+		if nr.gpuAllocatable > 0 {
+			states[i].gpuAllocPct = nr.gpuRequested / nr.gpuAllocatable * 100.0
+		}
 		states[i].hasGPU = nr.gpuAllocatable > 0
 		states[i].pods = nr.pods
 	}
@@ -335,6 +348,8 @@ func renderStatus(out *os.File, states []nodeState) {
 		gpuCap := "-"
 		if s.hasGPU {
 			gpuAlloc = fmt.Sprintf("%.0f%%", s.gpuAllocPct)
+		}
+		if s.hasGPU || s.gpuCapPlanned {
 			gpuCap = fmt.Sprintf("%.0f%%", s.gpuCapPct)
 		}
 		fmt.Fprintf(w, "%s\t%s\t%.0f%%\t%.0f%%\t%.0f%%\t%.0f%%\t%s\t%d\t%.0f%%\t%s\n",

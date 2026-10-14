@@ -359,7 +359,7 @@ Agent host mode uses Linux interfaces:
 GPU host control backends:
 
 - NVIDIA path: NVIDIA tooling/NVML-compatible power-limit controls
-- AMD path: ROCm SMI power-limit controls where supported
+- AMD path: the `power1_cap` files of each GPU's amdgpu hwmon device under `/host-sys`, each write read back; no tool (see [GPU power cap]({{< relref "/docs/architecture/agent.md#gpu-power-cap" >}}))
 
 If a GPU backend is unavailable on a node, result is `blocked` (not silent success).
 

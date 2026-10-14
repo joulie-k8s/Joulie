@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -85,20 +86,63 @@ def wait_ready_nodes(count: int = 2, timeout_sec: int = 300) -> list[str]:
     ]
 
 
-def node_has_gpu_allocatable(node: str) -> bool:
-    out = kubectl(["get", "node", node, "-o", "json"], capture=True).stdout
-    alloc = json.loads(out).get("status", {}).get("allocatable", {}) or {}
-    for key in ("nvidia.com/gpu", "amd.com/gpu"):
-        val = str(alloc.get(key, "")).strip()
-        if not val:
-            continue
-        try:
-            if int(val) > 0:
-                return True
-        except ValueError:
-            if val not in ("0", "0m"):
-                return True
+def is_gpu_resource(name: str) -> bool:
+    """Whether name is a GPU resource, by the rule of pkg/api.GPUResourceKind,
+    which the agent and the controller manager classify with: <vendor>/gpu,
+    gpu.intel.com/i915 or xe, nvidia.com/mig-<profile>, the AMD partitions
+    amd.com/<compute>_nps<n>, and any of them renamed <name>.shared."""
+    base = name.strip().lower()
+    if base.endswith(".shared"):
+        base = base[: -len(".shared")]
+    if base in ("gpu.intel.com/i915", "gpu.intel.com/xe"):
+        return True
+    if base.endswith("/gpu") and base.find("/") > 0:
+        return True
+    if base.startswith("nvidia.com/mig-") and len(base) > len("nvidia.com/mig-"):
+        return True
+    if base.startswith("amd.com/"):
+        compute, sep, memory = base[len("amd.com/"):].partition("_")
+        return bool(sep) and compute in ("spx", "dpx", "tpx", "qpx", "cpx") and memory.startswith("nps") and memory[3:].isdigit()
     return False
+
+
+def positive_quantity(val: Any) -> bool:
+    val = str(val).strip()
+    if not val:
+        return False
+    try:
+        return int(val) > 0
+    except ValueError:
+        return val not in ("0", "0m")
+
+
+def label_count(val: Any) -> int:
+    """The integer a count label states, as strconv.Atoi reads the trimmed
+    value in pkg/api.GPUCountFromLabels; 0 when it is not an integer."""
+    val = str(val).strip()
+    if not re.fullmatch(r"[+-]?[0-9]+", val):
+        return 0
+    return int(val)
+
+
+def node_object_has_gpu(obj: dict[str, Any]) -> bool:
+    """Whether a Node object tells the agent it has GPUs (nodeGPUCount in
+    cmd/agent): a GPU count label (joulie.io/hw.gpu-count, or
+    nvidia.com/gpu.count except when the single MIG strategy exposes MIG
+    devices, product suffixed -MIG-) or a GPU resource."""
+    labels = obj.get("metadata", {}).get("labels", {}) or {}
+    if label_count(labels.get("joulie.io/hw.gpu-count", "")) > 0:
+        return True
+    mig_single = labels.get("nvidia.com/mig.strategy", "").strip().lower() == "single" and "-MIG-" in labels.get("nvidia.com/gpu.product", "")
+    if not mig_single and label_count(labels.get("nvidia.com/gpu.count", "")) > 0:
+        return True
+    alloc = obj.get("status", {}).get("allocatable", {}) or {}
+    return any(is_gpu_resource(key) and positive_quantity(val) for key, val in alloc.items())
+
+
+def node_has_gpu(node: str) -> bool:
+    out = kubectl(["get", "node", node, "-o", "json"], capture=True).stdout
+    return node_object_has_gpu(json.loads(out))
 
 
 def get_node_labels(node: str) -> dict[str, str]:
@@ -765,7 +809,7 @@ def test_telemetry_http(ctx: Ctx) -> None:
     time.sleep(10)
     stats = get_mock_stats()
     gpu_posts = int(stats.get("gpu_post", 0))
-    if node_has_gpu_allocatable(ctx.eco_node):
+    if node_has_gpu(ctx.eco_node):
         if gpu_posts <= 0:
             raise AssertionError(f"expected gpu control POSTs > 0 on GPU node, stats={stats}")
     else:

@@ -159,7 +159,7 @@ func TestS19RocmSMIWithoutPythonExits127(t *testing.T) {
 func TestS20EmptyRootFSBehavesAsS1(t *testing.T) {
 	absent := layout.ToolRequirement{Paths: []string{"/nonexistent/hwemu-s20/loader"}, Exit: 99, Stderr: "must not print"}
 	nvidiaCalls := [][]string{agentNvidiaList, agentNvidiaQuery, {"nvidia-smi", "--bogus"}}
-	amdCalls := [][]string{agentRocmProduct, agentRocmInventory}
+	amdCalls := [][]string{agentRocmProduct, rocmShowPowerCap}
 
 	plain, requiring := newNVLNode(t), newNVLNode(t)
 	requiring.requireTools(map[string]layout.ToolEntry{"nvidia-smi": {Variant: "default", Requires: []layout.ToolRequirement{absent, reqLoader, reqNVML}}})

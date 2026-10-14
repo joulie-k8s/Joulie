@@ -543,10 +543,11 @@ func renderCheckCorpusNVML(t *testing.T, tree *Tree, text string) {
 	}
 }
 
-// H21: an AMD capture becomes amdgpu hwmon devices with the captured limits
-// and the legacy-agent-contract rocm-smi, a zone listed as rejecting that the
-// tree lacks is an error, and GPUs that disagree on their limits are an
-// error rather than a silently averaged profile.
+// H21: an AMD capture becomes amdgpu hwmon devices, each with its
+// bus/pci/devices entry, the captured cap, minimum, maximum and default, and
+// no GPU tool; a zone listed as rejecting that the tree lacks is an error,
+// GPUs that disagree on their limits are an error rather than a silently
+// averaged profile, and so is a device without a cap of its own.
 func TestH21FromCorpusAMDAndErrors(t *testing.T) {
 	t.Parallel()
 	machine := func(t *testing.T, files map[string]string) string {
@@ -563,34 +564,40 @@ func TestH21FromCorpusAMDAndErrors(t *testing.T) {
 		return dir
 	}
 	cpuinfo := "processor\t: 0\nvendor_id\t: AuthenticAMD\ncpu family\t: 25\nmodel\t\t: 17\nmodel name\t: AMD EPYC 9654 96-Core Processor\nstepping\t: 1\nphysical id\t: 0\ncore id\t\t: 0\ncpu cores\t: 1\nsiblings\t: 1\n\n"
-	card := `{"Max Graphics Package Power (W)": "750.0", "Min Graphics Package Power (W)": "0.0", "Current Power Cap (W)": "600.0", "Average Graphics Package Power (W)": "131.0", "Card Series": "AMD Instinct MI300X", "Card SKU": "X0000000"}`
 	files := map[string]string{
 		"machine.yaml":     "description: test AMD machine\nallocatable:\n  cpu: \"1\"\n  memory: 1024Ki\n  gpu:\n    amd.com/gpu: \"2\"\nwriteRejectingZones: []\n",
 		"cpuinfo":          cpuinfo,
-		"node-labels.json": `{"feature.node.kubernetes.io/pci-1200_1002.present": "true"}`,
-		"rocm-smi.txt":     `{"card0": ` + card + `, "card1": ` + card + `}`,
+		"node-labels.json": `{"feature.node.kubernetes.io/pci-1200_1002.present": "true", "amd.com/gpu.product-name": "AMD_Instinct_MI300X_OAM"}`,
+	}
+	for i := 0; i < 2; i++ {
+		dir := fmt.Sprintf("amdgpu-hwmon/gpu%d/", i)
+		files[dir+"power1_cap"] = "600000000\n"
+		files[dir+"power1_cap_min"] = "0\n"
+		files[dir+"power1_cap_max"] = "750000000\n"
+		files[dir+"power1_cap_default"] = "750000000\n"
 	}
 	p, err := FromCorpus(machine(t, files))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.GPUs.PCI.Class.V != "0x120000" {
-		t.Errorf("gpu class = %q, want 0x120000 from the captured NFD label", p.GPUs.PCI.Class.V)
+	if p.GPUs.PCI.Class.V != "0x120000" || p.GPUs.Product.V != "AMD_Instinct_MI300X_OAM" {
+		t.Errorf("gpu class %q product %q, want 0x120000 and the product from the captured labels", p.GPUs.PCI.Class.V, p.GPUs.Product.V)
 	}
 	tree := renderTestTree(t, p)
-	if got := renderReadFile(t, tree, "state/tools.json"); got != `{"schemaVersion":1,"tools":{"rocm-smi":{"variant":"legacy-agent-contract"}}}`+"\n" {
-		t.Errorf("tools.json = %s", got)
+	if got := renderReadFile(t, tree, "state/tools.json"); strings.Contains(got, "smi") {
+		t.Errorf("tools.json = %s, want no GPU tool", got)
 	}
 	for i := 0; i < 2; i++ {
 		link, _ := layout.HwmonClassLink(i+2, layout.PCIDevDir(0x10+i))
-		for file, want := range map[string]string{"power1_cap": "600000000\n", "power1_cap_max": "750000000\n", "power1_cap_min": "0\n", "power1_average": "131000000\n"} {
+		for file, want := range map[string]string{"power1_cap": "600000000\n", "power1_cap_max": "750000000\n", "power1_cap_min": "0\n", "power1_cap_default": "750000000\n"} {
 			if got := renderReadFile(t, tree, "sys/"+link+"/"+file); got != want {
 				t.Errorf("card%d %s = %q, want %q", i, file, got, want)
 			}
 		}
-	}
-	if got := renderReadFile(t, tree, "sys/"+layout.PCIDevDir(0x10)+"/vbios_version"); !strings.Contains(got, "-X0000000-") {
-		t.Errorf("vbios_version = %q, want the captured Card SKU as its middle segment", got)
+		bus, _ := layout.PCIBusDeviceLink(0x10 + i)
+		if got := renderReadFile(t, tree, "sys/"+bus+"/vendor"); got != "0x1002\n" {
+			t.Errorf("%s/vendor = %q, want the GPU's 0x1002 through its bus entry", bus, got)
+		}
 	}
 	if got := renderQty(p.NodeObject("n").Status.Allocatable, "amd.com/gpu"); got != "2" {
 		t.Errorf("allocatable amd.com/gpu = %q, want 2", got)
@@ -605,8 +612,14 @@ func TestH21FromCorpusAMDAndErrors(t *testing.T) {
 		t.Errorf("a rejecting zone without a powercap tree was accepted")
 	}
 	bad["machine.yaml"] = files["machine.yaml"]
-	bad["rocm-smi.txt"] = `{"card0": ` + card + `, "card1": ` + strings.Replace(card, `"750.0"`, `"500.0"`, 1) + `}`
+	bad["amdgpu-hwmon/gpu1/power1_cap_max"] = "500000000\n"
 	if _, err := FromCorpus(machine(t, bad)); err == nil || !strings.Contains(err.Error(), "differ") {
 		t.Errorf("err = %v, want GPUs with different limits rejected", err)
+	}
+	bad["amdgpu-hwmon/gpu1/power1_cap_max"] = "750000000\n"
+	bad["amdgpu-hwmon/gpu0/power1_cap"] = "0\n"
+	bad["amdgpu-hwmon/gpu1/power1_cap"] = "0\n"
+	if _, err := FromCorpus(machine(t, bad)); err == nil || !strings.Contains(err.Error(), "cap of its own") {
+		t.Errorf("err = %v, want a device without a cap of its own rejected", err)
 	}
 }

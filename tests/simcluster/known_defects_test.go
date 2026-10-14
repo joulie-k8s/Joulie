@@ -18,8 +18,8 @@ import (
 // fix landed, and the check must then assert the fixed behaviour instead.
 // summary.json lists every defect that reproduced under knownDefects.
 //
-// This follows the characterisation tests of cmd/agent (TestHwemuA06 for
-// D1): they too assert today's wrong behaviour, with the defect named.
+// This follows the characterisation tests of cmd/agent (TestHwemuA16 for
+// D16): they too assert today's wrong behaviour, with the defect named.
 
 // e2eDefect is one registered defect: the check that observes it, what the
 // check sees while the defect lasts, and what will change it.
@@ -30,25 +30,11 @@ type e2eDefect struct {
 // e2eDefects is the registry.
 var e2eDefects = []e2eDefect{
 	{
-		ID:    "D1",
-		Check: "E11",
-		Expected: "the MI300X agent's GPU inventory fails, because no rocm-smi release has --showpowercap: " +
-			"GPU control status none/error with \"unrecognized arguments: --showpowercap\"",
-		FlipsWith: "F3, the agent reading the MI300X power cap without --showpowercap",
-	},
-	{
 		ID:    "D15",
 		Check: "E12",
 		Expected: "a managed Node the agent DaemonSet does not reach (an untolerated taint) gets a NodeTwin with a cap, " +
 			"but no NodeHardware and no controlStatus, and its hardware keeps the uncapped limit: the cap is planned, not enforced",
 		FlipsWith: "a D15 chart decision: tolerating every taint, or the controller planning only Nodes that run an agent",
-	},
-	{
-		ID:    "D18",
-		Check: "MD01",
-		Expected: "MIG-mixed and renamed time-slicing GPU Nodes get no GPU intent (none/none/\"no GPU cap intent\") " +
-			"and a CPU percent cap, as if they had no GPU",
-		FlipsWith: "the controller counting nvidia.com/mig-* and nvidia.com/gpu.shared as GPUs",
 	},
 }
 

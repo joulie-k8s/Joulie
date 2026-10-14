@@ -37,14 +37,14 @@ Each check is one entry under `assertions` in the run's `summary.json`.
 | E06 | Prometheus holds series for every Node with a measured CPU package, and `target_info` of the jobs that carry node power names each one |
 | E07 | every check query of the mode equals the emulated truth; E07c, in mode `kepler-legacy`: each Node has two Kepler 0.7 platform series, which sum to its host power |
 | E08 | each NodeTwin's measured power is the truth, or `prometheus-no-data` where nothing measures |
-| E09, E10 | lowering the CPU and GPU caps from 80 % to 50 % lowers the enforced limits and the NodeTwins' measured power (RAPL, DVFS, NVIDIA) |
+| E09, E10 | lowering the CPU and GPU caps from 80 % to 50 % lowers the enforced limits (RAPL, NVIDIA GPUs whole or shared, and AMD GPUs; a GPU cap never below the published minimum) and the NodeTwins' measured power (RAPL, DVFS, NVIDIA) |
 | E11 | the control status of each hardware family |
 | E12 | D15, below |
 | E13 | the extender filters and scores a real pod, on the host network in the `hostnet` extender variant and off it, reached through its Service, in the `service` one |
 | E14 | a forced extender reload rolls out; an agent reload with an unchanged binary does nothing |
 | E15 | `status.sh` exits 0 |
 | E16 | the facility inputs reach the NodeTwin gauges and the cooling stress; in mode `otel-bridge`, which leaves the facility metrics off as the chart has them, no facility gauge is served and the cooling stress is computed with the ambient unknown |
-| MD01 to MD04 | medium spec only: D18; no NFD labels caps through DVFS; no driver tools leaves the GPUs alone; an unmanaged pool has series and nothing else |
+| MD01 to MD04 | medium spec only: MIG-mixed and renamed time-slicing GPU Nodes are planned and capped as GPU Nodes (the physical GPU count, a GPU cap and no CPU percent cap, every GPU limit at the cap); no NFD labels caps through DVFS; no driver tools leaves the NVIDIA GPUs alone; an unmanaged pool has series and nothing else |
 | GS01 | governor control on only: each agent's `NodeHardware` lists the governor presets its profile accepts, with the result each gives |
 | GS02 | governor control on only: each `NodeTwin` asks for the preset its profile and node state (performance or eco) call for, and the agent's result for it is the one its profile predicts |
 | GS03 | governor control on only: the emulated files hold the native words of every applied or equivalent result |
@@ -58,9 +58,7 @@ A defect the run reproduces today, and that waits for a fix or a decision, is re
 
 | ID | Check | Observation | Changes with |
 |----|-------|-------------|--------------|
-| D1 | E11 | The MI300X agent's GPU inventory fails: no `rocm-smi` release has `--showpowercap`, so the GPU status is `none`/`error` with "unrecognized arguments: --showpowercap". | the agent reading the MI300X cap without that flag |
 | D15 | E12 | A managed Node the agent DaemonSet does not reach (here an untolerated taint) gets a NodeTwin with a cap, but no NodeHardware and no `controlStatus`, and its hardware keeps the uncapped limit: the cap is planned, never enforced. | tolerating every taint, or the controller manager planning only Nodes that run an agent |
-| D18 | MD01 (medium) | MIG-mixed and renamed time-slicing GPU Nodes get no GPU intent (`none`/`none`/"no GPU cap intent") and a CPU percent cap, as if they had no GPU: the controller manager counts only `*/gpu` resources (`discoverGPUCount`), not `nvidia.com/mig-*` or `nvidia.com/gpu.shared`. | the controller manager counting those resources |
 
 The defects that reach users are also listed on the user pages: [GPU known limitations](../../website/content/en/docs/hardware/gpus.md#known-limitations) and the `agent.tolerations` row of the [configuration reference](../../website/content/en/docs/getting-started/05-configuration-reference.md#agent-chart-values).
 

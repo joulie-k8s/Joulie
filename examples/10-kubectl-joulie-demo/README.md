@@ -84,7 +84,7 @@ to idle.
 | COOLING | Thermal stress: fraction of physical cooling capacity in use |
 | CPU% | CPU cores requested vs allocatable |
 | MEM% | Memory requested vs allocatable |
-| GPU% | GPUs requested vs allocatable (`-` for CPU-only nodes) |
+| GPU% | GPUs requested vs allocatable, counting whole GPUs, MIG devices, AMD partitions and shared replicas, each weighted by its share of a GPU (`-` for nodes without GPU resources) |
 | PODS | Running pods on this node |
 | CPU CAP | Current CPU power cap percentage |
 | GPU CAP | Current GPU power cap percentage (`-` for CPU-only nodes) |

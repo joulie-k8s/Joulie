@@ -10,16 +10,23 @@ package main
 // messages name the defect, so the fix that changes the behaviour turns the
 // test into its regression test. The defects, with the code involved:
 //
-//   - D1: listAmdDevices runs rocm-smi --showpowercap --showproductname
-//     --json. No rocm-smi release has --showpowercap, so the inventory fails
-//     and every AMD GPU cap ends in an error.
-//   - D2: applyAmdGPUCap takes rocm-smi's exit 0 as applied, but rocm-smi
-//     exits 0 when it rejects a set, for example on a secondary die.
-//   - D3: applyAmdGPUCap passes no --autorespond. Above max(current, default)
-//     rocm-smi --setpoweroverdrive asks for confirmation, reads EOF from the
-//     empty stdin and exits 1.
-//   - D4: listAmdDevices takes the model from Card SKU, a VBIOS segment, and
-//     the maximum from --showmaxpower, which reports the current cap.
+//   - D1 (fixed): the AMD inventory ran rocm-smi --showpowercap, which no
+//     rocm-smi release has, so every AMD GPU cap ended in an error. The
+//     agent lists AMD GPUs and their cap range from the amdgpu hwmon files
+//     (listAmdDevices in amdgpu.go) and runs no AMD tool to cap; A02, A06,
+//     A06b and A19 guard it.
+//   - D2 (fixed): rocm-smi's exit 0 was taken as applied, while rocm-smi
+//     exits 0 when it rejects a set. applyAmdGPUCap reads every write back
+//     and never writes a device whose power1_cap reads 0 (a secondary die);
+//     A06c and TestAMDGPUSysfsInventoryAndWrite guard it.
+//   - D3 (fixed): rocm-smi --setpoweroverdrive asked for confirmation above
+//     max(current, default) and read EOF. No tool runs, so a cap above
+//     power1_cap_default is written like any other; A05d guards it.
+//   - D4 (fixed): the model came from Card SKU, a VBIOS segment, and the
+//     maximum from --showmaxpower, which reports the current cap. The model
+//     comes from the labeller's labels and the range from power1_cap_min and
+//     power1_cap_max; A02, A05b and TestAMDGPURangeIgnoresTheDefaultTheDriverResets
+//     guard it.
 //   - D5 (fixed): dvfs.EnergyFiles deduped by path string, so it listed every
 //     package twice, through class/powercap and devices/virtual/powercap. It
 //     now dedupes by resolved path; A04 and the dvfs D03 test guard it.
@@ -58,6 +65,12 @@ package main
 //     a tainted or arm64 node runs no agent.
 //   - D16: listNvidiaDevices parses nvidia-smi's [N/A] limits as 0 W, so the
 //     cap range is unknown and a percent cap cannot be resolved.
+//   - D18 (fixed): allocatableGPUCount counted only <vendor>/gpu resources,
+//     so a node exposing its GPUs as nvidia.com/mig-<profile> or
+//     nvidia.com/gpu.shared blocked every GPU cap ("node has no allocatable
+//     GPU resources") and, without GPU tools, published no GPUs. Resources
+//     are classified by pkg/api.GPUResourceKind and the count is read from
+//     the labels first; A12, A12b and A12c guard it.
 //
 // The fixes that flip them:
 //
@@ -65,14 +78,18 @@ package main
 //     CPUFreqList are deduplicated by resolved path (D5, D6).
 //   - F2: the simulator uses phys.AnalyticCPUModel, SolveFreqScaleForCap and
 //     FirstOrderToward instead of its own copies (D13).
-//   - F3: AMD and NVIDIA tool handling: real rocm-smi flags, output checks
-//     instead of exit codes, --autorespond, the model from Card Series, and
-//     [N/A] as unknown (D1 to D4, D16).
+//   - F3: AMD caps through the amdgpu hwmon files, each write read back
+//     (D1 to D4, fixed), and nvidia-smi's [N/A] read as unknown (D16).
 //   - F4: labels, vendor and zones: the NFD accelerator class, the labeller's
 //     keys, the vendor from cpuinfo without NFD, a fallback when RAPL is
 //     locked, and zone selection that leaves out psys and MMIO and splits a
 //     socket cap between dies (D8 to D11).
 //   - F5: the controller manager's node power query (D12).
+//
+// Open: hwemu renders a secondary die with the full cap attributes and
+// accepts its writes, while the kernel shows power1_cap 0 there and refuses
+// them. Until hwemu models that, the agent's secondary-die rule is guarded
+// by TestAMDGPUSysfsInventoryAndWrite only.
 //
 // Regenerate the goldens of the generic profiles after reviewing a change:
 //
@@ -200,7 +217,6 @@ const (
 	nvidiaPCILabel     = "feature.node.kubernetes.io/pci-0302_10de.present"
 	rocmProductProbe   = "rocm-smi --showproductname"
 	nvidiaListProbe    = "nvidia-smi -L"
-	amdInventoryAgent  = "rocm-smi --showpowercap --showproductname --json"
 	nvidiaQueryAgent   = "nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits"
 	amdAcceleratorNFD  = "feature.node.kubernetes.io/pci-1200_1002.present"
 	amdLabellerProduct = "amd.com/gpu.product-name"
@@ -287,12 +303,12 @@ var a02Paths = map[string]a02Path{
 	},
 	"amd-instinct-mi300x-8gpu": {
 		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9654",
-		gpuVendor: "amd", gpuCount: 8, gpuModel: "AMD_INSTINCT_MI300X", gpuVendorFrom: rocmProductProbe,
+		gpuVendor: "amd", gpuCount: 8, gpuCapMinW: 0, gpuCapMaxW: 750, gpuControl: true, gpuModel: "AMD_INSTINCT_MI300X", gpuVendorFrom: rocmProductProbe,
 		energyZones: a02Packages,
 	},
 	"amd-radeon-pro-w7900-4gpu": {
 		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9534",
-		gpuVendor: "amd", gpuCount: 4, gpuModel: "AMD_RADEON_PRO_W7900", gpuVendorFrom: amdDisplayNFD,
+		gpuVendor: "amd", gpuCount: 4, gpuCapMinW: 241, gpuCapMaxW: 241, gpuControl: true, gpuModel: "AMD_RADEON_PRO_W7900", gpuVendorFrom: amdDisplayNFD,
 		energyZones: a02Packages,
 	},
 	"vm-no-powercap": {
@@ -312,14 +328,15 @@ var a02Paths = map[string]a02Path{
 // no capRange and controls through cpufreq (DVFS); the energy-only and HSMP
 // EPYC hosts give no capRange and control through the cpufreq driver; H100
 // NVL and SXM and L40S give their per-GPU range, with the vendor from the
-// NFD 0302 label; MI300X counts its GPUs from allocatable, has no GPU
-// control and gets its vendor from rocm-smi --showproductname; the W7900
-// gets its vendor from the NFD display-class label pci-0300_1002 and, like
-// the MI300X, counts from allocatable with no GPU control; the VM reads one
-// socket per vCPU and has no control. Every CPU and GPU model string matches
-// its hardware catalog entry, except the VM's CPU, the 9282 and the 6787P,
-// which the catalog does not list. With the inventory failing (D1), the AMD
-// GPU model comes from amd.com/gpu.product-name, which names the MI300X
+// NFD 0302 label; MI300X and W7900 count their GPUs from the amdgpu hwmon
+// devices and publish their cap range from them with control, 0 to 750 W
+// and the pinned 241 to 241 W, and run no rocm-smi cap command; the MI300X
+// gets its vendor from rocm-smi --showproductname (D8), the W7900 from the
+// NFD display-class label pci-0300_1002; the VM reads one socket per vCPU
+// and has no control. Every CPU and GPU model string matches its hardware
+// catalog entry, except the VM's CPU, the 9282 and the 6787P, which the
+// catalog does not list. amdgpu sysfs names no product, so the AMD GPU model
+// comes from amd.com/gpu.product-name, which names the MI300X
 // AMD_Instinct_MI300X_OAM, a catalog alias of AMD_INSTINCT_MI300X.
 func TestHwemuA02GenericProfilesTakeTheirFamilyPath(t *testing.T) {
 	profiles, err := hwemu.BuiltinProfiles()
@@ -463,8 +480,7 @@ func checkA02Path(t *testing.T, e *emulatedNode, node *corev1.Node, hw HardwareI
 		}
 	case amdDisplayNFD:
 		// The display-class label answers detectGPUVendor before any probe
-		// runs; the inventory still fails (D1), so the count comes from
-		// allocatable.
+		// runs.
 		if node.Labels[amdDisplayNFD] != "true" {
 			t.Errorf("node has no %s label: %v", amdDisplayNFD, node.Labels)
 		}
@@ -473,25 +489,28 @@ func checkA02Path(t *testing.T, e *emulatedNode, node *corev1.Node, hw HardwareI
 				t.Errorf("%s ran, so the vendor did not come from %s; commands: %v", probe, amdDisplayNFD, e.runner.commands())
 			}
 		}
-		if _, ok := e.runner.ran(amdInventoryAgent); ok {
-			t.Errorf("%s succeeded, so the count may not come from allocatable", amdInventoryAgent)
-		}
-		if got := allocatableGPUCount(node); got != int64(want.gpuCount) {
-			t.Errorf("allocatable GPUs %d, want %d", got, want.gpuCount)
-		}
+		checkA02AMDInventory(t, e, hw, want)
 	case rocmProductProbe:
 		ranList, listOK := e.runner.ran(nvidiaListProbe)
 		ranProbe, probeOK := e.runner.ran(rocmProductProbe)
 		if !ranList || listOK || !ranProbe || !probeOK {
 			t.Errorf("want %s to fail and %s to succeed; commands: %v", nvidiaListProbe, rocmProductProbe, e.runner.commands())
 		}
-		// Count from allocatable: inventory failed, so no device was listed.
-		if _, ok := e.runner.ran(amdInventoryAgent); ok {
-			t.Errorf("%s succeeded, so the count may not come from allocatable", amdInventoryAgent)
-		}
-		if got := allocatableGPUCount(node); got != int64(want.gpuCount) {
-			t.Errorf("allocatable GPUs %d, want %d", got, want.gpuCount)
-		}
+		checkA02AMDInventory(t, e, hw, want)
+	}
+}
+
+// checkA02AMDInventory checks that the AMD GPUs were listed from the amdgpu
+// hwmon devices, one per GPU of the profile, and that no rocm-smi command
+// but the vendor probe ran.
+func checkA02AMDInventory(t *testing.T, e *emulatedNode, hw HardwareInfo, want a02Path) {
+	t.Helper()
+	if hw.GPUListErr != nil || len(hw.GPUDevices) != want.gpuCount || len(amdgpuHwmonDirs(t, e)) != want.gpuCount {
+		t.Errorf("listed %d AMD GPUs (%v) on a node with %d amdgpu hwmon devices, want %d", len(hw.GPUDevices), hw.GPUListErr,
+			len(amdgpuHwmonDirs(t, e)), want.gpuCount)
+	}
+	if calls := e.amdToolCalls(); len(calls) > 0 {
+		t.Errorf("the agent ran %v; it runs no AMD tool but the vendor probe %s", calls, rocmProductProbe)
 	}
 }
 
@@ -912,17 +931,13 @@ func TestHwemuA05NvidiaCapReachesEveryGPU(t *testing.T) {
 	}
 }
 
-// A05b: on the MI300X node with the legacy rocm-smi, the agent finds the
-// vendor only through rocm-smi --showproductname, because it ignores the NFD
-// accelerator-class label pci-1200_1002 (D8). A 500 W cap then sets every
-// power1_cap to 500000000, and power settles at most at 505 W. The product the
-// agent reads is the Card SKU, a VBIOS segment, not the product name (D4).
+// A05b: on the MI300X node, the agent finds the vendor only through
+// rocm-smi --showproductname, because it ignores the NFD accelerator-class
+// label pci-1200_1002 (D8). The model comes from the labeller's
+// amd.com/gpu.product-name, not from a VBIOS segment, and a 500 W cap runs
+// no rocm-smi command but the probe.
 func TestHwemuA05bAMDVendorComesFromRocmSMI(t *testing.T) {
-	n, tree, p := hwemutest.NewNode(t, "amd-instinct-mi300x-8gpu", withLegacyRocmSMI)
-	n.SetLoad(hwemu.Load{GPUUtil: []float64{1}})
-	if err := n.Step(3 * time.Second); err != nil {
-		t.Fatal(err)
-	}
+	_, tree, p := hwemutest.NewNode(t, "amd-instinct-mi300x-8gpu", nil)
 	e := useEmulatedNode(t, tree, nil)
 	node := e.nodeObject(p)
 	if node.Labels[amdAcceleratorNFD] != "true" {
@@ -932,19 +947,112 @@ func TestHwemuA05bAMDVendorComesFromRocmSMI(t *testing.T) {
 		t.Fatalf("the agent now reads an AMD vendor from the node labels; it ignored %s before (D8). Update this test with the fix", amdAcceleratorNFD)
 	}
 
-	nc := e.controller(t)
+	hw := discoverHardware(context.Background(), node)
+	if _, ok := e.runner.ran(rocmProductProbe); !ok || hw.GPUVendor != "amd" {
+		t.Fatalf("gpu vendor %q; %s did not decide it; commands: %v (D8)", hw.GPUVendor, rocmProductProbe, e.runner.commands())
+	}
+	if product := node.Labels[amdLabellerProduct]; hw.GPURawModel != product || strings.Contains(p.GPUs.VBIOSVersion.V, hw.GPURawModel) {
+		t.Fatalf("gpu rawModel %q, want the labeller's %s %q, never a segment of the VBIOS version %q (D4)",
+			hw.GPURawModel, amdLabellerProduct, product, p.GPUs.VBIOSVersion.V)
+	}
+
 	e.runner.reset()
-	dyn, err := reconcileEmulated(t, nc, node, nodeTwinWithGPUCap(e.name, float64Ptr(500), nil))
+	dyn, err := reconcileEmulated(t, e.controller(t), node, nodeTwinWithGPUCap(e.name, float64Ptr(500), nil))
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
-	}
-	if _, ok := e.runner.ran(rocmProductProbe); !ok {
-		t.Fatalf("%s did not decide the vendor; commands: %v (D8)", rocmProductProbe, e.runner.commands())
 	}
 	if s := controlStatus(t, dyn, e.name, "gpu"); s["backend"] != "host-amd" || s["result"] != "applied" {
 		t.Fatalf("gpu control status %v, want backend host-amd, result applied", s)
 	}
+	if calls := e.amdToolCalls(); len(calls) > 0 {
+		t.Fatalf("the agent ran %v to cap; it caps through amdgpu sysfs", calls)
+	}
+}
+
+// A05d: on the MI300X node with a 600 W default below the 750 W maximum,
+// NodeHardware publishes the driver's range, 0 to 750 W, and a 700 W cap
+// above the default is host-amd applied: the emulated driver takes it on
+// every power1_cap. No tool runs, so nothing can prompt (D3).
+func TestHwemuA05dCapAboveTheDefaultLimitIsWritten(t *testing.T) {
+	n, tree, p := hwemutest.NewNode(t, "amd-instinct-mi300x-8gpu", withDefaultLimit(600))
+	e := useEmulatedNode(t, tree, nil)
+	checkWritesThroughNode(t, n, tree)
 	hwmons := amdgpuHwmonDirs(t, e)
+	for i, dir := range hwmons {
+		if got := readTrimmed(t, filepath.Join(dir, "power1_cap")); got != "600000000" {
+			t.Fatalf("device %d starts at power1_cap %s, want the 600 W default", i, got)
+		}
+		if got := readTrimmed(t, filepath.Join(dir, "power1_cap_max")); got != "750000000" {
+			t.Fatalf("device %d power1_cap_max %s, want 750 W above the default, or this test proves nothing", i, got)
+		}
+	}
+	node := e.nodeObject(p)
+	if hw := discoverHardware(context.Background(), node); !hw.GPUCapKnown || hw.GPUCapMinWatts != 0 || hw.GPUCapMaxWatts != 750 {
+		t.Fatalf("gpu capRangePerGpu known=%v %v to %v W, want 0 to 750 W, power1_cap_min to power1_cap_max", hw.GPUCapKnown, hw.GPUCapMinWatts, hw.GPUCapMaxWatts)
+	}
+
+	dyn, err := reconcileEmulated(t, e.controller(t), node, nodeTwinWithGPUCap(e.name, float64Ptr(700), nil))
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if s := controlStatus(t, dyn, e.name, "gpu"); s["backend"] != "host-amd" || s["result"] != "applied" || s["message"] != "applied gpu cap 700.0W on 8 devices" {
+		t.Fatalf("gpu control status %v, want a 700 W cap applied above the 600 W default", s)
+	}
+	for i, dir := range hwmons {
+		if got := readTrimmed(t, filepath.Join(dir, "power1_cap")); got != "700000000" {
+			t.Errorf("device %d power1_cap = %s, want 700000000", i, got)
+		}
+	}
+	if calls := e.amdToolCalls(); len(calls) > 0 {
+		t.Errorf("the agent ran %v", calls)
+	}
+}
+
+// A06: on the MI300X node with the current rocm-smi, which has no
+// --showpowercap, NodeHardware lists the 8 GPUs from the amdgpu hwmon
+// devices with their 0 to 750 W range, the 750 W cap in force and control,
+// and takes the raw model from the labeller's amd.com/gpu.product-name,
+// AMD_Instinct_MI300X_OAM, which the catalog lists as an alias of
+// AMD_INSTINCT_MI300X. At full load a 500 W cap is host-amd applied, sets
+// every power1_cap to 500000000, and three seconds later each GPU draws at
+// most 505 W; no rocm-smi cap command runs (D1).
+func TestHwemuA06AMDCapsThroughSysfs(t *testing.T) {
+	n, tree, p := hwemutest.NewNode(t, "amd-instinct-mi300x-8gpu", nil)
+	n.SetLoad(hwemu.Load{GPUUtil: []float64{1}})
+	if err := n.Step(3 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	e := useEmulatedNode(t, tree, nil)
+	hwmons := amdgpuHwmonDirs(t, e)
+	if w := float64(readFileInt(t, filepath.Join(hwmons[0], "power1_input"))) / 1e6; w <= 505 {
+		t.Fatalf("device 0 draws %.1f W uncapped at full load; the test needs it above 505 W to mean anything", w)
+	}
+	node := e.nodeObject(p)
+	if node.Labels[amdLabellerProduct] == "" {
+		t.Fatalf("the node has no %s label, so this test proves nothing about it", amdLabellerProduct)
+	}
+	status := publishedStatusMap(t, node.Name, discoverHardware(context.Background(), node))
+	gpu, _ := status["gpu"].(map[string]any)
+	product := node.Labels[amdLabellerProduct]
+	capRange, _ := gpu["capRangePerGpu"].(map[string]any)
+	if gpu["count"] != float64(8) || gpu["controlAvailable"] != true || gpu["currentCapWatts"] != float64(750) ||
+		capRange["minWatts"] != float64(0) || capRange["maxWatts"] != float64(750) || gpu["rawModel"] != product ||
+		gpu["model"] != "AMD_INSTINCT_MI300X" || containsAny(gpu["warnings"], "gpu model not recognized") {
+		t.Fatalf("NodeHardware gpu %v; want count 8, capRangePerGpu 0 to 750 W, currentCapWatts 750 and control from amdgpu sysfs (D1), "+
+			"and rawModel the %s value %q, which the catalog matches as AMD_INSTINCT_MI300X", gpu, amdLabellerProduct, product)
+	}
+
+	e.runner.reset()
+	dyn, err := reconcileEmulated(t, e.controller(t), node, nodeTwinWithGPUCap(e.name, float64Ptr(500), nil))
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if s := controlStatus(t, dyn, e.name, "gpu"); s["backend"] != "host-amd" || s["result"] != "applied" {
+		t.Fatalf("gpu control status %v, want backend host-amd, result applied (D1)", s)
+	}
+	if calls := e.amdToolCalls(); len(calls) > 0 {
+		t.Errorf("the agent ran %v to cap", calls)
+	}
 	if len(hwmons) != p.GPUs.Count.V {
 		t.Fatalf("%d amdgpu devices, want %d", len(hwmons), p.GPUs.Count.V)
 	}
@@ -960,109 +1068,6 @@ func TestHwemuA05bAMDVendorComesFromRocmSMI(t *testing.T) {
 		if w := float64(readFileInt(t, filepath.Join(dir, "power1_input"))) / 1e6; w > 505 {
 			t.Errorf("device %d power1_input = %.3f W three seconds after a 500 W cap, want <= 505 W", i, w)
 		}
-	}
-
-	hw := discoverHardware(context.Background(), node)
-	sku := strings.Split(p.GPUs.VBIOSVersion.V, "-")[1]
-	if hw.GPURawModel != sku {
-		t.Fatalf("gpu rawModel %q; today the agent reads Card SKU, the VBIOS segment %q, not the product %q (D4). "+
-			"If the agent now reads the product, update this test with the fix", hw.GPURawModel, sku, p.GPUs.Product.V)
-	}
-}
-
-// A05c: on the MI300X node with the legacy rocm-smi and device 1 a secondary
-// die, a 500 W cap is recorded as host-amd applied while device 1's
-// power1_cap is unchanged: rocm-smi skips a secondary die and still exits 0
-// (python_smi_tools/rocm_smi.py:1687-1689 of rocm_smi_lib at 323ab1105dce),
-// and the agent takes exit 0 as success (D2).
-func TestHwemuA05cSecondaryDieCapIsAnExitZeroNoOp(t *testing.T) {
-	_, tree, p := hwemutest.NewNode(t, "amd-instinct-mi300x-8gpu", variant(withLegacyRocmSMI, withSecondaryDie(1)))
-	e := useEmulatedNode(t, tree, nil)
-	hwmons := amdgpuHwmonDirs(t, e)
-	before := readTrimmed(t, filepath.Join(hwmons[1], "power1_cap"))
-
-	dyn, err := reconcileEmulated(t, e.controller(t), e.nodeObject(p), nodeTwinWithGPUCap(e.name, float64Ptr(500), nil))
-	if err != nil {
-		t.Fatalf("reconcileOnce: %v", err)
-	}
-	if s := controlStatus(t, dyn, e.name, "gpu"); s["backend"] != "host-amd" || s["result"] != "applied" {
-		t.Fatalf("gpu control status %v; today the agent records host-amd applied, because rocm-smi exits 0 on a secondary die "+
-			"and the agent takes exit 0 as success (D2). F3 checks the output instead: update this test with it", s)
-	}
-	if got := readTrimmed(t, filepath.Join(hwmons[1], "power1_cap")); got != before {
-		t.Fatalf("secondary die power1_cap = %s, want it unchanged at %s: rocm-smi does not cap a secondary die", got, before)
-	}
-	for i, dir := range hwmons {
-		if i == 1 {
-			continue
-		}
-		if got := readTrimmed(t, filepath.Join(dir, "power1_cap")); got != "500000000" {
-			t.Errorf("device %d power1_cap = %s, want 500000000", i, got)
-		}
-	}
-}
-
-// A05d: on the MI300X node with the legacy rocm-smi and a 600 W default below
-// the 750 W maximum, a 700 W cap makes rocm-smi ask for confirmation. The
-// agent passes no --autorespond and exec gives the tool an empty stdin, so it
-// reads EOF and exits 1 (D3). The agent records host-amd error and no
-// power1_cap changes.
-func TestHwemuA05dRocmSMIPromptReadsEOF(t *testing.T) {
-	_, tree, p := hwemutest.NewNode(t, "amd-instinct-mi300x-8gpu", variant(withLegacyRocmSMI, withDefaultLimit(600)))
-	e := useEmulatedNode(t, tree, nil)
-	hwmons := amdgpuHwmonDirs(t, e)
-	for i, dir := range hwmons {
-		if got := readTrimmed(t, filepath.Join(dir, "power1_cap")); got != "600000000" {
-			t.Fatalf("device %d starts at power1_cap %s, want the 600 W default", i, got)
-		}
-	}
-
-	dyn, err := reconcileEmulated(t, e.controller(t), e.nodeObject(p), nodeTwinWithGPUCap(e.name, float64Ptr(700), nil))
-	if err != nil {
-		t.Fatalf("reconcileOnce: %v", err)
-	}
-	s := controlStatus(t, dyn, e.name, "gpu")
-	msg, _ := s["message"].(string)
-	if s["backend"] != "host-amd" || s["result"] != "error" || !strings.Contains(msg, "EOF") {
-		t.Fatalf("gpu control status %v; today rocm-smi prompts, reads EOF and exits 1, so the agent records host-amd error (D3)", s)
-	}
-	for i, dir := range hwmons {
-		if got := readTrimmed(t, filepath.Join(dir, "power1_cap")); got != "600000000" {
-			t.Errorf("device %d power1_cap = %s, want it unchanged at 600000000", i, got)
-		}
-	}
-}
-
-// A06: on the MI300X node with the current rocm-smi, the agent's inventory
-// call fails, because no rocm-smi release has --showpowercap (D1). NodeHardware
-// then counts 8 GPUs from allocatable, has no GPU control, and takes the raw
-// model from the labeller's amd.com/gpu.product-name, AMD_Instinct_MI300X_OAM,
-// which the catalog lists as an alias of AMD_INSTINCT_MI300X. A GPU cap ends
-// in backend none, result error, with the argparse message.
-func TestHwemuA06AMDInventoryFailsOnCurrentRocmSMI(t *testing.T) {
-	_, tree, p := hwemutest.NewNode(t, "amd-instinct-mi300x-8gpu", nil)
-	e := useEmulatedNode(t, tree, nil)
-	node := e.nodeObject(p)
-	if node.Labels[amdLabellerProduct] == "" {
-		t.Fatalf("the node has no %s label, so this test proves nothing about it", amdLabellerProduct)
-	}
-	status := publishedStatusMap(t, node.Name, discoverHardware(context.Background(), node))
-	gpu, _ := status["gpu"].(map[string]any)
-	product := node.Labels[amdLabellerProduct]
-	if gpu["count"] != float64(8) || gpu["controlAvailable"] != false || gpu["rawModel"] != product ||
-		gpu["model"] != "AMD_INSTINCT_MI300X" || containsAny(gpu["warnings"], "gpu model not recognized") {
-		t.Fatalf("NodeHardware gpu %v; today inventory fails (D1), so count 8 comes from allocatable, controlAvailable is false, "+
-			"and rawModel is the %s value %q, which the catalog matches as AMD_INSTINCT_MI300X, with no gpu model not recognized warning", gpu, amdLabellerProduct, product)
-	}
-
-	dyn, err := reconcileEmulated(t, e.controller(t), node, nodeTwinWithGPUCap(e.name, float64Ptr(500), nil))
-	if err != nil {
-		t.Fatalf("reconcileOnce: %v", err)
-	}
-	s := controlStatus(t, dyn, e.name, "gpu")
-	msg, _ := s["message"].(string)
-	if s["backend"] != "none" || s["result"] != "error" || !strings.Contains(msg, "unrecognized arguments: --showpowercap") {
-		t.Fatalf("gpu control status %v; today the inventory call fails argparse on every rocm-smi release (D1)", s)
 	}
 }
 
@@ -1306,31 +1311,29 @@ func TestHwemuA11WithoutNFDRAPLIsSkipped(t *testing.T) {
 }
 
 // A12: on the H100 NVL node exposed as MIG devices of mixed strategy, or as
-// renamed time-sliced replicas, the node has no resource the agent counts as
-// a GPU, so a GPU cap is blocked with node has no allocatable GPU resources
-// while nvidia-smi works, and no power_limit_mw changes.
-func TestHwemuA12SharedGPUExposureBlocksTheCap(t *testing.T) {
+// renamed time-sliced replicas, the GPUs are GPUs (pkg/api.GPUResourceKind):
+// a 250 W cap runs nvidia-smi -i <k> -pl 250 on each of the 8 physical GPUs,
+// whose limit holds every MIG device and replica of that GPU, and the
+// control status is host-nvidia applied.
+func TestHwemuA12SharedGPUExposureIsCapped(t *testing.T) {
 	for _, mode := range []string{"mig-mixed", "timeslice-rename"} {
 		t.Run(mode, func(t *testing.T) {
 			_, tree, p := hwemutest.NewNode(t, "nvidia-h100-nvl-8gpu", withExposure(mode))
 			e := useEmulatedNode(t, tree, nil)
-			before := make([]string, p.GPUs.Count.V)
-			for k := range before {
-				before[k] = readTrimmed(t, nvmlFile(e, k, "power_limit_mw"))
-			}
 			dyn, err := reconcileEmulated(t, e.controller(t), e.nodeObject(p), nodeTwinWithGPUCap(e.name, float64Ptr(250), nil))
 			if err != nil {
 				t.Fatalf("reconcileOnce: %v", err)
 			}
-			if s := controlStatus(t, dyn, e.name, "gpu"); s["backend"] != "none" || s["result"] != "blocked" || s["message"] != "node has no allocatable GPU resources" {
-				t.Fatalf("gpu control status %v, want backend none, result blocked, node has no allocatable GPU resources", s)
+			if s := controlStatus(t, dyn, e.name, "gpu"); s["backend"] != "host-nvidia" || s["result"] != "applied" {
+				t.Fatalf("gpu control status %v, want backend host-nvidia, result applied (D18)", s)
 			}
-			if out, err := e.runner.Run(context.Background(), "nvidia-smi", "-L"); err != nil {
-				t.Fatalf("nvidia-smi -L on the emulated node: %v (%s)", err, out)
-			}
-			for k := range before {
-				if got := readTrimmed(t, nvmlFile(e, k, "power_limit_mw")); got != before[k] {
-					t.Errorf("gpu %d power_limit_mw = %s, want it unchanged at %s", k, got, before[k])
+			for k := 0; k < p.GPUs.Count.V; k++ {
+				cmd := "nvidia-smi -i " + strconv.Itoa(k) + " -pl 250"
+				if _, ok := e.runner.ran(cmd); !ok {
+					t.Errorf("%q did not run successfully; commands: %v", cmd, e.runner.commands())
+				}
+				if got := readTrimmed(t, nvmlFile(e, k, "power_limit_mw")); got != "250000" {
+					t.Errorf("gpu %d power_limit_mw = %s, want 250000", k, got)
 				}
 			}
 		})
@@ -1458,89 +1461,65 @@ func TestHwemuA16UnsupportedNvidiaLimitsBlockAPercentCap(t *testing.T) {
 // A19: on the Radeon PRO W7900 node, whose driver pins every board's cap at
 // 241 W (minimum, maximum, default and current), the agent takes the AMD
 // vendor from the NFD display-class label pci-0300_1002 and runs no probe.
-// Its inventory call fails as on the MI300X (D1), so NodeHardware counts 4
-// GPUs from allocatable, has no capRangePerGpu and no GPU control, and takes
-// the raw model from the labeller's amd.com/gpu.product-name, which matches
-// the catalog's AMD_RADEON_PRO_W7900. A 200 W cap ends in backend none, result
-// error. With the legacy rocm-smi standing in for an inventory that works,
-// the agent publishes the pinned range, 241 to 241 W, with control available
-// and the Card SKU as the model (D4), and blocks the 200 W cap below the
-// minimum. In both cases every power1_cap stays at 241 W.
+// NodeHardware lists the 4 GPUs from the amdgpu hwmon devices with the
+// pinned range, 241 to 241 W, and control, and takes the raw model from the
+// labeller's amd.com/gpu.product-name, the catalog's AMD_RADEON_PRO_W7900. A
+// 200 W cap is blocked below the minimum; a 60 % cap resolves to the 241 W
+// minimum, already in force, so it is applied with nothing written. The
+// writes go through the node's CheckWrite, which refuses any other value.
 func TestHwemuA19W7900PinnedCapIsNeverWritten(t *testing.T) {
-	const capUW = "241000000"
-	checkCaps := func(t *testing.T, e *emulatedNode, count int) {
-		t.Helper()
-		hwmons := amdgpuHwmonDirs(t, e)
-		if len(hwmons) != count {
-			t.Fatalf("%d amdgpu devices, want %d", len(hwmons), count)
-		}
-		for i, dir := range hwmons {
-			if got := readTrimmed(t, filepath.Join(dir, "power1_cap")); got != capUW {
-				t.Errorf("device %d power1_cap = %s, want it pinned at %s", i, got, capUW)
-			}
+	n, tree, p := hwemutest.NewNode(t, "amd-radeon-pro-w7900-4gpu", nil)
+	e := useEmulatedNode(t, tree, nil)
+	checkWritesThroughNode(t, n, tree)
+	writes := watchWrites(t, tree.SysRoot)
+	node := e.nodeObject(p)
+	if node.Labels[amdDisplayNFD] != "true" || node.Labels[amdAcceleratorNFD] != "" {
+		t.Fatalf("labels %v: want %s and not %s, or this test proves nothing about the display class", node.Labels, amdDisplayNFD, amdAcceleratorNFD)
+	}
+	hw := discoverHardware(context.Background(), node)
+	for _, probe := range []string{nvidiaListProbe, rocmProductProbe} {
+		if ran, _ := e.runner.ran(probe); ran {
+			t.Errorf("%s ran, so the vendor did not come from %s; commands: %v", probe, amdDisplayNFD, e.runner.commands())
 		}
 	}
+	status := publishedStatusMap(t, node.Name, hw)
+	gpu, _ := status["gpu"].(map[string]any)
+	capRange, _ := gpu["capRangePerGpu"].(map[string]any)
+	product := node.Labels[amdLabellerProduct]
+	if gpu["vendor"] != "amd" || gpu["count"] != float64(4) || gpu["controlAvailable"] != true || gpu["currentCapWatts"] != float64(241) ||
+		capRange["minWatts"] != float64(241) || capRange["maxWatts"] != float64(241) ||
+		gpu["rawModel"] != product || gpu["model"] != "AMD_RADEON_PRO_W7900" || containsAny(gpu["warnings"], "gpu model not recognized") {
+		t.Fatalf("NodeHardware gpu %v; want 4 GPUs pinned at 241 to 241 W with control, from amdgpu sysfs (D1), "+
+			"and rawModel the %s value %q, the catalog's AMD_RADEON_PRO_W7900", gpu, amdLabellerProduct, product)
+	}
 
-	t.Run("current rocm-smi", func(t *testing.T) {
-		_, tree, p := hwemutest.NewNode(t, "amd-radeon-pro-w7900-4gpu", nil)
-		e := useEmulatedNode(t, tree, nil)
-		node := e.nodeObject(p)
-		if node.Labels[amdDisplayNFD] != "true" || node.Labels[amdAcceleratorNFD] != "" {
-			t.Fatalf("labels %v: want %s and not %s, or this test proves nothing about the display class", node.Labels, amdDisplayNFD, amdAcceleratorNFD)
+	nc := e.controller(t)
+	dyn, err := reconcileEmulated(t, nc, node, nodeTwinWithGPUCap(e.name, float64Ptr(200), nil))
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	s := controlStatus(t, dyn, e.name, "gpu")
+	if msg, _ := s["message"].(string); s["result"] != "blocked" || !strings.Contains(msg, "requested cap 200.0W below min 241.0W") {
+		t.Fatalf("gpu control status %v, want a 200 W cap blocked below the 241 W minimum", s)
+	}
+	dyn, err = reconcileEmulated(t, nc, node, nodeTwinWithGPUCap(e.name, nil, float64Ptr(60)))
+	if err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if s := controlStatus(t, dyn, e.name, "gpu"); s["backend"] != "host-amd" || s["result"] != "applied" || s["message"] != "applied gpu cap 241.0W on 4 devices" {
+		t.Fatalf("gpu control status %v, want a 60 %% cap applied at the pinned 241 W", s)
+	}
+	if w := writes.take(); len(w) != 0 {
+		t.Errorf("wrote %v on a pinned cap", w)
+	}
+	if calls := e.amdToolCalls(); len(calls) > 0 {
+		t.Errorf("the agent ran %v", calls)
+	}
+	for i, dir := range amdgpuHwmonDirs(t, e) {
+		if got := readTrimmed(t, filepath.Join(dir, "power1_cap")); got != "241000000" {
+			t.Errorf("device %d power1_cap = %s, want it pinned at 241000000", i, got)
 		}
-		hw := discoverHardware(context.Background(), node)
-		for _, probe := range []string{nvidiaListProbe, rocmProductProbe} {
-			if ran, _ := e.runner.ran(probe); ran {
-				t.Errorf("%s ran, so the vendor did not come from %s; commands: %v", probe, amdDisplayNFD, e.runner.commands())
-			}
-		}
-		status := publishedStatusMap(t, node.Name, hw)
-		gpu, _ := status["gpu"].(map[string]any)
-		product := node.Labels[amdLabellerProduct]
-		if _, ranged := gpu["capRangePerGpu"]; ranged || gpu["vendor"] != "amd" || gpu["count"] != float64(4) || gpu["controlAvailable"] != false ||
-			gpu["rawModel"] != product || gpu["model"] != "AMD_RADEON_PRO_W7900" || containsAny(gpu["warnings"], "gpu model not recognized") {
-			t.Fatalf("NodeHardware gpu %v; today inventory fails (D1), so count 4 comes from allocatable with no capRangePerGpu and no control, "+
-				"and rawModel is the %s value %q, the catalog's AMD_RADEON_PRO_W7900", gpu, amdLabellerProduct, product)
-		}
-
-		dyn, err := reconcileEmulated(t, e.controller(t), node, nodeTwinWithGPUCap(e.name, float64Ptr(200), nil))
-		if err != nil {
-			t.Fatalf("reconcileOnce: %v", err)
-		}
-		s := controlStatus(t, dyn, e.name, "gpu")
-		msg, _ := s["message"].(string)
-		if s["backend"] != "none" || s["result"] != "error" || !strings.Contains(msg, "unrecognized arguments: --showpowercap") {
-			t.Fatalf("gpu control status %v; today the inventory call fails argparse on every rocm-smi release (D1)", s)
-		}
-		checkCaps(t, e, p.GPUs.Count.V)
-	})
-
-	t.Run("legacy rocm-smi", func(t *testing.T) {
-		_, tree, p := hwemutest.NewNode(t, "amd-radeon-pro-w7900-4gpu", withLegacyRocmSMI)
-		e := useEmulatedNode(t, tree, nil)
-		node := e.nodeObject(p)
-		hw := discoverHardware(context.Background(), node)
-		sku := strings.Split(p.GPUs.VBIOSVersion.V, "-")[1]
-		if hw.GPUCount != 4 || !hw.GPUCapKnown || hw.GPUCapMinWatts != 241 || hw.GPUCapMaxWatts != 241 || !hw.GPUControl || hw.GPURawModel != sku {
-			t.Fatalf("gpu count %d, cap known %v, %v to %v W, control %v, rawModel %q; want 4 GPUs pinned at 241 to 241 W with control, "+
-				"and today the Card SKU %q as the model (D4)", hw.GPUCount, hw.GPUCapKnown, hw.GPUCapMinWatts, hw.GPUCapMaxWatts, hw.GPUControl, hw.GPURawModel, sku)
-		}
-		dyn, err := reconcileEmulated(t, e.controller(t), node, nodeTwinWithGPUCap(e.name, float64Ptr(200), nil))
-		if err != nil {
-			t.Fatalf("reconcileOnce: %v", err)
-		}
-		s := controlStatus(t, dyn, e.name, "gpu")
-		msg, _ := s["message"].(string)
-		if s["result"] != "blocked" || !strings.Contains(msg, "requested cap 200.0W below min 241.0W") {
-			t.Fatalf("gpu control status %v, want a 200 W cap blocked below the 241 W minimum", s)
-		}
-		for _, c := range e.runner.commands() {
-			if strings.Contains(c, "--setpoweroverdrive") {
-				t.Errorf("the agent ran %q for a blocked cap", c)
-			}
-		}
-		checkCaps(t, e, p.GPUs.Count.V)
-	})
+	}
 }
 
 // publishedStatusMap is publishedNodeHardwareStatus decoded.

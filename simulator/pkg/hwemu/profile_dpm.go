@@ -222,9 +222,8 @@ func renderValidateGPUDPM(p *Profile) []error {
 // pp_od_clk_voltage, pp_power_profile_mode and pm_policy/ where the family
 // has them (A, 0644 as amdgpu creates them, amdgpu_pm.h v6.17:112-114), and
 // pp_dpm_* as the emulator keeps them (S, also 0644; a level-mask write
-// under manual is not emulated). Each GPU also gets its bus/pci/devices
-// entry, the path tools and the agent address the device by, and the state
-// the fake tools read (dpmStatePerfLevels and its neighbours).
+// under manual is not emulated). Each GPU also gets the state the fake tools
+// read (dpmStatePerfLevels and its neighbours).
 func renderGPUDPM(b *renderBuilder, p *Profile, o RenderOptions) error {
 	g := p.GPUs
 	if g == nil || g.Vendor != "amd" || g.DPM == nil {
@@ -263,10 +262,6 @@ func renderGPUDPM(b *renderBuilder, p *Profile, o RenderOptions) error {
 			if err := b.writeEntries(renderSys(layout.AMDGPUPMPolicyDir(bus)), pe); err != nil {
 				return err
 			}
-		}
-		link, target := layout.PCIBusDeviceLink(bus)
-		if err := b.link(renderSys(link), target); err != nil {
-			return err
 		}
 		state := []renderEntry{{name: dpmStatePerfLevels, content: dpmPerfLevelsText(d), owner: layout.OwnerRender, mode: 0o444}}
 		if d.OD != nil && d.OD.Enabled.V {

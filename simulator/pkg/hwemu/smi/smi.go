@@ -12,9 +12,6 @@
 //   - rocm-smi current: rocm_smi.py of rocm_smi_lib at 323ab1105dce, the head
 //     of its develop branch, whose flags and exit logic hold from rocm-5.4.0
 //     on. It has no --showpowercap.
-//   - rocm-smi legacy-agent-contract: current plus --showpowercap, the flag
-//     the agent asks for (listAmdDevices in cmd/agent). No release has it; the
-//     variant is assumed and lives only until the agent stops asking.
 //   - amd-smi 7.1 and 7.2: amdsmi_cli of rocm-7.1.0 and rocm-7.2.0, whose set
 //     syntax and JSON shape differ.
 //

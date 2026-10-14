@@ -647,7 +647,7 @@ func scoreNode(nodeName string, states map[string]*joulie.NodeTwinStatus, hwInfo
 		nodeProfile := hwInfoToProfile(nodeName, hw)
 		est := powerest.EstimateMarginalImpact(*podDemand, &nodeProfile, marginalCoeff)
 		podMarginalW = est.DeltaTotalWatts
-		log.Printf("marginal: node=%s pod_cpu=%.2f pod_gpu=%d delta=%.1fW [%s]",
+		log.Printf("marginal: node=%s pod_cpu=%.2f pod_gpu=%.3g delta=%.1fW [%s]",
 			nodeName, podDemand.CPUCores, podDemand.GPUCount, est.DeltaTotalWatts, est.Explanation)
 	}
 

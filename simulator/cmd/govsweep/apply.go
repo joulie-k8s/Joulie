@@ -153,9 +153,10 @@ func applyCPU(n *hwemu.Node, t *hwemu.Tree, c Cell) (armResult, error) {
 	return out, err
 }
 
-// applyCap sets c's GPU power cap on every GPU, as the agent sets it
-// (nvidia-smi -i <index> -pl, rocm-smi -d <index> --setpoweroverdrive), in
-// W of the board maximum, and steps once so the node reads it. A cap of 100
+// applyCap sets c's GPU power cap on every GPU, in W of the board maximum,
+// with nvidia-smi -i <index> -pl and, on AMD, rocm-smi -d <index>
+// --setpoweroverdrive, which writes the power1_cap the agent writes
+// directly, and steps once so the node reads it. A cap of 100
 // percent writes nothing. The run sets the cap once the job holds its GPUs:
 // a GPU without persistence mode drops its limit back to the default
 // whenever it idles, as the agent sees on such a node.
