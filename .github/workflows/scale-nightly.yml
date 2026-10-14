@@ -41,17 +41,17 @@ concurrency:
 
 jobs:
   scale:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The run creates a cluster, builds two images, registers the nodes and
     # then observes for a steady-state window. 90 minutes leaves room for a
     # slow runner without letting a hung wait loop burn a whole day.
     timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       # Into a directory the runner user owns: the image ships a root owned
       # /usr/local/bin/kind that curl can overwrite but chmod cannot touch.
@@ -85,7 +85,7 @@ jobs:
       # and the controller manager log are worth reading.
       - name: Upload the scale summary and the controller manager log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scale-nightly-${{ github.run_id }}
           path: |

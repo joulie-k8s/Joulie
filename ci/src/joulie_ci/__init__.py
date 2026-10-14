@@ -40,6 +40,10 @@ exec "$@"
 
 # Pinned to the version observed in CI logs (2026-03-13).
 _K3S_IMAGE = "rancher/k3s:v1.34.1-k3s1"
+# The builder and base of the component images, as in Dockerfile: the golang
+# tag is the go.mod toolchain, and the digest is what Dagger pulls.
+_GOLANG_IMAGE = "golang:1.26.9@sha256:37cfcca63222ec499bec5e8ad7aad52dbf7529db36d5812b8eae2f0621aa92d6"
+_DISTROLESS_IMAGE = "gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3"
 _LOCAL_REGISTRY_ALIAS = "registry"
 _LOCAL_REGISTRY_HOST = "joulie-registry.local"
 _LOCAL_REGISTRY_PORT = 5000
@@ -109,7 +113,7 @@ class JoulieCi:
 
         go_base = (
             dag.container()
-            .from_("golang:1.23")
+            .from_(_GOLANG_IMAGE)
             .with_workdir("/src")
             .with_env_variable("CGO_ENABLED", "0")
             .with_env_variable("GOOS", "linux")
@@ -132,7 +136,7 @@ class JoulieCi:
         )
         runtime = (
             dag.container()
-            .from_("gcr.io/distroless/static:nonroot")
+            .from_(_DISTROLESS_IMAGE)
             .with_file("/joulie", builder.file("/out/joulie"))
             .with_entrypoint(["/joulie"])
         )
