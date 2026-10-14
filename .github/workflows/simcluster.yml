@@ -62,7 +62,7 @@ permissions:
 jobs:
   smoke:
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The test itself times out after ten rate windows, at least 20 minutes
     # (smoke.sh), 20 in dev timing; creating the cluster and building the
     # images come on top.
@@ -73,7 +73,7 @@ jobs:
       SIMCLUSTER_AIRGAP: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Outside the workspace, as the scripts want it; the runner context is
       # not available in a job's env, hence GITHUB_ENV.
@@ -81,7 +81,7 @@ jobs:
         run: echo "SIMCLUSTER_DIR=$RUNNER_TEMP/simcluster/joulie-sim-smoke" >>"$GITHUB_ENV"
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
@@ -90,14 +90,14 @@ jobs:
         run: echo "helm=$(sed -n 's/^HELM_VERSION=//p' scripts/simcluster/versions.env)" >>"$GITHUB_OUTPUT"
 
       - name: Setup Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ steps.versions.outputs.helm }}
 
       # images/ holds the air-gap bundle k3s imports at start
       # (SIMCLUSTER_AIRGAP=1); down.sh keeps it.
       - name: Cache the image tarballs
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/simcluster/*/images
           key: simcluster-images-${{ hashFiles('scripts/simcluster/versions.env') }}
@@ -114,7 +114,7 @@ jobs:
 
       - name: Upload the run
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: simcluster-smoke
           path: ${{ env.SIMCLUSTER_DIR }}/runs/
@@ -122,7 +122,7 @@ jobs:
 
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The test times out after 50 minutes in production timing (smoke.sh),
     # and the medium cluster takes minutes to create and deploy: the job
     # keeps room for both, so smoke.sh still writes the run's summary.
@@ -147,7 +147,7 @@ jobs:
     name: nightly (${{ matrix.name }})
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Outside the workspace, as the scripts want it; the runner context is
       # not available in a job's env, hence GITHUB_ENV.
@@ -155,7 +155,7 @@ jobs:
         run: echo "SIMCLUSTER_DIR=$RUNNER_TEMP/simcluster/joulie-sim-smoke" >>"$GITHUB_ENV"
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
@@ -164,12 +164,12 @@ jobs:
         run: echo "helm=$(sed -n 's/^HELM_VERSION=//p' scripts/simcluster/versions.env)" >>"$GITHUB_OUTPUT"
 
       - name: Setup Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ steps.versions.outputs.helm }}
 
       - name: Cache the image tarballs
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/simcluster/*/images
           key: simcluster-images-${{ hashFiles('scripts/simcluster/versions.env') }}
@@ -193,7 +193,7 @@ jobs:
 
       - name: Upload the run
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: simcluster-nightly-${{ matrix.name }}
           path: ${{ env.SIMCLUSTER_DIR }}/runs/

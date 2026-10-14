@@ -34,6 +34,13 @@ import (
 // scRepo is the repository root, seen from this package's directory.
 const scRepo = "../.."
 
+// scGoToolchain is the toolchain line of the go.mod stub in the fake
+// repository. The scripts build with whatever go.mod names, so the stub names
+// a release of its own and these tests hold across toolchain bumps. The fake
+// go reports $GOTOOLCHAIN as its GOVERSION, as a real go does, so a toolchain
+// the scripts take from go itself instead of go.mod fails the tests.
+const scGoToolchain = "go1.99.9"
+
 // scCommon is sourced by every fake: it appends the call to $FAKE_LOG, one
 // line per call with the arguments separated by 0x1f.
 const scCommon = `fake_record() {
@@ -324,7 +331,8 @@ build)
   done
   printf 'GOOS=%s GOARCH=%s CGO_ENABLED=%s GOTOOLCHAIN=%s\n' "${GOOS:-}" "${GOARCH:-}" "${CGO_ENABLED:-}" "${GOTOOLCHAIN:-}" >>"$FAKE_STATE/go-build-env"
   ;;
-env) echo go1.22.9 ;;
+# go env GOVERSION: the release GOTOOLCHAIN selects, like a real go.
+env) echo "${GOTOOLCHAIN:-go1.0.0}" ;;
 test)
   # go test -c -o <file>: the test binary, which records its run like
   # go test does and exits $FAKE_GO_TEST_RC.
@@ -516,7 +524,6 @@ func scNew(t *testing.T) *scEnv {
 		"scripts/simcluster/versions.env",
 		"scripts/simcluster/timing/dev.env",
 		"scripts/simcluster/timing/production.env",
-		"go.mod",
 		"values/simcluster.yaml",
 		"values/simcluster-simulator.yaml",
 		"values/simcluster-extender-service.yaml",
@@ -524,8 +531,10 @@ func scNew(t *testing.T) *scEnv {
 		e.copyIn(filepath.Join(scRepo, f), f)
 	}
 	// Stubs for files other packages own: the scripts only pass their paths
-	// to the fakes, and hash the scheduler configuration.
+	// to the fakes, hash the scheduler configuration and read the go.mod
+	// toolchain line.
 	for f, content := range map[string]string{
+		"go.mod": "module github.com/matbun/joulie\n\ngo 1.26.0\n\ntoolchain " + scGoToolchain + "\n",
 		"scripts/simcluster/manifests/prometheus.yaml":               "# stub\n",
 		"scripts/simcluster/manifests/otelcol.yaml":                  "# stub\n",
 		"scripts/simcluster/manifests/otelcol-bridge.yaml":           "# stub\n",
@@ -1003,7 +1012,7 @@ func TestSC05ImageTagsFollowTheBinaryAndListedImagesAreNotImported(t *testing.T)
 			t.Errorf("%s = %q is not joulie.local/joulie-<c>:dev-<12 hex>", k, v)
 		}
 	}
-	if env["GOTOOLCHAIN"] == "" || env["GO_VERSION"] != "go1.22.9" {
+	if env["GOTOOLCHAIN"] != scGoToolchain || env["GO_VERSION"] != scGoToolchain {
 		t.Errorf("images.env records GOTOOLCHAIN %q and GO_VERSION %q", env["GOTOOLCHAIN"], env["GO_VERSION"])
 	}
 
@@ -1027,8 +1036,8 @@ func TestSC05ImageTagsFollowTheBinaryAndListedImagesAreNotImported(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOTOOLCHAIN=go1.22.9") {
-		t.Errorf("the image binaries were not built for linux/amd64 without cgo with go1.22.9:\n%s", b)
+	if !strings.Contains(string(b), "GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOTOOLCHAIN="+scGoToolchain) {
+		t.Errorf("the image binaries were not built for linux/amd64 without cgo with the go.mod toolchain %s:\n%s", scGoToolchain, b)
 	}
 	// Without a VCS stamp, so a tag follows the code and not the git state.
 	for _, c := range e.callsOf("go", "build") {

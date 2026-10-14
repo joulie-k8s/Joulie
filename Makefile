@@ -251,6 +251,7 @@ ci-local:
 			failed="$$failed $$name"; \
 		fi; \
 	}; \
+	run "go mod tidy -diff" sh -c 'go mod tidy -diff && cd tests/promql && go mod tidy -diff'; \
 	run "make verify-manifests" $(MAKE) --no-print-directory verify-manifests; \
 	run "go build ./..." go build ./...; \
 	run "go vet ./..." go vet ./...; \

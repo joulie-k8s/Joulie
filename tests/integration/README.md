@@ -26,7 +26,7 @@ Built in `ci/src/joulie_ci/__init__.py`, from `rancher/k3s:v1.34.1-k3s1`:
   `ignorable: true`. The loopback address works because the extender pod runs
   with `hostNetwork: true`, pinned to `k3s-server`.
 - The three images (`agent`, `controller-manager`, `scheduler`) are built from
-  the working tree with `golang:1.23` onto `distroless/static:nonroot`, pushed
+  the working tree with `golang:1.26.9` onto `distroless/static:nonroot`, pushed
   to a `registry:2` sidecar with `crane`, and pulled by k3s through a
   `registries.yaml` mirror for `joulie-registry.local:5000`. Tags must start
   with `dev`; `latest` is never used.

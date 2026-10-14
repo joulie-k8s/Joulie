@@ -4,7 +4,7 @@ Kubernetes energy management: a controller manager (policy + digital twin), a no
 
 ## Invariants
 
-- Toolchain: Go from `go.mod` (`toolchain` line). On the main dev box use `$HOME/.local/go/bin/go`; `/usr/bin/go` is a different version and fails with `compile: version ... does not match`.
+- Toolchain: Go from `go.mod` (`toolchain` line). On the main dev box use `$HOME/.local/go/bin/go`; `/usr/bin/go` is another release that runs against the exported `GOROOT` and fails with `compile: version ... does not match` whenever it does not switch to the `go.mod` toolchain (`GOTOOLCHAIN=local`, or a toolchain no newer than itself).
 - `api/v1alpha1` is the source of truth for the CRDs. Never edit `config/crd/bases/*.yaml` or `charts/joulie/crds/*.yaml` by hand; run `make generate manifests` after touching `api/` and commit the output. CI runs `make verify-manifests`.
 - Before claiming anything works: `go build ./... && go vet ./... && go test ./...`, then `helm lint charts/joulie` and `helm template joulie charts/joulie -f values/joulie.yaml` if the chart changed. `go test -race ./cmd/...` when touching caches or goroutines.
 - Numbers read from the API server arrive as `int64` when whole. Read CRs through the typed `api/v1alpha1` structs, never through `unstructured` maps with a `float64` assertion.
