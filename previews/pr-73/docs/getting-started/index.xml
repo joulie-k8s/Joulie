@@ -13,15 +13,16 @@ For conceptual context first, read &lt;a href="https://joulie-k8s.github.io/Joul
 &lt;li&gt;cpufreq sysfs interfaces&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
+&lt;li&gt;Prometheus, for measured node power. The chart reads node power from Prometheus by default (&lt;code&gt;NODE_POWER_SOURCE=prometheus&lt;/code&gt;): it expects Prometheus at &lt;code&gt;http://prometheus-operated.monitoring:9090&lt;/code&gt; with its OTLP receiver on (&lt;code&gt;--web.enable-otlp-receiver&lt;/code&gt;), receiving &lt;code&gt;hw.energy&lt;/code&gt; or &lt;code&gt;hw.power&lt;/code&gt; for each node. Without that data every node reads 0 W, with source &lt;code&gt;prometheus-no-data&lt;/code&gt;.
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;values/prometheus-grafana.yaml&lt;/code&gt; configures kube-prometheus-stack this way (&lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/architecture/telemetry/#prometheus-settings"&gt;Prometheus settings&lt;/a&gt;).&lt;/li&gt;
+&lt;li&gt;&lt;a href="https://github.com/joulie-k8s/Joulie/tree/main/examples/11-otel-collector-bridge"&gt;&lt;code&gt;examples/11-otel-collector-bridge&lt;/code&gt;&lt;/a&gt; converts Kepler, dcgm-exporter and AMD device-metrics-exporter metrics into those names.&lt;/li&gt;
+&lt;li&gt;To run without it, set &lt;code&gt;controllerManager.env.NODE_POWER_SOURCE=static&lt;/code&gt; (0 W for every node).&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
 &lt;/ul&gt;
 &lt;h2 id="install-from-release-recommended"&gt;Install from release (recommended)&lt;/h2&gt;
-&lt;p&gt;Install directly from OCI chart release:&lt;/p&gt;
-&lt;div class="highlight"&gt;&lt;pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;helm upgrade --install joulie oci://registry.cern.ch/joulie/joulie &lt;span style="color:#ae81ff"&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; --version &amp;lt;version&amp;gt; &lt;span style="color:#ae81ff"&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; -n joulie-system &lt;span style="color:#ae81ff"&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; --create-namespace &lt;span style="color:#ae81ff"&gt;\
-&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span style="display:flex;"&gt;&lt;span&gt; -f values/joulie.yaml
-&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Charts, images and the kubectl plugin used to be published under &lt;code&gt;registry.cern.ch/mbunino/joulie&lt;/code&gt;. Every tag published there up to 0.2.0 was copied to &lt;code&gt;registry.cern.ch/joulie&lt;/code&gt; with the same digest, and later releases are published only to &lt;code&gt;registry.cern.ch/joulie&lt;/code&gt;. If your values file sets an &lt;code&gt;image.repository&lt;/code&gt; or you pull &lt;code&gt;latest&lt;/code&gt;, point it at the new path.&lt;/p&gt;</description></item><item><title>Pod Compatibility for Joulie</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/getting-started/workload-compatibility/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/getting-started/workload-compatibility/</guid><description>&lt;p&gt;Joulie uses a single pod annotation to express workload placement intent:&lt;/p&gt;
+&lt;p&gt;Install directly from OCI chart release:&lt;/p&gt;</description></item><item><title>Pod Compatibility for Joulie</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/getting-started/workload-compatibility/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/getting-started/workload-compatibility/</guid><description>&lt;p&gt;Joulie uses a single pod annotation to express workload placement intent:&lt;/p&gt;
 &lt;pre tabindex="0"&gt;&lt;code&gt;joulie.io/workload-class: performance | standard
 &lt;/code&gt;&lt;/pre&gt;&lt;p&gt;The scheduler extender reads this annotation and steers pods accordingly. No node affinity rules are needed.&lt;/p&gt;
 &lt;h2 id="workload-classes"&gt;Workload classes&lt;/h2&gt;
@@ -43,16 +44,38 @@ For conceptual context first, read &lt;a href="https://joulie-k8s.github.io/Joul
  &lt;/tr&gt;
  &lt;/tbody&gt;
 &lt;/table&gt;
-&lt;p&gt;If no annotation is present, the extender treats it as &lt;code&gt;standard&lt;/code&gt;.&lt;/p&gt;</description></item><item><title>Agent Runtime Modes</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/getting-started/daemonset/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/getting-started/daemonset/</guid><description>&lt;p&gt;The agent supports two runtime modes:&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;code&gt;daemonset&lt;/code&gt;: real-hardware mode, one pod per real node.&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;pool&lt;/code&gt;: simulation mode, one pod hosts many logical per-node controllers.&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;Chart templates:&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;code&gt;charts/joulie/templates/agent-daemonset.yaml&lt;/code&gt;&lt;/li&gt;
-&lt;li&gt;&lt;code&gt;charts/joulie/templates/agent-statefulset.yaml&lt;/code&gt;&lt;/li&gt;
-&lt;/ul&gt;
+&lt;p&gt;If no annotation is present, the extender treats it as &lt;code&gt;standard&lt;/code&gt;.&lt;/p&gt;</description></item><item><title>Agent Runtime Modes</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/getting-started/daemonset/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/getting-started/daemonset/</guid><description>&lt;p&gt;The chart runs the agent in one of three modes, or not at all (&lt;code&gt;agent.mode&lt;/code&gt;):&lt;/p&gt;
+&lt;table&gt;
+ &lt;thead&gt;
+ &lt;tr&gt;
+ &lt;th&gt;&lt;code&gt;agent.mode&lt;/code&gt;&lt;/th&gt;
+ &lt;th&gt;Pods&lt;/th&gt;
+ &lt;th&gt;Use&lt;/th&gt;
+ &lt;/tr&gt;
+ &lt;/thead&gt;
+ &lt;tbody&gt;
+ &lt;tr&gt;
+ &lt;td&gt;&lt;code&gt;daemonset&lt;/code&gt; (default)&lt;/td&gt;
+ &lt;td&gt;one pod per managed node (&lt;code&gt;charts/joulie/templates/agent-daemonset.yaml&lt;/code&gt;)&lt;/td&gt;
+ &lt;td&gt;real hardware&lt;/td&gt;
+ &lt;/tr&gt;
+ &lt;tr&gt;
+ &lt;td&gt;&lt;code&gt;pool&lt;/code&gt;&lt;/td&gt;
+ &lt;td&gt;a StatefulSet whose pods each run many logical per-node agents (&lt;code&gt;agent-statefulset.yaml&lt;/code&gt;)&lt;/td&gt;
+ &lt;td&gt;KWOK experiments over the simulator&amp;rsquo;s HTTP API&lt;/td&gt;
+ &lt;/tr&gt;
+ &lt;tr&gt;
+ &lt;td&gt;&lt;code&gt;emulated&lt;/code&gt;&lt;/td&gt;
+ &lt;td&gt;one Deployment per node of the simulated cluster (&lt;code&gt;agent-emulated.yaml&lt;/code&gt;), reading that node&amp;rsquo;s emulated &lt;code&gt;/sys&lt;/code&gt; and GPU tools&lt;/td&gt;
+ &lt;td&gt;the &lt;a href="https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/simulator/simulated-cluster/"&gt;simulated cluster&lt;/a&gt;&lt;/td&gt;
+ &lt;/tr&gt;
+ &lt;tr&gt;
+ &lt;td&gt;&lt;code&gt;none&lt;/code&gt;&lt;/td&gt;
+ &lt;td&gt;no agent&lt;/td&gt;
+ &lt;td&gt;&lt;/td&gt;
+ &lt;/tr&gt;
+ &lt;/tbody&gt;
+&lt;/table&gt;
 &lt;h2 id="daemonset-mode-real-hardware"&gt;DaemonSet mode (real hardware)&lt;/h2&gt;
 &lt;h3 id="required-runtime-settings"&gt;Required runtime settings&lt;/h3&gt;
 &lt;ul&gt;
@@ -75,5 +98,10 @@ For conceptual context first, read &lt;a href="https://joulie-k8s.github.io/Joul
 &lt;h2 id="pool-mode-kwok--simulation"&gt;Pool mode (KWOK / simulation)&lt;/h2&gt;
 &lt;p&gt;Pool mode preserves per-node semantics but shards logical node controllers across replicas.&lt;/p&gt;</description></item><item><title>Configuration Reference</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/getting-started/05-configuration-reference/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/getting-started/05-configuration-reference/</guid><description>&lt;p&gt;Complete reference for all Joulie environment variables. These are set via Helm values or directly in the Deployment/DaemonSet manifests.&lt;/p&gt;
 &lt;p&gt;Defaults listed below are the &lt;strong&gt;code defaults&lt;/strong&gt;. The Helm chart (&lt;code&gt;charts/joulie/values.yaml&lt;/code&gt;) overrides some of them: notably, the controller manager &lt;code&gt;NODE_SELECTOR&lt;/code&gt; defaults to &lt;code&gt;joulie.io/managed=true&lt;/code&gt; in the chart even though the code default is &lt;code&gt;node-role.kubernetes.io/worker&lt;/code&gt;.&lt;/p&gt;
-&lt;h2 id="images"&gt;Images&lt;/h2&gt;
-&lt;p&gt;The chart values &lt;code&gt;agent.image.tag&lt;/code&gt;, &lt;code&gt;controllerManager.image.tag&lt;/code&gt; and &lt;code&gt;schedulerExtender.image.tag&lt;/code&gt; (and &lt;code&gt;image.tag&lt;/code&gt; in the simulator chart) default to empty, which pulls the chart&amp;rsquo;s &lt;code&gt;appVersion&lt;/code&gt;. A chart installed from &lt;code&gt;oci://registry.cern.ch/joulie&lt;/code&gt; carries the version it was released with, so it runs the images of that release. A chart installed from a checkout has &lt;code&gt;appVersion: latest&lt;/code&gt; and runs the newest stable release. Set a tag only to run other images, for example your own build.&lt;/p&gt;</description></item></channel></rss>
+&lt;p&gt;&lt;strong&gt;Booleans.&lt;/strong&gt; The agent, the controller manager and the simulator read every on/off variable the same way: &lt;code&gt;true&lt;/code&gt;, &lt;code&gt;1&lt;/code&gt;, &lt;code&gt;yes&lt;/code&gt; or &lt;code&gt;on&lt;/code&gt;, and &lt;code&gt;false&lt;/code&gt;, &lt;code&gt;0&lt;/code&gt;, &lt;code&gt;no&lt;/code&gt; or &lt;code&gt;off&lt;/code&gt;, in any case, with surrounding spaces ignored. Unset or empty means the default. Any other value keeps the default and logs one warning naming the variable, so a typo never flips a switch. The exceptions are &lt;code&gt;SIM_OTEL_FILE_METRICS&lt;/code&gt;, &lt;code&gt;OTEL_SDK_DISABLED&lt;/code&gt; and &lt;code&gt;fakesmi&lt;/code&gt;&amp;rsquo;s &lt;code&gt;HWEMU_UNPRIVILEGED&lt;/code&gt;, whose rows say how they are read.&lt;/p&gt;</description></item><item><title>Upgrading</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/getting-started/06-upgrading/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-73/docs/getting-started/06-upgrading/</guid><description>&lt;p&gt;What to check when you upgrade a Joulie installation from v0.2 to v0.3. Go through the list before running &lt;code&gt;helm upgrade&lt;/code&gt;.&lt;/p&gt;
+&lt;h2 id="before-the-upgrade"&gt;Before the upgrade&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;input disabled="" type="checkbox"&gt; &lt;strong&gt;Apply the new CRDs.&lt;/strong&gt; &lt;code&gt;helm upgrade&lt;/code&gt; never updates CRDs, and the API server prunes every field the installed CRD does not know, such as the governor fields of &lt;code&gt;NodeTwin&lt;/code&gt; and &lt;code&gt;NodeHardware&lt;/code&gt;. Apply them first:&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;-webkit-text-size-adjust:none;"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span style="display:flex;"&gt;&lt;span&gt;kubectl apply -f charts/joulie/crds/
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;p&gt;Without a checkout, take them from the release chart: &lt;code&gt;helm pull oci://registry.cern.ch/joulie/joulie --version &amp;lt;version&amp;gt; --untar --untardir /tmp/joulie-chart&lt;/code&gt;, then &lt;code&gt;kubectl apply -f /tmp/joulie-chart/joulie/crds/&lt;/code&gt;.&lt;/p&gt;</description></item></channel></rss>
