@@ -84,7 +84,9 @@ collect() {
       pids+=($!)
     done
   done
-  wait ${pids[@]+"${pids[@]}"} || true
+  # Wait only for these jobs: with no PID, bash 5.1 and later also wait for
+  # the process substitution of the log tee, which never exits.
+  if ((${#pids[@]})); then wait "${pids[@]}" || true; fi
   helm get values "$SIM_RELEASE_JOULIE" -n "$SIM_NS_JOULIE" -o yaml >"$run_dir/values.effective.yaml" 2>/dev/null || true
   helm get values "$SIM_RELEASE_SIM" -n "$SIM_NS_SIM" -o yaml >"$run_dir/values.simulator.effective.yaml" 2>/dev/null || true
 }
