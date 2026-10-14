@@ -10,10 +10,11 @@ sources:
   gfdlabelsnvl: {kind: measured, ref: "read-only node description of a node with 8x H100 NVL, 2026-10", note: "GPU feature discovery labels gpu.family and gpu.memory"}
   pb11773:    {kind: published, ref: "https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/h100/PB-11773-001_v01.pdf", note: "Table 1, 16-pin strapped 450/600 W: 400 W maximum (default), 200 W minimum; Device ID 0x2321"}
   nvml:       {kind: published, ref: "https://docs.nvidia.com/deploy/nvml-api/api/group__nvmlDeviceQueries.html", note: "power averaged over 1 s on Ampere (except GA100) or newer; limits in mW"}
-  nvsmi:      {kind: published, ref: "https://docs.nvidia.com/deploy/nvidia-smi/index.html", note: "RETURN VALUE codes; -pl accepts integer and floating point watts"}
+  nvsmi:      {kind: published, ref: "https://docs.nvidia.com/deploy/nvidia-smi/index.html", note: "RETURN VALUE codes; -pl accepts integer and floating point watts; -lgc and -lmc require root; -lmc does not work on GPUs based on the Hopper architecture"}
   gfd:        {kind: published, ref: "https://github.com/NVIDIA/k8s-device-plugin/blob/d7265fdcf89f/docs/gpu-feature-discovery/README.md", note: "lines 216-242"}
   k8sdp:      {kind: published, ref: "https://github.com/NVIDIA/k8s-device-plugin/blob/d7265fdcf89f/README.md", note: "lines 250-263, 402, 954-975"}
   containerd: {kind: published, ref: "https://github.com/containerd/containerd/blob/81af89b1d4b1/docs/cri/config.md", note: "lines 548-552: privileged containers receive host devices by default"}
+  smih100clk: {kind: published, ref: "https://github.com/utkuozdemir/nvidia_gpu_exporter/blob/f6977bb790011483824091c916da991ae7ca97cf/internal/captures/linux-x86_64__nvidia-h100-80gb-hbm3__590.48.01.txt", note: "an H100 80GB HBM3 at driver 590.48.01. Idle nvidia-smi -q: Performance State P0 (line 1571), Clocks SM 345 MHz and Memory 2619 MHz (1695-1699), Max Clocks SM 1980 MHz and Memory 2619 MHz (1708-1712). Idle query-gpu (1740-1741): clocks_event_reasons.active 0x0000000000000001. Under gpu-burn at 100 % utilization, query-gpu (2104-2105): clocks.current.sm 1980 MHz, clocks.current.memory 2619 MHz"}
 node:
   # Admins commonly taint GPU nodes; the NVIDIA device plugin tolerates this taint.
   taints: [{key: nvidia.com/gpu, effect: NoSchedule}]
@@ -34,7 +35,70 @@ gpus:
     defaultW: {v: 310, src: "measured:nvsmiqnvl#Default Power Limit"}
     currentW: {v: 400, src: "measured:nvsmiqnvl#Current and Requested Power Limit, raised to the maximum"}
   persistenceMode: {v: enabled, src: measured:nvsmiqnvl}
-  tools: [{name: nvidia-smi, variant: default}]
+  # A real nvidia-smi runs only with its ELF loader, the shared libraries
+  # it links and the NVML library present; fakesmi checks them, in this
+  # order, under HWEMU_ROOTFS.
+  tools:
+    - name: nvidia-smi
+      variant: default
+      requires:
+        - paths: [/lib64/ld-linux-x86-64.so.2]
+          exit: 127
+          src: "assumed:nvidia-smi is a dynamically linked x86-64 ELF with this interpreter (check with file $(command -v nvidia-smi)); without it exec fails with ENOENT, which a shell reports as exit 127"
+        - paths: [/lib/x86_64-linux-gnu/libpthread.so.0, /usr/lib/x86_64-linux-gnu/libpthread.so.0, /lib64/libpthread.so.0, /usr/lib64/libpthread.so.0]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: libpthread.so.0: cannot open shared object file: No such file or directory"
+          src: "assumed:the shared libraries ldd lists for nvidia-smi, in its order (libpthread.so.0, libm.so.6, libdl.so.2, librt.so.1, libc.so.6; check with ldd $(command -v nvidia-smi)); the loader prints this line for the first one it cannot find and exits 127; the directories are the Debian and RHEL ones"
+        - paths: [/lib/x86_64-linux-gnu/libm.so.6, /usr/lib/x86_64-linux-gnu/libm.so.6, /lib64/libm.so.6, /usr/lib64/libm.so.6]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: libm.so.6: cannot open shared object file: No such file or directory"
+          src: "assumed:as libpthread.so.0"
+        - paths: [/lib/x86_64-linux-gnu/libdl.so.2, /usr/lib/x86_64-linux-gnu/libdl.so.2, /lib64/libdl.so.2, /usr/lib64/libdl.so.2]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: libdl.so.2: cannot open shared object file: No such file or directory"
+          src: "assumed:as libpthread.so.0"
+        - paths: [/lib/x86_64-linux-gnu/librt.so.1, /usr/lib/x86_64-linux-gnu/librt.so.1, /lib64/librt.so.1, /usr/lib64/librt.so.1]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: librt.so.1: cannot open shared object file: No such file or directory"
+          src: "assumed:as libpthread.so.0"
+        - paths: [/lib/x86_64-linux-gnu/libc.so.6, /usr/lib/x86_64-linux-gnu/libc.so.6, /lib64/libc.so.6, /usr/lib64/libc.so.6]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: libc.so.6: cannot open shared object file: No such file or directory"
+          src: "assumed:as libpthread.so.0"
+        - paths: [/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1, /usr/lib64/libnvidia-ml.so.1]
+          exit: 12
+          stderr: "NVIDIA-SMI couldn't find libnvidia-ml.so library in your system. Please make sure that the NVIDIA Display Driver is properly installed and present in your system.\nPlease also try adding directory that contains libnvidia-ml.so to your system PATH."
+          src: "published:nvsmi#RETURN VALUE, Return code 12 - NVML Shared Library couldn't be found or loaded; the library paths (Debian and RHEL layouts) and the stderr text are assumed"
+  # Clocks and locks the fake nvidia-smi reports and takes (-lgc, -lmc).
+  clocks:
+    sm:
+      minMHz: {v: 345, src: "assumed:the idle SM clock of an H100 SXM (smih100clk), taken as the lowest supported clock"}
+      maxMHz: {v: 1785, src: "published:pb11773#Table 1 GPU clocks Boost: 1,785 MHz"}
+      idleMHz: {v: 345, src: "assumed:as an idle H100 SXM (smih100clk)"}
+      sustainedMaxMHz: {v: 1785, src: "assumed:the boost clock; no published clock under sustained load"}
+    mem:
+      minMHz: {v: 2619, src: "published:pb11773#Table 2 Memory clock 2,619 MHz; HBM3 runs at its one clock"}
+      maxMHz: {v: 2619, src: "published:pb11773#Table 2 Memory clock 2,619 MHz"}
+      idleMHz: {v: 2619, src: "assumed:as an idle H100 SXM (smih100clk)"}
+      runtimeLock: {v: false, src: "published:nvsmi#-lmc does not work on GPUs based on the Hopper architecture"}
+    idlePState: {v: P0, src: "published:pb11773#Table 1 Performance states P0"}
+    supported:
+      smMHz:
+        v: [1785, 1770, 1755, 1740, 1725, 1710, 1695, 1680, 1665, 1650, 1635, 1620, 1605, 1590,
+            1575, 1560, 1545, 1530, 1515, 1500, 1485, 1470, 1455, 1440, 1425, 1410, 1395, 1380,
+            1365, 1350, 1335, 1320, 1305, 1290, 1275, 1260, 1245, 1230, 1215, 1200, 1185, 1170,
+            1155, 1140, 1125, 1110, 1095, 1080, 1065, 1050, 1035, 1020, 1005, 990, 975, 960,
+            945, 930, 915, 900, 885, 870, 855, 840, 825, 810, 795, 780, 765, 750, 735, 720, 705,
+            690, 675, 660, 645, 630, 615, 600, 585, 570, 555, 540, 525, 510, 495, 480, 465, 450,
+            435, 420, 405, 390, 375, 360, 345]
+        src: "assumed:15 MHz steps from sm.minMHz to sm.maxMHz; capture nvidia-smi -q -d SUPPORTED_CLOCKS to check"
+      memMHz: {v: [2619], src: "published:pb11773#Table 2 Memory clock 2,619 MHz"}
+    lockFloorAtIdle: {v: true, src: "assumed:an idle GPU sits at the lower bound of its lock; to measure with a lock floor and no load"}
+    locksResetOnDeinit: {v: false, src: "assumed:the driver persistence documentation lists the power limit, not the locks, among the settings a GPU initialization resets; to measure"}
+  transfer:
+    peerLinkGBps: {v: 64, src: "assumed:PCI Express Gen5 x16 (pb11773 Table 1), 32 GT/s on 16 lanes, about 64 GB/s each way; the NVLink bridge joins only pairs of cards (pb11773 Table 6, 600 GB/s), which one rate per node cannot express"}
+    receiverGate:
+      enabled: {v: false, src: "assumed:no receiver gate measured on this family; off in every repository profile"}
 physics:
   gpu:
     idleW: {v: 58.6, src: "measured:nvsmiqnvl#an idle GPU's Average Power Draw"}
@@ -44,3 +108,9 @@ physics:
     memoryGamma: {v: 1.2, src: "assumed:simulator default SIM_GPU_MEMORY_GAMMA; throughput only"}
     capSettleTauMS: {v: 150, src: "assumed:simulator default SIM_GPU_CAP_APPLY_TAU_MS"}
     telemetryWindowMS: {v: 1000, src: published:nvml}
+    clockBeta: {v: 1.5, src: "assumed:dynamic power falls faster than the compute clock, as the voltage falls with it; to sweep from 1.0 to 2.5"}
+    memoryKneeFrac: {v: 0.65, src: "assumed:memory-bound work keeps its speed down to 0.65 of the maximum compute clock, between the 0.41 and 0.87 where published memory-bound clock sweeps stop being flat"}
+    memoryKneeGamma: {v: 1.0, src: "assumed:below the knee memory-bound work slows in proportion to the clock"}
+    dataPathHoldW: {v: 0.0, src: "assumed:the HBM clock sits at its one rated clock at idle whatever the preset (mem.minMHz equals mem.maxMHz), so a held data path costs nothing idleW does not include"}
+    gatingOffIdleW: {v: 0.0, src: "assumed:no NVIDIA preset turns idle gating off"}
+    dataPathGamma: {v: 0.3, src: "assumed:memory-bound work loses 0.3 of its speed with the data path at its lowest level"}

@@ -106,3 +106,25 @@ func TestGPUPowerMemoryBoundLowerThanComputeBound(t *testing.T) {
 		t.Fatalf("expected memory-bound GPU power to be lower: memory=%f compute=%f", memory, compute)
 	}
 }
+
+// P03: a board never draws less than its idle power, whatever its cap. A
+// D3cold branch that dropped the floor to a tenth of the idle power on any
+// device capped below 99 % of its maximum with util under 0.01 would make
+// a 20 W cap on a 30 W idle board report 20 W: a draw no capped board
+// reaches, and a saving only capped (Joulie-managed) devices receive. An
+// uncapped board keeps its idle power.
+func TestP03GPUPowerNeverBelowIdle(t *testing.T) {
+	g := CappedBoardGPUModel{IdleW: 30, MaxW: 300}
+	for _, tc := range []struct {
+		capW, util float64
+	}{
+		{20, 0},
+		{20, 0.005},
+		{300, 0},
+	} {
+		got := g.Power(DeviceState{Utilization: tc.util, CapWatts: tc.capW, MaxCapWatts: 300})
+		if got != 30 {
+			t.Errorf("P03: idle 30 W, max 300 W, cap %.0f W, util %.3f: %.4f W, want the 30 W idle power", tc.capW, tc.util, got)
+		}
+	}
+}

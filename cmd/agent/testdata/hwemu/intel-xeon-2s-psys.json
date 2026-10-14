@@ -1,0 +1,105 @@
+{
+  "capabilities": {
+    "cpuControl": true,
+    "cpuTelemetry": true,
+    "gpuControl": false,
+    "gpuTelemetry": false
+  },
+  "cpu": {
+    "capRange": {
+      "maxWattsPerSocket": 270,
+      "minWattsPerSocket": 0,
+      "type": "package"
+    },
+    "controlAvailable": true,
+    "coresPerSocket": 64,
+    "driverFamily": "intel_pstate",
+    "governor": {
+      "available": [
+        "performance",
+        "powersave"
+      ],
+      "baseline": {
+        "groups": [
+          {
+            "boost": "on",
+            "epp": "balance_performance",
+            "governor": "powersave",
+            "policies": "0-127"
+          }
+        ]
+      },
+      "boost": {
+        "scope": "no-turbo",
+        "state": "on"
+      },
+      "current": "powersave",
+      "driver": "intel_pstate",
+      "driverMode": "active",
+      "epp": {
+        "available": [
+          "default",
+          "performance",
+          "balance_performance",
+          "balance_power",
+          "power"
+        ],
+        "current": "balance_performance"
+      },
+      "presets": [
+        {
+          "native": "performance",
+          "preset": "performance",
+          "result": "applied"
+        },
+        {
+          "native": "powersave epp=balance_performance",
+          "preset": "balanced",
+          "result": "applied"
+        },
+        {
+          "native": "powersave epp=balance_power",
+          "preset": "efficiency",
+          "result": "applied"
+        }
+      ],
+      "writable": true
+    },
+    "landmarks": {
+      "maxBoostMHz": 4000,
+      "minFreqMHz": 800,
+      "nominalFreqMHz": 2100
+    },
+    "model": "INTEL_XEON_GOLD_6530",
+    "rawModel": "INTEL(R) XEON(R) GOLD 6530",
+    "sockets": 2,
+    "telemetryAvailable": true,
+    "totalCores": 128,
+    "vendor": "GenuineIntel",
+    "warnings": null
+  },
+  "gpu": {
+    "controlAvailable": false,
+    "count": 0,
+    "currentCapWatts": 0,
+    "model": "",
+    "rawModel": "",
+    "telemetryAvailable": false,
+    "vendor": "none",
+    "warnings": null
+  },
+  "inventoryResolution": {
+    "exactness": {
+      "cpu": "exact",
+      "gpu": "generic"
+    },
+    "hardwareCatalogKey": {
+      "cpu": "INTEL_XEON_GOLD_6530",
+      "gpu": ""
+    }
+  },
+  "quality": {
+    "overall": "exact",
+    "warnings": null
+  }
+}

@@ -1,0 +1,46 @@
+# snapshot time: 2026-10-04T20:03:20Z
+apiVersion: v1
+items:
+- apiVersion: batch/v1
+  kind: Job
+  metadata:
+    creationTimestamp: null
+    labels:
+      app.kubernetes.io/part-of: joulie-sim-workload
+      sim.joulie.io/run-id: cde2659ac0
+    name: sim-perf-0
+    namespace: default
+  spec:
+    template:
+      metadata:
+        creationTimestamp: null
+      spec:
+        containers: null
+  status:
+    conditions:
+    - lastProbeTime: null
+      lastTransitionTime: null
+      status: "True"
+      type: Complete
+- apiVersion: batch/v1
+  kind: Job
+  metadata:
+    creationTimestamp: null
+    labels:
+      app.kubernetes.io/part-of: joulie-sim-workload
+      sim.joulie.io/run-id: cde2659ac0
+    name: sim-std-1
+    namespace: default
+  spec:
+    template:
+      metadata:
+        creationTimestamp: null
+      spec:
+        containers: null
+  status:
+    conditions:
+    - lastProbeTime: null
+      lastTransitionTime: null
+      status: "True"
+      type: Failed
+kind: List

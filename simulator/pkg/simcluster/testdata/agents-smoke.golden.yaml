@@ -1,0 +1,13 @@
+# Emulated Joulie agents of cluster spec smoke, written by simcluster agents:
+# one per spec Node the agent DaemonSet would reach.
+agent:
+  emulated:
+    nodes:
+    - name: epyc-0
+      profile: amd-epyc-2s-energy-only
+    - name: hsmp-0
+      profile: amd-epyc-2s-hsmp
+    - name: intel-0
+      profile: intel-xeon-2s-rapl
+    - name: vm-0
+      profile: vm-no-powercap

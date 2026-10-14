@@ -6,9 +6,11 @@ This page reports results from the CPU-only standalone simulator benchmark:
 
 > **Note:** These results were produced with the standalone simulator before Joulie v0.2.2. That simulator chose the performance nodes as one node per hardware family, then filled the remaining slots in node-name order. Joulie v0.2.2 splits the performance slots across hardware families in proportion to family size. These results have not been rerun with that split, and the exact configuration of the published runs is not recorded in the repository. Its `queue_aware_v1` demand also counted only running performance jobs, not jobs waiting for a node; that changed after v0.2.2.
 
+> **Note (2026-10-09):** Sections 1.3, 1.5, 1.6 and 2.1 do not describe the model these runs used. With the scripts in this repository, from the commit that added this report to v0.2.3, the standalone sweep gave the simulator a hardware catalog generated from the inventory, which gives every CPU a 300 W TDP and no measured curve. Every node therefore ran the analytic fallback model (80 W idle, 420 W at full load), not a SPECpower curve. Eco set a CPU frequency scale (`cpu_eco_pct_of_max`), never a RAPL cap: CPU caps stayed at the 5000 W default, so the cap clamping of section 1.3 never ran. Thermal throttling was on by default (85 to 97 °C) and is opt-in now, and the savings include a cut of idle CPU power on eco nodes (up to 50 % below 20 % utilization) that the simulator no longer models. These results have not been rerun with the current model. [Simulator changes](../../simulator/CHANGES.md) lists every change since v0.2.3 and how far it moves this experiment's `configs/benchmark-debug.yaml`: on that configuration the saving of C against A is 31.2 % with v0.2.3 and the generated catalog these runs read, and 17.3 % now.
+
 ## Scope
 
-The benchmark compares three baselines on a **CPU-only cluster** with 5,000 nodes across 3 hardware families, running entirely in the **standalone Go simulator** (`joulie-simulator`) — no Kubernetes, no Kind, no KWOK. All scheduling, power modelling, and job lifecycle management happen in-memory via scoring-based job placement, with physics-based cooling co-simulation provided by the DXCooledAirsideEconomizer FMU.
+The benchmark compares three baselines on a **CPU-only cluster** with 5,000 nodes across 3 hardware families, running entirely in the **standalone Go simulator** (`joulie-simulator`): no Kubernetes, no Kind, no KWOK. All scheduling, power modelling, and job lifecycle management happen in-memory via scoring-based job placement, with physics-based cooling co-simulation provided by the DXCooledAirsideEconomizer FMU.
 
 - `A`: Simulator only (no power management)
 - `B`: Static partition policy
@@ -25,7 +27,7 @@ The experiment demonstrates energy savings achievable through CPU RAPL capping a
 The `joulie-simulator` binary performs direct in-memory simulation:
 
 - **No Kubernetes control plane**: Eliminates Kind cluster bootstrap, API-server latency, and KWOK node emulation overhead.
-- **Scoring-based placement**: Jobs are placed onto nodes using a scoring function that evaluates CPU availability, power profile affinity, and node utilisation — analogous to the kube-scheduler extender but without network round-trips.
+- **Scoring-based placement**: Jobs are placed onto nodes using a scoring function that evaluates CPU availability, power profile affinity, and node utilisation, analogous to the kube-scheduler extender but without network round-trips.
 - **Discrete-event loop**: The simulator advances a logical clock at `time_scale=120` (each wall-second corresponds to 120 simulated seconds), executing job arrivals, completions, operator reconciliation, and agent reconciliation at their configured intervals.
 
 ### 1.2 Node inventory
@@ -76,13 +78,13 @@ where weights depend on workload class (e.g., `cpu.compute_bound` → 75% comput
 | Parameter | Performance | Eco |
 |---|---:|---:|
 | CPU cap (absolute watts) | 420 W | 220 W |
-| `cpu_eco_pct_of_max` | — | 60% |
+| `cpu_eco_pct_of_max` | n/a | 60% |
 
 The 220 W eco cap triggers on nodes drawing > 220 W (approximately > 40% CPU utilisation), avoiding throttling idle/lightly-loaded nodes.
 
 ### 1.6 Baselines
 
-- **A**: No power management — all nodes run uncapped at full power.
+- **A**: No power management: all nodes run uncapped at full power.
 - **B**: Static partition policy (`hp_frac=0.30`): 1,500 performance nodes at 420 W cap, 3,500 eco nodes at 220 W cap.
 - **C**: Queue-aware dynamic policy (`hp_base_frac=0.05`, `hp_min=50`, `hp_max=3,750`, `perf_per_hp_node=3`): dynamically adjusts performance/eco split based on running workload.
 
@@ -134,7 +136,7 @@ rate(t) = peak_rate × [0.25 + 0.70 × (1 - cos(phase)) / 2.0]
 
 - **Trough**: 4:00 AM sim-time (minimum arrival rate).
 - **Peak**: 4:00 PM sim-time (600 jobs/min).
-- **Burst overlay**: 10% probability per interval, generating 50–200 simultaneous jobs. Burst day probability is 50% with a 3.5× arrival rate multiplier.
+- **Burst overlay**: 10% probability per interval, generating 50 to 200 simultaneous jobs. Burst day probability is 50% with a 3.5× arrival rate multiplier.
 - **Dip overlay**: 40% probability per simulated day of a dip period where arrivals drop to 8% of normal (maintenance window simulation).
 
 The trace covers ~2.5 simulated days (60 sim-hours), producing visible multi-day cyclic patterns.
@@ -161,7 +163,7 @@ Co-simulation parameters:
 - **Inputs per step**: IT power (watts), ambient temperature (°C)
 - **Outputs per step**: Cooling power (watts), PUE (dimensionless)
 
-PUE ranges from **~1.05** (cool nighttime, low load) to **~1.38** (hot daytime, high load), showing realistic day/night cycling that correlates with the diurnal workload pattern. This is a tighter, more efficient PUE range than the Kind-based run (~1.15–1.45), reflecting the physics-based model's higher fidelity compared to the analytical cooling approximation.
+PUE ranges from **~1.05** (cool nighttime, low load) to **~1.38** (hot daytime, high load), showing realistic day/night cycling that correlates with the diurnal workload pattern. This is a tighter, more efficient PUE range than the Kind-based run (~1.15 to 1.45), reflecting the physics-based model's higher fidelity compared to the analytical cooling approximation.
 
 ---
 
@@ -182,7 +184,7 @@ PUE ranges from **~1.05** (cool nighttime, low load) to **~1.38** (hot daytime, 
 | B (static) | 11,961 | **16.4%** | 0% (3,984 jobs) |
 | C (queue-aware) | 9,001 | **12.3%** | 0% (3,984 jobs) |
 
-All three baselines complete exactly the same **3,984 jobs** — there is zero throughput penalty from CPU power capping.
+All three baselines complete exactly the same **3,984 jobs**: there is zero throughput penalty from CPU power capping.
 
 ---
 
@@ -196,8 +198,8 @@ Plots are in: [`img/`](./img/)
 
 The five-panel timeseries plot shows active jobs, IT power (kW), CPU utilisation (%), PUE (FMU-computed), and cooling power (kW) over 2.5 simulated days.
 
-- **Active Jobs**: All three baselines track the same job ramp-up and reach steady-state at ~35,000–40,000 concurrent jobs. The NHPP cosine envelope is clearly visible with daytime peaks and nighttime troughs.
-- **IT Power**: Baselines B and C run at approximately 800–900 kW steady-state versus A's ~1,000 kW, showing a clear and sustained power reduction from eco-mode capping. The gap is consistent across the entire simulation.
+- **Active Jobs**: All three baselines track the same job ramp-up and reach steady-state at ~35,000 to 40,000 concurrent jobs. The NHPP cosine envelope is clearly visible with daytime peaks and nighttime troughs.
+- **IT Power**: Baselines B and C run at approximately 800 to 900 kW steady-state versus A's ~1,000 kW, showing a clear and sustained power reduction from eco-mode capping. The gap is consistent across the entire simulation.
 - **CPU Utilisation**: B (52.1%) and C (50.3%) achieve higher utilisation than A (47.8%). This counter-intuitive result occurs because HP/eco partitioning concentrates work more efficiently on the subset of nodes running at full performance, while eco-capped nodes complete work more slowly, keeping cores busy longer.
 - **PUE**: Shows clear day/night cycling between 1.05 and 1.38. B and C exhibit slightly lower PUE than A because lower IT power reduces cooling demand, improving the cooling-to-IT ratio.
 - **Cooling Power**: Follows the same diurnal pattern as PUE, with B and C drawing less cooling power due to reduced IT load.
@@ -212,7 +214,7 @@ A 3×3 grid comparing facility energy (kWh), energy savings (%), and CPU utilisa
 
 ![Cumulative Energy](./img/cumulative_energy.png)
 
-Cumulative facility energy over the 60 sim-hour window. The divergence between A and the managed baselines is linear from the start — there is no warm-up period or convergence phase. B tracks below C throughout, consistent with B's larger static eco allocation. By the end of the run, A has accumulated 72,911 kWh while B sits at 60,950 kWh.
+Cumulative facility energy over the 60 sim-hour window. The divergence between A and the managed baselines is linear from the start: there is no warm-up period or convergence phase. B tracks below C throughout, consistent with B's larger static eco allocation. By the end of the run, A has accumulated 72,911 kWh while B sits at 60,950 kWh.
 
 ### 5.4 Energy comparison
 
@@ -244,7 +246,7 @@ In this configuration, B achieves 16.4% savings versus C's 12.3%. This reversal 
 
 ### FMU-derived PUE vs analytical PUE
 
-The FMU co-simulation produces a tighter PUE range (1.05–1.38) compared to the analytical model in the Kind-based run (1.15–1.45). This reflects the Modelica-based physics model's more accurate representation of:
+The FMU co-simulation produces a tighter PUE range (1.05 to 1.38) compared to the analytical model in the Kind-based run (1.15 to 1.45). This reflects the Modelica-based physics model's more accurate representation of:
 - Economiser free-cooling at low ambient temperatures (drives PUE closer to 1.0 at night).
 - DX compressor efficiency curves under partial load.
 - Thermal mass and lag effects that smooth PUE transitions.
@@ -255,9 +257,9 @@ The FMU co-simulation produces a tighter PUE range (1.05–1.38) compared to the
 
 PUE varies with both ambient temperature and IT power draw:
 
-- **Night (low ambient, low load)**: PUE approaches ~1.05 — free-cooling via the airside economiser nearly eliminates mechanical cooling overhead.
-- **Day (high ambient, high load)**: PUE rises to ~1.38 — DX compressor must supplement or replace economiser cooling.
-- **Joulie impact**: By reducing IT power draw, Joulie baselines slightly reduce cooling load, improving PUE by 0.01–0.03 points on average. The effect is most pronounced during daytime when both ambient temperature and workload are high.
+- **Night (low ambient, low load)**: PUE approaches ~1.05: free-cooling via the airside economiser nearly eliminates mechanical cooling overhead.
+- **Day (high ambient, high load)**: PUE rises to ~1.38: the DX compressor must supplement or replace economiser cooling.
+- **Joulie impact**: By reducing IT power draw, Joulie baselines slightly reduce cooling load, improving PUE by 0.01 to 0.03 points on average. The effect is most pronounced during daytime when both ambient temperature and workload are high.
 
 The FMU produces 360 data points (one per 10 sim-minutes over 60 sim-hours), providing high-resolution PUE traces that capture the full day/night thermal dynamics.
 
@@ -314,7 +316,7 @@ All three baselines consume the **same input job trace** generated by the NHPP w
 | B (static) | 60,950 | 3,984 | 15.30 |
 | C (queue-aware) | 63,910 | 3,984 | 16.04 |
 
-All three baselines complete exactly **3,984 jobs** — there is zero throughput penalty from CPU power capping. Joulie simply uses less energy to do the same work:
+All three baselines complete exactly **3,984 jobs**: there is zero throughput penalty from CPU power capping. Joulie simply uses less energy to do the same work:
 
 - **B reduces energy per job by 16.4%**: from 18.30 kWh to 15.30 kWh per job.
 - **C reduces energy per job by 12.3%**: from 18.30 kWh to 16.04 kWh per job.
@@ -342,12 +344,12 @@ Extrapolating from the 60 sim-hour window to a full year of continuous operation
 #### Assumptions
 
 - **Annualization factor**: 8,760 h / 60 h = 146×. Assumes the 60-hour workload pattern (2.5 diurnal cycles) is representative of year-round operation.
-- **Electricity cost**: $0.10/kWh — typical US commercial/industrial datacenter rate (wholesale rates in some regions are $0.05–0.07/kWh, which would scale linearly).
-- **CO₂ intensity**: 0.385 kg CO₂/kWh — 2024 EPA US national grid average. European grids (0.25–0.30 kg/kWh) or renewable-powered datacenters would yield lower CO₂ savings.
+- **Electricity cost**: $0.10/kWh, a typical US commercial/industrial datacenter rate (wholesale rates in some regions are $0.05 to 0.07/kWh, which would scale linearly).
+- **CO₂ intensity**: 0.385 kg CO₂/kWh, the 2024 EPA US national grid average. European grids (0.25 to 0.30 kg/kWh) or renewable-powered datacenters would yield lower CO₂ savings.
 - **US household**: 10,500 kWh/year average annual electricity consumption (EIA).
 
 ### 10.4 Context
 
-This is a **CPU-only** cluster (no GPUs), where idle power constitutes a larger fraction of total draw and the savings from RAPL capping are inherently smaller than in GPU-heavy environments. Even so, Joulie's static policy saves **$175K/year** and avoids **672 tonnes of CO₂** — equivalent to taking **145 passenger cars off the road** for a year (EPA: 4.6 tonnes CO₂/car/year).
+This is a **CPU-only** cluster (no GPUs), where idle power constitutes a larger fraction of total draw and the savings from RAPL capping are inherently smaller than in GPU-heavy environments. Even so, Joulie's static policy saves **$175K/year** and avoids **672 tonnes of CO₂**, equivalent to taking **145 passenger cars off the road** for a year (EPA: 4.6 tonnes CO₂/car/year).
 
 For GPU-heavy clusters, see Experiments 02 and 03 where savings scale to **$2.2M/year** and **8,600 tonnes CO₂/year**.

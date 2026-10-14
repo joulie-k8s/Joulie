@@ -1,6 +1,9 @@
 package hwinv
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDefaultCatalogMatchesSpreadsheetAliases(t *testing.T) {
 	cat, err := LoadDefaultCatalog()
@@ -92,5 +95,183 @@ gpuModels:
 	}
 	if key, _, ok := cat.MatchGPU("NVIDIA H100 NVL"); !ok || key != "NVIDIA_H100_NVL" {
 		t.Fatalf("gpu match key=%q ok=%v", key, ok)
+	}
+}
+
+// D14: the AMD_EPYC_9655 node2S curve carried SPEC result 01464, which is a
+// 2x EPYC 9965 Dell R7725 run. The only public 2x EPYC 9655 curves are 01457
+// and 01458; the catalogue uses 01457.
+func TestCatalogEPYC9655CurveIsSPECResult01457(t *testing.T) {
+	// SPECpower_ssj2008 result 01457, Active Idle then 10% to 100%.
+	assertSPECCurve(t, "AMD_EPYC_9655", "01457", []float64{126, 273, 329, 383, 433, 482, 531, 579, 625, 675, 751})
+}
+
+func TestCatalogEPYC9654And9965CurvesAreTheirCitedSPECResults(t *testing.T) {
+	assertSPECCurve(t, "AMD_EPYC_9654", "01203", []float64{128, 257, 300, 340, 378, 410, 442, 498, 577, 697, 817})
+	assertSPECCurve(t, "AMD_EPYC_9965", "01522", []float64{157, 265, 314, 362, 412, 461, 503, 544, 587, 661, 800})
+}
+
+// assertSPECCurve checks that key's node2S curve is SPECpower_ssj2008 result
+// id point for point and that the YAML comment above it cites that result's
+// .txt, which SPEC fair use requires.
+func assertSPECCurve(t *testing.T, key, id string, want []float64) {
+	t.Helper()
+	cat, err := LoadDefaultCatalog()
+	if err != nil {
+		t.Fatalf("LoadDefaultCatalog: %v", err)
+	}
+	spec, ok := cat.CPUModels[key]
+	if !ok || spec.MeasuredCurves == nil || spec.MeasuredCurves.Node2S == nil {
+		t.Fatalf("%s has no node2S curve: %+v", key, spec)
+	}
+	got := spec.MeasuredCurves.Node2S.Points
+	if len(got) != len(want) {
+		t.Fatalf("D14: %s node2S has %d points, SPEC result %s has %d", key, len(got), id, len(want))
+	}
+	for i, p := range got {
+		if p.LoadPct != float64(10*i) || p.PowerW != want[i] {
+			t.Fatalf("D14: %s node2S point %d = {loadPct: %v, powerW: %v}, SPEC result %s gives {loadPct: %d, powerW: %v}",
+				key, i, p.LoadPct, p.PowerW, id, 10*i, want[i])
+		}
+	}
+	comment := yamlCommentAbove(t, key, "node2S:")
+	for _, cite := range []string{"result " + id, "-" + id + ".txt"} {
+		if !strings.Contains(comment, cite) {
+			t.Errorf("D14: the comment above %s node2S does not cite %q:\n%s", key, cite, comment)
+		}
+	}
+}
+
+// yamlCommentAbove returns the comment lines directly above the first line
+// starting with field inside the block of the two-space-indented model key
+// in the embedded catalogue. The typed structs drop comments, so provenance
+// can only be checked on the raw YAML.
+func yamlCommentAbove(t *testing.T, key, field string) string {
+	t.Helper()
+	lines := strings.Split(string(defaultCatalogYAML), "\n")
+	in := false
+	for i, line := range lines {
+		if line == "  "+key+":" {
+			in = true
+			continue
+		}
+		if in && len(line) > 2 && line[2] != ' ' {
+			break
+		}
+		if !in || !strings.HasPrefix(strings.TrimSpace(line), field) {
+			continue
+		}
+		var comment []string
+		for j := i - 1; j >= 0 && strings.HasPrefix(strings.TrimSpace(lines[j]), "#"); j-- {
+			comment = append([]string{strings.TrimSpace(lines[j])}, comment...)
+		}
+		return strings.Join(comment, "\n")
+	}
+	t.Fatalf("%s has no %q line in the embedded catalogue", key, field)
+	return ""
+}
+
+// D14: every GPU minimum cap is the value its public source supports. The
+// controller clamps eco caps to it, so a floor no source backs moves caps.
+func TestCatalogGPUMinimumsHavePublicSources(t *testing.T) {
+	cat, err := LoadDefaultCatalog()
+	if err != nil {
+		t.Fatalf("LoadDefaultCatalog: %v", err)
+	}
+	// cite must appear in the YAML comment above minBoardPowerW.
+	want := map[string]struct {
+		minW   float64
+		source string
+		cite   string
+	}{
+		// MLPerf Inference v4.0, NVIDIA DGX-H100 MaxQ: the lowest vendor-set
+		// limit (power_limit = 300), not a datasheet minimum.
+		"NVIDIA_H100_SXM": {300, "MLPerf Inference v4.0 DGX-H100 MaxQ", "MLPerf"},
+		// arXiv 2603.16164: limits below 400 W were not reliably enforced.
+		"AMD_INSTINCT_MI300X": {400, "arXiv 2603.16164", "arXiv 2603.16164"},
+		// No public minimum: the H100 PCIe product brief gives 200 W.
+		"NVIDIA_H100_NVL": {200, "H100 PCIe product brief PB-11133-001", "PB-11133-001"},
+		// No public minimum: the L40S product brief says "TBD".
+		"NVIDIA_L40S": {200, "L40S product brief PB-11470-001 (TBD)", "PB-11470-001"},
+		// No public minimum: AMD publishes only TBP 295 W.
+		"AMD_RADEON_PRO_W7900": {200, "none published (TBP 295 W only)", "295 W"},
+	}
+	for key, gpu := range cat.GPUModels {
+		w, ok := want[key]
+		if !ok {
+			t.Errorf("D14: GPU %q has no audited minimum cap source; add one here", key)
+			continue
+		}
+		if gpu.Official.MinBoardPowerW != w.minW {
+			t.Errorf("D14: %s minBoardPowerW = %v, want %v (%s)", key, gpu.Official.MinBoardPowerW, w.minW, w.source)
+		}
+		if comment := yamlCommentAbove(t, key, "minBoardPowerW:"); !strings.Contains(comment, w.cite) {
+			t.Errorf("D14: the comment above %s minBoardPowerW does not cite %q (%s):\n%s", key, w.cite, w.source, comment)
+		}
+	}
+	for key := range want {
+		if _, ok := cat.GPUModels[key]; !ok {
+			t.Errorf("GPU %q is audited here but missing from the catalogue", key)
+		}
+	}
+}
+
+// A label-safe spelling of an Intel part, as the KWOK node generator writes it
+// into joulie.io/hw.cpu-model, matches the same entry as the cpuinfo name:
+// "(R)" becomes "-R-" there, which used to leave a stray "r" token.
+func TestMatchCPULabelSafeIntelSpelling(t *testing.T) {
+	c, err := LoadDefaultCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{"INTEL(R) XEON(R) GOLD 6530", "INTEL-R-XEON-R-GOLD-6530", "INTEL-R--XEON-R--GOLD-6530", "Intel(R) Xeon(R) Gold 6530 CPU @ 2.10GHz"} {
+		if key, _, ok := c.MatchCPU(raw); !ok || key != "INTEL_XEON_GOLD_6530" {
+			t.Errorf("MatchCPU(%q) = %q, %v; want INTEL_XEON_GOLD_6530", raw, key, ok)
+		}
+	}
+}
+
+// FC07: the 8260 matches its catalogue entry in the full cpuinfo spelling and
+// in its label-safe form, which the KWOK node generator (labelSafe in the
+// simulator) writes into joulie.io/hw.cpu-model. That form turns
+// " CPU @ 2.40GHz" into "-CPU---2.40GHz": the suffix pattern, anchored on
+// "@", used to miss it, so the node fell back to the built-in model.
+func TestFC07LabelSafeCPUInfoSpellingMatchesThe8260(t *testing.T) {
+	c, err := LoadDefaultCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{
+		"Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz",
+		"Intel-R--Xeon-R--Platinum-8260-CPU---2.40GHz",
+		"INTEL-R-XEON-R-PLATINUM-8260-CPU-2.40GHZ",
+		"Intel-R--Xeon-R--Platinum-8260-2.40GHz",
+	} {
+		if key, _, ok := c.MatchCPU(raw); !ok || key != "INTEL_XEON_PLATINUM_8260" {
+			t.Errorf("MatchCPU(%q) = %q, %v; want INTEL_XEON_PLATINUM_8260", raw, key, ok)
+		}
+	}
+	// A clock token alone is not a model, and a part the catalogue lacks
+	// stays unmatched in either spelling.
+	for _, raw := range []string{"2.40GHz", "Intel-R--Xeon-R--Gold-6252-CPU---2.10GHz"} {
+		if key, _, ok := c.MatchCPU(raw); ok {
+			t.Errorf("MatchCPU(%q) = %q; want no match", raw, key)
+		}
+	}
+}
+
+// The AMD GPU labeller names the MI300X by its board form factor,
+// AMD_Instinct_MI300X_OAM, in amd.com/gpu.product-name, which the agent
+// reads first: without that alias the node published "gpu model not
+// recognized" and fell back to the built-in GPU model.
+func TestMatchGPUMI300XLabellerProductName(t *testing.T) {
+	c, err := LoadDefaultCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{"AMD_Instinct_MI300X_OAM", "AMD Instinct MI300X OAM"} {
+		if key, _, ok := c.MatchGPU(raw); !ok || key != "AMD_INSTINCT_MI300X" {
+			t.Errorf("MatchGPU(%q) = %q, %v; want AMD_INSTINCT_MI300X", raw, key, ok)
+		}
 	}
 }

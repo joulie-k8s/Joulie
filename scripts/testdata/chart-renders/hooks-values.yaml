@@ -1,0 +1,20 @@
+# Every agent tool hook set, for case C03 of scripts/verify-chart-renders.sh:
+# each renders in the DaemonSet, and nothing else in it changes. The values
+# are the shape of a GPU node reaching its driver tools through the NVIDIA
+# container runtime.
+agent:
+  runtimeClassName: nvidia
+  extraEnv:
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: all
+    - name: NVIDIA_DRIVER_CAPABILITIES
+      value: utility
+  extraVolumes:
+    - name: host-tools
+      hostPath:
+        path: /opt/joulie-tools
+        type: Directory
+  extraVolumeMounts:
+    - name: host-tools
+      mountPath: /opt/joulie-tools
+      readOnly: true

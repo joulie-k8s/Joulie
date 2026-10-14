@@ -4,6 +4,8 @@ This page reports results from the homogeneous H100 NVL KWOK benchmark experimen
 
 - [`experiments/03-homogeneous-h100-benchmark/`](.)
 
+> **Note (2026-10-09):** With the scripts in this repository, from the commit that added this report to v0.2.3, the installer pointed the simulator at a hardware catalog generated from the inventory, which holds no measured curves, so every CPU ran the analytic fallback model, not a SPECpower curve. GPU nodes took their parameters from the generated node classes (`10-node-classes.yaml`). Thermal throttling was on by default (CPU 85 to 97 °C, GPU 82 to 92 °C) and is opt-in now. These results have not been rerun with the current model; [Simulator changes](../../simulator/CHANGES.md) lists every change to the simulated numbers since v0.2.3 and how far each one moves this experiment's `configs/benchmark-debug.yaml`.
+
 ## Scope
 
 The benchmark compares three baselines on a **homogeneous GPU cluster** with 33 identical NVIDIA H100 NVL nodes plus 8 CPU-only nodes, running on a real Kind+KWOK Kubernetes cluster:
@@ -186,13 +188,13 @@ All baselines run the same workload trace (8,272 jobs) over a fixed ~22 sim-hour
 
 | Baseline | Jobs Completed | Δ vs A | Total Work Done | Δ vs A |
 |---|---:|---:|---:|---:|
-| A (no mgmt) | 88/103 (85%) | — | 71.2% | — |
+| A (no mgmt) | 88/103 (85%) | n/a | 71.2% | n/a |
 | B (static) | 91/103 (88%) | **+3.4%** | 77.6% | **+9.0%** |
 | C (queue-aware) | 94/103 (91%) | **+6.8%** | 83.2% | **+16.9%** |
 
 | Baseline | Avg Concurrent Pods | Max Concurrent Pods | Δ Avg Pods vs A |
 |---|---:|---:|---:|
-| A (no mgmt) | 23.5 | 44 | — |
+| A (no mgmt) | 23.5 | 44 | n/a |
 | B (static) | 13.5 | 15 | **−42.6%** |
 | C (queue-aware) | 10.8 | 12 | **−54.0%** |
 

@@ -119,6 +119,8 @@ def generate_canonical_seed_trace(
         "go",
         "run",
         "./simulator/cmd/workloadgen",
+        "--schema-version",
+        "v2",
         "--jobs",
         str(jobs),
         "--seed",

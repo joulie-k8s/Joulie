@@ -6,6 +6,8 @@ This page reports results from the CPU-only cluster benchmark experiment (KWOK, 
 
 - [`experiments/01-cpu-only-benchmark/`](https://github.com/joulie-k8s/Joulie/tree/main/experiments/01-cpu-only-benchmark)
 
+> **Note (2026-10-09):** The results on this page, like the experiment's `REPORT.md` and `REPORT-standalone.md`, were produced with an older simulator model and have not been rerun. The simulator reads the hardware catalog embedded in it, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Simulator changes](https://github.com/joulie-k8s/Joulie/blob/main/simulator/CHANGES.md) lists each change and how far it moves the experiment's `configs/benchmark-debug.yaml`.
+
 ## Scope
 
 The benchmark compares three baselines on a **CPU-only cluster** with 40 KWOK nodes across 3 hardware families, running on a real Kind+KWOK Kubernetes cluster:
@@ -54,7 +56,7 @@ The experiment demonstrates energy savings achievable through CPU RAPL capping a
 
 ### Baselines
 
-- **A**: No power management — all nodes run uncapped at full power.
+- **A**: No power management: all nodes run uncapped at full power.
 - **B**: Static partition (`hp_frac=0.30`): 12 performance nodes, 28 eco nodes.
 - **C**: Queue-aware dynamic (`hp_base_frac=0.30`, min=1, max=30): dynamically adjusts performance/eco split.
 
@@ -65,7 +67,7 @@ PUE is computed using the **DXCooledAirsideEconomizer** Functional Mock-up Unit 
 The model captures:
 - **Three cooling modes**: free cooling (airside economizer), partial mechanical (economizer + DX compressor), full mechanical (DX only)
 - **Variable-speed DX compressor** with temperature-dependent COP (nominal 3.0)
-- **Airside economizer** with 5–100% outdoor air fraction
+- **Airside economizer** with 5 to 100% outdoor air fraction
 - **Fan affinity laws**: power scales with speed cubed
 - **Room thermal mass**: 50×40×3 m data center room
 
@@ -86,7 +88,7 @@ The model captures:
 | B (static) | −847 W | **−21.4%** |
 | C (queue-aware) | −1,153 W | **−29.1%** |
 
-Both managed baselines achieve significant power savings with zero throughput penalty — all baselines process the same workload trace.
+Both managed baselines achieve significant power savings with zero throughput penalty: all baselines process the same workload trace.
 
 ### Throughput and makespan
 
@@ -94,11 +96,11 @@ All baselines run the same workload trace over a fixed ~22 sim-hour window (660 
 
 | Baseline | Avg Concurrent Pods | Max Concurrent Pods | Δ Avg Pods vs A |
 |---|---:|---:|---:|
-| A (no mgmt) | 23.4 | 44 | — |
+| A (no mgmt) | 23.4 | 44 | n/a |
 | B (static) | 12.6 | 15 | **−46.2%** |
 | C (queue-aware) | 9.5 | 11 | **−59.4%** |
 
-Managed baselines run fewer concurrent pods because the scheduler extender concentrates work onto performance nodes. Despite fewer concurrent pods, **no jobs are dropped** — B and C process the same trace as A. The reduced concurrency reflects better scheduling efficiency: fewer nodes are actively loaded at any time, enabling deeper eco capping on idle nodes.
+Managed baselines run fewer concurrent pods because the scheduler extender concentrates work onto performance nodes. Despite fewer concurrent pods, **no jobs are dropped**: B and C process the same trace as A. The reduced concurrency reflects better scheduling efficiency: fewer nodes are actively loaded at any time, enabling deeper eco capping on idle nodes.
 
 ## Plot commentary
 
@@ -140,7 +142,7 @@ Stacked bar chart showing IT power + cooling power per baseline. Total facility 
 
 ## Interpretation
 
-Joulie reduces energy by **21–29%** without throughput penalty on a CPU-only cluster because:
+Joulie reduces energy by **21 to 29%** without throughput penalty on a CPU-only cluster because:
 
 1. **Realistic eco cap (220 W)**: targets actively-loaded nodes while leaving idle nodes unaffected.
 2. **Workload-aware throughput model**: memory-bound and I/O-bound jobs are less sensitive to frequency reduction.

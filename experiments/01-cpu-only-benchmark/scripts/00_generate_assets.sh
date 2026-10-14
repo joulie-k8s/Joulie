@@ -12,7 +12,6 @@ python3 "$ROOT/scripts/generate_heterogeneous_assets.py" \
   --input "$INPUT" \
   --sheet "$SHEET" \
   --out-nodes "$GENERATED_DIR/00-kwok-nodes.yaml" \
-  --out-classes "$GENERATED_DIR/10-node-classes.yaml" \
-  --out-catalog "$GENERATED_DIR/hardware.generated.yaml"
+  --out-classes "$GENERATED_DIR/10-node-classes.yaml"
 
 printf 'generated cpu-only benchmark assets using %s\n' "$INPUT"

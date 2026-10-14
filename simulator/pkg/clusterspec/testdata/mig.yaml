@@ -1,0 +1,11 @@
+# Two pools of one GPU profile, one of them with MIG (CS05). The MIG pool
+# comes first, so an override leaking into the next pool would show.
+# MIG 1g.12gb x7: NVIDIA MIG User Guide supported-mig-profiles.html, table
+# "H100 94GB product (PCIe and SXM5)".
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: mig}
+spec:
+  pools:
+  - {name: nvl-mig, profile: nvidia-h100-nvl-8gpu, count: 1, overrides: {gpus: {exposure: mig-mixed, migProfile: 1g.12gb, migDevicesPerGPU: 7}}}
+  - {name: nvl, profile: nvidia-h100-nvl-8gpu, count: 1}

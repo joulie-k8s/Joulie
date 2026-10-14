@@ -68,13 +68,13 @@ type NodeHardware struct {
 }
 
 type NodeHardwareCPU struct {
-	Vendor         string       `json:"vendor,omitempty"`
-	RawModel       string       `json:"rawModel,omitempty"`
-	Model          string       `json:"model,omitempty"`
-	Sockets        int          `json:"sockets,omitempty"`
-	CoresPerSocket int          `json:"coresPerSocket,omitempty"`
-	TotalCores     int          `json:"totalCores,omitempty"`
-	DriverFamily   string       `json:"driverFamily,omitempty"`
+	Vendor         string `json:"vendor,omitempty"`
+	RawModel       string `json:"rawModel,omitempty"`
+	Model          string `json:"model,omitempty"`
+	Sockets        int    `json:"sockets,omitempty"`
+	CoresPerSocket int    `json:"coresPerSocket,omitempty"`
+	TotalCores     int    `json:"totalCores,omitempty"`
+	DriverFamily   string `json:"driverFamily,omitempty"`
 	// CapRange is the RAPL/MSR power cap range (per socket).
 	CapRange           CPUCapRange  `json:"capRange,omitempty"`
 	Landmarks          CPULandmarks `json:"landmarks,omitempty"`
@@ -97,11 +97,11 @@ type CPUCapRange struct {
 }
 
 type NodeHardwareGPU struct {
-	Present  bool       `json:"present,omitempty"`
-	Vendor   string     `json:"vendor,omitempty"`
-	RawModel string     `json:"rawModel,omitempty"`
-	Model    string     `json:"model,omitempty"`
-	Count    int        `json:"count,omitempty"`
+	Present  bool   `json:"present,omitempty"`
+	Vendor   string `json:"vendor,omitempty"`
+	RawModel string `json:"rawModel,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Count    int    `json:"count,omitempty"`
 	// CapRange is per-GPU power cap range (not total for all GPUs).
 	CapRange           GPUCapRange `json:"capRangePerGpu,omitempty"`
 	CurrentCapWatts    float64     `json:"currentCapWatts,omitempty"`
@@ -153,28 +153,32 @@ type CatalogExactness struct {
 // NodeTwinSpec is the desired power state for a node, written by the controller manager.
 // This is the spec portion of the NodeTwin CRD.
 type NodeTwinSpec struct {
-	NodeName    string       `json:"nodeName"`
-	Profile     string       `json:"profile"`               // "performance" or "eco"
-	CPU         *NodeTwinCPU `json:"cpu,omitempty"`
-	GPU         *NodeTwinGPU `json:"gpu,omitempty"`
-	PolicyName  string       `json:"policyName,omitempty"`
-	Draining    bool         `json:"draining,omitempty"`
+	NodeName   string       `json:"nodeName"`
+	Profile    string       `json:"profile"` // "performance" or "eco"
+	CPU        *NodeTwinCPU `json:"cpu,omitempty"`
+	GPU        *NodeTwinGPU `json:"gpu,omitempty"`
+	PolicyName string       `json:"policyName,omitempty"`
+	Draining   bool         `json:"draining,omitempty"`
 }
 
 type NodeTwinCPU struct {
 	PackagePowerCapWatts    *float64 `json:"packagePowerCapWatts,omitempty"`
 	PackagePowerCapPctOfMax *float64 `json:"packagePowerCapPctOfMax,omitempty"`
+	// Governor is the CPU governor preset; nil leaves the governor alone.
+	Governor *CPUGovernorIntent `json:"governor,omitempty"`
 }
 
 type NodeTwinGPU struct {
 	Scope          string   `json:"scope,omitempty"` // "perGpu"
 	CapWattsPerGPU *float64 `json:"capWattsPerGpu,omitempty"`
 	CapPctOfMax    *float64 `json:"capPctOfMax,omitempty"`
+	// Governor is the GPU governor preset; nil leaves the GPU clocks alone.
+	Governor *GPUGovernorIntent `json:"governor,omitempty"`
 }
 
 // PowerMeasurement holds the measured power data and TDP/cap breakdowns.
 type PowerMeasurement struct {
-	Source             string  `json:"source,omitempty"`             // "kepler", "utilization", "static"
+	Source             string  `json:"source,omitempty"` // "kepler", "utilization", "static"
 	MeasuredNodePowerW float64 `json:"measuredNodePowerW,omitempty"`
 	CpuCappedPowerW    float64 `json:"cpuCappedPowerW,omitempty"`
 	GpuCappedPowerW    float64 `json:"gpuCappedPowerW,omitempty"`
@@ -204,21 +208,25 @@ type NodeTwinStatus struct {
 	// EstimatedPUE is the estimated Power Usage Effectiveness for this node.
 	// PUE = 1.0 + overhead. Ranges from ~1.05 (idle, cool) to ~1.40 (stressed cooling).
 	// Reserved for future rack-topology-aware extensions. Not used in scoring.
-	EstimatedPUE    float64        `json:"estimatedPUE,omitempty"`
-	ControlStatus   *ControlStatus `json:"controlStatus,omitempty"`
-	LastUpdated     time.Time      `json:"lastUpdated,omitempty"`
+	EstimatedPUE  float64        `json:"estimatedPUE,omitempty"`
+	ControlStatus *ControlStatus `json:"controlStatus,omitempty"`
+	LastUpdated   time.Time      `json:"lastUpdated,omitempty"`
 }
 
 // ControlStatus holds agent feedback on applied controls.
 type ControlStatus struct {
-	CPU *ControlResult `json:"cpu,omitempty"`
-	GPU *ControlResult `json:"gpu,omitempty"`
+	CPU         *ControlResult `json:"cpu,omitempty"`
+	GPU         *ControlResult `json:"gpu,omitempty"`
+	CPUGovernor *ControlResult `json:"cpuGovernor,omitempty"`
+	GPUGovernor *ControlResult `json:"gpuGovernor,omitempty"`
 }
 
 type ControlResult struct {
-	Backend   string `json:"backend,omitempty"`
-	Result    string `json:"result,omitempty"`
-	Message   string `json:"message,omitempty"`
+	Backend string `json:"backend,omitempty"`
+	Result  string `json:"result,omitempty"`
+	Message string `json:"message,omitempty"`
+	// Applied is the native setting in effect (governor results only).
+	Applied   string `json:"applied,omitempty"`
 	UpdatedAt string `json:"updatedAt,omitempty"`
 }
 
@@ -233,4 +241,3 @@ type CapState struct {
 	CPUPct float64 `json:"cpuPct,omitempty"`
 	GPUPct float64 `json:"gpuPct,omitempty"`
 }
-

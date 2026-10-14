@@ -1,0 +1,2 @@
+{"type":"job","schemaVersion":"v3","jobId":"a0","submitTimeOffsetSec":0,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"2","amd.com/gpu":"1"}},"work":{"cpuUnits":240,"gpuUnits":120}}
+{"type":"job","schemaVersion":"v3","jobId":"a1","submitTimeOffsetSec":30,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"1"}},"work":{"cpuUnits":60,"gpuUnits":0}}

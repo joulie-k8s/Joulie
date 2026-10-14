@@ -1,0 +1,32 @@
+# Joulie values for the governor presets example: both gates on, every other
+# governor setting at the chart default (charts/joulie/values.yaml), spelled
+# out so that the README's tables can be read against it.
+#
+# In the simulated cluster, pass it on top of values/simcluster.yaml through
+# SIMCLUSTER_EXTRA_VALUES (README). On a real cluster these values change the
+# CPU governors and GPU clocks of every managed node: read the README first.
+controllerManager:
+  env:
+    # Gate 1: the controller manager writes presets into NodeTwin.spec.
+    GOVERNOR_CONTROL: "all"
+    # The controller manager's default policy, pinned: half of each hardware
+    # family stays in performance, the other half runs eco.
+    POLICY_TYPE: "static_partition"
+    STATIC_HP_FRAC: "0.5"
+    CPU_GOVERNOR_PERFORMANCE_PRESET: "performance"
+    CPU_GOVERNOR_ECO_PRESET: "efficiency"
+    CPU_GOVERNOR_ECO_BOOST: ""
+    CPU_GOVERNOR_ON_GPU_NODES: "false"
+    # Empty: no GPU preset on performance nodes until a model is opted in
+    # through GPU_GOVERNOR_MODEL_PRESETS_JSON (README, "Opt a GPU model in").
+    GPU_GOVERNOR_PERFORMANCE_PRESET: ""
+    GPU_GOVERNOR_ECO_PRESET: "efficient"
+    GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX: "80"
+    GPU_GOVERNOR_MODEL_PRESETS_JSON: "{}"
+
+agent:
+  env:
+    # Gate 2: the agent applies the presets of its NodeTwin.
+    GOVERNOR_WRITES: "true"
+    # Put the baseline back when the agent stops.
+    GOVERNOR_RESTORE_ON_EXIT: "true"

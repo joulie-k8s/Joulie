@@ -1,0 +1,38 @@
+# Governor cluster: experiment 05's Tier B (experiments/05-governor-exploration)
+# and the harness checks GS01 to GS04 (tests/simcluster/e2e_test.go). One
+# pool per CPU frequency driver and per GPU family, two Nodes each, so that
+# with STATIC_HP_FRAC low every family keeps one Node in performance and one
+# in eco (policy.PerformanceSet) and both presets of each are written. Pool
+# names are vendor or model words only (GX05): the pools are chosen for
+# coverage, not to mirror any deployment.
+#
+#   epyc-9534  acpi-cpufreq, schedutil
+#   xeon-6530  intel_cpufreq (intel_pstate passive), schedutil
+#   xeon       intel_pstate active with HWP, powersave
+#   epyc-hsmp  amd-pstate-epp, performance
+#   w7900      amdgpu sysfs levels, on the acpi-cpufreq host
+#   mi300x     amdgpu sysfs levels and overdrive, on an acpi-cpufreq host
+#   h100-nvl   nvidia-smi clock locks (Hopper), on the intel_pstate host
+#   l40s       nvidia-smi clock and memory locks, on the acpi-cpufreq host
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: governor}
+spec:
+  defaults:
+    kwok: true
+    labels: {joulie.io/managed: "true"}
+    baseLoad: {cpuUtil: 0.5, gpuUtil: 1.0, memoryIntensity: 0.3, cpuClass: cpu.compute_bound, gpuClass: gpu.compute_bound}
+  pools:
+  - {name: epyc-9534, profile: amd-epyc-9534-2s-energy-only, count: 2}
+  - {name: xeon-6530, profile: intel-xeon-6530-2s-rapl,      count: 2}
+  - {name: xeon,      profile: intel-xeon-2s-rapl,           count: 2}
+  - {name: epyc-hsmp, profile: amd-epyc-2s-hsmp,             count: 2}
+  - {name: w7900,     profile: amd-radeon-pro-w7900-4gpu,    count: 2}
+  - {name: mi300x,    profile: amd-instinct-mi300x-8gpu,     count: 2}
+  - {name: h100-nvl,  profile: nvidia-h100-nvl-8gpu,         count: 2}
+  - {name: l40s,      profile: nvidia-l40s-4gpu,             count: 2}
+  # The GPU pools get the GPU tools a node with the driver installed has (a
+  # driver stub at each path the tools need). A pool left out follows the
+  # Joulie install, which by default delivers none (agent.runtimeClassName and
+  # agent.extraVolumes unset), so its agent's GPU inventory fails.
+  harness: {pools: {w7900: {toolDelivery: mounted}, mi300x: {toolDelivery: mounted}, h100-nvl: {toolDelivery: mounted}, l40s: {toolDelivery: mounted}}}

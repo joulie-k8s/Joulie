@@ -1,12 +1,16 @@
 package v1alpha1
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/yaml"
 )
 
 // The agent and the controller manager write these objects as unstructured maps, so the
@@ -135,6 +139,188 @@ func TestNodeHardwareRoundTrip(t *testing.T) {
 	} {
 		mustHavePath(t, u, p)
 	}
+}
+
+// GV01: the governor fields of the spec, of controlStatus and of
+// NodeHardware survive the unstructured round trip under the JSON names the
+// controller manager and the agent will write, and a ceiling the API server
+// returns as a whole number (an int64 in the unstructured map, a bare 75 in
+// JSON) reads back through the typed struct.
+func TestGV01GovernorFieldsRoundTrip(t *testing.T) {
+	twin := &NodeTwin{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "joulie.io/v1alpha1", Kind: "NodeTwin"},
+		ObjectMeta: metav1.ObjectMeta{Name: "worker-1"},
+		Spec: NodeTwinSpec{
+			NodeName: "worker-1",
+			Profile:  "eco",
+			CPU:      &NodeTwinCPU{Governor: &CPUGovernorIntent{Preset: "efficiency", Boost: "off"}},
+			GPU:      &NodeTwinGPU{Governor: &GPUGovernorIntent{Preset: "efficient", ComputeClockCeilingPctOfMax: ptr(75.5)}},
+		},
+		Status: NodeTwinStatus{ControlStatus: &ControlStatus{
+			CPUGovernor: &ControlResult{Backend: "cpufreq", Result: "equivalent", Message: "no EPP", Applied: "conservative", UpdatedAt: "2026-01-01T00:00:00Z"},
+			GPUGovernor: &ControlResult{Backend: "amdgpu-sysfs", Result: "applied", Applied: "manual", UpdatedAt: "2026-01-01T00:00:01Z"},
+		}},
+	}
+	u := roundTrip(t, twin, &NodeTwin{})
+	for _, p := range []string{
+		"spec.cpu.governor.preset", "spec.cpu.governor.boost",
+		"spec.gpu.governor.preset", "spec.gpu.governor.computeClockCeilingPctOfMax",
+		"status.controlStatus.cpuGovernor.backend", "status.controlStatus.cpuGovernor.result",
+		"status.controlStatus.cpuGovernor.message", "status.controlStatus.cpuGovernor.applied",
+		"status.controlStatus.cpuGovernor.updatedAt", "status.controlStatus.gpuGovernor.applied",
+	} {
+		mustHavePath(t, u, p)
+	}
+
+	hw := &NodeHardware{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "joulie.io/v1alpha1", Kind: "NodeHardware"},
+		ObjectMeta: metav1.ObjectMeta{Name: "worker-1"},
+		Spec:       NodeHardwareSpec{NodeName: "worker-1"},
+		Status: NodeHardwareStatus{
+			CPU: &NodeHardwareCPU{Governor: &CPUGovernorInventory{
+				Driver:     "intel_pstate",
+				DriverMode: "active",
+				Current:    "powersave",
+				Available:  []string{"performance", "powersave"},
+				EPP:        &CPUEPPInventory{Current: "balance_performance", Available: []string{"default", "performance", "balance_performance", "balance_power", "power"}},
+				Boost:      &CPUBoostInventory{State: "on", Scope: "no-turbo"},
+				Presets:    []GovernorPresetSupport{{Preset: "performance", Result: "applied", Native: "performance"}, {Preset: "balanced", Result: "equivalent", Native: "powersave"}},
+				Baseline: &CPUGovernorBaseline{
+					Groups:     []CPUGovernorState{{Policies: "0-63", Governor: "powersave", EPP: "balance_performance", Boost: "on"}},
+					RecordedAt: "2026-01-01T00:00:00Z",
+				},
+				Writable: true,
+			}},
+			GPU: &NodeHardwareGPU{Governor: &GPUGovernorInventory{
+				Mechanism: "amdgpu-sysfs",
+				Current:   "auto",
+				Presets:   []GovernorPresetSupport{{Preset: "auto", Result: "equivalent", Native: "auto"}, {Preset: "sustained", Result: "applied", Native: "high"}},
+				ClockRangesMHz: &GPUClockRanges{
+					Graphics: &ClockRangeMHz{Min: 100, Max: 2000},
+					Memory:   &ClockRangeMHz{Min: 100, Max: 1000},
+					Fabric:   &ClockRangeMHz{Min: 400, Max: 1600},
+				},
+				Baseline: &GPUGovernorBaseline{
+					Devices:    []GPUGovernorDeviceState{{BusID: "0000:c1:00.0", Level: "auto"}},
+					RecordedAt: "2026-01-01T00:00:00Z",
+				},
+				Writable: true,
+				Uniform:  true,
+			}},
+		},
+	}
+	u = roundTrip(t, hw, &NodeHardware{})
+	for _, p := range []string{
+		"status.cpu.governor.driver", "status.cpu.governor.driverMode", "status.cpu.governor.current",
+		"status.cpu.governor.available", "status.cpu.governor.epp.current", "status.cpu.governor.epp.available",
+		"status.cpu.governor.boost.state", "status.cpu.governor.boost.scope", "status.cpu.governor.presets",
+		"status.cpu.governor.baseline.groups", "status.cpu.governor.baseline.recordedAt", "status.cpu.governor.writable",
+		"status.gpu.governor.mechanism", "status.gpu.governor.current", "status.gpu.governor.presets",
+		"status.gpu.governor.clockRangesMHz.graphics.min", "status.gpu.governor.clockRangesMHz.memory.max",
+		"status.gpu.governor.clockRangesMHz.fabric.max", "status.gpu.governor.baseline.devices",
+		"status.gpu.governor.baseline.recordedAt", "status.gpu.governor.writable", "status.gpu.governor.uniform",
+	} {
+		mustHavePath(t, u, p)
+	}
+
+	// writable and uniform are written even when false, so a merge patch
+	// that turns them off replaces the stored true.
+	off, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&NodeHardware{Status: NodeHardwareStatus{
+		CPU: &NodeHardwareCPU{Governor: &CPUGovernorInventory{Driver: "acpi-cpufreq"}},
+		GPU: &NodeHardwareGPU{Governor: &GPUGovernorInventory{Mechanism: "nvidia-smi"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"status.cpu.governor.writable", "status.gpu.governor.writable", "status.gpu.governor.uniform"} {
+		mustHavePath(t, off, p)
+	}
+
+	// A whole-number ceiling arrives as int64 from the API server.
+	whole := map[string]any{
+		"apiVersion": "joulie.io/v1alpha1", "kind": "NodeTwin",
+		"metadata": map[string]any{"name": "worker-1"},
+		"spec": map[string]any{
+			"nodeName": "worker-1", "profile": "eco",
+			"gpu": map[string]any{"governor": map[string]any{"preset": "efficient", "computeClockCeilingPctOfMax": int64(75)}},
+		},
+	}
+	var got NodeTwin
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(whole, &got); err != nil {
+		t.Fatalf("FromUnstructured with an int64 ceiling: %v", err)
+	}
+	if g := got.Spec.GPU.Governor; g == nil || g.ComputeClockCeilingPctOfMax == nil || *g.ComputeClockCeilingPctOfMax != 75 {
+		t.Fatalf("int64 ceiling read back as %+v, want 75", got.Spec.GPU.Governor)
+	}
+	var fromJSON NodeTwin
+	if err := json.Unmarshal([]byte(`{"spec":{"nodeName":"w","profile":"eco","gpu":{"governor":{"preset":"efficient","computeClockCeilingPctOfMax":75}}}}`), &fromJSON); err != nil {
+		t.Fatal(err)
+	}
+	if g := fromJSON.Spec.GPU.Governor; g == nil || g.ComputeClockCeilingPctOfMax == nil || *g.ComputeClockCeilingPctOfMax != 75 {
+		t.Fatalf("JSON ceiling 75 read back as %+v", fromJSON.Spec.GPU.Governor)
+	}
+}
+
+// GV03: the generated schema bounds computeClockCeilingPctOfMax to (0, 100]:
+// 0 and 101 are rejected, 75 and 100 accepted. The check reads the bounds
+// controller-gen wrote into config/crd/bases, the copy kubectl applies.
+func TestGV03ComputeClockCeilingBounds(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "bases", "joulie.io_nodetwins.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crd map[string]any
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatalf("parse CRD: %v", err)
+	}
+	versions := crd["spec"].(map[string]any)["versions"].([]any)
+	schema := versions[0].(map[string]any)["schema"].(map[string]any)["openAPIV3Schema"].(map[string]any)
+	field := schemaAt(schema, "spec", "gpu", "governor", "computeClockCeilingPctOfMax")
+	if field == nil {
+		t.Fatal("spec.gpu.governor.computeClockCeilingPctOfMax missing from the schema")
+	}
+	for v, want := range map[float64]bool{0: false, 101: false, 75: true, 100: true, 0.5: true, -1: false} {
+		if got := schemaNumberAllowed(field, v); got != want {
+			t.Errorf("computeClockCeilingPctOfMax=%v: allowed=%v, want %v (schema %v)", v, got, want, field)
+		}
+	}
+}
+
+// schemaAt walks the properties of an OpenAPI v3 schema.
+func schemaAt(schema map[string]any, path ...string) map[string]any {
+	cur := schema
+	for _, p := range path {
+		props, ok := cur["properties"].(map[string]any)
+		if !ok {
+			return nil
+		}
+		if cur, ok = props[p].(map[string]any); !ok {
+			return nil
+		}
+	}
+	return cur
+}
+
+// schemaNumberAllowed applies the numeric bounds of an OpenAPI v3 schema
+// (minimum, maximum and their boolean exclusive forms, as structural CRD
+// schemas write them) to v.
+func schemaNumberAllowed(s map[string]any, v float64) bool {
+	num := func(k string) (float64, bool) {
+		switch x := s[k].(type) {
+		case float64:
+			return x, true
+		case int64:
+			return float64(x), true
+		}
+		return 0, false
+	}
+	if lo, ok := num("minimum"); ok && (v < lo || v == lo && s["exclusiveMinimum"] == true) {
+		return false
+	}
+	if hi, ok := num("maximum"); ok && (v > hi || v == hi && s["exclusiveMaximum"] == true) {
+		return false
+	}
+	return true
 }
 
 // roundTrip converts in to unstructured and back into out, fails the test

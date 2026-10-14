@@ -1,0 +1,200 @@
+name: simcluster
+
+# The simulated cluster end to end (scripts/simcluster, tests/simcluster): one
+# k3s server in Docker, KWOK Nodes from a cluster spec, the simulator in
+# emulate mode, Joulie with one emulated agent per Node the agent DaemonSet
+# would reach, and TestSimclusterE2E against it.
+#
+# The smoke job runs the smoke spec on pull requests and pushes to main that
+# touch what it builds or runs. The nightly job runs the medium spec in
+# production timing, the smoke spec once per input variant (the target_info
+# fallback, unpromoted labels, UTF-8 names, the Collector, the Collector
+# bridge from Kepler, dcgm-exporter and the AMD exporter with the facility
+# metrics off as the chart has them, both Kepler presets and host scope) and
+# with the extender reached through its Service off the host network, and
+# the profiles spec, one Node of every builtin hardware profile. Each job
+# uploads its run directory: summary.json, the OTLP files, the objects and
+# the logs. The Dagger integration job (integration-tests.yml) stays as it
+# is.
+on:
+  pull_request:
+    paths:
+      - "ci/**"
+      - "cmd/**"
+      - "pkg/**"
+      - "api/**"
+      - "charts/**"
+      - "config/**"
+      - "simulator/**"
+      - "scripts/simcluster/**"
+      - "tests/simcluster/**"
+      - "values/simcluster*.yaml"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/simcluster.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "ci/**"
+      - "cmd/**"
+      - "pkg/**"
+      - "api/**"
+      - "charts/**"
+      - "config/**"
+      - "simulator/**"
+      - "scripts/simcluster/**"
+      - "tests/simcluster/**"
+      - "values/simcluster*.yaml"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/simcluster.yml"
+  schedule:
+    # Daily at 03:23 UTC, off the hour so the job does not queue behind every
+    # other cron.
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    # The test itself times out after ten rate windows, at least 20 minutes
+    # (smoke.sh), 20 in dev timing; creating the cluster and building the
+    # images come on top.
+    timeout-minutes: 30
+    # k3s imports its system images from the release's air-gap bundle in
+    # images/, which the cache below keeps; without it, images/ stays empty.
+    env:
+      SIMCLUSTER_AIRGAP: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Outside the workspace, as the scripts want it; the runner context is
+      # not available in a job's env, hence GITHUB_ENV.
+      - name: Set the state directory
+        run: echo "SIMCLUSTER_DIR=$RUNNER_TEMP/simcluster/joulie-sim-smoke" >>"$GITHUB_ENV"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Read the pinned Helm version
+        id: versions
+        run: echo "helm=$(sed -n 's/^HELM_VERSION=//p' scripts/simcluster/versions.env)" >>"$GITHUB_OUTPUT"
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ steps.versions.outputs.helm }}
+
+      # images/ holds the air-gap bundle k3s imports at start
+      # (SIMCLUSTER_AIRGAP=1); down.sh keeps it.
+      - name: Cache the image tarballs
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/simcluster/*/images
+          key: simcluster-images-${{ hashFiles('scripts/simcluster/versions.env') }}
+
+      # The checks of the harness itself (TestE2E*) need no cluster, and
+      # smoke.sh runs only TestSimclusterE2E.
+      - name: Vet the end-to-end test and test its harness
+        run: |
+          go vet -tags simcluster ./tests/simcluster/
+          go test -tags simcluster -count=1 -run '^TestE2E' ./tests/simcluster/
+
+      - name: Smoke
+        run: make simcluster-smoke SIMCLUSTER_DIR=$RUNNER_TEMP/simcluster/joulie-sim-smoke
+
+      - name: Upload the run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simcluster-smoke
+          path: ${{ env.SIMCLUSTER_DIR }}/runs/
+          if-no-files-found: ignore
+
+  nightly:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # The test times out after 50 minutes in production timing (smoke.sh),
+    # and the medium cluster takes minutes to create and deploy: the job
+    # keeps room for both, so smoke.sh still writes the run's summary.
+    timeout-minutes: 70
+    env:
+      SIMCLUSTER_AIRGAP: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: medium-otel-production, spec: tests/simcluster/specs/medium.yaml, telemetry: otel, scope: components, timing: production}
+          - {name: smoke-otel-unpromoted, spec: tests/simcluster/specs/smoke.yaml, telemetry: otel-unpromoted, scope: components, timing: dev}
+          - {name: smoke-otel-labels-unpromoted, spec: tests/simcluster/specs/smoke.yaml, telemetry: otel-labels-unpromoted, scope: components, timing: dev}
+          - {name: smoke-otel-utf8, spec: tests/simcluster/specs/smoke.yaml, telemetry: otel-utf8, scope: components, timing: dev}
+          - {name: smoke-otel-collector, spec: tests/simcluster/specs/smoke.yaml, telemetry: otel-collector, scope: components, timing: dev}
+          - {name: smoke-otel-bridge, spec: tests/simcluster/specs/smoke.yaml, telemetry: otel-bridge, scope: components, timing: dev}
+          - {name: smoke-kepler, spec: tests/simcluster/specs/smoke.yaml, telemetry: kepler, scope: components, timing: dev}
+          - {name: smoke-kepler-legacy, spec: tests/simcluster/specs/smoke.yaml, telemetry: kepler-legacy, scope: components, timing: dev}
+          - {name: smoke-otel-host, spec: tests/simcluster/specs/smoke.yaml, telemetry: otel, scope: host, timing: dev}
+          - {name: smoke-extender-service, spec: tests/simcluster/specs/smoke.yaml, telemetry: otel, scope: components, timing: dev, extender: service}
+          - {name: profiles-otel-bridge-service, spec: tests/simcluster/specs/profiles.yaml, telemetry: otel-bridge, scope: components, timing: dev, extender: service}
+    name: nightly (${{ matrix.name }})
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Outside the workspace, as the scripts want it; the runner context is
+      # not available in a job's env, hence GITHUB_ENV.
+      - name: Set the state directory
+        run: echo "SIMCLUSTER_DIR=$RUNNER_TEMP/simcluster/joulie-sim-smoke" >>"$GITHUB_ENV"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Read the pinned Helm version
+        id: versions
+        run: echo "helm=$(sed -n 's/^HELM_VERSION=//p' scripts/simcluster/versions.env)" >>"$GITHUB_OUTPUT"
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ steps.versions.outputs.helm }}
+
+      - name: Cache the image tarballs
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/simcluster/*/images
+          key: simcluster-images-${{ hashFiles('scripts/simcluster/versions.env') }}
+
+      # The checks of the harness itself (TestE2E*) need no cluster, and
+      # smoke.sh runs only TestSimclusterE2E.
+      - name: Vet the end-to-end test and test its harness
+        run: |
+          go vet -tags simcluster ./tests/simcluster/
+          go test -tags simcluster -count=1 -run '^TestE2E' ./tests/simcluster/
+
+      - name: Smoke (${{ matrix.name }})
+        run: >-
+          make simcluster-smoke
+          SIMCLUSTER_DIR=$RUNNER_TEMP/simcluster/joulie-sim-smoke
+          SIMCLUSTER_SPEC=${{ matrix.spec }}
+          SIMCLUSTER_TELEMETRY=${{ matrix.telemetry }}
+          SIMCLUSTER_POWER_SCOPE=${{ matrix.scope }}
+          SIMCLUSTER_TIMING=${{ matrix.timing }}
+          SIMCLUSTER_EXTENDER=${{ matrix.extender || 'hostnet' }}
+
+      - name: Upload the run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simcluster-nightly-${{ matrix.name }}
+          path: ${{ env.SIMCLUSTER_DIR }}/runs/
+          if-no-files-found: ignore

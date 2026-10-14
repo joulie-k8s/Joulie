@@ -53,26 +53,11 @@ _DEFAULT_REGISTRY_REPO = f"{_LOCAL_REGISTRY_HOST}:{_LOCAL_REGISTRY_PORT}/joulie"
 K3S_SERVER_NODE = "k3s-server"
 K3S_WORKER_NODE = "k3s-worker-0"
 
-# KubeSchedulerConfiguration that registers the Joulie scheduler extender.
-# The extender runs as a pod (deployed by Helm); kube-scheduler retries if the
-# extender is not yet available at startup.
-_SCHEDULER_CONFIG = """\
-apiVersion: kubescheduler.config.k8s.io/v1
-kind: KubeSchedulerConfiguration
-clientConnection:
-  kubeconfig: /var/lib/rancher/k3s/server/cred/scheduler.kubeconfig
-leaderElection:
-  leaderElect: false
-extenders:
-  - urlPrefix: "http://127.0.0.1:9876"
-    filterVerb: "filter"
-    prioritizeVerb: "prioritize"
-    weight: 5
-    enableHTTPS: false
-    nodeCacheCapable: false
-    managedResources: []
-    ignorable: true
-"""
+# Scheduler configuration that registers the Joulie scheduler extender, read
+# from the repository source; the simulated cluster harness mounts the same
+# file into its k3s server. The extender runs as a pod (deployed by Helm);
+# kube-scheduler retries if the extender is not yet available at startup.
+_SCHEDULER_CONFIG_PATH = "scripts/simcluster/manifests/scheduler-config.yaml"
 
 
 @object_type
@@ -176,6 +161,7 @@ class JoulieCi:
         config_cache: dagger.CacheVolume,
         registry: dagger.Service,
         registries_yaml: str,
+        scheduler_config: dagger.File,
         run_id: str,
         token: str,
     ) -> dagger.Service:
@@ -185,6 +171,7 @@ class JoulieCi:
         reading any files from the server's filesystem.  config_cache is mounted
         at /etc/rancher/k3s so k3s writes k3s.yaml there; a separate lazy
         container reads the kubeconfig from the same cache volume later.
+        scheduler_config is the repository's _SCHEDULER_CONFIG_PATH.
         """
         return (
             dag.container()
@@ -195,7 +182,7 @@ class JoulieCi:
             .with_mounted_cache("/etc/rancher/k3s", config_cache)
             .with_new_file("/tmp/registries.yaml", registries_yaml)
             .with_exec(["cp", "/tmp/registries.yaml", "/etc/rancher/k3s/registries.yaml"])
-            .with_new_file("/tmp/scheduler-config.yaml", _SCHEDULER_CONFIG)
+            .with_file("/tmp/scheduler-config.yaml", scheduler_config)
             .with_exec(["cp", "/tmp/scheduler-config.yaml", "/etc/rancher/k3s/scheduler-config.yaml"])
             .with_mounted_temp("/etc/lib/cni")
             .with_mounted_temp("/var/lib/kubelet")
@@ -361,7 +348,14 @@ class JoulieCi:
         import asyncio
         registry_svc = self._local_registry_service()
         started_registry = await registry_svc.start()
-        server_svc = self._k3s_server_service(config_cache, started_registry, registries_yaml, run_id, cluster_token)
+        server_svc = self._k3s_server_service(
+            config_cache,
+            started_registry,
+            registries_yaml,
+            source.file(_SCHEDULER_CONFIG_PATH),
+            run_id,
+            cluster_token,
+        )
         worker_svc = self._k3s_worker_service(server_svc, started_registry, registries_yaml, cluster_token)
         started_server, started_worker = await asyncio.gather(
             server_svc.start(),
@@ -462,6 +456,7 @@ class JoulieCi:
             config_cache,
             started_registry,
             registries_yaml,
+            source.file(_SCHEDULER_CONFIG_PATH),
             run_id,
             cluster_token,
         )

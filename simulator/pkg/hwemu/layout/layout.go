@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"regexp"
 	"strconv"
 )
 
@@ -25,7 +26,8 @@ type Owner int
 const (
 	// OwnerRender files are written once by Render; a later write is reverted.
 	OwnerRender Owner = iota
-	// OwnerEmulator files are rewritten by temp file and rename.
+	// OwnerEmulator files are rewritten by the emulator, in place under a
+	// write lease or by temp file and rename, so a reader never sees one torn.
 	OwnerEmulator
 	// OwnerAgent files are written in place by the agent or a tool and read
 	// back on every step.
@@ -39,9 +41,6 @@ const (
 	KindFile Kind = iota
 	KindDir
 	KindSymlink
-	// KindRejectingDir is a directory in place of an attribute that rejects
-	// writes, so os.WriteFile on it fails with EISDIR.
-	KindRejectingDir
 )
 
 // FileSpec is one entry of a rendered tree. Rel is relative to the node root;
@@ -79,6 +78,32 @@ const (
 // "devices/virtual/powercap/intel-rapl" (powercap.rst:34-35).
 func PowercapControlDir(ct string) string {
 	return path.Join(powercapDevicesDir, ct)
+}
+
+// raplPackageZoneName matches the name file of a RAPL package zone,
+// package-N, and of one of its dies, package-N-die-M
+// (intel_rapl_common.c, rapl_package_add).
+var raplPackageZoneName = regexp.MustCompile(`^package-([0-9]+)(?:-die-([0-9]+))?$`)
+
+// RAPLPackageZone reads the name file of a RAPL powercap zone: package-N
+// is CPU package N, with die -1, and package-N-die-M die M of it. ok is
+// false for any other name, such as psys, dram, core or uncore.
+func RAPLPackageZone(name string) (socket, die int, ok bool) {
+	m := raplPackageZoneName.FindStringSubmatch(name)
+	if m == nil {
+		return 0, 0, false
+	}
+	socket, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	die = -1
+	if m[2] != "" {
+		if die, err = strconv.Atoi(m[2]); err != nil {
+			return 0, 0, false
+		}
+	}
+	return socket, die, true
 }
 
 // PowercapZoneDir is the directory of the zone at idx under control type ct.
@@ -154,6 +179,84 @@ func NVMLGPUDir(i int) string {
 // nvidia-smi -pm.
 const NVMLPersistenceModeFile = "persistence_mode"
 
+// NVMLLockedGPUClocksFile and NVMLLockedMemClocksFile are the clock locks of
+// a GPU, in its NVMLGPUDir, written by the fake nvidia-smi -lgc and -lmc
+// and cleared by -rgc and -rmc. No query prints them: NVML has no getter for
+// a lock.
+const (
+	NVMLLockedGPUClocksFile = "locked_gpu_clocks"
+	NVMLLockedMemClocksFile = "locked_mem_clocks"
+)
+
+// Governor entries of the CPU (cpufreq.rst, intel_pstate.rst, amd-pstate.rst,
+// intel_uncore_frequency_scaling.rst in Documentation/admin-guide/pm).
+
+// CPUFreqDir holds the attributes common to every policy, such as the
+// global boost, and the tunables of a governor that is not per policy.
+func CPUFreqDir() string {
+	return path.Join(cpuDir, "cpufreq")
+}
+
+// GovernorTunablesDir is the directory of a governor's tunables when they
+// are global: "devices/system/cpu/cpufreq/<governor>".
+func GovernorTunablesDir(governor string) string {
+	return path.Join(CPUFreqDir(), governor)
+}
+
+// IntelPstateDir holds the global attributes of intel_pstate in active and
+// passive mode, such as status and no_turbo.
+func IntelPstateDir() string {
+	return path.Join(cpuDir, "intel_pstate")
+}
+
+// AMDPstateDir holds the global attributes of amd-pstate, such as status.
+func AMDPstateDir() string {
+	return path.Join(cpuDir, "amd_pstate")
+}
+
+// IntelUncoreDir is the directory of the Intel uncore frequency driver.
+func IntelUncoreDir() string {
+	return path.Join(cpuDir, "intel_uncore_frequency")
+}
+
+// IntelUncoreDieDir is the uncore domain of die die of package pkg, as the
+// legacy interface names it: "package_<pkg>_die_<die>" in two digits each.
+func IntelUncoreDieDir(pkg, die int) string {
+	return path.Join(IntelUncoreDir(), fmt.Sprintf("package_%02d_die_%02d", pkg, die))
+}
+
+// IntelUncoreClusterDir is uncore domain id of the TPMI interface,
+// "uncore<id>" in two digits.
+func IntelUncoreClusterDir(id int) string {
+	return path.Join(IntelUncoreDir(), fmt.Sprintf("uncore%02d", id))
+}
+
+// Governor entries of an amdgpu device, in its PCIDevDir
+// (Documentation/gpu/amdgpu/thermal.rst).
+const (
+	// AMDGPUPerfLevelFile is power_dpm_force_performance_level.
+	AMDGPUPerfLevelFile = "power_dpm_force_performance_level"
+	// AMDGPUODFile is the overdrive file, pp_od_clk_voltage.
+	AMDGPUODFile = "pp_od_clk_voltage"
+	// AMDGPUPowerProfileFile is pp_power_profile_mode.
+	AMDGPUPowerProfileFile = "pp_power_profile_mode"
+)
+
+// AMDGPUPMPolicyDir is the pm_policy directory of the amdgpu device on bus
+// bus.
+func AMDGPUPMPolicyDir(bus int) string {
+	return path.Join(PCIDevDir(bus), "pm_policy")
+}
+
+// PCIBusDeviceLink is the bus entry of the PCI device on bus bus and its
+// target: "bus/pci/devices/0000:<bus>:00.0" pointing at
+// "../../../devices/pci0000:<bus>/0000:<bus>:00.0", the path an agent
+// enumerates PCI devices by.
+func PCIBusDeviceLink(bus int) (link, target string) {
+	dev := PCIDevDir(bus)
+	return path.Join("bus", "pci", "devices", path.Base(dev)), path.Join("..", "..", "..", dev)
+}
+
 // ToolsManifest is state/tools.json: the GPU tools on the node's PATH and the
 // variant each one emulates. Every family writes the same envelope, with an
 // empty Tools map when it has no tool.
@@ -162,9 +265,24 @@ type ToolsManifest struct {
 	Tools         map[string]ToolEntry `json:"tools"`
 }
 
-// ToolEntry is one tool of a ToolsManifest.
+// ToolEntry is one tool of a ToolsManifest. Requires lists, in order, the
+// files the real tool needs before it runs; fakesmi checks them under
+// Env.RootFS (package smi). A tool without requirements marshals without the
+// key (L03, L06).
 type ToolEntry struct {
-	Variant string `json:"variant"`
+	Variant  string            `json:"variant"`
+	Requires []ToolRequirement `json:"requires,omitempty"`
+}
+
+// ToolRequirement is one file a real tool needs before it runs, such as the
+// ELF loader of a dynamically linked binary or the interpreter of a script.
+// Paths are absolute in the container; one of them existing satisfies the
+// requirement. When none exists, the tool prints Stderr, if any, and exits
+// with Exit, as the real tool or the kernel's exec would make it.
+type ToolRequirement struct {
+	Paths  []string `json:"paths"`
+	Exit   int      `json:"exit"`
+	Stderr string   `json:"stderr,omitempty"`
 }
 
 func hwmonDir(devDir string, h int) string {

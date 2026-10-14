@@ -11,10 +11,13 @@ sources:
   amdsmidoc:   {kind: published, ref: "https://rocm.docs.amd.com/projects/amdsmi/en/latest/how-to/amdsmi-cli-tool.html", note: "MI300A (0x74a0) example: PPT0 max 550 W, min 0 W"}
   amdgpupm:    {kind: published, ref: "linux v7.3-rc5 drivers/gpu/drm/amd/pm/amdgpu_pm.c:3469-3496,3591-3600,3664-3674,3827-3834"}
   amdgpudrv:   {kind: published, ref: "linux v7.3-rc5 drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c:2193-2206", note: "binds VGA, display-other and accelerator-processing classes"}
-  rocmsmi:     {kind: published, ref: "https://github.com/ROCm/rocm_smi_lib/blob/323ab1105dce/python_smi_tools/rocm_smi.py", note: "head of the develop branch"}
+  rocmsmi:     {kind: published, ref: "https://github.com/ROCm/rocm_smi_lib/blob/323ab1105dce/python_smi_tools/rocm_smi.py", note: "head of the develop branch; line 1 is #!/usr/bin/env python3, and rocm_smi/CMakeLists.txt:117-122 installs the rocm-smi command as a symlink to this script"}
+  amdsmicli:   {kind: published, ref: "https://github.com/ROCm/amdsmi/blob/rocm-7.2.0/amdsmi_cli/amdsmi_cli.py", note: "line 1 is #!/usr/bin/env python3, and amdsmi_cli/CMakeLists.txt:68-75 installs the amd-smi command as a symlink to this script"}
   amdlabeller: {kind: published, ref: "https://github.com/ROCm/k8s-device-plugin/blob/3b9a79fe1ed1/cmd/k8s-node-labeller/main.go", note: "lines 38-39, 84, 209-238"}
   pciids:      {kind: published, ref: "https://pci-ids.ucw.cz/read/PC/1002/74a1", note: "1002:74a1 Aqua Vanjaram [Instinct MI300X] (pci.ids 2026.10.01)"}
   llvmamdgpu:  {kind: published, ref: "https://llvm.org/docs/AMDGPUUsage.html", note: "processor table: gfx942 lists AMD Instinct MI300X"}
+  amdgpupm617: {kind: published, ref: "https://github.com/torvalds/linux/blob/v6.17/drivers/gpu/drm/amd/pm/amdgpu_pm.c", note: "power_dpm_force_performance_level fails any word the firmware refuses with -EINVAL (365-398); pm_policy lists soc_pstate_default and soc_pstate_0 to 2, and plpd_disallow, plpd_default and plpd_optimized (2083-2134)"}
+  smuv1306:    {kind: published, ref: "https://github.com/torvalds/linux/blob/v6.17/drivers/gpu/drm/amd/pm/swsmu/smu13/smu_v13_0_6_ppt.c", note: "set_performance_level takes perf_determinism, auto and manual and returns -EOPNOTSUPP for any other level (1958-2011); overdrive edits only under manual or perf_determinism (2108-2111); Setting min UCLK level is not supported (2174); OD_SCLK and OD_MCLK printed as two levels (1375-1380, 1421-1429); fine-grained sclk printed as two levels, or three around a current clock (1394-1418)"}
 node:
   labels:
     amdgpu:
@@ -58,7 +61,71 @@ gpus:
     defaultW: {v: 750, src: "assumed:equal to max"}
   powerSensor: {v: input, src: "assumed:average vs input is per product (amdgpupm:3827-3834)"}
   ppt1: {v: absent, src: "assumed:fast PPT only on a few GPUs (amdgpupm:3670-3674)"}
-  tools: [{name: rocm-smi, variant: current}, {name: amd-smi, variant: "7.2"}]
+  # The amdgpu performance level and clock tables, SMU 13.0.6: auto, manual
+  # and perf_determinism only, overdrive always on, no power profiles.
+  dpm:
+    levels:
+      accept: {v: [auto, manual, perf_determinism], src: "published:smuv1306#set_performance_level"}
+      reject:
+        low: {v: EINVAL, src: "published:smuv1306#-EOPNOTSUPP from set_performance_level, which amdgpupm617 returns as -EINVAL"}
+        high: {v: EINVAL, src: "published:smuv1306#-EOPNOTSUPP from set_performance_level, which amdgpupm617 returns as -EINVAL"}
+        profile_exit: {v: EINVAL, src: "published:smuv1306#-EOPNOTSUPP from set_performance_level, which amdgpupm617 returns as -EINVAL"}
+        profile_standard: {v: EINVAL, src: "published:smuv1306#-EOPNOTSUPP from set_performance_level, which amdgpupm617 returns as -EINVAL"}
+        profile_min_sclk: {v: EINVAL, src: "published:smuv1306#-EOPNOTSUPP from set_performance_level, which amdgpupm617 returns as -EINVAL"}
+        profile_min_mclk: {v: EINVAL, src: "published:smuv1306#-EOPNOTSUPP from set_performance_level, which amdgpupm617 returns as -EINVAL"}
+        profile_peak: {v: EINVAL, src: "published:smuv1306#-EOPNOTSUPP from set_performance_level, which amdgpupm617 returns as -EINVAL"}
+    default: {v: auto, src: "assumed:the driver's boot level"}
+    tables:
+      sclk:
+        fine: {v: true, src: "published:smuv1306#gfxclk is printed as a fine-grained range"}
+        minMHz: {v: 500, src: "assumed:placeholder"}
+        maxMHz: {v: 2100, src: "assumed:the 2100 MHz peak engine clock commonly listed for MI300X, not checked against mi300xds"}
+      mclk: {v: [900, 1100, 1200, 1300], src: "assumed:placeholder"}
+      fclk: {v: [1200, 1400, 1600, 1800], src: "assumed:placeholder"}
+      socclk: {v: [600, 800, 1000, 1200], src: "assumed:placeholder"}
+    od:
+      enabled: {v: true, src: "assumed:overdrive is always on for SMU 13.0.6 (design section 1.5)"}
+      writable: {v: [sclkMin, sclkMax, uclkMax], src: "published:smuv1306#s 0, s 1 and m 1 are edited; m 0 is refused"}
+    pmPolicy:
+      soc_pstate:
+        policies: {v: [soc_pstate_default, soc_pstate_0, soc_pstate_1, soc_pstate_2], src: "published:amdgpupm617#pm_policy example"}
+        default: {v: 0, src: "assumed:soc_pstate_default at boot"}
+      xgmi_plpd:
+        policies: {v: [plpd_disallow, plpd_default, plpd_optimized], src: "published:amdgpupm617#pm_policy example"}
+        default: {v: 1, src: "assumed:plpd_default at boot"}
+    autoHoldS: {v: 1.0, src: "assumed:no public figure for the hold after a kernel"}
+    unprivilegedSetIsNoop: {v: true, src: "assumed:the rocm-smi behaviour measured on another AMD family; it is the tool's, not the board's"}
+  # The xGMI peer link. The receiver gate stays off in the repository.
+  transfer:
+    peerLinkGBps: {v: 64.0, src: "assumed:one xGMI link per GPU pair at 64 GB/s each way, not checked against mi300xds"}
+    receiverGate:
+      enabled: {v: false, src: "assumed:off in every repository profile"}
+      slowFraction: {v: 1.0, src: "assumed:neutral, no gate"}
+      midFraction: {v: 1.0, src: "assumed:neutral, no gate"}
+      midPairFraction: {v: 0.0, src: "assumed:neutral, no gate"}
+  # rocm-smi and amd-smi are Python scripts run through /usr/bin/env;
+  # fakesmi checks the interpreter chain, in this order, under HWEMU_ROOTFS.
+  tools:
+    - name: rocm-smi
+      variant: current
+      requires:
+        - paths: [/usr/bin/env]
+          exit: 127
+          src: "published:rocmsmi#line 1, #!/usr/bin/env python3; without /usr/bin/env exec fails with ENOENT, which a shell reports as exit 127 (assumed)"
+        - paths: [/usr/bin/python3, /usr/local/bin/python3]
+          exit: 127
+          stderr: "/usr/bin/env: 'python3': No such file or directory"
+          src: "assumed:GNU env exits 127 with this message when python3 is on no PATH directory; the directories searched are assumed"
+    - name: amd-smi
+      variant: "7.2"
+      requires:
+        - paths: [/usr/bin/env]
+          exit: 127
+          src: "published:amdsmicli#line 1, #!/usr/bin/env python3; without /usr/bin/env exec fails with ENOENT, which a shell reports as exit 127 (assumed)"
+        - paths: [/usr/bin/python3, /usr/local/bin/python3]
+          exit: 127
+          stderr: "/usr/bin/env: 'python3': No such file or directory"
+          src: "assumed:GNU env exits 127 with this message when python3 is on no PATH directory; the directories searched are assumed"
 physics:
   gpu:
     idleW: {v: 120, src: "assumed:placeholder"}
@@ -68,3 +135,9 @@ physics:
     memoryGamma: {v: 1.2, src: "assumed:simulator default SIM_GPU_MEMORY_GAMMA; throughput only"}
     capSettleTauMS: {v: 350, src: "assumed:no public settling data; simulator uses 350 only when CapApplyTauMS<=0 (updateNodeDynamicsWithModel)"}
     telemetryWindowMS: {v: 1000, src: "assumed:no public averaging window for power1_average"}
+    clockBeta: {v: 1.5, src: "assumed:dynamic power falls faster than the compute clock, as the voltage falls with it; to sweep from 1.0 to 2.5"}
+    memoryKneeFrac: {v: 0.65, src: "assumed:memory-bound work keeps its speed down to 0.65 of the maximum compute clock, between the 0.41 and 0.87 where published memory-bound clock sweeps stop being flat"}
+    memoryKneeGamma: {v: 1.0, src: "assumed:below the knee memory-bound work slows in proportion to the clock"}
+    dataPathHoldW: {v: 10.0, src: "assumed:no public idle cost of data-path clocks held at their maximum; to sweep from 1 to 50 W per GPU"}
+    gatingOffIdleW: {v: 20.0, src: "assumed:no public idle cost of deep sleep, ULV and GPO turned off under a profile level; to sweep from 5 to 50 W"}
+    dataPathGamma: {v: 0.3, src: "assumed:memory-bound work loses 0.3 of its speed with the data path at its lowest level"}

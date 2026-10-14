@@ -11,14 +11,16 @@ Visit the docs at [joulie-k8s.github.io/Joulie](https://joulie-k8s.github.io/Jou
 
 Joulie uses per-node digital twins to model your Kubernetes cluster's energy state in real time.
 It continuously ingests telemetry (CPU/GPU power draw via RAPL and NVML/DCGM,
-per-pod resource utilization via cAdvisor, and optional energy counters from
-[Kepler](https://github.com/sustainable-computing-io/kepler)) to maintain an
+read from Prometheus as the OpenTelemetry hardware metrics `hw.energy` and
+`hw.power` or as [Kepler](https://github.com/sustainable-computing-io/kepler)
+energy counters, and per-pod resource utilization via cAdvisor) to maintain an
 up-to-date model of every node's thermal and power state.
 
 These per-node digital twins drive two things:
 
 1. **Energy control**: the controller manager writes desired power state into `NodeTwin` CRs
-   (CPU and GPU power caps). The node agent reads `NodeTwin.spec` and enforces them.
+   (CPU and GPU power caps and, when enabled, governor presets). The node agent reads
+   `NodeTwin.spec` and enforces them.
 
 2. **Scheduling decisions**: a scheduler extender reads the twin's computed
    `NodeTwin.status` (power headroom, predicted cooling stress, power trend) to steer
@@ -52,7 +54,7 @@ Joulie has five components:
 
 | Component | What it does |
 |-----------|-------------|
-| **Agent** (`cmd/agent`) | Runs on every node. Discovers hardware (CPU/GPU caps, slicing modes). Enforces RAPL/NVML power caps. Publishes `NodeHardware` CR. Reads `NodeTwin.spec` for desired state. Writes control feedback to `NodeTwin.status.controlStatus`. |
+| **Agent** (`cmd/agent`) | Runs on every node. Discovers hardware (CPU/GPU caps, slicing modes). Enforces RAPL/NVML power caps. Applies governor presets when `GOVERNOR_WRITES=true`. Publishes `NodeHardware` CR. Reads `NodeTwin.spec` for desired state. Writes control feedback to `NodeTwin.status.controlStatus`. |
 | **Controller manager** (`cmd/controller-manager`) | Cluster-wide control loop. Reads `NodeHardware` + Prometheus metrics. Runs the digital twin model. Writes `NodeTwin` (spec = desired power state, status = twin output). |
 | **Scheduler extender** (`cmd/scheduler`) | HTTP extender for kube-scheduler. Reads `NodeTwin.status` (30s TTL cache). Rejects eco nodes for performance pods. Scores nodes by projected power headroom, cooling stress and power trend. |
 | **kubectl plugin** (`cmd/kubectl-joulie`) | `kubectl joulie status` for cluster energy overview. |
@@ -62,8 +64,8 @@ Joulie has five components:
 
 | CRD | Owner | Purpose |
 |-----|-------|---------|
-| `NodeHardware` | Agent | Hardware facts: CPU/GPU model, cap ranges, frequency landmarks, GPU slicing modes |
-| `NodeTwin` | Controller manager | Desired state (spec: power cap %) + twin output (status: headroom, cooling stress, PSU stress, estimated PUE, control feedback) |
+| `NodeHardware` | Agent | Hardware facts: CPU/GPU model, cap ranges, frequency landmarks, GPU slicing modes, governor state and the governor presets the node accepts |
+| `NodeTwin` | Controller manager | Desired state (spec: power cap %, governor presets) + twin output (status: headroom, cooling stress, PSU stress, estimated PUE, control feedback) |
 
 ## Workload classes
 
@@ -100,12 +102,15 @@ pkg/controller/fsm/     Node state machine (downgrade guards, pod classification
 pkg/controller/twin/    Digital twin model (power headroom, cooling stress, PSU stress)
 pkg/hwinv/              Hardware catalog: fills the facts a node cannot report about itself
 pkg/kube/               Scheme, caches and manager wiring shared by the components
+pkg/otel/semconv/       The OpenTelemetry names Joulie writes and reads, each spelled once
+pkg/otel/promname/      Prometheus spelling of those names under each OTLP translation strategy
+pkg/otel/otlpjson/      OTLP JSON encoding, decoding and HTTP export, with no OpenTelemetry SDK
 pkg/scheduler/          Marginal power estimation for a pod on a node
 simulator/              Workload and power simulator for offline experiments
 charts/joulie/          Helm chart (includes Grafana dashboard)
 config/crd/             Generated CRD manifests
-scripts/                Helper scripts: fixture capture, chart render matrix, KWOK scale run
-tests/                  Contract, envtest and integration suites
+scripts/                Helper scripts: fixture capture, chart render matrix, KWOK scale run, simulated cluster (simcluster/)
+tests/                  Contract, envtest and integration suites; simulated cluster specs and end-to-end test (simcluster/)
 ci/                     Dagger pipeline that runs the integration suite
 values/                 Helm values files used by the docs and the experiments
 experiments/            Benchmark experiments
@@ -113,6 +118,7 @@ experiments/            Benchmark experiments
   02-heterogeneous-benchmark/
   03-homogeneous-h100-benchmark/
   04-scoring-formula-validation/
+  05-governor-exploration/
 examples/               Runnable examples
 website/                Documentation site
 ```
@@ -122,6 +128,14 @@ earlier implementation that nothing imports; do not change it expecting a node t
 
 ## Quick start
 
+Prerequisite: the chart reads node power from Prometheus (`NODE_POWER_SOURCE: "prometheus"` in
+`charts/joulie/values.yaml`). It expects Prometheus at `http://prometheus-operated.monitoring:9090`
+with its OTLP receiver on (`--web.enable-otlp-receiver`), receiving `hw.energy` or `hw.power` for
+every node. `values/prometheus-grafana.yaml` configures kube-prometheus-stack that way, and
+`examples/11-otel-collector-bridge` converts Kepler, dcgm-exporter and AMD exporter series.
+Without that data every node reads 0 W, with source `prometheus-no-data`; to run without
+Prometheus, set `controllerManager.env.NODE_POWER_SOURCE=static`.
+
 ```bash
 # Install the released chart (it carries the CRDs)
 helm upgrade --install joulie oci://registry.cern.ch/joulie/joulie \
@@ -130,6 +144,9 @@ helm upgrade --install joulie oci://registry.cern.ch/joulie/joulie \
 # From a checkout instead
 helm upgrade --install joulie charts/joulie \
   -n joulie-system --create-namespace -f values/joulie.yaml
+
+# Upgrading: helm never updates CRDs, so apply them before the upgrade
+kubectl apply -f charts/joulie/crds/
 
 # Joulie only touches nodes that opt in, so label them
 kubectl label node <node> joulie.io/managed=true
@@ -144,6 +161,9 @@ See the [docs](https://joulie-k8s.github.io/Joulie/) for full setup instructions
 ## Run the experiments
 
 ```bash
+# Joulie on emulated bare-metal nodes, on one machine with Docker (simulated cluster smoke run)
+make simcluster-smoke
+
 # CPU-only benchmark (KWOK cluster)
 experiments/01-cpu-only-benchmark/scripts/05_sweep.py --config experiments/01-cpu-only-benchmark/configs/benchmark-debug.yaml
 
@@ -152,4 +172,8 @@ experiments/02-heterogeneous-benchmark/scripts/05_sweep.py --config experiments/
 
 # Homogeneous H100 benchmark (KWOK cluster)
 experiments/03-homogeneous-h100-benchmark/scripts/05_sweep.py --config experiments/03-homogeneous-h100-benchmark/configs/benchmark-debug.yaml
+
+# Governor exploration: offline sweep on emulated nodes, then one arm on a simulated cluster
+experiments/05-governor-exploration/scripts/run_tier_a.sh
+SIMCLUSTER_NAME=joulie-sim-gov experiments/05-governor-exploration/scripts/run_tier_b.sh all
 ```

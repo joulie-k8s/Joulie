@@ -96,6 +96,18 @@ type NodeHardware struct {
 	CPUControlAvailable bool
 	GPUControlAvailable bool
 	Warnings            []string
+	// CPUGovernorPresets and GPUGovernorPresets are the governor presets the
+	// agent found the node accepts (status.{cpu,gpu}.governor.presets); the
+	// controller manager writes no other. CPUBoostAvailable is true when the
+	// agent found a boost control (status.cpu.governor.boost).
+	CPUGovernorPresets []string
+	GPUGovernorPresets []string
+	CPUBoostAvailable  bool
+	// GPUGovernorGap is true when status.gpu.governor holds a baseline and
+	// no mechanism: the agent kept the baseline through a discovery a tool
+	// did not answer, so the block lists no presets without the node having
+	// lost any.
+	GPUGovernorGap bool
 }
 
 var (
@@ -136,6 +148,13 @@ var (
 	}, []string{"family"})
 )
 
+// defaultGPUProductLabelKeys are the node labels GPU_PRODUCT_LABEL_KEYS reads
+// by default, first match wins. The AMD node labeller names the board in
+// gpu.product-name (under both of its prefixes); amd.com/gpu.product is the
+// older key, and the family code (GC_11_0_0, AI), read last, names no board.
+const defaultGPUProductLabelKeys = "joulie.io/gpu.product,nvidia.com/gpu.product," +
+	"amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,amd.com/gpu.family"
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[joulie-controller-manager] ")
@@ -161,10 +180,7 @@ func main() {
 	gpuEcoCapPct := floatEnv("GPU_ECO_CAP_PCT_OF_MAX", 60)
 	gpuWriteAbsolute := boolEnv("GPU_WRITE_ABSOLUTE_CAPS", false)
 	gpuModelCaps := parseGPUModelCaps(envOrDefault("GPU_MODEL_CAPS_JSON", "{}"))
-	gpuProductLabelKeys := parseCSVList(envOrDefault(
-		"GPU_PRODUCT_LABEL_KEYS",
-		"joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product,amd.com/gpu.family",
-	))
+	gpuProductLabelKeys := parseCSVList(envOrDefault("GPU_PRODUCT_LABEL_KEYS", defaultGPUProductLabelKeys))
 	hardwareCatalog := loadHardwareCatalog()
 	twinHardwareCatalog = hardwareCatalog // share with fetchNodeHardware in twinstate.go
 
@@ -213,30 +229,18 @@ func main() {
 		log.Fatalf("index pods by node: %v", err)
 	}
 
-	// --- Node power source (per-node telemetry) ---
-	nodePowerSource = strings.ToLower(envOrDeprecated("NODE_POWER_SOURCE", "static"))
-	nodePowerHTTPEndpoint = envOrDeprecated("NODE_POWER_HTTP_ENDPOINT", "")
-	nodePowerPromAddress = envOrDeprecated("NODE_POWER_PROMETHEUS_ADDRESS", "")
-	nodePowerPromQuery = envOrDeprecated("NODE_POWER_PROMETHEUS_QUERY", "")
-	switch nodePowerSource {
-	case "http":
-		log.Printf("node power source: http endpoint=%s", nodePowerHTTPEndpoint)
-	case "prometheus":
-		log.Printf("node power source: prometheus address=%s query=%s", nodePowerPromAddress, nodePowerPromQuery)
-	default:
-		log.Printf("node power source: static (no measured power)")
+	// --- Measured inputs: node power and facility metrics ---
+	inputCfg, err := loadInputConfig()
+	if err != nil {
+		log.Fatalf("invalid input configuration: %v", err)
 	}
-
-	// --- Facility metrics (data-center level) ---
+	inputCfg.install()
+	inputCfg.logSummary()
+	governorCfg := loadGovernorConfig()
+	governorCfg.install()
+	governorCfg.logSummary()
 	fm := &facilityMetrics{}
-	facCfg := facilityConfig{
-		enabled:            boolEnv("ENABLE_FACILITY_METRICS", false),
-		prometheusAddress:  envOrDefault("FACILITY_PROMETHEUS_ADDRESS", "http://prometheus-operated.monitoring:9090"),
-		pollInterval:       durationEnv("FACILITY_POLL_INTERVAL", 30*time.Second),
-		ambientTempMetric:  envOrDefault("FACILITY_AMBIENT_TEMP_METRIC", "datacenter_ambient_temperature_celsius"),
-		itPowerMetric:      envOrDefault("FACILITY_IT_POWER_METRIC", "datacenter_total_it_power_watts"),
-		coolingPowerMetric: envOrDefault("FACILITY_COOLING_POWER_METRIC", "datacenter_cooling_power_watts"),
-	}
+	facCfg := inputCfg.facility
 	// Both loops are manager runnables: they start once the cache has synced
 	// and, with LEADER_ELECT, only on the leader.
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
@@ -284,12 +288,13 @@ func reconcileLoop(ctx context.Context, interval time.Duration, run func(context
 }
 
 // registerMetrics registers every policy metric, current and deprecated name,
-// with reg.
+// and every input metric with reg.
 func registerMetrics(reg prometheus.Registerer) {
 	reg.MustRegister(policyNodeState.collectors()...)
 	reg.MustRegister(policyNodeProfileLabel.collectors()...)
 	reg.MustRegister(policyStateTransitions.collectors()...)
 	reg.MustRegister(policyFamilyNodes, policyFamilyPerformanceNodes)
+	reg.MustRegister(inputMetricCollectors()...)
 }
 
 func startMetricsServer(addr string) {
@@ -419,18 +424,11 @@ func reconcileWithCatalog(
 	// runs performance pods, which keep performance caps until they finish
 	// (fsm.StateDrainingPerformance). Only the label and the scheduler see eco.
 	applyDowngradeGuards(ctx, reader, plan, nodesByName)
+	govCfg := currentGovernorConfig()
 	for i := range plan {
 		capProfile := plan[i].Profile
 		if plan[i].Draining {
 			capProfile = profilePerformance
-		}
-		// The policy set CapWatts from the planned profile; reset it from the
-		// profile the node runs at, which the spec writes whenever no percent
-		// cap is set (GPU nodes, and the absolute path below when it cannot
-		// resolve the hardware).
-		plan[i].CapWatts = ecoCap
-		if capProfile == profilePerformance {
-			plan[i].CapWatts = perfCap
 		}
 		// Skip CPU cap on GPU nodes: CPU is ~6% of GPU node power; capping it
 		// saves ~1.2% but slows GPU data feed by ~4.5%, costing 3.8x more energy
@@ -438,6 +436,16 @@ func reconcileWithCatalog(
 		hasGPU := false
 		if n := nodeObjs[plan[i].NodeName]; n != nil {
 			hasGPU = discoverGPUCount(*n) > 0
+		}
+		// The policy set CapWatts from the planned profile; reset it from the
+		// profile the node runs at. The spec writes it whenever no percent cap
+		// is set: on GPU nodes, and on the absolute path below when it cannot
+		// resolve the hardware. A GPU node's CPU gets the performance cap
+		// whatever its profile, so an eco GPU node is not CPU capped at
+		// ECO_CAP_WATTS, and a CPU an earlier release capped there is lifted.
+		plan[i].CapWatts = ecoCap
+		if capProfile == profilePerformance || hasGPU {
+			plan[i].CapWatts = perfCap
 		}
 		if !hasGPU {
 			if cpuWriteAbsolute {
@@ -467,11 +475,25 @@ func reconcileWithCatalog(
 				warnNoGPUIntentOnce(plan[i].NodeName, capProfile, reason)
 			}
 		}
+		// The governors follow the profile the node runs at, like the caps.
+		gpuProduct := ""
+		if n := nodeObjs[plan[i].NodeName]; n != nil {
+			gpuProduct = resolveGPUProduct(n.Labels, gpuProductLabelKeys)
+		}
+		plan[i].CPUGovernor, plan[i].GPUGovernor = govCfg.governorIntents(
+			plan[i].NodeName, capProfile, hasGPU, nodeHardwareByName[plan[i].NodeName], gpuProduct)
 	}
 	recordFamilySplit(plan, nodeHardwareByName)
 
+	// Every node of this reconcile reads one answer to the grouped node
+	// power query, and the same facility snapshot.
+	ctx = withNodePowerRound(ctx)
+	facility := currentTwinFacility()
+
 	// Build per-rack estimated power for topology-aware PSU stress.
 	// Sum each node's estimated power (CPU + GPU at current cap %) per rack.
+	// A rack the facility input measures uses its reading instead
+	// (nodeTopologyFor).
 	rackPowerEstimates := make(map[string]float64)
 	nodeRack := make(map[string]string)
 	nodeZone := make(map[string]string)
@@ -511,16 +533,7 @@ func reconcileWithCatalog(
 		if a.GPU != nil && a.GPU.CapPctOfMax != nil {
 			gpuPct = *a.GPU.CapPctOfMax
 		}
-		var topo *nodeTopology
-		rack := nodeRack[a.NodeName]
-		zone := nodeZone[a.NodeName]
-		if rack != "" || zone != "" {
-			topo = &nodeTopology{
-				rack:            rack,
-				coolingZone:     zone,
-				rackTotalPowerW: rackPowerEstimates[rack],
-			}
-		}
+		topo := nodeTopologyFor(a.NodeName, nodeRack[a.NodeName], nodeZone[a.NodeName], rackPowerEstimates, facility)
 		if err := reconcileNodeTwin(ctx, reader, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo); err != nil {
 			log.Printf("warning: reconcileNodeTwin %s: %v", a.NodeName, err)
 		}
@@ -534,8 +547,8 @@ func reconcileWithCatalog(
 }
 
 // reconcileWithCatalogAndFacility wraps reconcileWithCatalog and passes facility metrics
-// to the twin computation via reconcileNodeTwin. This enables PUE estimation from
-// real data-center metrics (ambient temperature, IT power, cooling power).
+// to the twin computation via reconcileNodeTwin: the outdoor, cooling zone and node
+// inlet temperatures for cooling stress, and the IT and rack power for PSU stress.
 func reconcileWithCatalogAndFacility(
 	ctx context.Context,
 	reader kube.Reader,
@@ -564,11 +577,10 @@ func reconcileWithCatalogAndFacility(
 	hardwareCatalog *hwinv.Catalog,
 	fm *facilityMetrics,
 ) error {
-	// Store facility metrics in package-level vars for use by reconcileNodeTwin.
+	// The reconcile reads this snapshot, not fm, so a poll that lands
+	// mid-reconcile cannot give two nodes different readings.
 	if fm != nil {
-		ambientC, itPowerW, _ := fm.get()
-		facilityAmbientTempC = ambientC
-		facilityClusterPowerW = itPowerW
+		setTwinFacility(fm.snapshot())
 	}
 	return reconcileWithCatalog(
 		ctx, reader, kubeClient, dyn, selector, reservedLabel, profileLabel, interval,
@@ -577,13 +589,6 @@ func reconcileWithCatalogAndFacility(
 		gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, hardwareCatalog,
 	)
 }
-
-// facilityAmbientTempC and facilityClusterPowerW are set by reconcileWithCatalogAndFacility
-// and read by reconcileNodeTwin to pass to the twin computation.
-var (
-	facilityAmbientTempC  float64
-	facilityClusterPowerW float64
-)
 
 // Delegate to fsm package.
 var (
@@ -1032,6 +1037,10 @@ func parseNodeHardware(obj *v1alpha1.NodeHardware) NodeHardware {
 			nh.CPUCapKnown = true
 		}
 		nh.CPUControlAvailable = cpu.ControlAvailable
+		if g := cpu.Governor; g != nil {
+			nh.CPUGovernorPresets = governorPresetNames(g.Presets)
+			nh.CPUBoostAvailable = g.Boost != nil
+		}
 	}
 	if gpu := obj.Status.GPU; gpu != nil {
 		nh.GPUModel = gpu.Model
@@ -1043,11 +1052,26 @@ func parseNodeHardware(obj *v1alpha1.NodeHardware) NodeHardware {
 			nh.GPUCapKnown = true
 		}
 		nh.GPUControlAvailable = gpu.ControlAvailable
+		if g := gpu.Governor; g != nil {
+			nh.GPUGovernorPresets = governorPresetNames(g.Presets)
+			nh.GPUGovernorGap = g.Mechanism == "" && g.Baseline != nil
+		}
 	}
 	if q := obj.Status.Quality; q != nil {
 		nh.Warnings = append(nh.Warnings, q.Warnings...)
 	}
 	return nh
+}
+
+// governorPresetNames lists the presets of a NodeHardware presets list.
+func governorPresetNames(presets []v1alpha1.GovernorPresetSupport) []string {
+	out := make([]string, 0, len(presets))
+	for _, p := range presets {
+		if p.Preset != "" {
+			out = append(out, p.Preset)
+		}
+	}
+	return out
 }
 
 func nodeHardwareFromLabels(node corev1.Node, catalog *hwinv.Catalog, gpuProductLabelKeys []string) NodeHardware {
@@ -1194,9 +1218,28 @@ func intEnv(key string, def int) int {
 	return def
 }
 
+// boolEnvWords are the spellings a boolean variable takes, in any case.
+var boolEnvWords = map[string]bool{
+	"true": true, "1": true, "yes": true, "on": true,
+	"false": false, "0": false, "no": false, "off": false,
+}
+
+// boolEnvWarned holds the values already warned about, by variable.
+var boolEnvWarned sync.Map
+
+// boolEnv reads a boolean variable: true, 1, yes or on, false, 0, no or off,
+// in any case. Unset or empty gives def; any other value gives def with one
+// warning naming the variable, so a typo never flips a switch.
 func boolEnv(key string, def bool) bool {
-	if s := strings.TrimSpace(os.Getenv(key)); s != "" {
-		return strings.EqualFold(s, "true") || s == "1" || strings.EqualFold(s, "yes")
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	if v, ok := boolEnvWords[strings.ToLower(raw)]; ok {
+		return v
+	}
+	if _, seen := boolEnvWarned.LoadOrStore(key+"="+raw, true); !seen {
+		log.Printf("warning: %s=%q is not true, 1, yes, on, false, 0, no or off; using %t", key, raw, def)
 	}
 	return def
 }

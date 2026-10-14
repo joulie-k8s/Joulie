@@ -2,39 +2,31 @@
 title: "Simulator"
 linkTitle: "Simulator"
 weight: 30
+aliases:
+  - "/docs/simulator/model-changes/"
 ---
 
-The Joulie simulator lets you evaluate energy management policies without physical hardware. It provides a controlled, reproducible environment for benchmarking power savings and scheduling strategies.
+The Joulie simulator lets you evaluate energy management policies without the hardware they manage. Kubernetes scheduling and the Joulie components stay real; the simulator provides the hardware, its telemetry and the progress of the workload.
 
-The simulator keeps scheduling behavior real while simulating telemetry, control dynamics, and workload progression.
+The real controller manager plans, the real scheduler extender scores, and the real agent caps, in one of two ways:
 
-The simulator mirrors the real Joulie architecture. The controller manager, agent, and scheduler extender are the real components running against simulated hardware:
-- the real controller manager computes desired state (`NodeTwin.spec`, `NodeTwin.status`),
-- the real agent (pool mode) realizes caps via HTTP against the simulator,
-- the real scheduler extender reads `NodeTwin.status` and applies workload-class-aware scoring,
-- workloads carry trace-defined fields (criticality, cap sensitivity),
-- facility stress model (`simulator/pkg/facility`) provides PSU and cooling stress signals.
+- **Emulated agents** read emulated `/sys` files and GPU tools, one agent per node, as on bare metal. This is [emulate mode]({{< relref "/docs/simulator/emulate-mode.md" >}}), which the [simulated cluster]({{< relref "/docs/simulator/simulated-cluster.md" >}}) runs on one machine with Docker.
+- **The agent in pool mode** reads telemetry from and sends caps to the simulator's HTTP API, for many [KWOK](https://kwok.sigs.k8s.io/) nodes at once. This is [KWOK mode]({{< relref "/docs/simulator/simulator.md" >}}), which the benchmark experiments run.
 
-The heterogeneous benchmark (`experiments/02-heterogeneous-benchmark/`) demonstrates the full architecture across three baselines: no Joulie, static partition, and queue-aware policy with scheduler extender steering.
-
-Use simulator docs after you are familiar with the core controller manager/agent control loop in Getting Started + Architecture.
+Read the [Getting Started]({{< relref "/docs/getting-started/_index.md" >}}) pages first: the simulator pages assume the controller manager and agent loop.
 
 ## Read in this order
 
-1. [Installation]({{< relref "/docs/simulator/installation.md" >}}) -- deploy the simulator stack locally or in CI
-2. [Workload and Power Simulator]({{< relref "/docs/simulator/simulator.md" >}}) -- architecture overview and how simulated components interact
-3. [Workload Generation]({{< relref "/docs/simulator/workload-generation.md" >}}) -- trace-driven job creation and replay
-4. [Workload Distributions]({{< relref "/docs/simulator/workload-distributions.md" >}}) -- arrival rates, duration profiles, resource demand curves
-5. [Kubernetes AI Workloads]({{< relref "/docs/simulator/kubernetes-ai-workloads.md" >}}) -- GPU-heavy training and inference workload models
-6. [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}}) -- per-pod lifecycle simulation and utilization dynamics
-7. [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}}) -- node-level power draw and thermal response modeling
-8. [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) -- CPU/GPU power curves used by the simulator
-9. [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}}) -- Prometheus metrics exported by simulated nodes
+1. [Simulated Cluster]({{< relref "/docs/simulator/simulated-cluster.md" >}}): Joulie on emulated nodes, on one machine with Docker
+2. [Workload Scenarios]({{< relref "/docs/simulator/scenarios.md" >}}): run a workload on the simulated cluster and check placement, slowdown and energy
+3. [Installation]({{< relref "/docs/simulator/installation.md" >}}): install the simulator into your own cluster, or run it from a workstation
+4. [Emulate Mode]({{< relref "/docs/simulator/emulate-mode.md" >}}): node trees, governors, hardware profiles, the cluster spec
+5. [KWOK and Standalone Modes]({{< relref "/docs/simulator/simulator.md" >}}): label-modelled nodes, the facility model and the HTTP API
+6. [Workload Generation]({{< relref "/docs/simulator/workload-generation.md" >}}): synthetic AI workload traces
+7. [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}}): how a trace runs and how caps slow it
+8. [Power Simulator]({{< relref "/docs/simulator/power-simulator.md" >}}): how a modelled node's power, caps and temperature advance
+9. [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}): the CPU and GPU power models and their sources
+10. [Hardware Calibration]({{< relref "/docs/simulator/calibration.md" >}}): fit a hardware profile to a sweep measured on your node
+11. [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}}): every metric and event the simulator emits
 
-## Simulator architecture diagram
-
-<img src='{{< relURL "images/joulie-arch-simulator.png" >}}' alt="Joulie simulator architecture overview">
-
-See detailed explanation in:
-
-- [Workload and Power Simulator]({{< relref "/docs/simulator/simulator.md" >}})
+Comparing with results of an older simulator: [`simulator/CHANGES.md`](https://github.com/joulie-k8s/Joulie/blob/main/simulator/CHANGES.md) lists every change that moved the numbers of modelled nodes, and how far.

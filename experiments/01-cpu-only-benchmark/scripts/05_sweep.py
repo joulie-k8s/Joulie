@@ -117,6 +117,8 @@ def generate_canonical_seed_trace(
         "go",
         "run",
         "./simulator/cmd/workloadgen",
+        "--schema-version",
+        "v2",
         "--jobs",
         str(jobs),
         "--seed",
@@ -592,12 +594,10 @@ def main():
     install_env_base["SIM_FACILITY_AMBIENT_AMPLITUDE_C"] = str(get_cfg(cfg, "simulator", "facility_ambient_amplitude_c", default=8.0))
     install_env_base["SIM_FACILITY_AMBIENT_PERIOD_SEC"] = str(get_cfg(cfg, "simulator", "facility_ambient_period_sec", default=600))
     install_env_base["ENABLE_FACILITY_METRICS"] = str(get_cfg(cfg, "operator", "enable_facility_metrics", default=False)).lower()
-    # GENERATED_CLASSES/CATALOG: prefer env vars already set by 30_run_overnight.sh, fall back to generated/ dir
+    # GENERATED_CLASSES: prefer the env var already set by 30_run_overnight.sh, fall back to generated/ dir.
+    # No catalog is passed: the simulator reads the hardware catalog embedded in it.
     install_env_base["GENERATED_CLASSES"] = os.environ.get(
         "GENERATED_CLASSES", "experiments/01-cpu-only-benchmark/generated/10-node-classes.yaml"
-    )
-    install_env_base["GENERATED_CATALOG"] = os.environ.get(
-        "GENERATED_CATALOG", "experiments/01-cpu-only-benchmark/generated/hardware.generated.yaml"
     )
 
     log(

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -51,9 +52,10 @@ func renderCorpusMachines(t testing.TB) []string {
 // the capture: cpuinfo is byte-identical; every captured powercap file reads
 // the same through class/powercap, the captured energy_uj included, and no
 // zone gains or loses a file; writeRejectingZones reject writes with EISDIR;
-// the cpufreq driver reads back from policy0; dev/nvidiactl exists exactly
-// when nvidia-smi.txt does; the NVML state holds the captured values; and
-// the Node carries the captured labels and allocatable.
+// the cpufreq driver reads back from policy0; the captured governor state
+// reads back byte for byte (renderCheckCorpusGovernor); dev/nvidiactl exists
+// exactly when nvidia-smi.txt does; the NVML state holds the captured values;
+// and the Node carries the captured labels and allocatable.
 func TestH21FromCorpusReplaysEveryMachine(t *testing.T) {
 	t.Parallel()
 	for _, machine := range renderCorpusMachines(t) {
@@ -78,17 +80,20 @@ func TestH21FromCorpusReplaysEveryMachine(t *testing.T) {
 				t.Errorf("cpuinfo differs from the capture")
 			}
 
-			renderCheckCorpusPowercap(t, dir, tree, meta.WriteRejectingZones)
+			renderCheckCorpusPowercap(t, dir, p, tree, meta.WriteRejectingZones)
 
 			driver, err := os.ReadFile(filepath.Join(dir, "cpufreq-driver"))
 			policy0 := filepath.Join(tree.SysRoot, layout.PolicyDir(0), "scaling_driver")
+			_, govErr := os.Stat(filepath.Join(dir, renderCorpusGovernorDir, "cpufreq"))
 			if err == nil {
 				if got, _ := os.ReadFile(policy0); string(got) != string(driver) {
 					t.Errorf("policy0/scaling_driver = %q, want the captured %q", got, driver)
 				}
-				if m, _ := filepath.Glob(filepath.Join(tree.SysRoot, "devices/system/cpu/cpu*/cpufreq/scaling_max_freq")); len(m) != 0 {
+				m, _ := filepath.Glob(filepath.Join(tree.SysRoot, "devices/system/cpu/cpu*/cpufreq/scaling_max_freq"))
+				if govErr != nil && len(m) != 0 {
 					t.Errorf("a driver-only capture renders scaling_max_freq, which the agent would write")
 				}
+				renderCheckCorpusGovernor(t, dir, tree, p)
 			} else if _, err := os.Stat(filepath.Join(tree.SysRoot, "devices/system/cpu/cpufreq")); err == nil {
 				t.Errorf("no cpufreq-driver captured, but cpufreq is rendered")
 			}
@@ -134,8 +139,10 @@ func TestH21FromCorpusReplaysEveryMachine(t *testing.T) {
 }
 
 // renderCheckCorpusPowercap compares the capture's flat powercap tree with
-// the rendered class/powercap view of it.
-func renderCheckCorpusPowercap(t *testing.T, dir string, tree *Tree, rejecting []string) {
+// the rendered class/powercap view of it, tree rendered from p. The limit of
+// a zone the capture lists as rejecting writes is a file the Node refuses
+// writes to.
+func renderCheckCorpusPowercap(t *testing.T, dir string, p *Profile, tree *Tree, rejecting []string) {
 	t.Helper()
 	captured := filepath.Join(dir, "powercap")
 	zones, err := os.ReadDir(captured)
@@ -163,7 +170,11 @@ func renderCheckCorpusPowercap(t *testing.T, dir string, tree *Tree, rejecting [
 			capturedFiles[f.Name()] = true
 			got := filepath.Join(class, z.Name(), f.Name())
 			if rejects[z.Name()] && f.Name() == "constraint_0_power_limit_uw" {
-				if !renderIsEISDIR(got) {
+				rel, err := filepath.Rel(tree.Root, got)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !renderRefusesWrites(t, p, tree, filepath.ToSlash(rel)) {
 					t.Errorf("%s/%s accepts writes; machine.yaml lists the zone as rejecting", z.Name(), f.Name())
 				}
 				continue
@@ -186,6 +197,319 @@ func renderCheckCorpusPowercap(t *testing.T, dir string, tree *Tree, rejecting [
 			}
 		}
 	}
+}
+
+// renderCheckCorpusGovernor compares the captured governor state with the
+// rendered tree, byte for byte: every attribute of every captured policy,
+// the status file of a driver with modes, and the boost file where the
+// driver keeps boost. A boost file the driver does not use is left out, as
+// the agent leaves it out (cpuBoostScope in cmd/agent).
+func renderCheckCorpusGovernor(t *testing.T, dir string, tree *Tree, p *Profile) {
+	t.Helper()
+	root := filepath.Join(dir, renderCorpusGovernorDir)
+	if _, err := os.Stat(filepath.Join(root, "cpufreq")); err != nil {
+		return
+	}
+	f := p.CPUFreq
+	if f == nil || f.Minimal {
+		t.Fatalf("governor/cpufreq is captured, but the profile's cpufreq is %+v", f)
+	}
+	driver := f.Driver.V
+	compared := 0
+	_ = filepath.WalkDir(root, func(fp string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(root, fp)
+		rel = filepath.ToSlash(rel)
+		var sys string
+		switch dirName, name := path.Split(rel); {
+		case strings.HasPrefix(rel, "cpufreq/policy"):
+			if name == "boost" && f.BoostScope.V != cpuGovBoostPerCPU {
+				return nil
+			}
+			id, err := strconv.Atoi(strings.TrimPrefix(path.Base(dirName), "policy"))
+			if err != nil {
+				t.Fatalf("governor/%s: %v", rel, err)
+			}
+			sys = path.Join(layout.PolicyDir(id), name)
+		case rel == "cpufreq/boost":
+			if f.BoostScope.V != cpuGovBoostGlobal {
+				return nil
+			}
+			sys = path.Join(path.Dir(layout.PolicyDir(0)), "boost")
+		case strings.HasPrefix(rel, "intel_pstate/"):
+			if !cpuGovIntel(driver) || name == "no_turbo" && f.BoostScope.V != cpuGovBoostNoTurbo {
+				return nil
+			}
+			sys = path.Join(layout.IntelPstateDir(), name)
+		case rel == "amd_pstate/status":
+			if !strings.HasPrefix(driver, "amd-pstate") {
+				return nil
+			}
+			sys = path.Join(layout.AMDPstateDir(), name)
+		default:
+			return nil // cpuidle, amdgpu and the NVIDIA clocks are not mapped
+		}
+		want, err := os.ReadFile(fp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := os.ReadFile(filepath.Join(tree.SysRoot, filepath.FromSlash(sys))); err != nil || string(got) != string(want) {
+			t.Errorf("%s = %q (%v), want the captured governor/%s %q", sys, got, err, rel, want)
+		}
+		compared++
+		return nil
+	})
+	if compared == 0 {
+		t.Errorf("governor/cpufreq is captured, but no governor file was compared")
+	}
+}
+
+// renderCorpusTestMachine writes a capture into a temporary directory named
+// test-machine and returns it.
+func renderCorpusTestMachine(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "test-machine")
+	for name, body := range files {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// renderCorpusGovernorCapture is a two CPU capture of one driver: the
+// cpuinfo with flags, and both policies in the same governor state, which
+// policy holds as attribute files.
+func renderCorpusGovernorCapture(driver, flags string, policy map[string]string, global map[string]string) map[string]string {
+	block := func(id int) string {
+		return fmt.Sprintf("processor\t: %d\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 143\nmodel name\t: Neutral Test CPU\n"+
+			"stepping\t: 8\nphysical id\t: 0\nsiblings\t: 2\ncore id\t\t: %d\ncpu cores\t: 2\nflags\t\t: %s\n\n", id, id, flags)
+	}
+	files := map[string]string{
+		"machine.yaml":     "description: test machine\nallocatable:\n  cpu: \"2\"\n  memory: 1024Ki\nwriteRejectingZones: []\n",
+		"cpuinfo":          block(0) + block(1),
+		"node-labels.json": "{}",
+		"cpufreq-driver":   driver + "\n",
+	}
+	for _, pol := range []string{"policy0", "policy1"} {
+		for name, body := range policy {
+			files["governor/cpufreq/"+pol+"/"+name] = body
+		}
+	}
+	for name, body := range global {
+		files["governor/"+name] = body
+	}
+	return files
+}
+
+// GF02: FromCorpus renders the captured governor state instead of the
+// scaling driver only: the governor, the available governors, the
+// energy-performance preference pair, the boost state where the driver keeps
+// it and the driver mode reach the profile's facts, and the rendered tree
+// reads them back byte for byte. Under performance amd-pstate-epp renders the
+// forced preference the capture shows.
+func TestGF02FromCorpusRendersGovernorAndEPP(t *testing.T) {
+	t.Parallel()
+	freq := map[string]string{"cpuinfo_min_freq": "400000\n", "cpuinfo_max_freq": "1500000\n"}
+	with := func(m map[string]string, kv ...string) map[string]string {
+		out := map[string]string{}
+		for k, v := range freq {
+			out[k] = v
+		}
+		for k, v := range m {
+			out[k] = v
+		}
+		for i := 0; i+1 < len(kv); i += 2 {
+			out[kv[i]] = kv[i+1]
+		}
+		return out
+	}
+	const prefs = "default performance balance_performance balance_power power \n"
+	cases := []struct {
+		name          string
+		files         map[string]string
+		governor, epp string
+		boost         int
+		scope, mode   string
+		hwp           bool
+	}{
+		{
+			name: "amd-pstate-epp powersave",
+			files: renderCorpusGovernorCapture("amd-pstate-epp", "fpu cppc", with(nil,
+				"scaling_governor", "powersave\n", "scaling_available_governors", "performance powersave\n",
+				"energy_performance_preference", "balance_power\n", "energy_performance_available_preferences", prefs,
+				"boost", "0\n"), map[string]string{"amd_pstate/status": "active\n"}),
+			governor: "powersave", epp: "balance_power", boost: 0, scope: cpuGovBoostPerCPU, mode: "active",
+		},
+		{
+			name: "amd-pstate-epp performance",
+			files: renderCorpusGovernorCapture("amd-pstate-epp", "fpu cppc", with(nil,
+				"scaling_governor", "performance\n", "scaling_available_governors", "performance powersave\n",
+				"energy_performance_preference", "performance\n", "energy_performance_available_preferences", "performance\n",
+				"boost", "1\n"), map[string]string{"amd_pstate/status": "active\n"}),
+			governor: "performance", boost: 1, scope: cpuGovBoostPerCPU, mode: "active",
+		},
+		{
+			name: "intel_cpufreq schedutil with HWP",
+			files: renderCorpusGovernorCapture("intel_cpufreq", "fpu hwp hwp_epp", with(nil,
+				"scaling_governor", "schedutil\n", "scaling_available_governors", "conservative ondemand userspace powersave performance schedutil \n",
+				"energy_performance_preference", "balance_performance\n", "energy_performance_available_preferences", prefs),
+				map[string]string{"intel_pstate/status": "passive\n", "intel_pstate/no_turbo": "1\n"}),
+			governor: "schedutil", epp: "balance_performance", boost: 0, scope: cpuGovBoostNoTurbo, mode: "passive", hwp: true,
+		},
+		{
+			name: "acpi-cpufreq with the global boost",
+			files: renderCorpusGovernorCapture("acpi-cpufreq", "fpu", with(nil,
+				"scaling_governor", "ondemand\n", "scaling_available_governors", "conservative ondemand userspace powersave performance schedutil \n"),
+				map[string]string{"cpufreq/boost": "1\n"}),
+			governor: "ondemand", boost: 1, scope: cpuGovBoostGlobal,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := renderCorpusTestMachine(t, tc.files)
+			p, err := FromCorpus(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := p.CPUFreq
+			if f.Minimal || f.Governor.V != tc.governor || f.Boost.V != tc.boost || f.BoostScope.V != tc.scope ||
+				f.DriverMode.V != tc.mode || f.HWP.V != tc.hwp || f.CPUInfoMinKHz.V != 400000 || f.CPUInfoMaxKHz.V != 1500000 {
+				t.Errorf("cpufreq = %+v, want governor %s, boost %d in %s, mode %q, hwp %v, 400000 to 1500000 kHz",
+					f, tc.governor, tc.boost, tc.scope, tc.mode, tc.hwp)
+			}
+			gotEPP := ""
+			if f.EPP != nil {
+				gotEPP = f.EPP.Default.V
+			}
+			if gotEPP != tc.epp {
+				t.Errorf("epp.default = %q, want %q", gotEPP, tc.epp)
+			}
+			tree := renderTestTree(t, p)
+			renderCheckCorpusGovernor(t, dir, tree, p)
+			for _, pol := range []int{0, 1} {
+				if got := renderReadFile(t, tree, "sys/"+layout.PolicyDir(pol)+"/scaling_governor"); got != tc.governor+"\n" {
+					t.Errorf("policy%d/scaling_governor = %q, want %q", pol, got, tc.governor)
+				}
+			}
+		})
+	}
+}
+
+// GF02: a capture the profile cannot hold is an error rather than a profile
+// that renders something else: policies in different states, a driver whose
+// status file is missing, a boost file the driver keeps that is missing,
+// policies the cpuinfo does not render, and governor state without the
+// scaling driver.
+func TestGF02FromCorpusRejectsGovernorStateItCannotRender(t *testing.T) {
+	t.Parallel()
+	good := func() map[string]string {
+		return renderCorpusGovernorCapture("amd-pstate-epp", "fpu cppc", map[string]string{
+			"scaling_governor": "powersave\n", "scaling_available_governors": "performance powersave\n",
+			"energy_performance_preference": "balance_performance\n", "energy_performance_available_preferences": "default performance balance_performance balance_power power \n",
+			"boost": "1\n", "cpuinfo_min_freq": "400000\n", "cpuinfo_max_freq": "1500000\n",
+		}, map[string]string{"amd_pstate/status": "active\n"})
+	}
+	if _, err := FromCorpus(renderCorpusTestMachine(t, good())); err != nil {
+		t.Fatalf("the good capture: %v", err)
+	}
+	cases := []struct {
+		name   string
+		mutate func(files map[string]string)
+		want   string
+	}{
+		{"policies differ", func(f map[string]string) { f["governor/cpufreq/policy1/scaling_governor"] = "performance\n" }, "one state for all policies"},
+		{"no status file", func(f map[string]string) { delete(f, "governor/amd_pstate/status") }, "keeps its mode"},
+		{"no policy boost", func(f map[string]string) {
+			delete(f, "governor/cpufreq/policy0/boost")
+			delete(f, "governor/cpufreq/policy1/boost")
+		}, "keeps boost"},
+		{"no preference pair", func(f map[string]string) {
+			for _, pol := range []string{"policy0", "policy1"} {
+				delete(f, "governor/cpufreq/"+pol+"/energy_performance_preference")
+				delete(f, "governor/cpufreq/"+pol+"/energy_performance_available_preferences")
+			}
+		}, "preference pair"},
+		{"policy the cpuinfo lacks", func(f map[string]string) {
+			for k, v := range f {
+				if strings.HasPrefix(k, "governor/cpufreq/policy1/") {
+					f[strings.Replace(k, "policy1", "policy5", 1)] = v
+					delete(f, k)
+				}
+			}
+		}, "neither per CPU nor per core"},
+		{"no scaling driver", func(f map[string]string) { delete(f, "cpufreq-driver") }, "no cpufreq-driver"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := good()
+			tc.mutate(files)
+			if _, err := FromCorpus(renderCorpusTestMachine(t, files)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want one that says %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// GF04: a capture that holds the scaling driver only, as every capture did
+// before the script copied governor state, still loads as the same minimal
+// cpufreq, scaling_driver alone: every such machine of the corpus, and a
+// synthetic one whose governor/ holds no policy.
+func TestGF04DriverOnlyCorpusEntriesLoadUnchanged(t *testing.T) {
+	t.Parallel()
+	minimal := func(driver string) *CPUFreqSpec {
+		return &CPUFreqSpec{
+			Driver:         Fact[string]{V: driver, Src: "corpus:corpus#cpufreq-driver"},
+			PolicyGrouping: Fact[string]{V: "per-cpu", Src: "assumed:the capture records the scaling driver only"},
+			Minimal:        true,
+		}
+	}
+	check := func(t *testing.T, dir string) {
+		t.Helper()
+		driver, err := os.ReadFile(filepath.Join(dir, "cpufreq-driver"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := FromCorpus(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := minimal(strings.TrimSpace(string(driver))); !reflect.DeepEqual(p.CPUFreq, want) {
+			t.Errorf("cpufreq = %+v, want the minimal %+v", p.CPUFreq, want)
+		}
+		tree := renderTestTree(t, p)
+		entries, err := os.ReadDir(filepath.Join(tree.SysRoot, layout.PolicyDir(0)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 || entries[0].Name() != "scaling_driver" {
+			t.Errorf("policy0 holds %v, want scaling_driver alone", entries)
+		}
+	}
+	ran := 0
+	for _, machine := range renderCorpusMachines(t) {
+		dir := filepath.Join(renderCorpusRoot(), machine)
+		_, driverErr := os.Stat(filepath.Join(dir, "cpufreq-driver"))
+		_, govErr := os.Stat(filepath.Join(dir, renderCorpusGovernorDir, "cpufreq"))
+		if driverErr != nil || govErr == nil {
+			continue
+		}
+		ran++
+		t.Run(machine, func(t *testing.T) { check(t, dir) })
+	}
+	if ran == 0 && os.Getenv("JOULIE_HARDWARE_CORPUS") == "" {
+		t.Errorf("no driver-only machine in %s; the repository's corpus has one", renderCorpusRoot())
+	}
+	t.Run("governor without policies", func(t *testing.T) {
+		files := renderCorpusGovernorCapture("intel_pstate", "fpu", nil, map[string]string{"intel_pstate/status": "active\n", "cpuidle/state0/name": "POLL\n"})
+		check(t, renderCorpusTestMachine(t, files))
+	})
 }
 
 // renderCheckCorpusNVML compares the NVML state with the captured query

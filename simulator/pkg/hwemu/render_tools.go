@@ -9,12 +9,20 @@ import (
 
 // renderTools writes state/tools.json, the same envelope for every family
 // (L03), and a bin/<tool> link to the fake tool for each entry, so a
-// tool the profile does not list is not on the emulated PATH.
+// tool the profile does not list is not on the emulated PATH. Each entry
+// carries the tool's requirements in profile order, without their sources
+// (L06).
 func renderTools(b *renderBuilder, p *Profile, o RenderOptions) error {
 	m := layout.ToolsManifest{SchemaVersion: 1, Tools: map[string]layout.ToolEntry{}}
 	if p.GPUs != nil {
 		for _, t := range p.GPUs.Tools {
-			m.Tools[t.Name] = layout.ToolEntry{Variant: t.Variant}
+			e := layout.ToolEntry{Variant: t.Variant}
+			for _, r := range t.Requires {
+				e.Requires = append(e.Requires, layout.ToolRequirement{
+					Paths: append([]string(nil), r.Paths...), Exit: r.Exit, Stderr: r.Stderr,
+				})
+			}
+			m.Tools[t.Name] = e
 		}
 	}
 	data, err := json.Marshal(m)

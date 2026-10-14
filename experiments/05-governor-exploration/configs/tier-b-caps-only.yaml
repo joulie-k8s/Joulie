@@ -1,0 +1,7 @@
+# Tier B arm caps-only: Joulie as released, no governor written.
+controllerManager:
+  env:
+    GOVERNOR_CONTROL: "off"
+agent:
+  env:
+    GOVERNOR_WRITES: "false"

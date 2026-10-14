@@ -2,6 +2,7 @@ package hwemu
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,7 +27,8 @@ func renderZoneFile(t testing.TB, tree *Tree, ct string, file string, idx ...int
 // no constraint on an energy-only zone.
 func TestH19PowercapFileContents(t *testing.T) {
 	t.Parallel()
-	intel := renderTestTree(t, renderBuiltin(t, "intel-xeon-2s-rapl"))
+	intelProfile := renderBuiltin(t, "intel-xeon-2s-rapl")
+	intel := renderTestTree(t, intelProfile)
 	for _, c := range []struct {
 		file string
 		idx  []int
@@ -56,9 +58,13 @@ func TestH19PowercapFileContents(t *testing.T) {
 	if got := renderReadFile(t, intel, "sys/devices/virtual/powercap/intel-rapl/enabled"); got != "1\n" {
 		t.Errorf("control type enabled = %q", got)
 	}
-	// The DRAM limit rejects writes the way the corpus replays it.
-	if !renderIsEISDIR(filepath.Join(intel.SysRoot, layout.PowercapZoneDir("intel-rapl", 0, 0), "constraint_0_power_limit_uw")) {
-		t.Errorf("the DRAM limit accepts writes, want EISDIR")
+	// The DRAM limit shows its value and refuses writes, as the corpus
+	// machine it comes from does.
+	if got := renderZoneFile(t, intel, "intel-rapl", "constraint_0_power_limit_uw", 0, 0); got != "0\n" {
+		t.Errorf("the DRAM limit reads %q, want 0", got)
+	}
+	if !renderRefusesWrites(t, intelProfile, intel, path.Join(layout.SysDir, layout.PowercapZoneDir("intel-rapl", 0, 0), "constraint_0_power_limit_uw")) {
+		t.Errorf("the DRAM limit accepts writes, want ENODATA")
 	}
 
 	amd := renderTestTree(t, renderBuiltin(t, "amd-epyc-2s-energy-only"))

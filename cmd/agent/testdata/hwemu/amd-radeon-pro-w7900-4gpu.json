@@ -1,0 +1,153 @@
+{
+  "capabilities": {
+    "cpuControl": true,
+    "cpuTelemetry": true,
+    "gpuControl": false,
+    "gpuTelemetry": true
+  },
+  "cpu": {
+    "controlAvailable": true,
+    "coresPerSocket": 128,
+    "driverFamily": "acpi-cpufreq",
+    "governor": {
+      "available": [
+        "conservative",
+        "ondemand",
+        "userspace",
+        "powersave",
+        "performance",
+        "schedutil"
+      ],
+      "baseline": {
+        "groups": [
+          {
+            "boost": "on",
+            "governor": "schedutil",
+            "policies": "0-255"
+          }
+        ]
+      },
+      "boost": {
+        "scope": "global",
+        "state": "on"
+      },
+      "current": "schedutil",
+      "driver": "acpi-cpufreq",
+      "presets": [
+        {
+          "native": "performance",
+          "preset": "performance",
+          "result": "applied"
+        },
+        {
+          "native": "schedutil",
+          "preset": "balanced",
+          "result": "applied"
+        },
+        {
+          "native": "conservative",
+          "preset": "efficiency",
+          "result": "applied"
+        }
+      ],
+      "writable": true
+    },
+    "landmarks": {
+      "maxBoostMHz": 3718.066,
+      "minFreqMHz": 1500
+    },
+    "model": "AMD_EPYC_9534",
+    "rawModel": "AMD EPYC 9534 64-Core Processor",
+    "sockets": 2,
+    "telemetryAvailable": true,
+    "totalCores": 256,
+    "vendor": "AuthenticAMD",
+    "warnings": null
+  },
+  "gpu": {
+    "controlAvailable": false,
+    "count": 4,
+    "currentCapWatts": 0,
+    "governor": {
+      "baseline": {
+        "devices": [
+          {
+            "busId": "0000:10:00.0",
+            "level": "auto"
+          },
+          {
+            "busId": "0000:11:00.0",
+            "level": "auto"
+          },
+          {
+            "busId": "0000:12:00.0",
+            "level": "auto"
+          },
+          {
+            "busId": "0000:13:00.0",
+            "level": "auto"
+          }
+        ]
+      },
+      "clockRangesMHz": {
+        "fabric": {
+          "max": 2301,
+          "min": 601
+        },
+        "graphics": {
+          "max": 3000,
+          "min": 500
+        },
+        "memory": {
+          "max": 1124,
+          "min": 96
+        }
+      },
+      "current": "auto",
+      "mechanism": "amdgpu-sysfs",
+      "presets": [
+        {
+          "native": "auto",
+          "preset": "auto",
+          "result": "applied"
+        },
+        {
+          "native": "high",
+          "preset": "sustained",
+          "result": "applied"
+        },
+        {
+          "native": "low",
+          "preset": "low",
+          "result": "applied"
+        },
+        {
+          "native": "profile_peak",
+          "preset": "peak",
+          "result": "applied"
+        }
+      ],
+      "uniform": true,
+      "writable": true
+    },
+    "model": "AMD_RADEON_PRO_W7900",
+    "rawModel": "AMD_Radeon_PRO_W7900",
+    "telemetryAvailable": true,
+    "vendor": "amd",
+    "warnings": null
+  },
+  "inventoryResolution": {
+    "exactness": {
+      "cpu": "exact",
+      "gpu": "exact"
+    },
+    "hardwareCatalogKey": {
+      "cpu": "AMD_EPYC_9534",
+      "gpu": "AMD_RADEON_PRO_W7900"
+    }
+  },
+  "quality": {
+    "overall": "exact",
+    "warnings": null
+  }
+}

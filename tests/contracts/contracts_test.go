@@ -86,12 +86,15 @@ type traceWorkloadRecord struct {
 	IntentClass   string `json:"intentClass"`
 }
 
-// generateTrace shells out to workloadgen and returns job records.
+// generateTrace shells out to workloadgen and returns job records. It pins
+// trace schema v2, the schema the legacy simulator loop and its affinity
+// contracts below were written for.
 func generateTrace(t *testing.T, jobs int) ([]traceJobRecord, []traceWorkloadRecord) {
 	t.Helper()
 	dir := t.TempDir()
 	out := filepath.Join(dir, "trace.jsonl")
 	cmd := exec.Command("go", "run", "./simulator/cmd/workloadgen",
+		"-schema-version", "v2",
 		"-jobs", strings.Repeat("", 0)+intToStr(jobs),
 		"-out", out,
 		"-seed", "42",
@@ -487,27 +490,41 @@ func TestTraceJobRecordsHaveAllRequiredFieldsForSimulator(t *testing.T) {
 }
 
 func TestGeneratedTraceLoadableBySimulator(t *testing.T) {
-	// Generate a trace and verify the raw JSON has all fields the simulator's
-	// loadTraceFileIntoEngine reads.
-	dir := t.TempDir()
-	out := filepath.Join(dir, "trace.jsonl")
-	cmd := exec.Command("go", "run", "./simulator/cmd/workloadgen",
-		"-jobs", "20",
-		"-out", out,
-		"-seed", "42",
-	)
-	cmd.Dir = repoRoot(t)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("workloadgen failed: %v\n%s", err, output)
+	// Generate a trace in the default schema (v3) and in the legacy v2, and
+	// verify the raw JSON has all fields the simulator's
+	// loadTraceFileIntoEngine reads. A v3 job carries no power-profile
+	// affinity, so the loader takes its class from intentClass alone.
+	for _, tc := range []struct {
+		name   string
+		flags  []string
+		schema string
+	}{
+		{name: "default", schema: "v3"},
+		{name: "v2", flags: []string{"-schema-version", "v2"}, schema: "v2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "trace.jsonl")
+			args := append([]string{"run", "./simulator/cmd/workloadgen"}, tc.flags...)
+			cmd := exec.Command("go", append(args, "-jobs", "20", "-out", out, "-seed", "42")...)
+			cmd.Dir = repoRoot(t)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("workloadgen failed: %v\n%s", err, output)
+			}
+			checkTraceLoadableBySimulator(t, out, tc.schema)
+		})
 	}
-	f, err := os.Open(out)
+}
+
+func checkTraceLoadableBySimulator(t *testing.T, path, schema string) {
+	t.Helper()
+	f, err := os.Open(path)
 	if err != nil {
 		t.Fatalf("open trace: %v", err)
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
-	jobCount := 0
+	jobCount, gpuJobs := 0, 0
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -526,6 +543,14 @@ func TestGeneratedTraceLoadableBySimulator(t *testing.T) {
 		jobID, ok := raw["jobId"].(string)
 		if !ok || jobID == "" {
 			t.Error("missing jobId")
+		}
+		if v, _ := raw["schemaVersion"].(string); v != schema {
+			t.Errorf("job %s: schemaVersion=%q, want %q", jobID, v, schema)
+		}
+		// Without intentClass the loader reads the class from the affinity,
+		// which v3 does not write, and every job would become standard.
+		if ic, _ := raw["intentClass"].(string); !validIntentClasses[ic] {
+			t.Errorf("job %s: intentClass=%q, want performance or standard", jobID, ic)
 		}
 		// podTemplate with requests
 		podTpl, ok := raw["podTemplate"].(map[string]any)
@@ -550,6 +575,22 @@ func TestGeneratedTraceLoadableBySimulator(t *testing.T) {
 		if cpuU, ok := workRaw["cpuUnits"].(float64); !ok || cpuU <= 0 {
 			t.Errorf("job %s: invalid work.cpuUnits", jobID)
 		}
+		// The loader reads a GPU request only as a string and, without
+		// gpuUnits, runs the job as CPU work alone.
+		for _, key := range []string{"nvidia.com/gpu", "amd.com/gpu", "gpu"} {
+			gpuRaw, ok := reqRaw[key]
+			if !ok {
+				continue
+			}
+			gpuJobs++
+			if s, ok := gpuRaw.(string); !ok || s == "" || s == "0" {
+				t.Errorf("job %s: podTemplate.requests[%q]=%v, want a positive integer string", jobID, key, gpuRaw)
+			}
+			if gpuU, ok := workRaw["gpuUnits"].(float64); !ok || gpuU <= 0 {
+				t.Errorf("job %s: requests %s but work.gpuUnits is missing or not positive", jobID, key)
+			}
+			break
+		}
 		// workloadClass (simulator reads cpu and gpu sub-fields)
 		if wcRaw, ok := raw["workloadClass"].(map[string]any); ok {
 			if _, ok := wcRaw["cpu"].(string); !ok {
@@ -566,30 +607,95 @@ func TestGeneratedTraceLoadableBySimulator(t *testing.T) {
 	if jobCount == 0 {
 		t.Fatal("no job records in trace")
 	}
-	t.Logf("validated %d job records are loadable by simulator", jobCount)
+	if gpuJobs == 0 {
+		t.Fatal("no GPU job in trace; the GPU fields went unchecked")
+	}
+	t.Logf("validated %d job records (%d with GPUs) are loadable by simulator", jobCount, gpuJobs)
+}
+
+// workloadgenRun matches go run on the workloadgen package, named by a
+// relative, rooted or module path (./simulator/cmd/workloadgen,
+// $(REPO_ROOT)/simulator/cmd/workloadgen, ./cmd/workloadgen run from
+// simulator/, github.com/matbun/joulie/simulator/cmd/workloadgen): the shell
+// words run, any go flags and the package, or the same words as separate
+// Python or Go list items, possibly on separate lines. Submatch 1 is the
+// value of -schema-version or --schema-version when it is the first flag
+// after the package, given as one word with = or as the next word or item.
+var workloadgenRun = regexp.MustCompile(`\brun(?:["',\s]+-[^"',\s]+(?:["',\s]+[^-"',\s][^"',\s]*)?)*["',\s]+[^"',\s]*\bcmd/workloadgen\b(?:["',\s]+-{1,2}schema-version(?:=|["',\s]+)["']?(v\d+))?`)
+
+// goFuncDecl matches a Go function or method declaration; submatch 1 is its
+// name.
+var goFuncDecl = regexp.MustCompile(`(?m)^func (?:\([^)]*\) )?(\w+)`)
+
+// workloadgen's default trace schema is v3, which sizes work, sensitivity and
+// affinity differently from v2. The legacy callers, written and measured on
+// v2, pin it as the first flag after the package, so a change of default
+// never moves their traces and no other command's flag can stand in for the
+// pin. A legacy call site is a file, or one function of a Go file, so a v3
+// run can sit next to it. Other callers may build or install workloadgen
+// and rely on the default.
+func TestWorkloadgenCallersPinSchemaVersion(t *testing.T) {
+	root := repoRoot(t)
+	legacy := []struct{ file, fn string }{
+		{file: "experiments/01-cpu-only-benchmark/scripts/04_run_one.py"},
+		{file: "experiments/01-cpu-only-benchmark/scripts/05_sweep.py"},
+		{file: "experiments/02-heterogeneous-benchmark/scripts/04_run_one.py"},
+		{file: "experiments/02-heterogeneous-benchmark/scripts/05_sweep.py"},
+		{file: "experiments/03-homogeneous-h100-benchmark/scripts/04_run_one.py"},
+		{file: "experiments/03-homogeneous-h100-benchmark/scripts/05_sweep.py"},
+		{file: "scripts/standalone_sweep.py"},
+		{file: "examples/10-kubectl-joulie-demo/demo.sh"},
+		{file: "examples/10-kubectl-joulie-demo/Makefile"},
+		{file: "tests/contracts/contracts_test.go", fn: "generateTrace"},
+	}
+	for _, site := range legacy {
+		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(site.file)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(b)
+		where := site.file
+		if site.fn != "" {
+			where += " func " + site.fn
+		}
+		runs := 0
+		for _, loc := range workloadgenRun.FindAllStringSubmatchIndex(text, -1) {
+			if site.fn != "" && enclosingGoFunc(text, loc[0]) != site.fn {
+				continue
+			}
+			runs++
+			line := strings.Count(text[:loc[0]], "\n") + 1
+			switch {
+			case loc[2] < 0:
+				t.Errorf("%s:%d runs workloadgen without -schema-version v2 as the first flag after the package", site.file, line)
+			case text[loc[2]:loc[3]] != "v2":
+				t.Errorf("%s:%d is a legacy caller and pins -schema-version %s, want v2", site.file, line, text[loc[2]:loc[3]])
+			}
+		}
+		if runs == 0 {
+			t.Errorf("%s: no go run of workloadgen found; update the legacy list or the pattern", where)
+		}
+	}
+}
+
+// enclosingGoFunc returns the name of the last function declared in src
+// before offset.
+func enclosingGoFunc(src string, offset int) string {
+	name := ""
+	for _, m := range goFuncDecl.FindAllStringSubmatchIndex(src[:offset], -1) {
+		name = src[m[2]:m[3]]
+	}
+	return name
 }
 
 // --------------------------------------------------------------------------
 // 6. Pod Annotation Contract
 // --------------------------------------------------------------------------
-
-func TestSimulatorPodAnnotationsMatchSchedulerExpectations(t *testing.T) {
-	// The simulator sets annotations on injected pods (simulator/cmd/simulator/main.go:2134):
-	//   "joulie.io/workload-class": j.Class
-	// The scheduler reads (cmd/scheduler/main.go:302):
-	//   pod.Metadata.Annotations["joulie.io/workload-class"]
-	// Verify the key matches.
-	simulatorAnnotationKey := "joulie.io/workload-class" // from injectTraceJobs
-	schedulerAnnotationKey := "joulie.io/workload-class" // from podWorkloadClass
-
-	if simulatorAnnotationKey != schedulerAnnotationKey {
-		t.Fatalf("annotation key mismatch: simulator=%q, scheduler=%q",
-			simulatorAnnotationKey, schedulerAnnotationKey)
-	}
-	if simulatorAnnotationKey != workloadClassAnnotationKey {
-		t.Fatalf("annotation key constant mismatch")
-	}
-}
+//
+// The workload class annotation the simulator writes is
+// workload.AnnotationWorkloadClass, checked against the controller's
+// fsm.WorkloadClassAnnotation by TestKeysMatchTheController in
+// simulator/pkg/workload.
 
 func TestSimulatorPodAffinityMatchesSchedulerFilter(t *testing.T) {
 	// The simulator's affinityForIntentClass("performance") creates:
@@ -649,84 +755,10 @@ func TestSimulatorPodAffinityMatchesSchedulerFilter(t *testing.T) {
 // 7. Telemetry Format Contract
 // --------------------------------------------------------------------------
 
-func TestSimulatorTelemetryFormatMatchesAgentExpectations(t *testing.T) {
-	// The simulator's handleTelemetry (simulator/cmd/simulator/main.go:647-695)
-	// returns a JSON response. The agent's HTTPPowerReader
-	// (pkg/agent/control/http.go:48-55) reads:
-	//   - top-level "packagePowerWatts"
-	//   - nested "cpu"."packagePowerWatts"
-	//
-	// Build a mock response matching the simulator's format and verify the
-	// agent would find what it needs.
-	simulatorResp := map[string]any{
-		"node":              "test-node",
-		"packagePowerWatts": 150.0,
-		"cpu": map[string]any{
-			"packagePowerWatts":  145.0,
-			"capWatts":           200.0,
-			"targetCapWatts":     180.0,
-			"utilization":        0.65,
-			"freqScale":          0.95,
-			"throttlePct":        0,
-			"thermalThrottlePct": 0.0,
-			"temperatureC":       55.0,
-			"raplCapWatts":       200.0,
-			"capSaturated":       false,
-		},
-		"gpu": map[string]any{
-			"present":               true,
-			"vendor":                "nvidia",
-			"product":               "A100",
-			"count":                 2,
-			"powerWattsTotal":       400.0,
-			"capWattsPerGpuApplied": 300.0,
-			"capWattsPerGpuTarget":  250.0,
-			"utilization":           0.80,
-		},
-	}
-
-	// Agent reads packagePowerWatts from top level
-	topLevel, ok := simulatorResp["packagePowerWatts"].(float64)
-	if !ok {
-		t.Fatal("simulator response missing top-level packagePowerWatts")
-	}
-	if topLevel <= 0 {
-		t.Error("packagePowerWatts should be > 0")
-	}
-
-	// Agent reads nested cpu.packagePowerWatts as fallback
-	cpuMap, ok := simulatorResp["cpu"].(map[string]any)
-	if !ok {
-		t.Fatal("simulator response missing cpu map")
-	}
-	cpuPower, ok := cpuMap["packagePowerWatts"].(float64)
-	if !ok {
-		t.Fatal("simulator cpu response missing packagePowerWatts")
-	}
-	if cpuPower <= 0 {
-		t.Error("cpu.packagePowerWatts should be > 0")
-	}
-
-	// Verify GPU fields the agent and controller manager may need
-	gpuMap, ok := simulatorResp["gpu"].(map[string]any)
-	if !ok {
-		t.Fatal("simulator response missing gpu map")
-	}
-	requiredGPUFields := []string{"present", "count", "powerWattsTotal", "capWattsPerGpuApplied", "capWattsPerGpuTarget", "utilization"}
-	for _, field := range requiredGPUFields {
-		if _, ok := gpuMap[field]; !ok {
-			t.Errorf("simulator gpu response missing field: %s", field)
-		}
-	}
-
-	// Verify CPU fields
-	requiredCPUFields := []string{"capWatts", "targetCapWatts", "utilization", "freqScale", "throttlePct", "capSaturated"}
-	for _, field := range requiredCPUFields {
-		if _, ok := cpuMap[field]; !ok {
-			t.Errorf("simulator cpu response missing field: %s", field)
-		}
-	}
-}
+// The simulator's /otlp/telemetry/{node} is read by the agent's real
+// HTTPPowerReader in simulator/cmd/simulator/otel_inputs_test.go
+// (TestAgentHTTPReaderReadsSimulatorOTLPTelemetry), which can run both
+// sides; this package cannot import the simulator's main package.
 
 // --------------------------------------------------------------------------
 // 8. Control Action Contract
@@ -974,6 +1006,81 @@ func TestNodeTwinSchemaAcceptsEveryPowerSourceValue(t *testing.T) {
 	}
 }
 
+// GV02: every governor enum in the CRDs accepts every value pkg/api lists
+// for it, so no value a component writes is rejected by the API server, and
+// the preset enums reject native words (powersave, schedutil, high, ...): a
+// preset is the vendor-neutral word, and only pkg/governor turns it into a
+// native one.
+func TestGV02GovernorEnumsAcceptEveryPkgAPIValue(t *testing.T) {
+	schemaOf := func(file string) map[string]any {
+		raw, err := os.ReadFile(filepath.Join(repoRoot(t), "config", "crd", "bases", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var crd map[string]any
+		if err := yaml.Unmarshal(raw, &crd); err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+		versions := crd["spec"].(map[string]any)["versions"].([]any)
+		return versions[0].(map[string]any)["schema"].(map[string]any)["openAPIV3Schema"].(map[string]any)
+	}
+	twin, hw := schemaOf("joulie.io_nodetwins.yaml"), schemaOf("joulie.io_nodehardwares.yaml")
+	prop := func(path string) []string {
+		var out []string
+		for _, p := range strings.Split(path, ".") {
+			if p == "[]" {
+				out = append(out, "items")
+				continue
+			}
+			out = append(out, "properties", p)
+		}
+		return out
+	}
+	natives := []string{"powersave", "schedutil", "ondemand", "conservative", "userspace", "high", "manual", "profile_peak", "profile_standard", "perf_determinism", "balance_power"}
+	for _, tc := range []struct {
+		schema  map[string]any
+		path    string
+		values  []string
+		natives bool
+	}{
+		{twin, "spec.cpu.governor.preset", joulie.CPUGovernorPresetValues, true},
+		{twin, "spec.cpu.governor.boost", joulie.CPUGovernorBoostValues, false},
+		{twin, "spec.gpu.governor.preset", joulie.GPUGovernorPresetValues, true},
+		{hw, "status.cpu.governor.boost.state", joulie.CPUGovernorBoostValues, false},
+		{hw, "status.cpu.governor.boost.scope", joulie.CPUBoostScopeValues, false},
+		{hw, "status.cpu.governor.presets.[].result", joulie.GovernorPresetSupportResultValues, false},
+		{hw, "status.cpu.governor.baseline.groups.[].boost", joulie.CPUGovernorBoostValues, false},
+		{hw, "status.gpu.governor.mechanism", joulie.GPUGovernorMechanismValues, false},
+		{hw, "status.gpu.governor.presets.[].result", joulie.GovernorPresetSupportResultValues, false},
+	} {
+		field := dig(tc.schema, prop(tc.path)...)
+		if field == nil {
+			t.Errorf("%s missing from the schema", tc.path)
+			continue
+		}
+		enum, _ := field["enum"].([]any)
+		allowed := map[string]bool{}
+		for _, v := range enum {
+			allowed[v.(string)] = true
+		}
+		if len(tc.values) == 0 {
+			t.Errorf("%s: the pkg/api list is empty, nothing would be proven", tc.path)
+		}
+		for _, v := range tc.values {
+			if !allowed[v] {
+				t.Errorf("%s: pkg/api lists %q but the CRD enum %v rejects it", tc.path, v, enum)
+			}
+		}
+		if tc.natives {
+			for _, v := range natives {
+				if allowed[v] {
+					t.Errorf("%s: the CRD enum accepts the native word %q; a preset field takes presets only", tc.path, v)
+				}
+			}
+		}
+	}
+}
+
 func dig(m map[string]any, path ...string) map[string]any {
 	cur := m
 	for _, p := range path {
@@ -984,4 +1091,94 @@ func dig(m map[string]any, path ...string) map[string]any {
 		cur = next
 	}
 	return cur
+}
+
+// TestWorkloadgenPeerTransferIntensityReachesTheSimulator: workloadgen
+// -peer-transfer-intensity writes workloadProfile.peerTransferIntensity, the
+// key the simulator's trace loader (loadTraceFileIntoEngine) and the
+// scenario schema (simulator/pkg/scenario Profile) read, on the jobs that
+// request two or more GPUs and on no other; without the flag no job carries
+// it, and a v2 pin refuses the flag, so legacy traces never move.
+func TestWorkloadgenPeerTransferIntensityReachesTheSimulator(t *testing.T) {
+	const key = "peerTransferIntensity"
+	root := repoRoot(t)
+	for _, src := range []string{"simulator/cmd/simulator/main.go", "simulator/pkg/scenario/schema.go"} {
+		b, err := os.ReadFile(filepath.Join(root, src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), `"`+key) {
+			t.Errorf("%s does not read %q", src, key)
+		}
+	}
+	// gen runs workloadgen with flags and returns its job records, or its
+	// output when it fails.
+	gen := func(flags ...string) ([]map[string]any, string) {
+		out := filepath.Join(t.TempDir(), "trace.jsonl")
+		args := append([]string{"run", "./simulator/cmd/workloadgen"}, flags...)
+		cmd := exec.Command("go", append(args, "-jobs", "40", "-seed", "7", "-gpu-ratio", "1", "-out", out)...)
+		cmd.Dir = root
+		if b, err := cmd.CombinedOutput(); err != nil {
+			return nil, err.Error() + ": " + string(b)
+		}
+		b, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var jobs []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				t.Fatal(err)
+			}
+			if rec["type"] == "job" {
+				jobs = append(jobs, rec)
+			}
+		}
+		return jobs, ""
+	}
+	gpusOf := func(rec map[string]any) int {
+		tpl, _ := rec["podTemplate"].(map[string]any)
+		req, _ := tpl["requests"].(map[string]any)
+		for _, k := range []string{"nvidia.com/gpu", "amd.com/gpu"} {
+			if s, ok := req[k].(string); ok {
+				var n int
+				_ = json.Unmarshal([]byte(s), &n)
+				return n
+			}
+		}
+		return 0
+	}
+
+	jobs, failed := gen("-schema-version", "v3", "-peer-transfer-intensity", "0.3")
+	if failed != "" {
+		t.Fatalf("workloadgen: %s", failed)
+	}
+	multi := 0
+	for _, j := range jobs {
+		prof, _ := j["workloadProfile"].(map[string]any)
+		v, has := prof[key]
+		if gpusOf(j) >= 2 {
+			multi++
+			if v != 0.3 {
+				t.Errorf("job %v requests %d GPUs: %s = %v, want 0.3", j["jobId"], gpusOf(j), key, v)
+			}
+		} else if has {
+			t.Errorf("job %v requests %d GPUs and carries %s = %v", j["jobId"], gpusOf(j), key, v)
+		}
+	}
+	if multi == 0 {
+		t.Fatal("no job requests two or more GPUs; the contract went unchecked")
+	}
+	if jobs, failed = gen("-schema-version", "v3"); failed != "" {
+		t.Fatalf("workloadgen: %s", failed)
+	}
+	for _, j := range jobs {
+		if prof, _ := j["workloadProfile"].(map[string]any); prof[key] != nil {
+			t.Fatalf("job %v carries %s without the flag", j["jobId"], key)
+		}
+	}
+	if _, failed := gen("-schema-version", "v2", "-peer-transfer-intensity", "0.3"); failed == "" {
+		t.Error("workloadgen -schema-version v2 accepted -peer-transfer-intensity")
+	}
 }

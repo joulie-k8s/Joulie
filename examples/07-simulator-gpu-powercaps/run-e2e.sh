@@ -204,8 +204,8 @@ main() {
     -p='[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}]'
   run k -n joulie-sim-demo rollout status deploy/joulie-telemetry-sim --timeout=240s
 
-  log "applying latest CRDs (helm does not upgrade CRDs on release upgrade)"
-  run k apply -f "$ROOT_DIR/charts/joulie/crds/joulie.io_nodetwins.yaml"
+  log "applying the CRDs (helm never updates CRDs on an upgrade)"
+  run k apply -f "$ROOT_DIR/charts/joulie/crds/"
 
   log "installing joulie chart in pool mode"
   run helm upgrade --install joulie "$ROOT_DIR/charts/joulie" \
@@ -220,15 +220,8 @@ main() {
     --set "controllerManager.image.pullPolicy=IfNotPresent"
 
   run k -n joulie-system rollout status deploy/joulie-controller-manager --timeout=240s
-  run k -n joulie-system rollout status statefulset/joulie-agent-pool --timeout=240s
-
-  log "configuring agent telemetry/control env vars for simulator HTTP routing"
-  run k -n joulie-system set env statefulset/joulie-agent-pool \
-    JOULIE_TELEMETRY_SOURCE_TYPE=http \
-    JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
-    JOULIE_CONTROL_TYPE=http \
-    JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
-    JOULIE_CONTROL_MODE=dvfs
+  # The values file routes the agents' telemetry and control, and the
+  # controller manager's node power, to the simulator over HTTP.
   run k -n joulie-system rollout status statefulset/joulie-agent-pool --timeout=240s
 
   wait_for_jq_expr 300 5 \

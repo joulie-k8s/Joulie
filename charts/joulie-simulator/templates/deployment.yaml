@@ -1,3 +1,56 @@
+{{- $emulate := .Values.emulate }}
+{{- if $emulate.enabled }}
+{{- if ne (int .Values.replicas) 1 }}
+{{- fail "emulate.enabled requires replicas: 1, because two simulators would write the same emulated trees" }}
+{{- end }}
+{{- if and $emulate.clusterSpec $emulate.clusterSpecConfigMap }}
+{{- fail "emulate.enabled takes one cluster spec: set emulate.clusterSpec or emulate.clusterSpecConfigMap, not both" }}
+{{- end }}
+{{- if not (or $emulate.clusterSpec $emulate.clusterSpecConfigMap) }}
+{{- fail "emulate.enabled needs a cluster spec: --set-file emulate.clusterSpec=<spec.yaml>, or emulate.clusterSpecConfigMap naming a ConfigMap with the key cluster-spec.yaml" }}
+{{- end }}
+{{- end }}
+{{- /* One map, so a variable set twice is rendered once and extraEnv wins. */}}
+{{- $env := dict }}
+{{- range $key, $val := .Values.env }}
+{{- $_ := set $env $key ($val | toString) }}
+{{- end }}
+{{- if $emulate.enabled }}
+{{- /* In emulate mode a trace path starts an implicit v1 run at startup and
+runs come through the run API, so env's default path is dropped; extraEnv,
+applied below, still sets one. */}}
+{{- $_ := unset $env "SIM_WORKLOAD_TRACE_PATH" }}
+{{- $_ := set $env "SIM_EMULATE" "true" }}
+{{- $_ := set $env "SIM_HWEMU_ROOT" ($emulate.root | toString) }}
+{{- $_ := set $env "SIM_CLUSTER_SPEC" "/etc/joulie-sim-spec/cluster-spec.yaml" }}
+{{- $_ := set $env "SIM_EMULATE_TICK" ($emulate.tick | toString) }}
+{{- /* YAML reads an unquoted on or off as a boolean: map it back. */}}
+{{- $gate := $emulate.receiverGate }}
+{{- if kindIs "bool" $gate }}
+{{- $gate = ternary "on" "off" $gate }}
+{{- end }}
+{{- $_ := set $env "SIM_GPU_RECEIVER_GATE" ($gate | default "profile" | toString) }}
+{{- with $emulate.exporters }}
+{{- $_ := set $env "SIM_EXPORTERS" (join "," .) }}
+{{- end }}
+{{- with .Values.otel.metricsEndpoint }}
+{{- $_ := set $env "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" (. | toString) }}
+{{- end }}
+{{- with .Values.otel.logsEndpoint }}
+{{- $_ := set $env "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT" (. | toString) }}
+{{- end }}
+{{- $_ := set $env "OTEL_METRIC_EXPORT_INTERVAL" (int64 .Values.otel.exportIntervalMillis | toString) }}
+{{- with .Values.otel.resourceAttributes }}
+{{- $attrs := list }}
+{{- range $key, $val := . }}
+{{- $attrs = append $attrs (printf "%s=%v" $key $val) }}
+{{- end }}
+{{- $_ := set $env "OTEL_RESOURCE_ATTRIBUTES" (join "," $attrs) }}
+{{- end }}
+{{- end }}
+{{- range $key, $val := .Values.extraEnv }}
+{{- $_ := set $env $key ($val | toString) }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,6 +60,11 @@ metadata:
     {{- include "joulie-simulator.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicas }}
+  {{- if $emulate.enabled }}
+  # The old pod must release the emulated trees before the new one opens them.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "joulie-simulator.selectorLabels" . | nindent 6 }}
@@ -14,24 +72,45 @@ spec:
     metadata:
       labels:
         {{- include "joulie-simulator.selectorLabels" . | nindent 8 }}
+      {{- if and $emulate.enabled $emulate.clusterSpec }}
+      annotations:
+        # The spec is read once at start: a changed spec restarts the pod.
+        checksum/cluster-spec: {{ $emulate.clusterSpec | toString | sha256sum }}
+      {{- end }}
     spec:
       serviceAccountName: joulie-simulator
       containers:
         - name: simulator
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if $emulate.enabled }}
+          # Root owns the emulated trees, as on a real node; the agent pods
+          # that write their limit files run as root too.
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+          {{- end }}
           env:
-            {{- range $key, $val := .Values.env }}
-            - name: {{ $key }}
-              value: {{ $val | quote }}
-            {{- end }}
-            {{- range $key, $val := .Values.extraEnv }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- range $key, $val := $env }}
             - name: {{ $key }}
               value: {{ $val | quote }}
             {{- end }}
           ports:
             - name: http
               containerPort: 18080
+          {{- if $emulate.enabled }}
+          # Ready once the first snapshot is published, so every tree exists.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          {{- end }}
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -46,7 +125,18 @@ spec:
             - name: hardware-catalog
               mountPath: /etc/joulie-sim-catalog
               readOnly: true
-      {{- with .Values.nodeSelector }}
+            {{- if $emulate.enabled }}
+            - name: cluster-spec
+              mountPath: /etc/joulie-sim-spec
+              readOnly: true
+            - name: hwemu-root
+              mountPath: {{ $emulate.root }}
+            {{- end }}
+      {{- $nodeSelector := .Values.nodeSelector | default dict }}
+      {{- if $emulate.enabled }}
+      {{- $nodeSelector = merge (dict) $nodeSelector ($emulate.nodeSelector | default dict) }}
+      {{- end }}
+      {{- with $nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -58,9 +148,21 @@ spec:
         - name: node-classes
           configMap:
             name: {{ .Values.configMaps.nodeClasses.name }}
+            optional: true
         - name: workload-trace
           configMap:
             name: {{ .Values.configMaps.workloadTrace.name }}
+            optional: true
         - name: hardware-catalog
           configMap:
             name: {{ .Values.configMaps.hardwareCatalog.name }}
+            optional: true
+        {{- if $emulate.enabled }}
+        - name: cluster-spec
+          configMap:
+            name: {{ $emulate.clusterSpecConfigMap | default "joulie-simulator-cluster-spec" }}
+        - name: hwemu-root
+          hostPath:
+            path: {{ $emulate.root }}
+            type: DirectoryOrCreate
+        {{- end }}

@@ -6,6 +6,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/matbun/joulie/pkg/otel/semconv"
 	"github.com/matbun/joulie/simulator/pkg/phys"
 )
 
@@ -43,18 +44,48 @@ type nodeChannel struct {
 	J float64
 }
 
-// nodeConstraint is constraint_N of a powercap zone.
+// nodeConstraint is constraint_N of a powercap zone. limitUW is what the
+// register holds, the raw limit times the power unit, which the file reads
+// back; mask is the width of the register's limit field in raw units
+// (nodeLimitMask).
 type nodeConstraint struct {
 	kind         int
-	limitUW      int64 // the readback: quantized, not clamped
+	limitUW      int64
+	mask         int64
 	maxUW        int64
 	windowUS     int64
 	rejectWrites string
 	settledW     float64 // PL1 only: the cap in effect, settling toward targetW
 }
 
-// enforcedUW is the limit the hardware applies: the written one, clamped to
-// max_power_uw when the zone has one (assumed: hardware clamp).
+// Limit fields of the RAPL registers, in raw power units
+// (intel_rapl_common.c): PL1 and PL2 of a package, die or DRAM domain
+// (POWER_LIMIT1_MASK, POWER_LIMIT2_MASK), PL1 and PL2 of the platform
+// domain (PSYS_POWER_LIMIT1_MASK, PSYS_POWER_LIMIT2_MASK) and PL4
+// (POWER_LIMIT4_MASK) on the MSR and MMIO interfaces.
+const (
+	nodeLimitMask15   = 0x7fff
+	nodeLimitMaskPsys = 0x1ffff
+	nodeLimitMaskPL4  = 0x1fff
+)
+
+// nodeLimitMask is the limit field of a constraint of kind on a zone of
+// role: bits wide when the profile's zone says so (limitBits, 18 on TPMI,
+// TPMI_POWER_LIMIT_MASK), else the field of the MSR interface.
+func nodeLimitMask(role, kind int, bits Fact[int]) int64 {
+	switch {
+	case bits.Src != "" && bits.V > 0 && bits.V < 63:
+		return 1<<bits.V - 1
+	case kind == nodePL4:
+		return nodeLimitMaskPL4
+	case role == nodeRolePsys:
+		return nodeLimitMaskPsys
+	}
+	return nodeLimitMask15
+}
+
+// enforcedUW is the limit the hardware applies: the one the register holds,
+// clamped to max_power_uw when the zone has one (assumed: hardware clamp).
 func (c *nodeConstraint) enforcedUW() int64 {
 	if c.maxUW > 0 && c.limitUW > c.maxUW {
 		return c.maxUW
@@ -64,8 +95,11 @@ func (c *nodeConstraint) enforcedUW() int64 {
 
 func (c *nodeConstraint) targetW() float64 { return float64(c.enforcedUW()) / 1e6 }
 
-// nodeZone is one powercap zone of the tree.
+// nodeZone is one powercap zone of the tree. rel is its directory relative
+// to sys/, and component the hw.id its files belong to (stateZoneComponent).
 type nodeZone struct {
+	rel         string
+	component   string
 	role        int
 	socket      int
 	dies        int       // die zones of this zone's package in its control type
@@ -96,15 +130,27 @@ type nodePolicy struct {
 	setpolicy bool // intel_pstate or amd-pstate-epp: powersave follows load
 	governors []string
 	governor  string
-	boost     *int // the global cpufreq/boost, shared by every policy
+	// boost is the boost state the policy runs with: the global
+	// cpufreq/boost, shared by every policy, or, where the driver has
+	// set_boost, the policy's own boost file (buildCPUGovernor).
+	boost     *int
 	epp       string
 	reqMinKHz int64 // as written
 	reqMaxKHz int64
 	curKHz    float64 // the running frequency, ramping toward targetKHz
-	targetKHz float64
+	targetKHz float64 // the governor's frequency with boost (boostedKHz)
 	shownKHz  float64 // curKHz after a package cap, as scaling_cur_freq shows it
 	cur       *nodeSFile
 	curSeeded bool
+
+	// The governor between substeps (phys.GovernorStep): govReqKHz is the
+	// request it keeps, the CurKHz of its next step, and govSetKHz the
+	// frequency it set, a table entry on a table driver, before boost.
+	// govDemand is the demand it last read, and govSeeded false until it
+	// first ran.
+	govReqKHz, govSetKHz int64
+	govDemand            float64
+	govSeeded            bool
 }
 
 func (p *nodePolicy) clampKHz(v int64) int64 {
@@ -168,11 +214,22 @@ func (p *nodePolicy) effMinKHz() int64 {
 	return min(p.resolveKHz(p.clampKHz(p.reqMinKHz), false), p.effMaxKHz())
 }
 
-// target is where the governor holds the policy at util. performance sits at
-// the maximum at any load; powersave on a driver with governors sits at the
-// minimum (cpufreq.rst:372-389). The powersave of intel_pstate and
-// amd-pstate-epp, schedutil, ondemand and any other governor scale linearly
-// with load between the two (assumed).
+// boostedKHz is the frequency the policy runs at when its governor sets
+// set: a table driver with boost on runs above its top entry, up to
+// cpuinfo_max_freq, when the governor sets the top entry and the policy
+// allows it (ceilingKHz); any other frequency stands.
+func (p *nodePolicy) boostedKHz(set int64) int64 {
+	if hi, ceil := p.effMaxKHz(), p.ceilingKHz(); ceil > hi && set >= hi {
+		return ceil
+	}
+	return set
+}
+
+// target is where a profile without governor facts holds the policy at
+// util. performance sits at the maximum at any load; powersave on a driver
+// with governors sits at the minimum (cpufreq.rst:372-389). The powersave
+// of intel_pstate and amd-pstate-epp, schedutil, ondemand and any other
+// governor scale linearly with load between the two (assumed).
 func (p *nodePolicy) target(util float64) float64 {
 	lo, hi := float64(p.effMinKHz()), float64(p.ceilingKHz())
 	switch {
@@ -182,6 +239,22 @@ func (p *nodePolicy) target(util float64) float64 {
 		return lo
 	}
 	return lo + (hi-lo)*math.Max(0, math.Min(1, util))
+}
+
+// effUtil is the busy share of demand u on pol. With the governor facts work
+// is counted in cycles: u is the share the work keeps the policy busy at
+// the frequency performance runs it at under the present limits
+// (ceilingKHz), so a governor holding a lower frequency sees the same work
+// as a busier CPU, up to 1. Under performance it is u, and so it is on a
+// profile without the governor facts. assumed: the governor's frequency
+// (targetKHz), not the ramp toward it, sets the cycles, and a package cap
+// does not raise them, so the cap solve reads the demand alone.
+func (n *Node) effUtil(pol *nodePolicy, u float64) float64 {
+	u = math.Max(0, math.Min(1, u))
+	if !n.cpuGov.on || pol.targetKHz <= 0 {
+		return u
+	}
+	return math.Min(1, u*float64(pol.ceilingKHz())/pol.targetKHz)
 }
 
 // nodeHSMP is the HSMP socket power cap of one package.
@@ -218,10 +291,22 @@ type nodePackage struct {
 	capped     bool
 	capW       float64
 	requestedW float64
+
+	// govNative is the governor of the package's policies in the driver's
+	// own words, and govPreset the preset it maps to; empty when the
+	// policies disagree or no single preset maps. govPresetOf is the
+	// govNative govPreset was derived from, and govKey the state govNative
+	// spells (deriveCPUGovernor).
+	govNative, govPreset string
+	govPresetOf          string
+	govKey               nodeGovKey
 }
 
 // nodeGPU is one GPU. limitRaw is the limit file's value: mW in NVML state, uW
-// in amdgpu hwmon.
+// in amdgpu hwmon. defaultMW is the NVML default limit, where persistReset
+// puts the limit back while persistence, the persistence_mode word, is
+// Disabled. uuid and pciBusID are the GPU's identity as its tools print it,
+// and sysfsPath its PCI device relative to sys/, when the tree has one.
 type nodeGPU struct {
 	index    int
 	nvml     bool
@@ -235,6 +320,13 @@ type nodeGPU struct {
 	pwr      nodeChannel
 	next     float64
 
+	defaultMW   int64
+	persistence string
+	limitFile   *nodeAFile
+	uuid        string
+	pciBusID    string
+	sysfsPath   string
+
 	// NVML only: the energy of each substep of the last telemetry window, a
 	// ring starting at winAt, and the channel energy at the last boundary.
 	win   []float64
@@ -243,7 +335,24 @@ type nodeGPU struct {
 
 	input, average                   *nodeSFile // amdgpu hwmon
 	draw, enforced, energy, utilFile *nodeSFile // NVML state
+
+	// clock is the governor and clock state the physics reads
+	// (clockstate.go); dpm and nvclock the vendor state behind it
+	// (node_dpm.go, node_nvclock.go).
+	clock   gpuClockState
+	dpm     nodeGPUDPM
+	nvclock nodeGPUNVClock
+
+	// rx and tx are the peer transfer bytes the GPU receives and sends: W
+	// the rate in bytes per second, J the bytes up to the start of the
+	// current segment, integrated as energy is. nextRx and nextTx wait for
+	// adopt as next does.
+	rx, tx         nodeChannel
+	nextRx, nextTx float64
 }
+
+// id is the GPU's hw.id, gpu<index>.
+func (g *nodeGPU) id() string { return stateID(semconv.HwTypeGPU, g.index) }
 
 // limitW is the limit as set, in W.
 func (g *nodeGPU) limitW() float64 {
@@ -278,20 +387,24 @@ func (g *nodeGPU) targetW() float64 {
 // read as no cap at all (phys.CappedBoardGPUModel.Power).
 const nodeMinGPUCapW = 1e-3
 
+// nodeIdleUtil is the utilization below which a package counts as idle for
+// physics.cpu.idleGovernorDeltaW, the same threshold as the GPU clock
+// model's (assumed).
+const nodeIdleUtil = 0.05
+
 // derive recomputes everything that follows from the state at the last
-// substep boundary and the current inputs: governor targets, natural and
-// capped package power, the frequency scaling_cur_freq shows, and GPU power.
-// The new powers wait in next until adopt or a substep takes them.
+// substep boundary and the current inputs: natural and capped package power,
+// the frequency scaling_cur_freq shows, the governor state State reports,
+// GPU clocks and power, and the peer transfer rates. The new powers and
+// rates wait in next until adopt or a substep takes them. Governors run at
+// substep boundaries (governorTick); derive runs one for a single sampling
+// period only when it never ran or its demand changed since, so a new load
+// moves the target at once, and the frequency still ramps toward it.
 func (n *Node) derive() {
-	for _, pol := range n.policies {
-		u := 0.0
-		for _, c := range pol.cpus {
-			u += n.cpuUtil[c]
+	for i, pol := range n.policies {
+		if !pol.govSeeded || n.policyDemand(pol) != pol.govDemand {
+			n.governorTick(i, pol, 0)
 		}
-		if len(pol.cpus) > 0 {
-			u /= float64(len(pol.cpus))
-		}
-		pol.targetKHz = pol.target(u)
 		if !pol.curSeeded {
 			pol.curKHz, pol.curSeeded = pol.targetKHz, true
 		}
@@ -307,22 +420,34 @@ func (n *Node) derive() {
 			}
 		}
 	}
+	n.deriveCPUGovernor()
+	n.deriveGovernorPresets()
+	n.deriveGPUDPM()
+	n.deriveNVClock()
 	for _, g := range n.gpus {
-		s := phys.DeviceState{
-			Utilization:     n.gpuUtil(g.index),
-			CapWatts:        math.Max(g.settledW, nodeMinGPUCapW),
-			MemoryIntensity: n.load.MemoryIntensity,
-			Class:           n.load.GPUClass,
-		}
-		g.next = n.gpuModel.Power(s)
+		g.next = n.gpuPowerW(g, n.gpuDeviceState(g))
 		if !g.avgSeed {
 			g.avgW, g.avgSeed = g.next, true
 		}
 	}
+	n.derivePeers()
+}
+
+// gpuDeviceState is what the GPU model reads for g: its utilization, the
+// enforced limit and the load's class and memory intensity.
+func (n *Node) gpuDeviceState(g *nodeGPU) phys.DeviceState {
+	return phys.DeviceState{
+		Utilization:     n.gpuUtil(g.index),
+		CapWatts:        math.Max(g.settledW, nodeMinGPUCapW),
+		MemoryIntensity: n.load.MemoryIntensity,
+		Class:           n.load.GPUClass,
+	}
 }
 
 // derivePackage is steps 3 and 4 for one package. Natural power comes from the
-// CPU model at the package's mean frequency scale. Above the cap the scale is
+// CPU model at the package's mean frequency scale and mean busy share, work
+// counted in cycles (nodePolicy.effUtil), plus idleGovernorW while the
+// package idles. Above the cap the scale is
 // solved for the cap, and power is max(min(natural, cap), floorW, power at
 // minScale): a cap below what the lowest frequency reaches shows as power
 // above the limit, never as a changed readback. Power never exceeds
@@ -331,11 +456,12 @@ func (n *Node) derivePackage(pk *nodePackage) {
 	pk.util = 0
 	pk.natScale = 0
 	for _, c := range pk.cpus {
-		pk.util += n.cpuUtil[c]
-		scale := 1.0
+		u, scale := n.cpuUtil[c], 1.0
 		if pol := n.cpuPolicy[c]; pol != nil && pol.maxKHz > 0 {
+			u = n.effUtil(pol, u)
 			scale = pol.curKHz / float64(pol.maxKHz)
 		}
+		pk.util += u
 		pk.natScale += scale
 	}
 	if len(pk.cpus) > 0 {
@@ -352,6 +478,9 @@ func (n *Node) derivePackage(pk *nodePackage) {
 		Class:           n.load.CPUClass,
 	}
 	natural := n.cpuModel.Power(s)
+	if pk.util < nodeIdleUtil {
+		natural += n.idleGovernorW(pk)
+	}
 	pk.next, pk.effScale, pk.capped = natural, pk.natScale, false
 	if natural > capW {
 		lowest := s
@@ -403,16 +532,17 @@ func (n *Node) packageCap(pk *nodePackage) (capW, requestedW float64) {
 	return capW, requestedW
 }
 
-// adopt makes the derived powers current at t. When one changed, energy is
-// first committed at t with the old powers, so a counter never runs backwards
-// and a step that changes nothing leaves the integration untouched.
+// adopt makes the derived powers and peer rates current at t. When one
+// changed, energy and bytes are first committed at t with the old ones, so a
+// counter never runs backwards and a step that changes nothing leaves the
+// integration untouched.
 func (n *Node) adopt(t time.Time) {
 	changed := false
 	for _, pk := range n.pkgs {
 		changed = changed || pk.next != pk.pwr.W
 	}
 	for _, g := range n.gpus {
-		changed = changed || g.next != g.pwr.W
+		changed = changed || g.next != g.pwr.W || g.nextRx != g.rx.W || g.nextTx != g.tx.W
 	}
 	if changed {
 		n.commit(t)
@@ -426,6 +556,7 @@ func (n *Node) assign() {
 	}
 	for _, g := range n.gpus {
 		g.pwr.W = g.next
+		g.rx.W, g.tx.W = g.nextRx, g.nextTx
 	}
 }
 
@@ -440,6 +571,8 @@ func (n *Node) commit(t time.Time) {
 		n.other.J += n.other.W * dt
 		for _, g := range n.gpus {
 			g.pwr.J += g.pwr.W * dt
+			g.rx.J += g.rx.W * dt
+			g.tx.J += g.tx.W * dt
 		}
 	}
 	n.segT = t
@@ -447,7 +580,8 @@ func (n *Node) commit(t time.Time) {
 
 // substep advances the physics by one substep, to the boundary t: energy up
 // to t at the powers of the substep, then caps, averages and frequencies
-// settle (step 2 and 3), and the powers of the next substep follow (step 4).
+// settle (step 2 and 3), the governors read the substep that ended, and the
+// powers of the next substep follow (step 4).
 // Substep boundaries sit on a fixed grid from Options.Start, so the state at
 // any time is the same however AdvanceTo cut the way there.
 func (n *Node) substep(t time.Time) {
@@ -476,6 +610,12 @@ func (n *Node) substep(t time.Time) {
 	for _, pol := range n.policies {
 		pol.curKHz = phys.FirstOrderToward(pol.curKHz, pol.targetKHz, h, n.rampTau)
 	}
+	for i, pol := range n.policies {
+		n.governorTick(i, pol, h)
+	}
+	n.substepCPUGovernor(h)
+	n.substepGPUDPM(h)
+	n.substepNVClock(h)
 	n.grid = t
 	n.derive()
 	n.assign()
@@ -621,7 +761,18 @@ func (n *Node) writeOutputs() error {
 			put(g.utilFile, int64(math.Round(100*n.gpuUtil(g.index))))
 		}
 	}
+	errs = append(errs, n.writeCPUGovernor(), n.writeGPUDPM(), n.writeNVClock())
+	n.settlePeerBytes(dt)
 	return errors.Join(errs...)
+}
+
+// settlePeerBytes brings the peer byte counts State reports up to the
+// node's time, dt seconds into the current segment.
+func (n *Node) settlePeerBytes(dt float64) {
+	for _, g := range n.gpus {
+		g.clock.peerRxBytes = g.rx.J + g.rx.W*dt
+		g.clock.peerTxBytes = g.tx.J + g.tx.W*dt
+	}
 }
 
 // nodeMicroWatts is a hwmon power reading: whole mW, times 1000

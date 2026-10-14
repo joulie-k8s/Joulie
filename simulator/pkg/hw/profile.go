@@ -2,7 +2,6 @@ package hw
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"sigs.k8s.io/yaml"
@@ -11,8 +10,6 @@ import (
 // Profile defines the node hardware-power model used by the simulator.
 type Profile struct {
 	BaseIdleW                 float64
-	PodW                      float64
-	DvfsDropW                 float64
 	RaplHeadW                 float64
 	DefaultCapW               float64
 	PMaxW                     float64
@@ -25,7 +22,6 @@ type Profile struct {
 	DvfsRampMS                int
 	CPUCapApplyTauMS          int
 	CPUTelemetryWindowMS      int
-	NoiseStddevW              float64
 	CPUAmbientTempC           float64
 	CPUThermalTauMS           int
 	CPUWattsPerDeltaC         float64
@@ -42,6 +38,21 @@ type Profile struct {
 	CPUSocketCapMinW          float64
 	CPUSocketCapMaxW          float64
 	GPU                       GPUProfile
+	// Defaulted marks the fields that still hold their built-in constant.
+	Defaulted Defaulted
+}
+
+// Defaulted marks the Profile fields that hold a built-in constant because
+// neither the environment nor a node class set them. Model resolution lets
+// the hardware catalogue entry a node matches replace them. A field so comes
+// from the node class, else the environment, else the catalogue, else the
+// constant. ApplyOverrides clears the mark of every field a class sets.
+type Defaulted struct {
+	PMaxW                bool
+	CPUSocketCapMinW     bool
+	CPUSocketCapMaxW     bool
+	GPUMaxWattsPerGPU    bool
+	GPUMinCapWattsPerGPU bool
 }
 
 type PowerPoint struct {
@@ -67,12 +78,6 @@ type GPUProfile struct {
 	ComputeGamma          float64
 	MemoryEpsilon         float64
 	MemoryGamma           float64
-	PowerModel            GPUPowerModel
-}
-
-type GPUPowerModel struct {
-	AlphaUtil float64
-	BetaCap   float64
 }
 
 type ClassFile struct {
@@ -87,8 +92,6 @@ type Class struct {
 
 type Overrides struct {
 	BaseIdleW                 *float64      `yaml:"baseIdleW"`
-	PodW                      *float64      `yaml:"podW"`
-	DvfsDropW                 *float64      `yaml:"dvfsDropWPerPct"`
 	RaplHeadW                 *float64      `yaml:"raplHeadW"`
 	DefaultCapW               *float64      `yaml:"defaultCapW"`
 	PMaxW                     *float64      `yaml:"pMaxW"`
@@ -101,7 +104,6 @@ type Overrides struct {
 	DvfsRampMS                *int          `yaml:"dvfsRampMs"`
 	CPUCapApplyTauMS          *int          `yaml:"cpuCapApplyTauMs"`
 	CPUTelemetryWindowMS      *int          `yaml:"cpuTelemetryWindowMs"`
-	NoiseStddevW              *float64      `yaml:"noiseStddevW"`
 	CPUAmbientTempC           *float64      `yaml:"cpuAmbientTempC"`
 	CPUThermalTauMS           *int          `yaml:"cpuThermalTauMs"`
 	CPUWattsPerDeltaC         *float64      `yaml:"cpuWattsPerDeltaC"`
@@ -121,41 +123,29 @@ type Overrides struct {
 }
 
 type GPUOverrides struct {
-	Vendor                *string            `yaml:"vendor"`
-	Product               *string            `yaml:"product"`
-	Count                 *int               `yaml:"count"`
-	IdleWattsPerGPU       *float64           `yaml:"idleWattsPerGpu"`
-	MaxWattsPerGPU        *float64           `yaml:"maxWattsPerGpu"`
-	MinCapWattsPerGPU     *float64           `yaml:"minCapWattsPerGpu"`
-	CapApplyTauMS         *int               `yaml:"capApplyTauMs"`
-	TelemetryWindowMS     *int               `yaml:"telemetryWindowMs"`
-	AmbientTempC          *float64           `yaml:"ambientTempC"`
-	ThermalTauMS          *int               `yaml:"thermalTauMs"`
-	WattsPerDeltaC        *float64           `yaml:"wattsPerDeltaC"`
-	ThermalThrottleStartC *float64           `yaml:"thermalThrottleStartC"`
-	ThermalThrottleFullC  *float64           `yaml:"thermalThrottleFullC"`
-	Provenance            *string            `yaml:"provenance"`
-	ComputeGamma          *float64           `yaml:"computeGamma"`
-	MemoryEpsilon         *float64           `yaml:"memoryEpsilon"`
-	MemoryGamma           *float64           `yaml:"memoryGamma"`
-	PowerModel            *GPUPowerOverrides `yaml:"powerModel"`
-}
-
-type GPUPowerOverrides struct {
-	AlphaUtil *float64 `yaml:"alphaUtil"`
-	BetaCap   *float64 `yaml:"betaCap"`
+	Vendor                *string  `yaml:"vendor"`
+	Product               *string  `yaml:"product"`
+	Count                 *int     `yaml:"count"`
+	IdleWattsPerGPU       *float64 `yaml:"idleWattsPerGpu"`
+	MaxWattsPerGPU        *float64 `yaml:"maxWattsPerGpu"`
+	MinCapWattsPerGPU     *float64 `yaml:"minCapWattsPerGpu"`
+	CapApplyTauMS         *int     `yaml:"capApplyTauMs"`
+	TelemetryWindowMS     *int     `yaml:"telemetryWindowMs"`
+	AmbientTempC          *float64 `yaml:"ambientTempC"`
+	ThermalTauMS          *int     `yaml:"thermalTauMs"`
+	WattsPerDeltaC        *float64 `yaml:"wattsPerDeltaC"`
+	ThermalThrottleStartC *float64 `yaml:"thermalThrottleStartC"`
+	ThermalThrottleFullC  *float64 `yaml:"thermalThrottleFullC"`
+	Provenance            *string  `yaml:"provenance"`
+	ComputeGamma          *float64 `yaml:"computeGamma"`
+	MemoryEpsilon         *float64 `yaml:"memoryEpsilon"`
+	MemoryGamma           *float64 `yaml:"memoryGamma"`
 }
 
 func ApplyOverrides(base Profile, o Overrides) Profile {
 	out := base
 	if o.BaseIdleW != nil {
 		out.BaseIdleW = *o.BaseIdleW
-	}
-	if o.PodW != nil {
-		out.PodW = *o.PodW
-	}
-	if o.DvfsDropW != nil {
-		out.DvfsDropW = *o.DvfsDropW
 	}
 	if o.RaplHeadW != nil {
 		out.RaplHeadW = *o.RaplHeadW
@@ -165,6 +155,7 @@ func ApplyOverrides(base Profile, o Overrides) Profile {
 	}
 	if o.PMaxW != nil {
 		out.PMaxW = *o.PMaxW
+		out.Defaulted.PMaxW = false
 	}
 	if o.AlphaUtil != nil {
 		out.AlphaUtil = *o.AlphaUtil
@@ -192,9 +183,6 @@ func ApplyOverrides(base Profile, o Overrides) Profile {
 	}
 	if o.CPUTelemetryWindowMS != nil {
 		out.CPUTelemetryWindowMS = *o.CPUTelemetryWindowMS
-	}
-	if o.NoiseStddevW != nil {
-		out.NoiseStddevW = *o.NoiseStddevW
 	}
 	if o.CPUAmbientTempC != nil {
 		out.CPUAmbientTempC = *o.CPUAmbientTempC
@@ -237,9 +225,11 @@ func ApplyOverrides(base Profile, o Overrides) Profile {
 	}
 	if o.CPUSocketCapMinW != nil {
 		out.CPUSocketCapMinW = *o.CPUSocketCapMinW
+		out.Defaulted.CPUSocketCapMinW = false
 	}
 	if o.CPUSocketCapMaxW != nil {
 		out.CPUSocketCapMaxW = *o.CPUSocketCapMaxW
+		out.Defaulted.CPUSocketCapMaxW = false
 	}
 	if o.GPU != nil {
 		if o.GPU.Vendor != nil {
@@ -256,9 +246,11 @@ func ApplyOverrides(base Profile, o Overrides) Profile {
 		}
 		if o.GPU.MaxWattsPerGPU != nil {
 			out.GPU.MaxWattsPerGPU = *o.GPU.MaxWattsPerGPU
+			out.Defaulted.GPUMaxWattsPerGPU = false
 		}
 		if o.GPU.MinCapWattsPerGPU != nil {
 			out.GPU.MinCapWattsPerGPU = *o.GPU.MinCapWattsPerGPU
+			out.Defaulted.GPUMinCapWattsPerGPU = false
 		}
 		if o.GPU.CapApplyTauMS != nil {
 			out.GPU.CapApplyTauMS = *o.GPU.CapApplyTauMS
@@ -292,14 +284,6 @@ func ApplyOverrides(base Profile, o Overrides) Profile {
 		}
 		if o.GPU.MemoryGamma != nil {
 			out.GPU.MemoryGamma = *o.GPU.MemoryGamma
-		}
-		if o.GPU.PowerModel != nil {
-			if o.GPU.PowerModel.AlphaUtil != nil {
-				out.GPU.PowerModel.AlphaUtil = *o.GPU.PowerModel.AlphaUtil
-			}
-			if o.GPU.PowerModel.BetaCap != nil {
-				out.GPU.PowerModel.BetaCap = *o.GPU.PowerModel.BetaCap
-			}
 		}
 	}
 	return out
@@ -347,9 +331,6 @@ func ValidateProfile(p Profile) error {
 	}
 	if p.CPUTelemetryWindowMS < 0 {
 		return fmt.Errorf("cpuTelemetryWindowMs must be >= 0")
-	}
-	if p.NoiseStddevW < 0 {
-		return fmt.Errorf("noiseStddevW must be >= 0")
 	}
 	if p.CPUAmbientTempC < 0 {
 		return fmt.Errorf("cpuAmbientTempC must be >= 0")
@@ -417,12 +398,6 @@ func ValidateProfile(p Profile) error {
 		if p.GPU.MinCapWattsPerGPU > p.GPU.MaxWattsPerGPU {
 			return fmt.Errorf("gpu.minCapWattsPerGpu must be <= gpu.maxWattsPerGpu")
 		}
-		if p.GPU.PowerModel.AlphaUtil <= 0 {
-			return fmt.Errorf("gpu.powerModel.alphaUtil must be > 0")
-		}
-		if p.GPU.PowerModel.BetaCap <= 0 {
-			return fmt.Errorf("gpu.powerModel.betaCap must be > 0")
-		}
 		if p.GPU.CapApplyTauMS < 0 {
 			return fmt.Errorf("gpu.capApplyTauMs must be >= 0")
 		}
@@ -484,9 +459,6 @@ func ValidateOverrides(o Overrides) error {
 	}
 	if o.CPUTelemetryWindowMS != nil && *o.CPUTelemetryWindowMS < 0 {
 		return fmt.Errorf("cpuTelemetryWindowMs override must be >= 0")
-	}
-	if o.NoiseStddevW != nil && *o.NoiseStddevW < 0 {
-		return fmt.Errorf("noiseStddevW override must be >= 0")
 	}
 	if o.CPUAmbientTempC != nil && *o.CPUAmbientTempC < 0 {
 		return fmt.Errorf("cpuAmbientTempC override must be >= 0")
@@ -554,14 +526,6 @@ func ValidateOverrides(o Overrides) error {
 		if o.GPU.MinCapWattsPerGPU != nil && *o.GPU.MinCapWattsPerGPU <= 0 {
 			return fmt.Errorf("gpu.minCapWattsPerGpu override must be > 0")
 		}
-		if o.GPU.PowerModel != nil {
-			if o.GPU.PowerModel.AlphaUtil != nil && *o.GPU.PowerModel.AlphaUtil <= 0 {
-				return fmt.Errorf("gpu.powerModel.alphaUtil override must be > 0")
-			}
-			if o.GPU.PowerModel.BetaCap != nil && *o.GPU.PowerModel.BetaCap <= 0 {
-				return fmt.Errorf("gpu.powerModel.betaCap override must be > 0")
-			}
-		}
 		if o.GPU.MinCapWattsPerGPU != nil && o.GPU.MaxWattsPerGPU != nil && *o.GPU.MinCapWattsPerGPU > *o.GPU.MaxWattsPerGPU {
 			return fmt.Errorf("gpu.minCapWattsPerGpu override must be <= gpu.maxWattsPerGpu override")
 		}
@@ -626,14 +590,9 @@ func ValidateClasses(base Profile, classes []Class) error {
 	return nil
 }
 
-func LoadClasses(path string, base Profile) ([]Class, error) {
-	if strings.TrimSpace(path) == "" {
-		return nil, nil
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
+// ParseClasses decodes a node class file, drops the classes without a name
+// and validates the rest against base.
+func ParseClasses(b []byte, base Profile) ([]Class, error) {
 	var cfg ClassFile
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return nil, err
@@ -652,4 +611,54 @@ func LoadClasses(path string, base Profile) ([]Class, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// removedModelKeys are the class model keys of knobs that no longer exist;
+// nothing read them. removedGPUKeys are the same under model.gpu.
+var (
+	removedModelKeys = []string{"podW", "dvfsDropWPerPct", "noiseStddevW"}
+	removedGPUKeys   = []string{"powerModel"}
+)
+
+// RemovedClassKeys returns the removed model keys that some class of a node
+// class file still sets, each once, spelled "model.<key>" or
+// "model.gpu.<key>". Keys match regardless of case, as the decoder matched
+// them. A file that does not decode returns none: ParseClasses reports it.
+func RemovedClassKeys(b []byte) []string {
+	var cfg struct {
+		Classes []struct {
+			Model map[string]any `json:"model"`
+		} `json:"classes"`
+	}
+	if err := yaml.Unmarshal(b, &cfg); err != nil {
+		return nil
+	}
+	var out []string
+	add := func(m map[string]any, keys []string, prefix string) {
+		for _, k := range keys {
+			for mk := range m {
+				if strings.EqualFold(mk, k) && !containsString(out, prefix+k) {
+					out = append(out, prefix+k)
+				}
+			}
+		}
+	}
+	for _, c := range cfg.Classes {
+		add(c.Model, removedModelKeys, "model.")
+		for mk, v := range c.Model {
+			if gpu, ok := v.(map[string]any); ok && strings.EqualFold(mk, "gpu") {
+				add(gpu, removedGPUKeys, "model.gpu.")
+			}
+		}
+	}
+	return out
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

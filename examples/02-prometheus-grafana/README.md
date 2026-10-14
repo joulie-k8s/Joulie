@@ -14,12 +14,13 @@ It includes:
 - Prometheus scraping from `joulie-system/joulie-agent-metrics:8080/metrics`.
 - Grafana running.
 
-If you need to install kube-prometheus-stack first:
+If you need to install kube-prometheus-stack first, install it into the `monitoring` namespace. The chart's default `PROMETHEUS_ADDRESS`, `http://prometheus-operated.monitoring:9090`, resolves only there:
 
 ```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update
-helm install telemetry prometheus-community/kube-prometheus-stack -f values/prometheus-grafana.yaml
+helm install telemetry prometheus-community/kube-prometheus-stack \
+  -n monitoring --create-namespace -f values/prometheus-grafana.yaml
 ```
 
 ## 1) Verify metrics endpoint
@@ -39,9 +40,34 @@ curl -s localhost:18080/metrics | grep '^joulie_' | head
 ## Quick access (Prometheus + Grafana UI)
 
 ```bash
-kubectl port-forward svc/telemetry-kube-prometheus-prometheus 9090:9090 1>/dev/null &
-kubectl port-forward svc/telemetry-grafana 5000:80 1>/dev/null &
+kubectl -n monitoring port-forward svc/telemetry-kube-prometheus-prometheus 9090:9090 1>/dev/null &
+kubectl -n monitoring port-forward svc/telemetry-grafana 5000:80 1>/dev/null &
 ```
+
+## OTLP inputs for the controller manager
+
+The controller manager reads measured node power and the facility metrics from Prometheus as OpenTelemetry metrics (`hw.energy`, `hw.power`, `joulie.facility.*`). Producers push them to Prometheus' OTLP receiver; the controller manager only runs PromQL. `values/prometheus-grafana.yaml` sets the four Prometheus fields this needs:
+
+| Field | Value | Why |
+|---|---|---|
+| `prometheusSpec.enableOTLPReceiver` | `true` | serves `POST /api/v1/otlp/v1/metrics`; off by default |
+| `prometheusSpec.otlp.promoteResourceAttributes` | `[k8s.node.name, host.name]` | puts the node on every series; without it the controller manager joins `target_info` |
+| `prometheusSpec.otlp.translationStrategy` | `UnderscoreEscapingWithSuffixes` | must equal the controller manager's `PROMETHEUS_NAME_TRANSLATION` |
+| `prometheusSpec.tsdb.outOfOrderTimeWindow` | `30m` | OTLP samples carry the producer's timestamps |
+
+Point an OTLP exporter at the receiver, for example the simulator in emulate mode or an OpenTelemetry Collector:
+
+```bash
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://telemetry-kube-prometheus-prometheus.monitoring:9090/api/v1/otlp/v1/metrics
+```
+
+Check that the series the controller manager reads exist, under the names the default strategy gives them:
+
+```bash
+curl -s localhost:9090/api/v1/query --data-urlencode 'query=count by (k8s_node_name, hw_type) (hw_energy_joules_total)'
+```
+
+The controller manager counts each query in `joulie_twin_input_queries_total{input,result}`; a `no_data` result usually means the receiver is off or `k8s.node.name` is neither promoted nor on `target_info`. The full input contract is in the [telemetry page](https://joulie-k8s.github.io/Joulie/docs/architecture/telemetry/#input-metrics-opentelemetry).
 
 ## 2) Prometheus scrape configuration
 

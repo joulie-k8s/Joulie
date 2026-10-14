@@ -1,0 +1,1 @@
+{"type":"job","schemaVersion":"v2","jobId":"j0","submitTimeOffsetSec":0,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"1"}},"work":{"cpuUnits":60,"gpuUnits":0}}

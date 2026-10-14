@@ -14,6 +14,54 @@
     "controlAvailable": true,
     "coresPerSocket": 64,
     "driverFamily": "intel_cpufreq",
+    "governor": {
+      "available": [
+        "conservative",
+        "ondemand",
+        "userspace",
+        "powersave",
+        "performance",
+        "schedutil"
+      ],
+      "baseline": {
+        "groups": [
+          {
+            "boost": "on",
+            "governor": "schedutil",
+            "policies": "0-127"
+          }
+        ]
+      },
+      "boost": {
+        "scope": "no-turbo",
+        "state": "on"
+      },
+      "current": "schedutil",
+      "driver": "intel_cpufreq",
+      "driverMode": "passive",
+      "presets": [
+        {
+          "native": "performance",
+          "preset": "performance",
+          "result": "applied"
+        },
+        {
+          "native": "schedutil",
+          "preset": "balanced",
+          "result": "applied"
+        },
+        {
+          "native": "conservative",
+          "preset": "efficiency",
+          "result": "applied"
+        }
+      ],
+      "writable": true
+    },
+    "landmarks": {
+      "maxBoostMHz": 4000,
+      "minFreqMHz": 800
+    },
     "model": "INTEL_XEON_GOLD_6530",
     "rawModel": "INTEL(R) XEON(R) GOLD 6530",
     "sockets": 2,
@@ -31,6 +79,69 @@
     "controlAvailable": true,
     "count": 4,
     "currentCapWatts": 700,
+    "governor": {
+      "baseline": {
+        "devices": [
+          {
+            "busId": "00000000:10:00.0",
+            "level": "unknown"
+          },
+          {
+            "busId": "00000000:11:00.0",
+            "level": "unknown"
+          },
+          {
+            "busId": "00000000:12:00.0",
+            "level": "unknown"
+          },
+          {
+            "busId": "00000000:13:00.0",
+            "level": "unknown"
+          }
+        ]
+      },
+      "clockRangesMHz": {
+        "graphics": {
+          "max": 1980,
+          "min": 345
+        },
+        "memory": {
+          "max": 2619,
+          "min": 2619
+        }
+      },
+      "current": "unknown",
+      "mechanism": "nvidia-smi",
+      "presets": [
+        {
+          "native": "unknown",
+          "preset": "auto",
+          "result": "equivalent"
+        },
+        {
+          "native": "unknown",
+          "preset": "sustained",
+          "result": "equivalent"
+        },
+        {
+          "native": "-lgc 345,1575",
+          "preset": "efficient",
+          "result": "applied"
+        },
+        {
+          "native": "-lgc 345,345",
+          "preset": "low",
+          "result": "applied"
+        },
+        {
+          "native": "-lgc 1980,1980",
+          "preset": "peak",
+          "result": "applied"
+        }
+      ],
+      "uniform": false,
+      "writable": true
+    },
     "model": "NVIDIA_H100_SXM",
     "present": true,
     "rawModel": "NVIDIA H100 80GB HBM3",

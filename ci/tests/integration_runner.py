@@ -398,11 +398,44 @@ def install_http_mock() -> None:
             data:
               server.py: |
                 import json
+                import time
                 from http.server import BaseHTTPRequestHandler, HTTPServer
-                STATS = {"get": 0, "post": 0, "gpu_post": 0}
+                # get: legacy JSON reads (/telemetry/{node}?format=legacy), otlp_get: OTLP reads
+                # (/otlp/telemetry/{node}, and /telemetry/{node} by default, as the simulator serves them).
+                STATS = {"get": 0, "otlp_get": 0, "post": 0, "gpu_post": 0}
+                START_NS = time.time_ns()
+                # Two CPU packages of 125 W: 250 W per node, the legacy body's packagePowerWatts.
+                PACKAGE_W = 125.0
+                def kv(key, value):
+                    return {"key": key, "value": {"stringValue": value}}
+                def otlp_body(node):
+                    # One ExportMetricsServiceRequest for node, as the simulator's
+                    # /otlp/telemetry/{node} serves it: a cumulative hw.energy counter
+                    # and the hw.power gauge per CPU package, k8s.node.name on the resource.
+                    now = time.time_ns()
+                    seconds = (now - START_NS) / 1e9
+                    energy, power = [], []
+                    for i in (0, 1):
+                        attrs = [kv("hw.id", "cpu%d" % i), kv("hw.type", "cpu"), kv("hw.name", "package-%d" % i)]
+                        energy.append({"attributes": attrs, "startTimeUnixNano": str(START_NS), "timeUnixNano": str(now), "asDouble": PACKAGE_W * seconds})
+                        power.append({"attributes": attrs, "timeUnixNano": str(now), "asDouble": PACKAGE_W})
+                    return {"resourceMetrics": [{
+                        "resource": {"attributes": [kv("service.name", "joulie-it-mock"), kv("service.instance.id", node), kv("k8s.node.name", node)]},
+                        "scopeMetrics": [{"scope": {"name": "joulie-it-mock"}, "metrics": [
+                            {"name": "hw.energy", "unit": "J", "sum": {"aggregationTemporality": 2, "isMonotonic": True, "dataPoints": energy}},
+                            {"name": "hw.power", "unit": "W", "gauge": {"dataPoints": power}},
+                        ]}],
+                    }]}
                 class H(BaseHTTPRequestHandler):
                     def do_GET(self):
-                        if self.path.startswith("/telemetry/"):
+                        path, _, query = self.path.partition("?")
+                        legacy = "format=legacy" in query.split("&")
+                        if path.startswith("/otlp/telemetry/") or (path.startswith("/telemetry/") and not legacy):
+                            STATS["otlp_get"] += 1
+                            node = path.split("/telemetry/", 1)[1]
+                            self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+                            self.wfile.write(json.dumps(otlp_body(node)).encode())
+                        elif path.startswith("/telemetry/"):
                             STATS["get"] += 1
                             self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
                             self.wfile.write(json.dumps({"cpu":{"packagePowerWatts":250.0}}).encode())
@@ -470,12 +503,23 @@ def install_http_mock() -> None:
     wait_rollout("joulie-it", "deploy/joulie-http-mock")
 
 
+HTTP_MOCK_BASE = "http://joulie-http-mock.joulie-it.svc.cluster.local:8080"
+
+# Expected measured power of every node from the mock: two 125 W packages over
+# OTLP, or packagePowerWatts 250 in the legacy JSON.
+HTTP_MOCK_NODE_POWER_W = 250.0
+
+
 def apply_telemetry_profile(node: str) -> None:
-    """Configure agent telemetry via env vars (replaces the removed TelemetryProfile CRD)."""
-    mock_base = "http://joulie-http-mock.joulie-it.svc.cluster.local:8080"
+    """Configure agent telemetry via env vars (replaces the removed TelemetryProfile CRD).
+
+    The agent reads the OTLP route; {node} is left for the agent to fill in, so
+    each node reads the export whose k8s.node.name is its own.
+    """
+    mock_base = HTTP_MOCK_BASE
     envs = [
         "TELEMETRY_CPU_SOURCE=http",
-        f"TELEMETRY_CPU_HTTP_ENDPOINT={mock_base}/telemetry/{node}",
+        f"TELEMETRY_CPU_HTTP_ENDPOINT={mock_base}/otlp/telemetry/{{node}}",
         "TELEMETRY_CPU_CONTROL=http",
         f"TELEMETRY_CPU_CONTROL_HTTP_ENDPOINT={mock_base}/control/{node}",
         "TELEMETRY_CPU_CONTROL_MODE=dvfs",
@@ -494,6 +538,31 @@ def apply_telemetry_profile(node: str) -> None:
         if result.returncode == 0:
             wait_rollout("joulie-system", target)
             break
+
+
+def apply_controller_node_power_http() -> None:
+    """Point the controller manager's node power at the mock's legacy JSON.
+
+    The chart default is NODE_POWER_SOURCE=prometheus; the legacy
+    packagePowerWatts body stays readable until v0.4.0, and this keeps that
+    deprecated path covered while the agent reads OTLP. /telemetry/{node}
+    serves OTLP by default, as the simulator's does, so the legacy body
+    needs ?format=legacy until v0.4.0 as well.
+    """
+    kubectl([
+        "-n", "joulie-system", "set", "env", "deploy/joulie-controller-manager",
+        "NODE_POWER_SOURCE=http",
+        f"NODE_POWER_HTTP_ENDPOINT={HTTP_MOCK_BASE}/telemetry/{{node}}?format=legacy",
+    ])
+    wait_rollout("joulie-system", "deploy/joulie-controller-manager")
+
+
+def get_twin_power_measurement(node: str) -> dict[str, Any]:
+    """Read status.powerMeasurement of a NodeTwin, empty when not written yet."""
+    out = kubectl(["get", "nodetwin", node, "-o", "json"], capture=True, check=False)
+    if out.returncode != 0 or not out.stdout.strip():
+        return {}
+    return json.loads(out.stdout).get("status", {}).get("powerMeasurement", {}) or {}
 
 
 def get_mock_stats() -> dict[str, Any]:
@@ -688,8 +757,8 @@ def test_telemetry_http(ctx: Ctx) -> None:
     apply_telemetry_profile(ctx.eco_node)
     time.sleep(12)
     stats = get_mock_stats()
-    if stats.get("get", 0) <= 0:
-        raise AssertionError(f"expected telemetry GETs > 0, stats={stats}")
+    if stats.get("otlp_get", 0) <= 0:
+        raise AssertionError(f"expected OTLP telemetry GETs > 0, stats={stats}")
     if stats.get("post", 0) <= 0:
         raise AssertionError(f"expected control POSTs > 0, stats={stats}")
     patch_node_gpu_cap(ctx.eco_node, 200)
@@ -905,6 +974,43 @@ def test_fsm_idempotency(ctx: Ctx) -> None:
     # Draining is tracked via NodeTwinState.schedulableClass, not as a node label.
     if "joulie.io/draining" in labels_after:
         raise AssertionError("joulie.io/draining label should not exist on node")
+
+
+def test_twin_power_http(ctx: Ctx) -> None:
+    """IT-TWIN-POWER-01: measured node power reaches the NodeTwin.
+
+    With the chart defaults the controller manager reads node power from
+    Prometheus (NODE_POWER_SOURCE=prometheus). CI runs no Prometheus, so the
+    twin must say prometheus-no-data rather than fail or stay static. Pointed at
+    the mock's legacy JSON route, every node must then report the mock's 250 W
+    with source http.
+    """
+    log("IT-TWIN-POWER-01")
+
+    def _default_source() -> bool:
+        return get_twin_power_measurement(ctx.perf_node).get("source", "") == "prometheus-no-data"
+
+    wait_until(_default_source, timeout_sec=60, desc="twin power source prometheus-no-data under chart defaults")
+
+    before = int(get_mock_stats().get("get", 0))
+    apply_controller_node_power_http()
+
+    def _http_power() -> bool:
+        for node in (ctx.perf_node, ctx.eco_node):
+            pm = get_twin_power_measurement(node)
+            if pm.get("source", "") != "http":
+                return False
+            if abs(float(pm.get("measuredNodePowerW", 0) or 0) - HTTP_MOCK_NODE_POWER_W) > 0.01:
+                return False
+        return True
+
+    wait_until(_http_power, timeout_sec=60, desc=f"twin measuredNodePowerW {HTTP_MOCK_NODE_POWER_W} from http")
+    stats = get_mock_stats()
+    if int(stats.get("get", 0)) <= before:
+        raise AssertionError(f"expected the controller manager's legacy telemetry GETs to grow past {before}, stats={stats}")
+    for node in (ctx.perf_node, ctx.eco_node):
+        pm = get_twin_power_measurement(node)
+        log(f"node={node} powerMeasurement.source={pm.get('source')} measuredNodePowerW={pm.get('measuredNodePowerW')}")
 
 
 def get_nodetwin_status(node: str) -> dict[str, Any]:
@@ -1392,6 +1498,7 @@ def main() -> int:
         ctx = test_boot_and_install()
         test_scheduler_extender_deployed(ctx)
         test_telemetry_http(ctx)
+        test_twin_power_http(ctx)
         test_twin_status_populated(ctx)
         test_nodehardware_discovery(ctx)
         if scope in ("all", "full"):

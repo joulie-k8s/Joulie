@@ -145,7 +145,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
       "id": 102,
-      "title": "Agent — Backend & Power",
+      "title": "Agent: Backend & Power",
       "type": "row"
     },
     {
@@ -218,7 +218,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
       "id": 103,
-      "title": "Agent — DVFS Control",
+      "title": "Agent: DVFS Control",
       "type": "row"
     },
     {
@@ -292,7 +292,7 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 },
       "id": 104,
-      "title": "Agent — Reliability",
+      "title": "Agent: Reliability",
       "type": "row"
     },
     {
@@ -336,6 +336,53 @@
     {
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 },
+      "id": 109,
+      "title": "Agent: Governors",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Nodes per governor preset in effect (joulie_agent_governor_state == 1): applied, applied-unverified or equivalent. Empty while governor control is off.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "fillOpacity": 20, "stacking": { "mode": "normal" } }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+      "id": 34,
+      "title": "Nodes per governor preset in effect",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "count by (component, preset) (joulie_agent_governor_state{node=~\"$node\"} == 1)",
+          "legendFormat": "{{component}} {{preset}}"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Governor writes per component, preset and result: a preset applied, or the baseline restored (preset=baseline). Steady writes with result drift mean another writer changes the setting.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "fillOpacity": 50, "stacking": { "mode": "normal" } }
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 46 },
+      "id": 35,
+      "title": "Governor writes (rate/5m)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (component, preset, result) (rate(joulie_agent_governor_writes_total{node=~\"$node\"}[5m]))",
+          "legendFormat": "{{component}} {{preset}} ({{result}})"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 },
       "id": 107,
       "title": "Scheduler Extender",
       "type": "row"
@@ -348,7 +395,7 @@
           "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } }
         }
       },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 46 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 55 },
       "id": 25,
       "title": "Filter & Prioritize Requests (rate/5m)",
       "type": "timeseries",
@@ -371,7 +418,7 @@
           "custom": { "fillOpacity": 20 }
         }
       },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 46 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 55 },
       "id": 26,
       "title": "Filter & Prioritize Latency (p99)",
       "type": "timeseries",
@@ -394,7 +441,7 @@
           "custom": { "fillOpacity": 20 }
         }
       },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 46 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 55 },
       "id": 27,
       "title": "Stale Twin Data",
       "type": "timeseries",
@@ -415,7 +462,7 @@
           "custom": { "fillOpacity": 20 }
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 54 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 63 },
       "id": 28,
       "title": "Final Node Score",
       "type": "timeseries",
@@ -434,7 +481,7 @@
           "custom": { "fillOpacity": 20 }
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 54 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 63 },
       "id": 29,
       "title": "Node Headroom Score",
       "type": "timeseries",
@@ -446,10 +493,102 @@
       ]
     },
     {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 71 },
+      "id": 108,
+      "title": "Twin inputs",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "IT and cooling power the controller manager's facility input last read (FACILITY_PRESET in the legend). Absent while unknown or with ENABLE_FACILITY_METRICS=false.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": { "fillOpacity": 20 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 72 },
+      "id": 30,
+      "title": "Facility power read by the twin (W)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_twin_facility_it_power_watts",
+          "legendFormat": "IT ({{preset}})"
+        },
+        {
+          "expr": "joulie_twin_facility_cooling_power_watts",
+          "legendFormat": "cooling ({{preset}})"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "PUE from the twin's facility inputs: (IT + cooling) / IT, the formula the controller manager logs.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2,
+          "custom": { "fillOpacity": 10 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 72 },
+      "id": 31,
+      "title": "PUE from twin inputs",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "(joulie_twin_facility_it_power_watts + joulie_twin_facility_cooling_power_watts) / joulie_twin_facility_it_power_watts",
+          "legendFormat": "PUE ({{preset}})"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Outdoor ambient temperature the facility input last read.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": { "fillOpacity": 10 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 72 },
+      "id": 32,
+      "title": "Ambient temperature read by the twin",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "joulie_twin_facility_ambient_temperature_celsius",
+          "legendFormat": "ambient ({{preset}})"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Prometheus queries of the measured inputs by input and result. A steady no_data or error rate means the twin runs without measured values; see the telemetry docs for the hints.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } }
+        }
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 72 },
+      "id": 33,
+      "title": "Input queries by result (rate/5m)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (input, result) (rate(joulie_twin_input_queries_total[5m]))",
+          "legendFormat": "{{input}} {{result}}"
+        }
+      ]
+    },
+    {
       "collapsed": true,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 62 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 80 },
       "id": 105,
-      "title": "Simulator — Power & Utilization",
+      "title": "Simulator: Power & Utilization",
       "type": "row",
       "panels": [
         {
@@ -461,7 +600,7 @@
               "custom": { "fillOpacity": 20 }
             }
           },
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 81 },
           "id": 14,
           "title": "Simulated Power vs Cap (W)",
           "type": "timeseries",
@@ -487,7 +626,7 @@
               "min": 0
             }
           },
-          "gridPos": { "h": 8, "w": 6, "x": 12, "y": 46 },
+          "gridPos": { "h": 8, "w": 6, "x": 12, "y": 81 },
           "id": 15,
           "title": "CPU Utilization (sim)",
           "type": "timeseries",
@@ -509,7 +648,7 @@
               "min": 0
             }
           },
-          "gridPos": { "h": 8, "w": 6, "x": 18, "y": 46 },
+          "gridPos": { "h": 8, "w": 6, "x": 18, "y": 81 },
           "id": 16,
           "title": "Freq Scale (sim)",
           "type": "timeseries",
@@ -531,7 +670,7 @@
               "min": 0
             }
           },
-          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 54 },
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 89 },
           "id": 17,
           "title": "Simulated Throttle %",
           "type": "timeseries",
@@ -551,7 +690,7 @@
               "unit": "short"
             }
           },
-          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 54 },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 89 },
           "id": 18,
           "title": "Running Pods (sim)",
           "type": "timeseries",
@@ -571,7 +710,7 @@
               "unit": "short"
             }
           },
-          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 54 },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 89 },
           "id": 19,
           "title": "Node Class Assignment (sim)",
           "type": "timeseries",
@@ -586,9 +725,9 @@
     },
     {
       "collapsed": true,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 46 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 81 },
       "id": 106,
-      "title": "Simulator — Facility & Jobs",
+      "title": "Simulator: Facility & Jobs",
       "type": "row",
       "panels": [
         {
@@ -599,7 +738,7 @@
               "custom": { "fillOpacity": 20 }
             }
           },
-          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 47 },
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 82 },
           "id": 20,
           "title": "Facility Power (IT + Cooling)",
           "type": "timeseries",
@@ -623,7 +762,7 @@
               "custom": { "fillOpacity": 20 }
             }
           },
-          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 47 },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 82 },
           "id": 21,
           "title": "Facility PUE & Ambient Temp",
           "type": "timeseries",
@@ -646,7 +785,7 @@
               "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } }
             }
           },
-          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 47 },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 82 },
           "id": 22,
           "title": "Job Throughput (rate/5m)",
           "type": "timeseries",
@@ -669,7 +808,7 @@
               "custom": { "fillOpacity": 30, "stacking": { "mode": "normal" } }
             }
           },
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 55 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 90 },
           "id": 23,
           "title": "Control Actions by Result (rate/5m)",
           "type": "timeseries",
@@ -687,7 +826,7 @@
               "unit": "reqps"
             }
           },
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 55 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 90 },
           "id": 24,
           "title": "Simulator HTTP Request Rate (5m)",
           "type": "timeseries",

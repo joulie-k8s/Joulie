@@ -11,8 +11,8 @@ This page reports results from the energy-aware scheduling formula validation ex
 Validate Joulie's energy-aware scheduling formula by demonstrating that power-aware scheduling improves energy efficiency compared to standard Kubernetes bin-packing (MostAllocated), using a Modelica FMU (DXCooled Airside Economizer) for physically-accurate cooling/PUE computation.
 
 Two scales tested:
-1. **Small cluster** (28 nodes) — formula tuning and component selection
-2. **Large cluster** (2,500 nodes) — production-scale validation with H100 GPUs
+1. **Small cluster** (28 nodes): formula tuning and component selection
+2. **Large cluster** (2,500 nodes): production-scale validation with H100 GPUs
 
 The experiment also validated the evolution from a legacy multi-component formula to the current streamlined Joulie scoring formula.
 
@@ -52,8 +52,8 @@ score = projectedHeadroom * 0.7
 ```
 
 Where:
-- `projectedHeadroom` = (nodeCappedPower - measuredPower - podMarginalW) / nodeCappedPower x 100 — marginal pod power is **subtracted before scoring**, not as a separate penalty
-- `coolingStress` = min(100, measuredPower / nodeTDP x 100) — normalized against TDP (not a reference constant)
+- `projectedHeadroom` = (nodeCappedPower - measuredPower - podMarginalW) / nodeCappedPower x 100: marginal pod power is **subtracted before scoring**, not as a separate penalty
+- `coolingStress` = min(100, measuredPower / nodeTDP x 100), normalized against TDP (not a reference constant)
 - `adaptiveTrendBonus`:
   - `trendScale` = 2.0 if |clusterTrend| > 500 W/min (burst), else 6.0 (steady state)
   - `trendBonus` = -clamp(powerTrend / trendScale, -25, +25)
@@ -79,7 +79,7 @@ score = powerHeadroom * 0.4                    # prefer nodes with more power he
       - clamp(trend / trendScale, -20, 25)     # smooth power transients
 ```
 
-## Results (large cluster — 2,500 nodes)
+## Results (large cluster, 2,500 nodes)
 
 ### FMU-validated results (seed=42, 48h)
 
@@ -139,7 +139,7 @@ To find the optimal energy-vs-smoothing balance, 10 formula variants were tested
 - **Best energy efficiency** (-18.38% kWh/job, best of all variants)
 - **100% seed consistency** (8/8 seeds winning on energy)
 
-The adaptive trend mechanism is the key differentiator: by using cluster-wide trend detection (`clusterTrend = sum(nodetrends)`), it tightens the trend scale during burst periods (trendScale=2.0 when |clusterTrend| > 500 W/min) and amplifies it during steady state (trendScale=6.0). This provides strong smoothing when it matters most — during normal operation — while avoiding over-reaction during coordinated cluster ramps.
+The adaptive trend mechanism is the key differentiator: by using cluster-wide trend detection (`clusterTrend = sum(nodetrends)`), it tightens the trend scale during burst periods (trendScale=2.0 when |clusterTrend| > 500 W/min) and amplifies it during steady state (trendScale=6.0). This provides strong smoothing when it matters most (during normal operation) while avoiding over-reaction during coordinated cluster ramps.
 
 ## Formula evolution analysis
 
@@ -149,7 +149,7 @@ The evolution from JOULIE-legacy -> JOULIE (+/-10) -> HYBRID-t25-adap shows a cl
 
 2. **Adaptive trend recovers smoothness**: The original +/-10 TDP-normalized trend was too weak for power smoothing (+16.97% std). The adaptive +/-25 trend with cluster-wide burst detection recovers most of the legacy formula's smoothing (-10.95% std -> +3.00% std) while maintaining the energy savings of the headroom-dominant approach.
 
-3. **Removing PSU stress has no impact**: PSU stress was the same for all nodes (cluster-wide metric), so removing it doesn't change relative rankings — confirmed by the results.
+3. **Removing PSU stress has no impact**: PSU stress was the same for all nodes (cluster-wide metric), so removing it doesn't change relative rankings, as the results confirm.
 
 4. **PUE remains flat**: All formulas produce nearly identical PUE (~1.35), confirming that at this operating point, cooling scales linearly with IT power regardless of scheduling strategy.
 
@@ -194,11 +194,11 @@ The most striking result is the dramatically larger improvement at scale:
 | Dropped jobs | -1.8% | **-13.0%** | **7x** |
 | kWh/job | -0.8% | **-16.5%** | **21x** |
 
-**Why**: At 28 nodes, the scheduler has few placement choices — most nodes are similarly loaded, so power-aware scoring makes marginal differences. At 2,500 nodes, there is substantial heterogeneity in power states across the cluster at any given moment. The power-headroom formula can exploit this diversity to make genuinely better placement decisions, routing jobs to nodes with the most thermal and electrical headroom.
+**Why**: At 28 nodes, the scheduler has few placement choices: most nodes are similarly loaded, so power-aware scoring makes marginal differences. At 2,500 nodes, there is substantial heterogeneity in power states across the cluster at any given moment. The power-headroom formula can exploit this diversity to make genuinely better placement decisions, routing jobs to nodes with the most thermal and electrical headroom.
 
 ### Why PUE stays flat despite large IT savings
 
-The FMU receives **aggregate datacenter IT power** as a single Q_IT signal. Both schedulers process the same workload, so the aggregate power trajectory is similar in shape — Joulie just runs at a lower average level. PUE stays nearly constant because:
+The FMU receives **aggregate datacenter IT power** as a single Q_IT signal. Both schedulers process the same workload, so the aggregate power trajectory is similar in shape; Joulie just runs at a lower average level. PUE stays nearly constant because:
 
 1. **Cooling scales linearly with IT power**: At this operating point (COP ~2.9), cooling power is roughly proportional to IT power. Reducing IT by 5% reduces cooling by ~5%, keeping the ratio constant.
 2. **The FMU's thermal mass smooths everything**: Building mass and coolant inertia damp minute-level variations, making PUE insensitive to scheduling-level power smoothing.
@@ -213,12 +213,12 @@ The FMU receives **aggregate datacenter IT power** as a single Q_IT signal. Both
 
 ### Per-rack vs aggregate cooling
 
-In production datacenters with **per-rack cooling** (rear-door heat exchangers, in-row coolers), the per-node power smoothing would have even larger cooling impact — each rack's thermal response is directly coupled to its nodes' power curves. The single-FMU aggregate model represents a conservative lower bound on the formula's cooling benefit.
+In production datacenters with **per-rack cooling** (rear-door heat exchangers, in-row coolers), the per-node power smoothing would have even larger cooling impact: each rack's thermal response is directly coupled to its nodes' power curves. The single-FMU aggregate model represents a conservative lower bound on the formula's cooling benefit.
 
 ## Recommended formula
 
 ```go
-// Joulie scoring formula (Go implementation — HYBRID-t25-adap)
+// Joulie scoring formula (Go implementation, HYBRID-t25-adap)
 func Score(node *Node, pod *Pod, clusterTrend float64) float64 {
     // Estimate pod marginal power
     podMarginalW := EstimateMarginalImpact(node, pod).DeltaTotalWatts
@@ -245,7 +245,7 @@ func Score(node *Node, pod *Pod, clusterTrend float64) float64 {
 ```
 
 **Parameters**:
-- Projected headroom weight: 0.7 (dominant signal — includes marginal pod power)
+- Projected headroom weight: 0.7 (dominant signal, includes marginal pod power)
 - Cooling stress weight: 0.15 (physical safety signal)
 - Trend bonus: +/-25 points max (adaptive)
 - Trend scale: 6.0 at steady state, 2.0 during cluster-wide bursts (|clusterTrend| > 500 W/min)
@@ -256,8 +256,8 @@ func Score(node *Node, pod *Pod, clusterTrend float64) float64 {
 - [Experiment folder](https://github.com/joulie-k8s/Joulie/tree/main/experiments/04-scoring-formula-validation)
 - [Full report (REPORT.md)](https://github.com/joulie-k8s/Joulie/blob/main/experiments/04-scoring-formula-validation/REPORT.md)
 - Main scripts:
-  - [sim_24h_pue.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/04-scoring-formula-validation/sim_24h_pue.py) — 48h simulation with FMU co-simulation
-  - [sweep_formulas.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/04-scoring-formula-validation/sweep_formulas.py) — 9-variant formula sweep
-  - [compare_redesign.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/04-scoring-formula-validation/compare_redesign.py) — JOULIE vs legacy multi-seed comparison
-  - [fmu_compare_redesign.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/04-scoring-formula-validation/fmu_compare_redesign.py) — 3-way FMU comparison
-  - [compare_hybrid.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/04-scoring-formula-validation/compare_hybrid.py) — Hybrid formula sweep
+  - [sim_24h_pue.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/04-scoring-formula-validation/sim_24h_pue.py): 48h simulation with FMU co-simulation
+  - [sweep_formulas.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/04-scoring-formula-validation/sweep_formulas.py): 9-variant formula sweep
+  - [compare_redesign.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/04-scoring-formula-validation/compare_redesign.py): JOULIE vs legacy multi-seed comparison
+  - [fmu_compare_redesign.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/04-scoring-formula-validation/fmu_compare_redesign.py): 3-way FMU comparison
+  - [compare_hybrid.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/04-scoring-formula-validation/compare_hybrid.py): Hybrid formula sweep

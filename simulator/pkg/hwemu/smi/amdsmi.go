@@ -4,9 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 )
 
 // amd-smi as amdsmi_cli of rocm-7.1.0 and rocm-7.2.0 behaves. "parser 7.2:N"
@@ -110,9 +114,12 @@ func runAMDSMI(c *call) int {
 	case "static":
 		spec, modelled["--limit"] = amdsmiStaticSpec, pyOpt{}
 	case "metric":
-		spec, modelled["--power"] = amdsmiMetricSpec, pyOpt{}
+		spec, modelled["--power"], modelled["--perf-level"] = amdsmiMetricSpec, pyOpt{}, pyOpt{}
 	case "set":
 		spec = amdsmiSetSpec
+		modelled["--perf-level"] = pyOpt{nargs: 1, metavar: []string{"LEVEL"}}
+		modelled["--profile"] = pyOpt{nargs: 1, metavar: []string{"PROFILE_LEVEL"}}
+		modelled["--clk-limit"] = pyOpt{nargs: 3, metavar: []string{"CLK_TYPE", "LIM_TYPE", "VALUE"}}
 		if r.v72 {
 			// parser 7.2:1362: -o PWR_TYPE WATTS, and -S and -F after -c.
 			spec = strings.Replace(spec, "-c/--clk-level ", "-c/--clk-level -S/--ptl-status -F/--ptl-format ", 1)
@@ -154,9 +161,35 @@ func runAMDSMI(c *call) int {
 	sel := gpus
 	var pwrType string
 	var watts int64
+	var setOpt string // the one option of set's exclusive group
+	var limit amdsmiClkLimit
 	for _, key := range a.order {
 		vals := a.values[key]
+		if r.cmd == "set" && slices.Contains(amdsmiSetGroup, key) {
+			if setOpt != "" && setOpt != key {
+				return p.fail(c.stderr, fmt.Sprintf("argument %s: not allowed with argument %s", amdsmiFlags(p, key), amdsmiFlags(p, setOpt)))
+			}
+			setOpt = key
+		}
 		switch key {
+		case "--perf-level":
+			if r.cmd != "set" {
+				continue
+			}
+			// type=str.upper, then choices (parser 7.2:1355).
+			if lvl := strings.ToUpper(vals[0]); !slices.Contains(amdsmiPerfLevels, lvl) {
+				quoted := make([]string, len(amdsmiPerfLevels))
+				for i, l := range amdsmiPerfLevels {
+					quoted[i] = "'" + l + "'"
+				}
+				return p.fail(c.stderr, fmt.Sprintf("argument -l/--perf-level: invalid choice: '%s' (choose from %s)", lvl, strings.Join(quoted, ", ")))
+			}
+		case "--clk-limit":
+			// AMDSMILimitArgs, parser 7.2:240-261.
+			var code int
+			if limit, code = r.parseClkLimit(vals); code >= 0 {
+				return code
+			}
 		case "--gpu":
 			var code int
 			if sel, code = r.selectGPUs(vals); sel == nil {
@@ -190,24 +223,62 @@ func runAMDSMI(c *call) int {
 
 	switch r.cmd {
 	case "static", "metric":
-		want := map[string]string{"static": "--limit", "metric": "--power"}[r.cmd]
-		if !a.has(want) || r.format != "json" {
-			return c.notEmulated(r.cmd + " other than " + want + " --json")
+		want, other := map[string]string{"static": "--limit", "metric": "--power"}[r.cmd], ""
+		if r.cmd == "metric" {
+			other = "--perf-level"
+		}
+		if (!a.has(want) && (other == "" || !a.has(other))) || r.format != "json" {
+			return c.notEmulated(r.cmd + " other than " + strings.TrimSuffix(want+" or "+other, " or ") + " --json")
 		}
 		var data []any
 		for _, g := range sel {
 			if r.cmd == "static" {
 				data = append(data, r.staticLimit(g))
-			} else {
-				data = append(data, r.metricPower(g))
+				continue
 			}
+			// The keys in the order metric fills values_dict: power before
+			// perf_level (cmds 7.2:1932-1982, 2577-2583).
+			d := newPyDict("gpu", g.Index)
+			if a.has("--power") {
+				d.set("power", r.metricPower(g))
+			}
+			if a.has("--perf-level") {
+				d.set("perf_level", r.metricPerfLevel(g))
+			}
+			data = append(data, d)
 		}
 		// combine_arrays_to_json (logger 7.2:600-624): indent 4.
 		fmt.Fprintln(c.stdout, pyJSON(newPyDict("gpu_data", data), 4))
 		return 0
 	}
-	if !a.has("--power-cap") || r.format == "csv" {
-		return c.notEmulated(r.cmd + " other than -o")
+	if r.format == "csv" {
+		return c.notEmulated(r.cmd + " --csv")
+	}
+	if r.cmd == "set" && setOpt != "" && setOpt != "--power-cap" {
+		for _, g := range sel {
+			var out any
+			var key string
+			var code int
+			switch setOpt {
+			case "--perf-level":
+				key = "perflevel"
+				out, code = r.setPerfLevel(g, strings.ToUpper(a.values["--perf-level"][0]))
+			case "--profile":
+				// cmds 7.2:4747-4751: the option is parsed and ignored.
+				key, out = "profile", "Not Yet Implemented"
+			case "--clk-limit":
+				key = "clk_limit"
+				out, code = r.setClkLimit(g, limit)
+			}
+			if out == nil {
+				return code
+			}
+			r.printOutput(g, key, out)
+		}
+		return 0
+	}
+	if !a.has("--power-cap") {
+		return c.notEmulated(r.cmd + " other than -o, -l, -P and -L")
 	}
 	for _, g := range sel {
 		var out any
@@ -399,7 +470,7 @@ func (r *amdsmiRun) staticLimit(g amdGPU) *pyDict {
 	return newPyDict("gpu", g.Index, "limit", limit)
 }
 
-// metricPower is one GPU of metric --power (cmds 7.2:1932-1982). The socket
+// metricPower is the power of one GPU of metric --power (cmds 7.2:1932-1982). The socket
 // power comes from the hwmon power reading in whole watts (assumed: the
 // library reads gpu_metrics, which a text tree has not); the voltages, the
 // throttle status and the power management state have no source here and
@@ -410,7 +481,7 @@ func (r *amdsmiRun) metricPower(g amdGPU) *pyDict {
 	if uw, _, ok := g.sensorUW(); ok {
 		power.set("socket_power", wattsJSON(amdsmiW(uw)))
 	}
-	return newPyDict("gpu", g.Index, "power", power)
+	return power
 }
 
 // setPowerCap is set -o (cmds 7.2:5055-5102 with typ "PPT0 " or "PPT1 ";
@@ -436,7 +507,7 @@ func (r *amdsmiRun) setPowerCap(g amdGPU, sensor int, typ string, watts int64) (
 	case info.cur == 0:
 		return fmt.Sprintf("Unable to set %spower cap to %dW, current value is %dW", typ, watts, info.cur), 0
 	case inRange:
-		if err := writeAttr(g.hwmonPath("power"+strconv.Itoa(sensor+1)+"_cap"), strconv.FormatInt(amdsmiUW(watts), 10)); err != nil {
+		if err := amdWrite(r.env, g.hwmonPath("power"+strconv.Itoa(sensor+1)+"_cap"), strconv.FormatInt(amdsmiUW(watts), 10)); err != nil {
 			if code, ok := r.permissionError(err); ok {
 				return nil, code
 			}
@@ -463,7 +534,7 @@ func (r *amdsmiRun) resetPowerCap71(g amdGPU) (any, int) {
 	if info.cur == info.def {
 		return fmt.Sprintf("Power cap is already set to %dW", info.def), 0
 	}
-	if err := writeAttr(g.hwmonPath("power1_cap"), strconv.FormatInt(amdsmiUW(info.def), 10)); err != nil {
+	if err := amdWrite(r.env, g.hwmonPath("power1_cap"), strconv.FormatInt(amdsmiUW(info.def), 10)); err != nil {
 		if code, ok := r.permissionError(err); ok {
 			return nil, code
 		}
@@ -490,7 +561,7 @@ func (r *amdsmiRun) resetPowerCap72(g amdGPU) (any, int) {
 			out.set(key, failed)
 			break
 		}
-		if err := writeAttr(g.hwmonPath("power"+strconv.Itoa(s+1)+"_cap"), strconv.FormatInt(info.defUW, 10)); err != nil {
+		if err := amdWrite(r.env, g.hwmonPath("power"+strconv.Itoa(s+1)+"_cap"), strconv.FormatInt(info.defUW, 10)); err != nil {
 			if code, ok := r.permissionError(err); ok {
 				return nil, code
 			}
@@ -573,4 +644,180 @@ func amdsmiDump(d *pyDict, indent int) string {
 		b.WriteString(fmt.Sprintf("%s%s: %v\n", pad, k, d.vals[k]))
 	}
 	return b.String()
+}
+
+// amdsmiSetGroup are the modelled options of set's mutually exclusive group
+// (parser 7.2:1345-1372): one per call.
+var amdsmiSetGroup = []string{"--perf-level", "--profile", "--power-cap", "--clk-limit"}
+
+// amdsmiPerfLevels are the AmdSmiDevPerfLevel names, the choices of set
+// --perf-level, in enum order (amdsmi.h:1219-1231). get_perf_levels lists
+// them all; the options a failed set prints leave out the last, UNKNOWN.
+var amdsmiPerfLevels = []string{"AUTO", "LOW", "HIGH", "MANUAL", "STABLE_STD", "STABLE_PEAK",
+	"STABLE_MIN_MCLK", "STABLE_MIN_SCLK", "DETERMINISM", "UNKNOWN"}
+
+// amdsmiLevelWords is the power_dpm_force_performance_level word each
+// level sets; UNKNOWN has none.
+var amdsmiLevelWords = map[string]string{
+	"AUTO": "auto", "LOW": "low", "HIGH": "high", "MANUAL": "manual",
+	"STABLE_STD": "profile_standard", "STABLE_PEAK": "profile_peak",
+	"STABLE_MIN_MCLK": "profile_min_mclk", "STABLE_MIN_SCLK": "profile_min_sclk",
+	"DETERMINISM": "perf_determinism",
+}
+
+// amdsmiFlags is an option as argparse names it in an error, its option
+// strings joined by a slash, such as -l/--perf-level.
+func amdsmiFlags(p *pyParser, key string) string {
+	for _, o := range p.opts {
+		if o.key() == key {
+			return strings.Join(o.flags, "/")
+		}
+	}
+	return key
+}
+
+// amdsmiStatus is the AMDSMI status name a failed write reports in
+// "[<status>] Unable to ...": the errno of a refused value, a missing
+// attribute as not supported (assumed mapping).
+func amdsmiStatus(err error) string {
+	var en errnoError
+	switch {
+	case errors.As(err, &en) && en.Errno == "EINVAL":
+		return "AMDSMI_STATUS_INVAL"
+	case errors.As(err, &en) && en.Errno == "EBUSY":
+		return "AMDSMI_STATUS_BUSY"
+	case errors.Is(err, fs.ErrNotExist), errors.As(err, &en):
+		return "AMDSMI_STATUS_NOT_SUPPORTED"
+	}
+	return "AMDSMI_STATUS_FILE_ERROR"
+}
+
+// metricPerfLevel is perf_level of metric --perf-level (cmds 7.2:2577-2583):
+// the library's enum name, such as AMDSMI_DEV_PERF_LEVEL_AUTO (assumed
+// format), or N/A without the level file.
+func (r *amdsmiRun) metricPerfLevel(g amdGPU) string {
+	level, ok := g.perfLevel()
+	if !ok {
+		return "N/A"
+	}
+	for name, word := range amdsmiLevelWords {
+		if word == level {
+			return "AMDSMI_DEV_PERF_LEVEL_" + name
+		}
+	}
+	return "AMDSMI_DEV_PERF_LEVEL_UNKNOWN"
+}
+
+// setPerfLevel is set --perf-level (cmds 7.2:4731-4746). A level the kernel
+// refuses prints the options, then the message; without root the command
+// raises PermissionError. It returns a nil message and the exit code when
+// the run ends instead.
+func (r *amdsmiRun) setPerfLevel(g amdGPU, level string) (any, int) {
+	word, ok := amdsmiLevelWords[level]
+	var err error
+	if ok {
+		err = g.setPerfLevel(r.env, word)
+	} else {
+		err = errnoError{"EINVAL"} // UNKNOWN: refused by the library (assumed)
+	}
+	if err != nil {
+		if code, ok := r.permissionError(err); ok {
+			return nil, code
+		}
+		fmt.Fprintf(r.stdout, "\nPerformance Level Options:\n\t%s\n\n", strings.Join(amdsmiPerfLevels[:len(amdsmiPerfLevels)-1], ","))
+		return fmt.Sprintf("[%s] Unable to set performance level to %s", amdsmiStatus(err), level), 0
+	}
+	return "Successfully set performance level " + level, 0
+}
+
+// amdsmiClkLimit is the value of set -L: the clock, min or max, and MHz.
+type amdsmiClkLimit struct {
+	clk, lim string
+	mhz      int64
+}
+
+// parseClkLimit is AMDSMILimitArgs (parser 7.2:240-261): sclk or mclk, min
+// or max, and a non-negative integer, each checked as argparse reaches it.
+// code is -1 when the value is valid, otherwise the exit code.
+func (r *amdsmiRun) parseClkLimit(vals []string) (amdsmiClkLimit, int) {
+	l := amdsmiClkLimit{clk: vals[0], lim: vals[1]}
+	switch {
+	case l.clk != "sclk" && l.clk != "mclk":
+		return l, r.invalidParameter(l.clk)
+	case l.lim != "min" && l.lim != "max":
+		return l, r.invalidParameter(l.lim)
+	case !pyIsDigit(vals[2]):
+		return l, r.invalidValue(vals[2])
+	}
+	l.mhz, _ = pyInt(vals[2])
+	return l, -1
+}
+
+// setClkLimit is set -L (cmds 7.2:5104-5176). The range comes from the
+// first and last levels of pp_dpm_sclk or pp_dpm_mclk (assumed source of
+// amdsmi_get_clock_info); a bound equal to it is already set. The library
+// sets the level to manual, then writes "s|m <0|1> <MHz>" and "c" to
+// pp_od_clk_voltage (rocm_smi.cc:1508-1560). Both lines go in one write, so
+// the emulator, which sees only the last write to a file, handles both; a
+// value the kernel would refuse is not written. A NOT_SUPPORTED answer to an
+// mclk minimum prints its own line instead of the status, from the range
+// query and from the set alike (cmds 7.2:5146-5148, 5163-5165).
+func (r *amdsmiRun) setClkLimit(g amdGPU, l amdsmiClkLimit) (any, int) {
+	const mclkMinUnsupported = "Setting mclk min is not supported"
+	mclkMin := l.clk == "mclk" && l.lim == "min"
+	file, bound, cmd := "pp_dpm_sclk", odSclkMin, "s"
+	if l.clk == "mclk" {
+		file, bound, cmd = "pp_dpm_mclk", odUclkMin, "m"
+	}
+	idx := "0"
+	if l.lim == "max" {
+		idx = "1"
+		bound = map[string]string{odSclkMin: odSclkMax, odUclkMin: odUclkMax}[bound]
+	}
+	lo, hi, ok := g.dpmRange(file)
+	if !ok {
+		if mclkMin {
+			return mclkMinUnsupported, 0
+		}
+		return fmt.Sprintf("[AMDSMI_STATUS_NOT_SUPPORTED] Unable to change %s of %s to %dMHz", l.lim, l.clk, l.mhz), 0
+	}
+	changed := true
+	switch {
+	case l.lim == "min" && l.mhz > hi:
+		return fmt.Sprintf("Cannot set %s min value greater than max (%dMHz)", l.clk, hi), 0
+	case l.lim == "max" && l.mhz < lo:
+		return fmt.Sprintf("Cannot set %s max value less than min (%dMHz)", l.clk, lo), 0
+	case l.lim == "min" && l.mhz == lo, l.lim == "max" && l.mhz == hi:
+		changed = false
+	}
+	if !changed {
+		return fmt.Sprintf("Clock limit is already set to %dMHz", l.mhz), 0
+	}
+	err := g.setPerfLevel(r.env, "manual")
+	od := filepath.Join(g.Dev, layout.AMDGPUODFile)
+	if err == nil {
+		switch _, serr := os.Stat(od); {
+		case serr != nil:
+			err = fs.ErrNotExist
+		case !slices.Contains(g.odWritable(), bound):
+			if bound == odUclkMin {
+				return mclkMinUnsupported, 0
+			}
+			err = errnoError{"EINVAL"}
+		case l.mhz < lo || l.mhz > hi:
+			err = errnoError{"EINVAL"}
+		default:
+			err = amdWrite(r.env, od, fmt.Sprintf("%s %s %d\nc\n", cmd, idx, l.mhz))
+		}
+	}
+	if err != nil {
+		if code, ok := r.permissionError(err); ok {
+			return nil, code
+		}
+		if status := amdsmiStatus(err); status != "AMDSMI_STATUS_NOT_SUPPORTED" || !mclkMin {
+			return fmt.Sprintf("[%s] Unable to set %s of %s to %dMHz", status, l.lim, l.clk, l.mhz), 0
+		}
+		return mclkMinUnsupported, 0
+	}
+	return fmt.Sprintf("Successfully changed %s of %s to %dMHz", l.lim, l.clk, l.mhz), 0
 }

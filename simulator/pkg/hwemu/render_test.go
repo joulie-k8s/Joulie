@@ -111,7 +111,7 @@ func renderReadFile(t testing.TB, tree *Tree, rel string) string {
 }
 
 var renderOwnerLetters = map[layout.Owner]string{layout.OwnerRender: "R", layout.OwnerEmulator: "S", layout.OwnerAgent: "A"}
-var renderKindWords = map[layout.Kind]string{layout.KindFile: "file", layout.KindDir: "dir", layout.KindSymlink: "link", layout.KindRejectingDir: "rejectdir"}
+var renderKindWords = map[layout.Kind]string{layout.KindFile: "file", layout.KindDir: "dir", layout.KindSymlink: "link"}
 
 // renderLayoutListing lists a rendered tree one entry per line, sorted: path,
 // owner (R, S or A), kind, mode and link target. Kind, mode and target are read from disk and
@@ -155,9 +155,6 @@ func renderLayoutListing(t testing.TB, tree *Tree) string {
 			}
 		case fi.IsDir():
 			kind = layout.KindDir
-			if spec.Kind == layout.KindRejectingDir {
-				kind = layout.KindRejectingDir
-			}
 		}
 		mode := fi.Mode().Perm()
 		if spec.Kind != kind || spec.Mode != mode || spec.Target != target {
@@ -398,7 +395,11 @@ func TestH02CommonEntriesOfEveryFamily(t *testing.T) {
 	for _, name := range renderBuiltinNames {
 		t.Run(name, func(t *testing.T) {
 			p, tree := renderSharedBuiltin(t, name)
-			if got := renderReadFile(t, tree, "state/hwemu.json"); got != `{"schemaVersion":1,"profile":"`+name+`","node":"hwemu-test-node","substep":"100ms"}`+"\n" {
+			digest, derr := ensureProfileDigest(p)
+			if derr != nil {
+				t.Fatal(derr)
+			}
+			if got := renderReadFile(t, tree, "state/hwemu.json"); got != `{"schemaVersion":1,"profile":"`+name+`","node":"hwemu-test-node","substep":"100ms","profileDigest":"`+digest+`"}`+"\n" {
 				t.Errorf("hwemu.json = %s", got)
 			}
 			tools := renderReadFile(t, tree, "state/tools.json")
@@ -409,7 +410,7 @@ func TestH02CommonEntriesOfEveryFamily(t *testing.T) {
 			if p.GPUs != nil {
 				for _, tool := range p.GPUs.Tools {
 					want = append(want, tool.Name)
-					if !strings.Contains(tools, `"`+tool.Name+`":{"variant":"`+tool.Variant+`"}`) {
+					if !strings.Contains(tools, `"`+tool.Name+`":{"variant":"`+tool.Variant+`"`) {
 						t.Errorf("tools.json = %s lacks %s %s", tools, tool.Name, tool.Variant)
 					}
 				}
@@ -438,10 +439,18 @@ func TestH02CommonEntriesOfEveryFamily(t *testing.T) {
 	}
 }
 
-// renderIsEISDIR reports whether writing path fails the way a rejected sysfs
-// write does on an emulated node: EISDIR, because a directory stands in for
-// the attribute.
-func renderIsEISDIR(path string) bool {
-	err := os.WriteFile(path, []byte("1"), 0o644)
-	return errors.Is(err, syscall.EISDIR)
+// renderRefusesWrites reports whether rel, relative to the root of tree
+// rendered from p, is a regular file the kernel would refuse a write of
+// 1000000 to with ENODATA, as a locked or disabled RAPL limit refuses it.
+func renderRefusesWrites(t testing.TB, p *Profile, tree *Tree, rel string) bool {
+	t.Helper()
+	fi, err := os.Lstat(filepath.Join(tree.Root, filepath.FromSlash(rel)))
+	if err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	n, err := NewNode(p, tree, Options{Start: nodeStart, Frozen: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return errors.Is(n.CheckWrite(rel, "1000000"), syscall.ENODATA)
 }

@@ -1,0 +1,52 @@
+processor	: 0
+vendor_id	: AuthenticAMD
+cpu family	: 25
+model		: 17
+model name	: AMD EPYC 9654 96-Core Processor
+stepping	: 1
+cpu MHz		: 1500.000
+physical id	: 0
+siblings	: 4
+core id		: 0
+cpu cores	: 2
+flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx lm constant_tsc rep_good nopl cpuid aperfmperf rapl pni ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand lahf_lm svm cpb hw_pstate avx2 avx512f cppc
+
+processor	: 1
+vendor_id	: AuthenticAMD
+cpu family	: 25
+model		: 17
+model name	: AMD EPYC 9654 96-Core Processor
+stepping	: 1
+cpu MHz		: 1500.000
+physical id	: 0
+siblings	: 4
+core id		: 1
+cpu cores	: 2
+flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx lm constant_tsc rep_good nopl cpuid aperfmperf rapl pni ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand lahf_lm svm cpb hw_pstate avx2 avx512f cppc
+
+processor	: 2
+vendor_id	: AuthenticAMD
+cpu family	: 25
+model		: 17
+model name	: AMD EPYC 9654 96-Core Processor
+stepping	: 1
+cpu MHz		: 1500.000
+physical id	: 0
+siblings	: 4
+core id		: 0
+cpu cores	: 2
+flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx lm constant_tsc rep_good nopl cpuid aperfmperf rapl pni ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand lahf_lm svm cpb hw_pstate avx2 avx512f cppc
+
+processor	: 3
+vendor_id	: AuthenticAMD
+cpu family	: 25
+model		: 17
+model name	: AMD EPYC 9654 96-Core Processor
+stepping	: 1
+cpu MHz		: 1500.000
+physical id	: 0
+siblings	: 4
+core id		: 1
+cpu cores	: 2
+flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx lm constant_tsc rep_good nopl cpuid aperfmperf rapl pni ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand lahf_lm svm cpb hw_pstate avx2 avx512f cppc
+

@@ -6,15 +6,14 @@ weight = 4
 +++
 
 
-The agent supports two runtime modes:
+The chart runs the agent in one of three modes, or not at all (`agent.mode`):
 
-- `daemonset`: real-hardware mode, one pod per real node.
-- `pool`: simulation mode, one pod hosts many logical per-node controllers.
-
-Chart templates:
-
-- `charts/joulie/templates/agent-daemonset.yaml`
-- `charts/joulie/templates/agent-statefulset.yaml`
+| `agent.mode` | Pods | Use |
+|---|---|---|
+| `daemonset` (default) | one pod per managed node (`charts/joulie/templates/agent-daemonset.yaml`) | real hardware |
+| `pool` | a StatefulSet whose pods each run many logical per-node agents (`agent-statefulset.yaml`) | KWOK experiments over the simulator's HTTP API |
+| `emulated` | one Deployment per node of the simulated cluster (`agent-emulated.yaml`), reading that node's emulated `/sys` and GPU tools | the [simulated cluster]({{< relref "/docs/simulator/simulated-cluster.md" >}}) |
+| `none` | no agent | |
 
 ## DaemonSet mode (real hardware)
 
@@ -56,9 +55,11 @@ agent:
     nodeSelector: "joulie.io/managed=true"
 ```
 
-Use `daemonset` mode for real `/host-sys` enforcement and `pool` mode for KWOK-scale simulation.
+Use `daemonset` mode for real `/host-sys` enforcement and `pool` mode for KWOK-scale simulation: pool mode runs KWOK experiments over the simulator's HTTP API ([KWOK and Standalone Modes]({{< relref "/docs/simulator/simulator.md" >}})), with a real controller manager and scheduler and no physical hardware.
 
-Pool mode is the standard runtime for the [Workload and Power Simulator]({{< relref "/docs/simulator/simulator.md" >}}), which uses KWOK fake nodes with a real controller manager and scheduler to run repeatable experiments without physical hardware.
+## Emulated mode (simulated cluster)
+
+With `agent.mode: emulated` the chart renders one Deployment `joulie-agent-emu-<i>` per entry of `agent.emulated.nodes`, on the node that runs the simulator in [emulate mode]({{< relref "/docs/simulator/emulate-mode.md" >}}). Each runs the unmodified agent binary for one node, with that node's emulated tree mounted where the agent reads `/sys`, `/proc/cpuinfo` and the GPU tools, a literal `NODE_NAME`, and no host network or privileges. The simulated cluster scripts write `agent.emulated.nodes` for you; the values are under [Agent chart values]({{< relref "/docs/getting-started/05-configuration-reference.md#agent-chart-values" >}}).
 
 ## Managed node selector
 

@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,7 +43,11 @@ const renderCorpusSource = "corpus"
 //     corpus;
 //   - machine.yaml allocatable becomes capacity, with no reservation, as the
 //     corpus test builds its Node;
-//   - cpufreq-driver becomes a minimal cpufreq (scaling_driver only);
+//   - cpufreq-driver and the governor state under governor/ become cpufreq
+//     with the captured governor, preference, boost, frequency range and
+//     driver mode (renderCorpusCPUFreq); cpufreq-driver alone, a capture from
+//     before the script copied governor state, stays a minimal cpufreq
+//     (scaling_driver only);
 //   - nvidia-smi.txt becomes NVML state with the captured limits, product
 //     and power draw, plus dev/nvidiactl. All GPUs must report the same
 //     limits and product; the draw of GPU 0 stands for all of them;
@@ -132,12 +137,8 @@ func FromCorpus(machineDir string) (*Profile, error) {
 
 	if driver, ok, err := read("cpufreq-driver"); err != nil {
 		return fail(err)
-	} else if ok {
-		p.CPUFreq = &CPUFreqSpec{
-			Driver:         Fact[string]{V: strings.TrimSpace(driver), Src: src("cpufreq-driver")},
-			PolicyGrouping: Fact[string]{V: "per-cpu", Src: "assumed:the capture records the scaling driver only"},
-			Minimal:        true,
-		}
+	} else if err := renderCorpusCPUFreq(p, machineDir, driver, ok, src); err != nil {
+		return fail(err)
 	}
 
 	nvidia, hasNvidia, err := read("nvidia-smi.txt")
@@ -515,10 +516,7 @@ func renderCorpusNvidia(p *Profile, text string, labels, gpu map[string]string, 
 	g.Limits.MinW = Fact[float64]{V: first.min, Src: file}
 	g.Limits.MaxW = Fact[float64]{V: first.max, Src: file}
 	g.Limits.DefaultW = Fact[float64]{V: first.limit, Src: "assumed:the capture has no default limit; the current power.limit stands for it"}
-	g.Tools = append(g.Tools, struct {
-		Name    string `json:"name"`
-		Variant string `json:"variant"`
-	}{Name: "nvidia-smi", Variant: "default"})
+	g.Tools = append(g.Tools, GPUTool{Name: "nvidia-smi", Variant: "default"})
 	p.GPUs = g
 	p.Physics.GPU.IdleW = Fact[float64]{V: first.draw, Src: src("nvidia-smi.txt power.draw of GPU 0")}
 	return nil
@@ -608,13 +606,248 @@ func renderCorpusRocm(p *Profile, text string, labels, gpu map[string]string, sr
 	g.Limits.MinW = Fact[float64]{V: minW, Src: file}
 	g.Limits.MaxW = Fact[float64]{V: maxW, Src: file}
 	g.Limits.DefaultW = Fact[float64]{V: capW, Src: "assumed:the capture has no default cap; the current cap stands for it"}
-	g.Tools = append(g.Tools, struct {
-		Name    string `json:"name"`
-		Variant string `json:"variant"`
-	}{Name: "rocm-smi", Variant: "legacy-agent-contract"})
+	g.Tools = append(g.Tools, GPUTool{Name: "rocm-smi", Variant: "legacy-agent-contract"})
 	p.GPUs = g
 	if avg, err := watts(first, avgKey); err == nil {
 		p.Physics.GPU.IdleW = Fact[float64]{V: avg, Src: src("rocm-smi.txt " + avgKey + " of card0")}
+	}
+	return nil
+}
+
+// renderCorpusGovernorDir holds the governor state of a capture, as
+// scripts/collect-hardware-fixture.sh copies it: cpufreq/policyN/,
+// cpufreq/boost, intel_pstate/, amd_pstate/, cpuidle/stateN/name, amdgpu/gpuN/
+// and nvidia-smi-clocks.txt.
+const renderCorpusGovernorDir = "governor"
+
+// renderCorpusPolicyFiles are the attributes of one policy the capture holds,
+// each of them a fact of CPUFreqSpec.
+var renderCorpusPolicyFiles = []string{
+	"scaling_governor", "scaling_available_governors",
+	"energy_performance_preference", "energy_performance_available_preferences",
+	"boost", "cpuinfo_min_freq", "cpuinfo_max_freq",
+}
+
+// renderCorpusCPUFreq sets p.CPUFreq from the scaling driver (hasDriver says
+// cpufreq-driver exists) and the policies under governor/cpufreq. Without
+// policies the cpufreq is minimal, the scaling driver only, as a capture
+// without governor state allows. With them it carries the governor, the
+// available governors, the frequency range and the energy-performance
+// preference of the policies, the driver mode, HWP from the cpuinfo flags on
+// intel_pstate, and the boost state where the driver keeps it. A profile
+// holds one state for all policies, so policies that differ are an error, as
+// are captured policies the cpuinfo does not render per CPU or per core, and
+// a capture that lacks a file the governor emulation renders (a driver's
+// status, its boost file, the preference pair): the emulated node would
+// differ from the capture in what the agent reads.
+//
+// cpuidle/, amdgpu/ and nvidia-smi-clocks.txt are not mapped: hwemu renders
+// no cpuidle tree, and the amdgpu DPM and NVIDIA clock facts (the levels a
+// family accepts, the pinned clocks, the lock behaviour) are more than a
+// capture shows. They stay in the capture for review and calibration.
+func renderCorpusCPUFreq(p *Profile, machineDir, driverText string, hasDriver bool, src func(string) string) error {
+	govRoot := filepath.Join(machineDir, renderCorpusGovernorDir)
+	policies := map[int]map[string]string{}
+	entries, err := os.ReadDir(filepath.Join(govRoot, "cpufreq"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	for _, e := range entries {
+		id, err := strconv.Atoi(strings.TrimPrefix(e.Name(), "policy"))
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "policy") || err != nil {
+			continue
+		}
+		files := map[string]string{}
+		for _, name := range renderCorpusPolicyFiles {
+			b, err := os.ReadFile(filepath.Join(govRoot, "cpufreq", e.Name(), name))
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			files[name] = string(b)
+		}
+		policies[id] = files
+	}
+	driver := strings.TrimSpace(driverText)
+	if len(policies) == 0 {
+		if hasDriver {
+			p.CPUFreq = &CPUFreqSpec{
+				Driver:         Fact[string]{V: driver, Src: src("cpufreq-driver")},
+				PolicyGrouping: Fact[string]{V: "per-cpu", Src: "assumed:the capture records the scaling driver only"},
+				Minimal:        true,
+			}
+		}
+		return nil
+	}
+	if !hasDriver {
+		return errors.New("governor/cpufreq has policies but there is no cpufreq-driver")
+	}
+
+	ids := make([]int, 0, len(policies))
+	for id := range policies {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	first := policies[ids[0]]
+	for _, id := range ids[1:] {
+		for _, name := range renderCorpusPolicyFiles {
+			if policies[id][name] != first[name] {
+				return fmt.Errorf("governor/cpufreq/policy%d/%s is %q where policy%d has %q; a profile holds one state for all policies",
+					id, name, policies[id][name], ids[0], first[name])
+			}
+		}
+	}
+	gsrc := func(file string) string { return src(renderCorpusGovernorDir + "/" + file) }
+	psrc := func(name string) string { return gsrc("cpufreq/policy*/" + name) }
+	word := func(name string) (string, error) {
+		v, ok := first[name]
+		if !ok || strings.TrimSpace(v) == "" {
+			return "", fmt.Errorf("governor/cpufreq/policy%d has no %s", ids[0], name)
+		}
+		return strings.TrimSpace(v), nil
+	}
+	khz := func(name string) (Fact[int64], error) {
+		v, err := word(name)
+		if err != nil {
+			return Fact[int64]{}, err
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return Fact[int64]{}, fmt.Errorf("governor/cpufreq/policy%d/%s: %w", ids[0], name, err)
+		}
+		return Fact[int64]{V: n, Src: psrc(name)}, nil
+	}
+	gov, err := word("scaling_governor")
+	if err != nil {
+		return err
+	}
+	available, err := word("scaling_available_governors")
+	if err != nil {
+		return err
+	}
+	f := &CPUFreqSpec{
+		Driver:             Fact[string]{V: driver, Src: src("cpufreq-driver")},
+		Governor:           Fact[string]{V: gov, Src: psrc("scaling_governor")},
+		AvailableGovernors: Fact[string]{V: strings.Join(strings.Fields(available), " "), Src: psrc("scaling_available_governors")},
+	}
+	if f.CPUInfoMinKHz, err = khz("cpuinfo_min_freq"); err != nil {
+		return err
+	}
+	if f.CPUInfoMaxKHz, err = khz("cpuinfo_max_freq"); err != nil {
+		return err
+	}
+	p.CPUFreq = f
+
+	// The captured policies must be the ones Render lays out from the
+	// cpuinfo, one per CPU or one per core.
+	cpus := renderCPUs(p)
+	for _, grouping := range []string{"per-cpu", "per-core"} {
+		f.PolicyGrouping = Fact[string]{V: grouping, Src: "derived:" + renderCorpusSource + "#governor/cpufreq policy directories against the cpuinfo CPUs"}
+		var rendered []int
+		for _, pol := range renderPolicies(p, cpus) {
+			rendered = append(rendered, pol.ID)
+		}
+		if slices.Equal(rendered, ids) {
+			break
+		}
+		if grouping == "per-core" {
+			return fmt.Errorf("governor/cpufreq has policies %v, which the cpuinfo renders neither per CPU nor per core", ids)
+		}
+	}
+
+	readGov := func(file string) (string, bool, error) {
+		b, err := os.ReadFile(filepath.Join(govRoot, filepath.FromSlash(file)))
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", false, nil
+		}
+		return strings.TrimSpace(string(b)), err == nil, err
+	}
+	// The driver mode, from the status file the governor emulation renders
+	// for the drivers with modes.
+	var status string
+	switch {
+	case cpuGovIntel(driver):
+		status = "intel_pstate/status"
+		f.HWP = Fact[bool]{V: slices.Contains(strings.Fields(p.CPU.Flags), "hwp"), Src: src("cpuinfo")}
+	case driver == "amd-pstate" || driver == "amd-pstate-epp":
+		status = "amd_pstate/status"
+	}
+	if status != "" {
+		mode, ok, err := readGov(status)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%s keeps its mode in %s, which governor/ lacks", driver, status)
+		}
+		f.DriverMode = Fact[string]{V: mode, Src: gsrc(status)}
+	}
+
+	// The preference pair. Under performance amd-pstate-epp offers no other
+	// preference, so the capture shows the forced state rather than the
+	// policy's own; the profile then keeps the default list, which renders
+	// the same forced state.
+	epp, hasEPP := first["energy_performance_preference"]
+	prefs, hasPrefs := first["energy_performance_available_preferences"]
+	if hasEPP != hasPrefs {
+		return fmt.Errorf("governor/cpufreq/policy%d has one of the energy-performance preference pair only", ids[0])
+	}
+	if hasEPP && !(driver == "amd-pstate-epp" && gov == "performance") {
+		f.EPP = &EPPSpec{
+			Available: Fact[string]{V: strings.Join(strings.Fields(prefs), " "), Src: psrc("energy_performance_available_preferences")},
+			Default:   Fact[string]{V: strings.TrimSpace(epp), Src: psrc("energy_performance_preference")},
+		}
+	}
+	if !hasEPP && cpuGovHasEPP(f) {
+		return fmt.Errorf("%s policies render the energy-performance preference pair, which governor/cpufreq/policy%d lacks", driver, ids[0])
+	}
+
+	// Boost, where the driver keeps it: the inverted no_turbo, each policy's
+	// boost, or the global cpufreq/boost. The first two are rendered whenever
+	// the governor emulation is on, so they must be captured.
+	bit := func(v, file string) (int, error) {
+		switch v {
+		case "0":
+			return 0, nil
+		case "1":
+			return 1, nil
+		}
+		return 0, fmt.Errorf("governor/%s is %q, want 0 or 1", file, v)
+	}
+	scope := cpuGovDriverBoostScope(driver)
+	var boostFile, boostText string
+	var hasBoost bool
+	switch scope {
+	case cpuGovBoostNoTurbo:
+		boostFile = "intel_pstate/no_turbo"
+		if boostText, hasBoost, err = readGov(boostFile); err != nil {
+			return err
+		}
+	case cpuGovBoostPerCPU:
+		boostFile = "cpufreq/policy*/boost"
+		boostText, hasBoost = first["boost"]
+		boostText = strings.TrimSpace(boostText)
+	default:
+		boostFile = "cpufreq/boost"
+		if boostText, hasBoost, err = readGov(boostFile); err != nil {
+			return err
+		}
+	}
+	switch {
+	case hasBoost:
+		v, err := bit(boostText, boostFile)
+		if err != nil {
+			return err
+		}
+		if scope == cpuGovBoostNoTurbo {
+			v = 1 - v
+		}
+		f.Boost = Fact[int]{V: v, Src: gsrc(boostFile)}
+		f.BoostScope = Fact[string]{V: scope, Src: gsrc(boostFile)}
+	case scope != cpuGovBoostGlobal:
+		return fmt.Errorf("%s keeps boost in %s, which governor/ lacks", driver, boostFile)
 	}
 	return nil
 }

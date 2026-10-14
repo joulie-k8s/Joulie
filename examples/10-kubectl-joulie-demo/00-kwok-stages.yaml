@@ -1,4 +1,4 @@
-## Node heartbeat stage — marks fake nodes as Ready
+## Node heartbeat stage: marks fake nodes as Ready
 apiVersion: kwok.x-k8s.io/v1alpha1
 kind: Stage
 metadata:
@@ -45,7 +45,7 @@ spec:
     durationMilliseconds: 2000
     jitterDurationMilliseconds: 1000
 ---
-## Pod lifecycle — move pods scheduled on fake nodes to Running
+## Pod lifecycle: move pods scheduled on fake nodes to Running
 apiVersion: kwok.x-k8s.io/v1alpha1
 kind: Stage
 metadata:
@@ -92,7 +92,7 @@ spec:
     durationMilliseconds: 3000
     jitterDurationMilliseconds: 2000
 ---
-## Pod delete — handle pod deletion on fake nodes
+## Pod delete: handle pod deletion on fake nodes
 apiVersion: kwok.x-k8s.io/v1alpha1
 kind: Stage
 metadata:

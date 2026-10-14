@@ -7,6 +7,7 @@ requiring a Kubernetes cluster.  All kubectl / subprocess calls are mocked.
 import importlib
 import json
 import pathlib
+import subprocess
 import sys
 from collections import deque
 from unittest.mock import MagicMock, patch
@@ -556,7 +557,7 @@ class TestHelpers:
 
 
 # ---------------------------------------------------------------------------
-# Config sanity tests — catch bad workload/cluster combos before cluster setup
+# Config sanity tests: catch bad workload/cluster combos before cluster setup
 # ---------------------------------------------------------------------------
 
 class TestConfigSanity:
@@ -675,7 +676,7 @@ class TestConfigSanity:
             )
 
     def test_no_gang_scheduling_workload_types(self):
-        """Multi-pod workload types must not be enabled — K8s lacks gang scheduling.
+        """Multi-pod workload types must not be enabled: K8s lacks gang scheduling.
 
         distributed_training, parameter_server_training, and hpo_experiment
         spawn multiple co-dependent pods.  Without gang scheduling, these can
@@ -690,7 +691,7 @@ class TestConfigSanity:
             overlap = allowed & gang_types
             assert not overlap, (
                 f"{cfg_path.name}: gang-scheduling-risky types {overlap} enabled. "
-                f"K8s does not support gang scheduling — remove them to avoid deadlocks."
+                f"K8s does not support gang scheduling; remove them to avoid deadlocks."
             )
 
     # -- Simulation coverage --------------------------------------------------
@@ -835,3 +836,86 @@ class TestConfigSanity:
                     f"(= {max_cap}W × {eco_pct}%) < hardware min {min_cap}W "
                     f"for {n.get('node_name_prefix', '?')}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Hardware catalog: the simulator reads the one embedded in it
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+
+
+def _load_standalone_sweep():
+    spec = importlib.util.spec_from_file_location(
+        "standalone_sweep_03", REPO_ROOT / "scripts" / "standalone_sweep.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestEmbeddedCatalog:
+    """No catalog path reaches the simulator, so it reads its embedded catalog.
+
+    The experiments used to generate a catalog from their inventory and mount
+    it over the embedded one. It replaced that catalog whole and held only
+    placeholder facts (every CPU 2.0/3.0 GHz and 300 W TDP).
+    """
+
+    def test_standalone_sweep_sets_no_catalog_path(self, tmp_path, monkeypatch):
+        # A path left exported in the shell must not reach the simulator either.
+        monkeypatch.setenv("SIM_HARDWARE_CATALOG_PATH", "/stale/hardware.generated.yaml")
+        standalone = _load_standalone_sweep()
+        cfg = yaml.safe_load((SCRIPTS_DIR.parent / "configs" / "benchmark.yaml").read_text()) or {}
+        seen = {}
+
+        def fake_run(cmd, env=None, **kwargs):
+            seen["env"] = env
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(standalone.subprocess, "run", fake_run)
+        ok = standalone.run_standalone(
+            simulator_bin="joulie-simulator",
+            baseline="B",
+            trace_path=tmp_path / "trace.jsonl",
+            output_dir=tmp_path / "out",
+            inventory_path=str(SCRIPTS_DIR.parent / "configs" / "cluster-nodes.yaml"),
+            cfg=cfg,
+            time_scale=120.0,
+        )
+        assert ok
+        assert seen["env"]["SIM_HARDWARE_CATALOG_PATH"] == ""
+
+    def test_installer_clears_the_catalog_path(self):
+        text = (SCRIPTS_DIR / "03_install_components.sh").read_text()
+        # The chart's default path is the ConfigMap's file, and an empty file
+        # there loads no catalog at all, so the path has to be cleared.
+        assert '--set "env.SIM_HARDWARE_CATALOG_PATH="' in text
+        assert '--from-literal=hardware.generated.yaml=""' in text
+
+    def test_no_script_generates_or_passes_a_catalog(self):
+        for path in sorted(SCRIPTS_DIR.iterdir()):
+            if path.name == pathlib.Path(__file__).name or path.suffix not in {".sh", ".py"}:
+                continue
+            text = path.read_text()
+            for needle in ("--out-catalog", "GENERATED_CATALOG"):
+                assert needle not in text, f"{path.name} still uses {needle}"
+
+    def test_out_catalog_flag_writes_nothing(self, tmp_path):
+        catalog = tmp_path / "hardware.generated.yaml"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "generate_heterogeneous_assets.py"),
+                "--input", str(SCRIPTS_DIR.parent / "configs" / "cluster-nodes.yaml"),
+                "--out-nodes", str(tmp_path / "00-kwok-nodes.yaml"),
+                "--out-classes", str(tmp_path / "10-node-classes.yaml"),
+                "--out-catalog", str(catalog),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "00-kwok-nodes.yaml").exists()
+        assert not catalog.exists()
+        assert "--out-catalog is deprecated" in result.stderr

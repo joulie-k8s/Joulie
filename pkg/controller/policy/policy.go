@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	joulie "github.com/matbun/joulie/pkg/api"
 )
 
 // profilePerformance is the value of the power-profile label on a node that
@@ -31,11 +33,17 @@ type NodeAssignment struct {
 	CapWatts       float64 // absolute power cap
 	CPUCapPctOfMax *float64
 	GPU            *GPUCapIntent
-	ManagedBy      string // policy name that produced this assignment
-	SourceProfile  string
-	SourceDrain    bool
-	Draining       bool
-	State          string
+	// CPUGovernor and GPUGovernor are the governor presets written to
+	// NodeTwin spec.cpu.governor and spec.gpu.governor; nil writes none, and
+	// the agent then leaves that governor as it is. The policies leave them
+	// nil; the controller manager sets them from the profile the node runs at.
+	CPUGovernor   *joulie.CPUGovernorIntent
+	GPUGovernor   *joulie.GPUGovernorIntent
+	ManagedBy     string // policy name that produced this assignment
+	SourceProfile string
+	SourceDrain   bool
+	Draining      bool
+	State         string
 }
 
 // GPUCapIntent encodes GPU power cap intent.

@@ -1191,11 +1191,28 @@ func TestNodeTwinStatusMapNeverContainsControlStatus(t *testing.T) {
 	status := joulieNodeTwinStatusForTest()
 	// Even if a ControlStatus is present in memory, the controller manager must never
 	// write it: that subtree belongs to the agent.
-	status.ControlStatus = &joulie.ControlStatus{CPU: &joulie.ControlResult{Backend: "rapl", Result: "applied"}}
+	status.ControlStatus = &joulie.ControlStatus{
+		CPU: &joulie.ControlResult{Backend: "rapl", Result: "applied"},
+		// GV04: the governor results belong to the agent too.
+		CPUGovernor: &joulie.ControlResult{Backend: joulie.GovernorBackendCPUFreq, Result: joulie.GovernorResultApplied, Applied: "performance"},
+		GPUGovernor: &joulie.ControlResult{Backend: joulie.GovernorBackendAMDGPUSysfs, Result: joulie.GovernorResultApplied, Applied: "high"},
+	}
 	m := nodeTwinStatusToMap(status)
 	if _, ok := m["controlStatus"]; ok {
 		t.Fatalf("controller manager status payload contains controlStatus: %v", m)
 	}
+	var walk func(v interface{}, at string)
+	walk = func(v interface{}, at string) {
+		if mm, ok := v.(map[string]interface{}); ok {
+			for k, e := range mm {
+				if k == "cpuGovernor" || k == "gpuGovernor" {
+					t.Fatalf("controller manager status payload contains %s%s: %v", at, k, m)
+				}
+				walk(e, at+k+".")
+			}
+		}
+	}
+	walk(m, "")
 }
 
 func TestUpsertNodeTwinSpecSkipsUpdateWhenUnchanged(t *testing.T) {
@@ -1459,5 +1476,13 @@ func TestDrainingNodeKeepsPerformanceCaps(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The controller manager's own GPU_PRODUCT_LABEL_KEYS default is the one the
+// chart sets, so a deployment without the chart reads the same labels.
+func TestDefaultGPUProductLabelKeysMatchChart(t *testing.T) {
+	if got := chartGPUProductLabelKeys(t); got != defaultGPUProductLabelKeys {
+		t.Fatalf("chart GPU_PRODUCT_LABEL_KEYS %q, controller default %q", got, defaultGPUProductLabelKeys)
 	}
 }

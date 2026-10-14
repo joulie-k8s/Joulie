@@ -1,0 +1,15 @@
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+clientConnection:
+  kubeconfig: /var/lib/rancher/k3s/server/cred/scheduler.kubeconfig
+leaderElection:
+  leaderElect: false
+extenders:
+  - urlPrefix: "http://127.0.0.1:9876"
+    filterVerb: "filter"
+    prioritizeVerb: "prioritize"
+    weight: 5
+    enableHTTPS: false
+    nodeCacheCapable: false
+    managedResources: []
+    ignorable: true

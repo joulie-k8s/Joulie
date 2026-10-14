@@ -1,0 +1,2 @@
+# The goldens are OTLP JSON lines, which the root .gitignore excludes as *.jsonl.
+!*.jsonl

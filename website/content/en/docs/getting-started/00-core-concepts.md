@@ -11,14 +11,21 @@ Before installing Joulie, understand the control model.
 
 Joulie is a Kubernetes-native energy management system that uses **per-node digital twins** to optimize data center power consumption.
 
-It continuously ingests telemetry from every node (CPU/GPU power draw via RAPL and NVML/DCGM, per-pod resource utilization via cAdvisor, and optional energy counters from [Kepler](https://github.com/sustainable-computing-io/kepler)) to maintain an up-to-date model of each node's thermal and power state.
+It continuously ingests telemetry from every node (CPU/GPU power draw via RAPL and NVML/DCGM, read from Prometheus as the OpenTelemetry hardware metrics `hw.energy` and `hw.power` or as [Kepler](https://github.com/sustainable-computing-io/kepler) energy counters, and per-pod resource utilization via cAdvisor) to maintain an up-to-date model of each node's thermal and power state.
 
 These per-node digital twins drive two outcomes:
 
-1. **Energy control**: the controller manager writes desired power state into `NodeTwin` CRs (CPU and GPU power caps). The node agent reads `NodeTwin.spec` and enforces them.
+1. **Energy control**: the controller manager writes desired power state into `NodeTwin` CRs (CPU and GPU power caps and, when enabled, governor presets). The node agent reads `NodeTwin.spec` and enforces them.
 2. **Scheduling decisions**: the scheduler extender reads computed `NodeTwin.status` (power headroom, predicted cooling stress, PSU load) to steer new pods toward nodes with the best energy-efficiency / performance trade-off.
 
 The feedback loop: telemetry → twin update → cap decisions → new pod placement → updated telemetry. This keeps the cluster's power envelope stable and prevents cooling or PSU spikes without sacrificing critical workload performance.
+
+## Two energy knobs on a node
+
+- **Power caps (throttling).** A hard ceiling on CPU or GPU watts. The biggest savings, but work slows whenever it reaches the ceiling.
+- **Governors.** How eagerly a CPU or GPU raises its clocks: the Linux CPU governor and energy-performance preference, the GPU performance level or clock limit. Gentler than a cap: the hardware still speeds up when there is work, it just leans towards efficiency. Smaller savings, smaller slowdown.
+
+Joulie picks a preset per node from its state: performance nodes stay fast, eco nodes get an efficient governor next to their cap. Governor control is off until you enable it; see [Governor policy]({{< relref "/docs/architecture/policy.md#governor-policy" >}}) and the [experiment]({{< relref "/docs/experiments/governor-exploration.md" >}}) for what each preset saves in the simulator.
 
 ## Why it matters
 
@@ -101,7 +108,7 @@ For the formulas and the inputs they read, see [Digital Twin]({{< relref "/docs/
 ## Digital twin feedback loop
 
 ```
-telemetry (RAPL/NVML/cAdvisor/Kepler)
+telemetry (RAPL/NVML as OTel hw.* metrics, or Kepler; cAdvisor)
   → twin update (NodeTwin.status: headroom, coolingStress, psuStress)
     → cap decisions (NodeTwin.spec)
     → pod placement steering (scheduler extender)

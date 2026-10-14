@@ -1,0 +1,53 @@
+# The KWOK Stage that ends a v1 workload pod. It replaces the vendored
+# pod-complete Stage of the same name, which only a Stage of that name
+# applied later can do, and so is applied by up.sh after the vendored
+# Stages. Adapted from the pod-complete Stage of KWOK v0.8.0
+# (kustomize/stage/pod/general/pod-complete.yaml; the status template is
+# the one of the vendored kwok-v0.8.0/stage-fast.yaml), Copyright The
+# Kubernetes Authors, Apache License 2.0.
+#
+# Upstream moves every Running pod owned by a Job to Succeeded, so a
+# simulated job would end before it did its work. Here a pod ends only once
+# the simulator has marked it complete with the annotation
+# sim.joulie.io/complete: "true" (workload.AnnotationComplete): the delay,
+# the Ready check and the owner selector are dropped.
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: pod-complete
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+    - key: .metadata.deletionTimestamp
+      operator: DoesNotExist
+    - key: .status.phase
+      operator: In
+      values:
+      - Running
+    - key: .metadata.annotations["sim.joulie.io/complete"]
+      operator: In
+      values:
+      - "true"
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+      {{ $root := . }}
+      containerStatuses:
+      {{ range $index, $item := .spec.containers }}
+      {{ $origin := index $root.status.containerStatuses $index }}
+      - image: {{ $item.image | Quote }}
+        name: {{ $item.name | Quote }}
+        ready: false
+        restartCount: 0
+        started: false
+        state:
+          terminated:
+            exitCode: 0
+            finishedAt: {{ $now | Quote }}
+            reason: Completed
+            startedAt: {{ $now | Quote }}
+      {{ end }}
+      phase: Succeeded

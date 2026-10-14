@@ -1,7 +1,7 @@
 ---
 title: "Energy-Aware Scheduling"
 weight: 45
-description: "How Joulie combines Kepler telemetry, workload classification, digital twin predictions, and PUE-weighted scoring to make energy-aware scheduling decisions."
+description: "How Joulie combines measured power (OpenTelemetry hardware metrics or Kepler), workload classification, digital twin predictions, and PUE-weighted scoring to make energy-aware scheduling decisions."
 ---
 
 Joulie's scheduler extender makes placement decisions informed by real-time energy telemetry, workload characteristics, and facility-level power conditions. This page describes the full pipeline from metrics collection through scoring and optional rescheduling.
@@ -11,8 +11,8 @@ Joulie's scheduler extender makes placement decisions informed by real-time ener
 The energy-aware scheduling pipeline has five stages:
 
 ```
-Kepler + RAPL/NVML telemetry
-  -> Prometheus (scrape & store)
+RAPL/NVML readings as OpenTelemetry metrics (or Kepler)
+  -> Prometheus (OTLP receiver, or scrape)
     -> Digital twin (NodeTwin.status)
       -> Scheduler extender (filter + score)
         -> Placement decision
@@ -22,21 +22,23 @@ Each stage runs independently and communicates through Kubernetes CRDs or Promet
 
 ### Stage 1: Telemetry collection
 
-[Kepler](https://github.com/sustainable-computing-io/kepler) instruments the Linux kernel via eBPF to produce per-container energy counters. It reads hardware energy interfaces (Intel RAPL for CPU/DRAM, NVML/DCGM for GPUs) and attributes energy consumption to individual containers using kernel tracepoints.
+The twin's measured power comes from the hardware energy interfaces (Intel and AMD RAPL for CPU packages, NVML or ROCm SMI for GPUs), published per component as the OpenTelemetry hardware metrics `hw.energy` and `hw.power` and pushed over OTLP to Prometheus. The simulator in emulate mode publishes them this way, and an OpenTelemetry Collector can translate other exporters into them. The [input contract]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}}) lists every name.
 
-The agent also reads RAPL and NVML directly to obtain node-level power draw for cap enforcement and twin input.
+[Kepler](https://github.com/sustainable-computing-io/kepler) is the other supported source. It instruments the Linux kernel via eBPF, reads the same hardware interfaces and attributes energy to individual containers using kernel tracepoints. The controller manager reads its node counters with `NODE_POWER_PRESET=kepler` (Kepler 0.10 and later) or `kepler-legacy` (0.7 to 0.9). Kepler reports node GPU energy only from 0.12, behind an experimental feature that is off by default.
+
+The agent also reads RAPL and NVML directly on its node, for cap enforcement.
 
 Together, these produce three categories of signal:
 
 | Source | Granularity | Metrics |
 |--------|-------------|---------|
-| Kepler | Per-container | `kepler_container_package_joules_total`, `kepler_container_dram_joules_total`, `kepler_container_gpu_joules_total` |
-| RAPL | Per-socket | CPU package power, DRAM power |
-| NVML/DCGM | Per-GPU | GPU power draw, temperature, utilization |
+| OpenTelemetry producer | Per component (CPU package, GPU) and host | `hw.energy`, `hw.power`, `hw.host.energy`, `hw.host.power` (`hw_energy_joules_total` and so on in Prometheus) |
+| Kepler | Per node and per container | `kepler_node_cpu_active_joules_total`, `kepler_node_cpu_idle_joules_total` and `kepler_node_gpu_joules_total` (0.10 and later), `kepler_node_package_joules_total` (0.7 to 0.9), `kepler_container_*_joules_total` |
+| RAPL, NVML/DCGM on the node | Per socket, per GPU | CPU package power for the agent's caps; GPU power draw, temperature, utilization |
 
 ### Stage 2: Prometheus aggregation
 
-All telemetry is scraped into Prometheus. The controller manager and classifier query Prometheus over configurable windows (default 10 minutes for classification, 30 seconds for twin updates). This decouples data collection from decision-making and lets each consumer query at its own cadence.
+OpenTelemetry producers push into Prometheus' OTLP receiver, and exporters such as Kepler are scraped into the same store. The controller manager queries it with one grouped query per input every reconcile, over a `rate()` window of 5 minutes by default (`PROMETHEUS_RATE_WINDOW`). This decouples data collection from decision-making and lets each consumer query at its own cadence.
 
 ### Stage 3: Digital twin computation
 
@@ -50,9 +52,9 @@ The controller manager's twin controller ingests `NodeHardware` (static capabili
 
 When kube-scheduler has a pending pod, it calls the Joulie extender at two endpoints:
 
-**Filter** (`POST /filter`): The extender reads the pod's `joulie.io/workload-class` annotation. Performance pods are rejected from nodes whose `NodeTwin.status.schedulableClass` is `eco` or `draining`. Standard pods pass all nodes. This is a hard constraint — rejected nodes are excluded from scoring.
+**Filter** (`POST /filter`): The extender reads the pod's `joulie.io/workload-class` annotation. Performance pods are rejected from nodes whose `NodeTwin.status.schedulableClass` is `eco` or `draining`. Standard pods pass all nodes. This is a hard constraint: rejected nodes are excluded from scoring.
 
-**Prioritize** (`POST /prioritize`): The extender scores each surviving node 0-100. The score is **pod-specific** — it accounts for the power this particular pod would add to the node:
+**Prioritize** (`POST /prioritize`): The extender scores each surviving node 0-100. The score is **pod-specific**: it accounts for the power this particular pod would add to the node:
 
 ```
 projectedPower = measuredPower + podMarginalPower
@@ -71,7 +73,7 @@ score = headroomScore * 0.7
 Key properties:
 - **Headroom is relative to capped power**, not TDP. Eco nodes (capped lower) run out of headroom sooner.
 - **Pod marginal power** is estimated from the pod's CPU/GPU requests and the node's hardware profile. A GPU-heavy pod reduces headroom more than a CPU-only pod.
-- **headroomScore can go negative** if the pod would exceed the node's cap — such nodes get score 0.
+- **headroomScore can go negative** if the pod would exceed the node's cap; such nodes get score 0.
 - **Trend bonus** uses adaptive scaling (±25 pts): trendScale=6.0 at steady state, trendScale=2.0 during cluster-wide bursts (|clusterTrend| > 500 W/min). This provides strong smoothing during normal operation while avoiding over-reaction during coordinated ramps.
 
 See [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}}) for the full scoring logic, worked examples, and environment variable reference.
@@ -148,7 +150,7 @@ Burns et al. (2016) trace the evolution from Borg through Omega to Kubernetes, d
 
 Prior work has addressed energy measurement, power-aware scheduling, and data center thermal modeling independently. Joulie's contribution is integrating these into a single Kubernetes-native feedback loop:
 
-1. **Kepler + RAPL + NVML telemetry** provides both per-container attribution and node-level power measurement.
+1. **RAPL and NVML telemetry** as OpenTelemetry metrics, or through Kepler, provides node-level power measurement, and Kepler adds per-container attribution.
 2. **A digital twin** predicts the facility-level impact (cooling, PSU) of placement decisions, not just IT power.
 3. **PUE-weighted scoring** makes the scheduler aware of marginal facility energy cost, not just compute availability.
 

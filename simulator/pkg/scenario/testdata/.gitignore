@@ -1,0 +1,3 @@
+# The root .gitignore drops *.jsonl, the run outputs. The OTLP JSON Lines
+# and traces here are fixtures the tests read, so they are committed.
+!*.jsonl

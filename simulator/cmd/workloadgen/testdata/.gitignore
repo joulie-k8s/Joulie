@@ -1,0 +1,2 @@
+# The goldens are traces, which the root .gitignore excludes as *.jsonl.
+!*.jsonl

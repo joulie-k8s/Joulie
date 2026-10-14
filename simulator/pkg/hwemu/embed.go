@@ -22,16 +22,27 @@ func BuiltinProfiles() (map[string]*Profile, error) {
 // name, an IPv4 address or a dotted host name.
 var renderHostPattern = regexp.MustCompile(`(?i)node-?[0-9]|\b[0-9]{1,3}(\.[0-9]{1,3}){3}\b|\b[a-z0-9-]+\.[a-z0-9-]+\.[a-z]{2,}\b`)
 
-// renderLoadEmbedded is LoadProfiles plus the rule for profiles shipped in
-// the repository: a measured source describes the machine by its hardware
-// only, never by a node name, address or host name.
+// renderLoadEmbedded is LoadProfiles plus renderRejectMachineNames on every
+// profile it loads: the rule for profiles shipped in the repository.
 func renderLoadEmbedded(fsys fs.FS, dir string) (map[string]*Profile, error) {
 	profiles, err := LoadProfiles(fsys, dir)
 	if err != nil {
 		return nil, err
 	}
+	if err := renderRejectMachineNames(profiles, renderSortedProfileNames(profiles)); err != nil {
+		return nil, err
+	}
+	return profiles, nil
+}
+
+// renderRejectMachineNames checks that every measured source of the named
+// profiles describes the machine by its hardware only, never by a node name,
+// address or host name. It checks only the names it is given, so
+// LoadProfileSet applies it to the builtins and never to the local profiles
+// beside them, which may name the machines they were measured on.
+func renderRejectMachineNames(profiles map[string]*Profile, names []string) error {
 	var errs []error
-	for _, name := range renderSortedProfileNames(profiles) {
+	for _, name := range names {
 		p := profiles[name]
 		for _, id := range renderSortedSourceIDs(p.Sources) {
 			s := p.Sources[id]
@@ -43,10 +54,7 @@ func renderLoadEmbedded(fsys fs.FS, dir string) (map[string]*Profile, error) {
 			}
 		}
 	}
-	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
-	}
-	return profiles, nil
+	return errors.Join(errs...)
 }
 
 func renderSortedProfileNames(m map[string]*Profile) []string {

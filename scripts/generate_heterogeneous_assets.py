@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate KWOK node manifests, optional simulator overrides, and a compositional hardware catalog.
+"""Generate KWOK node manifests and optional simulator overrides from a node inventory.
+
+The simulator models each node from the hardware catalog embedded in pkg/hwinv
+(pkg/hwinv/assets/hardware.yaml), matched on the CPU and GPU labels written here.
+This script no longer writes a catalog: --out-catalog is accepted for one
+release, prints a warning and writes nothing.
 
 Input columns expected (case-insensitive):
 - node_name
@@ -17,8 +22,7 @@ Usage:
     --input inventory.xlsx \
     --sheet Nodes \
     --out-nodes "examples/07-simulator-gpu-powercaps/manifests/00-kwok-nodes.yaml" \
-    --out-classes "examples/07-simulator-gpu-powercaps/manifests/10-node-classes.yaml" \
-    --out-catalog simulator/catalog/hardware.generated.yaml
+    --out-classes "examples/07-simulator-gpu-powercaps/manifests/10-node-classes.yaml"
 """
 
 from __future__ import annotations
@@ -169,11 +173,6 @@ def slugify(value: str) -> str:
 def label_safe(value: str) -> str:
     txt = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip("-.")
     return txt or "unknown"
-
-
-def yaml_list(items: list[str]) -> str:
-    quoted = [f'"{item}"' for item in items if item]
-    return "[" + ", ".join(quoted) + "]"
 
 
 def expand_inventory_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -409,66 +408,9 @@ def make_class_rows(rows: list[dict[str, str]]) -> str:
                 f'        idleWattsPerGpu: {phys["idleWattsPerGpu"]}',
                 f'        maxWattsPerGpu: {item["max"]}',
                 f'        minCapWattsPerGpu: {item["min"]}',
-                "        powerModel:",
-                "          alphaUtil: 1.0",
-                "          betaCap: 1.0",
                 f'        computeGamma: {phys["computeGamma"]}',
                 f'        memoryEpsilon: {phys["memoryEpsilon"]}',
                 f'        memoryGamma: {phys["memoryGamma"]}',
-            ]
-        )
-    return "\n".join(out) + "\n"
-
-
-def make_catalog_rows(rows: list[dict[str, str]]) -> str:
-    cpu_models: OrderedDict[str, dict[str, str]] = OrderedDict()
-    gpu_models: OrderedDict[str, dict[str, str]] = OrderedDict()
-    out = ["catalogVersion: v1", "cpuModels:"]
-    for row in rows:
-        cpu = norm(row, "cpu")
-        if not cpu or cpu in cpu_models:
-            continue
-        vendor = "amd" if "amd" in cpu.lower() else "intel" if "intel" in cpu.lower() or "xeon" in cpu.lower() else ""
-        cpu_models[cpu] = {
-            "vendor": vendor,
-            "cores": norm(row, "cpu", "").split(" ")[-2] if "Core" in cpu else "",
-        }
-    for cpu, item in cpu_models.items():
-        key = cpu.replace("-", "_").replace(" ", "_").replace("(R)", "").replace("__", "_")
-        out.extend(
-            [
-                f"  {key}:",
-                f"    aliases: {yaml_list([cpu, label_safe(cpu)])}",
-                "    provenance: generated-from-inventory",
-                "    official:",
-                f'      vendor: {item["vendor"] or "unknown"}',
-                "      baseGHz: 2.0",
-                "      boostGHz: 3.0",
-                "      tdpW: 300",
-            ]
-        )
-    out.append("")
-    out.append("gpuModels:")
-    for row in rows:
-        vendor = norm(row, "vendor", "none").lower()
-        product = norm(row, "product")
-        if vendor not in {"nvidia", "amd"} or not product:
-            continue
-        if product in gpu_models:
-            continue
-        gpu_models[product] = {
-            "vendor": vendor,
-            "max": norm(row, "gpu_max_cap_watts", "350"),
-        }
-    for product, item in gpu_models.items():
-        out.extend(
-            [
-                f"  {product.replace('-', '_').replace(' ', '_')}:",
-                f"    aliases: {yaml_list([product, label_safe(product)])}",
-                "    provenance: generated-from-inventory",
-                "    official:",
-                f'      vendor: {item["vendor"]}',
-                f'      maxBoardPowerW: {item["max"]}',
             ]
         )
     return "\n".join(out) + "\n"
@@ -480,7 +422,12 @@ def main() -> int:
     ap.add_argument("--sheet", default=None)
     ap.add_argument("--out-nodes", required=True, type=Path)
     ap.add_argument("--out-classes", required=True, type=Path)
-    ap.add_argument("--out-catalog", type=Path, default=None)
+    ap.add_argument(
+        "--out-catalog",
+        type=Path,
+        default=None,
+        help="deprecated and ignored: the simulator reads the catalog embedded in pkg/hwinv",
+    )
     args = ap.parse_args()
 
     rows = normalize_inventory_rows(load_rows(args.input, args.sheet))
@@ -489,20 +436,23 @@ def main() -> int:
 
     nodes_yaml = "\n---\n".join(make_kwok_node(r) for r in rows) + "\n"
     classes_yaml = make_class_rows(rows)
-    catalog_yaml = make_catalog_rows(rows)
 
     args.out_nodes.parent.mkdir(parents=True, exist_ok=True)
     args.out_classes.parent.mkdir(parents=True, exist_ok=True)
     args.out_nodes.write_text(nodes_yaml, encoding="utf-8")
     args.out_classes.write_text(classes_yaml, encoding="utf-8")
-    if args.out_catalog:
-        args.out_catalog.parent.mkdir(parents=True, exist_ok=True)
-        args.out_catalog.write_text(catalog_yaml, encoding="utf-8")
 
     print(f"wrote {args.out_nodes}")
     print(f"wrote {args.out_classes}")
     if args.out_catalog:
-        print(f"wrote {args.out_catalog}")
+        # A generated catalog replaced the embedded one whole and held only
+        # placeholder facts (every CPU 2.0/3.0 GHz and 300 W), so it is no
+        # longer written. The flag goes away in the next release.
+        print(
+            f"warning: --out-catalog is deprecated and ignored, {args.out_catalog} was not written: "
+            "the simulator reads the hardware catalog embedded in pkg/hwinv",
+            file=sys.stderr,
+        )
     return 0
 
 

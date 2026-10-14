@@ -4,9 +4,11 @@ This page reports results from the standalone simulator benchmark of a homogeneo
 
 - [`experiments/03-homogeneous-h100-benchmark/`](.)
 
-**Simulator**: Go standalone binary (`joulie-simulator`) — no Kubernetes, no Kind, no KWOK. Direct in-memory simulation with scoring-based job placement.
+**Simulator**: Go standalone binary (`joulie-simulator`): no Kubernetes, no Kind, no KWOK. Direct in-memory simulation with scoring-based job placement.
 
 > **Note:** These results were produced with the standalone simulator before Joulie v0.2.2. That simulator chose the performance nodes as one node per hardware family, then filled the remaining slots in node-name order. Joulie v0.2.2 splits the performance slots across hardware families in proportion to family size. These results have not been rerun with that split, and the exact configuration of the published runs is not recorded in the repository. Its `queue_aware_v1` demand also counted only running performance jobs, not jobs waiting for a node; that changed after v0.2.2.
+
+> **Note (2026-10-09):** Sections 1.2, 1.4, 1.5, 2.1 and 2.2 do not describe the model these runs used. With the scripts in this repository, from the commit that added this report to v0.2.3, the standalone sweep gave the simulator a hardware catalog generated from the inventory, which gives every CPU a 300 W TDP and no measured curve, and loaded no node classes. Every CPU therefore ran the analytic fallback model (80 W idle, 420 W at full load), not a SPECpower curve, and every H100 NVL the generic 300 W board (30 W idle, `ComputeGamma` 1): an uncapped GPU drew up to 300 W, not 400 W, and the 70 % eco cap was 210 W, not 280 W. Eco set a CPU frequency scale (`cpu_eco_pct_of_max`), never a RAPL cap, so no CPU ran at 220 W. Thermal throttling was on by default (CPU 85 to 97 °C, GPU 82 to 92 °C) and is opt-in now, and the savings include a cut of idle CPU power on eco nodes (up to 50 % below 20 % utilization) that the simulator no longer models. These results have not been rerun with the current model. [Simulator changes](../../simulator/CHANGES.md) lists every change since v0.2.3 and how far it moves this experiment's `configs/benchmark-debug.yaml`: on that configuration the saving of C against A is 34.5 % with v0.2.3 and the generated catalog these runs read, and 32.6 % now.
 
 ---
 
@@ -37,7 +39,7 @@ The standalone simulator (`joulie-simulator`) is a single Go binary that:
 5. Co-simulates with the `DXCooledAirsideEconomizer.fmu` Modelica model at each timestep for physically-accurate cooling and PUE calculation.
 6. Emits per-tick timeseries data for post-hoc analysis and plotting.
 
-No Kind cluster, no KWOK, no etcd, no kubelet emulation — all scheduling and power management logic runs in-process.
+No Kind cluster, no KWOK, no etcd, no kubelet emulation: all scheduling and power management logic runs in-process.
 
 ### 1.2 Node inventory
 
@@ -45,7 +47,7 @@ No Kind cluster, no KWOK, no etcd, no kubelet emulation — all scheduling and p
 
 | Node prefix | Count | GPU model | GPUs/node | GPU cap range | Host CPU | CPU cores/node |
 |---|---:|---|---:|---|---|---:|
-| kwok-h100-nvl | **4,000** | NVIDIA H100 NVL | 8 | 200–400 W | AMD EPYC 9654 | 192 |
+| kwok-h100-nvl | **4,000** | NVIDIA H100 NVL | 8 | 200 to 400 W | AMD EPYC 9654 | 192 |
 
 #### CPU-only nodes (1,000 total)
 
@@ -80,7 +82,7 @@ The workload mix is heavier on GPU jobs (85% GPU ratio, 4 GPUs per job) compared
 | Parameter | Performance | Eco |
 |---|---:|---:|
 | CPU cap (absolute watts) | 600 W | 220 W |
-| CPU eco % of max | — | 60% |
+| CPU eco % of max | n/a | 60% |
 | GPU eco % of max | 100% | 70% |
 | GPU eco cap per device | 400 W | 280 W |
 
@@ -92,7 +94,7 @@ The 70% GPU eco cap is less aggressive than the Kind+KWOK experiment's 50%, but 
 |---|---:|---:|
 | HP fraction | 25% (1,250 HP nodes) | base 5%, min 50, max 4,000 |
 | Eco nodes | 3,750 | dynamic (up to 4,950) |
-| perf_per_hp_node | — | 3 |
+| perf_per_hp_node | n/a | 3 |
 
 **Static (B)**: Fixed 1,250 HP / 3,750 eco split. All 3,750 eco GPU nodes run at 280 W per GPU (70% of 400 W TDP). The 1,250 HP nodes run uncapped. Under the node-name order the simulator used before v0.2.2 they were the 1,000 CPU-only nodes and 250 of the 4,000 H100 nodes, so 3,750 of the 4,000 GPU nodes (about 94%) were capped (a reconstruction from the committed code, not a measurement).
 
@@ -102,11 +104,11 @@ The 70% GPU eco cap is less aggressive than the Kind+KWOK experiment's 50%, but 
 
 ## 2. Policy Algorithms
 
-### 2.1 Baseline A — No power management
+### 2.1 Baseline A: No power management
 
 All 5,000 nodes run at full performance. GPUs uncapped at 400 W TDP. CPUs at full frequency. This is the energy ceiling.
 
-### 2.2 Baseline B — Static partition (`static_partition`)
+### 2.2 Baseline B: Static partition (`static_partition`)
 
 Given `N=5000` managed nodes with `hp_frac=0.25`:
 - 1,250 nodes → `performance` profile (GPU at 400 W, CPU uncapped)
@@ -114,7 +116,7 @@ Given `N=5000` managed nodes with `hp_frac=0.25`:
 
 The partition is fixed for the entire run. The scheduler steers performance-sensitive pods to HP nodes and standard pods to eco nodes via scoring.
 
-### 2.3 Baseline C — Queue-aware (`queue_aware_v1`)
+### 2.3 Baseline C: Queue-aware (`queue_aware_v1`)
 
 Dynamically adjusts the performance node count based on running performance-sensitive pods:
 - `hp_base_frac=0.05`, `hp_min=50`, `hp_max=4000`
@@ -145,7 +147,7 @@ Non-Homogeneous Poisson Process (NHPP) with:
 2. **Burst overlay**: sudden spikes in arrival rate simulating batch submission events.
 3. **Negative dip overlay**: arrivals drop sharply simulating maintenance windows or planned drains.
 
-The trace covers 60 sim-hours (~2.5 simulated days) of arrivals, generating 20,000–40,000 submitted jobs depending on seed and baseline.
+The trace covers 60 sim-hours (~2.5 simulated days) of arrivals, generating 20,000 to 40,000 submitted jobs depending on seed and baseline.
 
 ### 3.2 Job model
 
@@ -204,9 +206,9 @@ Facility energy = IT energy × PUE (integrated over time). Since PUE varies with
 
 | Baseline | Facility Energy (kWh) | Std (kWh) | CPU Util | GPU Util | Jobs Completed | Jobs Submitted |
 |---|---:|---:|---:|---:|---:|---:|
-| A (no mgmt) | 507,877 | ±10,727 | 47.8% | 51.2% | 547–912 | 20,818–31,313 |
-| B (static) | 354,850 | ±2,826 | 55.2% | 32.7% | 2,526–2,584 | 39,486–39,738 |
-| C (queue-aware) | 363,511 | ±34 | 56.9% | 33.5% | 2,561–2,737 | 40,366–40,460 |
+| A (no mgmt) | 507,877 | ±10,727 | 47.8% | 51.2% | 547 to 912 | 20,818 to 31,313 |
+| B (static) | 354,850 | ±2,826 | 55.2% | 32.7% | 2,526 to 2,584 | 39,486 to 39,738 |
+| C (queue-aware) | 363,511 | ±34 | 56.9% | 33.5% | 2,561 to 2,737 | 40,366 to 40,460 |
 
 ### 5.2 Energy savings relative to baseline A
 
@@ -221,17 +223,17 @@ This is the highest energy savings observed across all three experiments (01, 02
 
 | Baseline | Jobs Completed (range) | Jobs Submitted (range) | Completion Rate |
 |---|---:|---:|---:|
-| A | 547–912 | 20,818–31,313 | 2.6–2.9% |
-| B | 2,526–2,584 | 39,486–39,738 | 6.4–6.5% |
-| C | 2,561–2,737 | 40,366–40,460 | 6.3–6.8% |
+| A | 547 to 912 | 20,818 to 31,313 | 2.6 to 2.9% |
+| B | 2,526 to 2,584 | 39,486 to 39,738 | 6.4 to 6.5% |
+| C | 2,561 to 2,737 | 40,366 to 40,460 | 6.3 to 6.8% |
 
-B and C complete **3–5× more jobs** than A within the same 60 sim-hour timeout. This is not paradoxical: A's uncapped nodes run at full power but with less efficient scheduling (no HP/eco steering), leading to more power contention and thermal throttling. B/C's structured partition enables better workload concentration and more predictable scheduling.
+B and C complete **3 to 5× more jobs** than A within the same 60 sim-hour timeout. This is not paradoxical: A's uncapped nodes run at full power but with less efficient scheduling (no HP/eco steering), leading to more power contention and thermal throttling. B/C's structured partition enables better workload concentration and more predictable scheduling.
 
 ### 5.4 Variance analysis
 
-- **B** has moderate variance (±2,826 kWh) — the fixed partition is deterministic, so variance comes from workload seed differences.
-- **C** has remarkably low variance (±34 kWh) — the queue-aware controller adapts to each seed's workload pattern, converging on similar energy outcomes regardless of arrival timing.
-- **A** has high variance (±10,727 kWh) — without power management, energy is entirely at the mercy of workload stochasticity.
+- **B** has moderate variance (±2,826 kWh): the fixed partition is deterministic, so variance comes from workload seed differences.
+- **C** has remarkably low variance (±34 kWh): the queue-aware controller adapts to each seed's workload pattern, converging on similar energy outcomes regardless of arrival timing.
+- **A** has high variance (±10,727 kWh): without power management, energy is entirely at the mercy of workload stochasticity.
 
 ---
 
@@ -245,15 +247,15 @@ Plots are in: [`img/`](./img/)
 
 Six-panel timeseries showing active jobs, IT power, CPU utilization, GPU utilization, PUE, and cooling power over 60 sim-hours.
 
-**Active Jobs**: B and C handle ~40,000 concurrent jobs vs A's ~20,000–31,000. The HP/eco partition enables B/C to pull far more jobs from the trace by providing structured scheduling that avoids resource fragmentation.
+**Active Jobs**: B and C handle ~40,000 concurrent jobs vs A's ~20,000 to 31,000. The HP/eco partition enables B/C to pull far more jobs from the trace by providing structured scheduling that avoids resource fragmentation.
 
 **IT Power**: A runs at ~4,500 to 5,000 kW. B drops to ~3,200 to 3,500 kW. C tracks ~3,300 to 3,600 kW. The massive gap is because 32,000 GPUs dominate the power draw, and capping about 94% (B) or nearly all (C at night: 3,999 of 4,000) of them at 70% TDP produces a dramatic reduction. Both shares are reconstructed from the node-name order described in the note on the static split above, not measured.
 
 **CPU Utilization**: B (55.2%) and C (56.9%) exceed A (47.8%). This is the workload concentration effect: by steering standard jobs to eco nodes and performance jobs to HP nodes, B/C pack work more tightly, raising utilization per node even as total power drops.
 
-**GPU Utilization**: A has 51.2% GPU utilization (high for a large cluster), but B/C drop to ~33%. This apparent paradox is because "GPU utilization" here measures actual compute throughput, which is reduced by the 70% power cap on eco nodes. The GPUs are still allocated and running — they are just executing at reduced clock speed. The throughput reduction is the mechanism by which energy is saved.
+**GPU Utilization**: A has 51.2% GPU utilization (high for a large cluster), but B/C drop to ~33%. This apparent paradox is because "GPU utilization" here measures actual compute throughput, which is reduced by the 70% power cap on eco nodes. The GPUs are still allocated and running; they are just executing at reduced clock speed. The throughput reduction is the mechanism by which energy is saved.
 
-**PUE**: Clear day/night cycling between ~1.28 and ~1.36. The oscillation is driven by the ambient temperature model (14–30°C). Nighttime PUE dips reduce both the cooling power and the PUE multiplier, compounding the energy savings from reduced IT power.
+**PUE**: Clear day/night cycling between ~1.28 and ~1.36. The oscillation is driven by the ambient temperature model (14 to 30°C). Nighttime PUE dips reduce both the cooling power and the PUE multiplier, compounding the energy savings from reduced IT power.
 
 **Cooling Power**: Tracks IT power with a phase lag from the ambient temperature cycle. C requires the lowest cooling throughout the run.
 
@@ -261,13 +263,13 @@ Six-panel timeseries showing active jobs, IT power, CPU utilization, GPU utiliza
 
 ![Baseline Means](./img/baseline_means.png)
 
-Energy bar chart across all three experiments (01, 02, 03), showing progressive improvement. Experiment 03 (this report) achieves the largest absolute and relative savings. The savings percentage bars confirm: 30.1% (B) and 28.4% (C) for exp03, vs ~21% for exp02 and ~12–26% for exp01.
+Energy bar chart across all three experiments (01, 02, 03), showing progressive improvement. Experiment 03 (this report) achieves the largest absolute and relative savings. The savings percentage bars confirm: 30.1% (B) and 28.4% (C) for exp03, vs ~21% for exp02 and ~12 to 26% for exp01.
 
 ### 6.3 Cumulative energy
 
 ![Cumulative Energy](./img/cumulative_energy.png)
 
-Cumulative energy diverges from the very first simulation tick. The divergence is the steepest of all three experiments, reflecting the larger cluster size and more aggressive GPU-dominated power savings. By 60 sim-hours, B and C have consumed ~150,000 kWh less than A — equivalent to roughly 15 average US homes' annual electricity consumption, compressed into 60 simulated hours.
+Cumulative energy diverges from the very first simulation tick. The divergence is the steepest of all three experiments, reflecting the larger cluster size and more aggressive GPU-dominated power savings. By 60 sim-hours, B and C have consumed ~150,000 kWh less than A, equivalent to roughly 15 average US homes' annual electricity consumption, compressed into 60 simulated hours.
 
 ### 6.4 Energy comparison
 
@@ -287,7 +289,7 @@ The homogeneous H100 NVL fleet eliminates GPU placement constraints entirely. In
 - Cap the remaining (majority) nodes at 70% GPU TDP.
 - Dynamically resize the HP/eco boundary (baseline C) without stranding capacity.
 
-**Result**: 30% energy savings vs experiment 02's 21% — a 43% relative improvement in savings rate.
+**Result**: 30% energy savings vs experiment 02's 21%, a 43% relative improvement in savings rate.
 
 ### 7.2 GPU power dominance
 
@@ -295,17 +297,17 @@ With 32,000 GPUs at 400 W TDP each, GPU power constitutes ~85%+ of total IT powe
 
 ### 7.3 Why B slightly outperforms C in energy
 
-B saves 30.1% vs C's 28.4%. This is because B's fixed 25% HP allocation (1,250 nodes) is more aggressive than C's dynamic allocation, which starts at 5% but scales up as performance-sensitive pods increase. During peak hours, C may have 500–1,000+ HP nodes (vs B's fixed 1,250), and during off-peak, C drops to ~50–250. On average over the 60 sim-hour window, C's mean HP count is slightly higher than B's, because the queue-aware controller responds to demand spikes by provisioning HP nodes that then take time to scale back down.
+B saves 30.1% vs C's 28.4%. This is because B's fixed 25% HP allocation (1,250 nodes) is more aggressive than C's dynamic allocation, which starts at 5% but scales up as performance-sensitive pods increase. During peak hours, C may have 500 to 1,000+ HP nodes (vs B's fixed 1,250), and during off-peak, C drops to ~50 to 250. On average over the 60 sim-hour window, C's mean HP count is slightly higher than B's, because the queue-aware controller responds to demand spikes by provisioning HP nodes that then take time to scale back down.
 
-However, C's advantage lies in **adaptability** — it would outperform B in scenarios with more extreme diurnal variation or unexpected workload surges. C's variance (±34 kWh) vs B's (±2,826 kWh) also demonstrates superior consistency.
+However, C's advantage lies in **adaptability**: it would outperform B in scenarios with more extreme diurnal variation or unexpected workload surges. C's variance (±34 kWh) vs B's (±2,826 kWh) also demonstrates superior consistency.
 
 ### 7.4 Throughput paradox
 
-B/C complete 3–5× more jobs than A despite running at lower power. This is because:
+B/C complete 3 to 5× more jobs than A despite running at lower power. This is because:
 
 1. **Structured scheduling**: HP/eco partitioning reduces scheduling conflicts and improves bin-packing.
 2. **Reduced contention**: Performance-sensitive jobs on HP nodes get full power; standard jobs on eco nodes run slower but still complete. Without Joulie, all jobs compete for the same resources without priority differentiation.
-3. **More jobs submitted**: B/C's workload generators submit ~40,000 jobs vs A's ~20,000–31,000. The structured environment allows the simulator to sustain higher arrival rates without queue saturation.
+3. **More jobs submitted**: B/C's workload generators submit ~40,000 jobs vs A's ~20,000 to 31,000. The structured environment allows the simulator to sustain higher arrival rates without queue saturation.
 
 ### 7.5 Comparison to experiment 02 (heterogeneous)
 
@@ -315,13 +317,13 @@ B/C complete 3–5× more jobs than A despite running at lower power. This is be
 | Total GPUs | ~22,000 | 32,000 |
 | GPU eco cap | 60% of max | 70% of max |
 | Best energy savings | ~21% | **30.1%** |
-| Placement constraints | GPU family affinity required | None — any node serves any job |
+| Placement constraints | GPU family affinity required | None: any node serves any job |
 
 Exp03 achieves 30% savings with a *less aggressive* GPU eco cap (70% vs 60%) because the larger fleet and absence of placement constraints allow far more GPU devices to be capped. The total capped GPU power delta (3.6 MW) exceeds exp02's despite the weaker per-device cap.
 
 ### 7.6 FMU contribution
 
-The FMU co-simulation adds ~28–36% overhead to raw IT energy (PUE 1.28–1.36), but this overhead is not constant. By reducing IT power, Joulie also reduces cooling load, which improves PUE. The compound effect means facility energy savings (30.1%) exceed raw IT energy savings (~28%) because the PUE multiplier shrinks when IT load drops.
+The FMU co-simulation adds ~28 to 36% overhead to raw IT energy (PUE 1.28 to 1.36), but this overhead is not constant. By reducing IT power, Joulie also reduces cooling load, which improves PUE. The compound effect means facility energy savings (30.1%) exceed raw IT energy savings (~28%) because the PUE multiplier shrinks when IT load drops.
 
 ---
 
@@ -349,7 +351,7 @@ The `joulie-simulator` binary performs all simulation in-process. No external de
 ### 8.3 Output artifacts
 
 - Timeseries data: per-baseline, per-seed CSV files with columns `timestamp_utc`, `elapsed_sec`, `sim_elapsed_sec`, `sim_hour`, `it_power_w`, `cpu_power_w`, `gpu_power_w`, `pue`, `cooling_power_w`, `facility_power_w`, `ambient_temp_c`, `cluster_cpu_util`, `cluster_gpu_util`, `nodes_active`, `pods_running`, `energy_cumulative_j`.
-- Plots: [`img/`](./img/) — `timeseries.png`, `baseline_means.png`, `cumulative_energy.png`, `energy_comparison.png`.
+- Plots: [`img/`](./img/), with `timeseries.png`, `baseline_means.png`, `cumulative_energy.png`, `energy_comparison.png`.
 - FMU input data: exported in FMU-compatible format for offline analysis.
 
 ### 8.4 Seed determinism
@@ -364,10 +366,10 @@ Both seeds produce consistent results (C variance ±34 kWh). The standalone simu
 |---|---|
 | 30% facility energy savings (B) | 507,877 → 354,850 kWh, ±2,826 kWh std |
 | 28.4% facility energy savings (C) | 507,877 → 363,511 kWh, ±34 kWh std |
-| 3–5× job throughput improvement | A: 547–912, B: 2,526–2,584, C: 2,561–2,737 completed |
-| Highest savings across all experiments | Exp01 ~12–26%, Exp02 ~21%, Exp03 **30%** |
+| 3 to 5× job throughput improvement | A: 547 to 912, B: 2,526 to 2,584, C: 2,561 to 2,737 completed |
+| Highest savings across all experiments | Exp01 ~12 to 26%, Exp02 ~21%, Exp03 **30%** |
 | Homogeneous fleet > heterogeneous | 30% vs 21% savings; no placement constraints |
-| Physics-accurate cooling via FMU | DXCooledAirsideEconomizer, PUE 1.28–1.36 |
+| Physics-accurate cooling via FMU | DXCooledAirsideEconomizer, PUE 1.28 to 1.36 |
 | Reproducible across seeds | 2 seeds, C std = ±34 kWh |
 
 ---
@@ -376,7 +378,7 @@ Both seeds produce consistent results (C variance ±34 kWh). The standalone simu
 
 ### 10.1 Same trace, less energy, more throughput
 
-All three baselines consume the **same input job trace** generated by the NHPP workload model with identical seeds, arrival times, and job parameters. The only difference is the power management policy applied to the cluster. Joulie-managed baselines (B, C) not only use dramatically less energy but also **complete 3–5× more jobs** within the same 60 sim-hour window.
+All three baselines consume the **same input job trace** generated by the NHPP workload model with identical seeds, arrival times, and job parameters. The only difference is the power management policy applied to the cluster. Joulie-managed baselines (B, C) not only use dramatically less energy but also **complete 3 to 5× more jobs** within the same 60 sim-hour window.
 
 | Baseline | Facility Energy (kWh) | Jobs Completed | Energy per Job (kWh/job) |
 |---|---:|---:|---:|
@@ -384,7 +386,7 @@ All three baselines consume the **same input job trace** generated by the NHPP w
 | B (static) | 354,850 | ~2,555 | 138.9 |
 | C (queue-aware) | 363,511 | ~2,649 | 137.2 |
 
-Joulie delivers a **double win** — the strongest across all three experiments:
+Joulie delivers a **double win**, the strongest across all three experiments:
 
 - **B uses 30.1% less total energy** than A while completing **3.5× more jobs**.
 - **C uses 28.4% less total energy** than A while completing **3.6× more jobs**.
@@ -413,18 +415,18 @@ Extrapolating from the 60 sim-hour window to a full year of continuous operation
 #### Assumptions
 
 - **Annualization factor**: 8,760 h / 60 h = 146×. Assumes the 60-hour workload pattern (2.5 diurnal cycles) is representative of year-round operation.
-- **Electricity cost**: $0.10/kWh — typical US commercial/industrial datacenter rate. At hyperscale wholesale rates ($0.05–0.07/kWh), savings scale to $1.1–1.6M/yr.
-- **CO₂ intensity**: 0.385 kg CO₂/kWh — 2024 EPA US national grid average. European grids (0.25–0.30 kg/kWh) would yield proportionally lower CO₂ figures.
+- **Electricity cost**: $0.10/kWh, a typical US commercial/industrial datacenter rate. At hyperscale wholesale rates ($0.05 to 0.07/kWh), savings scale to $1.1 to 1.6M/yr.
+- **CO₂ intensity**: 0.385 kg CO₂/kWh, the 2024 EPA US national grid average. European grids (0.25 to 0.30 kg/kWh) would yield proportionally lower CO₂ figures.
 - **US household**: 10,500 kWh/year average annual electricity consumption (EIA).
 
 ### 10.4 Context
 
-This homogeneous H100 NVL cluster (32,000 GPUs) represents a modern large-scale AI training facility — the type of infrastructure being deployed by hyperscalers and AI labs worldwide. Joulie saves **$2.2M/year** in electricity costs and avoids **8,602 tonnes of CO₂** — equivalent to:
+This homogeneous H100 NVL cluster (32,000 GPUs) represents a modern large-scale AI training facility, the type of infrastructure being deployed by hyperscalers and AI labs worldwide. Joulie saves **$2.2M/year** in electricity costs and avoids **8,602 tonnes of CO₂**, equivalent to:
 
 - **1,870 passenger cars** removed from the road for a year (EPA: 4.6 tonnes CO₂/car/year).
-- **3,497 transatlantic flights** (London–New York round trip, ~2.46 tonnes CO₂/flight).
+- **3,497 transatlantic flights** (London to New York round trip, ~2.46 tonnes CO₂/flight).
 - Powering **2,128 average US homes** for an entire year.
-- **22.3 GWh/year** of energy saved — comparable to the annual output of a small solar farm (~15 MW peak capacity).
+- **22.3 GWh/year** of energy saved, comparable to the annual output of a small solar farm (~15 MW peak capacity).
 
 ### 10.5 Cross-experiment comparison
 
@@ -434,4 +436,4 @@ This homogeneous H100 NVL cluster (32,000 GPUs) represents a modern large-scale 
 | Exp02 (Heterogeneous) | 4k GPU + 1k CPU | 21.5% | 9,331 MWh | $933K | 3,592 t |
 | **Exp03 (Homogeneous H100)** | **4k H100 + 1k CPU** | **30.1%** | **22,342 MWh** | **$2.2M** | **8,602 t** |
 
-The progression is clear: GPU-dominated clusters benefit most from Joulie's power capping, and homogeneous fleets unlock the highest savings by eliminating placement constraints. The 30% savings achieved here — with zero throughput penalty and in fact a 3.5× throughput improvement — represents the upper bound of what RAPL-based energy management can deliver at datacenter scale.
+The progression is clear: GPU-dominated clusters benefit most from Joulie's power capping, and homogeneous fleets unlock the highest savings by eliminating placement constraints. The 30% savings achieved here, with zero throughput penalty and in fact a 3.5× throughput improvement, represents the upper bound of what RAPL-based energy management can deliver at datacenter scale.

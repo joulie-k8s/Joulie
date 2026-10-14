@@ -1,0 +1,11 @@
+# Pool taints, which come after the profile's and before the KWOK taint
+# (CS13).
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: taints}
+spec:
+  pools:
+  - name: tainted
+    profile: vm-no-powercap
+    count: 1
+    taints: [{key: example.com/pool, value: b, effect: NoSchedule}, {key: example.com/second, value: c, effect: PreferNoSchedule}]

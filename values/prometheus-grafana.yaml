@@ -39,6 +39,21 @@ prometheus:
     image:
       registry: registry.cern.ch
       repository: quay.io/prometheus/prometheus
+    # Joulie's measured power and facility inputs arrive as OpenTelemetry
+    # metrics pushed over OTLP (hw.*, joulie.*). The receiver is off by default.
+    enableOTLPReceiver: true
+    otlp:
+      # Copies the node identity onto every series, so the controller manager
+      # needs no target_info join. Prometheus promotes nothing by default.
+      promoteResourceAttributes:
+        - k8s.node.name
+        - host.name
+      # Must equal the controller manager's PROMETHEUS_NAME_TRANSLATION.
+      translationStrategy: UnderscoreEscapingWithSuffixes
+    tsdb:
+      # OTLP producers push samples with their own timestamps, which can
+      # arrive slightly out of order.
+      outOfOrderTimeWindow: 30m
 thanosRuler:
   thanosRulerSpec:
     image:
@@ -60,7 +75,7 @@ grafana:
       defaultDatasourceEnabled: true
       isDefaultDatasource: true
       # Point Grafana at the Prometheus service
-      url: "http://telemetry-kube-prometheus-prometheus.default.svc:9090"
+      url: "http://telemetry-kube-prometheus-prometheus.monitoring.svc:9090"
 
   initChownData:
     image:

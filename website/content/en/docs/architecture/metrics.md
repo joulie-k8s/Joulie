@@ -70,6 +70,18 @@ For telemetry/control input interfaces (host/http routing), see:
 - `joulie_dvfs_cpu_max_freq_khz{node,cpu}` (gauge)
   - enforced max frequency cap in kHz
 
+### Governors
+
+Written by the agent's [governor control]({{< relref "/docs/architecture/agent.md#governor-control" >}}).
+
+- `joulie_agent_governor_writes_total{node,component,preset,result}` (counter)
+  - one per governor write: a preset applied, or the baseline restored (`preset="baseline"`)
+  - `component`: `cpu|gpu`
+  - `result`: `applied|applied-unverified|equivalent|unsupported|not-applied|refused|restored|error`
+  - a reconcile that only checks the setting, and a preset the node cannot express or the agent may not write (`disabled`), count nothing
+- `joulie_agent_governor_state{node,component,preset}` (gauge)
+  - the preset in effect is `1` (result `applied`, `applied-unverified` or `equivalent`), every other preset of the component `0`; all `0` before a write and after a restore
+
 ### Reliability
 
 - `joulie_reconcile_errors_total{node}` (counter)
@@ -77,7 +89,7 @@ For telemetry/control input interfaces (host/http routing), see:
 
 ## Policy controller metrics
 
-Exported by the controller manager. Until the next minor release each metric is also exported under its old `joulie_operator_*` name (same labels, same values, help text `Deprecated, use joulie_policy_...`); update dashboards and alerts to the `joulie_policy_*` names before that release.
+Exported by the controller manager. Until the next minor release each metric is also exported under its deprecated `joulie_operator_*` alias (same labels, same values, help text `Deprecated, use joulie_policy_...`); update dashboards and alerts to the `joulie_policy_*` names before that release.
 
 ### FSM state and profile label
 
@@ -99,14 +111,33 @@ Exported by the controller manager. Until the next minor release each metric is 
 
 ### Heterogeneous planning
 
-These two gauges are new in v0.2.2 and have no `joulie_operator_*` alias. Both are reset every reconcile and computed from the plan after the downgrade guard, so a draining node counts as not performance. `family` is `gpu:<model>` when the node has GPUs, otherwise `cpu:<model>` (see [Heterogeneous planning]({{< relref "/docs/architecture/controller-manager.md#heterogeneous-planning" >}})).
+These two gauges have no `joulie_operator_*` alias. Both are reset every reconcile and computed from the plan after the downgrade guard, so a draining node counts as not performance. `family` is `gpu:<model>` when the node has GPUs, otherwise `cpu:<model>` (see [Heterogeneous planning]({{< relref "/docs/architecture/controller-manager.md#heterogeneous-planning" >}})).
 
 - `joulie_policy_family_nodes{family}` (gauge)
   - eligible nodes in each hardware family
 - `joulie_policy_family_performance_nodes{family}` (gauge)
   - nodes of each hardware family planned in the `performance` profile
 
-`joulie_policy_node_compute_density{node,component}` and its alias `joulie_operator_node_compute_density` were removed in v0.2.2, together with the compute-density ordering that used them. The density values had no defined meaning and ranked many-core CPU-only nodes above GPU nodes; performance slots are now split across hardware families instead.
+## Twin input metrics
+
+Exported by the controller manager. They show whether the measured inputs (see [Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}})) are read.
+
+- `joulie_twin_input_queries_total{input,result}` (counter)
+  - one increment per Prometheus query of a measured input
+  - `input`: `node_power`, or the facility input: `ambient_temp`, `it_power`, `cooling_power`, `zone_ambient_temp`, `rack_power`, `node_inlet_temp`
+  - `result`:
+    - `success`: every series was read
+    - `partial`: some series were skipped, for a missing key label or a value that is not finite
+    - `no_data`: no usable series
+    - `error`: Prometheus failed the query or could not be reached, or the answer was refused (duplicate keys, several series for a single value)
+- `joulie_twin_facility_ambient_temperature_celsius{preset}` (gauge)
+  - outdoor ambient temperature the facility input last read, in degrees Celsius
+- `joulie_twin_facility_it_power_watts{preset}` (gauge)
+  - IT power the facility input last read, in watts
+- `joulie_twin_facility_cooling_power_watts{preset}` (gauge)
+  - cooling power the facility input last read, in watts
+
+`preset` is `FACILITY_PRESET` (`otel`, `legacy` or `custom`). A facility gauge is absent while its input is unknown, so a stale reading never outlives the poll that lost it. PUE is `(it_power + cooling_power) / it_power`; the overview dashboard's "Twin inputs" row plots it.
 
 ## Scheduler extender metrics
 

@@ -15,33 +15,37 @@ import (
 	"github.com/matbun/joulie/pkg/controller/policy"
 	"github.com/matbun/joulie/pkg/hwinv"
 	"github.com/matbun/joulie/simulator/pkg/hw"
-	"github.com/matbun/joulie/simulator/pkg/phys"
+	"github.com/matbun/joulie/simulator/pkg/hwemu"
 	"sigs.k8s.io/yaml"
 )
 
 // ---------------------------------------------------------------------------
-// Standalone simulation mode — bypasses K8s entirely, runs at CPU speed.
+// Standalone simulation mode: bypasses K8s entirely, runs at CPU speed.
 // Activated by SIM_STANDALONE=true.
 //
 // Required env vars:
-//   SIM_STANDALONE_INVENTORY  — path to cluster-nodes.yaml
-//   SIM_WORKLOAD_TRACE_PATH   — path to workload trace JSONL
-//   SIM_STANDALONE_BASELINE   — A, B, or C
-//   SIM_DEBUG_PERSIST_DIR     — output directory (timeseries.csv written here)
+//   SIM_STANDALONE_INVENTORY  path to cluster-nodes.yaml
+//   SIM_WORKLOAD_TRACE_PATH   path to workload trace JSONL
+//   SIM_STANDALONE_BASELINE   A, B, or C
+//   SIM_DEBUG_PERSIST_DIR     output directory (timeseries.csv written here)
 //
 // Optional env vars (same as normal mode):
 //   SIM_BASE_SPEED_PER_CORE, SIM_FACILITY_AMBIENT_TEMP_C,
-//   SIM_FACILITY_TEMP_AMPLITUDE_C, SIM_FACILITY_TEMP_PERIOD_H
+//   SIM_FACILITY_TEMP_AMPLITUDE_C, SIM_FACILITY_TEMP_PERIOD_H,
+//   SIM_PROFILES_DIR (local hwemu profiles an inventory entry may name)
 //
 // Policy env vars (for baselines B and C):
-//   SIM_SA_CPU_ECO_PCT          — eco CPU frequency scale (0-100), default 60
-//   SIM_SA_GPU_ECO_PCT          — eco GPU cap as % of max, default 70
-//   SIM_SA_HP_FRAC              — static HP fraction for baseline B, default 0.30
-//   SIM_SA_HP_BASE_FRAC         — base HP fraction for baseline C, default 0.30
-//   SIM_SA_HP_MIN               — min HP nodes for baseline C, default 1
-//   SIM_SA_HP_MAX               — max HP nodes for baseline C, default 25
-//   SIM_SA_PERF_PER_HP_NODE     — queue depth per HP node for baseline C, default 10
-//   SIM_SA_RECONCILE_INTERVAL   — controller manager reconcile sim-seconds for C, default 300
+//   SIM_SA_CPU_ECO_PCT          eco CPU frequency scale (0-100), default 60
+//   SIM_SA_GPU_ECO_PCT          eco GPU cap as % of max, default 70
+//   SIM_SA_HP_FRAC              static HP fraction for baseline B, default 0.30
+//   SIM_SA_HP_BASE_FRAC         base HP fraction for baseline C, default 0.30
+//   SIM_SA_HP_MIN               min HP nodes for baseline C, default 1
+//   SIM_SA_HP_MAX               max HP nodes for baseline C, default 25
+//   SIM_SA_PERF_PER_HP_NODE     queue depth per HP node for baseline C, default 10
+//   SIM_SA_RECONCILE_INTERVAL   controller manager reconcile sim-seconds for C, default 300
+//
+// Physics env vars:
+//   SIM_SA_SUBSTEP              longest physics substep in sim-seconds, default SIM_SA_DT
 // ---------------------------------------------------------------------------
 
 // inventoryFile is the top-level YAML structure for cluster-nodes.yaml.
@@ -49,10 +53,14 @@ type inventoryFile struct {
 	Nodes []inventoryNode `json:"nodes"`
 }
 
+// inventoryNode is one entry of the inventory. Profile names an hwemu
+// profile (builtin, or local in SIM_PROFILES_DIR) that sets the node's
+// hardware; the hardware keys below it then stay unset.
 type inventoryNode struct {
 	NodeNamePrefix string  `json:"node_name_prefix"`
 	NodeName       string  `json:"node_name"`
 	Replicas       int     `json:"replicas"`
+	Profile        string  `json:"profile"`
 	Vendor         string  `json:"vendor"`
 	Product        string  `json:"product"`
 	CPU            string  `json:"cpu"`
@@ -77,6 +85,11 @@ type expandedNode struct {
 	GPUMinCapWatts float64
 	GPUMaxCapWatts float64
 	Labels         map[string]string
+	// Profile is the hwemu profile of a profile entry, nil for a legacy one.
+	Profile *hwemu.Profile
+	// EcoPowerCap marks a profile node with a writable PL1: eco caps its CPU
+	// power, as the agent does, instead of scaling its frequency.
+	EcoPowerCap bool
 }
 
 // standaloneNodeTracker tracks per-node resource usage for bin-packing.
@@ -109,13 +122,9 @@ func runStandalone(s *simulator) {
 	}
 	log.Printf("standalone: loaded inventory nodes=%d baseline=%s", len(nodes), baseline)
 
-	// Initialize node state from inventory labels (same path as refreshNodeStateFromKubeData).
-	nodeLabels := map[string]map[string]string{}
-	for _, n := range nodes {
-		nodeLabels[n.Name] = n.Labels
+	if err := initStandaloneNodes(s, nodes); err != nil {
+		log.Fatalf("standalone: %v", err)
 	}
-	counts := map[string]int{} // no pods yet
-	s.refreshNodeStateFromKubeData(counts, nil, nodeLabels)
 
 	// Build resource tracker.
 	tracker := map[string]*standaloneNodeTracker{}
@@ -158,6 +167,10 @@ func runStandalone(s *simulator) {
 	if sampleEvery < 1 {
 		sampleEvery = 1
 	}
+	// SIM_SA_SUBSTEP: the longest physics substep in sim-seconds (default
+	// SIM_SA_DT, one substep per tick). stepNode splits each tick into
+	// equal substeps no longer than this.
+	substep := time.Duration(floatEnv("SIM_SA_SUBSTEP", dt) * float64(time.Second))
 
 	// Parallel workers for physics computation.
 	numWorkers := runtime.GOMAXPROCS(0)
@@ -171,20 +184,29 @@ func runStandalone(s *simulator) {
 
 	s.workload.startTime = time.Now().UTC()
 	virtualNow := s.workload.startTime
+	// The nodes' physics runs on the virtual clock from its start.
+	s.mu.Lock()
+	for _, name := range nodeNames {
+		if st := s.state[name]; st != nil {
+			st.SimTime = virtualNow
+		}
+	}
+	s.mu.Unlock()
 	tickCount := 0
 	lastReconcileSec := 0.0
 	totalJobs := len(s.workload.jobs)
 
-	// Incremental counters — avoid O(totalJobs) scans per tick.
+	// Incremental counters: avoid O(totalJobs) scans per tick.
 	submittedCount := 0
 	completedCount := 0
 	pendingCount := 0 // submitted but not completed
 
-	// Job injection cursor — jobs are sorted by SubmitOffsetSec, so we
+	// Job injection cursor: jobs are sorted by SubmitOffsetSec, so we
 	// never need to re-scan already-submitted jobs.
 	nextInjectIdx := 0
 
-	// Active node set — only run physics on nodes that have jobs.
+	// Active node set: only nodes that have jobs run job progress; the
+	// physics steps every node.
 	activeNodes := map[string]bool{}
 
 	// Timeout: truncate at steady state, not after drain.
@@ -205,13 +227,14 @@ func runStandalone(s *simulator) {
 		virtualNow = virtualNow.Add(time.Duration(dt * float64(time.Second)))
 		elapsed := virtualNow.Sub(s.workload.startTime).Seconds()
 
-		// 1. Inject ready jobs (bin-packing scheduler) — cursor-based, no cap.
+		// 1. Inject ready jobs (bin-packing scheduler), cursor-based, no cap.
 		injected := standaloneInjectJobsFast(s, tracker, nodeNames, nodeByName, virtualNow, &nextInjectIdx, activeNodes)
 		submittedCount += injected
 		pendingCount += injected
 
-		// 2. Advance job progress + accumulate energy (parallel across nodes).
-		completed := standaloneTickParallel(s, tracker, nodeNames, nodeByName, dt, virtualNow, activeNodes, numWorkers)
+		// 2. Advance job progress, then step every node's physics by dt
+		// and book its energy (parallel across nodes).
+		completed := standaloneTickParallel(s, tracker, nodeNames, nodeByName, dt, substep, virtualNow, activeNodes, numWorkers)
 		completedCount += completed
 		pendingCount -= completed
 
@@ -234,7 +257,7 @@ func runStandalone(s *simulator) {
 				tickCount, elapsed, submittedCount, completedCount, totalJobs, pendingCount, len(activeNodes))
 		}
 
-		// Truncate at timeout — captures steady state, avoids cool-down drain.
+		// Truncate at timeout: captures steady state, avoids cool-down drain.
 		if elapsed >= timeout {
 			log.Printf("standalone: timeout reached ticks=%d elapsed=%.0fs submitted=%d completed=%d/%d (steady-state truncation)",
 				tickCount, elapsed, submittedCount, completedCount, totalJobs)
@@ -249,8 +272,8 @@ func runStandalone(s *simulator) {
 		}
 	}
 
-	// Flush timeseries.
-	s.flushTimeseries()
+	// Flush the timeseries and close the journal.
+	s.closePersistence()
 	log.Printf("standalone: done, timeseries written (%d ticks, dt=%.1fs)", tickCount, dt)
 }
 
@@ -264,6 +287,7 @@ func loadInventory(path string) ([]expandedNode, error) {
 		return nil, fmt.Errorf("parse inventory: %w", err)
 	}
 
+	var profiles map[string]*hwemu.Profile
 	var result []expandedNode
 	for _, n := range inv.Nodes {
 		replicas := n.Replicas
@@ -276,6 +300,26 @@ func loadInventory(path string) ([]expandedNode, error) {
 		}
 		if prefix == "" {
 			prefix = "kwok-node"
+		}
+		var profile *hwemu.Profile
+		if n.Profile != "" {
+			if keys := inventoryHardwareKeys(n); len(keys) > 0 {
+				return nil, fmt.Errorf("inventory entry %s: profile %s sets the hardware, so %s must stay unset", prefix, n.Profile, strings.Join(keys, ", "))
+			}
+			if profiles == nil {
+				// Loaded once, and only for an inventory that names a profile.
+				if profiles, err = loadProfileSetFromEnv(); err != nil {
+					return nil, fmt.Errorf("inventory entry %s: %w", prefix, err)
+				}
+			}
+			if profile = profiles[n.Profile]; profile == nil {
+				known := make([]string, 0, len(profiles))
+				for name := range profiles {
+					known = append(known, name)
+				}
+				sort.Strings(known)
+				return nil, fmt.Errorf("inventory entry %s: unknown profile %q (known: %s)", prefix, n.Profile, strings.Join(known, ", "))
+			}
 		}
 		sockets := n.CPUSockets
 		if sockets <= 0 {
@@ -290,6 +334,10 @@ func loadInventory(path string) ([]expandedNode, error) {
 			name := fmt.Sprintf("%s-%d", prefix, idx)
 			if replicas == 1 && n.NodeName != "" {
 				name = n.NodeName
+			}
+			if profile != nil {
+				result = append(result, profileInventoryNode(profile, name))
+				continue
 			}
 
 			vendor := strings.ToLower(n.Vendor)
@@ -348,6 +396,150 @@ func loadInventory(path string) ([]expandedNode, error) {
 		}
 	}
 	return result, nil
+}
+
+// inventoryHardwareKeys lists the hardware keys an inventory entry sets.
+func inventoryHardwareKeys(n inventoryNode) []string {
+	var keys []string
+	for _, k := range []struct {
+		name string
+		set  bool
+	}{
+		{"vendor", n.Vendor != ""},
+		{"product", n.Product != ""},
+		{"cpu", n.CPU != ""},
+		{"cpu_sockets", n.CPUSockets != 0},
+		{"cpu_cores", n.CPUCores != 0},
+		{"memory_gib", n.MemoryGiB != 0},
+		{"gpu_count", n.GPUCount != 0},
+		{"gpu_min_cap_watts", n.GPUMinCapWatts != 0},
+		{"gpu_max_cap_watts", n.GPUMaxCapWatts != 0},
+	} {
+		if k.set {
+			keys = append(keys, k.name)
+		}
+	}
+	return keys
+}
+
+// profileInventoryNode is the inventory node called name, of profile p. Its
+// labels are those of the Node a real node of the profile registers as
+// (hwemu.Profile.NodeObject), plus the ones of a legacy entry that the
+// simulator reads: type, joulie.io/managed, joulie.io/node-name and the CPU
+// and GPU counts (refreshNodeStateFromKubeData).
+func profileInventoryNode(p *hwemu.Profile, name string) expandedNode {
+	cpus := int(p.Node.Capacity.CPU.V)
+	gpus, vendor, product := 0, "none", ""
+	if g := p.GPUs; g != nil && g.Count.V > 0 {
+		gpus, vendor, product = g.Count.V, g.Vendor, g.Product.V
+	}
+	lbls := map[string]string{}
+	for k, v := range p.NodeObject(name).Labels {
+		lbls[k] = v
+	}
+	lbls["type"] = "kwok"
+	lbls["joulie.io/managed"] = "true"
+	lbls["joulie.io/node-name"] = name
+	lbls["joulie.io/hw.cpu-cores"] = fmt.Sprintf("%d", cpus)
+	lbls["joulie.io/hw.gpu-count"] = fmt.Sprintf("%d", gpus)
+	return expandedNode{
+		Name:        name,
+		Vendor:      vendor,
+		Product:     product,
+		CPUModel:    p.CPU.ModelName.V,
+		CPUSockets:  max(1, p.CPU.Sockets.V),
+		CPUCores:    cpus,
+		MemoryGiB:   int(p.Node.Capacity.MemoryKi.V / (1024 * 1024)),
+		GPUCount:    gpus,
+		Labels:      lbls,
+		Profile:     p,
+		EcoPowerCap: profileHasWritablePL1(p),
+	}
+}
+
+// initStandaloneNodes builds the model and the state of every inventory
+// node. A legacy entry resolves its model from its labels, as a Kubernetes
+// node does (refreshNodeStateFromKubeData), and then takes the GPU board
+// power range the entry sets (withInventoryGPUCaps). A profile entry takes
+// simModelFromProfile and its profile's capacity, whatever SIM_NODE_SELECTOR
+// says, as an emulated node does.
+func initStandaloneNodes(s *simulator, nodes []expandedNode) error {
+	legacy := map[string]map[string]string{}
+	for _, n := range nodes {
+		if n.Profile == nil {
+			legacy[n.Name] = n.Labels
+		}
+	}
+	s.refreshNodeStateFromKubeData(map[string]int{}, nil, legacy)
+
+	for _, n := range nodes {
+		if n.Profile == nil {
+			if err := withInventoryGPUCaps(s, n); err != nil {
+				return fmt.Errorf("inventory node %s: %w", n.Name, err)
+			}
+			continue
+		}
+		model, err := simModelFromProfile(n.Profile, s.model)
+		if err != nil {
+			return fmt.Errorf("inventory node %s: %w", n.Name, err)
+		}
+		class := profileProvenance(n.Profile)
+		s.mu.Lock()
+		s.nodeSeen[n.Name] = true
+		s.nodeModels[n.Name] = model
+		if prev := s.nodeClass[n.Name]; prev != "" && prev != class {
+			s.nodeClassInfo.WithLabelValues(n.Name, prev).Set(0)
+		}
+		s.nodeClass[n.Name] = class
+		s.nodeClassInfo.WithLabelValues(n.Name, class).Set(1)
+		delete(s.state, n.Name)
+		s.mu.Unlock()
+		st := s.getNode(n.Name)
+		s.mu.Lock()
+		st.CPUCapacityCores = float64(n.CPUCores)
+		st.GPUCapacityDevices = float64(n.GPUCount)
+		s.mu.Unlock()
+	}
+	return nil
+}
+
+// withInventoryGPUCaps sets the GPU board power range of a legacy inventory
+// entry, gpu_min_cap_watts and gpu_max_cap_watts, on its node's model: the
+// entry describes that node, so it overrides the environment, the node
+// classes and the catalogue. A value of 0 keeps the model's. The node's GPUs
+// restart at the new maximum, as a new node's do.
+func withInventoryGPUCaps(s *simulator, n expandedNode) error {
+	if n.GPUMinCapWatts <= 0 && n.GPUMaxCapWatts <= 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	model, selected := s.nodeModels[n.Name]
+	st := s.state[n.Name]
+	if !selected || st == nil {
+		return nil
+	}
+	if n.GPUMaxCapWatts > 0 {
+		model.GPU.MaxWattsPerGPU = n.GPUMaxCapWatts
+		model.Defaulted.GPUMaxWattsPerGPU = false
+	}
+	if n.GPUMinCapWatts > 0 {
+		model.GPU.MinCapWattsPerGPU = n.GPUMinCapWatts
+		model.Defaulted.GPUMinCapWattsPerGPU = false
+	} else {
+		model.GPU.MinCapWattsPerGPU = capMinAtMax(model.GPU.MinCapWattsPerGPU, model.GPU.MaxWattsPerGPU)
+	}
+	if err := hw.ValidateProfile(model); err != nil {
+		return fmt.Errorf("gpu_min_cap_watts %g, gpu_max_cap_watts %g: %w", n.GPUMinCapWatts, n.GPUMaxCapWatts, err)
+	}
+	s.nodeModels[n.Name] = model
+	maxW := model.GPU.MaxWattsPerGPU
+	st.GPUCapWattsPerGpu, st.GPUTargetCapWattsPerGpu = maxW, maxW
+	for i := range st.GPUDevices {
+		st.GPUDevices[i].CapWatts, st.GPUDevices[i].TargetCapWatts = maxW, maxW
+	}
+	stepNode(st, model, 0, physMaxSubstep)
+	return nil
 }
 
 // labelSafe sanitizes a string for use as a K8s label value.
@@ -537,10 +729,10 @@ func findNodeForJob(tracker map[string]*standaloneNodeTracker, nodeNames []strin
 			headroomScore = 100
 		}
 
-		// Cooling stress not simulated — use 0 (no stress).
+		// Cooling stress not simulated: use 0 (no stress).
 		coolingStress := 0.0
 
-		// Trend not simulated — use 0. In production, uses adaptive scaling:
+		// Trend not simulated: use 0. In production, uses adaptive scaling:
 		// trendScale = 2.0 if |clusterTrend| > 500 W/min, else 6.0; capped at ±25.
 		trendBonus := 0.0
 
@@ -596,17 +788,11 @@ func standaloneAdvanceJobProgressFast(s *simulator, tracker map[string]*standalo
 			model = m
 		}
 		freqScale := 1.0
-		gpuCapFactor := 1.0
 		gpuCount := 0.0
 		if st != nil {
 			freqScale = st.FreqScale
 			if model.GPU.Count > 0 && model.GPU.MaxWattsPerGPU > 0 {
 				gpuCount = float64(model.GPU.Count)
-				cap := st.GPUCapWattsPerGpu
-				if cap <= 0 {
-					cap = model.GPU.MaxWattsPerGPU
-				}
-				gpuCapFactor = clamp01(cap / model.GPU.MaxWattsPerGPU)
 			}
 		}
 		s.mu.RUnlock()
@@ -712,44 +898,17 @@ func standaloneAdvanceJobProgressFast(s *simulator, tracker map[string]*standalo
 		for _, j := range activeJobs {
 			jobThermalThrottle := snapThermalThrottle
 			jobCPUMul := cpuThroughputMultiplier(freqScale, j.CPUWorkClass, model, j.MemoryIntensity, j.IOIntensity, jobThermalThrottle)
+			cpuSpeed, gpuSpeed := legacyJobRates(j, model, s.workload.baseSpeedCore, jobCPUMul, cpuShareFactor, gpuShareFactor, snapGPUCapPerGpu, snapThermalThrottle)
 
 			if j.CPUUnitsRemaining > 0 {
-				cpuThrottle := cpuThrottleImpactFactor(jobCPUMul, j)
-				speed := j.RequestedCPUCores * s.workload.baseSpeedCore * cpuThrottle * cpuShareFactor
-				if speed < 0 {
-					speed = 0
-				}
 				prev := j.CPUUnitsRemaining
-				j.CPUUnitsRemaining -= speed * dt
+				j.CPUUnitsRemaining -= cpuSpeed * dt
 				if j.CPUUnitsRemaining < prev {
 					j.LastProgressAt = now
 				}
 			}
 
 			if j.GPUUnitsRemaining > 0 {
-				gpuBase := math.Max(0.1, j.RequestedGPUs) * s.workload.baseSpeedCore
-				gpuPhys := phys.CappedBoardGPUModel{
-					IdleW:         model.GPU.IdleWattsPerGPU,
-					MaxW:          model.GPU.MaxWattsPerGPU,
-					ComputeGamma:  model.GPU.ComputeGamma,
-					MemoryEpsilon: model.GPU.MemoryEpsilon,
-					MemoryGamma:   model.GPU.MemoryGamma,
-				}
-				gpuMul := gpuPhys.ThroughputMultiplier(phys.DeviceState{
-					Utilization:      clamp01(j.GPUUtilTarget),
-					CapWatts:         snapGPUCapPerGpu,
-					MaxCapWatts:      model.GPU.MaxWattsPerGPU,
-					MemoryIntensity:  j.MemoryIntensity,
-					CPUFeedIntensity: j.CPUFeedIntensity,
-					ThermalThrottle:  snapThermalThrottle,
-					Class:            j.GPUWorkClass,
-				}, j.GPUWorkClass)
-				cpuFeedFac := cpuFeedThrottleFactor(jobCPUMul, j)
-				gpuCapImpact := 1.0 - (1.0-gpuCapFactor)*j.SensitivityGPU
-				gpuSpeed := gpuBase * gpuMul * cpuFeedFac * gpuCapImpact * gpuShareFactor
-				if gpuSpeed < 0 {
-					gpuSpeed = 0
-				}
 				prev := j.GPUUnitsRemaining
 				j.GPUUnitsRemaining -= gpuSpeed * dt
 				if j.GPUUnitsRemaining < prev {
@@ -811,10 +970,11 @@ func standaloneAdvanceJobProgressFast(s *simulator, tracker map[string]*standalo
 	return completedThisTick
 }
 
-// standaloneTickParallel runs job progress + energy accumulation in parallel
-// across numWorkers goroutines. Each worker handles a disjoint set of active nodes,
-// so no locking is needed for per-node state.
-func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTracker, allNodeNames []string, nodeByName map[string]*expandedNode, dt float64, now time.Time, activeNodes map[string]bool, numWorkers int) int {
+// standaloneTickParallel runs job progress, then steps every node's physics
+// by dt (stepNode, in substeps of at most substep) and books its energy, in
+// parallel across numWorkers goroutines. Each worker handles a disjoint set
+// of nodes, so no locking is needed for per-node state.
+func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTracker, allNodeNames []string, nodeByName map[string]*expandedNode, dt float64, substep time.Duration, now time.Time, activeNodes map[string]bool, numWorkers int) int {
 	// Build list of active node names for partitioning.
 	activeList := make([]string, 0, len(activeNodes))
 	for name := range activeNodes {
@@ -826,7 +986,14 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 	// For small workloads, skip goroutine overhead.
 	if numWorkers <= 1 || len(activeList) < 32 {
 		completed := standaloneAdvanceJobProgressFast(s, tracker, dt, now, activeNodes)
-		s.accumulateEnergy(dt)
+		s.mu.Lock()
+		for _, name := range allNodeNames {
+			if st := s.state[name]; st != nil {
+				cpuJ, gpuJ := stepNode(st, s.modelLocked(name), dt, substep)
+				s.addEnergyLocked(name, cpuJ, gpuJ)
+			}
+		}
+		s.mu.Unlock()
 		return completed
 	}
 
@@ -844,8 +1011,7 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 		completed   int64
 		completions []completionRec
 		emptyNodes  []string
-		energyByNode map[string]float64
-		energyTotal  float64
+		energy      []standaloneNodeEnergy
 	}
 	results := make([]workerResult, numWorkers)
 
@@ -865,7 +1031,7 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 		wg.Add(1)
 		go func(workerID int, nodes []string) {
 			defer wg.Done()
-			res := workerResult{energyByNode: make(map[string]float64, len(nodes))}
+			res := workerResult{energy: make([]standaloneNodeEnergy, 0, len(nodes))}
 
 			for _, nodeName := range nodes {
 				t := tracker[nodeName]
@@ -884,15 +1050,9 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 				}
 
 				freqScale := st.FreqScale
-				gpuCapFactor := 1.0
 				gpuCount := 0.0
 				if model.GPU.Count > 0 && model.GPU.MaxWattsPerGPU > 0 {
 					gpuCount = float64(model.GPU.Count)
-					cap := st.GPUCapWattsPerGpu
-					if cap <= 0 {
-						cap = model.GPU.MaxWattsPerGPU
-					}
-					gpuCapFactor = clamp01(cap / model.GPU.MaxWattsPerGPU)
 				}
 
 				// Compute aggregate resource demand.
@@ -937,7 +1097,7 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 					}
 				}
 
-				// Update node utilization (no lock needed — disjoint partition).
+				// Update node utilization (no lock needed: disjoint partition).
 				cpuCapacity := st.CPUCapacityCores
 				if cpuCapacity <= 0 {
 					cpuCapacity = 16
@@ -987,44 +1147,17 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 				for _, j := range activeJobs {
 					jobThermalThrottle := snapThermalThrottle
 					jobCPUMul := cpuThroughputMultiplier(freqScale, j.CPUWorkClass, model, j.MemoryIntensity, j.IOIntensity, jobThermalThrottle)
+					cpuSpeed, gpuSpeed := legacyJobRates(j, model, baseSpeedCore, jobCPUMul, cpuShareFactor, gpuShareFactor, snapGPUCapPerGpu, snapThermalThrottle)
 
 					if j.CPUUnitsRemaining > 0 {
-						cpuThrottle := cpuThrottleImpactFactor(jobCPUMul, j)
-						speed := j.RequestedCPUCores * baseSpeedCore * cpuThrottle * cpuShareFactor
-						if speed < 0 {
-							speed = 0
-						}
 						prev := j.CPUUnitsRemaining
-						j.CPUUnitsRemaining -= speed * dt
+						j.CPUUnitsRemaining -= cpuSpeed * dt
 						if j.CPUUnitsRemaining < prev {
 							j.LastProgressAt = now
 						}
 					}
 
 					if j.GPUUnitsRemaining > 0 {
-						gpuBase := math.Max(0.1, j.RequestedGPUs) * baseSpeedCore
-						gpuPhys := phys.CappedBoardGPUModel{
-							IdleW:         model.GPU.IdleWattsPerGPU,
-							MaxW:          model.GPU.MaxWattsPerGPU,
-							ComputeGamma:  model.GPU.ComputeGamma,
-							MemoryEpsilon: model.GPU.MemoryEpsilon,
-							MemoryGamma:   model.GPU.MemoryGamma,
-						}
-						gpuMul := gpuPhys.ThroughputMultiplier(phys.DeviceState{
-							Utilization:      clamp01(j.GPUUtilTarget),
-							CapWatts:         snapGPUCapPerGpu,
-							MaxCapWatts:      model.GPU.MaxWattsPerGPU,
-							MemoryIntensity:  j.MemoryIntensity,
-							CPUFeedIntensity: j.CPUFeedIntensity,
-							ThermalThrottle:  snapThermalThrottle,
-							Class:            j.GPUWorkClass,
-						}, j.GPUWorkClass)
-						cpuFeedFac := cpuFeedThrottleFactor(jobCPUMul, j)
-						gpuCapImpact := 1.0 - (1.0-gpuCapFactor)*j.SensitivityGPU
-						gpuSpeed := gpuBase * gpuMul * cpuFeedFac * gpuCapImpact * gpuShareFactor
-						if gpuSpeed < 0 {
-							gpuSpeed = 0
-						}
 						prev := j.GPUUnitsRemaining
 						j.GPUUnitsRemaining -= gpuSpeed * dt
 						if j.GPUUnitsRemaining < prev {
@@ -1080,13 +1213,9 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 					res.emptyNodes = append(res.emptyNodes, nodeName)
 				}
 
-				// Compute energy for this node (local accumulation, merged after).
-				p := s.nodePowerWithModel(st, model)
-				e := p * dt
-				if e > 0 {
-					res.energyByNode[nodeName] += e
-					res.energyTotal += e
-				}
+				// Step this node's physics (local accumulation, merged after).
+				cpuJ, gpuJ := stepNode(st, model, dt, substep)
+				res.energy = append(res.energy, standaloneNodeEnergy{node: nodeName, cpuJ: cpuJ, gpuJ: gpuJ})
 			}
 
 			atomic.AddInt64(&completedTotal, res.completed)
@@ -1095,7 +1224,7 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 	}
 	wg.Wait()
 
-	// --- Parallel energy for IDLE nodes (not in activeList) ---
+	// --- Parallel physics for IDLE nodes (not in activeList) ---
 	activeSet := make(map[string]bool, len(activeList))
 	for _, name := range activeList {
 		activeSet[name] = true
@@ -1108,8 +1237,7 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 	}
 	if len(idleList) > 0 {
 		idleChunk := (len(idleList) + numWorkers - 1) / numWorkers
-		idleEnergy := make([]float64, numWorkers)
-		idleEnergyMaps := make([]map[string]float64, numWorkers)
+		idleEnergy := make([][]standaloneNodeEnergy, numWorkers)
 		var wg2 sync.WaitGroup
 		for w := 0; w < numWorkers; w++ {
 			start := w * idleChunk
@@ -1123,36 +1251,27 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 			wg2.Add(1)
 			go func(wid int, nodes []string) {
 				defer wg2.Done()
-				localE := make(map[string]float64, len(nodes))
-				var total float64
+				local := make([]standaloneNodeEnergy, 0, len(nodes))
 				for _, name := range nodes {
 					st := s.state[name]
 					if st == nil {
 						continue
 					}
-					model := s.model
-					if m, ok := s.nodeModels[name]; ok {
-						model = m
-					}
-					p := s.nodePowerWithModel(st, model)
-					e := p * dt
-					if e > 0 {
-						localE[name] = e
-						total += e
-					}
+					cpuJ, gpuJ := stepNode(st, s.modelLocked(name), dt, substep)
+					local = append(local, standaloneNodeEnergy{node: name, cpuJ: cpuJ, gpuJ: gpuJ})
 				}
-				idleEnergy[wid] = total
-				idleEnergyMaps[wid] = localE
+				idleEnergy[wid] = local
 			}(w, idleList[start:end])
 		}
 		wg2.Wait()
 		// Merge idle energy.
-		for wid := range idleEnergyMaps {
-			s.energyTotalJ += idleEnergy[wid]
-			for name, e := range idleEnergyMaps[wid] {
-				s.energyJByNode[name] += e
+		s.mu.Lock()
+		for _, local := range idleEnergy {
+			for _, e := range local {
+				s.addEnergyLocked(e.node, e.cpuJ, e.gpuJ)
 			}
 		}
+		s.mu.Unlock()
 	}
 
 	// Flush completion metrics, energy, and remove empty nodes (single-threaded).
@@ -1167,13 +1286,21 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 			delete(activeNodes, name)
 		}
 		// Merge energy from active nodes.
-		s.energyTotalJ += res.energyTotal
-		for name, e := range res.energyByNode {
-			s.energyJByNode[name] += e
+		s.mu.Lock()
+		for _, e := range res.energy {
+			s.addEnergyLocked(e.node, e.cpuJ, e.gpuJ)
 		}
+		s.mu.Unlock()
 	}
 
 	return int(completedTotal)
+}
+
+// standaloneNodeEnergy is one node's energy over a tick, as a worker of
+// standaloneTickParallel collects it before the merge.
+type standaloneNodeEnergy struct {
+	node       string
+	cpuJ, gpuJ float64
 }
 
 // performanceNodes is the simulator's whole decision of which nodes stay in
@@ -1248,6 +1375,7 @@ func applyPowerPolicy(s *simulator, tracker map[string]*standaloneNodeTracker, n
 				if m, ok := s.nodeModels[name]; ok {
 					model = m
 				}
+				st.TargetCapWatts = model.DefaultCapW
 				st.GPUCapWattsPerGpu = model.GPU.MaxWattsPerGPU
 				st.GPUTargetCapWattsPerGpu = model.GPU.MaxWattsPerGPU
 			}
@@ -1308,6 +1436,7 @@ func applyPowerPolicy(s *simulator, tracker map[string]*standaloneNodeTracker, n
 			// Performance node: full power, no throttle.
 			st.FreqScale = 1.0
 			st.TargetThrottlePct = 0
+			st.TargetCapWatts = model.DefaultCapW
 			st.GPUCapWattsPerGpu = model.GPU.MaxWattsPerGPU
 			st.GPUTargetCapWattsPerGpu = model.GPU.MaxWattsPerGPU
 			t.isEco = false
@@ -1320,15 +1449,35 @@ func applyPowerPolicy(s *simulator, tracker map[string]*standaloneNodeTracker, n
 				// DrainingPerformance: keep perf caps, mark as draining.
 				st.FreqScale = 1.0
 				st.TargetThrottlePct = 0
+				st.TargetCapWatts = model.DefaultCapW
 				st.GPUCapWattsPerGpu = model.GPU.MaxWattsPerGPU
 				st.GPUTargetCapWattsPerGpu = model.GPU.MaxWattsPerGPU
 				t.isEco = false
 				t.isDraining = true
 			} else {
-				// ActiveEco: apply eco caps.
-				throttlePct := int(math.Round((1.0 - cpuEcoPct) * 100))
-				st.FreqScale = cpuEcoPct
-				st.TargetThrottlePct = throttlePct
+				// ActiveEco: apply eco caps. A GPU node gets GPU caps
+				// only, as the controller manager plans it: its CPU runs
+				// as on a performance node, since capping it saves little
+				// and slows the GPU data feed by more (exp-03). A CPU-only
+				// profile node with a writable PL1 gets a CPU power cap,
+				// as the agent writes one; any other CPU-only node, HSMP
+				// included since the agent has no HSMP path, gets a
+				// frequency scale.
+				n := nodeByName[name]
+				switch {
+				case n != nil && n.GPUCount > 0:
+					st.FreqScale = 1.0
+					st.TargetThrottlePct = 0
+					st.TargetCapWatts = model.DefaultCapW
+				case n != nil && n.EcoPowerCap:
+					st.FreqScale = 1.0
+					st.TargetThrottlePct = 0
+					st.TargetCapWatts = cpuEcoPct * model.RaplCapMaxW
+				default:
+					throttlePct := int(math.Round((1.0 - cpuEcoPct) * 100))
+					st.FreqScale = cpuEcoPct
+					st.TargetThrottlePct = throttlePct
+				}
 				if model.GPU.MaxWattsPerGPU > 0 {
 					ecoCap := gpuEcoPct * model.GPU.MaxWattsPerGPU
 					st.GPUCapWattsPerGpu = ecoCap

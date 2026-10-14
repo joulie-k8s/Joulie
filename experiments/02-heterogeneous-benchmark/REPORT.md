@@ -4,6 +4,8 @@ This page reports results from the heterogeneous GPU cluster KWOK benchmark expe
 
 - [`experiments/02-heterogeneous-benchmark/`](.)
 
+> **Note (2026-10-09):** With the scripts in this repository, from the commit that added this report to v0.2.3, the installer pointed the simulator at a hardware catalog generated from the inventory, which holds no measured curves, so every CPU ran the analytic fallback model, not a SPECpower curve. GPU nodes took their parameters from the generated node classes (`10-node-classes.yaml`). Thermal throttling was on by default (CPU 85 to 97 °C, GPU 82 to 92 °C) and is opt-in now. These results have not been rerun with the current model; [Simulator changes](../../simulator/CHANGES.md) lists every change to the simulated numbers since v0.2.3 and how far each one moves this experiment's `configs/benchmark-debug.yaml`.
+
 ## Scope
 
 The benchmark compares three baselines on a **heterogeneous GPU cluster** mixing 5 distinct GPU hardware families plus CPU-only nodes, running on a real Kind+KWOK Kubernetes cluster:
@@ -26,17 +28,17 @@ The experiment demonstrates energy savings achievable through combined CPU and G
 - Scheduler extender provides performance/eco affinity-based filtering and scoring.
 - GPU nodes get GPU RAPL caps; CPU-only nodes get CPU RAPL caps.
 
-### 1.2 Node inventory — detailed cluster composition
+### 1.2 Node inventory: detailed cluster composition
 
 #### GPU nodes (33 total, 188 GPUs across 5 families)
 
 | Node prefix | Count | GPU model | GPUs/node | GPU cap range | Host CPU | CPU cores/node |
 |---|---:|---|---:|---|---|---:|
-| kwok-h100-nvl | **12** | NVIDIA H100 NVL | 8 | 200–400 W | AMD EPYC 9654 | 192 |
-| kwok-h100-sxm | **6** | NVIDIA H100 80GB HBM3 | 4 | 350–700 W | Intel Xeon Gold 6530 | 64 |
-| kwok-l40s | **7** | NVIDIA L40S | 4 | 200–350 W | AMD EPYC 9534 | 128 |
-| kwok-mi300x | **2** | AMD Instinct MI300X | 8 | 350–750 W | AMD EPYC 9534 | 128 |
-| kwok-w7900 | **6** | AMD Radeon PRO W7900 | 4 | 200–295 W | AMD EPYC 9534 | 128 |
+| kwok-h100-nvl | **12** | NVIDIA H100 NVL | 8 | 200 to 400 W | AMD EPYC 9654 | 192 |
+| kwok-h100-sxm | **6** | NVIDIA H100 80GB HBM3 | 4 | 350 to 700 W | Intel Xeon Gold 6530 | 64 |
+| kwok-l40s | **7** | NVIDIA L40S | 4 | 200 to 350 W | AMD EPYC 9534 | 128 |
+| kwok-mi300x | **2** | AMD Instinct MI300X | 8 | 350 to 750 W | AMD EPYC 9534 | 128 |
+| kwok-w7900 | **6** | AMD Radeon PRO W7900 | 4 | 200 to 295 W | AMD EPYC 9534 | 128 |
 
 GPU count: (12×8) + (6×4) + (7×4) + (2×8) + (6×4) = **188 GPUs** across NVIDIA and AMD families.
 
@@ -62,11 +64,11 @@ Per-GPU-family physics parameters:
 
 | GPU family | IdleW (W) | MaxW (W) | ComputeGamma | GPU cap range |
 |---|---:|---:|---:|---|
-| NVIDIA H100 NVL | 60 | 400 | 1.50 | 200–400 W |
-| NVIDIA H100 80GB HBM3 | 120 | 700 | 1.50 | 350–700 W |
-| NVIDIA L40S | 60 | 350 | 1.40 | 200–350 W |
-| AMD Instinct MI300X | 100 | 750 | 0.85 | 350–750 W |
-| AMD Radeon PRO W7900 | 40 | 295 | 1.20 | 200–295 W |
+| NVIDIA H100 NVL | 60 | 400 | 1.50 | 200 to 400 W |
+| NVIDIA H100 80GB HBM3 | 120 | 700 | 1.50 | 350 to 700 W |
+| NVIDIA L40S | 60 | 350 | 1.40 | 200 to 350 W |
+| AMD Instinct MI300X | 100 | 750 | 0.85 | 350 to 750 W |
+| AMD Radeon PRO W7900 | 40 | 295 | 1.20 | 200 to 295 W |
 
 ### 1.4 Run configuration
 
@@ -141,10 +143,10 @@ Dynamically adjusts performance node count based on running performance-sensitiv
 The workload generator uses a **Non-Homogeneous Poisson Process (NHPP)** with:
 
 1. **Cosine diurnal cycle**: trough at 4 AM sim-time, peak at 4 PM sim-time, with Ornstein-Uhlenbeck rate noise.
-2. **Mega-burst overlay**: 4–8 burst events per simulated day, scaled by cluster size.
-3. **Maintenance dip windows**: 1–3 per day (GPU clusters get longer dips: 60–180 min sim-time).
-4. **Surge windows**: 1–2 per day, 1–3 sim-hours at 2–3× normal rate.
-5. **Mixed job sizes**: CPU-only (4–192 cores), GPU (1–8 GPUs), with workload-class-specific resource profiles.
+2. **Mega-burst overlay**: 4 to 8 burst events per simulated day, scaled by cluster size.
+3. **Maintenance dip windows**: 1 to 3 per day (GPU clusters get longer dips: 60 to 180 min sim-time).
+4. **Surge windows**: 1 to 2 per day, 1 to 3 sim-hours at 2 to 3× normal rate.
+5. **Mixed job sizes**: CPU-only (4 to 192 cores), GPU (1 to 8 GPUs), with workload-class-specific resource profiles.
 
 ### 3.2 Ambient temperature model
 
@@ -158,7 +160,7 @@ The model captures:
 
 - **Three cooling modes**: free cooling (full airside economizer when outdoor temp < 13°C), partial mechanical (economizer + DX compressor), and full mechanical (DX only when outdoor temp > 18°C).
 - **Variable-speed DX compressor** with temperature-dependent COP (nominal 3.0), degrading at high outdoor temperatures.
-- **Airside economizer** with 5–100% outdoor air fraction based on temperature.
+- **Airside economizer** with 5 to 100% outdoor air fraction based on temperature.
 - **Fan affinity laws**: power scales with speed cubed (P proportional to speed^3).
 - **Room thermal mass**: 50x40x3 m data center room with ~5 MJ/K effective thermal capacitance.
 
@@ -193,13 +195,13 @@ All baselines run the same workload trace (8,272 jobs) over a fixed ~22 sim-hour
 
 | Baseline | Jobs Completed | Δ vs A | Total Work Done | Δ vs A |
 |---|---:|---:|---:|---:|
-| A (no mgmt) | 88/103 (85%) | — | 71.2% | — |
+| A (no mgmt) | 88/103 (85%) | n/a | 71.2% | n/a |
 | B (static) | 91/103 (88%) | **+3.4%** | 77.6% | **+9.0%** |
 | C (queue-aware) | 94/103 (91%) | **+6.8%** | 83.2% | **+16.9%** |
 
 | Baseline | Avg Concurrent Pods | Max Concurrent Pods | Δ Avg Pods vs A |
 |---|---:|---:|---:|
-| A (no mgmt) | 23.5 | 44 | — |
+| A (no mgmt) | 23.5 | 44 | n/a |
 | B (static) | 13.5 | 15 | **−42.6%** |
 | C (queue-aware) | 10.8 | 12 | **−54.0%** |
 
@@ -233,13 +235,13 @@ Cumulative energy (MJ) over time showing linear divergence from the start. C mai
 
 ![Utilization Summary](./img/kwok/utilization_summary.png)
 
-CPU and GPU utilization histograms per baseline. GPU utilization is modest (11.5% avg under A) due to the 41-node cluster having 188 GPUs — more than sufficient for the workload arrival rate. CPU utilization shows clear separation between baselines.
+CPU and GPU utilization histograms per baseline. GPU utilization is modest (11.5% avg under A) due to the 41-node cluster having 188 GPUs, more than sufficient for the workload arrival rate. CPU utilization shows clear separation between baselines.
 
 ### 5.5 PUE analysis (IT Power, Cooling & PUE)
 
 ![PUE Analysis](./img/kwok/pue_analysis.png)
 
-Three-panel stacked timeseries showing IT equipment power (kW), cooling system power (kW), and PUE over simulated time. Cooling power is computed by the DXCooledAirsideEconomizer FMU — a physics-based Modelica model that captures economizer free-cooling, DX compressor dynamics, and fan affinity laws. The narrow PUE range (1.13–1.15) reflects the small cluster size; at datacenter scale, the same IT power reduction would produce more pronounced PUE improvements.
+Three-panel stacked timeseries showing IT equipment power (kW), cooling system power (kW), and PUE over simulated time. Cooling power is computed by the DXCooledAirsideEconomizer FMU, a physics-based Modelica model that captures economizer free-cooling, DX compressor dynamics, and fan affinity laws. The narrow PUE range (1.13 to 1.15) reflects the small cluster size; at datacenter scale, the same IT power reduction would produce more pronounced PUE improvements.
 
 ### 5.6 Facility power breakdown
 
@@ -268,7 +270,7 @@ The heterogeneous GPU fleet creates placement constraints: GPU jobs require spec
 
 ### Why queue-aware (C) outperforms static (B)
 
-On a 41-node cluster, the difference between ~14 fixed performance nodes (B) and dynamic allocation from 1–25 (C) is proportionally large. C can shift nearly all nodes to eco during low-demand periods, capturing deeper savings than B's fixed 35% performance allocation.
+On a 41-node cluster, the difference between ~14 fixed performance nodes (B) and dynamic allocation from 1 to 25 (C) is proportionally large. C can shift nearly all nodes to eco during low-demand periods, capturing deeper savings than B's fixed 35% performance allocation.
 
 ---
 
@@ -276,9 +278,9 @@ On a 41-node cluster, the difference between ~14 fixed performance nodes (B) and
 
 PUE is derived from the **DXCooledAirsideEconomizer FMU** (see Section 3.3), which models three cooling regimes:
 
-- **Free cooling** (outdoor temp < 13°C): Airside economizer provides all cooling. PUE ~1.05–1.10.
-- **Partial mechanical** (13–18°C): Economizer supplements DX compressor. PUE ~1.10–1.15.
-- **Full mechanical** (> 18°C): DX compressor provides all cooling. PUE ~1.15–1.20.
+- **Free cooling** (outdoor temp < 13°C): Airside economizer provides all cooling. PUE ~1.05 to 1.10.
+- **Partial mechanical** (13 to 18°C): Economizer supplements DX compressor. PUE ~1.10 to 1.15.
+- **Full mechanical** (> 18°C): DX compressor provides all cooling. PUE ~1.15 to 1.20.
 
 Observed in this experiment:
 
@@ -286,7 +288,7 @@ Observed in this experiment:
 - **Day (high ambient, high load)**: PUE ~1.15.
 - **Joulie impact**: Reduced IT power reduces cooling demand and marginally improves PUE (~0.004 points). On a 41-node cluster the absolute improvement is small but scales linearly with cluster size.
 
-At datacenter scale (5,000 nodes), the same proportional IT power reduction would produce PUE improvements of ~0.01–0.03 points, translating to significant cooling energy savings.
+At datacenter scale (5,000 nodes), the same proportional IT power reduction would produce PUE improvements of ~0.01 to 0.03 points, translating to significant cooling energy savings.
 
 ---
 
@@ -340,6 +342,6 @@ Extrapolating from the measured per-baseline power savings to a full year of con
 
 ### 9.3 Context
 
-This heterogeneous GPU cluster demonstrates that Joulie delivers significant savings even with mixed-vendor GPU fleets where placement constraints limit policy flexibility. The queue-aware policy saves **$108K/year** and avoids **418 tonnes of CO₂** — equivalent to taking **91 passenger cars off the road** for a year (EPA: 4.6 tonnes CO₂/car/year).
+This heterogeneous GPU cluster demonstrates that Joulie delivers significant savings even with mixed-vendor GPU fleets where placement constraints limit policy flexibility. The queue-aware policy saves **$108K/year** and avoids **418 tonnes of CO₂**, equivalent to taking **91 passenger cars off the road** for a year (EPA: 4.6 tonnes CO₂/car/year).
 
 For homogeneous GPU clusters where placement flexibility enables more aggressive capping, see Experiment 03.

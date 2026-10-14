@@ -25,3 +25,16 @@ data:
     {{- .Values.workloadTrace.content | toString | nindent 4 }}
 {{- end }}
 {{- end }}
+{{- if and .Values.emulate.enabled .Values.emulate.clusterSpec }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: joulie-simulator-cluster-spec
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "joulie-simulator.labels" . | nindent 4 }}
+data:
+  cluster-spec.yaml: |
+    {{- .Values.emulate.clusterSpec | toString | nindent 4 }}
+{{- end }}

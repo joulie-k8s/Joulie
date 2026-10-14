@@ -1,3 +1,14 @@
+// Command workloadgen writes a synthetic workload trace for the simulator:
+// JSON Lines with one type=workload record per logical workload and one
+// type=job record per pod.
+//
+// -schema-version selects the trace schema. v3, the default, writes no
+// sensitivity unless -cpu-sensitivity or -gpu-sensitivity is given and no
+// power-profile affinity, and sizes every pod's work so that its ideal
+// runtime, work over request times -base-speed-per-core, equals its
+// workload's durationSec. v2 is the schema experiments 01 to 03 were measured
+// with: its output is byte-identical to the generator before v3, and every
+// legacy caller pins it.
 package main
 
 import (
@@ -11,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/matbun/joulie/simulator/pkg/workload"
 )
 
 type jobRecord struct {
@@ -26,7 +39,7 @@ type jobRecord struct {
 	IntentClass         string             `json:"intentClass"`
 	PodTemplate         podTemplateRec     `json:"podTemplate"`
 	Work                workRec            `json:"work"`
-	Sensitivity         sensitivityRec     `json:"sensitivity"`
+	Sensitivity         *sensitivityRec    `json:"sensitivity,omitempty"`
 	WorkloadClass       workloadClass      `json:"workloadClass"`
 	WorkloadProfile     workloadProfileRec `json:"workloadProfile"`
 	Tags                []string           `json:"tags,omitempty"`
@@ -66,11 +79,14 @@ type workRec struct {
 	GPUUnits float64 `json:"gpuUnits"`
 }
 
-// sensitivityRec is retained for trace schema backward compatibility but
-// no longer populated. The scheduler uses only joulie.io/workload-class.
+// sensitivityRec is how strongly a job's progress follows a cap, per
+// resource, in [0,1]. v2 writes it on every job ({0, 0} in default mode).
+// v3 omits it, and the simulator then reads 1, unless -cpu-sensitivity or
+// -gpu-sensitivity is given; it then holds only the keys given. The
+// scheduler does not read it: it uses only joulie.io/workload-class.
 type sensitivityRec struct {
-	CPU float64 `json:"cpu"`
-	GPU float64 `json:"gpu"`
+	CPU *float64 `json:"cpu,omitempty"`
+	GPU *float64 `json:"gpu,omitempty"`
 }
 
 type workloadClass struct {
@@ -78,42 +94,138 @@ type workloadClass struct {
 	GPU string `json:"gpu,omitempty"`
 }
 
+// workloadProfileRec is a job's workloadProfile. PeerTransferIntensity is
+// written only with -peer-transfer-intensity (v3), on the jobs that request
+// two or more GPUs.
 type workloadProfileRec struct {
-	CPUUtilization      float64 `json:"cpuUtilization,omitempty"`
-	GPUUtilization      float64 `json:"gpuUtilization,omitempty"`
-	MemoryIntensity     float64 `json:"memoryIntensity,omitempty"`
-	IOIntensity         float64 `json:"ioIntensity,omitempty"`
-	CPUFeedIntensityGPU float64 `json:"cpuFeedIntensityGpu,omitempty"`
+	CPUUtilization        float64 `json:"cpuUtilization,omitempty"`
+	GPUUtilization        float64 `json:"gpuUtilization,omitempty"`
+	MemoryIntensity       float64 `json:"memoryIntensity,omitempty"`
+	IOIntensity           float64 `json:"ioIntensity,omitempty"`
+	CPUFeedIntensityGPU   float64 `json:"cpuFeedIntensityGpu,omitempty"`
+	PeerTransferIntensity float64 `json:"peerTransferIntensity,omitempty"`
 }
 
 type generatorConfig struct {
-	Jobs                int
-	Namespace           string
-	MeanInterArrival    float64
-	Seed                int64
-	PerfRatio              float64
-	ComputeBoundPerfBoost  float64
-	NoAffinityOnly         bool
-	GPURatio            float64
-	GPURequestPerJob    float64
-	CPURatePerCore      float64
-	GPURatePerGPU       float64
-	EmitWorkloadRecords bool
-	BurstDayProbability float64
-	BurstMeanJobs       float64
-	BurstMultiplier     float64
-	DipDayProbability   float64
-	DipMultiplier       float64
-	TimeScale           float64
-	Mode                string  // "default" or "diurnal"
-	SimHours            float64 // total sim-hours for diurnal mode
-	WorkScale           float64 // work unit multiplier
-	BaseSpeedPerCore    float64 // base speed per core for work unit calc
-	DiurnalBurstMin     int     // min burst size in diurnal mode
-	DiurnalBurstMax     int     // max burst size in diurnal mode
-	DiurnalPeakRate     float64 // peak arrival rate (jobs/min in sim-time)
-	MinGPURequest       int     // minimum GPUs per GPU job
-	AMDGPURatio         float64 // fraction of GPU workloads using amd.com/gpu (rest use nvidia.com/gpu)
+	Jobs                  int
+	Namespace             string
+	MeanInterArrival      float64
+	Seed                  int64
+	PerfRatio             float64
+	ComputeBoundPerfBoost float64
+	NoAffinityOnly        bool
+	GPURatio              float64
+	GPURequestPerJob      float64
+	CPURatePerCore        float64 // v2 only
+	GPURatePerGPU         float64 // v2 only
+	EmitWorkloadRecords   bool
+	BurstDayProbability   float64
+	BurstMeanJobs         float64
+	BurstMultiplier       float64
+	DipDayProbability     float64
+	DipMultiplier         float64
+	TimeScale             float64
+	Mode                  string   // "default" or "diurnal"
+	SimHours              float64  // total sim-hours for diurnal mode
+	WorkScale             float64  // work unit multiplier (v2 diurnal mode only)
+	BaseSpeedPerCore      float64  // work units per core-second; see baseSpeedPerCore
+	DiurnalBurstMin       int      // min burst size in diurnal mode
+	DiurnalBurstMax       int      // max burst size in diurnal mode
+	DiurnalPeakRate       float64  // peak arrival rate (jobs/min in sim-time)
+	MinGPURequest         int      // minimum GPUs per GPU job
+	AMDGPURatio           float64  // fraction of GPU workloads using amd.com/gpu (rest use nvidia.com/gpu)
+	SchemaVersion         string   // workload.TraceSchemaV3 (also when empty) or TraceSchemaV2
+	CPUSensitivity        *float64 // v3 only: sensitivity.cpu of every job; nil omits it
+	GPUSensitivity        *float64 // v3 only: sensitivity.gpu of every job; nil omits it
+	ArrivalWindowSec      float64  // v3 only: the last arrival is at most this; 0 keeps the offsets
+	MaxDurationSec        float64  // v3 only: durationSec is at most this; 0 keeps the durations
+	PeerTransferIntensity float64  // v3 only: peerTransferIntensity of every job with two or more GPUs; 0 omits it
+}
+
+// v3BaseSpeedPerCore is the v3 default of -base-speed-per-core. It equals the
+// simulator's SIM_BASE_SPEED_PER_CORE default, so a v3 trace's ideal
+// runtimes hold on a simulator deployed with defaults.
+const v3BaseSpeedPerCore = 1.0
+
+// v2DiurnalBaseSpeedPerCore is the v2 default, read only by diurnal mode.
+const v2DiurnalBaseSpeedPerCore = 2.0
+
+// v3 reports whether cfg writes schema v3, the default, which an empty
+// SchemaVersion also selects.
+func (c generatorConfig) v3() bool { return c.SchemaVersion != workload.TraceSchemaV2 }
+
+// schema is the schemaVersion every record carries.
+func (c generatorConfig) schema() string {
+	if c.v3() {
+		return workload.TraceSchemaV3
+	}
+	return workload.TraceSchemaV2
+}
+
+// baseSpeedPerCore is -base-speed-per-core, or the schema's default when it
+// is not positive: 1.0 in v3, 2.0 in v2, where only diurnal mode reads it.
+func (c generatorConfig) baseSpeedPerCore() float64 {
+	switch {
+	case c.BaseSpeedPerCore > 0:
+		return c.BaseSpeedPerCore
+	case c.v3():
+		return v3BaseSpeedPerCore
+	default:
+		return v2DiurnalBaseSpeedPerCore
+	}
+}
+
+// jobProfile is the workloadProfile of a job requesting gpus GPUs: the
+// workload's shared profile, plus -peer-transfer-intensity when the job
+// requests two or more GPUs, the jobs that can move data between their
+// GPUs on one node.
+func (c generatorConfig) jobProfile(shared workloadProfileRec, gpus int) workloadProfileRec {
+	if gpus >= 2 {
+		shared.PeerTransferIntensity = c.PeerTransferIntensity
+	}
+	return shared
+}
+
+// sensitivity is a job's sensitivity record. v2 writes both values given;
+// v3 writes only the -cpu-sensitivity and -gpu-sensitivity flags given, and
+// without them returns nil, which omits the key.
+func (c generatorConfig) sensitivity(cpu, gpu float64) *sensitivityRec {
+	if c.v3() {
+		if c.CPUSensitivity == nil && c.GPUSensitivity == nil {
+			return nil
+		}
+		return &sensitivityRec{CPU: c.CPUSensitivity, GPU: c.GPUSensitivity}
+	}
+	return &sensitivityRec{CPU: &cpu, GPU: &gpu}
+}
+
+// affinity is a default-mode job's pod affinity: the class's NotIn-eco rule
+// in v2, none in v3, whose consumers declare the class by annotation.
+func (c generatorConfig) affinity(class string) map[string]any {
+	if c.v3() {
+		return nil
+	}
+	return affinityForClass(class)
+}
+
+// clampDuration applies -max-duration-sec to a sampled durationSec.
+func (c generatorConfig) clampDuration(d float64) float64 {
+	if c.MaxDurationSec > 0 && d > c.MaxDurationSec {
+		return c.MaxDurationSec
+	}
+	return d
+}
+
+// v3Work sizes one pod's work so that its ideal runtime, units over request
+// times base speed (the simulator's rate at full speed), equals durationSec.
+// The CPU request is the one formatCPU writes, so the simulator reads back
+// the request the units were sized with.
+func v3Work(durationSec, cpuRequest float64, gpus int, baseSpeed float64) (cpuUnits, gpuUnits float64) {
+	cpu, err := strconv.ParseFloat(formatCPU(cpuRequest), 64)
+	if err != nil {
+		cpu = cpuRequest
+	}
+	return durationSec * cpu * baseSpeed, durationSec * float64(gpus) * baseSpeed
 }
 
 type logicalWorkload struct {
@@ -149,50 +261,120 @@ type arrivalState struct {
 }
 
 func main() {
-	cfg := parseFlags()
-	var err error
-	if cfg.Mode == "diurnal" {
-		err = generateDiurnalTrace(cfg)
-	} else {
-		err = generateTrace(cfg)
-	}
-	if err != nil {
-		panic(err)
+	if err := run(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, "workloadgen:", err)
+		os.Exit(2)
 	}
 }
 
-func parseFlags() generatorConfig {
+// run parses args and writes the trace.
+func run(args []string) error {
+	cfg, err := parseFlags(args)
+	if err != nil {
+		return err
+	}
+	if cfg.Mode == "diurnal" {
+		return generateDiurnalTrace(cfg)
+	}
+	return generateTrace(cfg)
+}
+
+// v3OnlyFlags shape only v3 output and v2OnlyFlags only v2 output. Giving
+// one with the other schema is an error rather than a flag that does
+// nothing, or one that breaks v3's ideal runtime.
+var (
+	v3OnlyFlags = []string{"cpu-sensitivity", "gpu-sensitivity", "arrival-window-sec", "max-duration-sec", "peer-transfer-intensity"}
+	v2OnlyFlags = []string{"cpu-work-rate-per-core", "gpu-work-rate-per-gpu", "work-scale"}
+)
+
+// parseFlags reads the command line. A malformed flag exits 2 and -h exits
+// 0, as the flag package does; a value the schema rejects is an error.
+func parseFlags(args []string) (generatorConfig, error) {
 	cfg := generatorConfig{}
+	fs := flag.NewFlagSet("workloadgen", flag.ExitOnError)
 	var outPath string
-	flag.IntVar(&cfg.Jobs, "jobs", 50, "number of logical workloads")
-	flag.StringVar(&outPath, "out", "trace.jsonl", "output JSONL path")
-	flag.StringVar(&cfg.Namespace, "namespace", "default", "namespace for generated workloads")
-	flag.Float64Var(&cfg.MeanInterArrival, "mean-inter-arrival-sec", 5, "baseline mean inter-arrival seconds before hourly seasonality")
-	flag.Int64Var(&cfg.Seed, "seed", time.Now().UnixNano(), "rng seed")
-	flag.Float64Var(&cfg.PerfRatio, "perf-ratio", 0.30, "base ratio of performance-constrained workloads")
-	flag.Float64Var(&cfg.ComputeBoundPerfBoost, "compute-bound-perf-boost", 3.5, "multiplier for performance probability of compute-bound workloads")
-	flag.BoolVar(&cfg.NoAffinityOnly, "no-affinity-only", false, "if true, do not emit power-profile affinity")
-	flag.Float64Var(&cfg.GPURatio, "gpu-ratio", 0.80, "ratio of logical workloads that use GPUs")
-	flag.Float64Var(&cfg.GPURequestPerJob, "gpu-request", 1, "GPU request per worker/trial pod when using the legacy single-job mode semantics")
-	flag.Float64Var(&cfg.CPURatePerCore, "cpu-work-rate-per-core", 1.0, "CPU work units produced per core-second at full speed")
-	flag.Float64Var(&cfg.GPURatePerGPU, "gpu-work-rate-per-gpu", 1.0, "GPU work units produced per GPU-second at full speed")
-	flag.BoolVar(&cfg.EmitWorkloadRecords, "emit-workload-records", true, "emit type=workload metadata records in addition to pod-expanded type=job records")
-	flag.Float64Var(&cfg.BurstDayProbability, "burst-day-probability", 0.25, "probability of a daily burst window")
-	flag.Float64Var(&cfg.BurstMeanJobs, "burst-mean-jobs", 8.0, "mean extra burst intensity used to scale arrival rate during burst windows")
-	flag.Float64Var(&cfg.BurstMultiplier, "burst-multiplier", 2.0, "arrival-rate multiplier during the selected burst hour")
-	flag.Float64Var(&cfg.DipDayProbability, "dip-day-probability", 0.30, "probability of a daily dip (negative spike) window")
-	flag.Float64Var(&cfg.DipMultiplier, "dip-multiplier", 0.08, "arrival-rate multiplier during the selected dip hour (e.g., 0.08 = 92% reduction)")
-	flag.Float64Var(&cfg.TimeScale, "time-scale", 1.0, "simulation time scale: offset*timeScale = simulated seconds (used for day/night hour calculation)")
-	flag.StringVar(&cfg.Mode, "mode", "default", "trace generation mode: 'default' (original) or 'diurnal' (exp04-style NHPP cosine day/night)")
-	flag.Float64Var(&cfg.SimHours, "sim-hours", 48, "total simulation hours (diurnal mode only)")
-	flag.Float64Var(&cfg.WorkScale, "work-scale", 1.0, "work unit multiplier (diurnal mode only)")
-	flag.Float64Var(&cfg.BaseSpeedPerCore, "base-speed-per-core", 2.0, "base speed per core for work unit calculation (diurnal mode only)")
-	flag.IntVar(&cfg.DiurnalBurstMin, "diurnal-burst-min", 20, "min burst size in diurnal mode")
-	flag.IntVar(&cfg.DiurnalBurstMax, "diurnal-burst-max", 80, "max burst size in diurnal mode")
-	flag.Float64Var(&cfg.DiurnalPeakRate, "diurnal-peak-rate", 80.0, "peak arrival rate in jobs/min sim-time (diurnal mode)")
-	flag.IntVar(&cfg.MinGPURequest, "min-gpu-request", 0, "minimum GPUs per GPU job (0 = use default sampling)")
-	flag.Float64Var(&cfg.AMDGPURatio, "amd-gpu-ratio", 0.0, "fraction of GPU workloads using amd.com/gpu (0.0 = all nvidia, 1.0 = all amd)")
-	flag.Parse()
+	var cpuSensitivity, gpuSensitivity float64
+	fs.IntVar(&cfg.Jobs, "jobs", 50, "number of logical workloads")
+	fs.StringVar(&outPath, "out", "trace.jsonl", "output JSONL path")
+	fs.StringVar(&cfg.Namespace, "namespace", "default", "namespace for generated workloads")
+	fs.Float64Var(&cfg.MeanInterArrival, "mean-inter-arrival-sec", 5, "baseline mean inter-arrival seconds before hourly seasonality")
+	fs.Int64Var(&cfg.Seed, "seed", time.Now().UnixNano(), "rng seed")
+	fs.Float64Var(&cfg.PerfRatio, "perf-ratio", 0.30, "base ratio of performance-constrained workloads")
+	fs.Float64Var(&cfg.ComputeBoundPerfBoost, "compute-bound-perf-boost", 3.5, "multiplier for performance probability of compute-bound workloads")
+	fs.BoolVar(&cfg.NoAffinityOnly, "no-affinity-only", false, "if true, do not emit power-profile affinity")
+	fs.Float64Var(&cfg.GPURatio, "gpu-ratio", 0.80, "ratio of logical workloads that use GPUs")
+	fs.Float64Var(&cfg.GPURequestPerJob, "gpu-request", 1, "GPU request per worker/trial pod when using the legacy single-job mode semantics")
+	fs.Float64Var(&cfg.CPURatePerCore, "cpu-work-rate-per-core", 1.0, "v2 only: CPU work units produced per core-second at full speed (default mode)")
+	fs.Float64Var(&cfg.GPURatePerGPU, "gpu-work-rate-per-gpu", 1.0, "v2 only: GPU work units produced per GPU-second at full speed (default mode)")
+	fs.BoolVar(&cfg.EmitWorkloadRecords, "emit-workload-records", true, "emit type=workload metadata records in addition to pod-expanded type=job records")
+	fs.Float64Var(&cfg.BurstDayProbability, "burst-day-probability", 0.25, "probability of a daily burst window")
+	fs.Float64Var(&cfg.BurstMeanJobs, "burst-mean-jobs", 8.0, "mean extra burst intensity used to scale arrival rate during burst windows")
+	fs.Float64Var(&cfg.BurstMultiplier, "burst-multiplier", 2.0, "arrival-rate multiplier during the selected burst hour")
+	fs.Float64Var(&cfg.DipDayProbability, "dip-day-probability", 0.30, "probability of a daily dip (negative spike) window")
+	fs.Float64Var(&cfg.DipMultiplier, "dip-multiplier", 0.08, "arrival-rate multiplier during the selected dip hour (e.g., 0.08 = 92% reduction)")
+	fs.Float64Var(&cfg.TimeScale, "time-scale", 1.0, "simulation time scale: offset*timeScale = simulated seconds (used for day/night hour calculation)")
+	fs.StringVar(&cfg.Mode, "mode", "default", "trace generation mode: 'default' (original) or 'diurnal' (exp04-style NHPP cosine day/night)")
+	fs.Float64Var(&cfg.SimHours, "sim-hours", 48, "total simulation hours (diurnal mode only)")
+	fs.Float64Var(&cfg.WorkScale, "work-scale", 1.0, "v2 only: work unit multiplier (diurnal mode only)")
+	fs.Float64Var(&cfg.BaseSpeedPerCore, "base-speed-per-core", 0, "work units one core, or one GPU, does per second at full speed; it sizes work so the ideal runtime is durationSec. v3: both modes, default 1.0 (the simulator's SIM_BASE_SPEED_PER_CORE default). v2: diurnal mode only, default 2.0")
+	fs.IntVar(&cfg.DiurnalBurstMin, "diurnal-burst-min", 20, "min burst size in diurnal mode")
+	fs.IntVar(&cfg.DiurnalBurstMax, "diurnal-burst-max", 80, "max burst size in diurnal mode")
+	fs.Float64Var(&cfg.DiurnalPeakRate, "diurnal-peak-rate", 80.0, "peak arrival rate in jobs/min sim-time (diurnal mode)")
+	fs.IntVar(&cfg.MinGPURequest, "min-gpu-request", 0, "minimum GPUs per GPU job (0 = use default sampling)")
+	fs.Float64Var(&cfg.AMDGPURatio, "amd-gpu-ratio", 0.0, "fraction of GPU workloads using amd.com/gpu (0.0 = all nvidia, 1.0 = all amd)")
+	fs.StringVar(&cfg.SchemaVersion, "schema-version", workload.TraceSchemaV3, "trace schema: v3, or v2, the schema experiments 01 to 03 were measured with, written byte for byte as before v3")
+	fs.Float64Var(&cpuSensitivity, "cpu-sensitivity", 0, "v3 only: sensitivity.cpu, in [0,1], of every job; unset, the key is absent and the simulator uses 1")
+	fs.Float64Var(&gpuSensitivity, "gpu-sensitivity", 0, "v3 only: sensitivity.gpu, in [0,1], of every job; unset, the key is absent and the simulator uses 1")
+	fs.Float64Var(&cfg.ArrivalWindowSec, "arrival-window-sec", 0, "v3 only: scale submit offsets linearly so the last arrival is at most this many seconds (0 keeps them)")
+	fs.Float64Var(&cfg.MaxDurationSec, "max-duration-sec", 0, "v3 only: clamp each workload's durationSec to this many seconds before its work is sized (0 keeps them)")
+	fs.Float64Var(&cfg.PeerTransferIntensity, "peer-transfer-intensity", 0, "v3 only: workloadProfile.peerTransferIntensity, in [0,1], of every job that requests two or more GPUs: the share of its GPU time spent moving data between its GPUs (0 omits the key)")
+	_ = fs.Parse(args) // ExitOnError: never returns an error
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+
+	switch cfg.SchemaVersion {
+	case workload.TraceSchemaV2:
+		for _, name := range v3OnlyFlags {
+			if given[name] {
+				return cfg, fmt.Errorf("-%s needs -schema-version %s", name, workload.TraceSchemaV3)
+			}
+		}
+	case workload.TraceSchemaV3:
+		for _, name := range v2OnlyFlags {
+			if given[name] {
+				return cfg, fmt.Errorf("-%s is %s only: %s sizes work with -base-speed-per-core", name, workload.TraceSchemaV2, workload.TraceSchemaV3)
+			}
+		}
+		if given["base-speed-per-core"] && !(cfg.BaseSpeedPerCore > 0) {
+			return cfg, fmt.Errorf("-base-speed-per-core %v: must be positive", cfg.BaseSpeedPerCore)
+		}
+		for _, s := range []struct {
+			name  string
+			value float64
+			dst   **float64
+		}{
+			{"cpu-sensitivity", cpuSensitivity, &cfg.CPUSensitivity},
+			{"gpu-sensitivity", gpuSensitivity, &cfg.GPUSensitivity},
+		} {
+			if !given[s.name] {
+				continue
+			}
+			if !(s.value >= 0 && s.value <= 1) {
+				return cfg, fmt.Errorf("-%s %v: must be in [0,1]", s.name, s.value)
+			}
+			v := s.value
+			*s.dst = &v
+		}
+		if !(cfg.ArrivalWindowSec >= 0) || !(cfg.MaxDurationSec >= 0) {
+			return cfg, fmt.Errorf("-arrival-window-sec %v, -max-duration-sec %v: must not be negative", cfg.ArrivalWindowSec, cfg.MaxDurationSec)
+		}
+		if !(cfg.PeerTransferIntensity >= 0 && cfg.PeerTransferIntensity <= 1) {
+			return cfg, fmt.Errorf("-peer-transfer-intensity %v: must be in [0,1]", cfg.PeerTransferIntensity)
+		}
+	default:
+		return cfg, fmt.Errorf("-schema-version %q: want %s or %s", cfg.SchemaVersion, workload.TraceSchemaV3, workload.TraceSchemaV2)
+	}
+
 	if cfg.MeanInterArrival <= 0 {
 		cfg.MeanInterArrival = 1
 	}
@@ -220,74 +402,116 @@ func parseFlags() generatorConfig {
 	if cfg.TimeScale <= 0 {
 		cfg.TimeScale = 1.0
 	}
-	_ = outPath
 	setOutputPath(outPath)
-	return cfg
+	return cfg, nil
 }
 
 var outputPath = "trace.jsonl"
 
 func setOutputPath(v string) { outputPath = v }
 
-func generateTrace(cfg generatorConfig) error {
+// A generator samples a whole trace from cfg.Seed and hands every record to
+// emit in output order. at maps a sampled submit offset to the offset
+// written. It returns the last sampled offset, before at.
+type generator func(cfg generatorConfig, at func(float64) float64, emit func(any) error) (float64, error)
+
+// writeTrace writes gen's trace to outputPath and returns the number of job
+// records. With -arrival-window-sec it samples twice from the same seed: the
+// first pass only measures the last arrival, the second scales every offset
+// written by window/last, so the arrival pattern keeps its shape.
+func writeTrace(cfg generatorConfig, gen generator) (int, error) {
+	at := func(off float64) float64 { return off }
+	if window := cfg.ArrivalWindowSec; window > 0 {
+		last, err := gen(cfg, at, func(any) error { return nil })
+		if err != nil {
+			return 0, err
+		}
+		if last > window {
+			scale := window / last
+			at = func(off float64) float64 { return math.Min(window, off*scale) }
+		}
+	}
 	f, err := os.Create(outputPath)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer f.Close()
 	w := bufio.NewWriter(f)
+	jobs := 0
+	if _, err := gen(cfg, at, func(v any) error {
+		if _, ok := v.(jobRecord); ok {
+			jobs++
+		}
+		return writeJSONL(w, v)
+	}); err != nil {
+		return jobs, err
+	}
+	return jobs, w.Flush()
+}
 
+func generateTrace(cfg generatorConfig) error {
+	_, err := writeTrace(cfg, defaultRecords)
+	return err
+}
+
+// defaultRecords is the default mode's generator.
+func defaultRecords(cfg generatorConfig, at func(float64) float64, emit func(any) error) (float64, error) {
 	rng := rand.New(rand.NewSource(cfg.Seed))
 	arrivals := arrivalState{burstHourByDay: map[int]int{}, dipHourByDay: map[int]int{}}
 	offset := 0.0
 	jobOrdinal := 0
 	for i := 0; i < cfg.Jobs; i++ {
 		offset = nextArrivalOffset(rng, offset, cfg, &arrivals)
-		workload := sampleLogicalWorkload(rng, i+1, offset, cfg)
+		wl := sampleLogicalWorkload(rng, i+1, at(offset), cfg)
 		if cfg.EmitWorkloadRecords {
-			meta := workloadToRecord(workload)
-			if err := writeJSONL(w, meta); err != nil {
-				return err
+			if err := emit(workloadToRecord(wl, cfg)); err != nil {
+				return 0, err
 			}
 		}
-		jobs := expandLogicalWorkload(workload, cfg, &jobOrdinal)
-		for _, rec := range jobs {
-			if err := writeJSONL(w, rec); err != nil {
-				return err
+		for _, rec := range expandLogicalWorkload(wl, cfg, &jobOrdinal) {
+			if err := emit(rec); err != nil {
+				return 0, err
 			}
 		}
 	}
-	return w.Flush()
+	return offset, nil
 }
 
-// generateDiurnalTrace produces workloads using an NHPP cosine diurnal
-// arrival pattern matching experiment-04's sim_24h_pue.py:
+func generateDiurnalTrace(cfg generatorConfig) error {
+	jobs, err := writeTrace(cfg, diurnalRecords)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "diurnal trace: %d jobs, %.0f wall-sec, %.0f sim-hours\n", jobs, cfg.SimHours*3600.0/cfg.TimeScale, cfg.SimHours)
+	return nil
+}
+
+// diurnalRecords is the diurnal mode's generator. It samples workloads using
+// an NHPP cosine diurnal arrival pattern matching experiment-04's
+// sim_24h_pue.py:
 //   - Cosine day/night cycle (trough at 4 AM, peak at 4 PM)
 //   - 10% burst probability (50-200 simultaneous jobs)
 //   - 5 job categories: small CPU, medium CPU, GPU training (1-8 GPUs),
 //     GPU inference (1-2 GPUs), large CPU
-func generateDiurnalTrace(cfg generatorConfig) error {
-	f, err := os.Create(outputPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := bufio.NewWriter(f)
-
+func diurnalRecords(cfg generatorConfig, at func(float64) float64, emit func(any) error) (float64, error) {
 	rng := rand.New(rand.NewSource(cfg.Seed))
 	wallSec := cfg.SimHours * 3600.0 / cfg.TimeScale
 	if cfg.WorkScale <= 0 {
 		cfg.WorkScale = 1.0
 	}
-	if cfg.BaseSpeedPerCore <= 0 {
-		cfg.BaseSpeedPerCore = 2.0
-	}
+	baseSpeed := cfg.baseSpeedPerCore()
 
 	cpuClasses := []string{"cpu.compute_bound", "cpu.memory_bound", "cpu.mixed"}
 	gpuClasses := []string{"gpu.compute", "gpu.mixed", "gpu.memory_bound"}
+	if cfg.v3() {
+		// The physics model knows gpu.compute_bound; v2 keeps "gpu.compute",
+		// which it treats as gpu.mixed.
+		gpuClasses[0] = "gpu.compute_bound"
+	}
 
 	jobID := 0
 	t := 0.0
+	last := 0.0
 	for t < wallSec {
 		// Current sim-hour for diurnal pattern.
 		simH := (t * cfg.TimeScale) / 3600.0
@@ -301,6 +525,7 @@ func generateDiurnalTrace(cfg generatorConfig) error {
 		if t >= wallSec {
 			break
 		}
+		last = t
 
 		// 10% burst chance.
 		burstSize := 1
@@ -404,10 +629,15 @@ func generateDiurnalTrace(cfg generatorConfig) error {
 			ioIntensity := 0.05 + rng.Float64()*0.25
 
 			// Compute work units.
-			cpuUnits := duration * cpuReq * math.Max(0.10, cpuUtil) * cfg.BaseSpeedPerCore * cfg.WorkScale
-			gpuUnits := 0.0
-			if gpuReq > 0 {
-				gpuUnits = duration * float64(gpuReq) * math.Max(0.10, gpuUtil) * cfg.BaseSpeedPerCore * cfg.WorkScale
+			duration = cfg.clampDuration(duration)
+			var cpuUnits, gpuUnits float64
+			if cfg.v3() {
+				cpuUnits, gpuUnits = v3Work(duration, cpuReq, gpuReq, baseSpeed)
+			} else {
+				cpuUnits = duration * cpuReq * math.Max(0.10, cpuUtil) * baseSpeed * cfg.WorkScale
+				if gpuReq > 0 {
+					gpuUnits = duration * float64(gpuReq) * math.Max(0.10, gpuUtil) * baseSpeed * cfg.WorkScale
+				}
 			}
 
 			memGiB := math.Max(1, math.Floor(cpuReq*(0.5+rng.Float64()*1.5)))
@@ -420,9 +650,9 @@ func generateDiurnalTrace(cfg generatorConfig) error {
 				requests["nvidia.com/gpu"] = strconv.Itoa(gpuReq)
 			}
 
-			// Build affinity for performance jobs.
+			// Build affinity for performance jobs, v2 only.
 			var affinity map[string]any
-			if isPerf && !cfg.NoAffinityOnly {
+			if isPerf && !cfg.NoAffinityOnly && !cfg.v3() {
 				affinity = map[string]any{
 					"nodeAffinity": map[string]any{
 						"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{
@@ -462,10 +692,10 @@ func generateDiurnalTrace(cfg generatorConfig) error {
 			// Emit workload record.
 			if cfg.EmitWorkloadRecords {
 				wlRec := workloadRecord{
-					Type:                "workload",
-					SchemaVersion:       "v2",
+					Type:                workload.TraceRecordWorkload,
+					SchemaVersion:       cfg.schema(),
 					WorkloadID:          wlID,
-					SubmitTimeOffsetSec: t,
+					SubmitTimeOffsetSec: at(t),
 					Namespace:           cfg.Namespace,
 					WorkloadType:        wlType,
 					DurationSec:         duration,
@@ -474,36 +704,34 @@ func generateDiurnalTrace(cfg generatorConfig) error {
 					SharedIntensity:     profile,
 					Pods:                []workloadPodRec{{Role: "worker", Replicas: 1, Requests: requests}},
 				}
-				if err := writeJSONL(w, wlRec); err != nil {
-					return err
+				if err := emit(wlRec); err != nil {
+					return 0, err
 				}
 			}
 
 			// Emit job record.
 			jobRec := jobRecord{
-				Type:                "job",
-				SchemaVersion:       "v2",
+				Type:                workload.TraceRecordJob,
+				SchemaVersion:       cfg.schema(),
 				JobID:               fmt.Sprintf("%s-worker-01", wlID),
 				WorkloadID:          wlID,
 				WorkloadType:        wlType,
 				PodRole:             "worker",
-				SubmitTimeOffsetSec: t,
+				SubmitTimeOffsetSec: at(t),
 				Namespace:           cfg.Namespace,
 				IntentClass:         intent,
 				PodTemplate:         podTemplateRec{Affinity: affinity, Requests: requests},
 				Work:                workRec{CPUUnits: cpuUnits, GPUUnits: gpuUnits},
-				Sensitivity:         sensitivityRec{CPU: sensCPU, GPU: sensGPU},
+				Sensitivity:         cfg.sensitivity(sensCPU, sensGPU),
 				WorkloadClass:       wlCls,
-				WorkloadProfile:     profile,
+				WorkloadProfile:     cfg.jobProfile(profile, gpuReq),
 			}
-			if err := writeJSONL(w, jobRec); err != nil {
-				return err
+			if err := emit(jobRec); err != nil {
+				return 0, err
 			}
 		}
 	}
-
-	fmt.Fprintf(os.Stderr, "diurnal trace: %d jobs, %.0f wall-sec, %.0f sim-hours\n", jobID, wallSec, cfg.SimHours)
-	return w.Flush()
+	return last, nil
 }
 
 func writeJSONL(w *bufio.Writer, v any) error {
@@ -515,7 +743,7 @@ func writeJSONL(w *bufio.Writer, v any) error {
 	return err
 }
 
-func workloadToRecord(wl logicalWorkload) workloadRecord {
+func workloadToRecord(wl logicalWorkload, cfg generatorConfig) workloadRecord {
 	pods := make([]workloadPodRec, 0, len(wl.Pods))
 	for _, p := range wl.Pods {
 		requests := map[string]string{
@@ -532,8 +760,8 @@ func workloadToRecord(wl logicalWorkload) workloadRecord {
 		pods = append(pods, workloadPodRec{Role: p.Role, Replicas: p.Replicas, Requests: requests, Gang: wl.Gang})
 	}
 	return workloadRecord{
-		Type:                "workload",
-		SchemaVersion:       "v2",
+		Type:                workload.TraceRecordWorkload,
+		SchemaVersion:       cfg.schema(),
 		WorkloadID:          wl.ID,
 		SubmitTimeOffsetSec: wl.SubmitSec,
 		Namespace:           wl.Namespace,
@@ -572,8 +800,8 @@ func expandLogicalWorkload(wl logicalWorkload, cfg generatorConfig, ordinal *int
 				intent = sampleIntentClass(rand.New(rand.NewSource(int64(len(jobID))+13)), cfg, wl.CPUClass, wl.GPUClass)
 			}
 			out = append(out, jobRecord{
-				Type:                "job",
-				SchemaVersion:       "v2",
+				Type:                workload.TraceRecordJob,
+				SchemaVersion:       cfg.schema(),
 				JobID:               jobID,
 				WorkloadID:          wl.ID,
 				WorkloadType:        wl.Type,
@@ -583,13 +811,13 @@ func expandLogicalWorkload(wl logicalWorkload, cfg generatorConfig, ordinal *int
 				Namespace:           wl.Namespace,
 				IntentClass:         intent,
 				PodTemplate: podTemplateRec{
-					Affinity: affinityForClass(intent),
+					Affinity: cfg.affinity(intent),
 					Requests: requests,
 				},
 				Work:            workRec{CPUUnits: p.CPUUnits, GPUUnits: p.GPUUnits},
-				Sensitivity:     sensitivityRec{},
+				Sensitivity:     cfg.sensitivity(0, 0),
 				WorkloadClass:   workloadClass{CPU: wl.CPUClass, GPU: wl.GPUClass},
-				WorkloadProfile: wl.Profile,
+				WorkloadProfile: cfg.jobProfile(wl.Profile, p.GPURequest),
 				Tags:            append([]string{}, wl.Tags...),
 			})
 		}
@@ -607,7 +835,7 @@ func sampleLogicalWorkload(rng *rand.Rand, idx int, submitSec float64, cfg gener
 	cpuClass, gpuClass := classesForType(wlType)
 	intent := sampleIntentClass(rng, cfg, cpuClass, gpuClass)
 	profile := sampleSharedProfile(rng, wlType, totalGPUs, cpuClass, gpuClass)
-	durationSec := sampleDurationSec(rng, wlType, totalGPUs)
+	durationSec := cfg.clampDuration(sampleDurationSec(rng, wlType, totalGPUs))
 	wl := logicalWorkload{
 		ID:          fmt.Sprintf("workload-%06d", idx),
 		Type:        wlType,
@@ -797,6 +1025,11 @@ func buildPodsForWorkload(rng *rand.Rand, wl logicalWorkload, totalGPUs int, int
 	appendWorker := func(role string, replicas int, gpuEach int, cpuEach float64, memEach float64, cpuFrac float64, gpuFrac float64) {
 		cpuUnits := duration * cpuEach * math.Max(0.10, profile.CPUUtilization) * cfg.CPURatePerCore * cpuFrac
 		gpuUnits := duration * float64(gpuEach) * math.Max(0.10, profile.GPUUtilization) * cfg.GPURatePerGPU * gpuFrac
+		if cfg.v3() {
+			// Every pod of the workload runs for its durationSec at full
+			// speed, whatever its role, utilization or rate flags.
+			cpuUnits, gpuUnits = v3Work(duration, cpuEach, gpuEach, cfg.baseSpeedPerCore())
+		}
 		pods = append(pods, logicalPod{
 			Role:        role,
 			Replicas:    replicas,
@@ -1035,12 +1268,12 @@ func hourlyArrivalMultiplier(hour int) float64 {
 		0.40, // 06
 		0.65, // 07
 		0.85, // 08
-		1.00, // 09 — peak
-		1.00, // 10 — peak
+		1.00, // 09, peak
+		1.00, // 10, peak
 		0.95, // 11
-		0.80, // 12 — lunch
+		0.80, // 12, lunch
 		0.85, // 13
-		1.00, // 14 — afternoon peak
+		1.00, // 14, afternoon peak
 		1.00, // 15
 		0.95, // 16
 		0.85, // 17
@@ -1071,7 +1304,7 @@ func isBurstHour(rng *rand.Rand, st *arrivalState, day, hour int, cfg generatorC
 	return hour == burstHour
 }
 
-// isDipHour returns true if the current hour is a "negative spike" — a sudden
+// isDipHour returns true if the current hour is a "negative spike": a sudden
 // drop in arrival rate.  This models maintenance windows, planned drains, or
 // mass job completions that temporarily suppress new submissions.
 func isDipHour(rng *rand.Rand, st *arrivalState, day, hour int, cfg generatorConfig) bool {

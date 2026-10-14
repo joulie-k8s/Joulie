@@ -1,0 +1,17 @@
+# Tier B arm all-sustained: GOVERNOR_CONTROL=all with every GPU model of the
+# governor spec opted in to sustained on performance Nodes through the model
+# map (no default writes sustained). Keys are the GPU product label values
+# and the product names the agent reports; a key no Node matches is unused.
+controllerManager:
+  env:
+    GOVERNOR_CONTROL: "all"
+    GPU_GOVERNOR_MODEL_PRESETS_JSON: >-
+      {"AMD_Radeon_PRO_W7900": {"performance": "sustained"},
+       "AMD_Instinct_MI300X_OAM": {"performance": "sustained"},
+       "NVIDIA H100 NVL": {"performance": "sustained"},
+       "NVIDIA_H100_NVL": {"performance": "sustained"},
+       "NVIDIA L40S": {"performance": "sustained"},
+       "NVIDIA_L40S": {"performance": "sustained"}}
+agent:
+  env:
+    GOVERNOR_WRITES: "true"

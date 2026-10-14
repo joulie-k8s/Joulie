@@ -2,6 +2,7 @@ package hwemu
 
 import (
 	"bytes"
+	"fmt"
 	"io/fs"
 	"reflect"
 	"sort"
@@ -31,8 +32,13 @@ var renderBuiltinNames = []string{
 	"amd-epyc-2s-hsmp",
 	"amd-epyc-9534-2s-energy-only",
 	"amd-instinct-mi300x-8gpu",
+	"amd-radeon-pro-w7900-4gpu",
+	"intel-xeon-2s-multidie",
+	"intel-xeon-2s-psys",
 	"intel-xeon-2s-rapl",
 	"intel-xeon-6530-2s-rapl",
+	"intel-xeon6-2s-no-powercap",
+	"intel-xeon6-2s-tpmi",
 	"nvidia-h100-nvl-8gpu",
 	"nvidia-h100-sxm-4gpu",
 	"nvidia-h100-sxm-8gpu",
@@ -164,7 +170,7 @@ func TestH01BuiltinProfilesLoadWithProvenance(t *testing.T) {
 	// The 9534 host keeps the energy-only zones, the driver and the sockets
 	// of the 9654 host with their sources, and replaces what follows from the
 	// core count, the clocks and the TDP.
-	for _, name := range []string{"amd-epyc-9534-2s-energy-only", "nvidia-l40s-4gpu"} {
+	for _, name := range []string{"amd-epyc-9534-2s-energy-only", "nvidia-l40s-4gpu", "amd-radeon-pro-w7900-4gpu"} {
 		p := profiles[name]
 		if p.CPU.ModelName.V != "AMD EPYC 9534 64-Core Processor" || p.CPU.CoresPerSocket.V != 64 || p.Node.Capacity.CPU.V != 256 {
 			t.Errorf("%s: cpu %q with %d cores per socket and capacity %d, want the 9534 with 64 and 256", name, p.CPU.ModelName.V, p.CPU.CoresPerSocket.V, p.Node.Capacity.CPU.V)
@@ -180,6 +186,10 @@ func TestH01BuiltinProfilesLoadWithProvenance(t *testing.T) {
 				t.Errorf("%s: %s cites the 9654 (%q)", name, at, src)
 			}
 		}
+	}
+	w7900 := profiles["amd-radeon-pro-w7900-4gpu"]
+	if g := w7900.GPUs; g.Count.V != 4 || g.Limits.MinW.V != 241 || g.Limits.MaxW.V != 241 || g.Limits.DefaultW.V != 241 || g.PCI.Device.V != "0x7448" || g.PCI.Class.V != "0x030000" {
+		t.Errorf("w7900: count %d, limits %+v, pci %+v; want 4 boards pinned at 241 W, device 0x7448, display class", g.Count.V, g.Limits, g.PCI)
 	}
 	l40s := profiles["nvidia-l40s-4gpu"]
 	if g := l40s.GPUs; g.Count.V != 4 || g.Limits.MinW.V != 100 || g.Limits.MaxW.V != 350 || g.Limits.DefaultW.V != 350 || g.PCI.Device.V != "0x26b9" || g.PCI.Class.V != "0x030200" || g.Product.V != "NVIDIA L40S" {
@@ -458,5 +468,65 @@ func TestGPULimitsAreOrdered(t *testing.T) {
 	}
 	if err := renderBuiltin(t, "nvidia-h100-nvl-8gpu").Validate(); err != nil {
 		t.Fatalf("the builtin profile must validate: %v", err)
+	}
+}
+
+// Every GPU profile lists, for every tool, the files the real tool needs
+// before it runs, so a node without the driver or the interpreter
+// (simcluster toolDelivery none) fails as a real one does. nvidia-smi needs
+// its ELF loader, then the shared libraries it links, in the order the
+// loader reports the first missing one, then NVML: each missing one exits
+// 127 but NVML, 12.
+func TestEveryGPUProfileListsItsToolRequirements(t *testing.T) {
+	t.Parallel()
+	profiles, err := BuiltinProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nvidiaSMI := []struct {
+		first string
+		exit  int
+	}{
+		{"/lib64/ld-linux-x86-64.so.2", 127},
+		{"/lib/x86_64-linux-gnu/libpthread.so.0", 127},
+		{"/lib/x86_64-linux-gnu/libm.so.6", 127},
+		{"/lib/x86_64-linux-gnu/libdl.so.2", 127},
+		{"/lib/x86_64-linux-gnu/librt.so.1", 127},
+		{"/lib/x86_64-linux-gnu/libc.so.6", 127},
+		{"/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1", 12},
+	}
+	gpuProfiles := 0
+	for name, p := range profiles {
+		g := p.GPUs
+		if g == nil || g.Count.V == 0 {
+			continue
+		}
+		gpuProfiles++
+		if len(g.Tools) == 0 {
+			t.Errorf("%s has GPUs and no tool", name)
+		}
+		for _, tool := range g.Tools {
+			if len(tool.Requires) == 0 {
+				t.Errorf("%s: %s lists no requirement", name, tool.Name)
+				continue
+			}
+			if tool.Name != "nvidia-smi" {
+				continue
+			}
+			var got []string
+			for _, r := range tool.Requires {
+				got = append(got, fmt.Sprintf("%s %d", r.Paths[0], r.Exit))
+			}
+			var want []string
+			for _, r := range nvidiaSMI {
+				want = append(want, fmt.Sprintf("%s %d", r.first, r.exit))
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("%s: nvidia-smi requires\n%s\nwant\n%s", name, strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+		}
+	}
+	if gpuProfiles < 6 {
+		t.Errorf("found %d GPU profiles, want every builtin one", gpuProfiles)
 	}
 }

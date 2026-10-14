@@ -1,0 +1,11 @@
+# Background load in the defaults and in one pool (CS10): the tuned pool
+# overrides two fields and keeps the other three.
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: baseload}
+spec:
+  defaults:
+    baseLoad: {cpuUtil: 0.8, gpuUtil: 0.9, memoryIntensity: 0.2, cpuClass: cpu.compute_bound, gpuClass: gpu.compute_bound}
+  pools:
+  - {name: plain, profile: nvidia-h100-nvl-8gpu, count: 2}
+  - {name: tuned, profile: nvidia-h100-nvl-8gpu, count: 1, baseLoad: {cpuUtil: 0.3, gpuClass: gpu.memory_bound}}

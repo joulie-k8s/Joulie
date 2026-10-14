@@ -1,0 +1,9 @@
+# A spec with two problems, for the CLI: a cooling zone that is not
+# declared and a background load above 1. The CLI reports both.
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: invalid}
+spec:
+  pools:
+  - {name: a, profile: vm-no-powercap, count: 1, coolingZone: nowhere}
+  - {name: b, profile: vm-no-powercap, count: 1, baseLoad: {cpuUtil: 2}}

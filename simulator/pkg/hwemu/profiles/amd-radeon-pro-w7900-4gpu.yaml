@@ -1,0 +1,160 @@
+# Four Radeon PRO W7900 boards on the two socket EPYC 9534 energy-only host,
+# the shape of the measured node. The boards are display controllers (PCI
+# class 0x030000), unlike the MI300X's processing accelerators, so NFD
+# publishes pci-0300_1002 and the agent takes the AMD vendor from that label.
+# Their power cap is pinned: the driver and both tools report minimum,
+# maximum, default and current at 241 W on every board, so any other value is
+# refused. The published 295 W is the total board power; 241 W is the package
+# power limit (PPT0) the driver enforces and reports.
+schemaVersion: 1
+name: amd-radeon-pro-w7900-4gpu
+extends: amd-epyc-9534-2s-energy-only
+description: 4x Radeon PRO W7900 on the two socket EPYC 9534 energy-only host; amdgpu hwmon with the cap pinned at 241 W, current rocm-smi (no --showpowercap) and amd-smi 7.2.
+sources:
+  w7900smi:    {kind: measured, ref: "read-only rocm-smi, amd-smi and amdgpu hwmon output of a node with 2x EPYC 9534 and 4x Radeon PRO W7900, 2026-10", note: "rocm-smi 4.0.0 (library 7.8.0) and amd-smi 26.2.2 of ROCm 7.2.4, amdgpu 6.16.13. Every board: power1_cap, _min, _max and _default 241000000; rocm-smi --showmaxpower 241.0; amd-smi static --limit ppt0 min, max and socket power 241 W, ppt1 N/A; rocm-smi --showpowercap rejected as an unrecognized argument; rocm-smi --showpower prints Average Graphics Package Power, 7 to 15 W idle; PCI class 0x030000; amdgpu hwmon on cards 1 to 4. A 60 s sample of one power file per board read 6 to 16 W, mean 10.8 W"}
+  amdlabelsw7900: {kind: measured, ref: "read-only node description of a node with 4x Radeon PRO W7900, 2026-10", note: "AMD node labeller label set: every value under both label prefixes except the product name and the driver version, which have the amd prefix only; NFD pci-0300_1002 and pci-0300_1a03; 4 amd.com/gpu and 792215556Ki of memory in capacity; capacity minus allocatable is 2 CPUs and 1000Mi"}
+  w7900:       {kind: published, ref: "https://www.amd.com/en/products/graphics/workstations/radeon-pro/w7900.html", note: "Total Board Power (TBP) 295W; Dedicated Memory Size 48 GB, GDDR6; 96 compute units, 6144 stream processors; PCIe 4.0 x16 add-in card (fetched 2026-10-10)"}
+  pciids:      {kind: published, ref: "https://pci-ids.ucw.cz/read/PC/1002/7448", note: "1002:7448 Navi 31 [Radeon Pro W7900] (pci.ids 2026.10.09)"}
+  llvmamdgpu:  {kind: published, ref: "https://llvm.org/docs/AMDGPUUsage.html", note: "processor table: gfx1100 lists Radeon PRO W7900"}
+  amdgpupm:    {kind: published, ref: "linux v7.3-rc5 drivers/gpu/drm/amd/pm/amdgpu_pm.c:3469-3496,3591-3600,3664-3674,3827-3834"}
+  amdgpudrv:   {kind: published, ref: "linux v7.3-rc5 drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c:2193-2206", note: "binds VGA, display-other and accelerator-processing classes"}
+  rocmsmi:     {kind: published, ref: "https://github.com/ROCm/rocm_smi_lib/blob/323ab1105dce/python_smi_tools/rocm_smi.py", note: "head of the develop branch; line 1 is #!/usr/bin/env python3, and rocm_smi/CMakeLists.txt:117-122 installs the rocm-smi command as a symlink to this script"}
+  amdsmicli:   {kind: published, ref: "https://github.com/ROCm/amdsmi/blob/rocm-7.2.0/amdsmi_cli/amdsmi_cli.py", note: "line 1 is #!/usr/bin/env python3, and amdsmi_cli/CMakeLists.txt:68-75 installs the amd-smi command as a symlink to this script"}
+  amdlabeller: {kind: published, ref: "https://github.com/ROCm/k8s-device-plugin/blob/3b9a79fe1ed1/cmd/k8s-node-labeller/main.go", note: "lines 38-39, 84, 209-238"}
+  w7900dpm:    {kind: measured, ref: "pp_dpm_* readback under each performance level, and rocm-smi --setperflevel without root, on a node with 4x Radeon PRO W7900, 2026-10", note: "starred levels read under auto idle, auto with a kernel running, low, high, profile_standard, profile_min_mclk and profile_peak; peer copies between two boards peak at 28.0 GB/s with both data paths raised; an unprivileged rocm-smi --setperflevel changes nothing and exits 0"}
+  amdgpupm617: {kind: published, ref: "https://github.com/torvalds/linux/blob/v6.17/drivers/gpu/drm/amd/pm/amdgpu_pm.c", note: "power_dpm_force_performance_level parses its words by prefix and fails any word the firmware refuses with -EINVAL (365-398); pp_power_profile_mode takes the first character as the mode (1381-1386)"}
+  smuv13:      {kind: published, ref: "https://github.com/torvalds/linux/blob/v6.17/drivers/gpu/drm/amd/pm/swsmu/smu13/smu_v13_0.c", note: "smu_v13_0_set_performance_level (1582-1665): high and low pin every domain to the table maximum or minimum; profile_standard and profile_peak to the pstate clocks; profile_min_sclk and profile_min_mclk pin one domain; manual and profile_exit change nothing; any other level is -EINVAL"}
+  smuv1300:    {kind: published, ref: "https://github.com/torvalds/linux/blob/v6.17/drivers/gpu/drm/amd/pm/swsmu/smu13/smu_v13_0_0_ppt.c", note: "workload map (267-276); fine-grained sclk printed as two levels, or three around a current clock (1253-1280); pp_power_profile_mode format (2483-2532); umd pstate clocks: uclk standard and peak the table maximum, fclk and socclk standard the table minimum, peak the maximum, gfxclk standard BaseClockAc and peak GameClockAc (2301-2358)"}
+  amdgpusmu:   {kind: published, ref: "https://github.com/torvalds/linux/blob/v6.17/drivers/gpu/drm/amd/pm/swsmu/amdgpu_smu.c", note: "entering a profile_* level saves the level and turns deep sleep, GFX ULV and GPO off; leaving it turns them back on (2279-2315)"}
+node:
+  labels:
+    amdgpu:
+      src: "measured:amdlabelsw7900#each value under both label prefixes, plus a per-value key whose value is the GPU count; the product name and the driver version under the amd prefix only"
+      values:
+        amd.com/gpu.cu-count: "96"
+        amd.com/gpu.device-id: "7448"
+        amd.com/gpu.driver-version: "6.16.13"
+        amd.com/gpu.family: "GC_11_0_0"
+        amd.com/gpu.product-name: "AMD_Radeon_PRO_W7900"
+        amd.com/gpu.simd-count: "192"
+        amd.com/gpu.vram: "48G"
+        beta.amd.com/gpu.cu-count: "96"
+        beta.amd.com/gpu.cu-count.96: "4"
+        beta.amd.com/gpu.device-id: "7448"
+        beta.amd.com/gpu.device-id.7448: "4"
+        beta.amd.com/gpu.family: "GC_11_0_0"
+        beta.amd.com/gpu.family.GC_11_0_0: "4"
+        beta.amd.com/gpu.simd-count: "192"
+        beta.amd.com/gpu.simd-count.192: "4"
+        beta.amd.com/gpu.vram: "48G"
+        beta.amd.com/gpu.vram.48G: "4"
+  capacity:
+    memoryKi: {v: 792215556, src: "measured:amdlabelsw7900#memory capacity"}
+  # GPU nodes are often tainted so that only pods that tolerate it land
+  # there (assumed); the AMD device plugin tolerates it.
+  taints: [{key: amd.com/gpu, effect: NoSchedule}]
+pci:
+  - {class: "0x030000", vendor: "0x1a03", drm: true, src: "measured:amdlabelsw7900#pci-0300_1a03 next to pci-0300_1002; w7900smi finds the amdgpu hwmon devices on cards 1 to 4, so the BMC VGA is card0"}
+gpus:
+  vendor: amd
+  count: {v: 4, src: "measured:amdlabelsw7900#4 amd.com/gpu in capacity; w7900smi lists four boards"}
+  product: {v: "AMD Radeon Pro W7900", src: "measured:w7900smi#rocm-smi Card Series; matches the AMD_RADEON_PRO_W7900 alias of the hardware catalog, which ignores case"}
+  pci:
+    vendor: {v: "0x1002", src: "published:pciids#1002"}
+    device: {v: "0x7448", src: "published:pciids#1002:7448; w7900smi Card Model 0x7448 and the labeller's device-id 7448 agree"}
+    class: {v: "0x030000", src: "measured:w7900smi#class of all four boards, a VGA compatible controller, one of the classes amdgpudrv binds"}
+  exposure: {v: whole, src: "measured:amdlabelsw7900#amd.com/gpu resource, AMD device plugin"}
+  labeller: {v: listed, src: published:amdlabeller}
+  vbiosVersion: {v: "113-D7070100-100", src: "assumed:synthetic; its middle segment is the measured Card SKU D7070100 (w7900smi), which rocm-smi takes from vbios_version (rocmsmi showProduct, lines 2756-2761)"}
+  gfxVersion: {v: gfx1100, src: "measured:w7900smi#GFX Version; llvmamdgpu lists gfx1100 for Radeon PRO W7900"}
+  # Pinned: the driver reports the same value for all four, so there is no
+  # range to cap within.
+  limits:
+    minW: {v: 241, src: "measured:w7900smi#power1_cap_min and amd-smi min_power_limit, every board"}
+    maxW: {v: 241, src: "measured:w7900smi#power1_cap_max and amd-smi max_power_limit, every board; the 295 W that w7900 publishes is total board power, a different quantity (assumed)"}
+    defaultW: {v: 241, src: "measured:w7900smi#power1_cap_default, every board"}
+  powerSensor: {v: average, src: "measured:w7900smi#rocm-smi --showpower prints Average Graphics Package Power, and each board has one power file (amdgpupm:3827-3834)"}
+  ppt1: {v: absent, src: "measured:w7900smi#amd-smi static --limit prints ppt1 as N/A"}
+  # The amdgpu performance level and clock tables, SMU 13.0.0. Every level
+  # but perf_determinism is taken; high holds the data-path clocks at their
+  # maximum and keeps idle gating, the profile_* levels turn it off.
+  dpm:
+    levels:
+      accept: {v: [auto, low, high, manual, profile_exit, profile_standard, profile_min_sclk, profile_min_mclk, profile_peak], src: "published:smuv13#smu_v13_0_set_performance_level handles each of these levels, profile_exit through amdgpusmu"}
+      reject:
+        perf_determinism: {v: EINVAL, src: "published:smuv13#the default case returns -EINVAL; amdgpupm617 returns -EINVAL for any refusal"}
+    default: {v: auto, src: "measured:w7900dpm#auto on every board before and after the sweep"}
+    tables:
+      sclk:
+        fine: {v: true, src: "published:smuv1300#gfxclk is printed as a fine-grained range"}
+        minMHz: {v: 500, src: "assumed:the minimum of the fine-grained range was not read"}
+        maxMHz: {v: 3000, src: "assumed:at least the 2962 MHz read under load (w7900dpm); the maximum of the range was not read"}
+      mclk: {v: [96, 456, 772, 1124], src: "measured:w7900dpm#pp_dpm_mclk levels"}
+      fclk: {v: [601, 1000, 1200, 1801, 2301], src: "measured:w7900dpm#pp_dpm_fclk levels"}
+      socclk: {v: [500, 600, 750, 1200], src: "measured:w7900dpm#pp_dpm_socclk levels"}
+      pcie: {v: ["2.5GT/s, x1 97Mhz", "8.0GT/s, x16 400Mhz", "16.0GT/s, x16 600Mhz"], src: "published:w7900#PCIe 4.0 x16; the link clocks are assumed"}
+    pstate:
+      standard:
+        sclkMHz: {v: 975, src: "measured:w7900dpm#sclk read under profile_standard, the pinned BaseClockAc of smuv1300"}
+        mclkMHz: {v: 1124, src: "published:smuv1300#uclk standard is the table maximum"}
+        fclkMHz: {v: 601, src: "published:smuv1300#fclk standard is the table minimum"}
+        socclkMHz: {v: 500, src: "published:smuv1300#socclk standard is the table minimum"}
+      peak:
+        sclkMHz: {v: 1779, src: "measured:w7900dpm#sclk read under profile_peak, the pinned GameClockAc of smuv1300"}
+        mclkMHz: {v: 1124, src: "published:smuv1300#uclk peak is the table maximum"}
+        fclkMHz: {v: 2301, src: "published:smuv1300#fclk peak is the table maximum"}
+        socclkMHz: {v: 1200, src: "published:smuv1300#socclk peak is the table maximum"}
+    od:
+      enabled: {v: false, src: "assumed:pp_od_clk_voltage exists only with bit 14 of amdgpu.ppfeaturemask, off by default"}
+    powerProfiles:
+      modes: {v: [BOOTUP_DEFAULT, 3D_FULL_SCREEN, POWER_SAVING, VIDEO, VR, COMPUTE, CUSTOM, WINDOW_3D], src: "published:smuv1300#workload map, in index order"}
+      default: {v: BOOTUP_DEFAULT, src: "assumed:the boot profile"}
+    autoHoldS: {v: 10, src: "assumed:no public figure for how long auto holds the data path after a kernel stops; experiment 05 sweeps it from 2 to 60 s"}
+    unprivilegedSetIsNoop: {v: true, src: "measured:w7900dpm#unprivileged rocm-smi --setperflevel"}
+  # The peer link between two boards. The receiver gate stays off in the
+  # repository; its fractions here are neutral.
+  transfer:
+    peerLinkGBps: {v: 28.0, src: "measured:w7900dpm#peak of a peer copy with both data paths raised"}
+    receiverGate:
+      enabled: {v: false, src: "assumed:off in every repository profile"}
+      slowFraction: {v: 1.0, src: "assumed:neutral, no gate"}
+      midFraction: {v: 1.0, src: "assumed:neutral, no gate"}
+      midPairFraction: {v: 0.0, src: "assumed:neutral, no gate"}
+  # rocm-smi and amd-smi are Python scripts run through /usr/bin/env;
+  # fakesmi checks the interpreter chain, in this order, under HWEMU_ROOTFS.
+  tools:
+    - name: rocm-smi
+      variant: current
+      requires:
+        - paths: [/usr/bin/env]
+          exit: 127
+          src: "published:rocmsmi#line 1, #!/usr/bin/env python3; without /usr/bin/env exec fails with ENOENT, which a shell reports as exit 127 (assumed)"
+        - paths: [/usr/bin/python3, /usr/local/bin/python3]
+          exit: 127
+          stderr: "/usr/bin/env: 'python3': No such file or directory"
+          src: "assumed:GNU env exits 127 with this message when python3 is on no PATH directory; the directories searched are assumed"
+    - name: amd-smi
+      variant: "7.2"
+      requires:
+        - paths: [/usr/bin/env]
+          exit: 127
+          src: "published:amdsmicli#line 1, #!/usr/bin/env python3; without /usr/bin/env exec fails with ENOENT, which a shell reports as exit 127 (assumed)"
+        - paths: [/usr/bin/python3, /usr/local/bin/python3]
+          exit: 127
+          stderr: "/usr/bin/env: 'python3': No such file or directory"
+          src: "assumed:GNU env exits 127 with this message when python3 is on no PATH directory; the directories searched are assumed"
+physics:
+  gpu:
+    idleW: {v: 10.8, src: "measured:w7900smi#mean of the 60 s sample, four idle boards"}
+    naturalMaxW: {v: 241, src: "measured:w7900smi#the package limit in force; the reported package power cannot exceed it, so the boards run at full speed up to it"}
+    computeGamma: {v: 1.0, src: "assumed:simulator default SIM_GPU_COMPUTE_GAMMA; throughput only"}
+    memoryEpsilon: {v: 0.2, src: "assumed:simulator default SIM_GPU_MEMORY_EPSILON; throughput only"}
+    memoryGamma: {v: 1.2, src: "assumed:simulator default SIM_GPU_MEMORY_GAMMA; throughput only"}
+    capSettleTauMS: {v: 350, src: "assumed:no public settling data; the MI300X profile's value"}
+    telemetryWindowMS: {v: 1000, src: "assumed:no public averaging window for power1_average"}
+    clockBeta: {v: 1.5, src: "assumed:dynamic power falls faster than the compute clock, as the voltage falls with it; to sweep from 1.0 to 2.5"}
+    memoryKneeFrac: {v: 0.65, src: "assumed:memory-bound work keeps its speed down to 0.65 of the maximum compute clock, between the 0.41 and 0.87 where published memory-bound clock sweeps stop being flat"}
+    memoryKneeGamma: {v: 1.0, src: "assumed:below the knee memory-bound work slows in proportion to the clock"}
+    dataPathHoldW: {v: 10.0, src: "assumed:no public idle cost of data-path clocks held at their maximum; to sweep from 1 to 50 W per GPU"}
+    gatingOffIdleW: {v: 20.0, src: "assumed:no public idle cost of deep sleep, ULV and GPO turned off under a profile level; to sweep from 5 to 50 W"}
+    dataPathGamma: {v: 0.3, src: "assumed:memory-bound work loses 0.3 of its speed with the data path at its lowest level"}

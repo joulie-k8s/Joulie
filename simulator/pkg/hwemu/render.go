@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 )
@@ -19,12 +21,14 @@ import (
 // default, since Render does not know the Options a Node will run with.
 const renderSubstep = "100ms"
 
-// renderMeta is state/hwemu.json.
+// renderMeta is state/hwemu.json. ProfileDigest is ensureProfileDigest of
+// the profile, which Ensure compares before it resumes the tree.
 type renderMeta struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Profile       string `json:"profile"`
 	Node          string `json:"node"`
 	Substep       string `json:"substep"`
+	ProfileDigest string `json:"profileDigest"`
 }
 
 // Render writes the tree of one node of profile p under root: sys/ (mounted
@@ -38,16 +42,7 @@ type renderMeta struct {
 // and its name, or at 0 when o.Seed is 0; a corpus zone starts at its
 // captured value.
 func Render(p *Profile, root string, o RenderOptions) (*Tree, error) {
-	if p == nil {
-		return nil, errors.New("render: nil profile")
-	}
-	if err := p.Validate(); err != nil {
-		return nil, fmt.Errorf("render: %w", err)
-	}
-	if o.NodeName == "" {
-		return nil, errors.New("render: RenderOptions.NodeName is empty")
-	}
-	abs, err := filepath.Abs(root)
+	b, abs, err := renderPlan(p, root, o)
 	if err != nil {
 		return nil, err
 	}
@@ -57,28 +52,138 @@ func Render(p *Profile, root string, o RenderOptions) (*Tree, error) {
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return nil, err
 	}
-	b := &renderBuilder{root: abs, kinds: map[string]layout.Kind{}}
+	umask, err := renderUmask(abs)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range b.files {
+		if err := renderCreate(abs, f, b.content[f.Rel], umask); err != nil {
+			return nil, fmt.Errorf("render %s: %w", p.Name, err)
+		}
+	}
+	return b.tree(abs, o), nil
+}
+
+// renderPlan lays out the tree of node o.NodeName of profile p under root
+// without writing anything: every entry, sorted by path, so a directory
+// comes before what it holds, with the content of every file. It returns
+// root made absolute.
+func renderPlan(p *Profile, root string, o RenderOptions) (*renderBuilder, string, error) {
+	if p == nil {
+		return nil, "", errors.New("render: nil profile")
+	}
+	if err := p.Validate(); err != nil {
+		return nil, "", fmt.Errorf("render: %w", err)
+	}
+	if o.NodeName == "" {
+		return nil, "", errors.New("render: RenderOptions.NodeName is empty")
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, "", err
+	}
+	b := &renderBuilder{kinds: map[string]layout.Kind{}, content: map[string]string{}}
 	for _, step := range []func(*renderBuilder, *Profile, RenderOptions) error{
 		renderBase,
 		renderPowercap,
 		renderCPUFreq,
+		renderCPUGovernor,
 		renderHSMP,
 		renderPCIDevices,
+		renderGPUDPM,
 		renderNVML,
+		renderNVClock,
 		renderTools,
 	} {
 		if err := step(b, p, o); err != nil {
-			return nil, fmt.Errorf("render %s: %w", p.Name, err)
+			return nil, "", fmt.Errorf("render %s: %w", p.Name, err)
 		}
 	}
 	sort.Slice(b.files, func(i, j int) bool { return b.files[i].Rel < b.files[j].Rel })
+	return b, abs, nil
+}
+
+// tree is the Tree of the plan b rendered at root, with the content of
+// every file, which NewNode takes without reading a file back while it
+// still holds what the render wrote (nodeRenderedAsIs).
+func (b *renderBuilder) tree(root string, o RenderOptions) *Tree {
+	rendered := make(map[string]string, len(b.content))
+	for rel, c := range b.content {
+		rendered[rel] = c
+	}
 	return &Tree{
-		Root:        abs,
-		SysRoot:     filepath.Join(abs, layout.SysDir),
-		CPUInfoPath: filepath.Join(abs, layout.CPUInfoFile),
-		StateRoot:   filepath.Join(abs, layout.StateDir),
+		Root:        root,
+		NodeName:    o.NodeName,
+		SysRoot:     filepath.Join(root, layout.SysDir),
+		CPUInfoPath: filepath.Join(root, layout.CPUInfoFile),
+		StateRoot:   filepath.Join(root, layout.StateDir),
 		Files:       b.files,
-	}, nil
+		rendered:    rendered,
+	}
+}
+
+// renderUmask is the process's file mode creation mask: the Umask line of
+// /proc/self/status where the kernel has one (Linux 4.7 and later), else
+// learnt from a file created with every permission bit in dir and removed,
+// the bits the kernel took away. A created entry whose mode has one of them
+// needs a chmod; any other is right as created.
+func renderUmask(dir string) (fs.FileMode, error) {
+	if b, err := os.ReadFile("/proc/self/status"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if v, ok := strings.CutPrefix(line, "Umask:"); ok {
+				if m, err := strconv.ParseUint(strings.TrimSpace(v), 8, 32); err == nil {
+					return fs.FileMode(m) & fs.ModePerm, nil
+				}
+			}
+		}
+	}
+	probe := filepath.Join(dir, ".hwemu-umask-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	f, err := os.OpenFile(probe, os.O_WRONLY|os.O_CREATE|os.O_EXCL|nodeNoFollow, 0o777)
+	if err != nil {
+		return 0, err
+	}
+	fi, err := f.Stat()
+	_ = f.Close()
+	_ = os.Remove(probe)
+	if err != nil {
+		return 0, err
+	}
+	return 0o777 &^ fi.Mode().Perm(), nil
+}
+
+// renderCreate creates entry f of a plan under root: a directory, a file
+// with content, created exclusively and never through a link, or a link.
+// The mode is set exactly, with one chmod only where umask took a bit of
+// it, and a file gets nodeRenderMTime, the mark NewNode gives render-owned
+// files, so a Node over a fresh tree reads none of them back
+// (nodeRenderedAsIs). A path that exists already is an error that matches
+// fs.ErrExist.
+func renderCreate(root string, f layout.FileSpec, content string, umask fs.FileMode) error {
+	abs := filepath.Join(root, filepath.FromSlash(f.Rel))
+	switch f.Kind {
+	case layout.KindDir:
+		if err := os.Mkdir(abs, 0o755); err != nil {
+			return err
+		}
+		if umask&0o755 != 0 {
+			return os.Chmod(abs, 0o755)
+		}
+		return nil
+	case layout.KindSymlink:
+		return os.Symlink(f.Target, abs)
+	}
+	w, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_EXCL|nodeNoFollow, f.Mode)
+	if err != nil {
+		return err
+	}
+	_, werr := w.WriteString(content)
+	if werr == nil && umask&f.Mode != 0 {
+		werr = w.Chmod(f.Mode)
+	}
+	if err := errors.Join(werr, w.Close()); err != nil {
+		return err
+	}
+	return os.Chtimes(abs, nodeRenderMTime, nodeRenderMTime)
 }
 
 // renderCheckRoot refuses a root that exists and is not an empty directory.
@@ -114,7 +219,11 @@ func renderBase(b *renderBuilder, p *Profile, o RenderOptions) error {
 	if err := b.file(layout.CPUInfoFile, renderCPUInfo(p), layout.OwnerRender, 0o444); err != nil {
 		return err
 	}
-	meta, err := json.Marshal(renderMeta{SchemaVersion: 1, Profile: p.Name, Node: o.NodeName, Substep: renderSubstep})
+	digest, err := ensureProfileDigest(p)
+	if err != nil {
+		return err
+	}
+	meta, err := json.Marshal(renderMeta{SchemaVersion: 1, Profile: p.Name, Node: o.NodeName, Substep: renderSubstep, ProfileDigest: digest})
 	if err != nil {
 		return err
 	}
@@ -137,15 +246,13 @@ func renderSys(rel string) string {
 	return path.Join(layout.SysDir, rel)
 }
 
-// renderBuilder creates a tree and records every entry it creates.
+// renderBuilder lays out a tree: every entry the render steps ask for, in
+// files, with the content of each file in content; renderCreate writes
+// them. claim refuses an entry rendered twice.
 type renderBuilder struct {
-	root  string
-	files []layout.FileSpec
-	kinds map[string]layout.Kind
-}
-
-func (b *renderBuilder) abs(rel string) string {
-	return filepath.Join(b.root, filepath.FromSlash(rel))
+	files   []layout.FileSpec
+	kinds   map[string]layout.Kind
+	content map[string]string
 }
 
 func (b *renderBuilder) claim(rel string, k layout.Kind) error {
@@ -159,7 +266,7 @@ func (b *renderBuilder) claim(rel string, k layout.Kind) error {
 	return nil
 }
 
-// mkdir creates rel and every missing parent, recording each one.
+// mkdir lays out rel and every missing parent, recording each one.
 func (b *renderBuilder) mkdir(rel string) error {
 	if rel == "." || rel == "" {
 		return nil
@@ -176,17 +283,12 @@ func (b *renderBuilder) mkdir(rel string) error {
 	if err := b.claim(rel, layout.KindDir); err != nil {
 		return err
 	}
-	if err := os.Mkdir(b.abs(rel), 0o755); err != nil {
-		return err
-	}
-	if err := os.Chmod(b.abs(rel), 0o755); err != nil {
-		return err
-	}
 	b.files = append(b.files, layout.FileSpec{Rel: rel, Kind: layout.KindDir, Owner: layout.OwnerRender, Mode: 0o755})
 	return nil
 }
 
-// file writes rel with content and sets its mode exactly, whatever the umask.
+// file lays out rel with content and mode, which renderCreate sets exactly,
+// whatever the umask.
 func (b *renderBuilder) file(rel, content string, owner layout.Owner, mode fs.FileMode) error {
 	if err := b.mkdir(path.Dir(rel)); err != nil {
 		return err
@@ -194,17 +296,12 @@ func (b *renderBuilder) file(rel, content string, owner layout.Owner, mode fs.Fi
 	if err := b.claim(rel, layout.KindFile); err != nil {
 		return err
 	}
-	if err := os.WriteFile(b.abs(rel), []byte(content), mode); err != nil {
-		return err
-	}
-	if err := os.Chmod(b.abs(rel), mode); err != nil {
-		return err
-	}
+	b.content[rel] = content
 	b.files = append(b.files, layout.FileSpec{Rel: rel, Kind: layout.KindFile, Owner: owner, Mode: mode})
 	return nil
 }
 
-// link creates rel as a symlink to target.
+// link lays out rel as a symlink to target.
 func (b *renderBuilder) link(rel, target string) error {
 	if err := b.mkdir(path.Dir(rel)); err != nil {
 		return err
@@ -212,39 +309,16 @@ func (b *renderBuilder) link(rel, target string) error {
 	if err := b.claim(rel, layout.KindSymlink); err != nil {
 		return err
 	}
-	if err := os.Symlink(target, b.abs(rel)); err != nil {
-		return err
-	}
 	b.files = append(b.files, layout.FileSpec{Rel: rel, Kind: layout.KindSymlink, Owner: layout.OwnerRender, Mode: 0o777, Target: target})
-	return nil
-}
-
-// rejectingDir creates rel as a directory in place of an attribute whose
-// writes fail: os.WriteFile on it returns EISDIR.
-func (b *renderBuilder) rejectingDir(rel string) error {
-	if err := b.mkdir(path.Dir(rel)); err != nil {
-		return err
-	}
-	if err := b.claim(rel, layout.KindRejectingDir); err != nil {
-		return err
-	}
-	if err := os.Mkdir(b.abs(rel), 0o755); err != nil {
-		return err
-	}
-	if err := os.Chmod(b.abs(rel), 0o755); err != nil {
-		return err
-	}
-	b.files = append(b.files, layout.FileSpec{Rel: rel, Kind: layout.KindRejectingDir, Owner: layout.OwnerRender, Mode: 0o755})
 	return nil
 }
 
 // renderEntry is one attribute of a directory before it is written.
 type renderEntry struct {
-	name      string
-	content   string
-	owner     layout.Owner
-	mode      fs.FileMode
-	rejecting bool
+	name    string
+	content string
+	owner   layout.Owner
+	mode    fs.FileMode
 }
 
 // writeEntries writes entries into dir in order.
@@ -253,14 +327,7 @@ func (b *renderBuilder) writeEntries(dir string, entries []renderEntry) error {
 		return err
 	}
 	for _, e := range entries {
-		rel := path.Join(dir, e.name)
-		var err error
-		if e.rejecting {
-			err = b.rejectingDir(rel)
-		} else {
-			err = b.file(rel, e.content, e.owner, e.mode)
-		}
-		if err != nil {
+		if err := b.file(path.Join(dir, e.name), e.content, e.owner, e.mode); err != nil {
 			return err
 		}
 	}

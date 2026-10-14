@@ -1,0 +1,8 @@
+# Node names from a prefix and a start index (CS03).
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: names}
+spec:
+  pools:
+  - {name: gpu-pool, profile: vm-no-powercap, count: 3, prefix: gpu, startIndex: 8}
+  - {name: b, profile: vm-no-powercap, count: 2}

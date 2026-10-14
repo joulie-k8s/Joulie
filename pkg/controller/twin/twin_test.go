@@ -1,6 +1,7 @@
 package twin
 
 import (
+	"math"
 	"testing"
 
 	joulie "github.com/matbun/joulie/pkg/api"
@@ -261,6 +262,45 @@ func TestCoolingStressUnknownTemp(t *testing.T) {
 	// Same as 20C: (350/700)*1.0*100 = 50
 	if out.PredictedCoolingStressScore < 49.5 || out.PredictedCoolingStressScore > 50.5 {
 		t.Errorf("expected cooling stress ~50 for unknown temp, got %f", out.PredictedCoolingStressScore)
+	}
+}
+
+// A known ambient of 0 or below is a reading, not "unknown": a cold intake
+// lowers the stress below the unknown-ambient value, where a 0 without the
+// flag keeps the neutral multiplier.
+func TestCoolingStressKnownAmbientAtOrBelowZero(t *testing.T) {
+	hw := joulie.NodeHardware{
+		CPU: joulie.NodeHardwareCPU{
+			Sockets:  2,
+			CapRange: joulie.CPUCapRange{MaxWattsPerSocket: 350},
+		},
+	}
+	stress := func(tempC float64, known bool) float64 {
+		return Compute(Input{
+			NodeName:           "n",
+			Hardware:           hw,
+			Profile:            "eco",
+			MeasuredNodePowerW: 350,
+			OutsideTempC:       tempC,
+			OutsideTempKnown:   known,
+		}).PredictedCoolingStressScore
+	}
+	cases := []struct {
+		tempC float64
+		known bool
+		want  float64
+	}{
+		// (350/700) * 100 / max(0.5, 1-(T-20)*0.02)
+		{0, false, 50},
+		{0, true, 50 / 1.4},
+		{-3, true, 50 / 1.46},
+		{20, true, 50},
+		{35, false, 50 / 0.7}, // a positive reading needs no flag
+	}
+	for _, c := range cases {
+		if got := stress(c.tempC, c.known); math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("ambient %v known=%v: stress %v, want %v", c.tempC, c.known, got, c.want)
+		}
 	}
 }
 

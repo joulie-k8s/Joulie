@@ -1,14 +1,18 @@
 package smi
 
 import (
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
+	"io/fs"
 	"math"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 )
 
 // rocm-smi as python_smi_tools/rocm_smi.py of rocm_smi_lib behaves at commit
@@ -50,6 +54,10 @@ var rocmModelled = map[string]pyOpt{
 	"--showpower":           {},
 	"--showmaxpower":        {},
 	"--showpowercap":        {},
+	"--showperflevel":       {},
+	"--showprofile":         {},
+	"--setperflevel":        {nargs: 1, metavar: []string{"LEVEL"}},
+	"--setprofile":          {nargs: 1, metavar: []string{"SETPROFILE"}},
 	"--setpoweroverdrive":   {nargs: 1, metavar: []string{"WATTS"}},
 	"--resetpoweroverdrive": {},
 	"--autorespond":         {nargs: 1, metavar: []string{"RESPONSE"}},
@@ -174,6 +182,12 @@ func runRocmSMI(c *call) int {
 	if hasLevel {
 		r.level = pyLogLevel(logLevel)
 	}
+	if c.env.Unprivileged && rocmSets(a) && gpus[0].unprivilegedNoop() {
+		// relaunchAsSudo (rocm-7.2.0 4136-4145) without root: on the families that say
+		// so, the run changes nothing, prints nothing and exits 0 (measured
+		// on one family; the mechanism inside the relaunch is not known).
+		return 0
+	}
 
 	var devs []int
 	if ds, ok := a.values["--device"]; ok {
@@ -206,17 +220,26 @@ func runRocmSMI(c *call) int {
 		fmt.Fprint(c.stdout, "\n\n") // print('\n')
 	}
 	r.spacer(rocmHeader)
+	if a.has("--showperflevel") {
+		r.showPerfLevel(devs)
+	}
 	if a.has("--showmaxpower") {
 		r.showMaxPower(devs)
 	}
 	if legacy && a.has("--showpowercap") {
 		r.showPowerCap(devs)
 	}
+	if a.has("--showprofile") {
+		r.showProfile(devs)
+	}
 	if a.has("--showpower") {
 		r.showPower(devs)
 	}
 	if a.has("--showproductname") {
 		r.showProduct(devs)
+	}
+	if v, ok := a.value("--setperflevel"); ok {
+		r.setPerfLevel(devs, v)
 	}
 	auto, _ := a.value("--autorespond")
 	if v, _ := a.value("--setpoweroverdrive"); v != "" {
@@ -228,6 +251,9 @@ func runRocmSMI(c *call) int {
 		if code, exited := r.setPowerOverDrive(devs, "0", auto); exited {
 			return code
 		}
+	}
+	if v, ok := a.value("--setprofile"); ok {
+		r.setProfile(devs, v)
 	}
 
 	if r.retcode != 0 && !r.json {
@@ -558,7 +584,7 @@ func (r *rocmRun) setPowerOverDrive(devs []int, value, auto string) (code int, e
 			}
 			confirmed = true
 		}
-		if err := writeAttr(g.hwmonPath("power1_cap"), strconv.FormatInt(newCap, 10)); err != nil {
+		if err := amdWrite(r.env, g.hwmonPath("power1_cap"), strconv.FormatInt(newCap, 10)); err != nil {
 			if w == 0 {
 				r.printErrLog(d, "Unable to reset Power OverDrive to default")
 			} else {
@@ -625,4 +651,345 @@ func pyInput(in io.Reader) (string, bool) {
 			return string(line), len(line) > 0
 		}
 	}
+}
+
+// DPM: the performance level and power profile options. Their line
+// numbers are rocm_smi.py and rocm_smi.cc of tag rocm-7.2.0, not of the
+// develop head above.
+
+// The amdgpu DPM files of a GPU's PCI device (layout) and the state the
+// kernel's answers come from, which package hwemu renders under
+// state/amdgpu/card<N>/ (profile_dpm.go there): perf_levels lists each level
+// word with the errno of a refused one, od_writable the overdrive bounds a
+// write may set, unprivileged_set_noop is 1 when a level set through
+// rocm-smi without root changes nothing.
+const (
+	amdgpuPerfLevelsFile = "perf_levels"
+	amdgpuODWritableFile = "od_writable"
+	amdgpuUnprivNoopFile = "unprivileged_set_noop"
+)
+
+// The overdrive bounds of od_writable.
+const (
+	odSclkMin = "sclkMin"
+	odSclkMax = "sclkMax"
+	odUclkMin = "uclkMin"
+	odUclkMax = "uclkMax"
+)
+
+// errPermission is a write without root to an attribute only root may
+// write: amdgpu creates them S_IRUGO | S_IWUSR (amdgpu_pm.h v6.17:112-114).
+var errPermission = fs.ErrPermission
+
+// errnoError is a write the kernel fails with Errno, such as EINVAL for a
+// performance level the firmware refuses.
+type errnoError struct{ Errno string }
+
+func (e errnoError) Error() string { return "write failed with " + e.Errno }
+
+// amdWrite writes an amdgpu attribute as root would; without root
+// (Env.Unprivileged) it fails with a permission error and writes nothing.
+func amdWrite(env Env, p, value string) error {
+	if env.Unprivileged {
+		return &fs.PathError{Op: "open", Path: p, Err: errPermission}
+	}
+	return writeAttr(p, value)
+}
+
+// perfLevel is power_dpm_force_performance_level; ok is false without one.
+func (g amdGPU) perfLevel() (string, bool) {
+	s, err := readAttr(filepath.Join(g.Dev, layout.AMDGPUPerfLevelFile))
+	return strings.TrimSpace(s), err == nil
+}
+
+// levelErrno is the errno the kernel fails a write of level with, "" when
+// it takes it. Without the rendered state every word is taken.
+func (g amdGPU) levelErrno(level string) string {
+	s, err := readAttr(filepath.Join(g.State, amdgpuPerfLevelsFile))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(s, "\n") {
+		if f := strings.Fields(line); len(f) > 0 && f[0] == level {
+			if len(f) > 1 {
+				return f[1]
+			}
+			return ""
+		}
+	}
+	return "EINVAL"
+}
+
+// setPerfLevel writes level to the device as the library does. A level the
+// kernel refuses is an errnoError and nothing is written, since the real
+// write fails; without root it is a permission error.
+func (g amdGPU) setPerfLevel(env Env, level string) error {
+	p := filepath.Join(g.Dev, layout.AMDGPUPerfLevelFile)
+	if env.Unprivileged {
+		return amdWrite(env, p, level)
+	}
+	if _, ok := g.perfLevel(); !ok {
+		return fs.ErrNotExist
+	}
+	if e := g.levelErrno(level); e != "" {
+		return errnoError{e}
+	}
+	return amdWrite(env, p, level)
+}
+
+// unprivilegedNoop reports whether a set through rocm-smi without root
+// changes nothing and exits 0 on this device's family.
+func (g amdGPU) unprivilegedNoop() bool {
+	s, err := readAttr(filepath.Join(g.State, amdgpuUnprivNoopFile))
+	return err == nil && strings.TrimSpace(s) == "1"
+}
+
+// odWritable lists the overdrive bounds a write may set.
+func (g amdGPU) odWritable() []string {
+	s, err := readAttr(filepath.Join(g.State, amdgpuODWritableFile))
+	if err != nil {
+		return nil
+	}
+	return strings.Fields(s)
+}
+
+// dpmRange is the lowest and highest clock of a pp_dpm_* file, such as
+// pp_dpm_sclk, in MHz, skipping a deep-sleep "S:" line.
+func (g amdGPU) dpmRange(file string) (lo, hi int64, ok bool) {
+	s, err := readAttr(filepath.Join(g.Dev, file))
+	if err != nil {
+		return 0, 0, false
+	}
+	for _, line := range strings.Split(s, "\n") {
+		idx, rest, found := strings.Cut(line, ":")
+		if !found || strings.TrimSpace(idx) == "S" {
+			continue
+		}
+		f := strings.Fields(rest)
+		if len(f) == 0 {
+			continue
+		}
+		v, err := strconv.ParseInt(strings.TrimSuffix(f[len(f)-1], "Mhz"), 10, 64)
+		if err != nil {
+			v, err = strconv.ParseInt(strings.TrimSuffix(f[0], "Mhz"), 10, 64)
+		}
+		if err != nil {
+			continue
+		}
+		if !ok || v < lo {
+			lo = v
+		}
+		if !ok || v > hi {
+			hi = v
+		}
+		ok = true
+	}
+	return lo, hi, ok
+}
+
+// powerProfiles reads pp_power_profile_mode: the mode names in index order
+// and the index of the starred one.
+func (g amdGPU) powerProfiles() (modes []string, current int, ok bool) {
+	s, err := readAttr(filepath.Join(g.Dev, layout.AMDGPUPowerProfileFile))
+	if err != nil {
+		return nil, 0, false
+	}
+	current = -1
+	for _, line := range strings.Split(s, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 || !strings.HasSuffix(line, ":") {
+			continue
+		}
+		if _, err := strconv.Atoi(f[0]); err != nil {
+			continue
+		}
+		name := strings.TrimSuffix(strings.Join(f[1:], " "), ":")
+		if strings.HasSuffix(name, "*") {
+			current = len(modes)
+		}
+		modes = append(modes, strings.TrimSpace(strings.TrimSuffix(name, "*")))
+	}
+	return modes, current, len(modes) > 0 && current >= 0
+}
+
+// rocmPerfLevelNames is the level rocm-smi prints for each kernel word: the
+// rsmi_dev_perf_level_t name in lower case (assumed from rocm_smi_lib's
+// enum; rocm_smi.py:546-557, 2612-2622).
+var rocmPerfLevelNames = map[string]string{
+	"auto": "auto", "low": "low", "high": "high", "manual": "manual",
+	"profile_standard": "stable_std", "profile_peak": "stable_peak",
+	"profile_min_mclk": "stable_min_mclk", "profile_min_sclk": "stable_min_sclk",
+	"perf_determinism": "determinism",
+}
+
+// rocmProfileBits are rocm-smi's power profile names by bit (profileString,
+// rocm_smi.py:4125-4133), bit 0 first.
+var rocmProfileBits = []string{"CUSTOM", "VIDEO", "POWER SAVING", "COMPUTE", "VR", "3D FULL SCREEN", "BOOTUP DEFAULT"}
+
+// rocmProfileName is the rocm-smi name of a kernel power profile mode, such
+// as 3D FULL SCREEN for 3D_FULL_SCREEN, or "" for a mode rocm_smi_lib does
+// not know, such as WINDOW_3D.
+func rocmProfileName(mode string) string {
+	n := strings.ReplaceAll(mode, "_", " ")
+	if slices.Contains(rocmProfileBits, n) {
+		return n
+	}
+	return ""
+}
+
+// rocmFail is a library call that failed: rsmi_ret_ok (rocm_smi.py:4148-4184)
+// logs it at debug level and sets RETCODE, which main resets (D2). The
+// status names are rocm_smi_lib's; which one an errno becomes is assumed.
+func (r *rocmRun) rocmFail(dev int, metric string, err error) {
+	status := "RSMI_STATUS_NOT_SUPPORTED"
+	var en errnoError
+	switch {
+	case errors.Is(err, fs.ErrPermission):
+		status = "RSMI_STATUS_PERMISSION"
+	case errors.As(err, &en) && en.Errno == "EINVAL":
+		status = "RSMI_STATUS_INVALID_ARGS"
+	case errors.As(err, &en) && en.Errno == "EBUSY":
+		status = "RSMI_STATUS_BUSY"
+	case errors.Is(err, errOutOfBounds):
+		status = "RSMI_STATUS_INPUT_OUT_OF_BOUNDS"
+	}
+	if !r.json {
+		r.log(pyDebug, fmt.Sprintf("%s GPU[%d]: %s: \t", status, dev, metric))
+	}
+	r.retcode = 1
+}
+
+// errOutOfBounds is rocm_smi_lib's RSMI_STATUS_INPUT_OUT_OF_BOUNDS, such as
+// a power profile the device does not list.
+var errOutOfBounds = errors.New("input out of bounds")
+
+// showPerfLevel is -p (showPerformanceLevel, rocm_smi.py:2612-2622). A
+// device without the level file prints n/a, as getPerfLevel's 'N/A' lower
+// cased.
+func (r *rocmRun) showPerfLevel(devs []int) {
+	r.spacer(" Show Performance Level ")
+	for _, d := range devs {
+		level, ok := r.gpus[d].perfLevel()
+		name := "n/a"
+		if ok {
+			if name = rocmPerfLevelNames[level]; name == "" {
+				name = "unknown"
+			}
+		}
+		r.printLog(d, "Performance Level", name)
+	}
+	r.spacer("")
+}
+
+// setPerfLevel is --setperflevel (setPerformanceLevel,
+// rocm_smi.py:1595-1611): only auto, low, high and manual; a level the
+// kernel refuses fails quietly through rsmi_ret_ok.
+func (r *rocmRun) setPerfLevel(devs []int, level string) {
+	r.spacer(" Set Performance Level ")
+	valid := []string{"auto", "low", "high", "manual"}
+	for _, d := range devs {
+		if !slices.Contains(valid, level) {
+			r.printErrLog(d, "Unable to set Performance Level")
+			r.log(pyError, "Invalid Performance level: "+level)
+			continue
+		}
+		if err := r.gpus[d].setPerfLevel(r.env, level); err != nil {
+			r.rocmFail(d, "set_perf_level", err)
+			continue
+		}
+		r.printLog(d, "Performance level set to "+level)
+	}
+	r.spacer("")
+}
+
+// showProfile is -l (showProfile, rocm_smi.py:2776-2802): each power
+// profile rocm_smi_lib knows that the device lists, numbered by bit, the
+// one in effect starred. Nothing under --json.
+func (r *rocmRun) showProfile(devs []int) {
+	if r.json {
+		return
+	}
+	r.spacer(" Show Power Profiles ")
+	for _, d := range devs {
+		modes, cur, ok := r.gpus[d].powerProfiles()
+		if !ok {
+			r.rocmFail(d, "get_power_profiles", fs.ErrNotExist)
+			continue
+		}
+		current := rocmProfileName(modes[cur])
+		n := 0
+		for bit, name := range rocmProfileBits {
+			if !slices.ContainsFunc(modes, func(m string) bool { return rocmProfileName(m) == name }) {
+				continue
+			}
+			n++
+			if name == current {
+				name += "*"
+			}
+			r.printLog(d, fmt.Sprintf("%d. Available power profile (#%d of 7)", n, bit+1), name)
+		}
+	}
+	r.spacer("")
+}
+
+// setProfile is --setprofile (setProfile, rocm_smi.py:1716-1753): a number
+// 1 to 7 names the profile of that bit, or a name does; the library sets the
+// level to manual, then writes the mode's index (rocm_smi.cc:1807-1840). The
+// kernel answers at once, so the new profile reads back; here a write that
+// lands is taken as read back.
+func (r *rocmRun) setProfile(devs []int, profile string) {
+	r.spacer(" Set Power Profile ")
+	for _, d := range devs {
+		g := r.gpus[d]
+		modes, cur, ok := g.powerProfiles()
+		if !ok {
+			r.rocmFail(d, "get_power_profile", fs.ErrNotExist)
+			r.spacer("")
+			continue
+		}
+		previous := rocmProfileName(modes[cur])
+		if previous == "" {
+			previous = "UNKNOWN"
+		}
+		desired := ""
+		if n, err := strconv.Atoi(profile); err == nil && pyIsDigit(profile) && n > 0 && n < 8 {
+			desired = rocmProfileBits[n-1]
+		} else if name := strings.ToUpper(strings.ReplaceAll(profile, "_", " ")); slices.Contains(rocmProfileBits, name) {
+			desired = name
+		} else {
+			r.printErrLog(d, fmt.Sprintf("Unable to set profile to: %s (UNKNOWN profile)", profile))
+			return
+		}
+		if previous == desired {
+			r.printLog(d, "Profile was already set to", previous)
+			return
+		}
+		idx := slices.IndexFunc(modes, func(m string) bool { return rocmProfileName(m) == desired })
+		var err error
+		switch {
+		case idx < 0:
+			err = errOutOfBounds
+		default:
+			if err = g.setPerfLevel(r.env, "manual"); err == nil {
+				err = amdWrite(r.env, filepath.Join(g.Dev, layout.AMDGPUPowerProfileFile), strconv.Itoa(idx))
+			}
+		}
+		if err != nil {
+			r.rocmFail(d, "set_power_profile", err)
+		} else {
+			r.printLog(d, "Successfully set profile to", desired)
+		}
+		r.spacer("")
+	}
+}
+
+// rocmSets reports whether a run sets anything, which makes rocm_smi.py
+// relaunch itself through sudo first (rocm_smi.py:4429-4435).
+func rocmSets(a *pyArgs) bool {
+	for _, k := range []string{"--setperflevel", "--setprofile", "--setpoweroverdrive", "--resetpoweroverdrive"} {
+		if a.has(k) {
+			return true
+		}
+	}
+	return false
 }

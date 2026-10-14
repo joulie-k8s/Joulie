@@ -14,6 +14,54 @@
     "controlAvailable": true,
     "coresPerSocket": 64,
     "driverFamily": "intel_cpufreq",
+    "governor": {
+      "available": [
+        "conservative",
+        "ondemand",
+        "userspace",
+        "powersave",
+        "performance",
+        "schedutil"
+      ],
+      "baseline": {
+        "groups": [
+          {
+            "boost": "on",
+            "governor": "schedutil",
+            "policies": "0-127"
+          }
+        ]
+      },
+      "boost": {
+        "scope": "no-turbo",
+        "state": "on"
+      },
+      "current": "schedutil",
+      "driver": "intel_cpufreq",
+      "driverMode": "passive",
+      "presets": [
+        {
+          "native": "performance",
+          "preset": "performance",
+          "result": "applied"
+        },
+        {
+          "native": "schedutil",
+          "preset": "balanced",
+          "result": "applied"
+        },
+        {
+          "native": "conservative",
+          "preset": "efficiency",
+          "result": "applied"
+        }
+      ],
+      "writable": true
+    },
+    "landmarks": {
+      "maxBoostMHz": 4000,
+      "minFreqMHz": 800
+    },
     "model": "INTEL_XEON_GOLD_6530",
     "rawModel": "INTEL(R) XEON(R) GOLD 6530",
     "sockets": 2,

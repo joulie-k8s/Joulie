@@ -17,7 +17,8 @@ type NodeTwinSpec struct {
 }
 
 // NodeTwinCPU is the CPU package power cap, as an absolute value or as a
-// fraction of the hardware maximum. At most one is set.
+// fraction of the hardware maximum, and the CPU frequency governor. At most
+// one cap is set.
 type NodeTwinCPU struct {
 	// +kubebuilder:validation:Minimum=1
 	PackagePowerCapWatts *float64 `json:"packagePowerCapWatts,omitempty"`
@@ -25,11 +26,58 @@ type NodeTwinCPU struct {
 	// +kubebuilder:validation:ExclusiveMinimum=true
 	// +kubebuilder:validation:Maximum=100
 	PackagePowerCapPctOfMax *float64 `json:"packagePowerCapPctOfMax,omitempty"`
+	// Governor is the CPU frequency governor preset for every cpufreq policy
+	// of the node. Absent means the agent leaves the governor as it is.
+	Governor *CPUGovernorIntent `json:"governor,omitempty"`
 }
 
-// NodeTwinGPU holds the GPU power controls.
+// CPUGovernorIntent is a vendor-neutral CPU governor preset. The agent maps
+// it to the native governor, energy-performance preference and boost words
+// of the node's cpufreq driver; the presets a node accepts are listed in
+// NodeHardware.status.cpu.governor.presets.
+type CPUGovernorIntent struct {
+	// The enum must accept every value in joulie.CPUGovernorPresetValues
+	// (pkg/api/governor.go); tests/contracts enforces it.
+
+	// Preset is performance (highest frequency at any load), balanced
+	// (demand-driven, quick ramp) or efficiency (demand-driven with an energy
+	// bias).
+	// +kubebuilder:validation:Enum=performance;balanced;efficiency
+	Preset string `json:"preset"`
+	// Boost turns frequency boost (turbo) on or off. Absent leaves it as it is.
+	// +kubebuilder:validation:Enum=on;off
+	Boost string `json:"boost,omitempty"`
+}
+
+// NodeTwinGPU holds the GPU power controls and the GPU clock governor.
 type NodeTwinGPU struct {
 	PowerCap *GPUPowerCap `json:"powerCap,omitempty"`
+	// Governor is the GPU clock governor preset for every GPU of the node.
+	// Absent means the agent leaves the GPU clocks as they are.
+	Governor *GPUGovernorIntent `json:"governor,omitempty"`
+}
+
+// GPUGovernorIntent is a vendor-neutral GPU clock governor preset. The agent
+// maps it to the native performance level or clock locks of the GPU family;
+// the presets a node accepts are listed in
+// NodeHardware.status.gpu.governor.presets.
+type GPUGovernorIntent struct {
+	// The enum must accept every value in joulie.GPUGovernorPresetValues
+	// (pkg/api/governor.go); tests/contracts enforces it.
+
+	// Preset is auto (the vendor default), sustained (data-path clocks held
+	// at their maximum, idle gating kept), efficient (compute clock under a
+	// ceiling), low (every clock at its minimum) or peak (every clock at its
+	// maximum, idle gating off).
+	// +kubebuilder:validation:Enum=auto;sustained;efficient;low;peak
+	Preset string `json:"preset"`
+	// ComputeClockCeilingPctOfMax is the compute clock ceiling of the
+	// efficient preset, as a percentage of the GPU's maximum compute clock.
+	// Only meaningful with efficient.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:ExclusiveMinimum=true
+	// +kubebuilder:validation:Maximum=100
+	ComputeClockCeilingPctOfMax *float64 `json:"computeClockCeilingPctOfMax,omitempty"`
 }
 
 // GPUPowerCap is the GPU power cap, as an absolute value per GPU or as a
@@ -83,10 +131,13 @@ type PowerMeasurement struct {
 	// The enum must accept every value in joulie.PowerSourceValues
 	// (pkg/api/types.go); tests/contracts enforces it.
 
-	// Measurement source: kepler, utilization, or static
+	// Where measuredNodePowerW came from: prometheus, prometheus-no-data,
+	// http, http-error, http-no-endpoint or static; kepler and utilization
+	// are reserved.
 	// +kubebuilder:validation:Enum=kepler;utilization;static;http;http-error;http-no-endpoint;prometheus;prometheus-no-data
 	Source string `json:"source,omitempty"`
-	// Measured total node power draw in watts
+	// Measured node power draw in watts: the CPU packages plus the GPUs, or
+	// the whole host with NODE_POWER_SCOPE=host
 	MeasuredNodePowerW float64 `json:"measuredNodePowerW,omitempty"`
 	// CPU power budget based on TDP and cap percentage
 	CPUCappedPowerW float64 `json:"cpuCappedPowerW,omitempty"`
@@ -115,6 +166,10 @@ type CapState struct {
 type ControlStatus struct {
 	CPU *ControlResult `json:"cpu,omitempty"`
 	GPU *ControlResult `json:"gpu,omitempty"`
+	// CPUGovernor is the outcome of the last CPU governor write.
+	CPUGovernor *ControlResult `json:"cpuGovernor,omitempty"`
+	// GPUGovernor is the outcome of the last GPU governor write.
+	GPUGovernor *ControlResult `json:"gpuGovernor,omitempty"`
 }
 
 // ControlResult is the outcome of the last control write for one component.
@@ -122,6 +177,9 @@ type ControlResult struct {
 	Backend string `json:"backend,omitempty"`
 	Result  string `json:"result,omitempty"`
 	Message string `json:"message,omitempty"`
+	// Applied is the native setting in effect, in the driver's own words,
+	// such as schedutil or high. Set by the governor results only.
+	Applied string `json:"applied,omitempty"`
 	// UpdatedAt is the RFC3339 time of the last agent write.
 	UpdatedAt string `json:"updatedAt,omitempty"`
 }
@@ -138,6 +196,8 @@ type ControlResult struct {
 // +kubebuilder:printcolumn:name="PSUStress",type=number,JSONPath=".status.predictedPsuStressScore"
 // +kubebuilder:printcolumn:name="CPU-Cap",type=string,JSONPath=".spec.cpu.packagePowerCapPctOfMax"
 // +kubebuilder:printcolumn:name="Draining",type=boolean,JSONPath=".spec.scheduling.draining"
+// +kubebuilder:printcolumn:name="CPU-Gov",type=string,JSONPath=".spec.cpu.governor.preset"
+// +kubebuilder:printcolumn:name="GPU-Gov",type=string,JSONPath=".spec.gpu.governor.preset"
 
 // NodeTwin combines a node's desired power state and its computed twin
 // output. spec is written by the controller manager, status by its twin

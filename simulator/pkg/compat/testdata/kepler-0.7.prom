@@ -1,0 +1,62 @@
+# HELP kepler_node_core_joules_total Aggregated value in core value from rapl-sysfs
+# TYPE kepler_node_core_joules_total counter
+kepler_node_core_joules_total{instance="intel-0",mode="dynamic",package="0",source="rapl-sysfs"} 0
+kepler_node_core_joules_total{instance="intel-0",mode="dynamic",package="1",source="rapl-sysfs"} 0
+kepler_node_core_joules_total{instance="nvl-0",mode="dynamic",package="0",source="rapl-sysfs"} 0
+kepler_node_core_joules_total{instance="nvl-0",mode="dynamic",package="1",source="rapl-sysfs"} 0
+# HELP kepler_node_dram_joules_total Aggregated value in dram value from rapl-sysfs
+# TYPE kepler_node_dram_joules_total counter
+kepler_node_dram_joules_total{instance="intel-0",mode="dynamic",package="0",source="rapl-sysfs"} 90
+kepler_node_dram_joules_total{instance="intel-0",mode="dynamic",package="1",source="rapl-sysfs"} 90
+kepler_node_dram_joules_total{instance="intel-0",mode="idle",package="0",source="rapl-sysfs"} 390
+kepler_node_dram_joules_total{instance="intel-0",mode="idle",package="1",source="rapl-sysfs"} 390
+kepler_node_dram_joules_total{instance="nvl-0",mode="dynamic",package="0",source="rapl-sysfs"} 90
+kepler_node_dram_joules_total{instance="nvl-0",mode="dynamic",package="1",source="rapl-sysfs"} 90
+kepler_node_dram_joules_total{instance="nvl-0",mode="idle",package="0",source="rapl-sysfs"} 390
+kepler_node_dram_joules_total{instance="nvl-0",mode="idle",package="1",source="rapl-sysfs"} 390
+# HELP kepler_node_gpu_joules_total Aggregated value in gpu value from NVML
+# TYPE kepler_node_gpu_joules_total counter
+kepler_node_gpu_joules_total{instance="nvl-0",mode="dynamic",package="0",source="NVML"} 4350
+kepler_node_gpu_joules_total{instance="nvl-0",mode="dynamic",package="1",source="NVML"} 4350
+kepler_node_gpu_joules_total{instance="nvl-0",mode="dynamic",package="2",source="NVML"} 4350
+kepler_node_gpu_joules_total{instance="nvl-0",mode="dynamic",package="3",source="NVML"} 4350
+kepler_node_gpu_joules_total{instance="nvl-0",mode="dynamic",package="4",source="NVML"} 4350
+kepler_node_gpu_joules_total{instance="nvl-0",mode="dynamic",package="5",source="NVML"} 4350
+kepler_node_gpu_joules_total{instance="nvl-0",mode="dynamic",package="6",source="NVML"} 4350
+kepler_node_gpu_joules_total{instance="nvl-0",mode="dynamic",package="7",source="NVML"} 4350
+kepler_node_gpu_joules_total{instance="nvl-0",mode="idle",package="0",source="NVML"} 1800
+kepler_node_gpu_joules_total{instance="nvl-0",mode="idle",package="1",source="NVML"} 1830
+kepler_node_gpu_joules_total{instance="nvl-0",mode="idle",package="2",source="NVML"} 1860
+kepler_node_gpu_joules_total{instance="nvl-0",mode="idle",package="3",source="NVML"} 1890
+kepler_node_gpu_joules_total{instance="nvl-0",mode="idle",package="4",source="NVML"} 1920
+kepler_node_gpu_joules_total{instance="nvl-0",mode="idle",package="5",source="NVML"} 1950
+kepler_node_gpu_joules_total{instance="nvl-0",mode="idle",package="6",source="NVML"} 1980
+kepler_node_gpu_joules_total{instance="nvl-0",mode="idle",package="7",source="NVML"} 2010
+# HELP kepler_node_other_joules_total Aggregated value in other value from rapl-sysfs
+# TYPE kepler_node_other_joules_total counter
+kepler_node_other_joules_total{instance="intel-0",mode="dynamic",package="socket0",source="rapl-sysfs"} 0
+kepler_node_other_joules_total{instance="intel-0",mode="idle",package="socket0",source="rapl-sysfs"} 2400
+kepler_node_other_joules_total{instance="nvl-0",mode="dynamic",package="socket0",source="rapl-sysfs"} 0
+kepler_node_other_joules_total{instance="nvl-0",mode="idle",package="socket0",source="rapl-sysfs"} 2400
+# HELP kepler_node_package_joules_total Aggregated value in package value from rapl-sysfs
+# TYPE kepler_node_package_joules_total counter
+kepler_node_package_joules_total{instance="intel-0",mode="dynamic",package="0",source="rapl-sysfs"} 1237.5
+kepler_node_package_joules_total{instance="intel-0",mode="dynamic",package="1",source="rapl-sysfs"} 1237.5
+kepler_node_package_joules_total{instance="intel-0",mode="idle",package="0",source="rapl-sysfs"} 3112.5
+kepler_node_package_joules_total{instance="intel-0",mode="idle",package="1",source="rapl-sysfs"} 3262.5
+kepler_node_package_joules_total{instance="nvl-0",mode="dynamic",package="0",source="rapl-sysfs"} 1237.5
+kepler_node_package_joules_total{instance="nvl-0",mode="dynamic",package="1",source="rapl-sysfs"} 1237.5
+kepler_node_package_joules_total{instance="nvl-0",mode="idle",package="0",source="rapl-sysfs"} 3112.5
+kepler_node_package_joules_total{instance="nvl-0",mode="idle",package="1",source="rapl-sysfs"} 3262.5
+# HELP kepler_node_platform_joules_total Aggregated value in platform value from rapl-sysfs
+# TYPE kepler_node_platform_joules_total counter
+kepler_node_platform_joules_total{instance="intel-0",mode="dynamic",package="estimator0",source="rapl-sysfs"} 2655
+kepler_node_platform_joules_total{instance="intel-0",mode="idle",package="estimator0",source="rapl-sysfs"} 9555
+kepler_node_platform_joules_total{instance="nvl-0",mode="dynamic",package="estimator0",source="rapl-sysfs"} 37455
+kepler_node_platform_joules_total{instance="nvl-0",mode="idle",package="estimator0",source="rapl-sysfs"} 24795
+# HELP kepler_node_uncore_joules_total Aggregated value in uncore value from rapl-sysfs
+# TYPE kepler_node_uncore_joules_total counter
+kepler_node_uncore_joules_total{instance="intel-0",mode="dynamic",package="0",source="rapl-sysfs"} 0
+kepler_node_uncore_joules_total{instance="intel-0",mode="dynamic",package="1",source="rapl-sysfs"} 0
+kepler_node_uncore_joules_total{instance="nvl-0",mode="dynamic",package="0",source="rapl-sysfs"} 0
+kepler_node_uncore_joules_total{instance="nvl-0",mode="dynamic",package="1",source="rapl-sysfs"} 0

@@ -165,11 +165,11 @@ func renderParseFile(b []byte) (map[string]any, error) {
 
 // renderResolve turns every value below x into a renderLeaf. A mapping-level
 // src covers every value below it; {v: X, src: Y} sets the source of X, and
-// when X holds mappings, Y covers the values inside them. Label groups are
-// kept as written: their src is a field of the group, not a provenance to
-// spread over the label values.
+// when X holds mappings, Y covers the values inside them. Label groups and
+// GPU tools are kept as written: the src of a group or of a tool
+// requirement is a field of it, not a provenance to spread over its values.
 func renderResolve(x any, src, at string) (any, error) {
-	if at == "node.labels" {
+	if at == "node.labels" || at == "gpus.tools" {
 		return x, nil
 	}
 	switch t := x.(type) {
@@ -536,6 +536,10 @@ func (p *Profile) Validate() error {
 	errs = append(errs, renderValidateCPUFreq(p)...)
 	errs = append(errs, renderValidateHSMP(p)...)
 	errs = append(errs, renderValidateGPUs(p)...)
+	errs = append(errs, renderValidateCPUGovernor(p)...)
+	errs = append(errs, renderValidateGPUDPM(p)...)
+	errs = append(errs, renderValidateNVClock(p)...)
+	errs = append(errs, renderValidateGPUTransfer(p)...)
 	if !renderCPUModels[p.Physics.CPU.Model] {
 		fail("physics.cpu.model %q is not analytic or catalog-curve", p.Physics.CPU.Model)
 	}
@@ -678,6 +682,9 @@ func renderValidatePowercap(p *Profile) []error {
 		if z.PowerUnitUW.V < 0 {
 			fail("%s.powerUnitUW is negative", at)
 		}
+		if z.LimitBits.Src != "" && (z.LimitBits.V < 1 || z.LimitBits.V > 62) {
+			fail("%s.limitBits is %d, want 1 to 62", at, z.LimitBits.V)
+		}
 		for i, c := range z.Constraints {
 			if c.Name == "" {
 				fail("%s.constraints[%d].name is empty", at, i)
@@ -768,6 +775,32 @@ func renderValidateCPUFreq(p *Profile) []error {
 	if f.Boost.V != 0 && f.Boost.V != 1 {
 		fail("boost is %d, want 0 or 1", f.Boost.V)
 	}
+	if f.PolicyBoost.V != 0 && f.PolicyBoost.V != 1 {
+		fail("policyBoost is %d, want 0 or 1", f.PolicyBoost.V)
+	}
+	return errs
+}
+
+// renderValidateGPUTransfer checks gpus.transfer: a link rate that is not
+// negative and receiver-gate fractions within [0, 1].
+func renderValidateGPUTransfer(p *Profile) []error {
+	if p.GPUs == nil || p.GPUs.Transfer == nil {
+		return nil
+	}
+	var errs []error
+	t := p.GPUs.Transfer
+	if t.PeerLinkGBps.V < 0 {
+		errs = append(errs, fmt.Errorf("%s: gpus.transfer.peerLinkGBps is %v, want >= 0", p.Name, t.PeerLinkGBps.V))
+	}
+	g := t.ReceiverGate
+	for _, f := range []struct {
+		name string
+		v    float64
+	}{{"slowFraction", g.SlowFraction.V}, {"midFraction", g.MidFraction.V}, {"midPairFraction", g.MidPairFraction.V}} {
+		if f.v < 0 || f.v > 1 {
+			errs = append(errs, fmt.Errorf("%s: gpus.transfer.receiverGate.%s is %v, want within [0, 1]", p.Name, f.name, f.v))
+		}
+	}
 	return errs
 }
 
@@ -836,6 +869,15 @@ func renderValidateGPUs(p *Profile) []error {
 	if !renderPPT1Modes[g.PPT1.V] {
 		fail("ppt1 %q is not absent or present", g.PPT1.V)
 	}
+	switch g.PersistenceMode.V {
+	case "":
+	case PersistenceEnabled, PersistenceDisabled:
+		if g.Vendor != "nvidia" {
+			fail("persistenceMode applies to NVIDIA GPUs only")
+		}
+	default:
+		fail("persistenceMode %q is not %s or %s", g.PersistenceMode.V, PersistenceEnabled, PersistenceDisabled)
+	}
 	for field := range g.FieldSupport {
 		if g.Vendor != "nvidia" {
 			fail("fieldSupport applies to nvidia-smi only")
@@ -864,6 +906,25 @@ func renderValidateGPUs(p *Profile) []error {
 			fail("tools[%d] %s is listed twice", i, t.Name)
 		}
 		names[t.Name] = true
+		for j, r := range t.Requires {
+			at := fmt.Sprintf("tools[%d].requires[%d]", i, j)
+			if len(r.Paths) == 0 {
+				fail("%s has no paths", at)
+			}
+			for _, rp := range r.Paths {
+				if !path.IsAbs(rp) || path.Clean(rp) != rp {
+					fail("%s path %q is not a clean absolute path", at, rp)
+				}
+			}
+			if r.Exit < 1 || r.Exit > 255 {
+				fail("%s exit %d is not in [1, 255]", at, r.Exit)
+			}
+			if r.Src == "" {
+				fail("%s has no src", at)
+			} else if err := renderCheckSrc(r.Src, p.Sources); err != nil {
+				fail("%s: %v", at, err)
+			}
+		}
 	}
 	return errs
 }

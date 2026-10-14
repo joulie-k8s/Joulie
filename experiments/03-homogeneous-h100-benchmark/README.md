@@ -2,6 +2,8 @@
 
 This experiment is structurally identical to [02 - heterogeneous-benchmark](../02-heterogeneous-benchmark/README.md) but uses a **homogeneous cluster with only NVIDIA H100 NVL nodes**.
 
+> **Note (2026-10-09):** `REPORT.md` and `REPORT-standalone.md` were produced with an older simulator model and have not been rerun. Runs made now read the hardware catalog embedded in the simulator, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Simulator changes](../../simulator/CHANGES.md) lists each change and how far it moves `configs/benchmark-debug.yaml`.
+
 ## Purpose
 
 The experiment tests the hypothesis that Joulie's energy-aware scheduling policy is more effective on a homogeneous cluster, where every GPU node can accept any GPU job without vendor- or product-specific placement constraints. On a heterogeneous cluster, family-first placement and per-family hardware physics can cause:
@@ -70,7 +72,7 @@ sudo tcpdump -i eth0 port 53 -nn
 # If you see queries like:
 #   joulie-scheduler-extender.joulie-system.svc.cluster.local
 #   joulie-scheduler-extender.joulie-system.svc.cluster.local.cern.ch
-# then the iptables DNS redirect is not working — recreate the cluster.
+# then the iptables DNS redirect is not working: recreate the cluster.
 ```
 
 If DNS leaks are observed, delete and recreate the cluster:
@@ -94,7 +96,7 @@ long cooldown tail as the last few pods drain), the benchmark enforces a fixed t
 - Energy metrics during the tail are dominated by idle-cluster power, which dilutes the
   effect of energy-aware scheduling.
 - By truncating at timeout, we capture the steady-state window where the cluster is under
-  sustained load — exactly the regime where Joulie's power-capping policies matter most.
+  sustained load, exactly the regime where Joulie's power-capping policies matter most.
 
 **Consequences for analysis:**
 
@@ -111,4 +113,4 @@ are preferred over transient startup/shutdown phases.
 
 - The `generate_heterogeneous_assets.py` script applies H100 NVL-specific physics parameters (`computeGamma: 1.5`, `memoryEpsilon: 0.15`, `memoryGamma: 0.9`, `idleWattsPerGpu: 60`) to all GPU nodes.
 - The retargeting logic in `05_sweep.py` no longer pins jobs to exact node names. CPU-only jobs are constrained only to the CPU-only pool, while GPU jobs rely on the native `nvidia.com/gpu` extended resource so the Kubernetes scheduler can place them on any compatible H100 node.
-- All scripts share the same asset generation path (`scripts/generate_heterogeneous_assets.py`), so the node classes and hardware catalog are regenerated from the homogeneous cluster-nodes.yaml before each benchmark run.
+- All scripts share the same asset generation path (`scripts/generate_heterogeneous_assets.py`), so the node classes are regenerated from the homogeneous cluster-nodes.yaml before each benchmark run. No hardware catalog is generated: the simulator uses the one embedded in `pkg/hwinv/assets/hardware.yaml`.

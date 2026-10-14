@@ -93,7 +93,6 @@ export CLUSTER_NAME
 export BENCHMARK_RUN_ROOT=${BENCHMARK_RUN_ROOT:-$ARTIFACT_DIR}
 export RESULTS_DIR=${RESULTS_DIR:-$BENCHMARK_RUN_ROOT/results}
 export GENERATED_CLASSES=${GENERATED_CLASSES:-"$ROOT/experiments/03-homogeneous-h100-benchmark/generated/10-node-classes.yaml"}
-export GENERATED_CATALOG=${GENERATED_CATALOG:-"$ROOT/experiments/03-homogeneous-h100-benchmark/generated/hardware.generated.yaml"}
 export SIM_DEBUG_PERSIST_DIR=${SIM_DEBUG_PERSIST_DIR:-$BENCHMARK_RUN_ROOT/simulator-debug}
 
 mkdir -p "$BENCHMARK_RUN_ROOT" "$RESULTS_DIR" "$SIM_DEBUG_PERSIST_DIR" "$BENCHMARK_RUN_ROOT/logs"

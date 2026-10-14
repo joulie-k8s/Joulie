@@ -8,6 +8,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -65,6 +68,77 @@ jobs:
 
       - name: Run envtest suite
         run: make test-envtest
+
+  # tests/promql is a module of its own (go 1.26, Prometheus v0.315.0), which
+  # `go test ./...` at the root skips: it evaluates every input query of
+  # pkg/controller/inputs in the PromQL engine of Prometheus v3.15.0 and
+  # checks pkg/otel/promname against otlptranslator.
+  promql:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: tests/promql/go.mod
+          cache-dependency-path: tests/promql/go.sum
+
+      - name: Run PromQL tests
+        run: make test-promql
+
+  # Pushes OTLP JSON to a real Prometheus with the OTLP receiver and reads it
+  # back with the input queries (pkg/controller/inputs/live_test.go, build
+  # tag promlive). The tests read the receiver's otlp settings from the
+  # server, so each configuration runs the same command: k8s.node.name
+  # promoted or not, under the default and a UTF-8 translation strategy.
+  prometheus-otlp-live:
+    name: prometheus-otlp-live (${{ matrix.config }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - config: promoted
+            otlp: "{promote_resource_attributes: [k8s.node.name, host.name], translation_strategy: UnderscoreEscapingWithSuffixes}"
+          - config: unpromoted
+            otlp: "{translation_strategy: UnderscoreEscapingWithSuffixes}"
+          - config: utf8
+            otlp: "{promote_resource_attributes: [k8s.node.name, host.name], translation_strategy: NoUTF8EscapingWithSuffixes}"
+          - config: utf8-unpromoted
+            otlp: "{translation_strategy: NoUTF8EscapingWithSuffixes}"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Start Prometheus
+        env:
+          OTLP: ${{ matrix.otlp }}
+        run: |
+          . scripts/simcluster/versions.env
+          mkdir -p "$RUNNER_TEMP/prometheus"
+          printf 'storage:\n  tsdb:\n    out_of_order_time_window: 30m\notlp: %s\n' "$OTLP" > "$RUNNER_TEMP/prometheus/prometheus.yml"
+          docker run -d --name prometheus -p 127.0.0.1:19190:9090 \
+            -v "$RUNNER_TEMP/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            "$PROMETHEUS_IMAGE@$PROMETHEUS_DIGEST" \
+            --config.file=/etc/prometheus/prometheus.yml --web.enable-otlp-receiver
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:19190/-/ready && exit 0
+            sleep 1
+          done
+          docker logs prometheus
+          exit 1
+
+      - name: Run live tests
+        env:
+          JOULIE_PROM_URL: http://127.0.0.1:19190
+        run: go test -tags promlive -count=1 -run Live -v ./pkg/controller/inputs/
 
   # The experiment sanity tests check the sweep scripts and the benchmark
   # configs. They need the experiments' own requirements (pandas pulls numpy,

@@ -1,0 +1,19 @@
+{
+  "runId": "20261004T200000Z-fixture-0123456789ab",
+  "phase": "aborted",
+  "startedAt": "2026-10-04T20:00:00Z",
+  "elapsedSeconds": 200,
+  "allSubmitted": false,
+  "jobs": {
+    "total": 6,
+    "notDue": 1,
+    "pending": 0,
+    "scheduled": 0,
+    "running": 0,
+    "completed": 3,
+    "failed": 1,
+    "incomplete": 1,
+    "stalled": 0
+  },
+  "runStalled": false
+}

@@ -2,7 +2,12 @@ nameOverride: ""
 fullnameOverride: ""
 
 agent:
-  mode: daemonset
+  # daemonset: one agent per node with joulie.io/managed=true (the default).
+  # pool: a few agents that shard the managed nodes between them.
+  # emulated: one Deployment per agent.emulated.nodes entry, each managing an
+  #   emulated node of the simulated cluster through its hwemu tree.
+  # none: no agent.
+  mode: daemonset          # daemonset | pool | emulated | none
   image:
     repository: registry.cern.ch/joulie/joulie-agent
     # Empty pulls the chart's appVersion: the release's own version for a chart
@@ -15,9 +20,44 @@ agent:
     RECONCILE_INTERVAL: "20s"
     METRICS_ADDR: ":8080"
     SIMULATE_ONLY: "false"
+    # Governor presets of the NodeTwin are written only with "true"; the
+    # agent always discovers the governors. Restore the baseline governors
+    # when the agent stops (a rolling update restores, then re-applies).
+    GOVERNOR_WRITES: "false"
+    GOVERNOR_RESTORE_ON_EXIT: "true"
   daemonset:
     nodeSelector:
       joulie.io/managed: "true"
+  # Taints the DaemonSet and emulated agents tolerate. The default covers the
+  # NoSchedule taint GPU nodes usually carry, so the agent also runs on them
+  # and enforces the caps planned there. A node whose taints the agent does
+  # not tolerate gets planned caps that nothing enforces.
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    - key: amd.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  # Hooks into the DaemonSet and emulated agent pods, for example to reach
+  # the GPU tools of a node through a runtime class or a hostPath mount (the
+  # agent image ships none). Each renders only when set.
+  extraEnv: []            # EnvVar list, after the chart's env
+  extraVolumes: []        # Volume list, after the chart's volumes
+  extraVolumeMounts: []   # VolumeMount list, after the chart's mounts
+  runtimeClassName: ""
+  # agent.mode emulated only. Every pod runs on the node holding the hwemu
+  # trees and mounts its node's tree under root: sys at /host-sys, cpuinfo
+  # over /proc/cpuinfo, state at /emu/state, the GPU tool links at /emu/bin,
+  # root/lib at /emu/lib. nodes is written by "simcluster agents" (entries:
+  # name, profile, devNvidiactl, extraVolumes, extraVolumeMounts). These pods
+  # ignore hostNetwork and privileged above: they get neither.
+  emulated:
+    root: /var/lib/joulie-hwemu
+    hostNodeSelector:
+      joulie.io/hwemu-host: "true"
+    path: /emu/bin:/usr/local/bin:/usr/bin:/bin
+    nodes: []
   pool:
     replicas: 2
     nodeSelector: "joulie.io/managed=true"
@@ -60,11 +100,38 @@ controllerManager:
     GPU_ECO_CAP_PCT_OF_MAX: "60"
     GPU_WRITE_ABSOLUTE_CAPS: "false"
     GPU_MODEL_CAPS_JSON: "{}"
-    GPU_PRODUCT_LABEL_KEYS: "joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product,amd.com/gpu.family"
+    # First match wins; the AMD node labeller names the board in gpu.product-name.
+    GPU_PRODUCT_LABEL_KEYS: "joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,amd.com/gpu.family"
+    # Governor control, off by default: off, cpu, gpu or all. When on, the
+    # controller manager writes vendor-neutral CPU and GPU governor presets
+    # into each NodeTwin, by the profile the node runs at, and only presets the
+    # node lists in NodeHardware. The agent writes nothing unless its own
+    # GOVERNOR_WRITES is true as well. A GPU node gets no CPU governor unless
+    # CPU_GOVERNOR_ON_GPU_NODES is true.
+    GOVERNOR_CONTROL: "off"
+    CPU_GOVERNOR_PERFORMANCE_PRESET: "performance"  # performance, balanced or efficiency
+    CPU_GOVERNOR_ECO_PRESET: "efficiency"
+    CPU_GOVERNOR_ECO_BOOST: ""  # on or off with the eco preset; empty leaves boost alone
+    CPU_GOVERNOR_ON_GPU_NODES: "false"
+    # GPU presets: auto, sustained, efficient, low or peak; empty writes none.
+    # The performance default is empty: sustained holds the data-path clocks
+    # and costs idle power, so opt a model in through the model map below once
+    # a measurement shows it gains on that model.
+    GPU_GOVERNOR_PERFORMANCE_PRESET: ""
+    GPU_GOVERNOR_ECO_PRESET: "efficient"
+    GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX: "80"  # compute clock ceiling of efficient, (0, 100]
+    # Per GPU model, keyed like GPU_MODEL_CAPS_JSON:
+    # {"<model>": {"performance": "sustained", "eco": "efficient", "ecoCeilingPctOfMax": 70}}
+    GPU_GOVERNOR_MODEL_PRESETS_JSON: "{}"
+    # Measured power and facility metrics come from this Prometheus: producers
+    # push hw.* over OTLP (--web.enable-otlp-receiver), and promoting k8s.node.name
+    # (otlp.promote_resource_attributes) avoids a target_info join. See values/prometheus-grafana.yaml.
     PROMETHEUS_ADDRESS: "http://prometheus-operated.monitoring:9090"
-    KEPLER_AVAILABLE: "true"
+    NODE_POWER_SOURCE: "prometheus"
+    NODE_POWER_SCOPE: "components"
+    PROMETHEUS_RATE_WINDOW: "5m"
     ENABLE_FACILITY_METRICS: "false"
-    FACILITY_PROMETHEUS_ADDRESS: "http://prometheus-operated.monitoring:9090"
+    FACILITY_PRESET: "otel"
     FACILITY_POLL_INTERVAL: "30s"
   service:
     enabled: true
@@ -88,6 +155,12 @@ schedulerExtender:
   port: 9876
   clusterIP: ""  # set a fixed ClusterIP so the scheduler config can use an IP instead of DNS
   replicas: 1
+  # true runs the extender on its node's network, for a kube-scheduler that
+  # calls it on 127.0.0.1. Its port then cannot be held by two pods on one
+  # node, so the Deployment switches to strategy Recreate: the old pod stops
+  # before the new one starts. Scheduling goes on during that gap only while
+  # the scheduler config marks the extender ignorable: true; with
+  # ignorable: false, set nodeName as well.
   hostNetwork: false
   nodeName: ""  # set to bypass scheduler (needed when ignorable=false)
   nodeSelector: {}

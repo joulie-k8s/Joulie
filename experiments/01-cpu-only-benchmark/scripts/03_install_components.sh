@@ -25,7 +25,6 @@ CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS:-false}
 OPERATOR_RECONCILE_INTERVAL=${OPERATOR_RECONCILE_INTERVAL:-20s}
 AGENT_RECONCILE_INTERVAL=${AGENT_RECONCILE_INTERVAL:-10s}
 GENERATED_CLASSES=${GENERATED_CLASSES:-$EXP_ROOT/generated/10-node-classes.yaml}
-GENERATED_CATALOG=${GENERATED_CATALOG:-$EXP_ROOT/generated/hardware.generated.yaml}
 SIM_FACILITY_AMBIENT_BASE_C=${SIM_FACILITY_AMBIENT_BASE_C:-22.0}
 SIM_FACILITY_AMBIENT_AMPLITUDE_C=${SIM_FACILITY_AMBIENT_AMPLITUDE_C:-8.0}
 SIM_FACILITY_AMBIENT_PERIOD_SEC=${SIM_FACILITY_AMBIENT_PERIOD_SEC:-600}
@@ -83,7 +82,7 @@ else
     )
   fi
 
-  # Telemetry env vars for baselines B/C — included in the Helm install to avoid
+  # Telemetry env vars for baselines B/C, included in the Helm install to avoid
   # a second rolling restart from kubectl-set-env.
   AGENT_TELEMETRY_ARGS=()
   if [[ "$BASELINE" != "A" ]]; then
@@ -104,6 +103,11 @@ else
     )
   fi
 
+  # NODE_POWER_SOURCE=static keeps the input these experiments were run with:
+  # the chart now defaults to reading measured power from Prometheus, which the
+  # simulated cluster does not feed. The agent reads /telemetry/{node}: OTLP JSON
+  # from a simulator image that serves it by default, the legacy JSON (read
+  # until v0.4.0) from an older pinned image, which has no /otlp/telemetry/{node}.
   helm upgrade --install joulie "$ROOT/charts/joulie" -n joulie-system --create-namespace \
     -f "$EXAMPLE_DIR/manifests/30-joulie-values-pool.yaml" \
     --set "agent.image.repository=${JOULIE_REGISTRY}/joulie-agent" \
@@ -130,11 +134,12 @@ else
     --set "controllerManager.env.PERFORMANCE_CAP_WATTS=${PERFORMANCE_CAP_WATTS}" \
     --set "controllerManager.env.ECO_CAP_WATTS=${ECO_CAP_WATTS}" \
     --set "controllerManager.env.ENABLE_FACILITY_METRICS=${ENABLE_FACILITY_METRICS}" \
+    --set "controllerManager.env.NODE_POWER_SOURCE=static" \
     "${AGENT_TELEMETRY_ARGS[@]}" \
     "${SCHED_ARGS[@]}" \
     ${INFRA_SELECTOR_ARGS[@]+"${INFRA_SELECTOR_ARGS[@]}"}
 
-  # Extender must be ready first — controller manager/agent pods go through the extender filter.
+  # Extender must be ready first: controller manager/agent pods go through the extender filter.
   kubectl -n joulie-system rollout status deploy/joulie-scheduler-extender --timeout=120s
   kubectl -n joulie-system rollout status deploy/joulie-controller-manager
   kubectl -n joulie-system rollout status statefulset/joulie-agent-pool
@@ -149,7 +154,7 @@ else
     # KinD: check from control-plane node
     if ! docker exec "$CTRL_CONTAINER" curl -sf --max-time 5 "$EXTENDER_URL" >/dev/null 2>&1; then
       echo "FATAL: scheduler extender not reachable from control-plane at $EXTENDER_URL" >&2
-      echo "DNS or networking is misconfigured — kube-scheduler cannot reach the extender." >&2
+      echo "DNS or networking is misconfigured: kube-scheduler cannot reach the extender." >&2
       exit 1
     fi
   else
@@ -172,7 +177,13 @@ fi
 # ---------------------------------------------------------------------------
 kubectl create namespace joulie-sim-demo --dry-run=client -o yaml | kubectl apply -f -
 create_or_update_configmap_from_file joulie-sim-demo joulie-simulator-node-classes node-classes.yaml "$GENERATED_CLASSES"
-create_or_update_configmap_from_file joulie-sim-demo joulie-simulator-hardware-catalog hardware.generated.yaml "$GENERATED_CATALOG"
+# The simulator reads the hardware catalog embedded in it. The chart's default
+# SIM_HARDWARE_CATALOG_PATH is this ConfigMap's file, and an empty file there
+# loads no catalog at all, so the Helm args below clear the path. Writing the
+# ConfigMap empty also replaces a catalog left by an earlier run.
+kubectl -n joulie-sim-demo create configmap joulie-simulator-hardware-catalog \
+  --from-literal=hardware.generated.yaml="" \
+  --dry-run=client -o yaml | kubectl apply -f -
 cat <<'YAML' | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -188,6 +199,7 @@ SIM_HELM_ARGS=(
   --set "image.repository=${SIM_REGISTRY}/${SIM_IMAGE}"
   --set "image.tag=${SIM_TAG:-latest}"
   --set "image.pullPolicy=Always"
+  --set "env.SIM_HARDWARE_CATALOG_PATH="
   --set "env.SIM_FACILITY_AMBIENT_BASE_C=${SIM_FACILITY_AMBIENT_BASE_C}"
   --set "env.SIM_FACILITY_AMBIENT_AMPLITUDE_C=${SIM_FACILITY_AMBIENT_AMPLITUDE_C}"
   --set "env.SIM_FACILITY_AMBIENT_PERIOD_SEC=${SIM_FACILITY_AMBIENT_PERIOD_SEC}"

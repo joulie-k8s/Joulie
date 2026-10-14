@@ -1,0 +1,99 @@
+{
+  "capabilities": {
+    "cpuControl": true,
+    "cpuTelemetry": true,
+    "gpuControl": false,
+    "gpuTelemetry": false
+  },
+  "cpu": {
+    "controlAvailable": true,
+    "coresPerSocket": 4,
+    "driverFamily": "amd-pstate-epp",
+    "governor": {
+      "available": [
+        "performance",
+        "powersave"
+      ],
+      "baseline": {
+        "groups": [
+          {
+            "boost": "off",
+            "epp": "balance_power",
+            "governor": "powersave",
+            "policies": "0-3"
+          }
+        ]
+      },
+      "boost": {
+        "scope": "per-cpu",
+        "state": "off"
+      },
+      "current": "powersave",
+      "driver": "amd-pstate-epp",
+      "driverMode": "active",
+      "epp": {
+        "available": [
+          "default",
+          "performance",
+          "balance_performance",
+          "balance_power",
+          "power"
+        ],
+        "current": "balance_power"
+      },
+      "presets": [
+        {
+          "native": "performance",
+          "preset": "performance",
+          "result": "applied"
+        },
+        {
+          "native": "powersave epp=balance_performance",
+          "preset": "balanced",
+          "result": "applied"
+        },
+        {
+          "native": "powersave epp=balance_power",
+          "preset": "efficiency",
+          "result": "applied"
+        }
+      ],
+      "writable": true
+    },
+    "landmarks": {
+      "maxBoostMHz": 1500,
+      "minFreqMHz": 400
+    },
+    "model": "AMD_EPYC_9654",
+    "rawModel": "AMD EPYC 9654 96-Core Processor",
+    "sockets": 1,
+    "telemetryAvailable": true,
+    "totalCores": 4,
+    "vendor": "",
+    "warnings": null
+  },
+  "gpu": {
+    "controlAvailable": false,
+    "count": 0,
+    "currentCapWatts": 0,
+    "model": "",
+    "rawModel": "",
+    "telemetryAvailable": false,
+    "vendor": "none",
+    "warnings": null
+  },
+  "inventoryResolution": {
+    "exactness": {
+      "cpu": "exact",
+      "gpu": "generic"
+    },
+    "hardwareCatalogKey": {
+      "cpu": "AMD_EPYC_9654",
+      "gpu": ""
+    }
+  },
+  "quality": {
+    "overall": "exact",
+    "warnings": null
+  }
+}

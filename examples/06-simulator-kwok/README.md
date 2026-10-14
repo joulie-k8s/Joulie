@@ -64,18 +64,14 @@ helm upgrade --install joulie ../../charts/joulie \
   -f manifests/15-joulie-values-pool.yaml
 ```
 
-## 6. Route telemetry/control to simulator
+`helm upgrade` never updates CRDs: on a cluster where Joulie was installed before, run `kubectl apply -f ../../charts/joulie/crds/` first.
 
-Configure agent env vars to route telemetry and control to the simulator over HTTP:
+## 6. Telemetry and control go to the simulator
 
-```bash
-kubectl -n joulie-system set env daemonset/joulie-agent \
-  JOULIE_TELEMETRY_SOURCE_TYPE=http \
-  JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node} \
-  JOULIE_CONTROL_TYPE=http \
-  JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node} \
-  JOULIE_CONTROL_MODE=dvfs
-```
+`manifests/15-joulie-values-pool.yaml` routes both components to the simulator over HTTP, so this example needs no Prometheus:
+
+- the pool agents read each node's power from `/otlp/telemetry/{node}` and send CPU controls to `/control/{node}` (`TELEMETRY_CPU_*`);
+- the controller manager reads measured node power from the same `/otlp/telemetry/{node}` (`NODE_POWER_SOURCE=http`, `NODE_POWER_HTTP_ENDPOINT`). With the chart's default, `NODE_POWER_SOURCE=prometheus`, every node would read 0 W here, with source `prometheus-no-data`.
 
 ## 7. Load trace workload
 
@@ -106,7 +102,7 @@ curl -s localhost:18080/debug/events | jq
 
 ## Expected behavior
 
-- infra pods (`joulie-simulator`, controller manager, agent pool) schedule on real kind node(s),
+- infra pods (`joulie-telemetry-sim`, controller manager, agent pool) schedule on real kind node(s),
 - fake workload pods are scheduled on fake KWOK nodes,
 - controller manager writes `NodeTwin` for managed fake nodes,
 - exactly one pool shard controls each node,

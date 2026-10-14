@@ -3,6 +3,7 @@ package hwemu
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -30,9 +31,9 @@ func nodeLeasesWork(dir string) bool {
 	return ok
 }
 
-// nodeSFile is one emulator-owned file (S). It is rewritten by temp file and
-// rename, only when its content changes, so a reader never sees it empty or
-// half written.
+// nodeSFile is one emulator-owned file (S). It is rewritten only when its
+// content changes, in place under a write lease or by temp file and rename
+// (writeS), so a reader never sees it empty or half written.
 type nodeSFile struct {
 	rel  string
 	path string
@@ -40,31 +41,55 @@ type nodeSFile struct {
 	last string
 }
 
-// nodeWriteAtomic replaces path with data through a temp file in tmpDir. The
-// temp file never sits next to an attribute, because filepath.Glob("*") in a
-// zone or policy directory matches dotfiles. tmpDir must be on the same file
-// system as path; both live under the node root.
-func nodeWriteAtomic(tmpDir, path string, data []byte, mode fs.FileMode) error {
-	f, err := os.CreateTemp(tmpDir, "s-")
+// nodeAtomicPrefix starts the name of the temp file of an S file's
+// replacement. The temp file lives in the node's tmpDir and never next to an
+// attribute, because filepath.Glob("*") in a zone or policy directory
+// matches dotfiles.
+const nodeAtomicPrefix = "s-"
+
+// WriteFileAtomic replaces path with data through a temp file in tmpDir,
+// named prefix and a random suffix: the data is written, the temp file
+// gets mode and is renamed onto path, so a reader sees the old file or the
+// new one, whole, never a partial write. tmpDir must be on the same file
+// system as path. A temp file a crash leaves keeps its prefix, by which the
+// caller finds and removes it. There is no fsync: the file survives a
+// restart of its writer, not of the machine. An error names path and the
+// step that failed, never the temp file, whose name is random, so a failure
+// that repeats reads the same each time.
+func WriteFileAtomic(tmpDir, prefix, path string, data []byte, mode fs.FileMode) error {
+	f, err := os.CreateTemp(tmpDir, prefix)
 	if err != nil {
-		return err
+		return atomicErr("create a temp file for", path, err)
 	}
 	name := f.Name()
 	_, werr := f.Write(data)
-	cerr := f.Close()
-	if err := errors.Join(werr, cerr); err != nil {
+	if err := errors.Join(werr, f.Close()); err != nil {
 		_ = os.Remove(name)
-		return err
+		return atomicErr("write a temp file for", path, err)
 	}
 	if err := os.Chmod(name, mode); err != nil {
 		_ = os.Remove(name)
-		return err
+		return atomicErr("chmod a temp file for", path, err)
 	}
 	if err := os.Rename(name, path); err != nil {
 		_ = os.Remove(name)
-		return err
+		return atomicErr("rename a temp file to", path, err)
 	}
 	return nil
+}
+
+// atomicErr is err of op on a temp file for path, with the temp file's name
+// left out: the bare errno of a path or link error.
+func atomicErr(op, path string, err error) error {
+	var le *os.LinkError
+	var pe *fs.PathError
+	switch {
+	case errors.As(err, &le):
+		err = le.Err
+	case errors.As(err, &pe):
+		err = pe.Err
+	}
+	return fmt.Errorf("%s %s: %w", op, path, err)
 }
 
 // nodeWriteInPlace truncates path and writes data into the same inode, as the
@@ -76,10 +101,10 @@ func nodeWriteAtomic(tmpDir, path string, data []byte, mode fs.FileMode) error {
 func nodeWriteInPlace(path string, data []byte, mode fs.FileMode) error {
 	_, statErr := os.Lstat(path)
 	created := errors.Is(statErr, fs.ErrNotExist)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, mode)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC|os.O_CREATE|nodeNoFollow, mode)
 	if errors.Is(err, fs.ErrPermission) && statErr == nil {
 		var restore func()
-		f, restore, err = nodeOpenOwned(path, os.O_WRONLY|os.O_TRUNC, err)
+		f, restore, err = nodeOpenOwned(path, os.O_WRONLY|os.O_TRUNC|nodeNoFollow, err)
 		defer restore()
 	}
 	if err != nil {
@@ -102,8 +127,8 @@ func nodeWriteInPlace(path string, data []byte, mode fs.FileMode) error {
 // open fails too.
 func nodeOpenOwned(path string, flag int, denied error) (f *os.File, restore func(), err error) {
 	restore = func() {}
-	fi, err := os.Stat(path)
-	if err != nil {
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() {
 		return nil, restore, denied
 	}
 	if os.Chmod(path, fi.Mode().Perm()|0o200) != nil {
@@ -123,10 +148,10 @@ func nodeOpenOwned(path string, flag int, denied error) (f *os.File, restore fun
 // With lease, the check and the write run under a lease, so no open can slip
 // between them (see readAFile).
 func nodeRewriteInPlace(path string, seen, data []byte, mtime time.Time, lease bool) (bool, error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	f, err := os.OpenFile(path, os.O_RDWR|nodeNoFollow, 0)
 	if errors.Is(err, fs.ErrPermission) {
 		var restore func()
-		f, restore, err = nodeOpenOwned(path, os.O_RDWR, err)
+		f, restore, err = nodeOpenOwned(path, os.O_RDWR|nodeNoFollow, err)
 		defer restore()
 	}
 	if err != nil {
@@ -174,23 +199,15 @@ func (n *Node) sfile(abs string) *nodeSFile {
 	if err != nil || !fi.Mode().IsRegular() {
 		return nil
 	}
+	rel := n.relPath(abs)
+	if c, ok := n.tree.rendered[rel]; ok && nodeRenderedAsIs(fi, c) {
+		return &nodeSFile{rel: rel, path: abs, mode: fi.Mode().Perm(), last: c}
+	}
 	b, err := os.ReadFile(abs)
 	if err != nil {
 		return nil
 	}
-	return &nodeSFile{rel: n.relPath(abs), path: abs, mode: fi.Mode().Perm(), last: string(b)}
-}
-
-// writeS writes content to f when it differs from what f last held.
-func (n *Node) writeS(f *nodeSFile, content string) error {
-	if f == nil || content == f.last {
-		return nil
-	}
-	if err := nodeWriteAtomic(n.tmpDir, f.path, []byte(content), f.mode); err != nil {
-		return err
-	}
-	f.last = content
-	return nil
+	return &nodeSFile{rel: rel, path: abs, mode: fi.Mode().Perm(), last: string(b)}
 }
 
 // nodeReadWithMTime reads path and the modification time it had before the
@@ -210,9 +227,30 @@ func nodeReadWithMTime(path string) ([]byte, time.Time, error) {
 	return b, fi.ModTime(), err
 }
 
-// nodeReadInt reads a file holding one decimal integer, as sysfs prints it.
-func nodeReadInt(path string) (int64, bool) {
-	b, err := os.ReadFile(path)
+// readFile is the content of the file at path. A file of a laid-out tree
+// that still has the render's length and mark (nodeRenderedAsIs) holds
+// what the render gave it, so it is not read; any other file is read, so a
+// tree's own value, such as a capture's or a limit the agent wrote, wins.
+func (n *Node) readFile(path string) ([]byte, error) {
+	if c, ok := n.tree.rendered[n.relPath(path)]; ok {
+		if fi, err := os.Lstat(path); err == nil && nodeRenderedAsIs(fi, c) {
+			return []byte(c), nil
+		}
+	}
+	return os.ReadFile(path)
+}
+
+// nodeRenderedAsIs reports whether a file of a laid-out tree with info fi
+// still holds content as the render wrote it: a regular file of that
+// length whose modification time is still the mark the render gives every
+// file (and NewNode every render-owned one), which any write moves.
+func nodeRenderedAsIs(fi fs.FileInfo, content string) bool {
+	return fi.Mode().IsRegular() && fi.Size() == int64(len(content)) && fi.ModTime().Equal(nodeRenderMTime)
+}
+
+// readInt reads a file holding one decimal integer, as sysfs prints it.
+func (n *Node) readInt(path string) (int64, bool) {
+	b, err := n.readFile(path)
 	if err != nil {
 		return 0, false
 	}
@@ -220,9 +258,9 @@ func nodeReadInt(path string) (int64, bool) {
 	return v, ok
 }
 
-// nodeReadString reads a file and trims the newline sysfs appends.
-func nodeReadString(path string) (string, bool) {
-	b, err := os.ReadFile(path)
+// readString reads a file and trims the newline sysfs appends.
+func (n *Node) readString(path string) (string, bool) {
+	b, err := n.readFile(path)
 	if err != nil {
 		return "", false
 	}

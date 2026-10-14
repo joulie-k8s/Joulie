@@ -1,0 +1,8 @@
+# Tier B arm gpu: caps plus the governor presets of GOVERNOR_CONTROL=gpu,
+# written by every agent (GOVERNOR_WRITES).
+controllerManager:
+  env:
+    GOVERNOR_CONTROL: "gpu"
+agent:
+  env:
+    GOVERNOR_WRITES: "true"

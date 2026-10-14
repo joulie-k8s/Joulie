@@ -1,0 +1,23 @@
+# Policy cluster: 7 Nodes in three hardware families, for the scenarios that
+# check where Joulie places work and what its caps cost
+# (tests/simcluster/scenarios/perf-isolation.yaml, cap-cost.yaml). With
+# static_partition and STATIC_HP_FRAC=0.5, 4 of the 7 Nodes stay in
+# performance, at least one per family, so every family also keeps an eco
+# Node (policy.PerformanceSet): intel 2 + 1, epyc 1 + 1, nvl 1 + 1, the
+# lower names first. No baseLoad: a Node idles until a run's jobs load it.
+# The pools are chosen for coverage, not to mirror any deployment.
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: policy}
+spec:
+  defaults:
+    labels: {joulie.io/managed: "true"}
+  pools:
+  - {name: intel, profile: intel-xeon-2s-rapl,      count: 3}
+  - {name: epyc,  profile: amd-epyc-2s-energy-only, count: 2}
+  - {name: nvl,   profile: nvidia-h100-nvl-8gpu,    count: 2}
+  # The GPU pools get the GPU tools a node with the driver installed has (a
+  # driver stub at each path the tools need). A pool left out follows the
+  # Joulie install, which by default delivers none (agent.runtimeClassName and
+  # agent.extraVolumes unset), so its agent's GPU inventory fails.
+  harness: {pools: {nvl: {toolDelivery: mounted}}}

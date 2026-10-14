@@ -1,0 +1,53 @@
+# The workload smoke: 9 jobs of every kind the v1 engine runs (CPU and GPU,
+# both classes, NVIDIA and AMD GPUs) on the smoke spec, in about 7 minutes.
+# Every job must complete through KWOK's pod-complete Stage and leave nothing
+# behind; the run must never stall and must attribute some energy.
+schemaVersion: 1
+name: smoke
+description: Nine jobs of each kind complete through KWOK with energy attributed and nothing left behind.
+cluster: {spec: tests/simcluster/specs/smoke.yaml, timing: dev}
+seed: 1
+duration: 4m
+drain: 3m
+abortOnRunStalled: 3m
+workload:
+  namespace: sim-workload
+  jobs:
+  - name: cpu-performance
+    class: performance
+    count: 3
+    every: 30s
+    requests: {cpu: "8", memory: 8Gi}
+    runtime: 90s
+    workClass: {cpu: cpu.compute_bound}
+  - name: cpu-standard
+    class: standard
+    count: 3
+    every: 30s
+    requests: {cpu: "16", memory: 16Gi}
+    runtime: 90s
+    workClass: {cpu: cpu.compute_bound}
+  # The GPU vendor taints of the profiles are tolerated per job: nothing
+  # adds them for a GPU request (no ExtendedResourceToleration in k3s).
+  - name: gpu-nvidia
+    class: performance
+    count: 2
+    every: 60s
+    requests: {cpu: "4", memory: 32Gi}
+    gpus: {resource: nvidia.com/gpu, count: 2}
+    runtime: 2m
+    workClass: {cpu: cpu.compute_bound, gpu: gpu.compute_bound}
+    tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+  - name: gpu-amd
+    class: standard
+    requests: {cpu: "4", memory: 32Gi}
+    gpus: {resource: amd.com/gpu, count: 2}
+    runtime: 2m
+    workClass: {cpu: cpu.compute_bound, gpu: gpu.compute_bound}
+    tolerations: [{key: amd.com/gpu, operator: Exists, effect: NoSchedule}]
+assertions:
+- {name: jobs, type: jobs, expect: {completedFraction: "== 1", completed: "== 9", failed: "== 0", incomplete: "== 0"}}
+- {name: stall, type: stall, expect: {gangIncomplete: "== 0", noProgress: "== 0", runStalled: "== 0"}}
+- {name: objects, type: objects, expect: {jobsNotComplete: "== 0", strayPodsOnFakeNodes: "== 0"}}
+- {name: completed-events, type: events, event: joulie.sim.job.completed, expect: "== 9"}
+- {name: energy, type: energy, scope: total, expect: "> 0 J"}

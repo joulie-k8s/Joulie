@@ -1,0 +1,9 @@
+# Joulie values every Tier B arm of experiment 05 installs, before the arm's
+# own file (scripts/run_tier_b.sh). STATIC_HP_FRAC this low keeps one Node
+# per hardware family in performance and puts the other in eco
+# (policy.PerformanceSet keeps at least one per family), so both presets of
+# every family are written on tests/simcluster/specs/governor.yaml.
+controllerManager:
+  env:
+    POLICY_TYPE: static_partition
+    STATIC_HP_FRAC: "0.1"

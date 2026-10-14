@@ -1,0 +1,88 @@
+# OpenTelemetry Collector for the otel-collector telemetry mode: the simulator
+# pushes OTLP to the Collector instead of Prometheus, and Prometheus scrapes
+# the Collector's prometheus exporter with honor_labels: true.
+#
+# The image is the core build referenced by the tag in versions.env
+# (OTELCOL_IMAGE); images.sh imports it by tag after checking its digest.
+#
+# Apply this after prometheus.yaml, which creates the monitoring namespace.
+# This file holds no Namespace, so deleting it when leaving the mode leaves
+# Prometheus in place.
+#
+# The configuration is not in this file. up.sh generates it with
+# `simcluster telemetry --part otelcol-config` and applies it as ConfigMap
+# otelcol-config, key config.yaml. It must bind the otlp receiver's http
+# protocol to 0.0.0.0:4318 and the prometheus exporter to 0.0.0.0:8889: the
+# Collector binds the receiver to 127.0.0.1:4318 by default, which neither the
+# Service nor the readiness probe reaches.
+#
+# The Service carries no prometheus.io/scrape annotation: Prometheus scrapes
+# the Collector in a job of its own, and the annotation would add a second
+# scrape of the same series without honor_labels.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otelcol
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: otelcol
+    app.kubernetes.io/part-of: joulie-simcluster
+spec:
+  replicas: 1
+  # The prometheus exporter holds the cumulative state of every series it
+  # received: two pods would each expose part of it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otelcol
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otelcol
+        app.kubernetes.io/part-of: joulie-simcluster
+    spec:
+      nodeSelector:
+        joulie.io/infra: "true"
+      containers:
+        - name: otelcol
+          image: otel/opentelemetry-collector:0.162.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config=/etc/otelcol/config.yaml
+          ports:
+            - name: otlp-http
+              containerPort: 4318
+            - name: prom-metrics
+              containerPort: 8889
+          readinessProbe:
+            tcpSocket:
+              port: otlp-http
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: otelcol-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otelcol
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: otelcol
+    app.kubernetes.io/part-of: joulie-simcluster
+spec:
+  selector:
+    app.kubernetes.io/name: otelcol
+  ports:
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+    - name: prom-metrics
+      port: 8889
+      targetPort: prom-metrics

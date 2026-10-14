@@ -13,12 +13,24 @@ env:
   SIM_POLL_INTERVAL: "8s"
   SIM_NODE_SELECTOR: "joulie.io/managed=true"
   SIM_NODE_CLASS_CONFIG: "/etc/joulie-sim/node-classes.yaml"
+  # Not rendered in emulate mode, where a trace starts an implicit run on the
+  # v1 engine at startup and runs come through the run API; set it in
+  # extraEnv to start one there.
   SIM_WORKLOAD_TRACE_PATH: "/etc/joulie-sim-trace/trace.jsonl"
   SIM_HARDWARE_CATALOG_PATH: "/etc/joulie-sim-catalog/hardware.generated.yaml"
 
 # Extra env vars merged on top of env (useful for optional overrides)
 extraEnv: {}
 
+rbac:
+  # The ClusterRole rules a v1 workload run needs: patch pods (the completion
+  # annotation), create and delete Jobs, and read NodeTwins. auto grants them
+  # with emulate.enabled, the only mode that runs v1 workloads; true or false
+  # forces them.
+  workloadRuns: auto
+
+# Mounted as optional volumes: when one does not exist the simulator starts
+# without that file and uses its defaults.
 configMaps:
   nodeClasses:
     name: joulie-simulator-node-classes
@@ -29,6 +41,62 @@ configMaps:
   workloadTrace:
     name: joulie-simulator-workload-trace
     key: trace.jsonl
+
+# Emulate mode: the simulator emulates the bare-metal nodes a cluster spec
+# lists (simulator/pkg/clusterspec) instead of modelling them from their
+# labels. It keeps each node's sysfs tree, cpuinfo and GPU tool state under
+# root on the host it runs on and advances them every tick; emulated agent
+# pods mount them from that host. Nodes the spec does not list keep the
+# label-based model. See "Simulator emulate mode" in the configuration
+# reference. When enabled, the chart runs one replica as root with strategy
+# Recreate, so two simulators never write one tree.
+emulate:
+  enabled: false
+  # Host directory of every emulated node's tree (SIM_HWEMU_ROOT), mounted
+  # at the same path. The simulator creates it.
+  root: /var/lib/joulie-hwemu
+  # Physics tick (SIM_EMULATE_TICK), a Go duration.
+  tick: 1s
+  # Receiver gate of the peer links between the GPUs of a node
+  # (SIM_GPU_RECEIVER_GATE): profile follows each hardware profile's
+  # gpus.transfer.receiverGate.enabled, off in every builtin profile; off
+  # disables it everywhere; on enables it on every GPU profile with the
+  # profile's fractions, for what-if runs.
+  receiverGate: profile
+  # The cluster spec as YAML text, stored in the ConfigMap
+  # joulie-simulator-cluster-spec. Usually given with
+  #   --set-file emulate.clusterSpec=tests/simcluster/specs/smoke.yaml
+  clusterSpec: ""
+  # Or the name of an existing ConfigMap that holds the spec under the key
+  # cluster-spec.yaml. Set exactly one of clusterSpec and clusterSpecConfigMap.
+  clusterSpecConfigMap: ""
+  # Compatibility exporters served at /exporters/<name>/metrics
+  # (SIM_EXPORTERS): kepler-0.7, kepler-0.12, dcgm-4.8.4, amd-dme-1.5.2. The
+  # ServiceMonitor scrapes each one listed.
+  exporters: []
+  # Merged into nodeSelector: the simulator must run on the host whose root
+  # the emulated agent pods mount.
+  nodeSelector:
+    joulie.io/hwemu-host: "true"
+
+# OpenTelemetry export of the emulated nodes and the facility, in emulate mode
+# only: OTLP JSON over HTTP, for example straight to a Prometheus started with
+# --web.enable-otlp-receiver. See "Simulator telemetry export" in the
+# configuration reference.
+otel:
+  # OTEL_EXPORTER_OTLP_METRICS_ENDPOINT, used as is, such as
+  # http://prometheus-operated.monitoring:9090/api/v1/otlp/v1/metrics.
+  # Empty pushes no metrics.
+  metricsEndpoint: ""
+  # OTEL_EXPORTER_OTLP_LOGS_ENDPOINT. Prometheus has no logs receiver; events
+  # always go to events.jsonl and are pushed only when this is set.
+  logsEndpoint: ""
+  # OTEL_METRIC_EXPORT_INTERVAL in milliseconds, since Helm cannot parse
+  # durations. A rate() window should cover at least 4 intervals.
+  exportIntervalMillis: 10000
+  # Extra resource attributes (OTEL_RESOURCE_ATTRIBUTES). They never override
+  # service.instance.id, k8s.node.name or host.name.
+  resourceAttributes: {}
 
 serviceMonitor:
   enabled: false

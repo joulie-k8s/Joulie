@@ -1,0 +1,2 @@
+# The root .gitignore drops *.jsonl; this trace is a test fixture.
+!trace.jsonl

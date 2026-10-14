@@ -1,0 +1,16 @@
+# Receiver-gate test profile of the v1 engine tests (workload_peer_gate_test.go):
+# the W7900 node with the receiver gate on and assumed fractions. Every idle
+# receiver under auto gets the slow rate (midPairFraction 0). Gate code: it
+# stays with the gate files.
+schemaVersion: 1
+name: gate-on-test-gpu
+extends: amd-radeon-pro-w7900-4gpu
+description: Test profile, the W7900 node with an assumed receiver gate on its peer link.
+gpus:
+  transfer:
+    peerLinkGBps: {v: 20.0, src: "assumed:test value"}
+    receiverGate:
+      enabled: {v: true, src: "assumed:test value"}
+      slowFraction: {v: 0.5, src: "assumed:test value"}
+      midFraction: {v: 0.75, src: "assumed:test value"}
+      midPairFraction: {v: 0.0, src: "assumed:test value, no pair at the mid rate"}

@@ -5,7 +5,7 @@ REPO_ROOT := $(shell cd ../.. && pwd)
 trace: trace.jsonl
 
 trace.jsonl:
-	cd $(REPO_ROOT) && go run ./simulator/cmd/workloadgen \
+	cd $(REPO_ROOT) && go run ./simulator/cmd/workloadgen --schema-version v2 \
 		--jobs 60 --gpu-ratio 0.85 --amd-gpu-ratio 0.35 \
 		--mean-inter-arrival-sec 0.08 --min-gpu-request 2 \
 		--namespace demo --seed 42 --emit-workload-records=false \

@@ -39,13 +39,13 @@ Core mental model:
 ## Section guide
 
 - [Getting Started]({{< relref "/docs/getting-started/_index.md" >}})
-  - core concepts, Helm-based install, workload class annotations, agent runtime modes, full configuration reference
+  - core concepts, Helm-based install, workload class annotations, agent runtime modes, full configuration reference, upgrading
 - [Architecture]({{< relref "/docs/architecture/_index.md" >}})
   - controller manager, agent, digital twin, and scheduler extender roles; CRD definitions; policy algorithms; telemetry and actuation interfaces; kubectl plugin
 - [Hardware]({{< relref "/docs/hardware/_index.md" >}})
   - CPU (RAPL) and GPU (NVML) support, heterogeneous node strategies, cap range discovery, hardware modeling for simulation
 - [Simulator]({{< relref "/docs/simulator/_index.md" >}})
-  - trace-driven workload simulation, power and cooling models, facility stress testing, workload distribution profiles
+  - a simulated cluster on emulated nodes, KWOK and standalone modes, workload traces and scenarios, power and facility models
 - [Experiments]({{< relref "/docs/experiments/_index.md" >}})
   - benchmark design, baseline comparisons, and measured power savings across heterogeneous clusters
 

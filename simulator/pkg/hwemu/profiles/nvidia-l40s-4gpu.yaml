@@ -10,6 +10,7 @@ description: 4x L40S on the two socket EPYC 9534 energy-only host, nvidia-smi, G
 sources:
   cudagpus:   {kind: published, ref: "https://developer.nvidia.com/cuda-gpus", note: "compute capability: L40S 8.9"}
   nvsmiql40s: {kind: measured, ref: "read-only nvidia-smi -q of a node with 4x L40S, 2026-10", note: "Persistence Mode, an idle GPU's Average Power Draw"}
+  nvsmiqclkl40s: {kind: measured, ref: "read-only nvidia-smi -q of an idle node with 4x L40S, 2026-10", note: "Clocks section of an idle GPU at P8: Graphics 210 MHz, Memory 405 MHz"}
   gfdlabelsl40s: {kind: measured, ref: "read-only node description of a node with 4x L40S, 2026-10", note: "GPU feature discovery labels gpu.family (ampere for compute 8.9) and gpu.memory"}
   l40spb:      {kind: published, ref: "https://www.pny.com/File%20Library/Company/Support/product-briefs/data-center-gpus/NVIDIA-L40S-Product-Brief.pdf", note: "NVIDIA PB-11470-001_v02, August 2023. Table 1: total board power 350 W default, 350 W maximum, TBD W minimum; Device ID 26B9, Vendor ID 0x10DE; MIG not supported. Table 3: PCI class code 0x03, subclass 0x02 (3D controller); Display Off is the default mode. Programmable Power: example nvidia-smi -pl 150"}
   l40pb:       {kind: published, ref: "https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/datasheets/L-40/product-brief-L40.pdf", note: "NVIDIA PB-11131-001_v03, the L40 on the same AD102 board family. Table 1: 300 W default, 300 W maximum, 100 W minimum"}
@@ -18,6 +19,7 @@ sources:
   pciids:      {kind: published, ref: "https://pci-ids.ucw.cz/read/PC/10de/26b9", note: "10de:26b9 AD102GL [L40S] (pci.ids 2026.10.01)"}
   nvml:        {kind: published, ref: "https://docs.nvidia.com/deploy/nvml-api/api/group__nvmlDeviceQueries.html", note: "power averaged over 1 s on Ampere (except GA100) or newer; limits in mW"}
   gfd:         {kind: published, ref: "https://github.com/NVIDIA/k8s-device-plugin/blob/d7265fdcf89f/docs/gpu-feature-discovery/README.md", note: "lines 216-242"}
+  nvsmi:       {kind: published, ref: "https://docs.nvidia.com/deploy/nvidia-smi/index.html", note: "-lgc and -lmc require root; -lmc does not work on GPUs based on the Hopper architecture"}
 node:
   taints: [{key: nvidia.com/gpu, effect: NoSchedule}]
 gpus:
@@ -39,7 +41,79 @@ gpus:
     maxW: {v: 350, src: "published:l40spb#Table 1 350 W maximum"}
     defaultW: {v: 350, src: "published:l40spb#Table 1 350 W default"}
     minW: {v: 100, src: "published:smil40s#Min Power Limit 100.00 W; l40spb gives the minimum as TBD, and l40pb states the same 100 W for the L40"}
-  tools: [{name: nvidia-smi, variant: default}]
+  # A real nvidia-smi runs only with its ELF loader, the shared libraries
+  # it links and the NVML library present; fakesmi checks them, in this
+  # order, under HWEMU_ROOTFS.
+  tools:
+    - name: nvidia-smi
+      variant: default
+      requires:
+        - paths: [/lib64/ld-linux-x86-64.so.2]
+          exit: 127
+          src: "assumed:nvidia-smi is a dynamically linked x86-64 ELF with this interpreter (check with file $(command -v nvidia-smi)); without it exec fails with ENOENT, which a shell reports as exit 127"
+        - paths: [/lib/x86_64-linux-gnu/libpthread.so.0, /usr/lib/x86_64-linux-gnu/libpthread.so.0, /lib64/libpthread.so.0, /usr/lib64/libpthread.so.0]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: libpthread.so.0: cannot open shared object file: No such file or directory"
+          src: "assumed:the shared libraries ldd lists for nvidia-smi, in its order (libpthread.so.0, libm.so.6, libdl.so.2, librt.so.1, libc.so.6; check with ldd $(command -v nvidia-smi)); the loader prints this line for the first one it cannot find and exits 127; the directories are the Debian and RHEL ones"
+        - paths: [/lib/x86_64-linux-gnu/libm.so.6, /usr/lib/x86_64-linux-gnu/libm.so.6, /lib64/libm.so.6, /usr/lib64/libm.so.6]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: libm.so.6: cannot open shared object file: No such file or directory"
+          src: "assumed:as libpthread.so.0"
+        - paths: [/lib/x86_64-linux-gnu/libdl.so.2, /usr/lib/x86_64-linux-gnu/libdl.so.2, /lib64/libdl.so.2, /usr/lib64/libdl.so.2]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: libdl.so.2: cannot open shared object file: No such file or directory"
+          src: "assumed:as libpthread.so.0"
+        - paths: [/lib/x86_64-linux-gnu/librt.so.1, /usr/lib/x86_64-linux-gnu/librt.so.1, /lib64/librt.so.1, /usr/lib64/librt.so.1]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: librt.so.1: cannot open shared object file: No such file or directory"
+          src: "assumed:as libpthread.so.0"
+        - paths: [/lib/x86_64-linux-gnu/libc.so.6, /usr/lib/x86_64-linux-gnu/libc.so.6, /lib64/libc.so.6, /usr/lib64/libc.so.6]
+          exit: 127
+          stderr: "nvidia-smi: error while loading shared libraries: libc.so.6: cannot open shared object file: No such file or directory"
+          src: "assumed:as libpthread.so.0"
+        - paths: [/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1, /usr/lib64/libnvidia-ml.so.1]
+          exit: 12
+          stderr: "NVIDIA-SMI couldn't find libnvidia-ml.so library in your system. Please make sure that the NVIDIA Display Driver is properly installed and present in your system.\nPlease also try adding directory that contains libnvidia-ml.so to your system PATH."
+          src: "published:nvsmi#RETURN VALUE, Return code 12 - NVML Shared Library couldn't be found or loaded; the library paths (Debian and RHEL layouts) and the stderr text are assumed"
+  clocks:
+    sm:
+      minMHz: {v: 210, src: "assumed:the lowest graphics clock; capture nvidia-smi -q -d SUPPORTED_CLOCKS to check"}
+      maxMHz: {v: 2520, src: "published:l40spb#Table 1 GPU clocks Boost: 2,520 MHz; smil40s Max Clocks SM 2520 MHz"}
+      idleMHz: {v: 210, src: "measured:nvsmiqclkl40s#Clocks Graphics of an idle GPU at P8"}
+      sustainedMaxMHz: {v: 2520, src: "assumed:the boost clock; no published clock under sustained load"}
+    mem:
+      minMHz: {v: 405, src: "assumed:the lowest GDDR6 memory clock; capture nvidia-smi -q -d SUPPORTED_CLOCKS to check"}
+      maxMHz: {v: 9001, src: "published:l40spb#Table 2 Memory clock 9,001 MHz; smil40s Max Clocks Memory 9001 MHz"}
+      idleMHz: {v: 405, src: "measured:nvsmiqclkl40s#Clocks Memory of an idle GPU at P8"}
+      runtimeLock: {v: true, src: "published:nvsmi#-lmc works on GPUs that are not Hopper"}
+    idlePState: {v: P8, src: "published:cryodrgn477#each NVIDIA L40S at P8 and 0% utilization; l40spb Table 1 Performance States P0, P8"}
+    supported:
+      smMHz:
+        v: [2520, 2505, 2490, 2475, 2460, 2445, 2430, 2415, 2400, 2385, 2370, 2355, 2340, 2325,
+            2310, 2295, 2280, 2265, 2250, 2235, 2220, 2205, 2190, 2175, 2160, 2145, 2130, 2115,
+            2100, 2085, 2070, 2055, 2040, 2025, 2010, 1995, 1980, 1965, 1950, 1935, 1920, 1905,
+            1890, 1875, 1860, 1845, 1830, 1815, 1800, 1785, 1770, 1755, 1740, 1725, 1710, 1695,
+            1680, 1665, 1650, 1635, 1620, 1605, 1590, 1575, 1560, 1545, 1530, 1515, 1500, 1485,
+            1470, 1455, 1440, 1425, 1410, 1395, 1380, 1365, 1350, 1335, 1320, 1305, 1290, 1275,
+            1260, 1245, 1230, 1215, 1200, 1185, 1170, 1155, 1140, 1125, 1110, 1095, 1080, 1065,
+            1050, 1035, 1020, 1005, 990, 975, 960, 945, 930, 915, 900, 885, 870, 855, 840, 825,
+            810, 795, 780, 765, 750, 735, 720, 705, 690, 675, 660, 645, 630, 615, 600, 585, 570,
+            555, 540, 525, 510, 495, 480, 465, 450, 435, 420, 405, 390, 375, 360, 345, 330, 315,
+            300, 285, 270, 255, 240, 225, 210]
+        src: "assumed:15 MHz steps from sm.minMHz to sm.maxMHz; capture nvidia-smi -q -d SUPPORTED_CLOCKS to check"
+      memMHz: {v: [9001, 5001, 810, 405], src: "assumed:GDDR6 memory levels from the maximum down to the idle clock; capture nvidia-smi -q -d SUPPORTED_CLOCKS to check"}
+      # A lower memory clock offers only the lower graphics clocks, as a T4
+      # lists 87 graphics clocks at its 5001 MHz memory clock and 24, up to
+      # 645 MHz, at 405 MHz.
+      smMaxByMem:
+        - {memMHz: 810, smMaxMHz: 1290, src: "assumed:twice the 405 MHz ceiling; not measured, capture nvidia-smi -q -d SUPPORTED_CLOCKS to check"}
+        - {memMHz: 405, smMaxMHz: 645, src: "assumed:the ceiling a T4 shows at 405 MHz memory; not measured on the L40S, capture nvidia-smi -q -d SUPPORTED_CLOCKS to check"}
+    lockFloorAtIdle: {v: true, src: "assumed:an idle GPU sits at the lower bound of its lock; to measure with a lock floor and no load"}
+    locksResetOnDeinit: {v: false, src: "assumed:the driver persistence documentation lists the power limit, not the locks, among the settings a GPU initialization resets; to measure"}
+  transfer:
+    peerLinkGBps: {v: 32, src: "assumed:PCI Express Gen4 x16 (l40spb Table 1), 16 GT/s on 16 lanes, about 32 GB/s each way; peers move data over PCIe"}
+    receiverGate:
+      enabled: {v: false, src: "assumed:no receiver gate measured on this family; off in every repository profile"}
 physics:
   gpu:
     idleW: {v: 36.3, src: "measured:nvsmiql40s#an idle GPU's Average Power Draw; cryodrgn477 shows 31 W at P8"}
@@ -49,3 +123,9 @@ physics:
     memoryGamma: {v: 1.2, src: "assumed:simulator default SIM_GPU_MEMORY_GAMMA; throughput only"}
     capSettleTauMS: {v: 150, src: "assumed:simulator default SIM_GPU_CAP_APPLY_TAU_MS"}
     telemetryWindowMS: {v: 1000, src: "published:nvml#Ampere or newer; the L40S is Ada"}
+    clockBeta: {v: 1.5, src: "assumed:dynamic power falls faster than the compute clock, as the voltage falls with it; to sweep from 1.0 to 2.5"}
+    memoryKneeFrac: {v: 0.65, src: "assumed:memory-bound work keeps its speed down to 0.65 of the maximum compute clock, between the 0.41 and 0.87 where published memory-bound clock sweeps stop being flat"}
+    memoryKneeGamma: {v: 1.0, src: "assumed:below the knee memory-bound work slows in proportion to the clock"}
+    dataPathHoldW: {v: 10.0, src: "assumed:no public idle cost of the GDDR6 memory clock locked at its maximum; to sweep from 1 to 50 W per GPU"}
+    gatingOffIdleW: {v: 0.0, src: "assumed:no NVIDIA preset turns idle gating off"}
+    dataPathGamma: {v: 0.3, src: "assumed:memory-bound work loses 0.3 of its speed with the data path at its lowest level"}

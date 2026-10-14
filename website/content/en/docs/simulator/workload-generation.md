@@ -1,438 +1,218 @@
 ---
 title: "Workload Generation"
-weight: 15
+weight: 20
+aliases:
+  - "/docs/simulator/workload-distributions/"
+  - "/docs/simulator/kubernetes-ai-workloads/"
 ---
 
-This page documents how Joulie generates **realistic AI workload traces** for the simulator.
+`workloadgen` (`simulator/cmd/workloadgen`) writes synthetic traces of AI cluster workloads for the simulator. This page says what a trace contains and how the generator samples it; [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}}) says how the simulator runs it.
 
-It is separate from [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}}):
+```bash
+go run ./simulator/cmd/workloadgen --out trace.jsonl --jobs 200 --seed 7
+```
 
-- this page explains how traces are **generated**,
-- the workload-simulator page explains how those traces are **consumed at runtime**.
+The generator models AI-oriented Kubernetes clusters: CPU and GPU jobs, memory-bound jobs, and workloads made of several pods, such as distributed training and hyperparameter searches. It does not model network bandwidth, disk throughput or framework communication protocols: their cost is folded into the utilisation and bottleneck signals of each workload (`gpuUtilization`, `memoryIntensity`, `cpuFeedIntensityGpu`).
 
-## Scope
+## Trace format
 
-The current generator is designed to be realistic for:
+A trace is JSON Lines with two kinds of records:
 
-- AI-oriented Kubernetes clusters,
-- CPU + GPU workloads,
-- memory-pressure-sensitive jobs,
-- multi-pod logical workloads such as distributed training and HPO-style experiments.
+- `type=workload`: one logical workload, with its pods by role (`--emit-workload-records`, on by default). The simulator ignores it; it is there for inspection.
+- `type=job`: one runnable pod, expanded from a workload. The simulator runs these.
 
-The current generator **does not** explicitly model:
+```json
+{"type":"workload","schemaVersion":"v3","workloadId":"workload-000001","submitTimeOffsetSec":12.4,"namespace":"default","workloadType":"distributed_training","gang":true,"durationSec":14400,"workloadClass":{"cpu":"cpu.mixed","gpu":"gpu.compute_bound"},"sharedIntensityProfile":{"cpuUtilization":0.28,"gpuUtilization":0.47,"memoryIntensity":0.58,"ioIntensity":0.08,"cpuFeedIntensityGpu":0.56},"pods":[{"role":"launcher","replicas":1,"requests":{"cpu":"2","memory":"4Gi"},"gang":true},{"role":"worker","replicas":4,"requests":{"cpu":"4","memory":"12Gi","nvidia.com/gpu":"1"},"gang":true}]}
+```
 
-- network bandwidth,
-- disk IO throughput,
-- exact framework-level communication protocols.
+A job record of that workload (base speed 1.0: the worker runs for the workload's 14400 s on its 4 cores and its GPU):
 
-Instead, distributed overhead is folded into workload structure and bottleneck signals such as:
+```json
+{"type":"job","schemaVersion":"v3","jobId":"workload-000001-worker-01","workloadId":"workload-000001","workloadType":"distributed_training","podRole":"worker","gang":true,"submitTimeOffsetSec":12.4,"namespace":"default","intentClass":"performance","podTemplate":{"requests":{"cpu":"4","memory":"12Gi","nvidia.com/gpu":"1"}},"work":{"cpuUnits":57600,"gpuUnits":14400},"workloadClass":{"cpu":"cpu.mixed","gpu":"gpu.compute_bound"},"workloadProfile":{"cpuUtilization":0.28,"gpuUtilization":0.47,"memoryIntensity":0.58,"ioIntensity":0.08,"cpuFeedIntensityGpu":0.56}}
+```
 
-- `gpuUtilization`,
-- `memoryIntensity`,
-- `cpuFeedIntensityGpu`.
+The fields that drive the simulation:
 
-## Why the generator changed
+- `intentClass`: `performance` or `standard`, the class the pod declares to Joulie.
+- `workloadClass.cpu` and `workloadClass.gpu`: the qualitative response to a cap (`cpu.compute_bound`, `cpu.memory_bound`, `cpu.io_bound`, `cpu.mixed`; `gpu.compute_bound`, `gpu.memory_bound`, `gpu.bandwidth_bound`, `gpu.mixed`).
+- `workloadProfile`: the quantitative signals, `cpuUtilization`, `gpuUtilization`, `memoryIntensity`, `ioIntensity`, `cpuFeedIntensityGpu`, and `peerTransferIntensity` with `--peer-transfer-intensity`. They set the power a job draws and how much a cap slows it.
+- `work`: the CPU and GPU work units, see [Work units](#work-units).
+- `gang`: the pods of the workload advance only while all of them run.
 
-The original synthetic generator was intentionally simple: it sampled single jobs with coarse CPU/GPU classes.
-That was fine for basic scheduler and power-loop testing, but it was too weak for realistic AI experiments.
+### Schema versions
 
-The current generator now reflects the main public observations from production GPU clusters:
+`--schema-version` selects the schema, which every record carries as `schemaVersion`.
 
-- many jobs are **single-GPU**,
-- a smaller fraction of **multi-GPU jobs dominates GPU-time**,
-- job durations are **heavy-tailed**,
-- arrivals follow a **daily pattern**,
-- multi-pod logical workloads are common,
-- and accelerator jobs often have **lower host CPU compute utilisation than their CPU requests would suggest**.
+| | `v3` (default) | `v2` |
+|---|---|---|
+| `sensitivity` on job records | absent, so the simulator reads 1 (a cap slows the job in full); `--cpu-sensitivity` and `--gpu-sensitivity` write the keys they name on every job | always present: `{"cpu":0,"gpu":0}` in default mode, `0.5` on performance jobs in diurnal mode |
+| power-profile affinity | none; the class is `intentClass`, which the simulator renders as its placement intent (`SIM_WORKLOAD_INTENT`) | performance jobs carry `NotIn [eco]` on `joulie.io/power-profile` |
+| work units | every pod's ideal runtime equals its workload's `durationSec` | scaled by utilisation, role and rate flags |
+| diurnal GPU class | `gpu.compute_bound` | `gpu.compute`, which the physics model treats as `gpu.mixed` |
+| `--arrival-window-sec`, `--max-duration-sec`, `--peer-transfer-intensity` | available | rejected |
+| `--cpu-work-rate-per-core`, `--gpu-work-rate-per-gpu`, `--work-scale` | rejected | available |
 
-## Evidence base
+Pass `--schema-version v2` for traces in the v2 format.
 
-The current defaults are grounded in the following public sources.
+## How a workload is sampled
 
-### Production traces and workload studies
+The default mode (`--mode default`) samples each logical workload in this order:
+
+1. its arrival time,
+2. its family,
+3. its GPU count,
+4. its duration,
+5. its shared profile (classes, utilisation, intensities),
+6. its pods and their requests,
+7. the job records, one per pod.
+
+The priors follow public studies of production GPU clusters: most jobs use one GPU while multi-GPU jobs dominate GPU time, durations are heavy-tailed, arrivals follow the working day, many workloads span several pods, and accelerator jobs use far less host CPU than they request. They are a prior shaped by those studies, not a fit to one cluster.
+
+`--mode diurnal` samples instead single-pod CPU jobs, GPU training (1 to 8 GPUs) and GPU inference (1 or 2 GPUs) on a cosine day and night rate that peaks at `--diurnal-peak-rate` jobs per simulated minute over `--sim-hours`, with a 10 % chance of a burst of `--diurnal-burst-min` to `--diurnal-burst-max` jobs.
+
+### Arrivals
+
+Inter-arrival times are exponential, with a mean of `--mean-inter-arrival-sec` divided by the multiplier of the hour of day:
+
+| Hours | 00 to 05 | 06 | 07 | 08 | 09, 10 | 11 | 12 | 13 | 14, 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Multiplier | 0.10 to 0.20 | 0.40 | 0.65 | 0.85 | 1.00 | 0.95 | 0.80 | 0.85 | 1.00 | 0.95 | 0.85 | 0.65 | 0.50 | 0.40 | 0.30 | 0.22 | 0.18 |
+
+On a day drawn with `--burst-day-probability` (default 0.25), one hour among 10, 11, 14, 15 and 16 is a burst: its multiplier is scaled by `--burst-multiplier` (2.0) and raised by `--burst-mean-jobs` / 16. On a day drawn with `--dip-day-probability` (0.30), one off-peak hour (3, 4, 5, 19, 20 or 21) is a dip, scaled by `--dip-multiplier` (0.08), as during a maintenance window. `--time-scale` maps trace seconds to simulated seconds for the hour of day.
+
+### Families
+
+A workload uses GPUs with probability `--gpu-ratio` (default 0.80). Its family, and the classes it gets:
+
+| Family | Share | CPU class | GPU class |
+|---|---|---|---|
+| `debug_eval` | 45 % of GPU workloads | `cpu.mixed` | `gpu.memory_bound` |
+| `single_gpu_training` | 25 % | `cpu.mixed` | `gpu.compute_bound` |
+| `distributed_training` | 14 % | `cpu.mixed` | `gpu.compute_bound` |
+| `parameter_server_training` | 7 % | `cpu.memory_bound` | `gpu.compute_bound` |
+| `hpo_experiment` | 9 % | `cpu.mixed` | `gpu.mixed` |
+| `cpu_preprocess` | 75 % of CPU-only workloads | `cpu.memory_bound` | none |
+| `cpu_analytics` | 25 % | `cpu.compute_bound` | none |
+
+### GPU count
+
+`P(G=1) = 0.80`, `P(G=2) = 0.10`, `P(G=4) = 0.07`, `P(G=8) = 0.03`; `--min-gpu-request` raises the floor. `--amd-gpu-ratio` requests `amd.com/gpu` instead of `nvidia.com/gpu` for that share of GPU workloads.
+
+### Duration
+
+Lognormal per family, clamped:
+
+| Family | Median | Range |
+|---|---|---|
+| `debug_eval` | 206 s | 30 s to 1000 s |
+| `single_gpu_training` | 2 h | 15 min to 7 d |
+| `distributed_training` | 4 h, x1.2 with 4 or more GPUs | 20 min to 14 d |
+| `parameter_server_training` | 3 h | 15 min to 7 d |
+| `hpo_experiment` | 2 h | 20 min to 3 d |
+| `cpu_preprocess` | 15 min | 2 min to 8 h |
+| `cpu_analytics` | 30 min | 5 min to 24 h |
+
+### Utilisation and bottlenecks
+
+Requests decide placement; the profile decides power and slowdown. The two are sampled apart, because production studies report GPUs well below full utilisation and host CPUs underused even when CPU and memory are requested in proportion to GPUs.
+
+- **GPU utilisation**: a mean by GPU count, from the Philly study (1 GPU 0.5238, 2 GPUs 0.50, 4 GPUs 0.4518, 8 GPUs 0.5899, more 0.4039), lowered by 0.10 for `debug_eval` and `parameter_server_training`, 0.08 for `distributed_training` and 0.05 for `hpo_experiment`, then spread by up to 0.12 (0.16 from 4 GPUs).
+- **CPU utilisation**, uniform: `cpu_preprocess` 0.50 to 0.75, `cpu_analytics` 0.75 to 0.95, `debug_eval` 0.20 to 0.40, `single_gpu_training` 0.20 to 0.45, `distributed_training` 0.15 to 0.35, `parameter_server_training` 0.20 to 0.40, `hpo_experiment` 0.15 to 0.35.
+- **`memoryIntensity`**: highest for `cpu_preprocess` and `parameter_server_training` (0.70 to 0.92), then `debug_eval` (0.55 to 0.85), `distributed_training` (0.45 to 0.75), `hpo_experiment` (0.35 to 0.70), `single_gpu_training` (0.30 to 0.60) and `cpu_analytics` (0.20 to 0.45). A memory-bound job draws less power per unit of utilisation and slows less under a CPU cap; on a GPU it moves the job toward the memory-bound regime, where a moderate cap costs less.
+- **`ioIntensity`**: `cpu_preprocess` 0.10 to 0.30, `debug_eval` 0.05 to 0.20. It softens the CPU slowdown further.
+- **`cpuFeedIntensityGpu`**: from 0.15 to 0.35 (`debug_eval`) up to 0.40 to 0.75 (`parameter_server_training`). It makes a GPU job sensitive to a CPU cap, since the CPU feeds the GPUs.
+
+[Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) turns these signals into power and throughput.
+
+### Pods
+
+Each family expands into the pods of the Kubernetes pattern it stands for. The generator writes job records only; it renders no `PyTorchJob`, `MPIJob` or Katib `Experiment`.
+
+| Family | Pods | Gang | Kubernetes pattern |
+|---|---|---|---|
+| `single_gpu_training`, `debug_eval` | 1 worker with all the GPUs | no | a single training or evaluation pod |
+| `distributed_training` | 1 CPU-only launcher, `G` workers with 1 GPU each | yes | PyTorch distributed training, Kubeflow Trainer, MPI worker sets |
+| `parameter_server_training` | 1 CPU-only parameter server (2 from 4 workers), `G` workers with 1 GPU each | yes | TensorFlow-style parameter servers |
+| `hpo_experiment` | 1 controller, 2 to 4 trials (up to 8 from 4 GPUs) with 1 GPU each | no | a Katib experiment and its trials |
+| `cpu_preprocess`, `cpu_analytics` | 1 CPU-only pod | no | a batch job |
+
+The pods of a workload share its profile. A gang workload makes no progress until all its pods run, as a distributed job waits for its last worker.
+
+## Work units
+
+The simulator runs on abstract work units, so the generator converts a duration into work. In `v3` every pod of a workload gets:
+
+```text
+CPUUnits = durationSec * cpu_request * base_speed_per_core
+GPUUnits = durationSec * gpu_request * base_speed_per_core
+```
+
+At full speed the simulator does `request * SIM_BASE_SPEED_PER_CORE` units per second, so a pod's ideal runtime, with no cap and no contention, is its workload's `durationSec`. `--base-speed-per-core` defaults to 1.0, as `SIM_BASE_SPEED_PER_CORE` does; a trace generated with another value must run on a simulator set to the same speed. The CPU request is taken as written to the trace (two decimals). Utilisation and intensity stay in the profile, where they drive power and slowdown, not the amount of work.
+
+`v2` maps duration to work through utilisation (floored at 0.10), the role of the pod and `--cpu-work-rate-per-core`, `--gpu-work-rate-per-gpu` and, in diurnal mode, `--base-speed-per-core` (default 2.0) and `--work-scale`.
+
+Two `v3` flags fit a trace into a run of fixed length:
+
+- `--arrival-window-sec S` compresses the submit offsets so the last arrival is at `S` seconds, keeping the arrival pattern's shape; a window later than the last sampled arrival changes nothing.
+- `--max-duration-sec D` clamps each workload's `durationSec` to `D` before its work is sized.
+
+Both default to 0, which keeps the sampled values.
+
+## Flags
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--out` | `trace.jsonl` | Output file |
+| `--jobs` | `50` | Logical workloads |
+| `--seed` | the current time | Random seed; set it for a reproducible trace |
+| `--mode` | `default` | `default` or `diurnal` |
+| `--schema-version` | `v3` | `v3` or `v2` |
+| `--mean-inter-arrival-sec` | `5` | Mean inter-arrival before the hourly multiplier |
+| `--gpu-ratio`, `--amd-gpu-ratio`, `--min-gpu-request` | `0.80`, `0`, `0` | GPU workloads, their AMD share, and the least GPUs per GPU workload |
+| `--perf-ratio` | `0.30` | Base share of `performance` workloads |
+| `--burst-day-probability`, `--burst-multiplier`, `--burst-mean-jobs` | `0.25`, `2.0`, `8` | Daily bursts |
+| `--dip-day-probability`, `--dip-multiplier` | `0.30`, `0.08` | Daily dips |
+| `--emit-workload-records` | `true` | Write the `type=workload` records |
+| `--base-speed-per-core` | `1.0` in `v3` | Work units per core, or GPU, per second |
+| `--cpu-sensitivity`, `--gpu-sensitivity` | unset | `v3`: the `sensitivity` of every job, in [0, 1] |
+| `--arrival-window-sec`, `--max-duration-sec` | `0` | `v3`: fit the trace into a run |
+| `--peer-transfer-intensity` | `0` | `v3`: `workloadProfile.peerTransferIntensity` of every job with two or more GPUs, the share of its GPU time spent copying between its GPUs ([Peer transfers]({{< relref "/docs/simulator/workload-simulator.md#peer-transfers" >}})) |
+
+`go run ./simulator/cmd/workloadgen -h` lists every flag.
+
+A benchmark may rewrite the placement of a generated trace to fit its cluster: experiment 02 keeps the logical workloads, work and timing, and points each pod's placement constraints at the KWOK nodes of the benchmark.
+
+## Not modelled
+
+- no fit of the priors to Helios, Philly or Alibaba traces inside the generator,
+- no network or storage bandwidth,
+- one shared profile per workload, with no phases over time,
+- no rendering of `PyTorchJob`, `MPIJob`, Katib or Volcano and Kueue objects.
+
+## References
+
+Traces and workload studies:
 
 - [HeliosData repository (SenseTime traces)](https://github.com/S-Lab-System-Group/HeliosData)
-- [Characterization and Prediction of Deep Learning Workloads in Large-Scale GPU Datacenters, SC'21](https://tianweiz07.github.io/Papers/21-sc.pdf)
+- [Characterization and Prediction of Deep Learning Workloads in Large-Scale GPU Datacenters](https://tianweiz07.github.io/Papers/21-sc.pdf), SC'21
 - [Philly traces repository](https://github.com/msr-fiddle/philly-traces)
-- [Analysis of Large-Scale Multi-Tenant GPU Clusters for DNN Training Workloads, USENIX ATC'19](https://www.usenix.org/system/files/atc19-jeon.pdf)
-- [Alibaba cluster-trace-gpu-v2020 README](https://github.com/alibaba/clusterdata/blob/master/cluster-trace-gpu-v2020/README.md)
+- Myeongjae Jeon et al., [Analysis of Large-Scale Multi-Tenant GPU Clusters for DNN Training Workloads](https://www.usenix.org/system/files/atc19-jeon.pdf), USENIX ATC'19
+- [Alibaba cluster-trace-gpu-v2020](https://github.com/alibaba/clusterdata/blob/master/cluster-trace-gpu-v2020/README.md)
 
-### Modelling and scheduler references
+Modelling:
 
-- [Roofline: an insightful visual performance model for multicore architectures](https://dl.acm.org/doi/10.1145/1498765.1498785)
+- Samuel Williams et al., [Roofline: an insightful visual performance model for multicore architectures](https://dl.acm.org/doi/10.1145/1498765.1498785)
 - [Blox: A Modular Toolkit for Scheduling and Optimizing DAG-based Workflows in ML Clusters](https://arxiv.org/html/2312.12621v1)
+- David Meisner et al., [Memory Performance at Reduced CPU Clock Speeds](https://www.usenix.org/system/files/conference/hotpower12/hotpower12-final21.pdf), HotPower'12
+- [Characterizing the Impact of GPU Power Management on HPC Applications](https://arxiv.org/abs/2501.16371), PMBS 2025 preprint
+- Tapasya Patki et al., [Comparing GPU Power and Frequency Capping for Energy Savings in Scientific Applications](https://ieeexplore.ieee.org/document/8944989), SC Workshops 2019
 
-### Kubernetes-native multi-pod workload references
+Kubernetes multi-pod workloads:
 
 - [Kubeflow Trainer distributed training reference](https://www.kubeflow.org/docs/components/trainer/legacy-v1/reference/distributed-training/)
 - [Kubeflow PyTorchJob guide](https://www.kubeflow.org/docs/components/trainer/legacy-v1/user-guides/pytorch/)
 - [Kubeflow Trainer job scheduling with Volcano](https://www.kubeflow.org/docs/components/trainer/operator-guides/job-scheduling/volcano/)
+- [Kubeflow legacy job scheduling guide](https://www.kubeflow.org/docs/components/trainer/legacy-v1/user-guides/job-scheduling/)
 - [Kueue introduction](https://kubernetes.io/blog/2022/10/04/introducing-kueue/)
 - [Kubeflow Katib overview](https://www.kubeflow.org/docs/components/katib/overview/)
 - [Katib experiment configuration guide](https://www.kubeflow.org/docs/components/katib/user-guides/hp-tuning/configure-experiment/)
-
-## Trace format
-
-The generator now emits two kinds of JSONL records:
-
-- `type=workload`: logical workload metadata
-- `type=job`: pod-expanded runnable records consumed by the simulator
-
-The simulator currently consumes the `type=job` records directly and ignores `type=workload` metadata records.
-The workload metadata is still useful for inspection, debugging, and future calibration tooling.
-
-In benchmark experiments, there can also be a post-generation retargeting step. For example, experiment 02 keeps the canonical logical trace produced by `workloadgen`, then rewrites only the pod-level placement constraints so the runnable jobs land on concrete heterogeneous KWOK nodes present in the benchmark cluster. That retargeting does not change the logical workload shape, work units, or submission timing; it only makes the generated jobs hardware-aware for that specific cluster instance.
-
-### Logical workload record
-
-Example:
-
-```json
-{"type":"workload","schemaVersion":"v2","workloadId":"workload-000001","submitTimeOffsetSec":12.4,"namespace":"default","workloadType":"distributed_training","gang":true,"durationSec":14400,"workloadClass":{"cpu":"cpu.mixed","gpu":"gpu.compute_bound"},"sharedIntensityProfile":{"cpuUtilization":0.28,"gpuUtilization":0.47,"memoryIntensity":0.58,"ioIntensity":0.08,"cpuFeedIntensityGpu":0.56},"pods":[{"role":"launcher","replicas":1,"requests":{"cpu":"2","memory":"4Gi"},"gang":true},{"role":"worker","replicas":4,"requests":{"cpu":"4","memory":"12Gi","nvidia.com/gpu":"1"},"gang":true}]}
-```
-
-### Pod-expanded job record
-
-Example:
-
-```json
-{"type":"job","schemaVersion":"v2","jobId":"workload-000001-worker-01","workloadId":"workload-000001","workloadType":"distributed_training","podRole":"worker","gang":true,"submitTimeOffsetSec":12.4,"namespace":"default","podTemplate":{"requests":{"cpu":"4","memory":"12Gi","nvidia.com/gpu":"1"}},"work":{"cpuUnits":1024,"gpuUnits":6800},"sensitivity":{"cpu":0.65,"gpu":0.90},"workloadClass":{"cpu":"cpu.mixed","gpu":"gpu.compute_bound"},"workloadProfile":{"cpuUtilization":0.28,"gpuUtilization":0.47,"memoryIntensity":0.58,"ioIntensity":0.08,"cpuFeedIntensityGpu":0.56}}
-```
-
-## Statistical model
-
-The generator follows a hierarchical sampling path:
-
-1. sample arrival time,
-2. sample workload family,
-3. sample GPU footprint,
-4. sample duration,
-5. sample shared workload profile,
-6. sample pod structure and per-role resource requests,
-7. expand the logical workload into runnable pod-level jobs.
-
-When a benchmark or integration harness needs to bind those jobs to a specific synthetic cluster inventory, it can add an eighth step:
-
-8. retarget pod-level placement to the concrete nodes or hardware families available in the current test cluster.
-
-## Arrival model
-
-Joulie now uses a simple **NHPP-like day-shaped arrival process** with an hourly rate multiplier and optional bursts.
-
-The current built-in hourly prior reflects Helios-style behavior:
-
-- lower rate at night (`00:00-08:00`),
-- visible lunch/dinner dips,
-- higher submission activity during working hours.
-
-Current built-in multipliers:
-
-- `00:00-07:59`: `0.70`
-- `12:00`: `0.85`
-- `18:00`: `0.85`
-- `09:00-11:59`: `1.20`
-- `13:00-17:59`: `1.15`
-- `20:00-22:59`: `1.00`
-- remaining hours: `0.95`
-
-Inter-arrival is sampled as:
-
-```text
-delta ~ Exp(mean_inter_arrival / hourly_multiplier)
-```
-
-Optional burst behavior is also supported:
-
-- `--burst-day-probability`
-- `--burst-multiplier`
-- `--burst-mean-jobs`
-
-This is intentionally lightweight, but it captures the key point from Helios and Blox-style evaluation work: realistic clusters are not homogeneous Poisson streams with a single flat rate.
-
-## Workload families
-
-The current generator samples from these workload families.
-
-### GPU-backed logical workloads
-
-Conditional on `--gpu-ratio`, the generator currently uses:
-
-- `debug_eval`: 45%
-- `single_gpu_training`: 25%
-- `distributed_training`: 14%
-- `parameter_server_training`: 7%
-- `hpo_experiment`: 9%
-
-### CPU-only logical workloads
-
-For non-GPU logical workloads:
-
-- `cpu_preprocess`: 75%
-- `cpu_analytics`: 25%
-
-These are not claimed to be universal production truth. They are the current **HEP-friendly prior** inspired by the public traces:
-
-- many short exploratory jobs,
-- many single-GPU runs,
-- fewer but more expensive multi-GPU jobs,
-- some multi-pod training and HPO structure.
-
-## GPU-count distribution
-
-The current default categorical prior is:
-
-- `P(G=1) = 0.80`
-- `P(G=2) = 0.10`
-- `P(G=4) = 0.07`
-- `P(G=8) = 0.03`
-
-This follows the key shape reported in Helios:
-
-- single-GPU jobs dominate job count,
-- but larger jobs dominate GPU-time.
-
-For small debug benchmarks, the generator distribution is usually combined with a family-aware retargeting pass so at least the major GPU families in the synthetic cluster are exercised, even when the total job count is intentionally small.
-
-## Duration model
-
-Durations are heavy-tailed and workload-family-specific.
-
-Current built-in approximations:
-
-- `debug_eval`: lognormal around Helios-like short-job behavior, clamped to `30s .. 1000s`
-- `single_gpu_training`: long-tail lognormal, clamped to `15min .. 7d`
-- `distributed_training`: longer-tail lognormal, clamped to `20min .. 14d`
-- `parameter_server_training`: clamped to `15min .. 7d`
-- `hpo_experiment`: clamped to `20min .. 3d`
-- `cpu_preprocess`: clamped to `2min .. 8h`
-- `cpu_analytics`: clamped to `5min .. 24h`
-
-This is meant to preserve the public observation that AI job durations are not well represented by a narrow bell curve.
-
-## Utilisation and bottleneck priors
-
-The generator explicitly separates:
-
-- **requested resources**, used for placement,
-- **utilisation/intensity profile**, used for slowdown and power.
-
-That separation matters because ATC'19 reports that many training jobs underutilise GPU cycles, and also that host CPU cycles are often underutilised even when CPU and memory are allocated proportionally to requested GPUs.
-
-### GPU utilisation prior
-
-The built-in `gpuUtilization` prior is seeded from the ATC'19 Philly means by total GPU count:
-
-- `1 GPU`: `0.5238`
-- `4 GPUs`: `0.4518`
-- `8 GPUs`: `0.5899`
-- `16 GPUs`: `0.4039`
-
-The generator interpolates this into a practical small-cluster prior:
-
-- `1 GPU`: `0.5238`
-- `2 GPUs`: `0.50`
-- `4 GPUs`: `0.4518`
-- `8 GPUs`: `0.5899`
-
-Then it adjusts by workload type:
-
-- `debug_eval`: lower effective GPU utilisation
-- `distributed_training`: lower effective GPU utilisation because coordination overhead is folded into the shared profile
-- `parameter_server_training`: similar reduction
-
-### CPU utilisation prior
-
-CPU utilisation is sampled independently from CPU requests.
-
-Examples from the current generator:
-
-- `cpu_preprocess`: `0.50 .. 0.75`
-- `cpu_analytics`: `0.75 .. 0.95`
-- `debug_eval`: `0.20 .. 0.40`
-- `single_gpu_training`: `0.20 .. 0.45`
-- `distributed_training`: `0.15 .. 0.35`
-
-This reflects the public observation that many accelerator-heavy jobs are not CPU-compute-bound even when they still consume CPU and memory resources.
-
-### Memory / IO / CPU-feed intensities
-
-The shared profile also samples:
-
-- `memoryIntensity`
-- `ioIntensity`
-- `cpuFeedIntensityGpu`
-
-Examples:
-
-- `parameter_server_training`: high `memoryIntensity`
-- `distributed_training`: moderate-to-high `cpuFeedIntensityGpu`
-- `cpu_preprocess`: high `memoryIntensity`, low-to-moderate `ioIntensity`
-- `debug_eval`: more memory-heavy and less GPU-saturated than long training
-
-These fields are what connect the workload generator to the physical model documented in [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}).
-
-## Multi-pod workload structures
-
-The generator now emits realistic pod structures instead of only single pods.
-
-### `single_gpu_training`
-
-- 1 worker pod
-- all GPUs requested by that pod
-
-### `distributed_training`
-
-- 1 launcher pod (CPU-only)
-- `G` worker pods, typically `1 GPU` each
-- `gang=true`
-
-### `parameter_server_training`
-
-- `G` worker pods (`1 GPU` each)
-- `1-2` CPU-only parameter-server pods
-- `gang=true`
-
-### `hpo_experiment`
-
-- 1 controller pod
-- `K` trial pods
-- each trial usually requests `1 GPU`
-- not gang-coupled by default in the current simulator path
-
-This is a good fit for the report requirement that a single logical workload may span multiple pods while preserving a shared performance and power profile.
-
-## How work units are derived
-
-The simulator still runs on abstract work units, so the generator maps duration and utilization into work.
-
-Current mapping:
-
-```text
-CPUUnits ~= duration_sec * cpu_request * cpu_utilization * cpu_work_rate_per_core
-GPUUnits ~= duration_sec * gpu_request * gpu_utilization * gpu_work_rate_per_gpu
-```
-
-with small role-specific scaling factors for:
-
-- launchers,
-- controllers,
-- parameter servers,
-- workers,
-- trials.
-
-This is not a trace-replay of exact instruction counts. It is a practical way to make requested duration, requested resources, and throttling sensitivity line up inside the simulator.
-
-## Gang semantics in the simulator
-
-The generator now marks distributed and parameter-server workloads with `gang=true`.
-
-The simulator uses that metadata to avoid advancing workload progress until all pods in the gang are running.
-This makes multi-pod workloads behave more like real distributed jobs rather than a bag of unrelated pods.
-
-## CLI summary
-
-The main generator remains:
-
-```bash
-go run ./simulator/cmd/workloadgen --out trace.jsonl
-```
-
-Useful knobs:
-
-- `--jobs`
-- `--mean-inter-arrival-sec`
-- `--seed`
-- `--gpu-ratio`
-- `--perf-ratio`
-- `--eco-ratio`
-- `--burst-day-probability`
-- `--burst-multiplier`
-- `--burst-mean-jobs`
-- `--emit-workload-records`
-- `--cpu-work-rate-per-core`
-- `--gpu-work-rate-per-gpu`
-
-## What is still intentionally simplified
-
-A few things are still simplified compared with a full production-trace replay system:
-
-- no direct fitting from Helios / Philly / Alibaba traces inside the generator yet
-- no explicit network model
-- no explicit storage-bandwidth model
-- no phased time-series profile yet; profiles are currently shared averages per logical workload
-- no manifest renderer yet for `PyTorchJob`, `MPIJob`, or `Katib Experiment`
-
-That said, the current implementation is a large step up from a toy generator:
-
-- arrivals are no longer flat,
-- job sizes are no longer uniform,
-- durations are no longer narrow,
-- multi-pod AI workloads are first-class,
-- and utilisation/bottleneck priors are tied to public workload studies.
-
-## References
-
-### Trace datasets and workload studies
-
-- [WG1] HeliosData repository (SenseTime traces)  
-  <https://github.com/S-Lab-System-Group/HeliosData>
-- [WG2] Tianwei Zhang et al., Characterization and Prediction of Deep Learning Workloads in Large-Scale GPU Datacenters (SC'21)  
-  <https://tianweiz07.github.io/Papers/21-sc.pdf>
-- [WG3] Philly traces repository  
-  <https://github.com/msr-fiddle/philly-traces>
-- [WG4] Myeongjae Jeon et al., Analysis of Large-Scale Multi-Tenant GPU Clusters for DNN Training Workloads (USENIX ATC'19)  
-  <https://www.usenix.org/system/files/atc19-jeon.pdf>
-- [WG5] Alibaba cluster-trace-gpu-v2020 README  
-  <https://github.com/alibaba/clusterdata/blob/master/cluster-trace-gpu-v2020/README.md>
-
-### Modelling references
-
-- [WG6] Samuel Williams et al., Roofline: an insightful visual performance model for multicore architectures  
-  <https://dl.acm.org/doi/10.1145/1498765.1498785>
-- [WG7] Blox workflow/scheduler evaluation reference used for burst-style arrival thinking  
-  <https://arxiv.org/html/2312.12621v1>
-
-### Kubernetes multi-pod AI workload references
-
-- [WG8] Kubeflow Trainer distributed training reference  
-  <https://www.kubeflow.org/docs/components/trainer/legacy-v1/reference/distributed-training/>
-- [WG9] Kubeflow PyTorchJob guide  
-  <https://www.kubeflow.org/docs/components/trainer/legacy-v1/user-guides/pytorch/>
-- [WG10] Kubeflow Trainer scheduling with Volcano  
-  <https://www.kubeflow.org/docs/components/trainer/operator-guides/job-scheduling/volcano/>
-- [WG11] Kueue introduction  
-  <https://kubernetes.io/blog/2022/10/04/introducing-kueue/>
-- [WG12] Kubeflow Katib overview  
-  <https://www.kubeflow.org/docs/components/katib/overview/>
-- [WG13] Katib experiment configuration guide  
-  <https://www.kubeflow.org/docs/components/katib/user-guides/hp-tuning/configure-experiment/>
-
-These references support the current Joulie workload generator in four ways:
-
-- trace-shaped arrival and duration priors,
-- realistic GPU-count skew and utilisation priors,
-- multi-pod workload structure,
-- and Kubernetes-native execution patterns for distributed training and HPO.
-
-
-## Gap analysis against the workload-generation report
-
-The current implementation covers the **core generator/runtime path** described in the workload report:
-
-- realistic AI-oriented workload families
-- daily arrival shaping with bursts
-- heavy-tailed durations
-- GPU-count skew
-- multi-pod logical workloads
-- gang-style progress for distributed/PS workloads
-- explicit utilization and bottleneck priors
-
-However, a few report items are still not implemented and should be read as **future work**, not current behavior:
-
-- direct fitting from Helios / Philly / Alibaba traces inside `workloadgen`
-- profile-bundle import/export for fitted priors
-- phase/time-series intensity profiles instead of only shared averages
-- direct manifest rendering for Kubeflow / Katib objects
-- calibration-mode telemetry ingestion loop
-
-So the implementation is now clearly beyond a toy generator, but it is not yet the full end-state envisioned by the report.

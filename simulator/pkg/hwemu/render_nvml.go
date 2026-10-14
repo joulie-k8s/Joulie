@@ -35,9 +35,10 @@ var renderNVMLFields = map[string]string{
 // renderNVML writes the NVML state the fake nvidia-smi reads, under
 // state/nvml: driver_version (R) and per GPU, in mW and mJ as NVML reports
 // them, name, uuid, pci_bus_id and the min, max and default limits (R),
-// power_limit_mw (A), and enforced_power_limit_mw, power_draw_mw,
-// total_energy_mj and utilization_gpu_pct (S). A GPU starts at its default
-// limit, at idle power and with no energy.
+// power_limit_mw and persistence_mode (A), and enforced_power_limit_mw,
+// power_draw_mw, total_energy_mj and utilization_gpu_pct (S). A GPU starts
+// at its default limit, at idle power, with no energy and in the profile's
+// persistence mode, Enabled unless gpus.persistenceMode is disabled.
 //
 // A field that gpus.fieldSupport marks unsupported holds the token instead
 // of a value, such as [N/A], and the tool prints it as it is (D16).
@@ -68,6 +69,7 @@ func renderNVML(b *renderBuilder, p *Profile, o RenderOptions) error {
 			{name: "power_draw_mw", content: mw(p.Physics.GPU.IdleW.V), owner: layout.OwnerEmulator, mode: 0o444},
 			{name: "total_energy_mj", content: "0\n", owner: layout.OwnerEmulator, mode: 0o444},
 			{name: "utilization_gpu_pct", content: "0\n", owner: layout.OwnerEmulator, mode: 0o444},
+			{name: layout.NVMLPersistenceModeFile, content: persistModeText(g.PersistenceMode.V) + "\n", owner: layout.OwnerAgent, mode: 0o644},
 		}
 		fields := make([]string, 0, len(g.FieldSupport))
 		for f := range g.FieldSupport {
@@ -86,6 +88,22 @@ func renderNVML(b *renderBuilder, p *Profile, o RenderOptions) error {
 		}
 	}
 	return nil
+}
+
+// The words persistence_mode holds, as nvidia-smi prints the mode.
+const (
+	persistTextEnabled  = "Enabled"
+	persistTextDisabled = "Disabled"
+)
+
+// persistModeText is the persistence_mode content of a profile's
+// gpus.persistenceMode: Disabled for PersistenceDisabled, Enabled otherwise,
+// enabled being the default.
+func persistModeText(mode string) string {
+	if mode == PersistenceDisabled {
+		return persistTextDisabled
+	}
+	return persistTextEnabled
 }
 
 // renderGPUUUID is GPU-<sha256 of node and index>, in the 8-4-4-4-12 form

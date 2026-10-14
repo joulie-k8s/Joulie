@@ -1,0 +1,24 @@
+metrics.json, logs.json and events.json are copied unchanged from
+opentelemetry-proto v1.11.1 (tag commit b3f75588eb23c5fca62264edd05d382de49beb1a),
+directory examples/:
+
+  https://github.com/open-telemetry/opentelemetry-proto/tree/v1.11.1/examples
+
+Copyright The OpenTelemetry Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use these files except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+sha256 of the copies:
+76e398b8f285ae8349085c4535d94b14f0d1a4028f3c8712a59b10dd1bdb48ae  events.json
+5da7283e6772026408341cb45054c7c90cdc9674bd083bcfa6b586341dc3f7a4  logs.json
+b40977696f743f556b9556eb5e716425c4c1b4369f078a3504615e605cf21bff  metrics.json

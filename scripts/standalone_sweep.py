@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone sweep — runs the simulator in standalone mode (no K8s).
+"""Standalone sweep: runs the simulator in standalone mode (no K8s).
 
 Usage:
   python3 scripts/standalone_sweep.py --config experiments/01-cpu-only-benchmark/configs/benchmark-5k-debug.yaml
@@ -91,6 +91,7 @@ def generate_trace_diurnal(
     log(f"generating diurnal trace seed={seed} sim_hours={sim_hours} gpu_ratio={gpu_ratio} work_scale={work_scale}")
     cmd = [
         "go", "run", "./simulator/cmd/workloadgen",
+        "--schema-version", "v2",
         "--mode", "diurnal",
         "--seed", str(seed),
         "--out", str(trace_path),
@@ -240,7 +241,7 @@ def generate_trace_python(
         # Check if we're inside a maintenance dip window.
         in_dip = any(ws <= t <= we for ws, we in dip_windows)
         if in_dip:
-            rate *= 0.02  # 98% reduction during maintenance — near blackout
+            rate *= 0.02  # 98% reduction during maintenance, near blackout
 
         # Check if we're inside a surge window.
         for sw_start, sw_end, sw_mult in surge_windows:
@@ -451,6 +452,7 @@ def generate_trace(
     log(f"generating trace seed={seed} jobs={jobs} mia={mean_inter_arrival_sec}")
     cmd = [
         "go", "run", "./simulator/cmd/workloadgen",
+        "--schema-version", "v2",
         "--jobs", str(jobs),
         "--seed", str(seed),
         "--out", str(trace_path),
@@ -636,7 +638,6 @@ def run_standalone(
     inventory_path: str,
     cfg: dict,
     time_scale: float,
-    catalog_path: str,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -655,9 +656,9 @@ def run_standalone(
     env["SIM_FACILITY_TEMP_AMPLITUDE_C"] = str(get_cfg(cfg, "simulator", "facility_ambient_amplitude_c", default=8.0))
     env["SIM_FACILITY_TEMP_PERIOD_H"] = str(ambient_period_sec / 3600.0)
 
-    # Hardware catalog.
-    if catalog_path:
-        env["SIM_HARDWARE_CATALOG_PATH"] = catalog_path
+    # Hardware catalog: the one embedded in the simulator, never a path left
+    # exported in the shell. A generated catalog held only placeholder facts.
+    env["SIM_HARDWARE_CATALOG_PATH"] = ""
 
     # Timeout: truncate at steady state. Config timeout is wall-seconds.
     timeout = int(get_cfg(cfg, "run", "timeout", default=0))
@@ -735,22 +736,11 @@ def main():
         run(["go", "build", "-o", simulator_bin, "./simulator/cmd/simulator/"], check=True)
         log(f"simulator built: {simulator_bin}")
 
-    # Generate hardware catalog from inventory.
+    # The simulator reads the inventory itself and models each node from the
+    # hardware catalog embedded in it, so nothing is generated here.
     inventory_source = str(get_cfg(cfg, "inventory", "source", default=""))
     if not inventory_source:
         raise SystemExit("inventory.source not set in config")
-
-    generated_dir = results_dir / "generated"
-    generated_dir.mkdir(parents=True, exist_ok=True)
-    catalog_path = str(generated_dir / "hardware.generated.yaml")
-    run([
-        "python3", "scripts/generate_heterogeneous_assets.py",
-        "--input", inventory_source,
-        "--out-nodes", str(generated_dir / "00-kwok-nodes.yaml"),
-        "--out-classes", str(generated_dir / "10-node-classes.yaml"),
-        "--out-catalog", catalog_path,
-    ], check=True)
-    log(f"generated hardware catalog: {catalog_path}")
 
     # Extract config values.
     jobs = int(get_cfg(cfg, "run", "jobs", default=100))
@@ -791,7 +781,6 @@ def main():
             inventory_path=inventory_source,
             cfg=cfg,
             time_scale=time_scale,
-            catalog_path=catalog_path,
         )
 
         # Apply FMU post-processing for PUE if requested.

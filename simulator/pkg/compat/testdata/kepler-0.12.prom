@@ -1,0 +1,96 @@
+# HELP kepler_node_cpu_active_joules_total Energy consumption of cpu in active state at node level in joules
+# TYPE kepler_node_cpu_active_joules_total counter
+kepler_node_cpu_active_joules_total{node_name="intel-0",path="aggregated-dram",zone="dram"} 525
+kepler_node_cpu_active_joules_total{node_name="intel-0",path="aggregated-package",zone="package"} 5043.75
+kepler_node_cpu_active_joules_total{node_name="nvl-0",path="aggregated-dram",zone="dram"} 525
+kepler_node_cpu_active_joules_total{node_name="nvl-0",path="aggregated-package",zone="package"} 5043.75
+# HELP kepler_node_cpu_active_watts Power consumption of cpu in active state at node level in watts
+# TYPE kepler_node_cpu_active_watts gauge
+kepler_node_cpu_active_watts{node_name="intel-0",path="aggregated-dram",zone="dram"} 16
+kepler_node_cpu_active_watts{node_name="intel-0",path="aggregated-package",zone="package"} 147.5
+kepler_node_cpu_active_watts{node_name="nvl-0",path="aggregated-dram",zone="dram"} 16
+kepler_node_cpu_active_watts{node_name="nvl-0",path="aggregated-package",zone="package"} 147.5
+# HELP kepler_node_cpu_idle_joules_total Energy consumption of cpu in idle state at node level in joules
+# TYPE kepler_node_cpu_idle_joules_total counter
+kepler_node_cpu_idle_joules_total{node_name="intel-0",path="aggregated-dram",zone="dram"} 2435
+kepler_node_cpu_idle_joules_total{node_name="intel-0",path="aggregated-package",zone="package"} 5806.25
+kepler_node_cpu_idle_joules_total{node_name="nvl-0",path="aggregated-dram",zone="dram"} 2435
+kepler_node_cpu_idle_joules_total{node_name="nvl-0",path="aggregated-package",zone="package"} 5806.25
+# HELP kepler_node_cpu_idle_watts Power consumption of cpu in idle state at node level in watts
+# TYPE kepler_node_cpu_idle_watts gauge
+kepler_node_cpu_idle_watts{node_name="intel-0",path="aggregated-dram",zone="dram"} 16
+kepler_node_cpu_idle_watts{node_name="intel-0",path="aggregated-package",zone="package"} 147.5
+kepler_node_cpu_idle_watts{node_name="nvl-0",path="aggregated-dram",zone="dram"} 16
+kepler_node_cpu_idle_watts{node_name="nvl-0",path="aggregated-package",zone="package"} 147.5
+# HELP kepler_node_cpu_joules_total Energy consumption of cpu at node level in joules
+# TYPE kepler_node_cpu_joules_total counter
+kepler_node_cpu_joules_total{node_name="intel-0",path="aggregated-dram",zone="dram"} 2960
+kepler_node_cpu_joules_total{node_name="intel-0",path="aggregated-package",zone="package"} 10850
+kepler_node_cpu_joules_total{node_name="nvl-0",path="aggregated-dram",zone="dram"} 2960
+kepler_node_cpu_joules_total{node_name="nvl-0",path="aggregated-package",zone="package"} 10850
+# HELP kepler_node_cpu_watts Power consumption of cpu at node level in watts
+# TYPE kepler_node_cpu_watts gauge
+kepler_node_cpu_watts{node_name="intel-0",path="aggregated-dram",zone="dram"} 32
+kepler_node_cpu_watts{node_name="intel-0",path="aggregated-package",zone="package"} 295
+kepler_node_cpu_watts{node_name="nvl-0",path="aggregated-dram",zone="dram"} 32
+kepler_node_cpu_watts{node_name="nvl-0",path="aggregated-package",zone="package"} 295
+# HELP kepler_node_gpu_active_joules_total Energy consumption of gpu in active state at node level in joules
+# TYPE kepler_node_gpu_active_joules_total counter
+kepler_node_gpu_active_joules_total{gpu="0",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000001-0000-4000-8000-000000000001",node_name="nvl-0",vendor="nvidia"} 4350
+kepler_node_gpu_active_joules_total{gpu="1",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000002-0000-4000-8000-000000000002",node_name="nvl-0",vendor="nvidia"} 4350
+kepler_node_gpu_active_joules_total{gpu="2",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000003-0000-4000-8000-000000000003",node_name="nvl-0",vendor="nvidia"} 4350
+kepler_node_gpu_active_joules_total{gpu="3",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000004-0000-4000-8000-000000000004",node_name="nvl-0",vendor="nvidia"} 4350
+kepler_node_gpu_active_joules_total{gpu="4",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000005-0000-4000-8000-000000000005",node_name="nvl-0",vendor="nvidia"} 4350
+kepler_node_gpu_active_joules_total{gpu="5",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000006-0000-4000-8000-000000000006",node_name="nvl-0",vendor="nvidia"} 4350
+kepler_node_gpu_active_joules_total{gpu="6",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000007-0000-4000-8000-000000000007",node_name="nvl-0",vendor="nvidia"} 4350
+kepler_node_gpu_active_joules_total{gpu="7",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000008-0000-4000-8000-000000000008",node_name="nvl-0",vendor="nvidia"} 4350
+# HELP kepler_node_gpu_active_watts GPU active power (total - idle) in watts
+# TYPE kepler_node_gpu_active_watts gauge
+kepler_node_gpu_active_watts{gpu="0",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000001-0000-4000-8000-000000000001",node_name="nvl-0",vendor="nvidia"} 290
+kepler_node_gpu_active_watts{gpu="1",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000002-0000-4000-8000-000000000002",node_name="nvl-0",vendor="nvidia"} 290
+kepler_node_gpu_active_watts{gpu="2",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000003-0000-4000-8000-000000000003",node_name="nvl-0",vendor="nvidia"} 290
+kepler_node_gpu_active_watts{gpu="3",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000004-0000-4000-8000-000000000004",node_name="nvl-0",vendor="nvidia"} 290
+kepler_node_gpu_active_watts{gpu="4",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000005-0000-4000-8000-000000000005",node_name="nvl-0",vendor="nvidia"} 290
+kepler_node_gpu_active_watts{gpu="5",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000006-0000-4000-8000-000000000006",node_name="nvl-0",vendor="nvidia"} 290
+kepler_node_gpu_active_watts{gpu="6",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000007-0000-4000-8000-000000000007",node_name="nvl-0",vendor="nvidia"} 290
+kepler_node_gpu_active_watts{gpu="7",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000008-0000-4000-8000-000000000008",node_name="nvl-0",vendor="nvidia"} 290
+# HELP kepler_node_gpu_idle_joules_total Energy consumption of gpu in idle state at node level in joules
+# TYPE kepler_node_gpu_idle_joules_total counter
+kepler_node_gpu_idle_joules_total{gpu="0",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000001-0000-4000-8000-000000000001",node_name="nvl-0",vendor="nvidia"} 1800
+kepler_node_gpu_idle_joules_total{gpu="1",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000002-0000-4000-8000-000000000002",node_name="nvl-0",vendor="nvidia"} 1830
+kepler_node_gpu_idle_joules_total{gpu="2",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000003-0000-4000-8000-000000000003",node_name="nvl-0",vendor="nvidia"} 1860
+kepler_node_gpu_idle_joules_total{gpu="3",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000004-0000-4000-8000-000000000004",node_name="nvl-0",vendor="nvidia"} 1890
+kepler_node_gpu_idle_joules_total{gpu="4",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000005-0000-4000-8000-000000000005",node_name="nvl-0",vendor="nvidia"} 1920
+kepler_node_gpu_idle_joules_total{gpu="5",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000006-0000-4000-8000-000000000006",node_name="nvl-0",vendor="nvidia"} 1950
+kepler_node_gpu_idle_joules_total{gpu="6",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000007-0000-4000-8000-000000000007",node_name="nvl-0",vendor="nvidia"} 1980
+kepler_node_gpu_idle_joules_total{gpu="7",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000008-0000-4000-8000-000000000008",node_name="nvl-0",vendor="nvidia"} 2010
+# HELP kepler_node_gpu_idle_watts GPU idle power (auto-detected minimum) in watts
+# TYPE kepler_node_gpu_idle_watts gauge
+kepler_node_gpu_idle_watts{gpu="0",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000001-0000-4000-8000-000000000001",node_name="nvl-0",vendor="nvidia"} 60
+kepler_node_gpu_idle_watts{gpu="1",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000002-0000-4000-8000-000000000002",node_name="nvl-0",vendor="nvidia"} 61
+kepler_node_gpu_idle_watts{gpu="2",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000003-0000-4000-8000-000000000003",node_name="nvl-0",vendor="nvidia"} 62
+kepler_node_gpu_idle_watts{gpu="3",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000004-0000-4000-8000-000000000004",node_name="nvl-0",vendor="nvidia"} 63
+kepler_node_gpu_idle_watts{gpu="4",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000005-0000-4000-8000-000000000005",node_name="nvl-0",vendor="nvidia"} 64
+kepler_node_gpu_idle_watts{gpu="5",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000006-0000-4000-8000-000000000006",node_name="nvl-0",vendor="nvidia"} 65
+kepler_node_gpu_idle_watts{gpu="6",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000007-0000-4000-8000-000000000007",node_name="nvl-0",vendor="nvidia"} 66
+kepler_node_gpu_idle_watts{gpu="7",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000008-0000-4000-8000-000000000008",node_name="nvl-0",vendor="nvidia"} 67
+# HELP kepler_node_gpu_joules_total Energy consumption of gpu at node level in joules
+# TYPE kepler_node_gpu_joules_total counter
+kepler_node_gpu_joules_total{gpu="0",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000001-0000-4000-8000-000000000001",node_name="nvl-0",vendor="nvidia"} 9750
+kepler_node_gpu_joules_total{gpu="1",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000002-0000-4000-8000-000000000002",node_name="nvl-0",vendor="nvidia"} 9780
+kepler_node_gpu_joules_total{gpu="2",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000003-0000-4000-8000-000000000003",node_name="nvl-0",vendor="nvidia"} 9810
+kepler_node_gpu_joules_total{gpu="3",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000004-0000-4000-8000-000000000004",node_name="nvl-0",vendor="nvidia"} 9840
+kepler_node_gpu_joules_total{gpu="4",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000005-0000-4000-8000-000000000005",node_name="nvl-0",vendor="nvidia"} 9870
+kepler_node_gpu_joules_total{gpu="5",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000006-0000-4000-8000-000000000006",node_name="nvl-0",vendor="nvidia"} 9900
+kepler_node_gpu_joules_total{gpu="6",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000007-0000-4000-8000-000000000007",node_name="nvl-0",vendor="nvidia"} 9930
+kepler_node_gpu_joules_total{gpu="7",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000008-0000-4000-8000-000000000008",node_name="nvl-0",vendor="nvidia"} 9960
+# HELP kepler_node_gpu_watts Total GPU power consumption in watts
+# TYPE kepler_node_gpu_watts gauge
+kepler_node_gpu_watts{gpu="0",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000001-0000-4000-8000-000000000001",node_name="nvl-0",vendor="nvidia"} 350
+kepler_node_gpu_watts{gpu="1",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000002-0000-4000-8000-000000000002",node_name="nvl-0",vendor="nvidia"} 351
+kepler_node_gpu_watts{gpu="2",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000003-0000-4000-8000-000000000003",node_name="nvl-0",vendor="nvidia"} 352
+kepler_node_gpu_watts{gpu="3",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000004-0000-4000-8000-000000000004",node_name="nvl-0",vendor="nvidia"} 353
+kepler_node_gpu_watts{gpu="4",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000005-0000-4000-8000-000000000005",node_name="nvl-0",vendor="nvidia"} 354
+kepler_node_gpu_watts{gpu="5",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000006-0000-4000-8000-000000000006",node_name="nvl-0",vendor="nvidia"} 355
+kepler_node_gpu_watts{gpu="6",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000007-0000-4000-8000-000000000007",node_name="nvl-0",vendor="nvidia"} 356
+kepler_node_gpu_watts{gpu="7",gpu_name="NVIDIA H100 NVL",gpu_uuid="GPU-00000008-0000-4000-8000-000000000008",node_name="nvl-0",vendor="nvidia"} 357

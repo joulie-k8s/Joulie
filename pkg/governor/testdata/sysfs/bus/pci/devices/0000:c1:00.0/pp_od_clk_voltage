@@ -1,0 +1,5 @@
+OD_SCLK:
+0: 500Mhz
+1: 1500Mhz
+OD_RANGE:
+SCLK:     500Mhz       1500Mhz

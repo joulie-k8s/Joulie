@@ -1,11 +1,17 @@
 package main
 
-// Compatibility shims for the rename of the binary from "operator" to
-// "controller manager". Everything in this file is kept for one minor release
-// after the rename shipped; delete the file, the legacyEnvAliases lookups and
-// the deprecated metric names together.
+// Compatibility shims, in two groups with their own removal release:
+//   - the rename of the binary from "operator" to "controller manager":
+//     legacyEnvAliases and the deprecated metric names, removed in the next
+//     minor release;
+//   - the OpenTelemetry inputs: inputEnvAliases, the legacy facility preset
+//     and the legacy HTTP JSON body, added in v0.3.0 and removed in
+//     inputAliasesRemovedIn.
+//
+// Delete each group's aliases, lookups and docs rows together.
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -24,20 +30,41 @@ var legacyEnvAliases = map[string]string{
 	"NODE_POWER_PROMETHEUS_QUERY":   "OPERATOR_NODE_POWER_PROMETHEUS_QUERY",
 }
 
+// legacyEnvAliasesRemovedIn is when the OPERATOR_* names go.
+const legacyEnvAliasesRemovedIn = "the next minor release"
+
+// inputEnvAliases maps a facility query variable to the FACILITY_*_METRIC
+// name it replaced. The old value is a bare metric name, which the facility
+// reader aggregates (avg for a temperature, sum for a power), so it keeps
+// meaning what it did.
+var inputEnvAliases = map[string]string{
+	"FACILITY_AMBIENT_TEMP_QUERY":  "FACILITY_AMBIENT_TEMP_METRIC",
+	"FACILITY_IT_POWER_QUERY":      "FACILITY_IT_POWER_METRIC",
+	"FACILITY_COOLING_POWER_QUERY": "FACILITY_COOLING_POWER_METRIC",
+}
+
+// inputAliasesRemovedIn is when inputEnvAliases, FACILITY_PRESET=legacy and
+// the legacy HTTP JSON body go: otlpjson.LegacyRemovedIn, the release every
+// component names (TestInputAliasesGoWithTheLegacyFormats). It is spelled
+// as a literal because tests/docs reads it from this file to check the
+// configuration reference.
+const inputAliasesRemovedIn = "v0.4.0"
+
 var (
 	deprecatedEnvWarnMu   sync.Mutex
 	deprecatedEnvWarnSeen = map[string]struct{}{}
 )
 
-// envOrDeprecated is envOrDefault for a variable listed in legacyEnvAliases:
-// the current name wins, the old name is used when the current one is unset,
-// and def applies when neither is set. Reading the old name logs one warning
-// per variable naming the replacement.
+// envOrDeprecated is envOrDefault for a variable listed in legacyEnvAliases
+// or inputEnvAliases: the current name wins, the old name is used when the
+// current one is unset, and def applies when neither is set. Reading the old
+// name logs one warning per variable naming the replacement and the release
+// that removes the old name.
 func envOrDeprecated(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
 	}
-	old, ok := legacyEnvAliases[key]
+	old, removedIn, ok := deprecatedEnvAlias(key)
 	if !ok {
 		return def
 	}
@@ -45,14 +72,31 @@ func envOrDeprecated(key, def string) string {
 	if v == "" {
 		return def
 	}
+	warnDeprecatedOnce(old, fmt.Sprintf("%s is deprecated and will be removed in %s; set %s instead", old, removedIn, key))
+	return v
+}
+
+// deprecatedEnvAlias returns the old name of key and the release that
+// removes it.
+func deprecatedEnvAlias(key string) (old, removedIn string, ok bool) {
+	if old, ok := legacyEnvAliases[key]; ok {
+		return old, legacyEnvAliasesRemovedIn, true
+	}
+	if old, ok := inputEnvAliases[key]; ok {
+		return old, inputAliasesRemovedIn, true
+	}
+	return "", "", false
+}
+
+// warnDeprecatedOnce logs "warning: " + msg the first time it sees key.
+func warnDeprecatedOnce(key, msg string) {
 	deprecatedEnvWarnMu.Lock()
-	_, seen := deprecatedEnvWarnSeen[old]
-	deprecatedEnvWarnSeen[old] = struct{}{}
+	_, seen := deprecatedEnvWarnSeen[key]
+	deprecatedEnvWarnSeen[key] = struct{}{}
 	deprecatedEnvWarnMu.Unlock()
 	if !seen {
-		log.Printf("warning: %s is deprecated and will be removed in the next minor release; set %s instead", old, key)
+		log.Printf("warning: %s", msg)
 	}
-	return v
 }
 
 // dualGaugeVec writes every sample to the current metric and to its

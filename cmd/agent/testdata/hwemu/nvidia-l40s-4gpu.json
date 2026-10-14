@@ -9,6 +9,53 @@
     "controlAvailable": true,
     "coresPerSocket": 128,
     "driverFamily": "acpi-cpufreq",
+    "governor": {
+      "available": [
+        "conservative",
+        "ondemand",
+        "userspace",
+        "powersave",
+        "performance",
+        "schedutil"
+      ],
+      "baseline": {
+        "groups": [
+          {
+            "boost": "on",
+            "governor": "schedutil",
+            "policies": "0-255"
+          }
+        ]
+      },
+      "boost": {
+        "scope": "global",
+        "state": "on"
+      },
+      "current": "schedutil",
+      "driver": "acpi-cpufreq",
+      "presets": [
+        {
+          "native": "performance",
+          "preset": "performance",
+          "result": "applied"
+        },
+        {
+          "native": "schedutil",
+          "preset": "balanced",
+          "result": "applied"
+        },
+        {
+          "native": "conservative",
+          "preset": "efficiency",
+          "result": "applied"
+        }
+      ],
+      "writable": true
+    },
+    "landmarks": {
+      "maxBoostMHz": 3718.066,
+      "minFreqMHz": 1500
+    },
     "model": "AMD_EPYC_9534",
     "rawModel": "AMD EPYC 9534 64-Core Processor",
     "sockets": 2,
@@ -26,6 +73,69 @@
     "controlAvailable": true,
     "count": 4,
     "currentCapWatts": 350,
+    "governor": {
+      "baseline": {
+        "devices": [
+          {
+            "busId": "00000000:10:00.0",
+            "level": "unknown"
+          },
+          {
+            "busId": "00000000:11:00.0",
+            "level": "unknown"
+          },
+          {
+            "busId": "00000000:12:00.0",
+            "level": "unknown"
+          },
+          {
+            "busId": "00000000:13:00.0",
+            "level": "unknown"
+          }
+        ]
+      },
+      "clockRangesMHz": {
+        "graphics": {
+          "max": 2520,
+          "min": 210
+        },
+        "memory": {
+          "max": 9001,
+          "min": 405
+        }
+      },
+      "current": "unknown",
+      "mechanism": "nvidia-smi",
+      "presets": [
+        {
+          "native": "unknown",
+          "preset": "auto",
+          "result": "equivalent"
+        },
+        {
+          "native": "-lmc 9001,9001",
+          "preset": "sustained",
+          "result": "applied"
+        },
+        {
+          "native": "-lgc 210,2010",
+          "preset": "efficient",
+          "result": "applied"
+        },
+        {
+          "native": "-lgc 210,210 -lmc 405,405",
+          "preset": "low",
+          "result": "applied"
+        },
+        {
+          "native": "-lgc 2520,2520 -lmc 9001,9001",
+          "preset": "peak",
+          "result": "applied"
+        }
+      ],
+      "uniform": false,
+      "writable": true
+    },
     "model": "NVIDIA_L40S",
     "present": true,
     "rawModel": "NVIDIA L40S",

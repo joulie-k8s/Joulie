@@ -51,32 +51,32 @@ Outdoor temperature follows a spring-to-early-summer progression (March-May):
 
 | Baseline | Strategy | IT Energy (60 days) |
 |---|---|---|
-| A — No Joulie | All nodes run uncapped | 173,035 kWh |
-| B — Static partition | 30% performance / 70% eco-mode (65% CPU cap, 70% GPU cap) | 139,480 kWh (−19.4%) |
-| C — Queue-aware | Dynamic 15-40% perf fraction based on queue depth, tighter caps at low load | 132,333 kWh (−23.5%) |
+| A: No Joulie | All nodes run uncapped | 173,035 kWh |
+| B: Static partition | 30% performance / 70% eco-mode (65% CPU cap, 70% GPU cap) | 139,480 kWh (−19.4%) |
+| C: Queue-aware | Dynamic 15-40% perf fraction based on queue depth, tighter caps at low load | 132,333 kWh (−23.5%) |
 
 #### 2.5 Cooling Models
 
 Five parametric models and one physics-based FMU model:
 
-1. **Air-cooled (CRAH)** — Traditional computer room air handler. High baseline
+1. **Air-cooled (CRAH)**: Traditional computer room air handler. High baseline
    overhead, COP degrades with outdoor temperature. PUE = 1.30 + 0.015 per °C
    above 15°C.
 
-2. **Hot/cold aisle** — Containment with improved airflow management. PUE =
+2. **Hot/cold aisle**: Containment with improved airflow management. PUE =
    1.15 + 0.010 per °C above 15°C.
 
-3. **Direct liquid cooling (DLC)** — 75% of heat removed by liquid loop (COP
+3. **Direct liquid cooling (DLC)**: 75% of heat removed by liquid loop (COP
    ~20), 25% residual air cooling. Nearly outdoor-temp independent for the
    liquid fraction.
 
-4. **Immersion cooling** — Servers submerged in dielectric fluid. COP ~25,
+4. **Immersion cooling**: Servers submerged in dielectric fluid. COP ~25,
    minimal temperature sensitivity.
 
-5. **Free cooling (economizer)** — Air-side economizer. 100% free cooling below
+5. **Free cooling (economizer)**: Air-side economizer. 100% free cooling below
    18°C, 100% mechanical above 28°C, linear blend in between.
 
-6. **FMU (DXCooledAirsideEconomizer)** — Physics-based model adapted from
+6. **FMU (DXCooledAirsideEconomizer)**: Physics-based model adapted from
    [LBL Buildings Library v12.1.0](https://simulationresearch.lbl.gov/modelica/releases/v12.1.0/help/Buildings_Applications_DataCenters_DXCooled_Examples.html).
    Variable-speed DX compressor (4 stages, COP nominal = 3.0), airside
    economizer with three cooling modes, fan affinity laws, and room thermal
@@ -124,7 +124,7 @@ differently to the load profiles of each baseline.
 | Immersion | 6.0% |
 
 The FMU model's 27% overhead is realistic for a DX-cooled data center with
-partial economizer capability — it sits between traditional CRAH (39%) and
+partial economizer capability: it sits between traditional CRAH (39%) and
 modern hot/cold aisle (21%).
 
 #### 3.4 Key Observations
@@ -136,12 +136,12 @@ PUE factor: reducing IT power by X% reduces facility power by approximately X%.
 
 **2. The FMU model shows the largest relative savings from scheduling (19.6% for
 B).** The DX compressor's part-load COP improvement means that reducing IT power
-has a compounding effect — lower heat load lets the compressor run at a more
+has a compounding effect: lower heat load lets the compressor run at a more
 efficient operating point.
 
 **3. Absolute cooling energy savings scale with cooling overhead.** Switching
-from CRAH to immersion cooling saves 57,473 kWh over 60 days under Baseline A
-— more than the 40,701 kWh saved by switching from Baseline A to B with CRAH.
+from CRAH to immersion cooling saves 57,473 kWh over 60 days under Baseline A,
+more than the 40,701 kWh saved by switching from Baseline A to B with CRAH.
 This suggests that **cooling system selection can have a larger impact than
 scheduling optimization** for facilities with inefficient cooling.
 
@@ -207,7 +207,7 @@ handle glibc compatibility, with input/output data exchanged via CSV files.
 
 4. **The combination of efficient cooling + smart scheduling yields the best
    results**: Baseline C with immersion cooling uses 140,299 kWh over 60 days,
-   versus 240,924 kWh for Baseline A with CRAH — a **41.8% total reduction**.
+   versus 240,924 kWh for Baseline A with CRAH, a **41.8% total reduction**.
 
 ### 7. Reproducing This Analysis
 

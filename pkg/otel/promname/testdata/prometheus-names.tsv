@@ -1,0 +1,157 @@
+# Prometheus names of the semconv table under the four OTLP translation strategies, as Prometheus v3.15.0
+# stores them with its default otlp settings, produced by github.com/prometheus/otlptranslator v1.0.0
+# (prometheus v0.315.0 go.mod): MetricNamer.Build with NewMetricNamer("", strategy), and LabelNamer{UTF8Allowed:
+# !strategy.ShouldEscape(), UnderscoreLabelSanitization: true, PreserveMultipleUnderscores: true}.Build, the two
+# label settings Prometheus' DefaultOTLPConfig turns on (label_name_underscore_sanitization and
+# label_name_preserve_multiple_underscores). An empty name cell is a name the translator rejects with an error.
+# One row per semconv metric and attribute, plus rows that exercise units outside the table
+# (joule, empty, s, By, By/s, V, annotations) and edge cases; example.*, 2xx.* and underscore names are synthetic.
+# Columns, tab separated; unit and type are empty on label rows, and unit is empty for an empty unit:
+# row	name	unit	type	UnderscoreEscapingWithSuffixes	NoUTF8EscapingWithSuffixes	UnderscoreEscapingWithoutSuffixes	NoTranslation
+metric	hw.cpu.speed	Hz	gauge	hw_cpu_speed_hertz	hw.cpu.speed_hertz	hw_cpu_speed	hw.cpu.speed
+metric	hw.cpu.speed.limit	Hz	gauge	hw_cpu_speed_limit_hertz	hw.cpu.speed.limit_hertz	hw_cpu_speed_limit	hw.cpu.speed.limit
+metric	hw.energy	J	counter	hw_energy_joules_total	hw.energy_joules_total	hw_energy	hw.energy
+metric	hw.gpu.io	By	counter	hw_gpu_io_bytes_total	hw.gpu.io_bytes_total	hw_gpu_io	hw.gpu.io
+metric	hw.gpu.utilization	1	gauge	hw_gpu_utilization_ratio	hw.gpu.utilization_ratio	hw_gpu_utilization	hw.gpu.utilization
+metric	hw.host.ambient_temperature	Cel	gauge	hw_host_ambient_temperature_celsius	hw.host.ambient_temperature_celsius	hw_host_ambient_temperature	hw.host.ambient_temperature
+metric	hw.host.energy	J	counter	hw_host_energy_joules_total	hw.host.energy_joules_total	hw_host_energy	hw.host.energy
+metric	hw.host.power	W	gauge	hw_host_power_watts	hw.host.power_watts	hw_host_power	hw.host.power
+metric	hw.power	W	gauge	hw_power_watts	hw.power_watts	hw_power	hw.power
+metric	joulie.calibration.setpoint	{setpoint}	gauge	joulie_calibration_setpoint	joulie.calibration.setpoint	joulie_calibration_setpoint	joulie.calibration.setpoint
+metric	joulie.capture.nodetwin.control_result	1	updowncounter	joulie_capture_nodetwin_control_result	joulie.capture.nodetwin.control_result	joulie_capture_nodetwin_control_result	joulie.capture.nodetwin.control_result
+metric	joulie.capture.nodetwin.measured_power	W	gauge	joulie_capture_nodetwin_measured_power_watts	joulie.capture.nodetwin.measured_power_watts	joulie_capture_nodetwin_measured_power	joulie.capture.nodetwin.measured_power
+metric	joulie.capture.nodetwin.schedulable_class	1	updowncounter	joulie_capture_nodetwin_schedulable_class	joulie.capture.nodetwin.schedulable_class	joulie_capture_nodetwin_schedulable_class	joulie.capture.nodetwin.schedulable_class
+metric	joulie.cooling_zone.ambient_temperature	Cel	gauge	joulie_cooling_zone_ambient_temperature_celsius	joulie.cooling_zone.ambient_temperature_celsius	joulie_cooling_zone_ambient_temperature	joulie.cooling_zone.ambient_temperature
+metric	joulie.facility.ambient_temperature	Cel	gauge	joulie_facility_ambient_temperature_celsius	joulie.facility.ambient_temperature_celsius	joulie_facility_ambient_temperature	joulie.facility.ambient_temperature
+metric	joulie.facility.cooling.energy	J	counter	joulie_facility_cooling_energy_joules_total	joulie.facility.cooling.energy_joules_total	joulie_facility_cooling_energy	joulie.facility.cooling.energy
+metric	joulie.facility.cooling.power	W	gauge	joulie_facility_cooling_power_watts	joulie.facility.cooling.power_watts	joulie_facility_cooling_power	joulie.facility.cooling.power
+metric	joulie.facility.it.energy	J	counter	joulie_facility_it_energy_joules_total	joulie.facility.it.energy_joules_total	joulie_facility_it_energy	joulie.facility.it.energy
+metric	joulie.facility.it.power	W	gauge	joulie_facility_it_power_watts	joulie.facility.it.power_watts	joulie_facility_it_power	joulie.facility.it.power
+metric	joulie.facility.pue	1	gauge	joulie_facility_pue_ratio	joulie.facility.pue_ratio	joulie_facility_pue	joulie.facility.pue
+metric	joulie.hw.governor	1	updowncounter	joulie_hw_governor	joulie.hw.governor	joulie_hw_governor	joulie.hw.governor
+metric	joulie.hw.gpu.speed	Hz	gauge	joulie_hw_gpu_speed_hertz	joulie.hw.gpu.speed_hertz	joulie_hw_gpu_speed	joulie.hw.gpu.speed
+metric	joulie.hw.gpu.speed.limit	Hz	gauge	joulie_hw_gpu_speed_limit_hertz	joulie.hw.gpu.speed.limit_hertz	joulie_hw_gpu_speed_limit	joulie.hw.gpu.speed.limit
+metric	joulie.hw.power.limit	W	gauge	joulie_hw_power_limit_watts	joulie.hw.power.limit_watts	joulie_hw_power_limit	joulie.hw.power.limit
+metric	joulie.rack.energy	J	counter	joulie_rack_energy_joules_total	joulie.rack.energy_joules_total	joulie_rack_energy	joulie.rack.energy
+metric	joulie.rack.power	W	gauge	joulie_rack_power_watts	joulie.rack.power_watts	joulie_rack_power	joulie.rack.power
+metric	joulie.scenario.assertion.value	{value}	gauge	joulie_scenario_assertion_value	joulie.scenario.assertion.value	joulie_scenario_assertion_value	joulie.scenario.assertion.value
+metric	joulie.sim.workload.energy	J	counter	joulie_sim_workload_energy_joules_total	joulie.sim.workload.energy_joules_total	joulie_sim_workload_energy	joulie.sim.workload.energy
+metric	joulie.sim.workload.job.duration	s	histogram	joulie_sim_workload_job_duration_seconds	joulie.sim.workload.job.duration_seconds	joulie_sim_workload_job_duration	joulie.sim.workload.job.duration
+metric	joulie.sim.workload.job.queue_wait	s	histogram	joulie_sim_workload_job_queue_wait_seconds	joulie.sim.workload.job.queue_wait_seconds	joulie_sim_workload_job_queue_wait	joulie.sim.workload.job.queue_wait
+metric	joulie.sim.workload.job.slowdown	1	histogram	joulie_sim_workload_job_slowdown	joulie.sim.workload.job.slowdown	joulie_sim_workload_job_slowdown	joulie.sim.workload.job.slowdown
+metric	joulie.sim.workload.jobs.active	{job}	updowncounter	joulie_sim_workload_jobs_active	joulie.sim.workload.jobs.active	joulie_sim_workload_jobs_active	joulie.sim.workload.jobs.active
+metric	joulie.sim.workload.jobs.finished	{job}	counter	joulie_sim_workload_jobs_finished_total	joulie.sim.workload.jobs.finished_total	joulie_sim_workload_jobs_finished	joulie.sim.workload.jobs.finished
+metric	joulie.sim.workload.jobs.submitted	{job}	counter	joulie_sim_workload_jobs_submitted_total	joulie.sim.workload.jobs.submitted_total	joulie_sim_workload_jobs_submitted	joulie.sim.workload.jobs.submitted
+metric	joulie.sim.workload.work	{unit}	counter	joulie_sim_workload_work_total	joulie.sim.workload.work_total	joulie_sim_workload_work	joulie.sim.workload.work
+metric	system.cpu.utilization	1	gauge	system_cpu_utilization_ratio	system.cpu.utilization_ratio	system_cpu_utilization	system.cpu.utilization
+metric	target_info		gauge	target_info	target_info	target_info	target_info
+metric	joulie.twin.input.queries	{query}	counter	joulie_twin_input_queries_total	joulie.twin.input.queries_total	joulie_twin_input_queries	joulie.twin.input.queries
+metric	hw.energy	joule	counter	hw_energy_joule_total	hw.energy_joule_total	hw_energy	hw.energy
+metric	hw.energy		counter	hw_energy_total	hw.energy_total	hw_energy	hw.energy
+metric	example.duration	s	histogram	example_duration_seconds	example.duration_seconds	example_duration	example.duration
+metric	example.memory.usage	By	updowncounter	example_memory_usage_bytes	example.memory.usage_bytes	example_memory_usage	example.memory.usage
+metric	example.throughput	By/s	gauge	example_throughput_bytes_per_second	example.throughput_bytes_per_second	example_throughput	example.throughput
+metric	example.transfer	By/s	counter	example_transfer_bytes_per_second_total	example.transfer_bytes_per_second_total	example_transfer	example.transfer
+metric	example.read_per_second	By/s	counter	example_read_per_second_bytes_per_second_total	example.read_bytes_per_second_total	example_read_per_second	example.read_per_second
+metric	example.requests_total	{request}	counter	example_requests_total	example.requests_total	example_requests_total	example.requests_total
+metric	example.utilization_ratio	1	gauge	example_utilization_ratio	example.utilization_ratio	example_utilization_ratio	example.utilization_ratio
+metric	example.errors	1	counter	example_errors_total	example.errors_total	example_errors	example.errors
+metric	example.voltage	V	gauge	example_voltage_volts	example.voltage_volts	example_voltage	example.voltage
+metric	2xx.responses	{response}	counter	_2xx_responses_total	2xx.responses_total	_2xx_responses	2xx.responses
+metric	_		gauge		_	_	_
+metric	._		gauge		._		._
+label	cpu.logical_number			cpu_logical_number	cpu.logical_number	cpu_logical_number	cpu.logical_number
+label	cpu.mode			cpu_mode	cpu.mode	cpu_mode	cpu.mode
+label	error.type			error_type	error.type	error_type	error.type
+label	host.id			host_id	host.id	host_id	host.id
+label	host.name			host_name	host.name	host_name	host.name
+label	hw.gpu.task			hw_gpu_task	hw.gpu.task	hw_gpu_task	hw.gpu.task
+label	hw.id			hw_id	hw.id	hw_id	hw.id
+label	hw.limit_type			hw_limit_type	hw.limit_type	hw_limit_type	hw.limit_type
+label	hw.model			hw_model	hw.model	hw_model	hw.model
+label	hw.name			hw_name	hw.name	hw_name	hw.name
+label	hw.parent			hw_parent	hw.parent	hw_parent	hw.parent
+label	hw.type			hw_type	hw.type	hw_type	hw.type
+label	hw.vendor			hw_vendor	hw.vendor	hw_vendor	hw.vendor
+label	joulie.assertion.expected			joulie_assertion_expected	joulie.assertion.expected	joulie_assertion_expected	joulie.assertion.expected
+label	joulie.assertion.name			joulie_assertion_name	joulie.assertion.name	joulie_assertion_name	joulie.assertion.name
+label	joulie.assertion.observed			joulie_assertion_observed	joulie.assertion.observed	joulie_assertion_observed	joulie.assertion.observed
+label	joulie.assertion.passed			joulie_assertion_passed	joulie.assertion.passed	joulie_assertion_passed	joulie.assertion.passed
+label	joulie.assertion.source			joulie_assertion_source	joulie.assertion.source	joulie_assertion_source	joulie.assertion.source
+label	joulie.assertion.type			joulie_assertion_type	joulie.assertion.type	joulie_assertion_type	joulie.assertion.type
+label	joulie.calibration.class			joulie_calibration_class	joulie.calibration.class	joulie_calibration_class	joulie.calibration.class
+label	joulie.calibration.knob			joulie_calibration_knob	joulie.calibration.knob	joulie_calibration_knob	joulie.calibration.knob
+label	joulie.calibration.memory_intensity			joulie_calibration_memory_intensity	joulie.calibration.memory_intensity	joulie_calibration_memory_intensity	joulie.calibration.memory_intensity
+label	joulie.cooling_zone.name			joulie_cooling_zone_name	joulie.cooling_zone.name	joulie_cooling_zone_name	joulie.cooling_zone.name
+label	joulie.hw.clock.domain			joulie_hw_clock_domain	joulie.hw.clock.domain	joulie_hw_clock_domain	joulie.hw.clock.domain
+label	joulie.hw.governor.native			joulie_hw_governor_native	joulie.hw.governor.native	joulie_hw_governor_native	joulie.hw.governor.native
+label	joulie.hw.governor.preset			joulie_hw_governor_preset	joulie.hw.governor.preset	joulie_hw_governor_preset	joulie.hw.governor.preset
+label	joulie.hw.gpu.io.path			joulie_hw_gpu_io_path	joulie.hw.gpu.io.path	joulie_hw_gpu_io_path	joulie.hw.gpu.io.path
+label	joulie.hw.limit.state			joulie_hw_limit_state	joulie.hw.limit.state	joulie_hw_limit_state	joulie.hw.limit.state
+label	joulie.node.class_since			joulie_node_class_since	joulie.node.class_since	joulie_node_class_since	joulie.node.class_since
+label	joulie.node.power_profile			joulie_node_power_profile	joulie.node.power_profile	joulie_node_power_profile	joulie.node.power_profile
+label	joulie.node.schedulable_class			joulie_node_schedulable_class	joulie.node.schedulable_class	joulie_node_schedulable_class	joulie.node.schedulable_class
+label	joulie.nodetwin.control.backend			joulie_nodetwin_control_backend	joulie.nodetwin.control.backend	joulie_nodetwin_control_backend	joulie.nodetwin.control.backend
+label	joulie.nodetwin.control.result			joulie_nodetwin_control_result	joulie.nodetwin.control.result	joulie_nodetwin_control_result	joulie.nodetwin.control.result
+label	joulie.nodetwin.power_source			joulie_nodetwin_power_source	joulie.nodetwin.power_source	joulie_nodetwin_power_source	joulie.nodetwin.power_source
+label	joulie.rack.name			joulie_rack_name	joulie.rack.name	joulie_rack_name	joulie.rack.name
+label	joulie.scenario.name			joulie_scenario_name	joulie.scenario.name	joulie_scenario_name	joulie.scenario.name
+label	joulie.scenario.variant			joulie_scenario_variant	joulie.scenario.variant	joulie_scenario_variant	joulie.scenario.variant
+label	joulie.sim.file			joulie_sim_file	joulie.sim.file	joulie_sim_file	joulie.sim.file
+label	joulie.sim.gang			joulie_sim_gang	joulie.sim.gang	joulie_sim_gang	joulie.sim.gang
+label	joulie.sim.gpu.indices			joulie_sim_gpu_indices	joulie.sim.gpu.indices	joulie_sim_gpu_indices	joulie.sim.gpu.indices
+label	joulie.sim.job.duration			joulie_sim_job_duration	joulie.sim.job.duration	joulie_sim_job_duration	joulie.sim.job.duration
+label	joulie.sim.job.energy			joulie_sim_job_energy	joulie.sim.job.energy	joulie_sim_job_energy	joulie.sim.job.energy
+label	joulie.sim.job.id			joulie_sim_job_id	joulie.sim.job.id	joulie_sim_job_id	joulie.sim.job.id
+label	joulie.sim.job.ideal_run_time			joulie_sim_job_ideal_run_time	joulie.sim.job.ideal_run_time	joulie_sim_job_ideal_run_time	joulie.sim.job.ideal_run_time
+label	joulie.sim.job.outcome			joulie_sim_job_outcome	joulie.sim.job.outcome	joulie_sim_job_outcome	joulie.sim.job.outcome
+label	joulie.sim.job.queue_wait			joulie_sim_job_queue_wait	joulie.sim.job.queue_wait	joulie_sim_job_queue_wait	joulie.sim.job.queue_wait
+label	joulie.sim.job.run_time			joulie_sim_job_run_time	joulie.sim.job.run_time	joulie_sim_job_run_time	joulie.sim.job.run_time
+label	joulie.sim.job.state			joulie_sim_job_state	joulie.sim.job.state	joulie_sim_job_state	joulie.sim.job.state
+label	joulie.sim.node.profile			joulie_sim_node_profile	joulie.sim.node.profile	joulie_sim_node_profile	joulie.sim.node.profile
+label	joulie.sim.outcome			joulie_sim_outcome	joulie.sim.outcome	joulie_sim_outcome	joulie.sim.outcome
+label	joulie.sim.pod.role			joulie_sim_pod_role	joulie.sim.pod.role	joulie_sim_pod_role	joulie.sim.pod.role
+label	joulie.sim.pool			joulie_sim_pool	joulie.sim.pool	joulie_sim_pool	joulie.sim.pool
+label	joulie.sim.profile			joulie_sim_profile	joulie.sim.profile	joulie_sim_profile	joulie.sim.profile
+label	joulie.sim.run.completed_jobs			joulie_sim_run_completed_jobs	joulie.sim.run.completed_jobs	joulie_sim_run_completed_jobs	joulie.sim.run.completed_jobs
+label	joulie.sim.run.failed_jobs			joulie_sim_run_failed_jobs	joulie.sim.run.failed_jobs	joulie_sim_run_failed_jobs	joulie.sim.run.failed_jobs
+label	joulie.sim.run.id			joulie_sim_run_id	joulie.sim.run.id	joulie_sim_run_id	joulie.sim.run.id
+label	joulie.sim.run.incomplete_jobs			joulie_sim_run_incomplete_jobs	joulie.sim.run.incomplete_jobs	joulie_sim_run_incomplete_jobs	joulie.sim.run.incomplete_jobs
+label	joulie.sim.run.jobs			joulie_sim_run_jobs	joulie.sim.run.jobs	joulie_sim_run_jobs	joulie.sim.run.jobs
+label	joulie.sim.stall.age			joulie_sim_stall_age	joulie.sim.stall.age	joulie_sim_stall_age	joulie.sim.stall.age
+label	joulie.sim.stall.reason			joulie_sim_stall_reason	joulie.sim.stall.reason	joulie_sim_stall_reason	joulie.sim.stall.reason
+label	joulie.sim.tree.added			joulie_sim_tree_added	joulie.sim.tree.added	joulie_sim_tree_added	joulie.sim.tree.added
+label	joulie.sim.tree.resumed			joulie_sim_tree_resumed	joulie.sim.tree.resumed	joulie_sim_tree_resumed	joulie.sim.tree.resumed
+label	joulie.sim.value.effective			joulie_sim_value_effective	joulie.sim.value.effective	joulie_sim_value_effective	joulie.sim.value.effective
+label	joulie.sim.value.written			joulie_sim_value_written	joulie.sim.value.written	joulie_sim_value_written	joulie.sim.value.written
+label	joulie.sim.work.cpu			joulie_sim_work_cpu	joulie.sim.work.cpu	joulie_sim_work_cpu	joulie.sim.work.cpu
+label	joulie.sim.work.cpu_remaining			joulie_sim_work_cpu_remaining	joulie.sim.work.cpu_remaining	joulie_sim_work_cpu_remaining	joulie.sim.work.cpu_remaining
+label	joulie.sim.work.gpu			joulie_sim_work_gpu	joulie.sim.work.gpu	joulie_sim_work_gpu	joulie.sim.work.gpu
+label	joulie.sim.work.gpu_remaining			joulie_sim_work_gpu_remaining	joulie.sim.work.gpu_remaining	joulie_sim_work_gpu_remaining	joulie.sim.work.gpu_remaining
+label	joulie.sim.work.kind			joulie_sim_work_kind	joulie.sim.work.kind	joulie_sim_work_kind	joulie.sim.work.kind
+label	joulie.sim.workload.id			joulie_sim_workload_id	joulie.sim.workload.id	joulie_sim_workload_id	joulie.sim.workload.id
+label	joulie.sim.workload.type			joulie_sim_workload_type	joulie.sim.workload.type	joulie_sim_workload_type	joulie.sim.workload.type
+label	joulie.workload.class			joulie_workload_class	joulie.workload.class	joulie_workload_class	joulie.workload.class
+label	k8s.cluster.name			k8s_cluster_name	k8s.cluster.name	k8s_cluster_name	k8s.cluster.name
+label	k8s.job.name			k8s_job_name	k8s.job.name	k8s_job_name	k8s.job.name
+label	k8s.namespace.name			k8s_namespace_name	k8s.namespace.name	k8s_namespace_name	k8s.namespace.name
+label	k8s.node.name			k8s_node_name	k8s.node.name	k8s_node_name	k8s.node.name
+label	k8s.pod.name			k8s_pod_name	k8s.pod.name	k8s_pod_name	k8s.pod.name
+label	k8s.pod.uid			k8s_pod_uid	k8s.pod.uid	k8s_pod_uid	k8s.pod.uid
+label	network.io.direction			network_io_direction	network.io.direction	network_io_direction	network.io.direction
+label	service.instance.id			service_instance_id	service.instance.id	service_instance_id	service.instance.id
+label	service.name			service_name	service.name	service_name	service.name
+label	service.namespace			service_namespace	service.namespace	service_namespace	service.namespace
+label	service.version			service_version	service.version	service_version	service.version
+label	test.case.name			test_case_name	test.case.name	test_case_name	test.case.name
+label	test.case.result.status			test_case_result_status	test.case.result.status	test_case_result_status	test.case.result.status
+label	test.suite.name			test_suite_name	test.suite.name	test_suite_name	test.suite.name
+label	test.suite.run.status			test_suite_run_status	test.suite.run.status	test_suite_run_status	test.suite.run.status
+label	2xx.code			key_2xx_code	2xx.code	key_2xx_code	2xx.code
+label	__example.reserved__			__example_reserved__	__example.reserved__	__example_reserved__	__example.reserved__
+label	example..double__underscore			example__double__underscore	example..double__underscore	example__double__underscore	example..double__underscore
+label	_example.leading			key_example_leading	_example.leading	key_example_leading	_example.leading
+label	__example.leading			__example_leading	__example.leading	__example_leading	__example.leading
+label	_			key_		key_	
+label	___						
+label							

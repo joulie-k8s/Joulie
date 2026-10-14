@@ -82,6 +82,7 @@ website/.hugo_build.lock
 # Compiled Go binaries
 /agent
 /scheduler
+/controller-manager
 /operator
 /kubectl-joulie
 /workloadgen

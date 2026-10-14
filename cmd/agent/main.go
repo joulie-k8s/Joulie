@@ -20,6 +20,7 @@ import (
 	agentctl "github.com/matbun/joulie/pkg/agent/control"
 	"github.com/matbun/joulie/pkg/agent/dvfs"
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/governor/discover"
 	"github.com/matbun/joulie/pkg/hwinv"
 	"github.com/matbun/joulie/pkg/kube"
 	"github.com/prometheus/client_golang/prometheus"
@@ -89,6 +90,15 @@ type HardwareInfo struct {
 	GPUControl      bool
 	GPUTelemetry    bool
 	Warnings        []string
+	// CPULandmarks and Governors are read from cpufreq, amdgpu sysfs and
+	// nvidia-smi without writing anything (governor_discovery.go).
+	CPULandmarks *v1alpha1.CPULandmarks
+	Governors    governorDiscovery
+	// GPUDevices is the GPU inventory of GPUVendor this discovery listed,
+	// and GPUListErr the error listing it gave: the reconcile's one listing,
+	// which the GPU cap reuses.
+	GPUDevices []GPUDevice
+	GPUListErr error
 }
 
 type DesiredState struct {
@@ -96,6 +106,16 @@ type DesiredState struct {
 	PowerWatts    *float64
 	PowerPctOfMax *float64
 	GPU           *GPUPowerCap
+	// CPUGovernor and GPUGovernor are the governor presets; nil leaves the
+	// governor alone, and restores the baseline when the agent changed it.
+	CPUGovernor *joulie.CPUGovernorIntent
+	GPUGovernor *joulie.GPUGovernorIntent
+	// LastCPUGovernor and LastGPUGovernor are the governor results the agent
+	// last wrote to the NodeTwin status: how a restarted agent learns that
+	// an earlier run changed the governors, and which NVIDIA locks it set (a
+	// lock cannot be read back).
+	LastCPUGovernor *v1alpha1.ControlResult
+	LastGPUGovernor *v1alpha1.ControlResult
 }
 
 type NodeTwinSpec struct {
@@ -106,6 +126,12 @@ type NodeTwinSpec struct {
 	PowerPctOfMax *float64
 	GPU           *GPUPowerCap
 	PolicyName    string
+	// CPUGovernor, GPUGovernor, LastCPUGovernor and LastGPUGovernor are as
+	// in DesiredState; the last two come from the NodeTwin status.
+	CPUGovernor     *joulie.CPUGovernorIntent
+	GPUGovernor     *joulie.GPUGovernorIntent
+	LastCPUGovernor *v1alpha1.ControlResult
+	LastGPUGovernor *v1alpha1.ControlResult
 }
 
 type GPUPowerCap struct {
@@ -192,6 +218,10 @@ type NodeController struct {
 	lastSuccessfulSpecRead time.Time
 	specReadTimeout        time.Duration
 	capsRelaxed            bool // true when caps have been relaxed due to stale spec
+	// governor sets the CPU and GPU governors (governor_control.go).
+	governor *governorControl
+	// gpuFacts keeps the static NVIDIA governor facts between reconciles.
+	gpuFacts *nvidiaFactsCache
 }
 
 // DVFSController is an alias for the extracted dvfs.Controller type.
@@ -320,27 +350,33 @@ func runDaemonsetMode() {
 		log.Fatal("NODE_NAME env var is required in daemonset mode")
 	}
 	reconcileEvery := durationEnv("RECONCILE_INTERVAL", 20*time.Second)
-	simulateOnly := strings.EqualFold(strings.TrimSpace(os.Getenv("SIMULATE_ONLY")), "true")
+	simulateOnly := boolEnv("SIMULATE_ONLY", false)
 	controller, err := newNodeController(nodeName, simulateOnly)
 	if err != nil {
 		log.Fatalf("init controller: %v", err)
 	}
 	cfg, dyn := initKubeClients()
 	reader := startReader(context.Background(), cfg, cacheOptionsForNode(newScheme(), nodeName))
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// The first signal handler of the agent: on SIGTERM it stops
+	// reconciling and puts the governor baseline back before it exits.
+	sigCtx, stop := signalContext()
+	defer stop()
+	for sigCtx.Err() == nil {
+		ctx, cancel := context.WithTimeout(sigCtx, 10*time.Second)
 		if err := controller.reconcile(ctx, reader, dyn); err != nil {
 			controller.metrics.reconcileErrorsTotal.WithLabelValues(nodeName).Inc()
 			log.Printf("reconcile failed node=%s: %v", nodeName, err)
 		}
 		cancel()
-		time.Sleep(reconcileEvery)
+		sleepContext(sigCtx, reconcileEvery)
 	}
+	log.Printf("stopping node=%s: %v", nodeName, context.Cause(sigCtx))
+	restoreGovernorsOnExit(dyn, controller)
 }
 
 func runPoolMode() {
 	reconcileEvery := durationEnv("RECONCILE_INTERVAL", 20*time.Second)
-	simulateOnly := strings.EqualFold(strings.TrimSpace(os.Getenv("SIMULATE_ONLY")), "true")
+	simulateOnly := boolEnv("SIMULATE_ONLY", false)
 	selectorExpr := envOrDefault("POOL_NODE_SELECTOR", "joulie.io/managed=true")
 	shards := intEnv("POOL_SHARDS", 1)
 	shardID := resolvePoolShardID()
@@ -358,14 +394,16 @@ func runPoolMode() {
 	reader := startReader(context.Background(), cfg, cacheOptionsForPool(newScheme(), selector))
 	controllers := map[string]*NodeController{}
 	log.Printf("pool mode enabled selector=%q shards=%d shardID=%d interval=%s", selectorExpr, shards, shardID, reconcileEvery)
+	sigCtx, stop := signalContext()
+	defer stop()
 
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	for sigCtx.Err() == nil {
+		ctx, cancel := context.WithTimeout(sigCtx, 10*time.Second)
 		var nodes corev1.NodeList
 		if err := reader.List(ctx, &nodes, client.MatchingLabelsSelector{Selector: selector}); err != nil {
 			cancel()
 			log.Printf("pool list nodes failed: %v", err)
-			time.Sleep(reconcileEvery)
+			sleepContext(sigCtx, reconcileEvery)
 			continue
 		}
 		active := map[string]bool{}
@@ -381,6 +419,9 @@ func runPoolMode() {
 					log.Printf("failed to init controller node=%s: %v", n.Name, err)
 					continue
 				}
+				// A pool agent runs elsewhere: its /host-sys is not the
+				// node's, so it writes no governor.
+				c.governorControl().remote = true
 				controllers[n.Name] = c
 				log.Printf("controller started node=%s shard=%d/%d", n.Name, shardID, shards)
 			}
@@ -397,8 +438,9 @@ func runPoolMode() {
 			log.Printf("controller stopped node=%s shard=%d/%d", node, shardID, shards)
 		}
 		cancel()
-		time.Sleep(reconcileEvery)
+		sleepContext(sigCtx, reconcileEvery)
 	}
+	log.Printf("stopping pool agent: %v", context.Cause(sigCtx))
 }
 
 func resolvePoolShardID() int {
@@ -522,6 +564,8 @@ func newNodeController(nodeName string, simulateOnly bool) (*NodeController, err
 		simulateOnly:           simulateOnly,
 		specReadTimeout:        durationEnv("SPEC_READ_TIMEOUT", 5*time.Minute),
 		lastSuccessfulSpecRead: time.Now(), // assume fresh at startup
+		governor:               newGovernorControl(nodeName),
+		gpuFacts:               &nvidiaFactsCache{},
 	}, nil
 }
 
@@ -572,7 +616,7 @@ func reconcileOnce(
 		return fmt.Errorf("get node: %w", err)
 	}
 
-	hw := discoverHardware(ctx, node)
+	hw := discoverHardwareWith(ctx, node, nc.gpuFacts)
 
 	selected, source, err := resolveDesiredStateForNode(ctx, reader, nodeName)
 	if err != nil {
@@ -606,12 +650,25 @@ func reconcileOnce(
 	}
 	controlClient := controlClientFromTelemetry(telemetry, nodeName)
 	gpuControlClient := gpuControlClientFromTelemetry(telemetry, nodeName)
+	// The governor baseline reaches NodeHardware before any governor write.
+	gov := nc.governorControl()
+	gov.prepare(ctx, dyn, &hw, selected)
 	if err := upsertNodeHardwareStatus(ctx, dyn, nodeName, hw); err != nil {
 		log.Printf("warning: failed to upsert NodeHardware status for node=%s: %v", nodeName, err)
 	}
 	if dvfsCtl != nil {
 		setDVFSPowerReaderForTelemetry(dvfsCtl, telemetry, nodeName)
 	}
+	// The CPU governor goes before the CPU cap or DVFS (which writes
+	// scaling_max_freq and works under any governor), the GPU governor
+	// before the GPU cap. Without a NodeTwin, or with a spec too old to
+	// trust, the governors go back to their baseline.
+	gov.reconcile(ctx, dyn, hw, selected, governorEnv{
+		simulateOnly: simulateOnly,
+		cpuHTTP:      controlClient != nil,
+		gpuHTTP:      gpuControlClient != nil,
+		nodeLabels:   node.Labels,
+	})
 
 	if selected == nil {
 		metrics.setBackendMode("none")
@@ -662,7 +719,8 @@ func reconcileOnce(
 	}
 
 	if selected.GPU != nil {
-		backend, result, msg, observed, err := applyGPUIntent(ctx, node, selected.GPU, gpuControlClient)
+		backend, result, msg, observed, err := applyGPUIntentFrom(ctx, node, selected.GPU, gpuControlClient,
+			&gpuInventory{vendor: hw.GPUVendor, devices: hw.GPUDevices, err: hw.GPUListErr})
 		_ = updateTelemetryGPUStatus(ctx, dyn, telemetry, nodeName, backend, result, msg, observed)
 		if err != nil {
 			return err
@@ -754,6 +812,11 @@ func reconcileOnce(
 	return nil
 }
 
+// writeRAPLLimit writes a RAPL power limit as os.WriteFile does: opened for
+// writing, created when missing, truncated, then written. A variable so a
+// test can route the writes through an emulated node.
+var writeRAPLLimit = func(path string, data []byte) error { return os.WriteFile(path, data, 0) }
+
 func applyRAPLPackageCap(hw HardwareInfo, watts float64) (bool, int, error) {
 	if hw.CPUVendor != "AuthenticAMD" && hw.CPUVendor != "GenuineIntel" {
 		return false, 0, nil
@@ -770,13 +833,21 @@ func applyRAPLPackageCap(hw HardwareInfo, watts float64) (bool, int, error) {
 	}
 
 	uw := int64(watts * 1_000_000)
-	payload := []byte(strconv.FormatInt(uw, 10))
 	count := 0
 	var failures []string
 	for _, f := range files {
-		// Keep going after a failure: one unwritable socket must not leave the
-		// remaining sockets uncapped, which is what an early return did.
-		if err := os.WriteFile(f, payload, 0); err != nil {
+		// The kernel keeps a limit in the zone's power unit and masks it to
+		// the register's width, so a value above the zone's maximum wraps to
+		// a small cap on hardware: clamp to constraint_N_max_power_uw where
+		// the zone states one.
+		capUW := uw
+		if maxUW, ok := raplConstraintMaxUW(f); ok && capUW > maxUW {
+			capUW = maxUW
+		}
+		payload := []byte(strconv.FormatInt(capUW, 10))
+		// Keep going after a failure: one unwritable socket must not leave
+		// the remaining sockets uncapped.
+		if err := writeRAPLLimit(f, payload); err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", f, err))
 			continue
 		}
@@ -789,6 +860,21 @@ func applyRAPLPackageCap(hw HardwareInfo, watts float64) (bool, int, error) {
 		log.Printf("warning: applied cap to %d/%d package zones: %s", count, len(files), strings.Join(failures, "; "))
 	}
 	return true, count, nil
+}
+
+// raplConstraintMaxUW is constraint_N_max_power_uw of the constraint whose
+// constraint_N_power_limit_uw is limitFile; ok is false when the file is
+// missing, unreadable or not positive.
+func raplConstraintMaxUW(limitFile string) (int64, bool) {
+	base, ok := strings.CutSuffix(filepath.Base(limitFile), "_power_limit_uw")
+	if !ok {
+		return 0, false
+	}
+	v, err := readInt64(filepath.Join(filepath.Dir(limitFile), base+"_max_power_uw"))
+	if err != nil || v <= 0 {
+		return 0, false
+	}
+	return v, true
 }
 
 func resolveCPUCapFromPct(ctx context.Context, pct float64) (float64, string, bool) {
@@ -915,11 +1001,31 @@ func readRAPLPackageCapRangeWatts() (maxW float64, minW float64, ok bool) {
 	return maxW, minW, true
 }
 
+// gpuInventory is a GPU listing already taken this reconcile: the vendor,
+// the devices and the error the listing gave.
+type gpuInventory struct {
+	vendor  string
+	devices []GPUDevice
+	err     error
+}
+
 func applyGPUIntent(
 	ctx context.Context,
 	node *corev1.Node,
 	intent *GPUPowerCap,
 	httpClient *HTTPControlClient,
+) (string, string, string, map[string]any, error) {
+	return applyGPUIntentFrom(ctx, node, intent, httpClient, nil)
+}
+
+// applyGPUIntentFrom applies the GPU cap intent with the listing inv, or
+// lists the GPUs itself when inv is nil.
+func applyGPUIntentFrom(
+	ctx context.Context,
+	node *corev1.Node,
+	intent *GPUPowerCap,
+	httpClient *HTTPControlClient,
+	inv *gpuInventory,
 ) (string, string, string, map[string]any, error) {
 	if intent == nil {
 		return "none", "none", "no GPU cap intent", nil, nil
@@ -951,11 +1057,16 @@ func applyGPUIntent(
 		return "http", "applied", fmt.Sprintf("applied gpu cap %.1fW", capPerGPU), observed, nil
 	}
 
-	vendor := detectGPUVendor(ctx, nodeLabels)
+	if inv == nil {
+		inv = &gpuInventory{vendor: detectGPUVendor(ctx, nodeLabels)}
+		if inv.vendor != "none" {
+			inv.devices, inv.err = listGPUDevices(ctx, inv.vendor)
+		}
+	}
+	vendor, devices, err := inv.vendor, inv.devices, inv.err
 	if vendor == "none" {
 		return "none", "blocked", "no supported GPU backend detected", map[string]any{"vendor": "none"}, nil
 	}
-	devices, err := listGPUDevices(ctx, vendor)
 	if err != nil {
 		return "none", "error", fmt.Sprintf("gpu inventory failed: %v", err), map[string]any{"vendor": vendor}, nil
 	}
@@ -1149,9 +1260,18 @@ func listAmdDevices(ctx context.Context) ([]GPUDevice, error) {
 	return devices, nil
 }
 
+// applyNvidiaGPUCap sets the power limit of every device to capWatts,
+// rounded to whole watts as -pl takes it. A device whose listed limit
+// already rounds to that value is left alone: the listing is this
+// reconcile's, so a limit the driver put back after a reset or a reload
+// shows there and is set again.
 func applyNvidiaGPUCap(ctx context.Context, devices []GPUDevice, capWatts float64) error {
+	target := math.Round(capWatts)
 	for _, d := range devices {
-		if _, err := runCommand(ctx, "nvidia-smi", "-i", strconv.Itoa(d.Index), "-pl", strconv.Itoa(int(math.Round(capWatts)))); err != nil {
+		if math.Round(d.CurrentCapWatts) == target {
+			continue
+		}
+		if _, err := runCommand(ctx, "nvidia-smi", "-i", strconv.Itoa(d.Index), "-pl", strconv.Itoa(int(target))); err != nil {
 			return fmt.Errorf("nvidia-smi set cap gpu=%d: %w", d.Index, err)
 		}
 	}
@@ -1172,7 +1292,11 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 	defer cancel()
 	out, err := commandRunner.Run(timeoutCtx, name, args...)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s failed: %v (%s)", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		err = fmt.Errorf("%s %s failed: %w (%s)", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		if name == "nvidia-smi" && !discover.FieldRejected(err) {
+			nvidiaToolFailures.Add(1)
+		}
+		return nil, err
 	}
 	return out, nil
 }
@@ -1272,6 +1396,12 @@ func gpuControlClientFromTelemetry(cfg *TelemetryConfig, nodeName string) *HTTPC
 // HTTP control client methods are now in pkg/agent/control/http.go.
 
 func discoverHardware(ctx context.Context, node *corev1.Node) HardwareInfo {
+	return discoverHardwareWith(ctx, node, nil)
+}
+
+// discoverHardwareWith is discoverHardware with the controller's cache of
+// static NVIDIA governor facts; nil queries them every time.
+func discoverHardwareWith(ctx context.Context, node *corev1.Node, gpuFacts *nvidiaFactsCache) HardwareInfo {
 	nodeLabels := node.Labels
 	hw := HardwareInfo{
 		CPUVendor:       discoverCPUVendor(nodeLabels),
@@ -1315,7 +1445,8 @@ func discoverHardware(ctx context.Context, node *corev1.Node) HardwareInfo {
 		}
 	}
 	hw.GPUVendor = detectGPUVendor(ctx, nodeLabels)
-	gpuDevices, _ := listGPUDevices(ctx, hw.GPUVendor)
+	gpuDevices, listErr := listGPUDevices(ctx, hw.GPUVendor)
+	hw.GPUDevices, hw.GPUListErr = gpuDevices, listErr
 	hw.GPUCount = len(gpuDevices)
 	if hw.GPUCount == 0 {
 		hw.GPUCount = int(allocatableGPUCount(node))
@@ -1329,9 +1460,14 @@ func discoverHardware(ctx context.Context, node *corev1.Node) HardwareInfo {
 		hw.GPUControl = hw.GPUCapKnown
 		hw.GPUTelemetry = true
 	} else {
+		// The AMD node labeller names the board in gpu.product-name (under
+		// both of its prefixes); amd.com/gpu.product is the older key, and
+		// the family code (GC_11_0_0, AI), read last, names no board.
 		hw.GPURawModel = firstNonEmpty(
 			nodeLabels["joulie.io/gpu.product"],
 			nodeLabels["nvidia.com/gpu.product"],
+			nodeLabels["amd.com/gpu.product-name"],
+			nodeLabels["beta.amd.com/gpu.product-name"],
 			nodeLabels["amd.com/gpu.product"],
 			nodeLabels["amd.com/gpu.family"],
 		)
@@ -1347,6 +1483,8 @@ func discoverHardware(ctx context.Context, node *corev1.Node) HardwareInfo {
 	if hw.GPUCount > 0 && hw.GPUModel == "" && hw.GPURawModel != "" {
 		hw.Warnings = append(hw.Warnings, "gpu model not recognized")
 	}
+	hw.CPULandmarks = discoverCPULandmarks()
+	hw.Governors = discoverGovernors(ctx, nodeLabels, hw, gpuFacts)
 	return hw
 }
 
@@ -1515,10 +1653,14 @@ func resolveDesiredStateForNode(ctx context.Context, reader kube.Reader, nodeNam
 	}
 	if np != nil {
 		return &DesiredState{
-			Name:          np.Name,
-			PowerWatts:    np.PowerWatts,
-			PowerPctOfMax: np.PowerPctOfMax,
-			GPU:           np.GPU,
+			Name:            np.Name,
+			PowerWatts:      np.PowerWatts,
+			PowerPctOfMax:   np.PowerPctOfMax,
+			GPU:             np.GPU,
+			CPUGovernor:     np.CPUGovernor,
+			GPUGovernor:     np.GPUGovernor,
+			LastCPUGovernor: np.LastCPUGovernor,
+			LastGPUGovernor: np.LastGPUGovernor,
 		}, "nodetwin", nil
 	}
 	return nil, "", nil
@@ -1548,7 +1690,9 @@ func getNodeTwinSpec(ctx context.Context, reader kube.Reader, nodeName string) (
 
 // nodeTwinSpecFromObject copies the spec of a NodeTwin into the agent's
 // NodeTwinSpec. Optional caps stay nil when absent, and the GPU cap is only
-// set when at least one of its values is.
+// set when at least one of its values is. The governor intents are copied
+// as they are, and the governor results the agent last wrote come from the
+// status.
 func nodeTwinSpecFromObject(nt *v1alpha1.NodeTwin) NodeTwinSpec {
 	np := NodeTwinSpec{
 		Name:     nt.Name,
@@ -1561,6 +1705,23 @@ func nodeTwinSpecFromObject(nt *v1alpha1.NodeTwin) NodeTwinSpec {
 	if cpu := nt.Spec.CPU; cpu != nil {
 		np.PowerWatts = copyFloat64(cpu.PackagePowerCapWatts)
 		np.PowerPctOfMax = copyFloat64(cpu.PackagePowerCapPctOfMax)
+		if g := cpu.Governor; g != nil {
+			np.CPUGovernor = &joulie.CPUGovernorIntent{Preset: g.Preset, Boost: g.Boost}
+		}
+	}
+	if nt.Spec.GPU != nil && nt.Spec.GPU.Governor != nil {
+		g := nt.Spec.GPU.Governor
+		np.GPUGovernor = &joulie.GPUGovernorIntent{Preset: g.Preset, ComputeClockCeilingPctOfMax: copyFloat64(g.ComputeClockCeilingPctOfMax)}
+	}
+	if cs := nt.Status.ControlStatus; cs != nil {
+		if cs.CPUGovernor != nil {
+			r := *cs.CPUGovernor
+			np.LastCPUGovernor = &r
+		}
+		if cs.GPUGovernor != nil {
+			r := *cs.GPUGovernor
+			np.LastGPUGovernor = &r
+		}
 	}
 	if nt.Spec.GPU != nil && nt.Spec.GPU.PowerCap != nil {
 		pc := nt.Spec.GPU.PowerCap
@@ -1657,23 +1818,55 @@ func shouldWrite(key, payload string, now time.Time) bool {
 }
 
 func updateNodeTwinControlStatus(ctx context.Context, dyn dynamic.Interface, nodeName, component, backend, result, message string) error {
+	return patchNodeTwinControlStatus(ctx, dyn, nodeName, component, backend+"|"+result+"|"+message, map[string]interface{}{
+		"backend":   backend,
+		"result":    result,
+		"message":   message,
+		"updatedAt": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// updateNodeTwinGovernorStatus writes a governor outcome to
+// status.controlStatus.<component> (cpuGovernor or gpuGovernor), with the
+// native setting in applied. A nil s removes the entry.
+func updateNodeTwinGovernorStatus(ctx context.Context, dyn dynamic.Interface, nodeName, component string, s *governorStatus) error {
+	if s == nil {
+		return patchNodeTwinControlStatus(ctx, dyn, nodeName, component, "removed", nil)
+	}
+	entry := map[string]interface{}{
+		"backend":   s.backend,
+		"result":    s.result,
+		"message":   s.message,
+		"updatedAt": time.Now().UTC().Format(time.RFC3339),
+	}
+	if s.applied != "" {
+		entry["applied"] = s.applied
+	}
+	return patchNodeTwinControlStatus(ctx, dyn, nodeName, component, s.backend+"|"+s.result+"|"+s.message+"|"+s.applied, entry)
+}
+
+// patchNodeTwinControlStatus merges entry into status.controlStatus.<component>
+// of the node's NodeTwin, or removes the component when entry is nil. The
+// patch is skipped when fingerprint is what was last written there, within
+// rewriteInterval.
+func patchNodeTwinControlStatus(ctx context.Context, dyn dynamic.Interface, nodeName, component, fingerprint string, entry map[string]interface{}) error {
 	name := sanitizeNodeObjectName(nodeName)
 	res := dyn.Resource(nodeTwinGVR)
-	if !shouldWrite("controlStatus|"+name+"|"+component, backend+"|"+result+"|"+message, time.Now()) {
+	if !shouldWrite("controlStatus|"+name+"|"+component, fingerprint, time.Now()) {
 		return nil
 	}
 
 	// Use MergePatch on the status subresource to avoid overwriting fields
 	// written by the controller manager (e.g. schedulableClass, predicted scores).
+	// A null value removes the component.
+	var value interface{}
+	if entry != nil {
+		value = entry
+	}
 	patch := map[string]interface{}{
 		"status": map[string]interface{}{
 			"controlStatus": map[string]interface{}{
-				component: map[string]interface{}{
-					"backend":   backend,
-					"result":    result,
-					"message":   message,
-					"updatedAt": time.Now().UTC().Format(time.RFC3339),
-				},
+				component: value,
 			},
 		},
 	}
@@ -1804,6 +1997,11 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 			"cpu": exactnessCPU,
 			"gpu": exactnessGPU,
 		},
+	}
+
+	// Landmarks and governors; the governor baseline already stored is kept.
+	if err := addGovernorStatus(status, hw, obj); err != nil {
+		return fmt.Errorf("NodeHardware governor status: %w", err)
 	}
 
 	// Hardware facts change rarely; skip the write when nothing but the

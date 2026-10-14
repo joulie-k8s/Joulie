@@ -1,0 +1,4 @@
+# A values file that overrides a node power input, which scenarios may not.
+controllerManager:
+  env:
+    NODE_POWER_SOURCE: http

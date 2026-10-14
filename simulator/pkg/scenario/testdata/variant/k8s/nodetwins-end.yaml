@@ -1,0 +1,30 @@
+# snapshot time: 2026-10-04T20:03:20Z
+apiVersion: v1
+items:
+- apiVersion: joulie.io/v1alpha1
+  kind: NodeTwin
+  metadata:
+    creationTimestamp: null
+    name: intel-0
+  spec:
+    nodeName: intel-0
+    profile: ""
+  status:
+    controlStatus:
+      cpu:
+        backend: rapl
+        result: applied
+- apiVersion: joulie.io/v1alpha1
+  kind: NodeTwin
+  metadata:
+    creationTimestamp: null
+    name: nvl-0
+  spec:
+    nodeName: nvl-0
+    profile: ""
+  status:
+    controlStatus:
+      gpu:
+        backend: none
+        result: blocked
+kind: List

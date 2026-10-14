@@ -1,0 +1,20 @@
+# Labels and annotations from every level, for CS04, CS11 and CS12. The
+# defaults override a profile label (cpu-model.hypervisor), the pool
+# overrides a defaults label (tier) and the arm pool sets the architecture.
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: labels}
+spec:
+  defaults:
+    labels: {example.com/tier: defaults, example.com/from-defaults: "true", feature.node.kubernetes.io/cpu-model.hypervisor: none}
+    annotations: {example.com/note: defaults, example.com/who: defaults}
+  facility: {coolingZones: [{name: zone-a, offsetC: 2.5}]}
+  pools:
+  - name: vm
+    profile: vm-no-powercap
+    count: 2
+    rack: rack-7
+    coolingZone: zone-a
+    labels: {example.com/tier: pool}
+    annotations: {example.com/who: pool}
+  - {name: arm, profile: vm-no-powercap, count: 1, labels: {kubernetes.io/arch: arm64}}
