@@ -153,7 +153,7 @@ At full speed the simulator does `request * SIM_BASE_SPEED_PER_CORE` units per s
 
 Two `v3` flags fit a trace into a run of fixed length:
 
-- `--arrival-window-sec S` scales every submit offset so the last arrival is at `S` seconds, keeping the arrival pattern's shape.
+- `--arrival-window-sec S` compresses the submit offsets so the last arrival is at `S` seconds, keeping the arrival pattern's shape; a window later than the last sampled arrival changes nothing.
 - `--max-duration-sec D` clamps each workload's `durationSec` to `D` before its work is sized.
 
 Both default to 0, which keeps the sampled values.
