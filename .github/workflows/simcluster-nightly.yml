@@ -42,12 +42,12 @@ jobs:
     if: >-
       (github.event_name == 'schedule' && github.event.schedule == '17 3 * * 1-6') ||
       (github.event_name == 'workflow_dispatch' && inputs.scenarios == 'nightly')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 60 minutes of arrivals and 20 of drain, plus the cluster and the images.
     timeout-minutes: 130
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Outside the workspace, as the scripts want it; the runner context is
       # not available in a job's env, hence GITHUB_ENV.
@@ -55,7 +55,7 @@ jobs:
         run: echo "SIMCLUSTER_DIR=$RUNNER_TEMP/simcluster/joulie-sim" >>"$GITHUB_ENV"
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
@@ -64,12 +64,12 @@ jobs:
         run: echo "helm=$(sed -n 's/^HELM_VERSION=//p' scripts/simcluster/versions.env)" >>"$GITHUB_OUTPUT"
 
       - name: Setup Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ steps.versions.outputs.helm }}
 
       - name: Cache the image tarballs
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/simcluster/*/images
           key: simcluster-images-${{ hashFiles('scripts/simcluster/versions.env') }}
@@ -79,7 +79,7 @@ jobs:
 
       - name: Upload the run
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: simcluster-nightly-mixed
           path: ${{ env.SIMCLUSTER_DIR }}/runs/
@@ -90,17 +90,17 @@ jobs:
     if: >-
       (github.event_name == 'schedule' && github.event.schedule == '17 3 * * 1-6') ||
       (github.event_name == 'workflow_dispatch' && inputs.scenarios == 'nightly')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set the state directory
         run: echo "SIMCLUSTER_DIR=$RUNNER_TEMP/simcluster/joulie-sim" >>"$GITHUB_ENV"
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
@@ -109,12 +109,12 @@ jobs:
         run: echo "helm=$(sed -n 's/^HELM_VERSION=//p' scripts/simcluster/versions.env)" >>"$GITHUB_OUTPUT"
 
       - name: Setup Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ steps.versions.outputs.helm }}
 
       - name: Cache the image tarballs
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/simcluster/*/images
           key: simcluster-images-${{ hashFiles('scripts/simcluster/versions.env') }}
@@ -125,7 +125,7 @@ jobs:
 
       - name: Upload the run
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: simcluster-deadlock-visible
           path: ${{ env.SIMCLUSTER_DIR }}/runs/
@@ -138,7 +138,7 @@ jobs:
     if: >-
       (github.event_name == 'schedule' && github.event.schedule == '17 3 * * 0') ||
       (github.event_name == 'workflow_dispatch' && inputs.scenarios == 'weekly')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       run: ${{ steps.name.outputs.run }}
@@ -149,7 +149,7 @@ jobs:
 
   weekly-compare:
     needs: weekly-plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 60 minutes of arrivals and 20 of drain on a fresh cluster per variant.
     timeout-minutes: 150
     strategy:
@@ -159,7 +159,7 @@ jobs:
     name: weekly-compare (${{ matrix.variant }})
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set the state and run directories
         run: |
@@ -167,7 +167,7 @@ jobs:
           echo "SCENARIO_RUN_DIR=$RUNNER_TEMP/simcluster/joulie-sim/runs/${{ needs.weekly-plan.outputs.run }}" >>"$GITHUB_ENV"
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
@@ -176,12 +176,12 @@ jobs:
         run: echo "helm=$(sed -n 's/^HELM_VERSION=//p' scripts/simcluster/versions.env)" >>"$GITHUB_OUTPUT"
 
       - name: Setup Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ steps.versions.outputs.helm }}
 
       - name: Cache the image tarballs
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/simcluster/*/images
           key: simcluster-images-${{ hashFiles('scripts/simcluster/versions.env') }}
@@ -196,7 +196,7 @@ jobs:
       # same in every variant job, and the comparison job writes its own.
       - name: Upload the variant
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: simcluster-weekly-compare-${{ matrix.variant }}
           path: ${{ env.SCENARIO_RUN_DIR }}/${{ matrix.variant }}/
@@ -206,14 +206,14 @@ jobs:
   weekly-summarize:
     needs: [weekly-plan, weekly-compare]
     if: always() && needs.weekly-plan.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
@@ -223,7 +223,7 @@ jobs:
       # Each variant's artifact into its directory; a variant whose job
       # failed early has none, and summarize reports it.
       - name: Download the variants
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: simcluster-weekly-compare-*
           path: ${{ runner.temp }}/variants
@@ -242,7 +242,7 @@ jobs:
 
       - name: Upload the comparison
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: simcluster-weekly-compare
           path: ${{ env.RUN_DIR }}/

@@ -23,30 +23,30 @@ concurrency:
 jobs:
   preview:
     if: github.event.action != 'closed'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       HUGO_VERSION: 0.157.0
       PREVIEW_DIR: previews/pr-${{ github.event.pull_request.number }}
       PREVIEW_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/previews/pr-${{ github.event.pull_request.number }}/
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: website/go.mod
 
       - name: Setup Hugo
-        uses: peaceiris/actions-hugo@v3
+        uses: peaceiris/actions-hugo@2752ce1d29631191ea3f27c23495fa06139a5b78 # v3.2.1
         with:
           hugo-version: ${{ env.HUGO_VERSION }}
           extended: true
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "20"
 
@@ -115,7 +115,7 @@ jobs:
 
       - name: Deploy preview to gh-pages
         if: github.event.pull_request.head.repo.full_name == github.repository
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
@@ -124,12 +124,23 @@ jobs:
           keep_files: true
           force_orphan: false
 
-      - name: Comment preview URL
+      # The marker finds this workflow's earlier comment, so every push
+      # updates that one comment instead of adding another.
+      - name: Find the preview comment
         if: github.event.pull_request.head.repo.full_name == github.repository
-        uses: peter-evans/create-or-update-comment@v4
+        id: preview-comment
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
         with:
           issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
           body-includes: "<!-- docs-preview-comment -->"
+
+      - name: Comment preview URL
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-id: ${{ steps.preview-comment.outputs.comment-id }}
           body: |
             <!-- docs-preview-comment -->
             Docs preview is ready:
@@ -138,12 +149,12 @@ jobs:
 
   cleanup:
     if: github.event.action == 'closed'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       PREVIEW_DIR: previews/pr-${{ github.event.pull_request.number }}
     steps:
       - name: Checkout gh-pages
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: gh-pages
           fetch-depth: 0
