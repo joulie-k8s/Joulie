@@ -66,13 +66,12 @@ mkdir -p "$run_dir"
 exec > >(tee -a "$run_dir/smoke.log") 2>&1
 
 # collect copies what explains the run into the run directory; it never
-# fails the run.
+# fails the run. The container's and containerd's logs come first, from a
+# stopped container too, since a k3s that exited explains everything after.
 collect() {
   local k=$run_dir/k8s l=$run_dir/logs res ns pod
   mkdir -p "$k" "$l"
-  if [[ $(sim_container_state) == true ]]; then
-    docker logs --tail 2000 "$SIMCLUSTER_NAME" >"$l/k3s.log" 2>&1 || true
-  fi
+  sim_save_container_logs "$l"
   [[ -s $KUBECONFIG ]] || return 0
   for res in nodes nodehardwares nodetwins pods events; do
     kubectl get "$res" -A -o yaml >"$k/$res-end.yaml" 2>/dev/null || true

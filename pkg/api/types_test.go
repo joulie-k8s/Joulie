@@ -63,4 +63,3 @@ func TestNodeTwinMarshal(t *testing.T) {
 		t.Errorf("profile mismatch: got %q want %q", out.Spec.Profile, "eco")
 	}
 }
-

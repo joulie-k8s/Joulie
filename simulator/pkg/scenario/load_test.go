@@ -2,10 +2,12 @@ package scenario_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -129,6 +131,116 @@ func TestPlanRefusesATimingTheHarnessRefuses(t *testing.T) {
 	for _, want := range []string{"CONTROLLER_RECONCILE_INTERVAL=-5s is not a positive duration", "unknown key SCRAPE_EVERY"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("plan with an invalid timing file: error %v, want one containing %q", err, want)
+		}
+	}
+}
+
+// EarliestEnd is the latest of each job's due time plus its runtime and,
+// per resource, of each due time plus the work due from then on over the
+// capacity: on 10 cores, three jobs of 10 cores and 100 s due at 0, 50 and
+// 50 s end at 300 s at the earliest, and a fourth due at 400 s at 500 s.
+func TestEarliestEndCountsTheWorkDueFromEachArrival(t *testing.T) {
+	job := func(at float64) scenario.TraceJob {
+		return scenario.TraceJob{SubmitTimeOffsetSec: at, PodTemplate: scenario.TracePodTemplate{Requests: map[string]string{"cpu": "10"}},
+			Work: scenario.TraceWork{CPUUnits: 1000}}
+	}
+	capacity := map[string]float64{"cpu": 10, "memory": 0}
+	jobs := []scenario.TraceJob{job(50), job(0), job(50)}
+	if got := scenario.EarliestEnd(jobs, capacity, 1); got != 300*time.Second {
+		t.Errorf("earliest end %s, want 5m0s: 3000 core-seconds from 0 s on 10 cores", got)
+	}
+	if got := scenario.EarliestEnd(append(jobs, job(400)), capacity, 1); got != 500*time.Second {
+		t.Errorf("earliest end %s, want 8m20s: the job due at 400 s runs 100 s", got)
+	}
+}
+
+// plan refuses work that cannot end within 0.9 of the deadline even when
+// its load over the window is below the limit: 10 jobs of 95 cores and
+// 100 s due from 500 s on, on the mini spec's 190 untainted cores, offer
+// 0.83 of the 10 minutes but cannot end before 1000 s. Ten minutes of drain
+// make room for them.
+func TestPlanRefusesWorkThatCannotEndByTheDeadline(t *testing.T) {
+	plan := func(drain string) (*scenario.Plan, error) {
+		t.Helper()
+		s := fxDecode(t, "schemaVersion: 1\nname: burst\ncluster: {spec: tests/simcluster/specs/mini.yaml}\nduration: 10m\n"+drain+
+			"workload: {trace: traces/late-burst.jsonl}\n")
+		if err := scenario.Validate(s, scenario.ValidateOptions{RepoRoot: repoRoot}); err != nil {
+			t.Fatalf("invalid: %v", err)
+		}
+		return scenario.MakePlan(context.Background(), s, scenario.PlanOptions{RepoRoot: repoRoot, RunDir: filepath.Join(t.TempDir(), "run"), GitSHA: "abc"})
+	}
+	p, err := plan("")
+	var over *scenario.OverloadError
+	if !errors.As(err, &over) || len(over.Over) != 0 || over.EarliestEnd != 1000*time.Second || over.Deadline != 10*time.Minute {
+		t.Fatalf("error %v, want the work's earliest end, 16m40s, past 0.9 of the 10m deadline and no resource overloaded", err)
+	}
+	if !strings.Contains(err.Error(), "the work cannot end before 16m40s, past 0.90 of the 10m0s deadline") {
+		t.Errorf("error %q does not say when the work can end", err)
+	}
+	for _, l := range p.Load {
+		if l.Resource == "cpu" && (l.Load < 0.83 || l.Load > 0.84) {
+			t.Errorf("cpu load %.3f, want 95000 over 190 x 600 s", l.Load)
+		}
+	}
+	if p, err = plan("drain: 10m\n"); err != nil {
+		t.Fatalf("with 10 minutes of drain: %v", err)
+	}
+	if p.EarliestEnd != 1000*time.Second || p.Deadline != 20*time.Minute {
+		t.Errorf("earliest end %s of %s, want 16m40s of 20m0s", p.EarliestEnd, p.Deadline)
+	}
+}
+
+// Under static_partition the performance jobs run only on the Nodes it
+// keeps in performance, so plan checks their load there. On the mini spec
+// at STATIC_HP_FRAC 0.5 one Node of each family is in performance, intel-0
+// and nvl-0, whose GPU taint keeps CPU jobs off, so 10 performance jobs of
+// 60 cores and 100 s, 0.53 of the 190 untainted cores, offer 1.05 of the 95
+// left to them. Without Joulie, under queue_aware_v1, which grows its
+// performance set with the demand, or with every Node in performance, the
+// class is not confined that far and the plan passes.
+func TestPlanChecksThePerformanceClassOnThePerformanceNodes(t *testing.T) {
+	plan := func(joulie string) (*scenario.Plan, error) {
+		t.Helper()
+		s := fxDecode(t, "schemaVersion: 1\nname: confined\ncluster: {spec: tests/simcluster/specs/mini.yaml}\nduration: 10m\ndrain: 1m\nworkload:\n  jobs:\n"+
+			"  - {name: p, class: performance, count: 10, every: 50s, requests: {cpu: \"60\"}, runtime: 100s}\n"+joulie)
+		if err := scenario.Validate(s, scenario.ValidateOptions{RepoRoot: repoRoot}); err != nil {
+			t.Fatalf("invalid: %v", err)
+		}
+		return scenario.MakePlan(context.Background(), s, scenario.PlanOptions{RepoRoot: repoRoot, RunDir: filepath.Join(t.TempDir(), "run"), GitSHA: "abc"})
+	}
+	_, err := plan("")
+	var over *scenario.OverloadError
+	if !errors.As(err, &over) || len(over.Over) != 0 || over.Deadline != 0 || len(over.Classes) != 1 {
+		t.Fatalf("error %v, want the performance class refused and nothing else", err)
+	}
+	c := over.Classes[0]
+	load := map[string]float64{}
+	for _, l := range c.Load {
+		load[l.Resource] = l.Load
+	}
+	if c.Class != "performance" || c.Nodes != 2 || c.Policy != "static_partition at STATIC_HP_FRAC 0.5" || load["cpu"] < 1.05 || load["cpu"] > 1.06 {
+		t.Errorf("class %+v, want performance on intel-0 and nvl-0 at 1.05 of 95 cores", c)
+	}
+	if !strings.Contains(err.Error(), "performance jobs on the 2 Nodes static_partition at STATIC_HP_FRAC 0.5 leaves them: offered load above 0.90: cpu 1.05") {
+		t.Errorf("error %q does not name the class and its load", err)
+	}
+	for name, joulie := range map[string]string{
+		"joulie off":         "joulie: {enabled: false}\n",
+		"queue_aware_v1":     "joulie: {set: {controllerManager.env.POLICY_TYPE: queue_aware_v1}}\n",
+		"all performance":    "joulie: {set: {controllerManager.env.STATIC_HP_FRAC: \"1\"}}\n",
+		"variant joulie off": "variants: [{name: nojoulie, joulie: {enabled: false}}]\n",
+	} {
+		p, err := plan(joulie)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if name == "all performance" {
+			if len(p.Classes) != 1 || p.Classes[0].Over() {
+				t.Errorf("%s: classes %+v, want one within the limits", name, p.Classes)
+			}
+		} else if len(p.Classes) != 0 {
+			t.Errorf("%s: classes %+v, want none confined", name, p.Classes)
 		}
 	}
 }
