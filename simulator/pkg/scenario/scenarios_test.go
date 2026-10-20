@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -146,10 +147,16 @@ func TestScenarioLibraryValidates(t *testing.T) {
 	}
 }
 
-// Every scenario plans without exceeding the offered load limit. The smoke
-// scenario runs 9 jobs, and the two nightly ones offer between 0.5 and 0.8
-// of each resource a job can saturate (the CPUs and both GPU kinds), so the
-// cluster is busy without queueing past the drain.
+// Every scenario plans within the limits: no resource above
+// MaxOfferedLoad, and the work able to end within MaxOfferedLoad of the
+// deadline, on every Node and, for the performance class of a
+// static_partition variant, on the performance Nodes (MakePlan refuses
+// anything else). The smoke scenario runs 9 jobs. The two nightly ones
+// keep each resource a job can saturate (the CPUs and both GPU kinds) busy,
+// between 0.3 and 0.8 of the cluster, and nightly-mixed, on
+// static_partition, between 0.3 and 0.8 of the performance Nodes for its
+// performance jobs: those Nodes are half the cluster, so the class's share
+// of the work bounds the load more than the cluster's size does.
 func TestScenarioLibraryPlansUnderTheLoadLimit(t *testing.T) {
 	for _, name := range libScenarios {
 		t.Run(name, func(t *testing.T) {
@@ -163,16 +170,76 @@ func TestScenarioLibraryPlansUnderTheLoadLimit(t *testing.T) {
 			if name != "nightly-mixed" && name != "weekly-compare" {
 				return
 			}
-			load := map[string]float64{}
-			for _, l := range p.Load {
-				load[l.Resource] = l.Load
-			}
-			for _, r := range []string{"cpu", "nvidia.com/gpu", "amd.com/gpu"} {
-				if l, ok := load[r]; !ok || l < 0.5 || l > 0.8 {
-					t.Errorf("offered load of %s is %.3f (present %t), want 0.5 to 0.8", r, l, ok)
+			busy := func(what string, loads []scenario.OfferedLoad) {
+				t.Helper()
+				load := map[string]float64{}
+				for _, l := range loads {
+					load[l.Resource] = l.Load
+				}
+				for _, r := range []string{"cpu", "nvidia.com/gpu", "amd.com/gpu"} {
+					if l, ok := load[r]; !ok || l < 0.3 || l > 0.8 {
+						t.Errorf("offered load of %s on %s is %.3f (present %t), want 0.3 to 0.8", r, what, l, ok)
+					}
 				}
 			}
+			busy("the cluster", p.Load)
+			if name == "weekly-compare" {
+				if len(p.Classes) != 0 {
+					t.Errorf("weekly-compare confines %+v; no variant runs static_partition", p.Classes)
+				}
+				return
+			}
+			if len(p.Classes) != 1 || p.Classes[0].Class != "performance" {
+				t.Fatalf("classes %+v, want the performance class of static_partition", p.Classes)
+			}
+			busy("the performance Nodes", p.Classes[0].Load)
 		})
+	}
+}
+
+// plan refuses the nightly workload sized by the cluster alone: 1200
+// workloadgen jobs at the default time scale, whose arrivals climb
+// workloadgen's night-to-morning ramp, up to 20 minutes long, with 15 % of
+// them on GPUs. Its load on the cluster is within 0.9, but its performance
+// GPU work is more than the performance Nodes of static_partition can do
+// in the window, and on the whole cluster it cannot end within 0.9 of the
+// 80 minute deadline: such a run leaves jobs behind whatever Joulie does.
+func TestPlanRefusesTheNightlyWorkloadSizedByTheClusterAlone(t *testing.T) {
+	repo := moduleRoot(t)
+	path := filepath.Join(repo, libScenarioDir, "nightly-mixed.yaml")
+	s, err := scenario.ReadScenario(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Workload.Generate.Workloadgen = scenario.ScalarMap{
+		"jobs": "1200", "mean-inter-arrival-sec": "14", "arrival-window-sec": "3300", "max-duration-sec": "1200",
+		"gpu-ratio": "0.15", "amd-gpu-ratio": "0.2", "perf-ratio": "0.3",
+	}
+	if err := scenario.Validate(s, scenario.ValidateOptions{File: path, RepoRoot: repo}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := scenario.MakePlan(context.Background(), s, scenario.PlanOptions{
+		RepoRoot: repo, RunDir: filepath.Join(t.TempDir(), "run"), Workloadgen: libWorkloadgen(t),
+	})
+	var over *scenario.OverloadError
+	if !errors.As(err, &over) {
+		t.Fatalf("plan error %v, want an *OverloadError", err)
+	}
+	for _, l := range p.Load {
+		if l.Load > scenario.MaxOfferedLoad {
+			t.Errorf("cluster load %+v above the limit; this test needs the load the cluster alone allows", l)
+		}
+	}
+	if over.Deadline != 80*time.Minute || over.EarliestEnd.Seconds() <= scenario.MaxOfferedLoad*over.Deadline.Seconds() {
+		t.Errorf("earliest end %s of %s, want past 0.9 of the 80m deadline", over.EarliestEnd, over.Deadline)
+	}
+	if len(over.Classes) != 1 {
+		t.Fatalf("classes over the limit %+v, want the performance class", over.Classes)
+	}
+	for _, l := range over.Classes[0].Load {
+		if l.Resource == "amd.com/gpu" && l.Load <= 1 {
+			t.Errorf("performance AMD GPU load %.3f on the performance Nodes, want above 1: more work than they can do in the window", l.Load)
+		}
 	}
 }
 

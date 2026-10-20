@@ -5,26 +5,33 @@ import (
 	"math"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/labels"
 
+	"github.com/matbun/joulie/pkg/controller/policy"
 	"github.com/matbun/joulie/simulator/pkg/clusterspec"
 )
 
 // MaxOfferedLoad is the highest offered load plan accepts for any
-// resource. Above it queues grow for the whole window, so a completion
-// assertion fails by construction rather than by Joulie's doing.
+// resource, and the highest share of the run's deadline (duration plus
+// drain) the earliest end of its work may take. Above it queues grow for
+// the whole window, or the last jobs end past the deadline, so a
+// completion assertion fails by construction rather than by Joulie's doing.
 const MaxOfferedLoad = 0.9
 
 // SpecPool is one pool of a cluster spec as the planner sees it: its Nodes
 // as clusterspec.Expand renders them, with their labels (the topology and
-// host name labels included), taints and allocatable resources.
+// host name labels included), taints and allocatable resources, and the
+// hardware the agent reports for each, in the same order.
 type SpecPool struct {
-	Name  string
-	Nodes []*corev1.Node
+	Name     string
+	Nodes    []*corev1.Node
+	Hardware []policy.NodeHardwareInfo
 }
 
 // ReadSpecPools loads the cluster spec file spec (relative to repoRoot) as
@@ -41,15 +48,39 @@ func ReadSpecPools(repoRoot, spec string) (string, []SpecPool, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("cluster spec %s: %w", spec, err)
 	}
-	byPool := map[string][]*corev1.Node{}
+	byPool := map[string]*SpecPool{}
 	for _, m := range members {
-		byPool[m.Pool] = append(byPool[m.Pool], m.Node)
+		p := byPool[m.Pool]
+		if p == nil {
+			p = &SpecPool{Name: m.Pool}
+			byPool[m.Pool] = p
+		}
+		p.Nodes = append(p.Nodes, m.Node)
+		p.Hardware = append(p.Hardware, nodeHardware(m))
 	}
 	out := make([]SpecPool, 0, len(s.Spec.Pools))
 	for _, pool := range s.Spec.Pools {
-		out = append(out, SpecPool{Name: pool.Name, Nodes: byPool[pool.Name]})
+		if p := byPool[pool.Name]; p != nil {
+			out = append(out, *p)
+		} else {
+			out = append(out, SpecPool{Name: pool.Name})
+		}
 	}
 	return s.Metadata.Name, out, nil
+}
+
+// nodeHardware is the hardware of a spec member as the policy groups it into
+// families: the CPU model, and the GPU product and count.
+func nodeHardware(m clusterspec.Member) policy.NodeHardwareInfo {
+	var info policy.NodeHardwareInfo
+	if m.Profile == nil {
+		return info
+	}
+	info.CPUModel = m.Profile.CPU.ModelName.V
+	if g := m.Profile.GPUs; g != nil {
+		info.GPUModel, info.GPUCount = g.Product.V, g.Count.V
+	}
+	return info
 }
 
 // runTolerations are the tolerations of every pod of a run: the scenario's
@@ -155,17 +186,230 @@ type OfferedLoad struct {
 	Load     float64
 }
 
-// OverloadError is the offered load of the resources above MaxOfferedLoad.
+// OverloadError is what plan refuses: the resources whose offered load
+// exceeds MaxOfferedLoad on every usable Node (Over), work whose earliest
+// end there takes more than MaxOfferedLoad of the deadline (EarliestEnd
+// and Deadline set), and the classes a variant's policy confines whose load
+// on the Nodes left to them breaks either limit (Classes).
 type OverloadError struct {
-	Over []OfferedLoad
+	Over                  []OfferedLoad
+	EarliestEnd, Deadline time.Duration
+	Classes               []ClassLoad
 }
 
 func (e *OverloadError) Error() string {
-	parts := make([]string, len(e.Over))
-	for i, l := range e.Over {
-		parts[i] = fmt.Sprintf("%s %.2f", l.Resource, l.Load)
+	var parts []string
+	if over := overLimit(e.Over); over != "" {
+		parts = append(parts, fmt.Sprintf("offered load above %.2f: %s", MaxOfferedLoad, over))
 	}
-	return fmt.Sprintf("offered load above %.2f: %s; lower the job count or runtimes, or lengthen the duration", MaxOfferedLoad, strings.Join(parts, ", "))
+	if e.Deadline > 0 {
+		parts = append(parts, fmt.Sprintf("the work cannot end before %s, past %.2f of the %s deadline", e.EarliestEnd.Round(time.Second), MaxOfferedLoad, e.Deadline))
+	}
+	for _, c := range e.Classes {
+		line := fmt.Sprintf("%s jobs on the %d Nodes %s leaves them:", c.Class, c.Nodes, c.Policy)
+		if over := overLimit(c.Load); over != "" {
+			line += fmt.Sprintf(" offered load above %.2f: %s;", MaxOfferedLoad, over)
+		}
+		parts = append(parts, fmt.Sprintf("%s earliest end %s of the %s deadline", line, c.EarliestEnd.Round(time.Second), c.Deadline))
+	}
+	return strings.Join(parts, "; ") + "; lower the job count or runtimes, or lengthen the duration or the drain"
+}
+
+// overLimit lists the loads above MaxOfferedLoad, "cpu 1.05, amd.com/gpu 1.23".
+func overLimit(loads []OfferedLoad) string {
+	var parts []string
+	for _, l := range loads {
+		if l.Load > MaxOfferedLoad || math.IsInf(l.Load, 1) {
+			parts = append(parts, fmt.Sprintf("%s %.2f", l.Resource, l.Load))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// ClassLoad is the load of the jobs of one class on the Nodes a variant's
+// policy leaves them, and the earliest end of their work there.
+type ClassLoad struct {
+	Class string
+	// Policy describes the policy and its setting, "static_partition at
+	// STATIC_HP_FRAC 0.5"; Variants are the variants that run with it.
+	Policy   string
+	Variants []string
+	// Nodes counts the spec's Nodes the class may use.
+	Nodes       int
+	Load        []OfferedLoad
+	EarliestEnd time.Duration
+	Deadline    time.Duration
+}
+
+// Over reports whether the class breaks a limit: an offered load above
+// MaxOfferedLoad, or an earliest end past MaxOfferedLoad of the deadline.
+func (c ClassLoad) Over() bool {
+	return overLimit(c.Load) != "" || pastDeadline(c.EarliestEnd, c.Deadline)
+}
+
+// pastDeadline reports whether end takes more than MaxOfferedLoad of a
+// deadline; a scenario with no deadline has none to pass.
+func pastDeadline(end, deadline time.Duration) bool {
+	return deadline > 0 && end.Seconds() > MaxOfferedLoad*deadline.Seconds()
+}
+
+// EarliestEnd is the earliest time, from the start of the run, at which every
+// job can have ended with the capacity free at the start and each job at its
+// ideal runtime from the moment it is due: the latest, over the jobs, of the
+// due time plus the runtime, and over the resources and the due times T, of
+// T plus the work due from T on over the capacity. How the requests pack
+// onto Nodes is ignored, so a run ends later, never earlier. A resource with
+// no capacity is skipped; checkTraceResources reports a job that needs it.
+func EarliestEnd(jobs []TraceJob, capacity map[string]float64, base float64) time.Duration {
+	sorted := append([]TraceJob(nil), jobs...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].SubmitTimeOffsetSec < sorted[j].SubmitTimeOffsetSec })
+	runtimes := make([]float64, len(sorted))
+	requests := make([]map[string]float64, len(sorted))
+	end := 0.0
+	for i, j := range sorted {
+		runtimes[i] = IdealRuntime(j, base).Seconds()
+		requests[i] = jobRequests(j)
+		end = math.Max(end, j.SubmitTimeOffsetSec+runtimes[i])
+	}
+	for name, c := range capacity {
+		if c <= 0 {
+			continue
+		}
+		work := 0.0
+		for i := len(sorted) - 1; i >= 0; i-- {
+			work += requests[i][name] * runtimes[i]
+			end = math.Max(end, sorted[i].SubmitTimeOffsetSec+work/c)
+		}
+	}
+	return time.Duration(end * float64(time.Second))
+}
+
+// deadline is the end of the run: its duration plus its drain.
+func (s Scenario) deadline() time.Duration {
+	d := s.Duration.Duration
+	if s.Drain != nil {
+		d += s.Drain.Duration
+	}
+	return d
+}
+
+// The policy settings ConfinedLoads reads from a variant's joulie.set, with
+// the controller manager's defaults and the chart's Node selector.
+const (
+	confinedClass         = "performance"
+	policyStaticPartition = "static_partition"
+	defaultStaticHPFrac   = 0.5
+	defaultNodeSelector   = "joulie.io/managed=true"
+)
+
+// ConfinedLoads returns the load of the performance jobs on the Nodes each
+// policy of the scenario's variants leaves them: under static_partition,
+// which keeps STATIC_HP_FRAC of the managed Nodes of every hardware family
+// in performance (policy.BuildStaticPlan, before any Node is labelled), the
+// extender keeps performance pods off the others, the eco Nodes. A variant
+// without Joulie, or with a policy that grows its performance set with the
+// demand, confines no class. The policy, STATIC_HP_FRAC and NODE_SELECTOR
+// are read from joulie.set (controllerManager.env.*); a values file is not
+// read. Variants with the same setting share one entry.
+func ConfinedLoads(s Scenario, pools []SpecPool, jobs []TraceJob, nodeSelector map[string]string, tolerations []corev1.Toleration) ([]ClassLoad, error) {
+	var class []TraceJob
+	for _, j := range jobs {
+		if j.IntentClass == confinedClass {
+			class = append(class, j)
+		}
+	}
+	if len(class) == 0 {
+		return nil, nil
+	}
+	var out []ClassLoad
+	byPolicy := map[string]int{}
+	for _, name := range s.RunVariants() {
+		v, err := s.ForVariant(name)
+		if err != nil {
+			return nil, err
+		}
+		if v.Joulie.Enabled != nil && !*v.Joulie.Enabled {
+			continue
+		}
+		set := v.Joulie.Set
+		policyType := strings.ToLower(string(set[helmControllerEnv+"POLICY_TYPE"]))
+		if policyType == "" {
+			policyType = policyStaticPartition
+		}
+		if policyType != policyStaticPartition {
+			continue
+		}
+		frac := defaultStaticHPFrac
+		if raw := string(set[helmControllerEnv+"STATIC_HP_FRAC"]); raw != "" {
+			if frac, err = strconv.ParseFloat(raw, 64); err != nil {
+				return nil, fmt.Errorf("variant %q: %sSTATIC_HP_FRAC %q: %w", name, helmControllerEnv, raw, err)
+			}
+		}
+		selector := defaultNodeSelector
+		if raw, ok := set[helmControllerEnv+"NODE_SELECTOR"]; ok {
+			selector = string(raw)
+		}
+		managed, err := labels.Parse(selector)
+		if err != nil {
+			return nil, fmt.Errorf("variant %q: %sNODE_SELECTOR %q: %w", name, helmControllerEnv, selector, err)
+		}
+		desc := fmt.Sprintf("%s at STATIC_HP_FRAC %g", policyStaticPartition, frac)
+		if selector != defaultNodeSelector {
+			desc += fmt.Sprintf(" over %s", selector)
+		}
+		if i, ok := byPolicy[desc]; ok {
+			out[i].Variants = append(out[i].Variants, name)
+			continue
+		}
+		left := staticPartitionLeaves(pools, managed, frac)
+		capacity := Capacity(left, class, nodeSelector, tolerations)
+		c := ClassLoad{
+			Class: confinedClass, Policy: desc, Variants: []string{name},
+			Load:        ComputeOfferedLoad(class, capacity, s.Duration.Duration, s.baseSpeed()),
+			EarliestEnd: EarliestEnd(class, capacity, s.baseSpeed()),
+			Deadline:    s.deadline(),
+		}
+		for _, p := range left {
+			c.Nodes += len(p.Nodes)
+		}
+		byPolicy[desc] = len(out)
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// staticPartitionLeaves returns the pools without the Nodes static_partition
+// puts in eco at hpFrac: the managed Nodes outside policy.BuildStaticPlan's
+// performance set. Unmanaged Nodes carry no profile and stay.
+func staticPartitionLeaves(pools []SpecPool, managed labels.Selector, hpFrac float64) []SpecPool {
+	var names []string
+	hw := map[string]policy.NodeHardwareInfo{}
+	for _, p := range pools {
+		for i, n := range p.Nodes {
+			if managed.Matches(labels.Set(n.Labels)) {
+				names = append(names, n.Name)
+				hw[n.Name] = p.Hardware[i]
+			}
+		}
+	}
+	eco := map[string]bool{}
+	for _, a := range policy.BuildStaticPlan(names, hw, nil, 0, 0, hpFrac) {
+		if a.Profile != "performance" {
+			eco[a.NodeName] = true
+		}
+	}
+	out := make([]SpecPool, 0, len(pools))
+	for _, p := range pools {
+		kept := SpecPool{Name: p.Name}
+		for i, n := range p.Nodes {
+			if !eco[n.Name] {
+				kept.Nodes = append(kept.Nodes, n)
+				kept.Hardware = append(kept.Hardware, p.Hardware[i])
+			}
+		}
+		out = append(out, kept)
+	}
+	return out
 }
 
 // jobRequests returns a trace job's requests as numbers, with the

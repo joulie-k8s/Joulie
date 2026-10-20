@@ -84,4 +84,3 @@ func TestIT_TWIN_01_ControllerManagerWritesNodeTwin(t *testing.T) {
 	}
 	t.Logf("NodeTwin for %s: schedulableClass=%s", nodeName, class)
 }
-
