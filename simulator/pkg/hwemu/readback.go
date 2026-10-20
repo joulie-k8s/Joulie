@@ -173,14 +173,16 @@ func (n *Node) rfileComponents() map[string]string {
 // readback, so until then the file reads back the value written even when
 // the driver would refuse it, and two writes to one file between readbacks
 // count as the last. CheckWrite answers each write as the kernel would, for
-// a writer that can call it.
+// a writer that can call it, and a Live node's view answers every write so
+// (LiveWrite): it reads back no file and checks no R file, since every write
+// reached it through the view.
 func (n *Node) readback(checkRender bool) error {
 	var errs []error
 	changed := n.changedBuf[:0]
 	readAt := time.Now()
 	for i, f := range n.afiles {
-		if n.unobserved {
-			break // nobody wrote the tree since the last step (StepUnobserved)
+		if n.unobserved || n.live {
+			break // nobody wrote the tree since the last step (StepUnobserved, Live)
 		}
 		w, err := n.readAFile(f, readAt)
 		if err != nil {
@@ -211,22 +213,9 @@ func (n *Node) readback(checkRender bool) error {
 	clear(changed)
 	n.changedBuf = changed[:0]
 	if n.afilesDirty {
-		n.afilesDirty = false
-		for _, f := range n.afiles {
-			if c := f.current(); c != f.held && !f.emptySeen {
-				ok, err := nodeRewriteInPlace(f.path, []byte(f.held), []byte(c), time.Time{}, n.leases)
-				if err != nil {
-					errs = append(errs, err)
-				}
-				if ok {
-					f.held = c
-				} else {
-					n.afilesDirty = true
-				}
-			}
-		}
+		errs = append(errs, n.normalizeAFiles())
 	}
-	if checkRender && !n.unobserved {
+	if checkRender && !n.unobserved && !n.live {
 		for _, r := range n.rfiles {
 			if err := n.checkRFile(r); err != nil {
 				errs = append(errs, err)
@@ -235,6 +224,29 @@ func (n *Node) readback(checkRender bool) error {
 	}
 	n.derive()
 	n.adopt(n.now)
+	return errors.Join(errs...)
+}
+
+// normalizeAFiles rewrites every A file whose content is not the model's
+// readback, while the file still holds what the Node handled
+// (nodeRewriteInPlace). A file it cannot rewrite yet leaves afilesDirty set,
+// for the next readback.
+func (n *Node) normalizeAFiles() error {
+	n.afilesDirty = false
+	var errs []error
+	for _, f := range n.afiles {
+		if c := f.current(); c != f.held && !f.emptySeen {
+			ok, err := nodeRewriteInPlace(f.path, []byte(f.held), []byte(c), time.Time{}, n.leases)
+			if err != nil {
+				errs = append(errs, err)
+			}
+			if ok {
+				f.held = c
+			} else {
+				n.afilesDirty = true
+			}
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -268,7 +280,7 @@ type nodeAWrite struct {
 // still lost, where sysfs applies every write. A file emptied by a writer that
 // never writes reads empty until the restore, where sysfs keeps showing the
 // value. A writer that puts back the exact bytes the file holds is not seen.
-// Exact write semantics need FUSE.
+// A Live node's view has exact write semantics (LiveWrite).
 func (n *Node) readAFile(f *nodeAFile, readAt time.Time) (nodeAWrite, error) {
 	if !f.emptySeen && f.stamp.unchanged(f.path) {
 		return nodeAWrite{}, nil

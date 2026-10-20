@@ -143,6 +143,7 @@ jobs:
           - {name: smoke-kepler-legacy, spec: tests/simcluster/specs/smoke.yaml, telemetry: kepler-legacy, scope: components, timing: dev}
           - {name: smoke-otel-host, spec: tests/simcluster/specs/smoke.yaml, telemetry: otel, scope: host, timing: dev}
           - {name: smoke-extender-service, spec: tests/simcluster/specs/smoke.yaml, telemetry: otel, scope: components, timing: dev, extender: service}
+          - {name: smoke-files, spec: tests/simcluster/specs/smoke.yaml, telemetry: otel, scope: components, timing: dev, hwemu: files}
           - {name: profiles-otel-bridge-service, spec: tests/simcluster/specs/profiles.yaml, telemetry: otel-bridge, scope: components, timing: dev, extender: service}
     name: nightly (${{ matrix.name }})
     steps:
@@ -190,6 +191,7 @@ jobs:
           SIMCLUSTER_POWER_SCOPE=${{ matrix.scope }}
           SIMCLUSTER_TIMING=${{ matrix.timing }}
           SIMCLUSTER_EXTENDER=${{ matrix.extender || 'hostnet' }}
+          SIMCLUSTER_HWEMU=${{ matrix.hwemu || 'fuse' }}
 
       - name: Upload the run
         if: always()

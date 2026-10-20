@@ -106,8 +106,10 @@ type e2eEnv struct {
 	// Install is the tool delivery of the Joulie install deploy.sh ran
 	// (simcluster.Placement.ToolDelivery of its agent DaemonSet render),
 	// the delivery of every pool the spec leaves to it; Extender is how
-	// kube-scheduler reaches the extender (SIMCLUSTER_EXTENDER).
-	Install, Extender string
+	// kube-scheduler reaches the extender (SIMCLUSTER_EXTENDER); Hwemu how
+	// the agents reach their Nodes' files (SIMCLUSTER_HWEMU, files when
+	// deploy.env records none).
+	Install, Extender, Hwemu string
 	// Mode, Scope and Timing are the settings deploy.sh installed with
 	// (deploy.env); Parts are their telemetry parts, with Wait.Nodes set.
 	Mode   simcluster.Mode
@@ -165,6 +167,9 @@ func (e *e2eEnv) load(t *testing.T) {
 	e.summary.InputPreset = string(e.Mode.InputPreset())
 	if e.Extender = deploy["EXTENDER"]; e.Extender == "" {
 		e.Extender = e2eExtenderHostNet
+	}
+	if e.Hwemu = deploy["HWEMU"]; e.Hwemu == "" {
+		e.Hwemu = "files"
 	}
 
 	e.SpecPath = filepath.Join(e.Dir, "spec.yaml")

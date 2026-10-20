@@ -85,6 +85,7 @@ func TestSimclusterE2E(t *testing.T) {
 
 	env.check(t, "E14", "a forced extender reload rolls out, an unchanged agent reload does nothing", e2eE14ReloadRollsOrDoesNothing)
 	env.check(t, "E15", "status.sh exits 0", e2eE15StatusIsClean)
+	env.check(t, "E17", "in FUSE mode the agents keep reading their Nodes across a simulator restart", e2eE17SimulatorRestartKeepsTheAgents)
 
 	// GS01 to GS04: the governor presets, end to end. They run only when
 	// the deployment turns governor control on (GOVERNOR_CONTROL not off),

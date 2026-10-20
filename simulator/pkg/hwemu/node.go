@@ -109,6 +109,15 @@ type Node struct {
 	receiverGate string
 	rejectErrno  map[string]string
 	cpuGov       nodeCPUGovernor
+
+	// live is Options.Live; liveA, liveS and liveR are its agent-writable,
+	// emulator-owned and render-owned files by path relative to the root,
+	// and liveComp the component of each directory (live.go).
+	live     bool
+	liveA    map[string]*nodeAFile
+	liveS    map[string]*nodeSFile
+	liveR    map[string]*nodeRFile
+	liveComp map[string]string
 }
 
 // nodeTopology locates logical CPUs. Numbering socket-major-smt-last puts cpu k
@@ -148,6 +157,13 @@ func NewNode(p *Profile, t *Tree, o Options) (*Node, error) {
 		substepD:    o.Substep,
 		frozen:      o.Frozen,
 		renderEvery: o.RenderCheckInterval,
+		live:        o.Live,
+	}
+	if o.Live {
+		if len(t.Files) == 0 {
+			return nil, errors.New("hwemu: Options.Live needs the layout of the tree (Tree.Files), as Render and Ensure return it")
+		}
+		n.liveS = map[string]*nodeSFile{}
 	}
 	switch o.ReceiverGate {
 	case "":
@@ -211,6 +227,9 @@ func NewNode(p *Profile, t *Tree, o Options) (*Node, error) {
 	n.derive()
 	n.assign()
 	n.seedWindows()
+	if n.live {
+		n.liveIndex()
+	}
 	return n, nil
 }
 
@@ -310,12 +329,17 @@ func (n *Node) flushPending() error {
 	return errors.Join(errs...)
 }
 
-// AdvanceTo steps the node to t. A t before the node's time is an error.
+// AdvanceTo steps the node to t. A t before the node's time is an error,
+// except on a Live node, where a reader of the view may have stepped the
+// node past t: the step then ends at the node's time.
 func (n *Node) AdvanceTo(t time.Time) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if t.Before(n.now) {
-		return fmt.Errorf("hwemu: advance to %v, before the node's time %v", t, n.now)
+		if !n.live {
+			return fmt.Errorf("hwemu: advance to %v, before the node's time %v", t, n.now)
+		}
+		t = n.now
 	}
 	return n.step(t)
 }

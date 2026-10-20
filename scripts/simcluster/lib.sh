@@ -70,6 +70,10 @@ SIM_FIELD_MANAGER=joulie-simcluster
 # The hwemu trees, on the infra Node (inside the k3s container), in a named
 # volume so they outlive the container's restarts.
 SIM_HWEMU_ROOT=/var/lib/joulie-hwemu
+# The host's FUSE device, which the k3s container gets in FUSE mode
+# (SIMCLUSTER_HWEMU=fuse); the hermetic script tests point it at another
+# character device.
+SIM_FUSE_DEVICE=${SIM_FUSE_DEVICE:-/dev/fuse}
 # The images are built for this architecture only.
 SIM_IMAGE_ARCH=amd64
 SIM_IMAGE_REGISTRY=joulie.local
@@ -111,6 +115,7 @@ sim_init() {
   SIMCLUSTER_POWER_SCOPE=${SIMCLUSTER_POWER_SCOPE:-components}
   SIMCLUSTER_TIMING=${SIMCLUSTER_TIMING:-dev}
   SIMCLUSTER_EXTENDER=${SIMCLUSTER_EXTENDER:-hostnet}
+  SIMCLUSTER_HWEMU=${SIMCLUSTER_HWEMU:-fuse}
   # The modes of simcluster.Modes, in its order.
   case $SIMCLUSTER_TELEMETRY in
     otel | otel-unpromoted | otel-labels-unpromoted | otel-utf8 | otel-collector | otel-bridge | kepler | kepler-legacy) ;;
@@ -129,11 +134,22 @@ sim_init() {
     service) SIM_SCHEDULER_CONFIG=$SIM_MANIFESTS/scheduler-config-service.yaml SIM_EXTENDER_VALUES=("$SIM_REPO/values/simcluster-extender-service.yaml") ;;
     *) sim_die "SIMCLUSTER_EXTENDER=$SIMCLUSTER_EXTENDER is not hostnet or service" ;;
   esac
+  # How the emulated agents reach their node's files: fuse, through the
+  # simulator's FUSE views (a refused write fails at once, counters move at
+  # read time); files, the trees' plain files, read back each tick.
+  case $SIMCLUSTER_HWEMU in
+    fuse)
+      SIM_HWEMU_VALUES=("$SIM_REPO/values/simcluster-fuse.yaml")
+      SIM_HWEMU_SIM_VALUES=("$SIM_REPO/values/simcluster-simulator-fuse.yaml")
+      ;;
+    files) SIM_HWEMU_VALUES=() SIM_HWEMU_SIM_VALUES=() ;;
+    *) sim_die "SIMCLUSTER_HWEMU=$SIMCLUSTER_HWEMU is not fuse or files" ;;
+  esac
   local timing=$SIM_SCRIPTS/timing/$SIMCLUSTER_TIMING.env
   if [[ ! $SIMCLUSTER_TIMING =~ ^[a-z0-9-]+$ || ! -f $timing ]]; then
     sim_die "SIMCLUSTER_TIMING=$SIMCLUSTER_TIMING names no file scripts/simcluster/timing/<name>.env"
   fi
-  export SIMCLUSTER_NAME SIMCLUSTER_DIR SIMCLUSTER_TELEMETRY SIMCLUSTER_POWER_SCOPE SIMCLUSTER_TIMING SIMCLUSTER_EXTENDER
+  export SIMCLUSTER_NAME SIMCLUSTER_DIR SIMCLUSTER_TELEMETRY SIMCLUSTER_POWER_SCOPE SIMCLUSTER_TIMING SIMCLUSTER_EXTENDER SIMCLUSTER_HWEMU
 
   set -a
   # shellcheck source=versions.env
@@ -205,6 +221,15 @@ sim_go_toolchain() {
     tc=go$(awk '$1 == "go" { print $2; exit }' "$SIM_REPO/go.mod")
   fi
   printf '%s\n' "$tc"
+}
+
+# sim_hwemu_shared makes the hwemu root a shared mount in the cluster's
+# container, which the simulator's FUSE views need: its Bidirectional
+# volume propagates them to the infra Node, and from there to each agent's
+# HostToContainer volumes. A container's mounts are private on every start,
+# so up.sh runs it whenever the container runs.
+sim_hwemu_shared() {
+  docker exec "$SIMCLUSTER_NAME" mount --make-rshared "$SIM_HWEMU_ROOT"
 }
 
 # sim_require <command>... fails naming the first command that is missing.

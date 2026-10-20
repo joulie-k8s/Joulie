@@ -40,12 +40,19 @@ const renderSeed = 1
 // The node is named after the test, so two tests never share a node name.
 func NewNode(t testing.TB, profile string, mutate func(*hwemu.Profile)) (*hwemu.Node, *hwemu.Tree, *hwemu.Profile) {
 	t.Helper()
+	return NewNodeWith(t, profile, mutate, hwemu.Options{})
+}
+
+// NewNodeWith is NewNode with the node's options, such as Options.Live for
+// a node a FUSE view serves (package hwfuse/hwfusetest).
+func NewNodeWith(t testing.TB, profile string, mutate func(*hwemu.Profile), o hwemu.Options) (*hwemu.Node, *hwemu.Tree, *hwemu.Profile) {
+	t.Helper()
 	p := builtin(t, profile)
 	if mutate != nil {
 		mutate(p)
 	}
 	tree := render(t, p)
-	n, err := hwemu.NewNode(p, tree, hwemu.Options{})
+	n, err := hwemu.NewNode(p, tree, o)
 	if err != nil {
 		t.Fatalf("hwemutest: start node %s: %v", profile, err)
 	}

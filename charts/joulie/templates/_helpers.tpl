@@ -54,6 +54,8 @@ no privileges. Call it with:
 {{- $nodeSelector := $a.daemonset.nodeSelector -}}
 {{- $root := "" -}}
 {{- $tree := "" -}}
+{{- $live := "" -}}
+{{- $fuse := false -}}
 {{- if $emu -}}
 {{- $nodeSelector = $a.emulated.hostNodeSelector -}}
 {{- $name := required "every agent.emulated.nodes entry needs a name" $node.name -}}
@@ -62,6 +64,9 @@ no privileges. Call it with:
 {{- end -}}
 {{- $root = trimSuffix "/" (required "agent.emulated.root is required in agent.mode emulated" $a.emulated.root) -}}
 {{- $tree = printf "%s/%s" $root $name -}}
+{{- /* sys and state: the tree's own, or the simulator's FUSE view of them. */}}
+{{- $fuse = $a.emulated.fuse | default false -}}
+{{- $live = ternary (printf "%s/fuse/%s" $root $name) $tree $fuse -}}
 {{- end -}}
 {{- $hostNetwork := and (not $emu) $a.hostNetwork -}}
 serviceAccountName: joulie-agent
@@ -123,12 +128,18 @@ containers:
     volumeMounts:
       - name: host-sys
         mountPath: /host-sys
+        {{- if $fuse }}
+        mountPropagation: HostToContainer
+        {{- end }}
       {{- if $emu }}
       - name: hwemu-cpuinfo
         mountPath: /proc/cpuinfo
         readOnly: true
       - name: hwemu-state
         mountPath: /emu/state
+        {{- if $fuse }}
+        mountPropagation: HostToContainer
+        {{- end }}
       - name: hwemu-bin
         mountPath: /emu/bin
         readOnly: true
@@ -154,7 +165,7 @@ containers:
 volumes:
   - name: host-sys
     hostPath:
-      path: {{ if $emu }}{{ $tree }}/sys{{ else }}/sys{{ end }}
+      path: {{ if $emu }}{{ $live }}/sys{{ else }}/sys{{ end }}
       type: Directory
   {{- if $emu }}
   - name: hwemu-cpuinfo
@@ -163,7 +174,7 @@ volumes:
       type: File
   - name: hwemu-state
     hostPath:
-      path: {{ $tree }}/state
+      path: {{ $live }}/state
       type: Directory
   - name: hwemu-bin
     hostPath:

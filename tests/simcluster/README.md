@@ -44,13 +44,14 @@ Each check is one entry under `assertions` in the run's `summary.json`.
 | E14 | a forced extender reload rolls out; an agent reload with an unchanged binary does nothing |
 | E15 | `status.sh` exits 0 |
 | E16 | the facility inputs reach the NodeTwin gauges and the cooling stress; in mode `otel-bridge`, which leaves the facility metrics off as the chart has them, no facility gauge is served and the cooling stress is computed with the ambient unknown |
+| E17 | `SIMCLUSTER_HWEMU=fuse` only: after `reload.sh simulator --force` every emulated agent keeps its pod, with no container restart, none reads a dead FUSE view (ENOTCONN) from one agent reconcile after the new simulator is ready, and `status.sh` exits 0 |
 | MD01 to MD04 | medium spec only: MIG-mixed and renamed time-slicing GPU Nodes are planned and capped as GPU Nodes (the physical GPU count, a GPU cap and no CPU percent cap, every GPU limit at the cap); no NFD labels caps through DVFS; no driver tools leaves the NVIDIA GPUs alone; an unmanaged pool has series and nothing else |
 | GS01 | governor control on only: each agent's `NodeHardware` lists the governor presets its profile accepts, with the result each gives |
 | GS02 | governor control on only: each `NodeTwin` asks for the preset its profile and node state (performance or eco) call for, and the agent's result for it is the one its profile predicts |
 | GS03 | governor control on only: the emulated files hold the native words of every applied or equivalent result |
 | GS04 | governor control on only, and last: after one `helm upgrade` to `GOVERNOR_CONTROL=off`, every governor result is restored or gone, and every file (governor, EPP, boost, AMD level and overdrive table, NVIDIA locks) is back at the baseline `NodeHardware` recorded |
 
-GS01 to GS04 skip unless the deployed controller manager runs with `GOVERNOR_CONTROL` not `off`. `experiments/05-governor-exploration/scripts/run_tier_b.sh` deploys `specs/governor.yaml`, one pool per CPU frequency driver and per GPU family, with governor control on, and runs them. GS04 changes the release, so the cluster needs a fresh deploy afterwards.
+E17 restarts the simulator, so it runs after the other E checks. GS01 to GS04 skip unless the deployed controller manager runs with `GOVERNOR_CONTROL` not `off`. `experiments/05-governor-exploration/scripts/run_tier_b.sh` deploys `specs/governor.yaml`, one pool per CPU frequency driver and per GPU family, with governor control on, and runs them. GS04 changes the release, so the cluster needs a fresh deploy afterwards.
 
 ## Known defects
 
@@ -71,7 +72,7 @@ The defects that reach users are also listed on the user pages: [GPU known limit
 `.github/workflows/simcluster.yml` has two jobs; the Dagger integration job (`integration-tests.yml`, see [`tests/integration`](../integration/README.md)) is separate.
 
 - **`smoke`**, on pull requests and pushes to `main` that touch `cmd/`, `pkg/`, `api/`, `charts/`, `config/`, `simulator/`, `ci/`, `scripts/simcluster/`, `tests/simcluster/`, `values/simcluster*.yaml`, the `Makefile`, `go.mod`, `go.sum` or the workflow, and on demand. It vets the test, runs the harness's own tests, then `make simcluster-smoke`, with a 30 minute timeout around the test's 20 (ten rate windows, at least 20 minutes: 50 in `production` timing). The air-gap bundle is cached by the hash of `versions.env`.
-- **`nightly`**, daily at 03:23 UTC and on demand, with a 70 minute timeout: the medium spec in `production` timing; the smoke spec once for each of `otel-unpromoted`, `otel-labels-unpromoted`, `otel-utf8`, `otel-collector`, `otel-bridge`, `kepler`, `kepler-legacy`, `otel` with host scope, and `otel` with the extender reached through its Service (`SIMCLUSTER_EXTENDER=service`); and the profiles spec in mode `otel-bridge` with the extender Service. `TestSC21ModesAgree` fails when a telemetry mode has no nightly entry. One failing variant does not cancel the others.
+- **`nightly`**, daily at 03:23 UTC and on demand, with a 70 minute timeout: the medium spec in `production` timing; the smoke spec once for each of `otel-unpromoted`, `otel-labels-unpromoted`, `otel-utf8`, `otel-collector`, `otel-bridge`, `kepler`, `kepler-legacy`, `otel` with host scope, `otel` with the extender reached through its Service (`SIMCLUSTER_EXTENDER=service`), and `otel` on the trees' plain files (`SIMCLUSTER_HWEMU=files`; every other run uses the FUSE views); and the profiles spec in mode `otel-bridge` with the extender Service. `TestSC21ModesAgree` fails when a telemetry mode has no nightly entry. One failing variant does not cancel the others.
 
 `.github/workflows/simcluster-nightly.yml` runs the scenario library on a schedule, with `permissions: contents: read`, and never cancels a run in progress:
 
