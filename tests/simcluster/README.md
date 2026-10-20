@@ -37,20 +37,21 @@ Each check is one entry under `assertions` in the run's `summary.json`.
 | E06 | Prometheus holds series for every Node with a measured CPU package, and `target_info` of the jobs that carry node power names each one |
 | E07 | every check query of the mode equals the emulated truth; E07c, in mode `kepler-legacy`: each Node has two Kepler 0.7 platform series, which sum to its host power |
 | E08 | each NodeTwin's measured power is the truth, or `prometheus-no-data` where nothing measures |
-| E09, E10 | lowering the CPU and GPU caps from 80 % to 50 % lowers the enforced limits (RAPL, NVIDIA GPUs whole or shared, and AMD GPUs; a GPU cap never below the published minimum) and the NodeTwins' measured power (RAPL, DVFS, NVIDIA) |
+| E09, E10 | lowering the CPU and GPU caps from 80 % to 50 % lowers the enforced limits (RAPL, NVIDIA GPUs whole or shared, AMD and Intel GPUs; a GPU cap never below the published minimum) and the NodeTwins' measured power (RAPL, DVFS, NVIDIA) |
 | E11 | the control status of each hardware family |
 | E12 | every managed Node's NodeTwin reports `AgentReporting`: `True` where an agent runs, a Node with a taint of its own included, since the agent tolerates every taint (D15); `False` with reason `NoNodeHardware` where none does (the smoke spec's arm64 Node, as the images are built for amd64 only), which keeps its planned cap, no NodeHardware, no `controlStatus` and its uncapped limits |
 | E13 | the extender filters and scores a real pod, on the host network in the `hostnet` extender variant and off it, reached through its Service, in the `service` one |
 | E14 | a forced extender reload rolls out; an agent reload with an unchanged binary does nothing |
 | E15 | `status.sh` exits 0 |
 | E16 | the facility inputs reach the NodeTwin gauges and the cooling stress; in mode `otel-bridge`, which leaves the facility metrics off as the chart has them, no facility gauge is served and the cooling stress is computed with the ambient unknown |
+| E17 | `SIMCLUSTER_HWEMU=fuse` only: after `reload.sh simulator --force` every emulated agent keeps its pod, with no container restart, none reads a dead FUSE view (ENOTCONN) from one agent reconcile after the new simulator is ready, and `status.sh` exits 0 |
 | MD01 to MD04 | medium spec only: MIG-mixed and renamed time-slicing GPU Nodes are planned and capped as GPU Nodes (the physical GPU count, a GPU cap and no CPU percent cap, every GPU limit at the cap); no NFD labels caps through DVFS; no driver tools leaves the NVIDIA GPUs alone; an unmanaged pool has series and nothing else |
 | GS01 | governor control on only: each agent's `NodeHardware` lists the governor presets its profile accepts, with the result each gives |
 | GS02 | governor control on only: each `NodeTwin` asks for the preset its profile and node state (performance or eco) call for, and the agent's result for it is the one its profile predicts |
 | GS03 | governor control on only: the emulated files hold the native words of every applied or equivalent result |
 | GS04 | governor control on only, and last: after one `helm upgrade` to `GOVERNOR_CONTROL=off`, every governor result is restored or gone, and every file (governor, EPP, boost, AMD level and overdrive table, NVIDIA locks) is back at the baseline `NodeHardware` recorded |
 
-GS01 to GS04 skip unless the deployed controller manager runs with `GOVERNOR_CONTROL` not `off`. `experiments/05-governor-exploration/scripts/run_tier_b.sh` deploys `specs/governor.yaml`, one pool per CPU frequency driver and per GPU family, with governor control on, and runs them. GS04 changes the release, so the cluster needs a fresh deploy afterwards.
+E17 restarts the simulator, so it runs after the other E checks. GS01 to GS04 skip unless the deployed controller manager runs with `GOVERNOR_CONTROL` not `off`. `experiments/05-governor-exploration/scripts/run_tier_b.sh` deploys `specs/governor.yaml`, one pool per CPU frequency driver and per GPU family, with governor control on, and runs them. GS04 changes the release, so the cluster needs a fresh deploy afterwards.
 
 ## Known defects
 
@@ -62,14 +63,14 @@ The limitations that reach users are listed on the user pages: [GPU known limita
 
 ## Scenario library checks
 
-`simulator/pkg/scenario/scenarios_test.go` checks the scenario library without a cluster: every scenario validates and plans under the load limit, every job fits some Node of its spec (resources, node selector and taints), the nightly load stays between 0.5 and 0.8, the deadlock gang fits its Node one pod at a time but never whole, and the Nodes `perf-isolation` and `cap-cost` expect in eco are the ones `policy.BuildStaticPlan` puts there.
+`simulator/pkg/scenario/scenarios_test.go` checks the scenario library without a cluster: every scenario validates and plans under the load limit, every job fits some Node of its spec (resources, node selector and taints), the nightly load stays between 0.3 and 0.8 of the cluster and, for nightly-mixed's performance jobs, of the performance Nodes, the nightly workload sized by the cluster alone is refused, the deadlock gang fits its Node one pod at a time but never whole, and the Nodes `perf-isolation` and `cap-cost` expect in eco are the ones `policy.BuildStaticPlan` puts there.
 
 ## CI
 
 `.github/workflows/simcluster.yml` has two jobs; the Dagger integration job (`integration-tests.yml`, see [`tests/integration`](../integration/README.md)) is separate.
 
 - **`smoke`**, on pull requests and pushes to `main` that touch `cmd/`, `pkg/`, `api/`, `charts/`, `config/`, `simulator/`, `ci/`, `scripts/simcluster/`, `tests/simcluster/`, `values/simcluster*.yaml`, the `Makefile`, `go.mod`, `go.sum` or the workflow, and on demand. It vets the test, runs the harness's own tests, then `make simcluster-smoke`, with a 30 minute timeout around the test's 20 (ten rate windows, at least 20 minutes: 50 in `production` timing). The air-gap bundle is cached by the hash of `versions.env`.
-- **`nightly`**, daily at 03:23 UTC and on demand, with a 70 minute timeout: the medium spec in `production` timing; the smoke spec once for each of `otel-unpromoted`, `otel-labels-unpromoted`, `otel-utf8`, `otel-collector`, `otel-bridge`, `kepler`, `kepler-legacy`, `otel` with host scope, and `otel` with the extender reached through its Service (`SIMCLUSTER_EXTENDER=service`); and the profiles spec in mode `otel-bridge` with the extender Service. `TestSC21ModesAgree` fails when a telemetry mode has no nightly entry. One failing variant does not cancel the others.
+- **`nightly`**, daily at 03:23 UTC and on demand, with a 70 minute timeout: the medium spec in `production` timing; the smoke spec once for each of `otel-unpromoted`, `otel-labels-unpromoted`, `otel-utf8`, `otel-collector`, `otel-bridge`, `kepler`, `kepler-legacy`, `otel` with host scope, `otel` with the extender reached through its Service (`SIMCLUSTER_EXTENDER=service`), and `otel` on the trees' plain files (`SIMCLUSTER_HWEMU=files`; every other run uses the FUSE views); and the profiles spec in mode `otel-bridge` with the extender Service. `TestSC21ModesAgree` fails when a telemetry mode has no nightly entry. One failing variant does not cancel the others.
 
 `.github/workflows/simcluster-nightly.yml` runs the scenario library on a schedule, with `permissions: contents: read`, and never cancels a run in progress:
 
@@ -77,4 +78,4 @@ The limitations that reach users are listed on the user pages: [GPU known limita
 - Sunday at 03:17 UTC: `weekly-compare`, one variant per runner (150 minute timeout) into a run directory named once for all of them, then a job that plans the same directory, collects the variants and runs `simscenario summarize`.
 - On demand (`workflow_dispatch`): `nightly` or `weekly`.
 
-Every job uploads its `runs/` directory, also when it fails; the scenario runs are kept 14 days.
+Every job uploads its `runs/` directory, also when it fails, with a 10 minute timeout on the upload; a scenario job deletes its cluster first (`down.sh` keeps `runs/`), since `scenario.sh` keeps it. The scenario runs are kept 14 days.

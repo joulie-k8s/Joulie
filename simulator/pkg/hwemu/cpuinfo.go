@@ -15,6 +15,32 @@ type renderCPU struct {
 	Thread int
 }
 
+// renderCPUFlags is the flags line of a generated cpuinfo: the profile's
+// cpu.flags, then each flag a fact implies and a reader looks for, when
+// cpu.flags lacks it: hwp where cpufreq.hwp is true, which governor
+// discovery reads (pkg/governor/discover, hasHWP); hwp_epp with it under
+// intel_pstate in either mode, whose policies then render the preference
+// pair (cpuGovHasEPP), as the corpus Xeon lists both flags; hypervisor on a
+// virtual machine. A profile with none of them renders no flags line.
+func renderCPUFlags(p *Profile) []string {
+	flags := strings.Fields(p.CPU.Flags)
+	add := func(f string) {
+		if !renderContains(flags, f) {
+			flags = append(flags, f)
+		}
+	}
+	if f := p.CPUFreq; f != nil && f.HWP.V {
+		add("hwp")
+		if cpuGovIntel(f.Driver.V) {
+			add("hwp_epp")
+		}
+	}
+	if p.CPU.Hypervisor {
+		add("hypervisor")
+	}
+	return flags
+}
+
 // renderCPUs lists the node's logical CPUs in number order. A verbatim
 // cpuinfo is the truth when present; otherwise cpu.numbering places them.
 // socket-major-smt-last, the only numbering, puts CPU k on socket
@@ -72,17 +98,14 @@ func renderCPUInfoFields(block string) map[string]string {
 
 // renderCPUInfo is the node's /proc/cpuinfo: the verbatim capture when the
 // profile has one, otherwise one block per logical CPU in the x86 format
-// (keys and tab padding as in the corpus captures), with hypervisor added to
-// the flags of a virtual machine.
+// (keys and tab padding as in the corpus captures), with the flags of
+// renderCPUFlags.
 func renderCPUInfo(p *Profile) string {
 	if p.CPU.CPUInfoVerbatim != "" {
 		return p.CPU.CPUInfoVerbatim
 	}
 	c := p.CPU
-	flags := strings.Fields(c.Flags)
-	if c.Hypervisor && !renderContains(flags, "hypervisor") {
-		flags = append(flags, "hypervisor")
-	}
+	flags := renderCPUFlags(p)
 	var sb strings.Builder
 	for _, cpu := range renderCPUs(p) {
 		fmt.Fprintf(&sb, "processor\t: %d\n", cpu.ID)

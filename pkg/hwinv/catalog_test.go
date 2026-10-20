@@ -178,7 +178,9 @@ func TestCatalogGPUMinimumsHavePublicSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadDefaultCatalog: %v", err)
 	}
-	// cite must appear in the YAML comment above minBoardPowerW.
+	// cite must appear in the YAML comment above minBoardPowerW, or, for an
+	// entry with no minimum (minW 0, no minBoardPowerW line), above
+	// maxBoardPowerW.
 	want := map[string]struct {
 		minW   float64
 		source string
@@ -195,6 +197,11 @@ func TestCatalogGPUMinimumsHavePublicSources(t *testing.T) {
 		"NVIDIA_L40S": {200, "L40S product brief PB-11470-001 (TBD)", "PB-11470-001"},
 		// No public minimum: AMD publishes only TBP 295 W.
 		"AMD_RADEON_PRO_W7900": {200, "none published (TBP 295 W only)", "295 W"},
+		// No public minimum, and Level Zero Sysman reports the minimum
+		// limit as unknown: none is set.
+		"INTEL_DATA_CENTER_GPU_FLEX_170": {0, "none published (TBP 150 W only)", "Level Zero Sysman"},
+		"INTEL_DATA_CENTER_GPU_MAX_1100": {0, "none published (TDP 300 W only)", "Level Zero Sysman"},
+		"INTEL_DATA_CENTER_GPU_MAX_1550": {0, "none published (TDP 600 W only)", "Level Zero Sysman"},
 	}
 	for key, gpu := range cat.GPUModels {
 		w, ok := want[key]
@@ -205,8 +212,12 @@ func TestCatalogGPUMinimumsHavePublicSources(t *testing.T) {
 		if gpu.Official.MinBoardPowerW != w.minW {
 			t.Errorf("D14: %s minBoardPowerW = %v, want %v (%s)", key, gpu.Official.MinBoardPowerW, w.minW, w.source)
 		}
-		if comment := yamlCommentAbove(t, key, "minBoardPowerW:"); !strings.Contains(comment, w.cite) {
-			t.Errorf("D14: the comment above %s minBoardPowerW does not cite %q (%s):\n%s", key, w.cite, w.source, comment)
+		field := "minBoardPowerW:"
+		if w.minW == 0 {
+			field = "maxBoardPowerW:"
+		}
+		if comment := yamlCommentAbove(t, key, field); !strings.Contains(comment, w.cite) {
+			t.Errorf("D14: the comment above %s %s does not cite %q (%s):\n%s", key, field, w.cite, w.source, comment)
 		}
 	}
 	for key := range want {

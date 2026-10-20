@@ -303,22 +303,28 @@ type nodePackage struct {
 }
 
 // nodeGPU is one GPU. limitRaw is the limit file's value: mW in NVML state, uW
-// in amdgpu hwmon. defaultMW is the NVML default limit, where persistReset
-// puts the limit back while persistence, the persistence_mode word, is
-// Disabled. uuid and pciBusID are the GPU's identity as its tools print it,
+// in amdgpu hwmon, and on an Intel GPU, whose driver intel names, the uW
+// the PL1 field holds, before the clamp a read applies, 0 with PL1
+// disabled; unitShift is that field's PKG_PWR_UNIT. defaultMW is the NVML
+// default limit, where persistReset puts the limit back while persistence,
+// the persistence_mode word, is Disabled. uuid and pciBusID are the GPU's identity as its tools print it,
 // and sysfsPath its PCI device relative to sys/, when the tree has one.
+// secondary marks the secondary die of an AMD package (gpus.secondaryDies),
+// which has no limit of its own.
 type nodeGPU struct {
-	index    int
-	nvml     bool
-	limitRaw int64
-	minW     float64
-	maxW     float64
-	settledW float64
-	avgW     float64
-	avgSeed  bool
-	seedMJ   int64
-	pwr      nodeChannel
-	next     float64
+	index     int
+	nvml      bool
+	intel     string
+	unitShift int
+	limitRaw  int64
+	minW      float64
+	maxW      float64
+	settledW  float64
+	avgW      float64
+	avgSeed   bool
+	seedMJ    int64
+	pwr       nodeChannel
+	next      float64
 
 	defaultMW   int64
 	persistence string
@@ -326,6 +332,7 @@ type nodeGPU struct {
 	uuid        string
 	pciBusID    string
 	sysfsPath   string
+	secondary   bool
 
 	// NVML only: the energy of each substep of the last telemetry window, a
 	// ring starting at winAt, and the channel energy at the last boundary.
@@ -335,6 +342,11 @@ type nodeGPU struct {
 
 	input, average                   *nodeSFile // amdgpu hwmon
 	draw, enforced, energy, utilFile *nodeSFile // NVML state
+
+	// energyUJ is energy<N>_input of an Intel GPU's hwmon device, in uJ
+	// from seedUJ, what it showed when the Node started.
+	energyUJ *nodeSFile
+	seedUJ   int64
 
 	// clock is the governor and clock state the physics reads
 	// (clockstate.go); dpm and nvclock the vendor state behind it
@@ -376,9 +388,19 @@ func (g *nodeGPU) targetMW() int64 {
 	return v
 }
 
+// targetW is the limit the GPU settles toward, in W. A secondary die has
+// none of its own, so nothing caps it; the package limit its primary holds
+// is not shared out between the dies (assumed: the firmware's split of the
+// package power between the dies is not published).
 func (g *nodeGPU) targetW() float64 {
-	if g.nvml {
+	switch {
+	case g.nvml:
 		return float64(g.targetMW()) / 1000
+	case g.intel != "":
+		return g.intelEnforcedW()
+	}
+	if g.secondary {
+		return g.maxW
 	}
 	return g.limitW()
 }
@@ -759,6 +781,9 @@ func (n *Node) writeOutputs() error {
 		}
 		if g.utilFile != nil {
 			put(g.utilFile, int64(math.Round(100*n.gpuUtil(g.index))))
+		}
+		if g.energyUJ != nil {
+			put(g.energyUJ, nodeMicroJoules(g.seedUJ, g.pwr.J+g.pwr.W*dt))
 		}
 	}
 	errs = append(errs, n.writeCPUGovernor(), n.writeGPUDPM(), n.writeNVClock())

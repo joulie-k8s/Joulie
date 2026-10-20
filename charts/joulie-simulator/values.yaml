@@ -57,6 +57,13 @@ emulate:
   root: /var/lib/joulie-hwemu
   # Physics tick (SIM_EMULATE_TICK), a Go duration.
   tick: 1s
+  # Serve every emulated node's sys and state through FUSE (SIM_HWEMU_FUSE)
+  # at root/fuse/<node>: a write the kernel would refuse fails at once with
+  # its errno, and energy counters move at read time. The pod then runs
+  # privileged with /dev/fuse and mount propagation Bidirectional on root,
+  # so the host needs /dev/fuse and root on a shared mount; the emulated
+  # agents need agent.emulated.fuse in the Joulie chart.
+  fuse: false
   # Receiver gate of the peer links between the GPUs of a node
   # (SIM_GPU_RECEIVER_GATE): profile follows each hardware profile's
   # gpus.transfer.receiverGate.enabled, off in every builtin profile; off

@@ -45,7 +45,7 @@ The default "power = idle + dynamic(util)" model is useful for quick experimenta
 
 Real hardware behavior depends on:
 
-- vendor-specific control interfaces (RAPL, `intel_pstate`, `amd-pstate`, NVML, ROCm SMI),
+- vendor-specific control interfaces (RAPL, `intel_pstate`, `amd-pstate`, NVML, ROCm SMI, the i915 and xe hwmon files),
 - device-specific limits (TDP/TBP, cap range, turbo/headroom),
 - non-linear utilization-power curves,
 - workload class (compute-bound vs memory-bound),
@@ -150,6 +150,7 @@ The heterogeneous cluster inventory currently targeted includes:
 - NVIDIA L40S + 2x AMD EPYC 9534
 - AMD Instinct MI300X + 2x AMD EPYC 9534
 - AMD Radeon Pro W7900 + 2x AMD EPYC 9534
+- Intel Data Center GPU Flex 170 + 2x Intel Xeon Gold 6530
 
 ### CPU-only nodes
 - 2x AMD EPYC 9965
@@ -215,6 +216,7 @@ This is an important design choice: unknown hardware should degrade realism, not
 - **NVIDIA L40S**: max power consumption 350 W. Minimum cap 200 W, with no public source: the [L40S product brief](https://www.pny.com/File%20Library/Company/Support/product-briefs/data-center-gpus/NVIDIA-L40S-Product-Brief.pdf) gives the minimum as "TBD".
 - **AMD Instinct MI300X**: maximum TBP 750 W. Minimum cap 400 W: [a public study](https://arxiv.org/html/2603.16164v1) found that limits below 400 W were not reliably enforced, and the GPUs drew more power than configured.
 - **AMD Radeon Pro W7900**: total board power 295 W. Minimum cap 200 W, with no public source: AMD publishes no cap range.
+- **Intel Data Center GPU Flex 170**: TBP 150 W ([Intel specifications](https://www.intel.com/content/www/us/en/products/sku/230019/intel-data-center-gpu-flex-170/specifications.html)). **Intel Data Center GPU Max 1100**: TDP 300 W ([Intel specifications](https://www.intel.com/content/www/us/en/products/sku/232876/intel-data-center-gpu-max-1100/specifications.html)). **Intel Data Center GPU Max 1550**: TDP 600 W ([Intel specifications](https://www.intel.com/content/www/us/en/products/sku/232873/intel-data-center-gpu-max-1550/specifications.html)). No minimum cap: Intel publishes none, the drivers do not show the one the hardware enforces, and Level Zero Sysman reports it as unknown, so the catalog sets no `minBoardPowerW`.
 
 The minimum cap is `minBoardPowerW` in the catalog. When a node reports no GPU cap range, the controller manager takes the range from the catalog: the NodeTwin's GPU cap range starts at this minimum, and a percent cap turned into watts is raised to it.
 
@@ -502,12 +504,16 @@ The simulator distributes the node-average GPU utilization across the devices ra
 The agent calls the vendor command-line tools and reads sysfs; it links no vendor library. Measured GPU power reaches the twin through Prometheus (`hw.power`, `hw.energy`), never through these calls.
 
 ### NVIDIA
-- Caps: `nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name` for the cap range and the current limit, and `nvidia-smi -i <index> -pl <W>` to set a per-device limit, run only for a GPU whose current limit differs from the cap.
+- Caps: `nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name,power.default_limit` for the cap range, the current limit and the default limit, which `NodeHardware` publishes as `defaultWatts`, and `nvidia-smi -i <index> -pl <W>` to set a per-device limit, run only for a GPU whose current limit differs from the cap. A GPU whose limits print a token such as `[N/A]` is never written.
 - Governors: `nvidia-smi --query-gpu=pci.bus_id,clocks.sm,clocks.mem,clocks.max.sm,clocks.max.mem,pstate,clocks_throttle_reasons.active` (again with `clocks_event_reasons.active` when a driver rejects that field) and `nvidia-smi -q -d SUPPORTED_CLOCKS` for discovery, and `nvidia-smi -i <pci bus id>` with `-lgc`, `-lmc`, `-rgc` or `-rmc` to set or reset clock locks. A lock has no getter, so the clock query is also how the agent sees a lock in use (see [Governor control]({{< relref "/docs/architecture/agent.md#governor-control" >}})).
 
 ### AMD
-- Caps: amdgpu sysfs, the hwmon device named `amdgpu` under `/sys/bus/pci/devices/<pci bus id>/hwmon/`, as root, each write read back: `power1_cap_min` and `power1_cap_max` for the cap range, and `power1_cap` for the current cap, written in whole watts as microwatts only for a GPU whose cap differs. `power1_cap_default` is not read, because the driver sets it from the cap in force whenever it initialises the GPU. A device whose `power1_cap` reads 0, the secondary die of a package, is never written, and one without `power1_cap`, such as an APU's integrated GPU, is not counted as a GPU. `rocm-smi` and `amd-smi` are never used to read or set a cap; `rocm-smi --showproductname` is only a vendor probe.
+- Caps: amdgpu sysfs, the hwmon device named `amdgpu` under `/sys/bus/pci/devices/<pci bus id>/hwmon/`, as root, each write read back: `power1_cap_min` and `power1_cap_max` for the cap range, and `power1_cap` for the current cap, written in whole watts as microwatts only for a GPU whose cap differs. `power1_cap_default` is not read, because the driver sets it from the cap in force whenever it initialises the GPU, so `defaultWatts` is the maximum. A device whose `power1_cap` reads 0, the secondary die of a package, is counted and never written, and one without `power1_cap`, such as an APU's integrated GPU, is not counted as a GPU. `rocm-smi` and `amd-smi` are never used to read or set a cap; `rocm-smi --showproductname` is only a vendor probe.
 - Governors: amdgpu sysfs under `/sys/bus/pci/devices/<pci bus id>/`, as root, each write read back: `power_dpm_force_performance_level`, the `pp_dpm_sclk`, `pp_dpm_mclk` and `pp_dpm_fclk` tables for the clock ranges, and `pp_od_clk_voltage` for a compute clock ceiling. `rocm-smi` and `amd-smi` are never used to set a governor.
+
+### Intel
+- Caps: i915 or xe sysfs, the hwmon device named `i915` or `xe` under `/sys/bus/pci/devices/<pci bus id>/hwmon/` of a discrete GPU, as root, each write read back: the sustained limit PL1, `power1_max` under i915 and the first of `power1_max` (card) and `power2_max` (package) under xe, written in whole watts as microwatts only for a GPU whose limit differs, and `power<N>_rated_max`, the default limit, for the top of the range. The hardware clamps a limit to bounds sysfs does not show, so the range has no known minimum, and a clamped limit reads back different and is an error. A GPU without `power<N>_rated_max` is never written. Integrated GPUs have no such hwmon and are not counted. No Intel tool (`xpu-smi`, Level Zero) is used.
+- Governors: none.
 
 ## 6.3 Natural power envelope
 For GPU workloads, Joulie uses the concept of a **natural power envelope**:
@@ -840,6 +846,7 @@ For this reason, Joulie should be read as:
 - The current thermal model is still a first-order approximation; it does not attempt to model fan curves, hotspot sensors, package-to-package coupling, or chassis airflow in detail.
 - The current workload-boundness model is still a mixture-of-experts approximation; it is not yet calibrated from per-application traces for every workload family.
 - The governor and clock physics of emulated nodes (section 6.8) uses assumed parameters; no governor or clock sweep has been measured on hardware yet, so the governor presets' energy effects are directions to test, not results.
+- An emulated secondary die (`gpus.secondaryDies`) has the files and the refused writes of the real one, but no limit of its own: the package limit its primary holds bounds the primary alone, since how the firmware shares it between the dies is not published. No builtin profile has secondary dies for that reason.
 
 The implementation is designed so that any proxy can later be replaced with measured curves from bare-metal runs.
 

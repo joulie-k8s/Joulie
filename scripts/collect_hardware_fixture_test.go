@@ -109,8 +109,8 @@ func collectHostFiles() map[string]string {
 }
 
 // collectTools writes the fake tools and returns their directory: nvidia-smi
-// answers the agent's inventory query and the clock query, kubectl fails as
-// on a node without it.
+// answers the agent's inventory query, exactly as cmd/agent runs it, and the
+// clock query, kubectl fails as on a node without it.
 func collectTools(t *testing.T) string {
 	t.Helper()
 	bin := t.TempDir()
@@ -121,7 +121,8 @@ func collectTools(t *testing.T) string {
 	scripts := map[string]string{
 		"nvidia-smi": "#!/bin/sh\ncase \"$*\" in\n" +
 			"\"-q -d CLOCK,SUPPORTED_CLOCKS,PERFORMANCE\") cat '" + clocks + "' ;;\n" +
-			"--query-gpu=*) printf '0, 100.00, 300.00, 300.00, 50.00, Neutral GPU\\n' ;;\n" +
+			"\"--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name,power.default_limit --format=csv,noheader,nounits\") " +
+			"printf '0, 100.00, 300.00, 300.00, 50.00, Neutral GPU, 300.00\\n' ;;\n" +
 			"*) exit 9 ;;\nesac\n",
 		"kubectl": "#!/bin/sh\nexit 1\n",
 	}
@@ -217,6 +218,11 @@ func TestGF01CaptureCopiesTheGovernorState(t *testing.T) {
 		if got := collectRead(t, filepath.Join(dir, "governor", rel)); got != host[src] {
 			t.Errorf("governor/%s = %q, want the host's %q", rel, got, host[src])
 		}
+	}
+	// The fake answers only the inventory query cmd/agent runs, so the
+	// capture holds its output only when the script runs that query.
+	if got := collectRead(t, filepath.Join(dir, "nvidia-smi.txt")); got != "0, 100.00, 300.00, 300.00, 50.00, Neutral GPU, 300.00\n" {
+		t.Errorf("nvidia-smi.txt = %q, want the output of the agent's inventory query", got)
 	}
 
 	var got []string

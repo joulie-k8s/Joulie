@@ -21,7 +21,8 @@ import (
 // joulie.sim.write.rejected with error.type the errno in lower case.
 //
 // CheckWrite closes the gap for a writer that can call it: it answers each
-// write with the errno, or applies it, at the moment of the write.
+// write with the errno, or applies it, at the moment of the write. The live
+// view of a Live node (LiveWrite) closes it for every writer of the view.
 
 // Errno names of a rejected write, the values of Event.Errno and of the
 // errno a profile gives a refused value, such as gpus.dpm.levels.reject.
@@ -122,9 +123,21 @@ func (n *Node) CheckWrite(rel, value string) error {
 	if value == "" {
 		return nil
 	}
-	kind, eff := f.handle(strings.TrimSuffix(value, "\n"))
+	if _, _, errno := n.applyWrite(f, value); errno != 0 {
+		return fail(errno)
+	}
+	return nil
+}
+
+// applyWrite is a non-empty write of value to the A file f, with n.mu held:
+// value, less the one trailing newline the kernel accepts, goes to the
+// handler the readback runs. A value the driver refuses changes nothing and
+// returns the errno CheckWrite documents, with the event the next step
+// reports. Any other value takes effect in the model at once and returns
+// the handler's event kind and the value in effect.
+func (n *Node) applyWrite(f *nodeAFile, value string) (kind, eff string, errno syscall.Errno) {
+	kind, eff = f.handle(strings.TrimSuffix(value, "\n"))
 	n.afilesDirty = true
-	var errno syscall.Errno
 	switch kind {
 	case EventRejected:
 		name := n.rejectErrno[f.rel]
@@ -133,14 +146,14 @@ func (n *Node) CheckWrite(rel, value string) error {
 			errno = syscall.EIO
 		}
 		n.pending = append(n.pending, Event{Time: n.now, File: f.rel, Kind: kind, Written: nodeEventValue(value), Effective: nodeEventValue(eff), Component: f.component, Errno: name})
-		return fail(errno)
+		return kind, eff, errno
 	case EventParseError, EventRevertedOutOfRange:
 		n.pending = append(n.pending, Event{Time: n.now, File: f.rel, Kind: kind, Written: nodeEventValue(value), Effective: nodeEventValue(eff), Component: f.component})
-		return fail(syscall.EINVAL)
+		return kind, eff, syscall.EINVAL
 	}
 	n.derive()
 	n.adopt(n.now)
-	return nil
+	return kind, eff, 0
 }
 
 // afileAt is the A file at rel, relative to the node root, or nil.

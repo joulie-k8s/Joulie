@@ -1,0 +1,103 @@
+{
+  "capabilities": {
+    "cpuControl": true,
+    "cpuTelemetry": true,
+    "gpuControl": true,
+    "gpuTelemetry": true
+  },
+  "cpu": {
+    "capRange": {
+      "maxWattsPerSocket": 270,
+      "minWattsPerSocket": 0,
+      "type": "package"
+    },
+    "controlAvailable": true,
+    "coresPerSocket": 64,
+    "driverFamily": "intel_cpufreq",
+    "governor": {
+      "available": [
+        "conservative",
+        "ondemand",
+        "userspace",
+        "powersave",
+        "performance",
+        "schedutil"
+      ],
+      "baseline": {
+        "groups": [
+          {
+            "boost": "on",
+            "governor": "schedutil",
+            "policies": "0-127"
+          }
+        ]
+      },
+      "boost": {
+        "scope": "no-turbo",
+        "state": "on"
+      },
+      "current": "schedutil",
+      "driver": "intel_cpufreq",
+      "driverMode": "passive",
+      "presets": [
+        {
+          "native": "performance",
+          "preset": "performance",
+          "result": "applied"
+        },
+        {
+          "native": "schedutil",
+          "preset": "balanced",
+          "result": "applied"
+        },
+        {
+          "native": "conservative",
+          "preset": "efficiency",
+          "result": "applied"
+        }
+      ],
+      "writable": true
+    },
+    "landmarks": {
+      "maxBoostMHz": 4000,
+      "minFreqMHz": 800
+    },
+    "model": "INTEL_XEON_GOLD_6530",
+    "rawModel": "INTEL(R) XEON(R) GOLD 6530",
+    "sockets": 2,
+    "telemetryAvailable": true,
+    "totalCores": 128,
+    "vendor": "GenuineIntel",
+    "warnings": null
+  },
+  "gpu": {
+    "capRangePerGpu": {
+      "defaultWatts": 150,
+      "maxWatts": 150,
+      "minWatts": 0
+    },
+    "controlAvailable": true,
+    "count": 4,
+    "currentCapWatts": 150,
+    "model": "INTEL_DATA_CENTER_GPU_FLEX_170",
+    "present": true,
+    "rawModel": "Intel Data Center GPU Flex 170",
+    "telemetryAvailable": true,
+    "vendor": "intel",
+    "warnings": null
+  },
+  "inventoryResolution": {
+    "exactness": {
+      "cpu": "exact",
+      "gpu": "exact"
+    },
+    "hardwareCatalogKey": {
+      "cpu": "INTEL_XEON_GOLD_6530",
+      "gpu": "INTEL_DATA_CENTER_GPU_FLEX_170"
+    }
+  },
+  "quality": {
+    "overall": "exact",
+    "warnings": null
+  }
+}

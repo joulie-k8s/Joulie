@@ -88,7 +88,10 @@ func renderAllocatable(p *Profile) (corev1.ResourceList, error) {
 // mode (NVIDIA/k8s-device-plugin README.md at d7265fdcf89f, lines 250-263,
 // 402):
 //
-//   - whole: <vendor>/gpu = N;
+//   - whole: <vendor>/gpu = N, and for Intel gpu.intel.com/<driver> = N,
+//     the resource the Intel GPU plugin names after the driver
+//     (intel/intel-device-plugins-for-kubernetes cmd/gpu_plugin/README.md
+//     at 8405fa30bbaf, lines 48-49);
 //   - mig-single: nvidia.com/gpu = N*m;
 //   - mig-mixed: nvidia.com/mig-<profile> = N*m and no nvidia.com/gpu;
 //   - timeslice-rename: nvidia.com/gpu.shared = N*r;
@@ -99,13 +102,20 @@ func renderGPUResources(g *GPUSpec) map[corev1.ResourceName]int64 {
 		return nil
 	}
 	n := int64(g.Count.V)
-	domain := "nvidia.com"
-	if g.Vendor == "amd" {
-		domain = "amd.com"
+	whole := corev1.ResourceName("nvidia.com/gpu")
+	switch g.Vendor {
+	case "amd":
+		whole = "amd.com/gpu"
+	case "intel":
+		driver := IntelDriverI915
+		if g.Intel != nil && g.Intel.Driver.V != "" {
+			driver = g.Intel.Driver.V
+		}
+		whole = corev1.ResourceName("gpu.intel.com/" + driver)
 	}
 	switch g.Exposure.V {
 	case "whole":
-		return map[corev1.ResourceName]int64{corev1.ResourceName(domain + "/gpu"): n}
+		return map[corev1.ResourceName]int64{whole: n}
 	case "mig-single":
 		return map[corev1.ResourceName]int64{"nvidia.com/gpu": n * int64(g.MIGDevicesPerGPU)}
 	case "mig-mixed":

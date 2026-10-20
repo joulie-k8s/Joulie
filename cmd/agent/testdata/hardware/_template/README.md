@@ -93,11 +93,13 @@ tree is a useful fixture, not a broken one: `vm-no-rapl` is exactly that.
 The stdout of the exact query `cmd/agent/main.go` runs, no more and no less:
 
 ```sh
-nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits
+nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name,power.default_limit --format=csv,noheader,nounits
 ```
 
-One CSV line per GPU. `nvidia-smi -L` is not captured: the agent runs it only
-to see whether the command succeeds, and its output is a list of GPU UUIDs.
+One CSV line per GPU. A line of the first six fields, without
+`power.default_limit`, is valid too: the agent then reads the default as
+unknown. `nvidia-smi -L` is not captured: the agent runs it only to see
+whether the command succeeds, and its output is a list of GPU UUIDs.
 
 ### `amdgpu-hwmon/`
 

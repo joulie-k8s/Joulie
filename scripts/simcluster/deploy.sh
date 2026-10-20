@@ -38,6 +38,11 @@
 #                            only: the in-cluster simulator reads its
 #                            built-in profiles, and up.sh refuses a spec that
 #                            needs a local one
+#   SIMCLUSTER_HWEMU         fuse (the default) installs the simulator with
+#                            values/simcluster-simulator-fuse.yaml and Joulie
+#                            with values/simcluster-fuse.yaml, so the agents
+#                            mount the simulator's FUSE views; files installs
+#                            neither, and the agents mount the trees
 #   SIMCLUSTER_EXTRA_VALUES  Joulie values files, space separated
 #   SIMCLUSTER_SIM_EXTRA_VALUES  simulator values files, space separated, after
 #                            the generated ones (scenario.sh sets it for a
@@ -98,12 +103,12 @@ sim_apply_crds
 # 3. The simulator in emulate mode.
 sim_cli telemetry "${SIM_TELEMETRY_FLAGS[@]}" --part sim-values >"$vals/sim-values.yaml"
 sim_log "installing the simulator ($(sim_tag "$IMAGE_SIMULATOR"))"
-sim_files=("$SIM_REPO/values/simcluster-simulator.yaml" "$vals/sim-values.yaml")
+sim_files=("$SIM_REPO/values/simcluster-simulator.yaml" ${SIM_HWEMU_SIM_VALUES[@]+"${SIM_HWEMU_SIM_VALUES[@]}"} "$vals/sim-values.yaml")
 sim_helm_sim "${sim_files[@]}"
 
 # 4. Ready once its first snapshot is published, so every hwemu tree exists
 # before an agent mounts one.
-kubectl -n "$SIM_NS_SIM" rollout status "deployment/$SIM_SIM_DEPLOYMENT" --timeout=300s >/dev/null
+sim_rollouts "$SIM_NS_SIM" "deployment/$SIM_SIM_DEPLOYMENT"
 sim_wait 300 "the simulator's /readyz" sim_sim readyz
 
 # 5. The emulated agents: the Nodes the real DaemonSet would reach with
@@ -111,7 +116,7 @@ sim_wait 300 "the simulator's /readyz" sim_sim readyz
 # sets agent.emulated.nodes, which the DaemonSet render does not read.
 sim_cli telemetry "${SIM_TELEMETRY_FLAGS[@]}" --part joulie-values >"$vals/joulie-values.yaml"
 [[ -s $vals/agent-nodes.yaml ]] || printf '{}\n' >"$vals/agent-nodes.yaml"
-files=("$SIM_REPO/values/simcluster.yaml" "${SIM_EXTENDER_VALUES[@]}" "$vals/agent-nodes.yaml" "$vals/joulie-values.yaml" "${extra[@]}")
+files=("$SIM_REPO/values/simcluster.yaml" "${SIM_EXTENDER_VALUES[@]}" ${SIM_HWEMU_VALUES[@]+"${SIM_HWEMU_VALUES[@]}"} "$vals/agent-nodes.yaml" "$vals/joulie-values.yaml" "${extra[@]}")
 sim_agents "$vals/agent-nodes.yaml" "${files[@]}"
 agents=$(sim_count_agents "$vals/agent-nodes.yaml")
 sim_check_pod_capacity "$agents"
@@ -147,7 +152,7 @@ join() {
 }
 {
   printf 'DEPLOYED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf 'TELEMETRY=%s\nPOWER_SCOPE=%s\nTIMING=%s\nEXTENDER=%s\n' "$SIMCLUSTER_TELEMETRY" "$SIMCLUSTER_POWER_SCOPE" "$SIMCLUSTER_TIMING" "$SIMCLUSTER_EXTENDER"
+  printf 'TELEMETRY=%s\nPOWER_SCOPE=%s\nTIMING=%s\nEXTENDER=%s\nHWEMU=%s\n' "$SIMCLUSTER_TELEMETRY" "$SIMCLUSTER_POWER_SCOPE" "$SIMCLUSTER_TIMING" "$SIMCLUSTER_EXTENDER" "$SIMCLUSTER_HWEMU"
   printf 'AGENTS=%s\n' "$agents"
   printf 'JOULIE_VALUES=%s\n' "$(join "${files[@]}")"
   printf 'SIM_VALUES=%s\n' "$(join "${sim_files[@]}" "${sim_extra[@]}")"

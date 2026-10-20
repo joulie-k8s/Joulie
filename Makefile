@@ -20,7 +20,7 @@ CHART_CRD_DIR ?= charts/joulie/crds
 # Image names must follow joulie-<component>, where <component> matches cmd/<component>.
 IMAGES ?= joulie-agent joulie-controller-manager joulie-scheduler
 
-.PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-promql test-experiments test-all test-examples controller-gen generate manifests verify-manifests kubectl-plugin kubectl-plugin-install kubectl-plugin-push kubectl-plugin-build-push simulator-build simulator-push simulator-build-push simulator-install simulator-uninstall simulator-build-push-deploy simulator-logs docs-serve simcluster-up simcluster-images simcluster-deploy simcluster-reload simcluster-status simcluster-tree simcluster-logs simcluster-smoke simcluster-scenario simcluster-down
+.PHONY: help install uninstall build push build-push build-push-all rollout build-push-rollout build-push-install print-images test test-promql test-experiments test-all test-examples controller-gen generate manifests verify-manifests verify-fmt kubectl-plugin kubectl-plugin-install kubectl-plugin-push kubectl-plugin-build-push simulator-build simulator-push simulator-build-push simulator-install simulator-uninstall simulator-build-push-deploy simulator-logs docs-serve simcluster-up simcluster-images simcluster-deploy simcluster-reload simcluster-status simcluster-tree simcluster-logs simcluster-smoke simcluster-scenario simcluster-down
 
 help:
 	@echo "Targets:"
@@ -45,6 +45,7 @@ help:
 	@echo "  make generate                         Regenerate DeepCopy code for api/"
 	@echo "  make manifests                        Regenerate CRDs from api/ into config/ and the Helm chart"
 	@echo "  make verify-manifests                 Fail if generated code or CRDs are stale (CI)"
+	@echo "  make verify-fmt                       Fail if a tracked Go file is not gofmt-formatted (CI)"
 	@echo "  make simulator-build TAG=<tag>        Build simulator image"
 	@echo "  make simulator-push TAG=<tag>         Push simulator image"
 	@echo "  make simulator-build-push TAG=<tag>   Build and push simulator image"
@@ -199,6 +200,15 @@ manifests: controller-gen
 verify-manifests: generate manifests
 	git diff --exit-code -- api $(CRD_DIR) $(CHART_CRD_DIR)
 
+# verify-fmt names every tracked Go file that gofmt would change, and fails
+# when there is one. gofmt comes from the toolchain go.mod names.
+verify-fmt:
+	@files=$$(git ls-files -z '*.go' | xargs -0 "$$(go env GOROOT)/bin/gofmt" -l); \
+	if [ -n "$$files" ]; then \
+		printf 'not formatted, run gofmt -w on:\n%s\n' "$$files"; \
+		exit 1; \
+	fi
+
 test-experiments:
 	@echo "Running experiment sanity tests..."
 	python3 -m pytest experiments/01-cpu-only-benchmark/scripts/test_sweep.py -q --tb=short
@@ -253,6 +263,7 @@ ci-local:
 	}; \
 	run "go mod tidy -diff" sh -c 'go mod tidy -diff && cd tests/promql && go mod tidy -diff'; \
 	run "make verify-manifests" $(MAKE) --no-print-directory verify-manifests; \
+	run "make verify-fmt" $(MAKE) --no-print-directory verify-fmt; \
 	run "go build ./..." go build ./...; \
 	run "go vet ./..." go vet ./...; \
 	run "go test ./..." go test ./...; \
@@ -307,7 +318,7 @@ docs-serve:
 # default applies to the others. COMPONENT (or C), NODE and SCENARIO are
 # passed as arguments.
 SIMCLUSTER_VARS := SIMCLUSTER_NAME SIMCLUSTER_DIR SIMCLUSTER_SPEC SIMCLUSTER_NODES SIMCLUSTER_SCALE_PROFILE \
-	SIMCLUSTER_TELEMETRY SIMCLUSTER_POWER_SCOPE SIMCLUSTER_TIMING SIMCLUSTER_PROFILES_DIR SIMCLUSTER_KEEP \
+	SIMCLUSTER_TELEMETRY SIMCLUSTER_POWER_SCOPE SIMCLUSTER_TIMING SIMCLUSTER_HWEMU SIMCLUSTER_PROFILES_DIR SIMCLUSTER_KEEP \
 	SIMCLUSTER_AIRGAP SIMCLUSTER_FORCE_RELOAD SIMCLUSTER_EXTRA_VALUES SIMCLUSTER_SCENARIOS \
 	SIMCLUSTER_VALIDATE_OTLP SCENARIO_VARIANTS SCENARIO_RUN_DIR
 export $(foreach v,$(SIMCLUSTER_VARS),$(if $(filter undefined,$(origin $(v))),,$(v)))

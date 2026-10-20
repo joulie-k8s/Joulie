@@ -1,0 +1,9 @@
+# Joulie values for the simulated cluster in FUSE mode (SIMCLUSTER_HWEMU=fuse,
+# the default; scripts/simcluster/lib.sh adds this file after
+# values/simcluster.yaml). Every emulated agent mounts its node's sys and
+# state from the simulator's FUSE views, with mount propagation
+# HostToContainer; the simulator serves them with
+# values/simcluster-simulator-fuse.yaml.
+agent:
+  emulated:
+    fuse: true

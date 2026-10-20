@@ -19,6 +19,7 @@ spec:
   - {name: epyc-9534,        profile: amd-epyc-9534-2s-energy-only, count: 1}
   - {name: mi300x,           profile: amd-instinct-mi300x-8gpu,     count: 1}
   - {name: w7900,            profile: amd-radeon-pro-w7900-4gpu,    count: 1}
+  - {name: flex-170,         profile: intel-flex-170-4gpu,          count: 1}
   - {name: xeon-multidie,    profile: intel-xeon-2s-multidie,       count: 1}
   - {name: xeon-psys,        profile: intel-xeon-2s-psys,           count: 1}
   - {name: xeon,             profile: intel-xeon-2s-rapl,           count: 1}
@@ -30,14 +31,17 @@ spec:
   - {name: h100-sxm8,        profile: nvidia-h100-sxm-8gpu,         count: 1}
   - {name: l40s,             profile: nvidia-l40s-4gpu,             count: 1}
   - {name: vm,               profile: vm-no-powercap,               count: 1}
-  # The GPU pools get the GPU tools a node with the driver installed has (a
-  # driver stub at each path the tools need). A pool left out follows the
-  # Joulie install, which by default delivers none (agent.runtimeClassName and
-  # agent.extraVolumes unset), so its agent's NVIDIA GPU inventory fails.
+  # The NVIDIA and AMD GPU pools get the GPU tools a node with the driver
+  # installed has (a driver stub at each path the tools need). A pool left
+  # out follows the Joulie install, which by default delivers none
+  # (agent.runtimeClassName and agent.extraVolumes unset), so its agent's
+  # NVIDIA GPU inventory fails. The Intel pool gets none, as the default
+  # install: the agent caps Intel GPUs through sysfs, with no tool.
   harness:
     pools:
       mi300x: {toolDelivery: mounted}
       w7900: {toolDelivery: mounted}
+      flex-170: {toolDelivery: none}
       h100-nvl: {toolDelivery: mounted}
       h100-sxm4: {toolDelivery: mounted}
       h100-sxm8: {toolDelivery: mounted}

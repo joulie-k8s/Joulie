@@ -45,6 +45,7 @@ const (
 	envEmulate           = "SIM_EMULATE"
 	envClusterSpec       = "SIM_CLUSTER_SPEC"
 	envHwemuRoot         = "SIM_HWEMU_ROOT"
+	envHwemuFUSE         = "SIM_HWEMU_FUSE"
 	envEmulateTick       = "SIM_EMULATE_TICK"
 	envGPUReceiverGate   = "SIM_GPU_RECEIVER_GATE"
 	envEmulateWorkers    = "SIM_EMULATE_WORKERS"
@@ -105,11 +106,14 @@ func checkModes(getenv func(string) string) error {
 // emulateOptions is what newEmulateRuntime needs; emulateOptionsFromEnv
 // reads it from the environment. A zero Start means time.Now and a nil
 // Registerer registers nothing. ReceiverGate is SIM_GPU_RECEIVER_GATE, one
-// of the hwemu.ReceiverGate* values; empty means the profile's.
+// of the hwemu.ReceiverGate* values; empty means the profile's. FUSE is
+// SIM_HWEMU_FUSE: the nodes' sys and state are served through FUSE at
+// emulate.ViewDir.
 type emulateOptions struct {
 	SpecPath, Root, FakeSMISource string
 	Tick                          time.Duration
 	ReceiverGate                  string
+	FUSE                          bool
 	Workers                       int
 	Exporters                     []string
 	DCGMHostnameLabel             string
@@ -177,6 +181,7 @@ func (s *simulator) emulateOptionsFromEnv(lookup func(string) (string, bool)) (e
 		Tick:              defaultEmulateTick,
 		DCGMHostnameLabel: get(envDCGMHostnameLabel),
 		Kepler012GPU:      boolEnvFrom(get, envKepler012GPU, false),
+		FUSE:              boolEnvFrom(get, envHwemuFUSE, false),
 		Resource:          otlpTelemetryResource(),
 		Registerer:        prometheus.DefaultRegisterer,
 	}
@@ -277,6 +282,7 @@ func (s *simulator) newEmulateRuntime(o emulateOptions) (*emulateRuntime, error)
 		FakeSMISource: o.FakeSMISource,
 		Start:         o.Start,
 		ReceiverGate:  o.ReceiverGate,
+		FUSE:          o.FUSE,
 		Registerer:    o.Registerer,
 	})
 	if err != nil {
@@ -354,8 +360,8 @@ func (s *simulator) startEmulate(ctx context.Context) error {
 		defer rt.wg.Done()
 		rt.emu.Run(ctx, s.emulateLoads, s.emulateFacility, s.publishEmulateSnapshot)
 	}()
-	log.Printf("emulate mode cluster=%s nodes=%d root=%s tick=%s exporters=%s",
-		rt.cluster, len(rt.names), o.Root, o.Tick, strings.Join(rt.compat.Enabled(), ","))
+	log.Printf("emulate mode cluster=%s nodes=%d root=%s tick=%s fuse=%t exporters=%s",
+		rt.cluster, len(rt.names), o.Root, o.Tick, o.FUSE, strings.Join(rt.compat.Enabled(), ","))
 	return nil
 }
 

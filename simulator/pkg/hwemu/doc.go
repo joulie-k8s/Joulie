@@ -27,7 +27,9 @@
 //     the previous value: the writer is between truncate and write. A value
 //     the driver refuses, such as any write to a locked RAPL limit (ENODATA),
 //     is reverted with a rejected event; Node.CheckWrite answers it with the
-//     errno at the time of the write instead.
+//     errno at the time of the write instead, and so does the live view of
+//     a Node started with Options.Live (live.go, package hwfuse), which
+//     serves every read and write of sys/ and state/ and reads back no file.
 //   - L (layout.KindSymlink): relative inside sys/; absolute
 //     layout.FakeSMIInContainer for the tool links in bin/.
 //
