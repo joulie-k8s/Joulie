@@ -33,6 +33,7 @@ var renderBuiltinNames = []string{
 	"amd-epyc-9534-2s-energy-only",
 	"amd-instinct-mi300x-8gpu",
 	"amd-radeon-pro-w7900-4gpu",
+	"intel-flex-170-4gpu",
 	"intel-xeon-2s-multidie",
 	"intel-xeon-2s-psys",
 	"intel-xeon-2s-rapl",
@@ -471,9 +472,11 @@ func TestGPULimitsAreOrdered(t *testing.T) {
 	}
 }
 
-// Every GPU profile lists, for every tool, the files the real tool needs
-// before it runs, so a node without the driver or the interpreter
-// (simcluster toolDelivery none) fails as a real one does. nvidia-smi needs
+// Every NVIDIA and AMD GPU profile lists a tool and, for every tool, the
+// files the real tool needs before it runs, so a node without the driver or
+// the interpreter (simcluster toolDelivery none) fails as a real one does.
+// An Intel GPU profile lists none: the agent caps it through sysfs and no
+// emulated tool reports on it. nvidia-smi needs
 // its ELF loader, then the shared libraries it links, in the order the
 // loader reports the first missing one, then NVML: each missing one exits
 // 127 but NVML, 12.
@@ -502,7 +505,7 @@ func TestEveryGPUProfileListsItsToolRequirements(t *testing.T) {
 			continue
 		}
 		gpuProfiles++
-		if len(g.Tools) == 0 {
+		if len(g.Tools) == 0 && g.Vendor != "intel" {
 			t.Errorf("%s has GPUs and no tool", name)
 		}
 		for _, tool := range g.Tools {

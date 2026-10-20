@@ -337,7 +337,9 @@ type diffLimitFile struct {
 
 // diffControls are the limits the test writes: the long_term (PL1) limit of
 // every enabled package and die zone, the HSMP socket caps, every policy's
-// scaling_max_freq, and every GPU's power limit with its units per watt.
+// scaling_max_freq, and every GPU's power limit (amdgpu power1_cap, an Intel
+// GPU's power1_max or power2_max, NVML power_limit_mw) with its units per
+// watt.
 type diffControls struct {
 	pl1, hsmp, freq, gpu []diffLimitFile
 	gpuPerW              float64
@@ -376,7 +378,7 @@ func diffFindControls(t *testing.T, tree *hwemu.Tree) *diffControls {
 			c.pl1 = append(c.pl1, limit("constraint_"+k+"_max_power_uw"))
 		case base == "power1_cap" && strings.Contains(f.Rel, "/amd_hsmp/"):
 			c.hsmp = append(c.hsmp, limit("power1_cap_max"))
-		case base == "power1_cap":
+		case base == "power1_cap", base == "power1_max", base == "power2_max":
 			c.gpu, c.gpuPerW = append(c.gpu, limit("")), 1e6
 		case base == "power_limit_mw" && strings.HasPrefix(f.Rel, path.Join(layout.StateDir, layout.NVMLDir)+"/"):
 			c.gpu, c.gpuPerW = append(c.gpu, limit("")), 1000

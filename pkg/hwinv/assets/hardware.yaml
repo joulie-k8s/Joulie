@@ -185,3 +185,32 @@ gpuModels:
       maxBoardPowerW: 295
       # No public minimum: AMD publishes only the 295 W total board power.
       minBoardPowerW: 200
+  INTEL_DATA_CENTER_GPU_FLEX_170:
+    # Flex_170 is how Intel's NFD rules name it in gpu.intel.com/product; the
+    # others are the Intel and pci.ids names of device 8086:56c0.
+    aliases: ["Intel Data Center GPU Flex 170", "Data Center GPU Flex 170", "Flex_170"]
+    provenance: official
+    official:
+      vendor: intel
+      # TBP 150 W (Intel product specifications, SKU 230019). No public
+      # minimum: Level Zero Sysman reports the minimum limit as unknown, so
+      # minBoardPowerW is left out.
+      maxBoardPowerW: 150
+  INTEL_DATA_CENTER_GPU_MAX_1100:
+    aliases: ["Intel Data Center GPU Max 1100", "Data Center GPU Max 1100", "Max_1100"]
+    provenance: official
+    official:
+      vendor: intel
+      # TDP 300 W (Intel product specifications, SKU 232876). No public
+      # minimum: Level Zero Sysman reports the minimum limit as unknown, so
+      # minBoardPowerW is left out.
+      maxBoardPowerW: 300
+  INTEL_DATA_CENTER_GPU_MAX_1550:
+    aliases: ["Intel Data Center GPU Max 1550", "Data Center GPU Max 1550", "Max_1550"]
+    provenance: official
+    official:
+      vendor: intel
+      # TDP 600 W (Intel product specifications, SKU 232873). No public
+      # minimum: Level Zero Sysman reports the minimum limit as unknown, so
+      # minBoardPowerW is left out.
+      maxBoardPowerW: 600
