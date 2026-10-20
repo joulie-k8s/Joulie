@@ -2,11 +2,14 @@ package hwemu
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/matbun/joulie/pkg/governor/discover"
 )
 
 // renderParseCPUInfo splits a rendered /proc/cpuinfo into blocks of key and
@@ -226,6 +229,78 @@ func renderKeys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
+	}
+	return out
+}
+
+// H52: the generated cpuinfo of every builtin profile carries the flags its
+// facts imply: hwp on every block exactly where cpufreq.hwp is true, with
+// hwp_epp under intel_pstate, and governor discovery reads HWP from that
+// flag alone. The preference files intel_pstate renders with HWP are left
+// out of discovery's view, because their presence also says HWP and hid
+// that the generated cpuinfo had no flags line at all.
+func TestH52GeneratedCPUInfoFlagsFollowTheHWPFact(t *testing.T) {
+	t.Parallel()
+	hwpProfiles := 0
+	for _, name := range renderBuiltinNames {
+		t.Run(name, func(t *testing.T) {
+			p, tree := renderSharedBuiltin(t, name)
+			wantHWP := p.CPUFreq != nil && p.CPUFreq.HWP.V
+			wantEPP := wantHWP && cpuGovIntel(p.CPUFreq.Driver.V)
+			if wantHWP {
+				hwpProfiles++
+			}
+			for k, blk := range renderParseCPUInfo(t, renderReadFile(t, tree, "cpuinfo")) {
+				flags := strings.Fields(blk["flags"])
+				if got := renderContains(flags, "hwp"); got != wantHWP {
+					t.Fatalf("processor %d: hwp in flags = %v, want %v (cpufreq.hwp); flags %q", k, got, wantHWP, blk["flags"])
+				}
+				if got := renderContains(flags, "hwp_epp"); got != wantEPP {
+					t.Fatalf("processor %d: hwp_epp in flags = %v, want %v", k, got, wantEPP)
+				}
+			}
+			if p.CPUFreq == nil {
+				return
+			}
+			sys := copyWithoutEPP(t, tree.SysRoot)
+			c := discover.ReadCPU(sys, tree.CPUInfoPath)
+			if c == nil {
+				t.Fatal("discovery found no cpufreq policy")
+			}
+			if c.Facts.HWP != wantHWP {
+				t.Errorf("discovery reads HWP %v from the cpuinfo, want %v", c.Facts.HWP, wantHWP)
+			}
+		})
+	}
+	t.Cleanup(func() {
+		if hwpProfiles == 0 {
+			t.Error("no builtin profile has cpufreq.hwp true; the test checks nothing")
+		}
+	})
+}
+
+// copyWithoutEPP copies the regular files of devices/system/cpu under sys
+// into a new sys root, without the energy-performance preference pair.
+func copyWithoutEPP(t *testing.T, sys string) string {
+	t.Helper()
+	out := t.TempDir()
+	src := filepath.Join(sys, "devices", "system", "cpu")
+	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() || strings.HasPrefix(d.Name(), "energy_performance_") {
+			return err
+		}
+		rel, _ := filepath.Rel(sys, path)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Join(out, filepath.Dir(rel)), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(out, rel), b, 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	return out
 }

@@ -201,6 +201,10 @@ The other arms, the settings and the result files are in the [experiment README]
 | `idleGovernorDeltaW`, `eppGain`, `eppCeilingDrop` | the CPU idle and partial-load trade-off | energy of each CPU governor at steady loads, per driver |
 | class intensities, the job model | the size of every slowdown | traces of real jobs |
 
+The measurements behind `dataPathHoldW`, `gatingOffIdleW`, the receiver gate
+and `idleGovernorDeltaW` run on a real node, one command each, with the
+scripts in [`experiments/05-governor-exploration/hardware/`](https://github.com/joulie-k8s/Joulie/tree/main/experiments/05-governor-exploration/hardware).
+
 The receiver gate stays off in every repository profile, so the main grid
 shows no gate effect; `configs/tier-a-sensitivity.yaml` forces it on with
 `slowFraction` below 1 to show the shape of Q3.

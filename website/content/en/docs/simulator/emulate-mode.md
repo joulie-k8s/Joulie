@@ -12,7 +12,7 @@ Turn it on with `SIM_EMULATE=true` and `SIM_CLUSTER_SPEC`; every variable is und
 For each spec node the simulator keeps a tree under `SIM_HWEMU_ROOT/<node>/`, rendered from a hardware profile (`simulator/pkg/hwemu/profiles/`):
 
 - `sys/`: the powercap, cpufreq, hwmon and PCI attributes as the kernel nests them. An agent pod mounts it as its `/host-sys`.
-- `cpuinfo`: mounted as the pod's `/proc/cpuinfo`.
+- `cpuinfo`: mounted as the pod's `/proc/cpuinfo`. One block per logical CPU with the profile's model and topology, and a `flags` line with the flags its facts imply: `hwp`, and `hwp_epp` under intel_pstate, where `cpufreq.hwp` is true, and `hypervisor` on a virtual machine. A profile with none of them has no `flags` line; a corpus machine keeps its captured cpuinfo verbatim.
 - `state/`: what the fake GPU tools read and write, such as NVML limits and energy, and the node's energy ledger.
 - `bin/`: `nvidia-smi`, `rocm-smi` and `amd-smi`, links to `fakesmi`, which the simulator installs in `SIM_HWEMU_ROOT/lib/`. The agent pod puts `bin/` first on its `PATH`.
 

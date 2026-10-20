@@ -2064,3 +2064,36 @@ func TestHwemuA31AMDGPUsKeyedByBusID(t *testing.T) {
 		}
 	}
 }
+
+// A40: on an HWP Xeon the agent's governor discovery reports HWP from the
+// hwp flag of the emulated /proc/cpuinfo, also with the preference files,
+// which intel_pstate creates only with HWP and which said HWP on their
+// own, removed; on the 6530, whose profile has no HWP, it does not. hwemu
+// rendered no flags line before, so the flag path never ran on an
+// emulated node.
+func TestHwemuA40HWPFromTheCPUInfoFlag(t *testing.T) {
+	for _, c := range []struct {
+		profile string
+		want    bool
+	}{{"intel-xeon-2s-rapl", true}, {"intel-xeon-6530-2s-rapl", false}} {
+		t.Run(c.profile, func(t *testing.T) {
+			g := emulatedGovernorNode(t, c.profile, nil)
+			epp, err := filepath.Glob(filepath.Join(g.e.tree.SysRoot, "devices", "system", "cpu", "cpufreq", "policy*", "energy_performance_*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range epp {
+				if err := os.Remove(f); err != nil {
+					t.Fatal(err)
+				}
+			}
+			d := g.discoveredGovernors().CPU
+			if d == nil {
+				t.Fatal("no CPU governor discovered")
+			}
+			if d.Facts.HWP != c.want {
+				t.Errorf("discovered HWP %v, want %v from the cpuinfo flags", d.Facts.HWP, c.want)
+			}
+		})
+	}
+}
