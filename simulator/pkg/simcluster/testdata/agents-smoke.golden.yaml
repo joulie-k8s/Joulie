@@ -9,5 +9,81 @@ agent:
       profile: amd-epyc-2s-hsmp
     - name: intel-0
       profile: intel-xeon-2s-rapl
+    - name: intel-tainted-0
+      profile: intel-xeon-2s-rapl
+    - extraVolumeMounts:
+      - mountPath: /usr/bin/env
+        name: driver-stub
+        readOnly: true
+      - mountPath: /usr/bin/python3
+        name: driver-stub
+        readOnly: true
+      extraVolumes:
+      - hostPath:
+          path: /var/lib/joulie-hwemu/lib/driver-stub
+          type: File
+        name: driver-stub
+      name: mi300x-0
+      profile: amd-instinct-mi300x-8gpu
+    - devNvidiactl: true
+      extraVolumeMounts:
+      - mountPath: /lib64/ld-linux-x86-64.so.2
+        name: driver-stub
+        readOnly: true
+      - mountPath: /lib/x86_64-linux-gnu/libpthread.so.0
+        name: driver-stub
+        readOnly: true
+      - mountPath: /lib/x86_64-linux-gnu/libm.so.6
+        name: driver-stub
+        readOnly: true
+      - mountPath: /lib/x86_64-linux-gnu/libdl.so.2
+        name: driver-stub
+        readOnly: true
+      - mountPath: /lib/x86_64-linux-gnu/librt.so.1
+        name: driver-stub
+        readOnly: true
+      - mountPath: /lib/x86_64-linux-gnu/libc.so.6
+        name: driver-stub
+        readOnly: true
+      - mountPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1
+        name: driver-stub
+        readOnly: true
+      extraVolumes:
+      - hostPath:
+          path: /var/lib/joulie-hwemu/lib/driver-stub
+          type: File
+        name: driver-stub
+      name: nvl-0
+      profile: nvidia-h100-nvl-8gpu
+    - devNvidiactl: true
+      extraVolumeMounts:
+      - mountPath: /lib64/ld-linux-x86-64.so.2
+        name: driver-stub
+        readOnly: true
+      - mountPath: /lib/x86_64-linux-gnu/libpthread.so.0
+        name: driver-stub
+        readOnly: true
+      - mountPath: /lib/x86_64-linux-gnu/libm.so.6
+        name: driver-stub
+        readOnly: true
+      - mountPath: /lib/x86_64-linux-gnu/libdl.so.2
+        name: driver-stub
+        readOnly: true
+      - mountPath: /lib/x86_64-linux-gnu/librt.so.1
+        name: driver-stub
+        readOnly: true
+      - mountPath: /lib/x86_64-linux-gnu/libc.so.6
+        name: driver-stub
+        readOnly: true
+      - mountPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1
+        name: driver-stub
+        readOnly: true
+      extraVolumes:
+      - hostPath:
+          path: /var/lib/joulie-hwemu/lib/driver-stub
+          type: File
+        name: driver-stub
+      name: sxm-nopm-0
+      profile: nvidia-h100-sxm-8gpu
     - name: vm-0
       profile: vm-no-powercap

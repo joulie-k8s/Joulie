@@ -1631,14 +1631,25 @@ func loadHardwareCatalog() *hwinv.Catalog {
 	return hardwareCatalog
 }
 
+// nfdGPUClasses are the PCI classes a GPU of any vendor enumerates as, in
+// the four hex digits NFD keeps of the class code (it drops the
+// programming interface): VGA 0300, 3D controller 0302, other display
+// controller 0380 and processing accelerator 1200. The GPU drivers bind
+// these: nvidia 0300 and 0302, amdgpu 0300, 0380 and 1200 (an MI300X is a
+// processing accelerator), i915 and xe every display class 03xx. NFD's
+// default deviceClassWhitelist (03, 0b40, 12) labels all four.
+var nfdGPUClasses = []string{"0300", "0302", "0380", "1200"}
+
+// hasNFDGPUVendor reports whether NFD labelled a GPU of vendorHex (the PCI
+// vendor id, such as 1002) on the node: pci-<class>_<vendor>.present for a
+// class of nfdGPUClasses, the default deviceLabelFields class and vendor,
+// or pci-<vendor>.present when NFD labels by vendor alone.
 func hasNFDGPUVendor(nodeLabels map[string]string, vendorHex string) bool {
-	keys := []string{
-		fmt.Sprintf("feature.node.kubernetes.io/pci-%s.present", vendorHex),
-		fmt.Sprintf("feature.node.kubernetes.io/pci-0300_%s.present", vendorHex),
-		fmt.Sprintf("feature.node.kubernetes.io/pci-0302_%s.present", vendorHex),
+	if nodeLabels[fmt.Sprintf("feature.node.kubernetes.io/pci-%s.present", vendorHex)] == "true" {
+		return true
 	}
-	for _, k := range keys {
-		if nodeLabels[k] == "true" {
+	for _, class := range nfdGPUClasses {
+		if nodeLabels[fmt.Sprintf("feature.node.kubernetes.io/pci-%s_%s.present", class, vendorHex)] == "true" {
 			return true
 		}
 	}
@@ -1800,7 +1811,7 @@ type lastWrite struct {
 	at      time.Time
 }
 
-const rewriteInterval = 5 * time.Minute
+const rewriteInterval = joulie.StatusRewriteInterval
 
 // shouldWrite reports whether payload differs from what was last written
 // under key, or the last write is older than rewriteInterval. It records the

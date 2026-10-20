@@ -110,6 +110,8 @@ In this example:
 - GPU is expressed as both percentage and resolved absolute watts per GPU.
 - The agent applies the absolute GPU cap when present and falls back to percentage only when absolute watts are not provided.
 
+Besides the twin's numbers, the controller manager writes `status.conditions`: the condition `AgentReporting` is `True` (reason `NodeHardwareCurrent`) while an agent publishes the node's `NodeHardware`, and `False` when none has (`NoNodeHardware`) or its last write is more than 15 minutes old (`NodeHardwareStale`). The policy plans a managed node either way; `False` says the caps in `spec` are not enforced. `kubectl get nodetwins` shows it in the `Agent` column.
+
 ## Governor policy
 
 A governor decides how eagerly a CPU or GPU raises its clocks. It saves less than a cap and slows work less. Joulie sets one vendor-neutral preset per component, which the agent maps to the node's native settings. The preset follows the profile the node runs at, so a draining node keeps the performance presets, as it keeps the performance caps. Pod classes (`joulie.io/workload-class`) only steer placement.

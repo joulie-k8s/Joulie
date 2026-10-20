@@ -19,12 +19,7 @@ spec:
       nodeSelector:
         joulie.io/managed: "true"
       tolerations:
-        - effect: NoSchedule
-          key: nvidia.com/gpu
-          operator: Exists
-        - effect: NoSchedule
-          key: amd.com/gpu
-          operator: Exists
+        - operator: Exists
       containers:
         - name: agent
           image: "registry.cern.ch/joulie/joulie-agent:latest"

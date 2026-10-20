@@ -9,7 +9,7 @@ The end-to-end test of the [simulated cluster](../../website/content/en/docs/sim
 | `e2e_test.go` | `TestSimclusterE2E`, the end-to-end test, behind the `simcluster` build tag |
 | `*_test.go` (others) | its helpers, and the harness's own tests (`TestE2E*`, and the specs, scripts and manifests checks), which need no cluster |
 | `known_defects_test.go` | the known-defect registry (below) |
-| `specs/` | cluster specs: `smoke.yaml` (8 Nodes), `medium.yaml` (50), `profiles.yaml` (one Node of every builtin profile), `policy.yaml` and `nightly.yaml` for the scenarios, `governor.yaml` for experiment 05. Every GPU pool sets its `toolDelivery` in `spec.harness`: a pool left out follows the Joulie install, which delivers no GPU tools by default |
+| `specs/` | cluster specs: `smoke.yaml` (9 Nodes), `medium.yaml` (50), `profiles.yaml` (one Node of every builtin profile), `policy.yaml` and `nightly.yaml` for the scenarios, `governor.yaml` for experiment 05. Every GPU pool sets its `toolDelivery` in `spec.harness`: a pool left out follows the Joulie install, which delivers no GPU tools by default |
 | `smoke-values.yaml` | the Joulie values of the smoke run |
 | `scenarios/` | the [workload scenario](../../website/content/en/docs/simulator/scenarios.md) library |
 
@@ -39,7 +39,7 @@ Each check is one entry under `assertions` in the run's `summary.json`.
 | E08 | each NodeTwin's measured power is the truth, or `prometheus-no-data` where nothing measures |
 | E09, E10 | lowering the CPU and GPU caps from 80 % to 50 % lowers the enforced limits (RAPL, NVIDIA GPUs whole or shared, and AMD GPUs; a GPU cap never below the published minimum) and the NodeTwins' measured power (RAPL, DVFS, NVIDIA) |
 | E11 | the control status of each hardware family |
-| E12 | D15, below |
+| E12 | every managed Node's NodeTwin reports `AgentReporting`: `True` where an agent runs, a Node with a taint of its own included, since the agent tolerates every taint (D15); `False` with reason `NoNodeHardware` where none does (the smoke spec's arm64 Node, as the images are built for amd64 only), which keeps its planned cap, no NodeHardware, no `controlStatus` and its uncapped limits |
 | E13 | the extender filters and scores a real pod, on the host network in the `hostnet` extender variant and off it, reached through its Service, in the `service` one |
 | E14 | a forced extender reload rolls out; an agent reload with an unchanged binary does nothing |
 | E15 | `status.sh` exits 0 |
@@ -56,11 +56,9 @@ GS01 to GS04 skip unless the deployed controller manager runs with `GOVERNOR_CON
 
 A defect the run reproduces today, and that waits for a fix or a decision, is registered in `known_defects_test.go`. Its check asserts the defect's observation, so the run stays green while the defect lasts, and `summary.json` lists it under `knownDefects`. The day it no longer reproduces, the run fails with "remove it from tests/simcluster/known_defects_test.go": the fix has landed, and the check must assert the fixed behaviour instead.
 
-| ID | Check | Observation | Changes with |
-|----|-------|-------------|--------------|
-| D15 | E12 | A managed Node the agent DaemonSet does not reach (here an untolerated taint) gets a NodeTwin with a cap, but no NodeHardware and no `controlStatus`, and its hardware keeps the uncapped limit: the cap is planned, never enforced. | tolerating every taint, or the controller manager planning only Nodes that run an agent |
+No defect is registered today.
 
-The defects that reach users are also listed on the user pages: [GPU known limitations](../../website/content/en/docs/hardware/gpus.md#known-limitations) and the `agent.tolerations` row of the [configuration reference](../../website/content/en/docs/getting-started/05-configuration-reference.md#agent-chart-values).
+The limitations that reach users are listed on the user pages: [GPU known limitations](../../website/content/en/docs/hardware/gpus.md#known-limitations) and [Managed nodes without an agent](../../website/content/en/docs/getting-started/05-configuration-reference.md#managed-nodes-without-an-agent) in the configuration reference.
 
 ## Scenario library checks
 

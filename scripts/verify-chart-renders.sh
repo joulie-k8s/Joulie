@@ -65,8 +65,8 @@ Cases:
   C07                      a host network scheduler extender uses Recreate
   C09                      values/simcluster.yaml pulls only joulie.local
                            images, IfNotPresent
-  C10                      the agent tolerates the GPU vendor taints by
-                           default
+  C10                      the agent tolerates every taint by default; a
+                           list replaces the default, [] renders none
   joulie-simulator         the simulator chart; asserts its ConfigMap volumes
                            are optional, so a bare install starts
   joulie-simulator emulate emulate.enabled with the smoke cluster spec; asserts
@@ -688,25 +688,36 @@ if render simcluster "${CHART}" -f "${REPO_ROOT}/values/simcluster.yaml" -f "${E
 fi
 
 # --------------------------------------------------------------------------
-# C10: the agent tolerates the GPU vendor taints by default (D15), so GPU
-# nodes tainted nvidia.com/gpu or amd.com/gpu:NoSchedule get an agent, and
-# an empty list renders no tolerations.
+# C10: the agent tolerates every taint by default (D15), so every node its
+# nodeSelector picks, a tainted one included, gets an agent; a list replaces
+# the default rather than adding to it, and an empty list renders no
+# tolerations.
 # --------------------------------------------------------------------------
-case_start "C10 agent DaemonSet tolerates the GPU taints by default"
+case_start "C10 agent DaemonSet tolerates every taint by default"
+# c10_tolerations <slug>: the tolerations block of the agent DaemonSet.
+c10_tolerations() {
+	doc "$1" DaemonSet joulie-agent | awk '/^      tolerations:$/ { on=1; print; next } on == 1 && /^        / { print; next } { on=0 }'
+}
+# c10_expect <slug> <want>: the block equals want.
+c10_expect() {
+	local got
+	got="$(c10_tolerations "$1")"
+	if [ "${got}" != "$2" ]; then
+		fail "DaemonSet/joulie-agent ($1): tolerations differ (- want, + got)"
+		diff -u <(printf '%s\n' "$2") <(printf '%s\n' "${got}") | sed 's/^/    /' >&2
+	fi
+}
 C10_WANT='      tolerations:
+        - operator: Exists'
+for slug in daemonset-defaults daemonset-joulie-values; do
+	c10_expect "${slug}" "${C10_WANT}"
+done
+if render daemonset-tolerations-list "${CHART}" --set-json 'agent.tolerations=[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]'; then
+	c10_expect daemonset-tolerations-list '      tolerations:
         - effect: NoSchedule
           key: nvidia.com/gpu
-          operator: Exists
-        - effect: NoSchedule
-          key: amd.com/gpu
           operator: Exists'
-for slug in daemonset-defaults daemonset-joulie-values; do
-	got="$(doc "${slug}" DaemonSet joulie-agent | awk '/^      tolerations:$/ { on=1; print; next } on == 1 && /^        / { print; next } { on=0 }')"
-	if [ "${got}" != "${C10_WANT}" ]; then
-		fail "DaemonSet/joulie-agent (${slug}): tolerations differ (- want, + got)"
-		diff -u <(printf '%s\n' "${C10_WANT}") <(printf '%s\n' "${got}") | sed 's/^/    /' >&2
-	fi
-done
+fi
 if render daemonset-notolerations "${CHART}" --set-json 'agent.tolerations=[]'; then
 	assert_doc daemonset-notolerations lacks DaemonSet joulie-agent 'tolerations:' "no tolerations when the list is empty"
 fi

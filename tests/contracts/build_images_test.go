@@ -2,6 +2,10 @@ package contracts_test
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -118,10 +122,14 @@ func TestGolangImagesAreTheGoModToolchain(t *testing.T) {
 	}
 }
 
-func TestImageBasesArePinnedByDigest(t *testing.T) {
-	root := repoRoot(t)
-	// The simulated cluster builds its images on this base, at the paths the
-	// release images use, so it must be the release base too.
+// imageRef is a base image reference and where the repository names it.
+type imageRef struct{ where, image string }
+
+// simDistrolessBase returns DISTROLESS_STATIC of scripts/simcluster/versions.env:
+// the simulated cluster builds its images on this base, at the paths the
+// release images use, so it must be the release base too.
+func simDistrolessBase(t *testing.T, root string) string {
+	t.Helper()
 	var simBase string
 	lines(t, root, "scripts/simcluster/versions.env", func(_ int, line string) {
 		if v, ok := strings.CutPrefix(line, "DISTROLESS_STATIC="); ok {
@@ -131,9 +139,14 @@ func TestImageBasesArePinnedByDigest(t *testing.T) {
 	if simBase == "" {
 		t.Fatal("scripts/simcluster/versions.env sets no DISTROLESS_STATIC")
 	}
+	return simBase
+}
 
-	type ref struct{ where, image string }
-	var refs []ref
+// baseImageRefs returns every base image of the Dockerfiles (stage names
+// left out) and of the Dagger module.
+func baseImageRefs(t *testing.T, root string) []imageRef {
+	t.Helper()
+	var refs []imageRef
 	dockerfiles := 0
 	for _, rel := range repoTextFiles(t, root) {
 		if !isDockerfile(filepath.Base(rel)) {
@@ -147,7 +160,7 @@ func TestImageBasesArePinnedByDigest(t *testing.T) {
 				return
 			}
 			if !stages[strings.ToLower(m[1])] {
-				refs = append(refs, ref{rel + ":" + strconv.Itoa(n), m[1]})
+				refs = append(refs, imageRef{rel + ":" + strconv.Itoa(n), m[1]})
 			}
 			if m[2] != "" {
 				stages[strings.ToLower(m[2])] = true
@@ -159,12 +172,17 @@ func TestImageBasesArePinnedByDigest(t *testing.T) {
 	}
 	lines(t, root, daggerModule, func(n int, line string) {
 		for _, m := range daggerRefRE.FindAllStringSubmatch(line, -1) {
-			refs = append(refs, ref{daggerModule + ":" + strconv.Itoa(n), m[1]})
+			refs = append(refs, imageRef{daggerModule + ":" + strconv.Itoa(n), m[1]})
 		}
 	})
+	return refs
+}
 
+func TestImageBasesArePinnedByDigest(t *testing.T) {
+	root := repoRoot(t)
+	simBase := simDistrolessBase(t, root)
 	golang := map[string]string{}
-	for _, r := range refs {
+	for _, r := range baseImageRefs(t, root) {
 		if !digestRE.MatchString(r.image) {
 			t.Errorf("%s: base image %s has no digest; name it as <image>:<tag>@sha256:<digest> (docker buildx imagetools inspect <image>:<tag>)", r.where, r.image)
 		}
@@ -177,5 +195,72 @@ func TestImageBasesArePinnedByDigest(t *testing.T) {
 	}
 	if len(golang) > 1 {
 		t.Errorf("the golang builder differs between files: %v", golang)
+	}
+}
+
+// imageIndexDir holds the raw multi-arch index of every pinned base image
+// digest, as the registry serves it, named sha256-<hex>.json. The file's
+// sha256 is the digest, so the index the build pulls is the one checked
+// here, with no registry access.
+const imageIndexDir = "tests/contracts/testdata/image-indexes"
+
+// releasePlatforms are the platforms of every image the release workflow
+// publishes; each base image must provide all of them.
+var releasePlatforms = []string{"linux/amd64", "linux/arm64"}
+
+// TestImageBasesAreMultiArchIndexes checks that every pinned base image
+// (the Dockerfiles, the Dagger module and DISTROLESS_STATIC) names a
+// multi-arch index, not the manifest of one platform, and that the index
+// lists every release platform: a single-platform digest would build an
+// image of another architecture, or fail, for the other platforms.
+func TestImageBasesAreMultiArchIndexes(t *testing.T) {
+	root := repoRoot(t)
+	refs := append(baseImageRefs(t, root), imageRef{"scripts/simcluster/versions.env DISTROLESS_STATIC", simDistrolessBase(t, root)})
+	checked := map[string]bool{}
+	for _, r := range refs {
+		image, digest, ok := strings.Cut(r.image, "@sha256:")
+		if !ok || checked[digest] {
+			continue // a missing digest is TestImageBasesArePinnedByDigest's to report
+		}
+		checked[digest] = true
+		save := fmt.Sprintf("docker buildx imagetools inspect --raw %s@sha256:%s > %s/sha256-%s.json", image, digest, imageIndexDir, digest)
+		raw, err := os.ReadFile(filepath.Join(root, imageIndexDir, "sha256-"+digest+".json"))
+		if err != nil {
+			t.Errorf("%s: no saved index for %s; save it with %s", r.where, r.image, save)
+			continue
+		}
+		if sum := sha256.Sum256(raw); hex.EncodeToString(sum[:]) != digest {
+			t.Errorf("%s: %s/sha256-%s.json hashes to sha256:%x, not its name; save it again, unmodified, with %s", r.where, imageIndexDir, digest, sum, save)
+			continue
+		}
+		var index struct {
+			MediaType string `json:"mediaType"`
+			Manifests []struct {
+				Platform struct {
+					OS           string `json:"os"`
+					Architecture string `json:"architecture"`
+				} `json:"platform"`
+			} `json:"manifests"`
+		}
+		if err := json.Unmarshal(raw, &index); err != nil {
+			t.Errorf("%s: the saved index of %s: %v", r.where, r.image, err)
+			continue
+		}
+		if index.MediaType != "application/vnd.oci.image.index.v1+json" && index.MediaType != "application/vnd.docker.distribution.manifest.list.v2+json" {
+			t.Errorf("%s: %s is a %q, not a multi-arch index; pin the digest of the tag's index (docker buildx imagetools inspect %s)", r.where, r.image, index.MediaType, image)
+			continue
+		}
+		have := map[string]bool{}
+		for _, m := range index.Manifests {
+			have[m.Platform.OS+"/"+m.Platform.Architecture] = true
+		}
+		for _, p := range releasePlatforms {
+			if !have[p] {
+				t.Errorf("%s: the index %s has no %s image", r.where, r.image, p)
+			}
+		}
+	}
+	if len(checked) < 2 {
+		t.Fatalf("checked %d base image digests, want at least the golang builder and the distroless base", len(checked))
 	}
 }

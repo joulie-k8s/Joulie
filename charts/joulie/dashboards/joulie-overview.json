@@ -303,7 +303,7 @@
           "custom": { "fillOpacity": 50 }
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 37 },
       "id": 12,
       "title": "Reconcile Errors (rate/5m)",
       "type": "timeseries",
@@ -322,7 +322,7 @@
           "custom": { "fillOpacity": 20 }
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 37 },
       "id": 13,
       "title": "Avg CPU Max Freq (MHz)",
       "type": "timeseries",
@@ -330,6 +330,26 @@
         {
           "expr": "avg by (node) (joulie_dvfs_cpu_max_freq_khz{node=~\"$node\"}) / 1000",
           "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Managed nodes whose NodeTwin reports AgentReporting False (joulie_twin_nodes_agent_reporting), by reason: the caps planned there are not enforced. The nodes are the NodeTwins with that condition.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "fillOpacity": 50 }
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 37 },
+      "id": 36,
+      "title": "Managed nodes without a reporting agent",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (reason) (joulie_twin_nodes_agent_reporting{status=\"false\"})",
+          "legendFormat": "{{reason}}"
         }
       ]
     },

@@ -294,6 +294,7 @@ func registerMetrics(reg prometheus.Registerer) {
 	reg.MustRegister(policyNodeProfileLabel.collectors()...)
 	reg.MustRegister(policyStateTransitions.collectors()...)
 	reg.MustRegister(policyFamilyNodes, policyFamilyPerformanceNodes)
+	reg.MustRegister(twinNodesAgentReporting)
 	reg.MustRegister(inputMetricCollectors()...)
 }
 
@@ -399,6 +400,7 @@ func reconcileWithCatalog(
 	if len(eligible) == 0 {
 		log.Printf("no eligible nodes matched selector=%q", selector.String())
 		recordFamilySplit(nil, nil) // no families left, so no stale split either
+		recordAgentReporting(nil)
 		return nil
 	}
 
@@ -525,6 +527,7 @@ func reconcileWithCatalog(
 		}
 	}
 
+	var agentConditions []metav1.Condition
 	for _, a := range plan {
 		if err := upsertNodeTwinSpec(ctx, dyn, a); err != nil {
 			return err
@@ -541,13 +544,18 @@ func reconcileWithCatalog(
 			gpuPct = *a.GPU.CapPctOfMax
 		}
 		topo := nodeTopologyFor(a.NodeName, nodeRack[a.NodeName], nodeZone[a.NodeName], rackPowerEstimates, facility)
-		if err := reconcileNodeTwin(ctx, reader, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo); err != nil {
+		agent, err := reconcileNodeTwin(ctx, reader, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo)
+		if err != nil {
 			log.Printf("warning: reconcileNodeTwin %s: %v", a.NodeName, err)
+		}
+		if agent != nil {
+			agentConditions = append(agentConditions, *agent)
 		}
 		recordNodeStateMetrics(a.NodeName, a.State)
 		recordNodeProfileLabelMetrics(a.NodeName, a.Profile)
 		recordTransitionMetrics(a)
 	}
+	recordAgentReporting(agentConditions)
 
 	log.Printf("assigned profiles policy=%s interval=%s nodes=%d plan=%s", policyType, interval, len(eligible), summarizePlan(plan))
 	return nil

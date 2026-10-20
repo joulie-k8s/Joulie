@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -62,6 +63,11 @@ func TestNodeTwinRoundTrip(t *testing.T) {
 				GPU: &ControlResult{Backend: "nvml", Result: "failed", Message: "no device", UpdatedAt: "2026-01-01T00:00:01Z"},
 			},
 			LastUpdated: "2026-01-01T00:00:02Z",
+			Conditions: []metav1.Condition{{
+				Type: "AgentReporting", Status: metav1.ConditionFalse, Reason: "NoNodeHardware", Message: "no agent",
+				// metav1.Time decodes in the local zone.
+				LastTransitionTime: metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 3, 0, time.UTC).Local()),
+			}},
 		},
 	}
 	u := roundTrip(t, in, &NodeTwin{})
@@ -75,6 +81,7 @@ func TestNodeTwinRoundTrip(t *testing.T) {
 		"status.effectiveCapState.cpuPct", "status.effectiveCapState.gpuPct",
 		"status.estimatedPUE",
 		"status.controlStatus.cpu.backend", "status.controlStatus.gpu.updatedAt", "status.lastUpdated",
+		"status.conditions",
 	} {
 		mustHavePath(t, u, p)
 	}

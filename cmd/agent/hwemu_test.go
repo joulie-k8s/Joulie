@@ -37,11 +37,14 @@ package main
 //   - D7: one CPU cap has two meanings: applyRAPLPackageCap writes it to each
 //     package, while the DVFS fallback (dvfs.Controller.Reconcile) compares
 //     it with the node total.
-//   - D8: hasNFDGPUVendor ignores the NFD accelerator class pci-1200_<vendor>.
-//     Its other half is fixed: the GPU model was read from amd.com/gpu.product
-//     while the AMD labeller publishes amd.com/gpu.product-name, so an AMD
-//     node took the family code as its model; gpu_label_regression_test.go
-//     guards it.
+//   - D8 (fixed): hasNFDGPUVendor read the display classes 0300 and 0302
+//     only, so an MI300X, a processing accelerator labelled pci-1200_1002,
+//     got its vendor from a probe, and a node without the tools none. It
+//     reads every class a GPU driver binds (nfdGPUClasses: 0300, 0302, 0380,
+//     1200) for every vendor; A02, A05b and TestD8GPUVendorFromEveryNFDGPUClass
+//     guard it. The GPU model was read from amd.com/gpu.product while the
+//     AMD labeller publishes amd.com/gpu.product-name, so an AMD node took
+//     the family code as its model; gpu_label_regression_test.go guards it.
 //   - D9: discoverCPUVendor reads NFD labels only. Without NFD the vendor is
 //     empty, so applyRAPLPackageCap skips RAPL, while NodeHardware still
 //     publishes the RAPL capRange and controlAvailable.
@@ -61,8 +64,15 @@ package main
 //     public source. Fixed in pkg/hwinv/assets/hardware.yaml, which now names
 //     the source of each value or says that none is published; its regression
 //     tests are in pkg/hwinv/catalog_test.go.
-//   - D15: the agent DaemonSet has no tolerations and an amd64-only image, so
-//     a tainted or arm64 node runs no agent.
+//   - D15 (fixed): the agent DaemonSet tolerated the GPU vendor taints only
+//     and its images were amd64 only, so a tainted or arm64 managed node ran
+//     no agent while the controller manager planned it, and nothing said
+//     so. The agent tolerates every taint (agent.tolerations), every image
+//     is built for linux/amd64 and linux/arm64, and the NodeTwin of a
+//     managed node without an agent reports AgentReporting False; C10 of
+//     scripts/verify-chart-renders.sh, TestReleaseImagesAreMultiArch,
+//     TestImageBasesAreMultiArchIndexes, TestD15ManagedNodeWithoutAnAgentIsReported
+//     and E12 guard it.
 //   - D16: listNvidiaDevices parses nvidia-smi's [N/A] limits as 0 W, so the
 //     cap range is unknown and a percent cap cannot be resolved.
 //   - D18 (fixed): allocatableGPUCount counted only <vendor>/gpu resources,
@@ -80,10 +90,10 @@ package main
 //     FirstOrderToward instead of its own copies (D13).
 //   - F3: AMD caps through the amdgpu hwmon files, each write read back
 //     (D1 to D4, fixed), and nvidia-smi's [N/A] read as unknown (D16).
-//   - F4: labels, vendor and zones: the NFD accelerator class, the labeller's
-//     keys, the vendor from cpuinfo without NFD, a fallback when RAPL is
-//     locked, and zone selection that leaves out psys and MMIO and splits a
-//     socket cap between dies (D8 to D11).
+//   - F4: labels, vendor and zones: the NFD accelerator class and the
+//     labeller's keys (D8, fixed), the vendor from cpuinfo without NFD, a
+//     fallback when RAPL is locked, and zone selection that leaves out psys
+//     and MMIO and splits a socket cap between dies (D9 to D11).
 //   - F5: the controller manager's node power query (D12).
 //
 // Open: hwemu renders a secondary die with the full cap attributes and
@@ -303,7 +313,7 @@ var a02Paths = map[string]a02Path{
 	},
 	"amd-instinct-mi300x-8gpu": {
 		cpuVendor: "AuthenticAMD", cpuSockets: 2, cpuDriverFamily: "acpi-cpufreq", cpuControl: true, cpuModel: "AMD_EPYC_9654",
-		gpuVendor: "amd", gpuCount: 8, gpuCapMinW: 0, gpuCapMaxW: 750, gpuControl: true, gpuModel: "AMD_INSTINCT_MI300X", gpuVendorFrom: rocmProductProbe,
+		gpuVendor: "amd", gpuCount: 8, gpuCapMinW: 0, gpuCapMaxW: 750, gpuControl: true, gpuModel: "AMD_INSTINCT_MI300X", gpuVendorFrom: amdAcceleratorNFD,
 		energyZones: a02Packages,
 	},
 	"amd-radeon-pro-w7900-4gpu": {
@@ -331,8 +341,9 @@ var a02Paths = map[string]a02Path{
 // NFD 0302 label; MI300X and W7900 count their GPUs from the amdgpu hwmon
 // devices and publish their cap range from them with control, 0 to 750 W
 // and the pinned 241 to 241 W, and run no rocm-smi cap command; the MI300X
-// gets its vendor from rocm-smi --showproductname (D8), the W7900 from the
-// NFD display-class label pci-0300_1002; the VM reads one socket per vCPU
+// gets its vendor from the NFD accelerator-class label pci-1200_1002 (D8),
+// the W7900 from the display-class label pci-0300_1002, and neither runs a
+// probe; the VM reads one socket per vCPU
 // and has no control. Every CPU and GPU model string matches its hardware
 // catalog entry, except the VM's CPU, the 9282 and the 6787P, which the
 // catalog does not list. amdgpu sysfs names no product, so the AMD GPU model
@@ -478,23 +489,16 @@ func checkA02Path(t *testing.T, e *emulatedNode, node *corev1.Node, hw HardwareI
 			t.Errorf("without dev/nvidiactl %s ran, so the agent did not take the vendor from %s; commands: %v",
 				nvidiaListProbe, nvidiaPCILabel, e.runner.commands())
 		}
-	case amdDisplayNFD:
-		// The display-class label answers detectGPUVendor before any probe
-		// runs.
-		if node.Labels[amdDisplayNFD] != "true" {
-			t.Errorf("node has no %s label: %v", amdDisplayNFD, node.Labels)
+	case amdDisplayNFD, amdAcceleratorNFD:
+		// The display-class or accelerator-class label answers
+		// detectGPUVendor before any probe runs.
+		if node.Labels[want.gpuVendorFrom] != "true" {
+			t.Errorf("node has no %s label: %v", want.gpuVendorFrom, node.Labels)
 		}
 		for _, probe := range []string{nvidiaListProbe, rocmProductProbe} {
 			if ran, _ := e.runner.ran(probe); ran {
-				t.Errorf("%s ran, so the vendor did not come from %s; commands: %v", probe, amdDisplayNFD, e.runner.commands())
+				t.Errorf("%s ran, so the vendor did not come from %s; commands: %v", probe, want.gpuVendorFrom, e.runner.commands())
 			}
-		}
-		checkA02AMDInventory(t, e, hw, want)
-	case rocmProductProbe:
-		ranList, listOK := e.runner.ran(nvidiaListProbe)
-		ranProbe, probeOK := e.runner.ran(rocmProductProbe)
-		if !ranList || listOK || !ranProbe || !probeOK {
-			t.Errorf("want %s to fail and %s to succeed; commands: %v", nvidiaListProbe, rocmProductProbe, e.runner.commands())
 		}
 		checkA02AMDInventory(t, e, hw, want)
 	}
@@ -931,25 +935,27 @@ func TestHwemuA05NvidiaCapReachesEveryGPU(t *testing.T) {
 	}
 }
 
-// A05b: on the MI300X node, the agent finds the vendor only through
-// rocm-smi --showproductname, because it ignores the NFD accelerator-class
-// label pci-1200_1002 (D8). The model comes from the labeller's
+// A05b: on the MI300X node, the agent takes the AMD vendor from the NFD
+// accelerator-class label pci-1200_1002 and runs no probe, nvidia-smi -L or
+// rocm-smi --showproductname (D8). The model comes from the labeller's
 // amd.com/gpu.product-name, not from a VBIOS segment, and a 500 W cap runs
-// no rocm-smi command but the probe.
-func TestHwemuA05bAMDVendorComesFromRocmSMI(t *testing.T) {
+// no AMD tool.
+func TestHwemuA05bAMDVendorComesFromTheAcceleratorClassLabel(t *testing.T) {
 	_, tree, p := hwemutest.NewNode(t, "amd-instinct-mi300x-8gpu", nil)
 	e := useEmulatedNode(t, tree, nil)
 	node := e.nodeObject(p)
-	if node.Labels[amdAcceleratorNFD] != "true" {
-		t.Fatalf("the node has no %s label, so this test proves nothing about it: %v", amdAcceleratorNFD, node.Labels)
-	}
-	if hasNFDGPUVendor(node.Labels, "1002") {
-		t.Fatalf("the agent now reads an AMD vendor from the node labels; it ignored %s before (D8). Update this test with the fix", amdAcceleratorNFD)
+	if node.Labels[amdAcceleratorNFD] != "true" || node.Labels[amdDisplayNFD] != "" {
+		t.Fatalf("labels %v: want %s and not %s, or this test proves nothing about the accelerator class", node.Labels, amdAcceleratorNFD, amdDisplayNFD)
 	}
 
 	hw := discoverHardware(context.Background(), node)
-	if _, ok := e.runner.ran(rocmProductProbe); !ok || hw.GPUVendor != "amd" {
-		t.Fatalf("gpu vendor %q; %s did not decide it; commands: %v (D8)", hw.GPUVendor, rocmProductProbe, e.runner.commands())
+	for _, probe := range []string{nvidiaListProbe, rocmProductProbe} {
+		if ran, _ := e.runner.ran(probe); ran {
+			t.Errorf("%s ran, so the vendor did not come from %s (D8); commands: %v", probe, amdAcceleratorNFD, e.runner.commands())
+		}
+	}
+	if hw.GPUVendor != "amd" || !slices.Equal(hw.GPUVendors, []string{"amd"}) {
+		t.Fatalf("gpu vendor %q, vendors %v; want amd from %s (D8)", hw.GPUVendor, hw.GPUVendors, amdAcceleratorNFD)
 	}
 	if product := node.Labels[amdLabellerProduct]; hw.GPURawModel != product || strings.Contains(p.GPUs.VBIOSVersion.V, hw.GPURawModel) {
 		t.Fatalf("gpu rawModel %q, want the labeller's %s %q, never a segment of the VBIOS version %q (D4)",

@@ -139,6 +139,18 @@ Exported by the controller manager. They show whether the measured inputs (see [
 
 `preset` is `FACILITY_PRESET` (`otel`, `legacy` or `custom`). A facility gauge is absent while its input is unknown, so a stale reading never outlives the poll that lost it. PUE is `(it_power + cooling_power) / it_power`; the overview dashboard's "Twin inputs" row plots it.
 
+## Twin agent coverage
+
+Exported by the controller manager, set every reconcile from the `AgentReporting` condition of each managed node's `NodeTwin` (see [Managed nodes without an agent]({{< relref "/docs/getting-started/05-configuration-reference.md#managed-nodes-without-an-agent" >}})).
+
+- `joulie_twin_nodes_agent_reporting{status,reason}` (gauge)
+  - managed nodes per condition status and reason
+  - `status="true"`, `reason="NodeHardwareCurrent"`: an agent publishes the node's `NodeHardware`
+  - `status="false"`, `reason="NoNodeHardware"` or `"NodeHardwareStale"`: no agent has published it, or its last write is more than 15 minutes old; the caps planned there are not enforced
+  - all three series are set on every reconcile, `0` included, so `sum(joulie_twin_nodes_agent_reporting{status="false"}) > 0` works as an alert from the first reconcile on; a node whose `NodeHardware` could not be read in a reconcile is not counted in it
+
+The gauge has no `node` label; the nodes themselves are the `NodeTwin`s whose condition is `False`. The overview dashboard plots the `false` series in its "Agent: Reliability" row.
+
 ## Scheduler extender metrics
 
 ### Request counters

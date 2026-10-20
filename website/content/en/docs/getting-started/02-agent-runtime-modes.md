@@ -75,7 +75,8 @@ This label defines managed scope for both controller manager and agent by defaul
 Default behavior:
 
 - nodes without `joulie.io/managed=true` are outside controller manager policy scope;
-- no DaemonSet agent pod is scheduled on unlabeled nodes.
+- no DaemonSet agent pod is scheduled on unlabeled nodes;
+- every labelled node gets an agent pod whatever its taints, since the chart's `agent.tolerations` tolerates every taint, and whatever its architecture, `amd64` or `arm64`. A managed node the agent still does not reach reports `AgentReporting` `False` on its `NodeTwin` ([Managed nodes without an agent]({{< relref "/docs/getting-started/05-configuration-reference.md#managed-nodes-without-an-agent" >}})).
 
 Override example (if you need a different scope):
 
@@ -107,7 +108,7 @@ GPU vendor discovery hints:
 - `feature.node.kubernetes.io/pci-10de.present` (NVIDIA)
 - `feature.node.kubernetes.io/pci-1002.present` (AMD)
 - `feature.node.kubernetes.io/pci-8086.present` (Intel)
-- and class-specific forms like `pci-0300_<vendor>.present` / `pci-0302_<vendor>.present`
+- and the class-specific forms `pci-<class>_<vendor>.present`, NFD's default, for the classes GPUs enumerate as: `0300` (VGA), `0302` (3D controller), `0380` (other display controller) and `1200` (processing accelerator, such as an AMD Instinct MI300X)
 
 GPU labels are used for capability detection, and GPU cap intents are enforced when a supported backend is available.
 

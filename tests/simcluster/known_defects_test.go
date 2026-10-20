@@ -27,16 +27,9 @@ type e2eDefect struct {
 	ID, Check, Expected, FlipsWith string
 }
 
-// e2eDefects is the registry.
-var e2eDefects = []e2eDefect{
-	{
-		ID:    "D15",
-		Check: "E12",
-		Expected: "a managed Node the agent DaemonSet does not reach (an untolerated taint) gets a NodeTwin with a cap, " +
-			"but no NodeHardware and no controlStatus, and its hardware keeps the uncapped limit: the cap is planned, not enforced",
-		FlipsWith: "a D15 chart decision: tolerating every taint, or the controller planning only Nodes that run an agent",
-	},
-}
+// e2eDefects is the registry. It is empty while the run reproduces no
+// known defect.
+var e2eDefects = []e2eDefect{}
 
 // e2eDefectByID returns the registered defect id.
 func e2eDefectByID(id string) (e2eDefect, bool) {

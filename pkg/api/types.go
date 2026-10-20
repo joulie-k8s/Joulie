@@ -3,6 +3,8 @@ package api
 import (
 	"strings"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Field manager names recorded in managedFields on every write, so
@@ -211,6 +213,9 @@ type NodeTwinStatus struct {
 	EstimatedPUE  float64        `json:"estimatedPUE,omitempty"`
 	ControlStatus *ControlStatus `json:"controlStatus,omitempty"`
 	LastUpdated   time.Time      `json:"lastUpdated,omitempty"`
+	// Conditions the controller manager writes, such as
+	// ConditionAgentReporting. Empty leaves the stored ones as they are.
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // ControlStatus holds agent feedback on applied controls.
