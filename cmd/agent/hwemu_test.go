@@ -18,7 +18,11 @@ package main
 //   - D2 (fixed): rocm-smi's exit 0 was taken as applied, while rocm-smi
 //     exits 0 when it rejects a set. applyAmdGPUCap reads every write back
 //     and never writes a device whose power1_cap reads 0 (a secondary die);
-//     A06c and TestAMDGPUSysfsInventoryAndWrite guard it.
+//     A06c, A34, A34b and TestAMDGPUSysfsInventoryAndWrite guard it. hwemu
+//     renders a secondary die as the kernel shows it (power1_cap and
+//     power1_cap_default 0, the package's range, every write refused with
+//     EINVAL), and A34 and A34b run the agent over the four MI250X of the
+//     test profile in testdata/hwemu-profiles.
 //   - D3 (fixed): rocm-smi --setpoweroverdrive asked for confirmation above
 //     max(current, default) and read EOF. No tool runs, so a cap above
 //     power1_cap_default is written like any other; A05d guards it.
@@ -104,11 +108,6 @@ package main
 //     socket cap between dies (D8 to D11).
 //   - F5: the controller manager's node power query (D12).
 //
-// Open: hwemu renders a secondary die with the full cap attributes and
-// accepts its writes, while the kernel shows power1_cap 0 there and refuses
-// them. Until hwemu models that, the agent's secondary-die rule is guarded
-// by TestAMDGPUSysfsInventoryAndWrite only.
-//
 // Regenerate the goldens of the generic profiles after reviewing a change:
 //
 //	go test ./cmd/agent/ -run Hwemu -update
@@ -146,7 +145,8 @@ import (
 )
 
 // hwemuGoldenDir holds the published NodeHardware status of each generic
-// profile, generated with -update and never hand edited.
+// profile and of the MI250X test profile (A34), generated with -update and
+// never hand edited.
 const hwemuGoldenDir = "testdata/hwemu"
 
 // A01: every corpus machine with a golden, mapped by hwemu.FromCorpus and
@@ -239,7 +239,7 @@ const (
 	nvidiaPCILabel     = "feature.node.kubernetes.io/pci-0302_10de.present"
 	rocmProductProbe   = "rocm-smi --showproductname"
 	nvidiaListProbe    = "nvidia-smi -L"
-	nvidiaQueryAgent   = "nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits"
+	nvidiaQueryAgent   = "nvidia-smi " + nvidiaInventoryQuery + " --format=csv,noheader,nounits"
 	amdAcceleratorNFD  = "feature.node.kubernetes.io/pci-1200_1002.present"
 	amdLabellerProduct = "amd.com/gpu.product-name"
 	amdDisplayNFD      = "feature.node.kubernetes.io/pci-0300_1002.present"

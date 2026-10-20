@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1009,6 +1010,9 @@ func (n *Node) buildGPUs() error {
 			g.utilFile = n.sfile(file("utilization_gpu_pct"))
 		case "amd":
 			g.limitRaw = int64(math.Round(gs.Limits.DefaultW.V * 1e6))
+			if g.secondary = slices.Contains(gs.SecondaryDies, i); g.secondary {
+				g.limitRaw = 0
+			}
 			if i < len(amd) {
 				file := func(name string) string { return filepath.Join(amd[i], name) }
 				if v, ok := n.readInt(file("power1_cap_min")); ok {
@@ -1022,6 +1026,9 @@ func (n *Node) buildGPUs() error {
 				g.pciBusID = filepath.Base(dev)
 				g.sysfsPath = strings.TrimPrefix(n.relPath(dev), layout.SysDir+"/")
 				h, cur := n.amdgpuCapHandler(g, file("power1_cap"))
+				if g.secondary {
+					h, cur = n.amdgpuSecondaryCapHandler(file("power1_cap"))
+				}
 				n.addAFile(file("power1_cap"), g.id(), h, cur)
 				g.input = n.sfile(file("power1_input"))
 				if g.average = n.sfile(file("power1_average")); g.average != nil {

@@ -84,7 +84,7 @@ func TestS17NvidiaSMIWithoutNVMLExits12(t *testing.T) {
 	for _, lib := range reqNVML.Paths {
 		n.env.RootFS = newRootFS(t, reqLoader.Paths[0], lib)
 		code, stdout, stderr := n.main("", agentNvidiaQuery...)
-		if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "0, 200.00, 400.00, 400.00, 50.00, NVIDIA H100 NVL\n") {
+		if code != 0 || stderr != "" || !strings.HasPrefix(stdout, "0, 200.00, 400.00, 400.00, 50.00, NVIDIA H100 NVL, 400.00\n") {
 			t.Errorf("query with %s = %d, stdout %q, stderr %q; want the S1 answer", lib, code, stdout, stderr)
 		}
 	}

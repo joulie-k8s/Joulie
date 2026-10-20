@@ -39,6 +39,7 @@ If you are new, first read:
 | `NodeHardware` | `status.*` | Agent | discovered hardware facts |
 | `NodeHardware` | `status.cpu.governor`, `status.gpu.governor` | Agent | governor state read without writing, the presets the node accepts, and the baseline the agent restores |
 | `NodeHardware` | `status.cpu.landmarks` | Agent | minimum, nominal and maximum boost frequency from cpufreq |
+| `NodeHardware` | `status.gpu.powerDomains` | Agent | the GPUs that hold a power limit of their own, published only when fewer than `status.gpu.count`; readers use the count when it is absent |
 | `NodeTwin` | `spec.*` | Controller manager (policy) | desired profile, caps, policy name, draining |
 | `NodeTwin` | `spec.cpu.governor`, `spec.gpu.governor` | Controller manager (policy) | governor presets; absent means the agent leaves the governor as it is |
 | `NodeTwin` | `status.controlStatus.*` | Agent | what was applied on the node, per component |

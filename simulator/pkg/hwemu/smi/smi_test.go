@@ -17,12 +17,15 @@ import (
 
 // The agent's GPU commands, verbatim from cmd/agent/main.go: the vendor
 // probes of detectGPUVendor and the inventory query of listNvidiaDevices.
-// rocmShowPowerCap asks rocm-smi for --showpowercap, which no release has.
+// corpusNvidiaQuery is the first six fields of that query, the ones a
+// corpus capture without power.default_limit holds. rocmShowPowerCap asks
+// rocm-smi for --showpowercap, which no release has.
 var (
-	agentNvidiaList  = []string{"nvidia-smi", "-L"}
-	agentNvidiaQuery = []string{"nvidia-smi", "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name", "--format=csv,noheader,nounits"}
-	agentRocmProduct = []string{"rocm-smi", "--showproductname"}
-	rocmShowPowerCap = []string{"rocm-smi", "--showpowercap", "--showproductname", "--json"}
+	agentNvidiaList   = []string{"nvidia-smi", "-L"}
+	agentNvidiaQuery  = []string{"nvidia-smi", "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name,power.default_limit", "--format=csv,noheader,nounits"}
+	corpusNvidiaQuery = []string{"nvidia-smi", "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name", "--format=csv,noheader,nounits"}
+	agentRocmProduct  = []string{"rocm-smi", "--showproductname"}
+	rocmShowPowerCap  = []string{"rocm-smi", "--showpowercap", "--showproductname", "--json"}
 )
 
 // agentNvidiaSet is the call of applyNvidiaGPUCap; rocmSetPowerOverDrive is

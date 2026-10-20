@@ -80,7 +80,7 @@
   },
   "gpu": {
     "capRangePerGpu": {
-      "defaultWatts": 400,
+      "defaultWatts": 310,
       "maxWatts": 400,
       "minWatts": 200
     },

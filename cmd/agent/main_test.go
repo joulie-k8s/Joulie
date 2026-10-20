@@ -877,7 +877,7 @@ func TestApplyGPUIntentHTTP(t *testing.T) {
 	defer func() { commandRunner = old }()
 	commandRunner = fakeCommandRunner{
 		responses: map[string]fakeCommandResult{
-			"nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits": {
+			"nvidia-smi " + nvidiaInventoryQuery + " --format=csv,noheader,nounits": {
 				out: "0, 200, 350, 300, 250, NVIDIA L40S\n",
 			},
 			"nvidia-smi -L": {out: "GPU 0: NVIDIA L40S"},
@@ -1001,9 +1001,9 @@ func TestResolveGPUCapPerDeviceFailsWhenPctNeedsUnknownMax(t *testing.T) {
 	}
 }
 
-// nvidiaInventoryQuery is the agent's NVIDIA inventory command, as the fake
-// command runner keys it.
-const nvidiaInventoryQuery = "nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits"
+// nvidiaInventoryCommand is the agent's NVIDIA inventory command, as the
+// fake command runner keys it.
+const nvidiaInventoryCommand = "nvidia-smi " + nvidiaInventoryQuery + " --format=csv,noheader,nounits"
 
 // A power limit column that is not a finite number of at least 0, whether
 // one of the tokens nvidia-smi prints or anything else, leaves the GPU
@@ -1019,7 +1019,7 @@ func TestListNvidiaDevicesReadsATokenAsNoSettableLimit(t *testing.T) {
 		for col, field := range columns {
 			values := []string{"200.00", "400.00", "350.00"}
 			values[col] = token
-			commandRunner = fakeCommandRunner{responses: map[string]fakeCommandResult{nvidiaInventoryQuery: {
+			commandRunner = fakeCommandRunner{responses: map[string]fakeCommandResult{nvidiaInventoryCommand: {
 				out: "0, " + strings.Join(values, ", ") + ", 58.60, NVIDIA H100 NVL\n",
 			}}}
 			devices, err := listNvidiaDevices(context.Background())
@@ -1039,7 +1039,7 @@ func TestListNvidiaDevicesReadsATokenAsNoSettableLimit(t *testing.T) {
 			}
 		}
 	}
-	commandRunner = fakeCommandRunner{responses: map[string]fakeCommandResult{nvidiaInventoryQuery: {
+	commandRunner = fakeCommandRunner{responses: map[string]fakeCommandResult{nvidiaInventoryCommand: {
 		out: "0, 200.00, 400.00, 350.00, [N/A], NVIDIA H100 NVL\n",
 	}}}
 	devices, err := listNvidiaDevices(context.Background())

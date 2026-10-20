@@ -876,7 +876,13 @@ func hwInfoFromObject(nh *v1alpha1.NodeHardware) (string, nodeHWInfo) {
 		info.GPUModel = gpu.Model
 		info.GPUVendor = gpu.Vendor
 		if cr := gpu.CapRangePerGPU; cr != nil {
+			// A pod requests counted GPUs. Where fewer GPUs hold a limit
+			// than are counted (the two dies of an MI250X), a counted GPU
+			// stands for its share of the limits that are held.
 			info.GPUMaxWattsPerGPU = cr.MaxWatts
+			if d := joulie.GPUPowerDomains(gpu.Count, gpu.PowerDomains); d < gpu.Count {
+				info.GPUMaxWattsPerGPU = cr.MaxWatts * float64(d) / float64(gpu.Count)
+			}
 		}
 	}
 

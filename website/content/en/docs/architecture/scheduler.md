@@ -114,7 +114,7 @@ For each candidate node, the extender gathers:
 
 4. **Node hardware** from `NodeHardware.status`:
    - CPU model, total cores, max watts per socket
-   - GPU model, count, max watts per GPU
+   - GPU model, count, max watts per GPU; where `status.gpu.powerDomains` is below the count (the two dies of an MI250X), a counted GPU stands for `maxWatts * powerDomains / count`, the share of the limit that holds it
 
 ### Marginal power estimation
 

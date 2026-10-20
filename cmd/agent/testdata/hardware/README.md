@@ -118,8 +118,12 @@ the same way: the agent reads and caps AMD GPUs through sysfs.
 The captured NVIDIA query is the exact one `cmd/agent/main.go` runs:
 
 ```
-nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits
+nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name,power.default_limit --format=csv,noheader,nounits
 ```
+
+A capture of the first six fields, without `power.default_limit`, replays
+with the default unknown, so `NodeHardware` publishes the maximum as
+`defaultWatts`.
 
 Where the driver gives no value, nvidia-smi prints a bracketed token in its
 place, such as `[N/A]` or `[Not Supported]`; keep it as printed. The validation

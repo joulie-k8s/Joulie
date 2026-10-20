@@ -102,6 +102,9 @@ type NodeHardwareGPU struct {
 	RawModel string `json:"rawModel,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Count    int    `json:"count,omitempty"`
+	// PowerDomains is the number of GPUs that hold a power limit of their
+	// own, 0 when it is Count (GPUPowerDomains).
+	PowerDomains int `json:"powerDomains,omitempty"`
 	// CapRange is per-GPU power cap range (not total for all GPUs).
 	CapRange           GPUCapRange `json:"capRangePerGpu,omitempty"`
 	CurrentCapWatts    float64     `json:"currentCapWatts,omitempty"`

@@ -477,17 +477,18 @@ func renderCorpusExposure(gpu map[string]string, resourceName string, count int,
 var ErrCorpusNoPowerLimit = errors.New("no numeric GPU power limit to emulate")
 
 // renderCorpusNvidia maps the agent's nvidia-smi query output, one line per
-// GPU: index, min limit, max limit, limit, draw, name (listNvidiaDevices in
-// cmd/agent). A bracketed token in a power column, such as [N/A], is what
-// nvidia-smi prints where the driver gives no value: it becomes
-// gpus.fieldSupport, so the emulated tool prints it back, and the physics
-// takes the limit in force, else the maximum, in its place. A capture with
-// neither returns ErrCorpusNoPowerLimit.
+// GPU: index, min limit, max limit, limit, draw, name and, in a capture that
+// has it, the default limit (listNvidiaDevices in cmd/agent). A bracketed
+// token in a power column, such as [N/A], is what nvidia-smi prints where
+// the driver gives no value: it becomes gpus.fieldSupport, so the emulated
+// tool prints it back, and the physics takes the limit in force, else the
+// maximum, in its place. A capture with neither returns
+// ErrCorpusNoPowerLimit.
 func renderCorpusNvidia(p *Profile, text string, labels, gpu map[string]string, src func(string) string) error {
 	type line struct {
-		min, max, limit, draw float64
-		tokens                map[string]string
-		name                  string
+		min, max, limit, draw, def float64
+		tokens                     map[string]string
+		name                       string
 	}
 	fields := []string{"power.min_limit", "power.max_limit", "power.limit", "power.draw"}
 	var lines []line
@@ -510,11 +511,18 @@ func renderCorpusNvidia(p *Profile, text string, labels, gpu map[string]string, 
 			*dst = f
 		}
 		l.name = strings.TrimSpace(strings.Join(parts[5:], ","))
+		if len(parts) >= 7 {
+			// power.default_limit follows name, as the agent reads it; a
+			// token such as [N/A] there is a default the agent reads as
+			// unknown.
+			l.name = strings.TrimSpace(parts[5])
+			l.def, _ = strconv.ParseFloat(strings.TrimSpace(parts[6]), 64)
+		}
 		lines = append(lines, l)
 	}
 	first := lines[0]
 	for _, l := range lines[1:] {
-		if l.min != first.min || l.max != first.max || l.limit != first.limit || l.name != first.name || !maps.Equal(l.tokens, first.tokens) {
+		if l.min != first.min || l.max != first.max || l.limit != first.limit || l.def != first.def || l.name != first.name || !maps.Equal(l.tokens, first.tokens) {
 			return errors.New("nvidia-smi.txt: GPUs differ in limits or product; a profile holds one value for all GPUs")
 		}
 	}
@@ -552,7 +560,16 @@ func renderCorpusNvidia(p *Profile, text string, labels, gpu map[string]string, 
 	}
 	g.Limits.MinW = Fact[float64]{V: first.min, Src: file}
 	g.Limits.MaxW = Fact[float64]{V: first.max, Src: file}
-	g.Limits.DefaultW = Fact[float64]{V: first.limit, Src: "assumed:the capture has no default limit; the current power.limit stands for it"}
+	// The agent publishes the default it reads within the range, and the
+	// maximum for any other, so the maximum stands for a default the
+	// capture does not give.
+	g.Limits.DefaultW = Fact[float64]{V: first.max, Src: "assumed:the capture prints no power.default_limit within the range, and the agent then publishes the maximum"}
+	if first.def > 0 && first.def >= first.min && first.def <= first.max {
+		g.Limits.DefaultW = Fact[float64]{V: first.def, Src: src("nvidia-smi.txt power.default_limit")}
+	}
+	if first.limit != g.Limits.DefaultW.V {
+		g.Limits.CurrentW = Fact[float64]{V: first.limit, Src: file}
+	}
 	if len(first.tokens) > 0 {
 		g.FieldSupport = first.tokens
 	}
