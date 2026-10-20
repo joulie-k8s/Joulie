@@ -104,3 +104,22 @@ func Classify(writeErr error, want, readback string) (result, message string) {
 	}
 	return joulie.GovernorResultError, writeErr.Error()
 }
+
+// ClassifyRun sorts one run of a GPU tool's set command, named command in
+// the message: a run that failed as Classify sorts its error; a run that
+// succeeded is unsupported when a line of its output says "not supported",
+// in any case, and applied otherwise. nvidia-smi reports a setting the GPU
+// does not support as a warning, "Setting locked memory clocks is not
+// supported for GPU <bus id>.", then "Treating as warning and moving on.",
+// and exits 0, so its exit code alone says nothing.
+func ClassifyRun(command string, runErr error, out []byte) (result, message string) {
+	if runErr != nil {
+		return Classify(runErr, "", "")
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(strings.ToLower(line), "not supported") {
+			return joulie.GovernorResultUnsupported, command + ": " + strings.TrimSpace(line)
+		}
+	}
+	return joulie.GovernorResultApplied, ""
+}

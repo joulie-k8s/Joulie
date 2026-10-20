@@ -59,7 +59,7 @@ The emulated nodes of `simulator/pkg/hwemu` render every NVIDIA exposure (`gpus.
 
 ## Agent host backends
 
-- NVIDIA: host backend uses NVIDIA tooling (power-limit set per device).
+- NVIDIA: `nvidia-smi -i <index> -pl <W>` per device, within the `power.min_limit` to `power.max_limit` range the agent's inventory query lists. A GPU whose limits print a token such as `[N/A]` has no settable power limit: it is never written, and its GPU cap ends `blocked`, while the other GPUs of a mixed node are capped ([GPU power cap]({{< relref "/docs/architecture/agent.md#gpu-power-cap" >}})).
 - AMD: the agent reads the cap range and writes the cap through the amdgpu hwmon device of each GPU, `/sys/bus/pci/devices/<pci bus id>/hwmon/hwmon<N>/power1_cap` (with `power1_cap_min` and `power1_cap_max`), as root, and reads every write back; it runs no AMD tool. The range is the driver's, `power1_cap_min` to `power1_cap_max`, so a 100 % cap is `power1_cap_max`; on a Radeon with overdrive on, that is above the board's default limit. The agent never writes a device whose `power1_cap` reads 0, the secondary die of a package whose primary holds the cap, and does not count an amdgpu device without `power1_cap`, such as an APU's integrated GPU. A GPU that is runtime suspended keeps the cap the agent last set ([GPU power cap]({{< relref "/docs/architecture/agent.md#gpu-power-cap" >}})). The NFD labels, `rocm-smi --showproductname` or the amdgpu hwmon devices themselves identify an AMD node.
 
 When capabilities are unavailable/unsupported, status is reported as `blocked` rather than failing the whole reconcile loop.
@@ -92,7 +92,7 @@ NVIDIA GPUs (`nvidia-smi`): every command is `nvidia-smi -i <pci bus id>`, as ro
 
 A memory clock lock also bounds the graphics clock: at a lower memory clock a GPU offers only the lower graphics clocks (`SUPPORTED_CLOCKS` lists them per memory clock), so a lock at a low memory clock also holds the graphics clock at or below that memory clock's ceiling. The emulated GPUs model it (`gpus.clocks.supported.smMaxByMem`), in their power and speed and in `clocks.sm`.
 
-A lock cannot be read back, so the result is `applied-unverified` until busy samples of the clock query show the clocks within it. An operator's own lock is never reset. Application clocks (`-ac`, `-rac`) and `--auto-boost-default` are never used. A GPU older than Ampere has no mapping and gets no governor.
+A lock cannot be read back, so the result is `applied-unverified` until busy samples of the clock query show the clocks within it. A lock the GPU cannot take, such as `-lmc` on a GPU without a run-time memory lock, makes `nvidia-smi` print `... is not supported for GPU <bus id>.` and `Treating as warning and moving on.` and exit 0; the agent reads that output as `unsupported`, never `applied`, records no lock, and resets the locks the same plan set before on that GPU, such as the `-lgc` of `low` on Ada when its `-lmc` is refused. An operator's own lock is never reset. Application clocks (`-ac`, `-rac`) and `--auto-boost-default` are never used. A GPU older than Ampere has no mapping and gets no governor.
 
 No default selects `sustained`: opt a GPU model in through the controller manager's `GPU_GOVERNOR_MODEL_PRESETS_JSON` once a measurement on that model shows the gain. The mappings are tested against emulated GPUs (`simulator/pkg/hwemu` profiles and the fake `nvidia-smi` and `rocm-smi`), not yet on hardware.
 
@@ -113,6 +113,7 @@ Joulie GPU capping is node-level and not a GPU slicing API.
 ## Known limitations
 
 - **Intel GPUs are not capped.** The agent has no Intel GPU backend, so an Intel GPU node runs uncapped ([Shared and partitioned GPUs](#shared-and-partitioned-gpus)).
+- **A GPU node whose GPUs cannot be capped runs uncapped in eco.** Such a node, an Intel GPU node or one whose NVIDIA GPUs print `[N/A]` for their power limits, gets neither a GPU cap nor the eco CPU cap.
 
 Check the GPU control status of every GPU node with:
 

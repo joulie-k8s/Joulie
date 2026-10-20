@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -997,6 +998,106 @@ func TestResolveGPUCapPerDeviceFailsWhenPctNeedsUnknownMax(t *testing.T) {
 	}
 	if !strings.Contains(msg, "cannot resolve capPctOfMax") {
 		t.Fatalf("unexpected msg: %q", msg)
+	}
+}
+
+// nvidiaInventoryQuery is the agent's NVIDIA inventory command, as the fake
+// command runner keys it.
+const nvidiaInventoryQuery = "nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits"
+
+// A power limit column that is not a finite number of at least 0, whether
+// one of the tokens nvidia-smi prints or anything else, leaves the GPU
+// without a settable power limit, named with the column and what it held,
+// and that column at 0; the numbers of the other columns are kept. A token
+// in power.draw alone leaves the limit settable.
+func TestListNvidiaDevicesReadsATokenAsNoSettableLimit(t *testing.T) {
+	old := commandRunner
+	defer func() { commandRunner = old }()
+	columns := []string{"power.min_limit", "power.max_limit", "power.limit"}
+	for _, token := range []string{"[N/A]", "[Not Supported]", "[Requested functionality has been deprecated]",
+		"[Insufficient Permissions]", "[Unknown Error]", "NaN", "Inf", "-1", ""} {
+		for col, field := range columns {
+			values := []string{"200.00", "400.00", "350.00"}
+			values[col] = token
+			commandRunner = fakeCommandRunner{responses: map[string]fakeCommandResult{nvidiaInventoryQuery: {
+				out: "0, " + strings.Join(values, ", ") + ", 58.60, NVIDIA H100 NVL\n",
+			}}}
+			devices, err := listNvidiaDevices(context.Background())
+			if err != nil || len(devices) != 1 {
+				t.Fatalf("%s %q: %d devices, %v", field, token, len(devices), err)
+			}
+			d := devices[0]
+			shown := token
+			if shown == "" {
+				shown = "(empty)"
+			}
+			got := []float64{d.MinCapWatts, d.MaxCapWatts, d.CurrentCapWatts}
+			want := []float64{200, 400, 350}
+			want[col] = 0
+			if d.CapUnsupported != field+" "+shown || !slices.Equal(got, want) || d.PowerWatts != 58.6 {
+				t.Errorf("%s %q: listed %+v; want CapUnsupported %q and the limits %v", field, token, d, field+" "+shown, want)
+			}
+		}
+	}
+	commandRunner = fakeCommandRunner{responses: map[string]fakeCommandResult{nvidiaInventoryQuery: {
+		out: "0, 200.00, 400.00, 350.00, [N/A], NVIDIA H100 NVL\n",
+	}}}
+	devices, err := listNvidiaDevices(context.Background())
+	if err != nil || len(devices) != 1 || devices[0].CapUnsupported != "" || devices[0].MaxCapWatts != 400 || devices[0].PowerWatts != 0 {
+		t.Fatalf("a power.draw token: %+v, %v; want a settable limit and no draw", devices, err)
+	}
+}
+
+// GPUs without a settable power limit are named once per set of tokens, in
+// listing order, the same on every call.
+func TestNvidiaUnsupportedNoteGroupsTheGPUsByToken(t *testing.T) {
+	t.Parallel()
+	got := nvidiaUnsupportedNote([]GPUDevice{
+		{Index: 0, CapUnsupported: "power.limit [N/A]"},
+		{Index: 2, CapUnsupported: "power.min_limit [N/A]"},
+		{Index: 3, CapUnsupported: "power.limit [N/A]"},
+	})
+	const want = "no settable power limit on gpu 0,3: nvidia-smi prints power.limit [N/A]; gpu 2: nvidia-smi prints power.min_limit [N/A]"
+	if got != want {
+		t.Fatalf("note %q, want %q", got, want)
+	}
+}
+
+// nvidia-smi refuses -pl on a GPU whose limit cannot be changed with a
+// warning and exit 0; a GTX 1060 Mobile at driver 555.58.02 lists 1 to 72 W
+// and still refuses. That -pl is an error, not applied.
+func TestApplyNvidiaGPUCapWarningExitZeroIsNotApplied(t *testing.T) {
+	old := commandRunner
+	defer func() { commandRunner = old }()
+	commandRunner = fakeCommandRunner{responses: map[string]fakeCommandResult{
+		"nvidia-smi -i 0 -pl 50": {out: "Changing power management limit is not supported for GPU: 00000000:01:00.0.\nTreating as warning and moving on.\nAll done.\n"},
+	}}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"nvidia.com/gpu.count": "1"}}}
+	inv := &gpuInventory{vendor: "nvidia", devices: []GPUDevice{{Index: 0, Vendor: "nvidia", MinCapWatts: 1, MaxCapWatts: 72, CurrentCapWatts: 72}}}
+	backend, result, msg, _, err := applyGPUIntentFrom(context.Background(), node, &GPUPowerCap{CapWattsPerGPU: float64Ptr(50)}, nil, inv)
+	const want = "nvidia-smi set cap gpu=0: Changing power management limit is not supported for GPU: 00000000:01:00.0."
+	if err != nil || backend != "host-nvidia" || result != "error" || msg != want {
+		t.Fatalf("gpu cap %s, %s, %q, %v; want host-nvidia, error, %q", backend, result, msg, err, want)
+	}
+}
+
+// A -pl that fails on one GPU does not stop the cap of the GPUs after it:
+// every GPU is tried, and the error names each failure.
+func TestApplyNvidiaGPUCapCarriesOnPastAFailingGPU(t *testing.T) {
+	old := commandRunner
+	defer func() { commandRunner = old }()
+	commandRunner = fakeCommandRunner{responses: map[string]fakeCommandResult{
+		"nvidia-smi -i 0 -pl 250": {out: "Failed to set power management limit for GPU 00000000:10:00.0: Insufficient Permissions\n", err: errors.New("exit status 4")},
+		"nvidia-smi -i 1 -pl 250": {out: "Power limit for GPU 00000000:11:00.0 was set to 250.00 W from 400.00 W.\nAll done.\n"},
+		"nvidia-smi -i 2 -pl 250": {out: "Unable to set power limit for GPU 00000000:12:00.0: Unknown Error\n", err: errors.New("exit status 999")},
+	}}
+	devices := make([]GPUDevice, 3)
+	for i := range devices {
+		devices[i] = GPUDevice{Index: i, Vendor: "nvidia", MinCapWatts: 200, MaxCapWatts: 400, CurrentCapWatts: 400}
+	}
+	err := applyNvidiaGPUCap(context.Background(), devices, 250)
+	if err == nil || !strings.Contains(err.Error(), "gpu=0:") || !strings.Contains(err.Error(), "gpu=2:") || strings.Contains(err.Error(), "gpu=1:") {
+		t.Fatalf("applyNvidiaGPUCap: %v; want the failures of gpu 0 and gpu 2, which means gpu 1 and 2 were tried after gpu 0 failed", err)
 	}
 }
 

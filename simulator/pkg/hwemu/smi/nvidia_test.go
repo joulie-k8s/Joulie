@@ -110,7 +110,7 @@ func TestS03UnknownNvidiaOptionExits255OnStdout(t *testing.T) {
 }
 
 // A field the device does not support prints its token literally in the
-// agent's query line, which the agent then parses as 0 (D16).
+// agent's query line, where the agent reads it as no settable power limit.
 func TestS14UnsupportedFieldPrintsItsToken(t *testing.T) {
 	t.Parallel()
 	n := newNVLNode(t)
@@ -128,19 +128,56 @@ func TestS14UnsupportedFieldPrintsItsToken(t *testing.T) {
 	}
 }
 
-// A limit that holds a token is not a number: -pl on that GPU is refused as
-// not supported (exit 3) and writes nothing, where reading the token as 0, as
-// the agent does (D16), would accept any value up to the maximum.
+// A limit that holds a token is not a number, so the GPU has no settable
+// limit: -pl on it prints the warning the real tool prints, moves on, writes
+// nothing and exits 0. Without -i the other GPUs are still set, in GPU
+// order. With --error-on-warning, or -eow, the warning fails the call with
+// exit 3 and nothing written on any GPU.
 func TestS14TokenLimitRefusesPowerLimit(t *testing.T) {
 	t.Parallel()
 	n := newNVLNode(t)
 	n.nvmlGPU(0, map[string]string{"power_min_limit_mw": "[N/A]"})
-	out, err := n.run(agentNvidiaSet(0, 100)...)
-	if code := exitCode(t, err); code != 3 || !strings.Contains(string(out), "not supported for GPU: 00000000:10:00.0") {
-		t.Fatalf("-i 0 -pl 100 with a [N/A] minimum: exit %d, output %q; want 3, not supported", code, out)
+	const warning = "Changing power management limit is not supported for GPU: 00000000:10:00.0.\nTreating as warning and moving on.\n"
+	code, stdout, stderr := n.main("", agentNvidiaSet(0, 300)...)
+	if code != 0 || stdout != warning+"All done.\n" || stderr != "" {
+		t.Fatalf("-i 0 -pl 300 with a [N/A] minimum: exit %d, stdout %q, stderr %q; want 0, the warning and All done", code, stdout, stderr)
 	}
 	if got := n.read(nvmlRel(0, "power_limit_mw")); got != "400000" {
 		t.Fatalf("gpu0 power_limit_mw = %s after a refused -pl, want 400000", got)
+	}
+
+	code, stdout, _ = n.main("", "nvidia-smi", "-pl", "300")
+	var want strings.Builder
+	want.WriteString(warning)
+	for i := 1; i < 8; i++ {
+		fmt.Fprintf(&want, "Power limit for GPU 00000000:%02x:00.0 was set to 300.00 W from 400.00 W.\n", 0x10+i)
+	}
+	want.WriteString("All done.\n")
+	if code != 0 || stdout != want.String() {
+		t.Fatalf("-pl 300 on every GPU: exit %d, stdout %q; want 0 and\n%s", code, stdout, want.String())
+	}
+	for i := 0; i < 8; i++ {
+		want := "300000"
+		if i == 0 {
+			want = "400000"
+		}
+		if got := n.read(nvmlRel(i, "power_limit_mw")); got != want {
+			t.Errorf("after -pl 300: gpu%d power_limit_mw = %s, want %s", i, got, want)
+		}
+	}
+
+	for _, flag := range []string{"--error-on-warning", "-eow"} {
+		m := newNVLNode(t)
+		m.nvmlGPU(0, map[string]string{"power_min_limit_mw": "[N/A]"})
+		code, stdout, _ := m.main("", "nvidia-smi", "-pl", "250", flag)
+		if code != 3 || !strings.HasPrefix(stdout, "Changing power management limit is not supported for GPU: 00000000:10:00.0.\n") {
+			t.Errorf("-pl 250 %s: exit %d, stdout %q; want 3 and the warning", flag, code, stdout)
+		}
+		for i := 0; i < 8; i++ {
+			if got := m.read(nvmlRel(i, "power_limit_mw")); got != "400000" {
+				t.Errorf("after -pl 250 %s: gpu%d power_limit_mw = %s, want 400000", flag, i, got)
+			}
+		}
 	}
 }
 
@@ -459,19 +496,38 @@ func TestNV04ResetClearsTheLock(t *testing.T) {
 }
 
 // NV05: on a GPU whose memory clock has no run-time lock (Hopper), -lmc and
-// -rmc fail with exit 3, say so, and change nothing; where the lock exists
-// -lmc <max>,<max> stores it.
+// -rmc print, per GPU, that the lock is not supported and "Treating as
+// warning and moving on.", then All done, exit 0, and change nothing, as
+// the real tool reports a clock lock it does not support; with
+// --error-on-warning, or -eow, they exit 3. Where the lock exists -lmc
+// <max>,<max> stores it.
 func TestNV05MemoryLockWithoutRuntimeLockFails(t *testing.T) {
 	t.Parallel()
 	n := newNVClockNode(t, false)
-	for _, argv := range [][]string{
-		{"nvidia-smi", "-i", "0", "-lmc", "1200,1200"},
-		{"nvidia-smi", "-lmc", "1200"},
-		{"nvidia-smi", "-i", "0", "-rmc"},
+	warning := func(action string, gpus int) string {
+		var b strings.Builder
+		for i := 0; i < gpus; i++ {
+			fmt.Fprintf(&b, "%s is not supported for GPU 00000000:%02x:00.0.\nTreating as warning and moving on.\n", action, 0x10+i)
+		}
+		return b.String() + "All done.\n"
+	}
+	for _, c := range []struct {
+		argv []string
+		want string
+	}{
+		{[]string{"nvidia-smi", "-i", "0", "-lmc", "1200,1200"}, warning("Setting locked memory clocks", 1)},
+		{[]string{"nvidia-smi", "-lmc", "1200"}, warning("Setting locked memory clocks", 8)},
+		{[]string{"nvidia-smi", "-i", "0", "-rmc"}, warning("Resetting locked memory clocks", 1)},
 	} {
-		code, stdout, stderr := n.main("", argv...)
-		if code != 3 || !strings.Contains(stdout, "is not supported for GPU 00000000:10:00.0") || stderr != "" {
-			t.Errorf("%v: exit %d, stdout %q, stderr %q; want 3 and not supported", argv[1:], code, stdout, stderr)
+		code, stdout, stderr := n.main("", c.argv...)
+		if code != 0 || stdout != c.want || stderr != "" {
+			t.Errorf("%v: exit %d, stdout %q, stderr %q; want 0 and %q", c.argv[1:], code, stdout, stderr, c.want)
+		}
+	}
+	for _, flag := range []string{"--error-on-warning", "-eow"} {
+		code, stdout, _ := n.main("", "nvidia-smi", "-i", "0", "-lmc", "1200,1200", flag)
+		if code != 3 || !strings.HasPrefix(stdout, "Setting locked memory clocks is not supported for GPU 00000000:10:00.0.\n") {
+			t.Errorf("-lmc %s: exit %d, stdout %q; want 3 and the warning", flag, code, stdout)
 		}
 	}
 	for i, got := range n.nvLocks(layout.NVMLLockedMemClocksFile) {
