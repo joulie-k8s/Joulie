@@ -18,8 +18,8 @@ import (
 // fix landed, and the check must then assert the fixed behaviour instead.
 // summary.json lists every defect that reproduced under knownDefects.
 //
-// This follows the characterisation tests of cmd/agent (TestHwemuA16 for
-// D16): they too assert today's wrong behaviour, with the defect named.
+// This follows the characterisation tests of cmd/agent (TestHwemuA13 for
+// D11): they too assert today's wrong behaviour, with the defect named.
 
 // e2eDefect is one registered defect: the check that observes it, what the
 // check sees while the defect lasts, and what will change it.

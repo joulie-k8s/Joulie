@@ -121,6 +121,50 @@ The captured NVIDIA query is the exact one `cmd/agent/main.go` runs:
 nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits
 ```
 
+Where the driver gives no value, nvidia-smi prints a bracketed token in its
+place, such as `[N/A]` or `[Not Supported]`; keep it as printed. The validation
+test accepts any bracketed token in the four power columns, the agent reads one
+in a limit column as a GPU without a settable power limit, and
+`hwemu.FromCorpus` renders it for the emulated tool to print back. A capture
+whose `power.limit` and `power.max_limit` are both tokens, as on a vGPU guest,
+has no limit to emulate: `TestHwemuA01` skips it, and the flat replay still
+checks its golden.
+
+**Wanted: a GPU whose power limit cannot be set.** The corpus has no capture
+with tokens in its limits yet. A vGPU guest, or a GeForce laptop at driver R530
+or later, is the likeliest to print them. Along with the capture, put in the
+pull request the output of these two commands, with `<W>` inside the range the
+GPU lists, or any value when it lists none:
+
+```sh
+sudo nvidia-smi -i 0 -pl <W>; echo $?
+sudo nvidia-smi -i 0 -pl <W> --error-on-warning; echo $?
+```
+
+They settle how nvidia-smi reports a refused limit, and which exit code each
+form returns. If the first one sets the limit, put the captured `power.limit`
+back with `sudo nvidia-smi -i 0 -pl <captured limit>`.
+
+The same goes for the clock locks on a GPU that refuses them, such as `-lmc`
+on a GPU without a run-time memory lock or `-lgc` on one older than Volta.
+With `<min>,<max>` two clocks that `nvidia-smi -q -d SUPPORTED_CLOCKS` lists,
+put in the pull request the output and exit code of:
+
+```sh
+sudo nvidia-smi -i 0 -lgc <min>,<max>; echo $?
+sudo nvidia-smi -i 0 -lgc <min>,<max> --error-on-warning; echo $?
+sudo nvidia-smi -i 0 -lmc <min>,<max>; echo $?
+sudo nvidia-smi -i 0 -lmc <min>,<max> --error-on-warning; echo $?
+```
+
+A lock that is taken stays until reset, so run these afterwards, and add
+their output and exit codes too:
+
+```sh
+sudo nvidia-smi -i 0 -rgc; echo $?
+sudo nvidia-smi -i 0 -rmc; echo $?
+```
+
 `nvidia-smi -L`, which `detectGPUVendor` uses only as a presence probe, is not
 captured: its output is a list of GPU UUIDs and nothing reads it. The stub
 answers it with success whenever the machine has `nvidia-smi.txt`.

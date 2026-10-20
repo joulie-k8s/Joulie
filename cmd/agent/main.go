@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -89,7 +90,10 @@ type HardwareInfo struct {
 	GPUCapKnown     bool
 	GPUControl      bool
 	GPUTelemetry    bool
-	Warnings        []string
+	// GPUWarnings are the warnings of the gpu block other than an
+	// unrecognised model, such as the GPUs without a settable power limit.
+	GPUWarnings []string
+	Warnings    []string
 	// CPULandmarks and Governors are read from cpufreq, amdgpu sysfs and
 	// nvidia-smi without writing anything (governor_discovery.go).
 	CPULandmarks *v1alpha1.CPULandmarks
@@ -186,6 +190,12 @@ type GPUDevice struct {
 	BusID      string
 	HwmonDir   string
 	CapUnknown bool
+	// CapUnsupported is set for an NVIDIA device whose power.min_limit,
+	// power.max_limit or power.limit printed a token instead of a number,
+	// such as [N/A] or [Not Supported]: it has no settable power limit and
+	// is never written. It names each such field with its token, for
+	// messages; the numeric fields behind them stay 0, which means unknown.
+	CapUnsupported string
 }
 
 type GPUTelemetry struct {
@@ -1085,6 +1095,20 @@ func applyGPUIntentFrom(
 		return "none", "blocked", "no GPU devices discovered", map[string]any{"vendor": vendor}, nil
 	}
 	resolveFrom := devices
+	// An NVIDIA GPU without a settable power limit is never written, whether
+	// the cap is absolute or a percentage: the cap is resolved against and
+	// written to the others, and the note names the GPUs left out.
+	skippedNote := ""
+	if vendor == "nvidia" {
+		settable, unsupported := nvidiaCapSets(devices)
+		if len(unsupported) > 0 {
+			skippedNote = nvidiaUnsupportedNote(unsupported)
+		}
+		if len(settable) == 0 {
+			return "none", "blocked", skippedNote, map[string]any{"vendor": vendor, "deviceCount": len(devices)}, nil
+		}
+		devices, resolveFrom = settable, settable
+	}
 	if vendor == "amd" {
 		devices, resolveFrom = amdgpuCapSets(devices)
 		if len(devices) == 0 {
@@ -1111,10 +1135,14 @@ func applyGPUIntentFrom(
 
 	switch vendor {
 	case "nvidia":
+		result, msg := "applied", fmt.Sprintf("applied gpu cap %.1fW on %d devices", capPerGPU, len(devices))
 		if err := applyNvidiaGPUCap(ctx, devices, capPerGPU); err != nil {
-			return "host-nvidia", "error", err.Error(), observed, nil
+			result, msg = "error", err.Error()
 		}
-		return "host-nvidia", "applied", fmt.Sprintf("applied gpu cap %.1fW on %d devices", capPerGPU, len(devices)), observed, nil
+		if skippedNote != "" {
+			msg += "; " + skippedNote
+		}
+		return "host-nvidia", result, msg, observed, nil
 	case "amd":
 		if err := applyAmdGPUCap(devices, capPerGPU); err != nil {
 			return "host-amd", "error", err.Error(), observed, nil
@@ -1237,40 +1265,114 @@ func listNvidiaDevices(ctx context.Context) ([]GPUDevice, error) {
 			continue
 		}
 		idx, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
-		minW, _ := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-		maxW, _ := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
-		curCap, _ := strconv.ParseFloat(strings.TrimSpace(parts[3]), 64)
-		pwr, _ := strconv.ParseFloat(strings.TrimSpace(parts[4]), 64)
-		name := strings.TrimSpace(parts[5])
-		devices = append(devices, GPUDevice{
-			Index:           idx,
-			Vendor:          "nvidia",
-			Product:         name,
-			PowerWatts:      pwr,
-			CurrentCapWatts: curCap,
-			MinCapWatts:     minW,
-			MaxCapWatts:     maxW,
-		})
+		d := GPUDevice{Index: idx, Vendor: "nvidia", Product: strings.TrimSpace(parts[5])}
+		limits := []struct {
+			field string
+			dst   *float64
+		}{
+			{"power.min_limit", &d.MinCapWatts},
+			{"power.max_limit", &d.MaxCapWatts},
+			{"power.limit", &d.CurrentCapWatts},
+		}
+		var tokens []string
+		for i, l := range limits {
+			v, ok := nvidiaWatts(parts[i+1])
+			if ok {
+				*l.dst = v
+				continue
+			}
+			token := parts[i+1]
+			if token == "" {
+				token = "(empty)"
+			}
+			tokens = append(tokens, l.field+" "+token)
+		}
+		// A token in power.draw leaves the draw at 0 and the limit settable.
+		d.PowerWatts, _ = nvidiaWatts(parts[4])
+		d.CapUnsupported = strings.Join(tokens, ", ")
+		devices = append(devices, d)
 	}
 	return devices, nil
+}
+
+// nvidiaWatts reads one watts column of the inventory query. nvidia-smi
+// prints a token in place of a value the driver does not give: [N/A],
+// [Not Supported], [Requested functionality has been deprecated],
+// [Insufficient Permissions], [Unknown Error]. That, and anything else that
+// is not a finite number of at least 0, is not a value.
+func nvidiaWatts(s string) (float64, bool) {
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+// nvidiaCapSets splits an NVIDIA inventory for a cap: settable is every
+// device with a settable power limit, which the cap is resolved against and
+// written to, and the published range comes from; unsupported is the
+// others, which are never written.
+func nvidiaCapSets(devices []GPUDevice) (settable, unsupported []GPUDevice) {
+	for _, d := range devices {
+		if d.CapUnsupported != "" {
+			unsupported = append(unsupported, d)
+		} else {
+			settable = append(settable, d)
+		}
+	}
+	return settable, unsupported
+}
+
+// nvidiaUnsupportedNote names the devices without a settable power limit
+// and the tokens nvidia-smi printed for them, devices that printed the same
+// together, in listing order. It depends on the listing alone, so it reads
+// the same on every reconcile and the control status is not rewritten.
+func nvidiaUnsupportedNote(unsupported []GPUDevice) string {
+	var order []string
+	indexes := map[string][]string{}
+	for _, d := range unsupported {
+		if _, ok := indexes[d.CapUnsupported]; !ok {
+			order = append(order, d.CapUnsupported)
+		}
+		indexes[d.CapUnsupported] = append(indexes[d.CapUnsupported], strconv.Itoa(d.Index))
+	}
+	groups := make([]string, len(order))
+	for i, tokens := range order {
+		groups[i] = fmt.Sprintf("gpu %s: nvidia-smi prints %s", strings.Join(indexes[tokens], ","), tokens)
+	}
+	return "no settable power limit on " + strings.Join(groups, "; ")
 }
 
 // applyNvidiaGPUCap sets the power limit of every device to capWatts,
 // rounded to whole watts as -pl takes it. A device whose listed limit
 // already rounds to that value is left alone: the listing is this
 // reconcile's, so a limit the driver put back after a reset or a reload
-// shows there and is set again.
+// shows there and is set again. A device without a settable power limit is
+// never written. A -pl that fails, or whose output says the limit is not
+// supported, is an error naming the GPU, and the other devices are still
+// capped: nvidia-smi reports a GPU that refuses the limit as a warning,
+// "Changing power management limit is not supported for GPU ...",
+// "Treating as warning and moving on.", and can exit 0.
 func applyNvidiaGPUCap(ctx context.Context, devices []GPUDevice, capWatts float64) error {
 	target := math.Round(capWatts)
+	var errs []error
 	for _, d := range devices {
-		if math.Round(d.CurrentCapWatts) == target {
+		if d.CapUnsupported != "" || math.Round(d.CurrentCapWatts) == target {
 			continue
 		}
-		if _, err := runCommand(ctx, "nvidia-smi", "-i", strconv.Itoa(d.Index), "-pl", strconv.Itoa(int(target))); err != nil {
-			return fmt.Errorf("nvidia-smi set cap gpu=%d: %w", d.Index, err)
+		out, err := runCommand(ctx, "nvidia-smi", "-i", strconv.Itoa(d.Index), "-pl", strconv.Itoa(int(target)))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("nvidia-smi set cap gpu=%d: %w", d.Index, err))
+			continue
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.Contains(strings.ToLower(line), "not supported") {
+				errs = append(errs, fmt.Errorf("nvidia-smi set cap gpu=%d: %s", d.Index, strings.TrimSpace(line)))
+				break
+			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -1450,15 +1552,31 @@ func discoverHardwareWith(ctx context.Context, node *corev1.Node, gpuFacts *nvid
 		nodeLabels["amd.com/gpu.family"],
 	)
 	if len(gpuDevices) > 0 {
-		// On AMD the range, the cap and control come from the first device
-		// with a cap of its own whose range is known: a secondary die, or a
-		// GPU asleep since the agent started, may come first, and a node
-		// with none has no control.
 		ref := gpuDevices[0]
-		if hw.GPUVendor == "amd" {
+		switch hw.GPUVendor {
+		case "amd":
+			// The range, the cap and control come from the first device
+			// with a cap of its own whose range is known: a secondary die,
+			// or a GPU asleep since the agent started, may come first, and
+			// a node with none has no control.
 			ref = GPUDevice{}
 			if _, ranged := amdgpuCapSets(gpuDevices); len(ranged) > 0 {
 				ref = ranged[0]
+			}
+		case "nvidia":
+			// The range, the cap and control come from the first device
+			// with a settable power limit, and the others are named in a
+			// warning. A node with none has no range and no control, and
+			// publishes the limit in force of its first GPU when it prints
+			// one.
+			settable, unsupported := nvidiaCapSets(gpuDevices)
+			if len(unsupported) > 0 {
+				hw.GPUWarnings = append(hw.GPUWarnings, nvidiaUnsupportedNote(unsupported))
+			}
+			if len(settable) > 0 {
+				ref = settable[0]
+			} else {
+				ref = GPUDevice{CurrentCapWatts: gpuDevices[0].CurrentCapWatts}
 			}
 		}
 		hw.GPURawModel = firstNonEmpty(gpuDevices[0].Product, labelModel)
@@ -1940,7 +2058,7 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 			"currentCapWatts":    hw.GPUCurrentCapW,
 			"controlAvailable":   hw.GPUControl,
 			"telemetryAvailable": hw.GPUTelemetry,
-			"warnings":           stringAnySlice(warningSlice(hw.GPUCount > 0 && hw.GPUModel == "" && hw.GPURawModel != "", "gpu model not recognized")),
+			"warnings":           stringAnySlice(append(warningSlice(hw.GPUCount > 0 && hw.GPUModel == "" && hw.GPURawModel != "", "gpu model not recognized"), hw.GPUWarnings...)),
 		},
 		"capabilities": map[string]any{
 			"cpuControl":   hw.CPUControl,

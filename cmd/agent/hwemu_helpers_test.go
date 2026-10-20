@@ -238,6 +238,17 @@ func (e *emulatedNode) amdToolCalls() []string {
 	return out
 }
 
+// powerLimitCalls lists the nvidia-smi -pl commands the agent ran.
+func (e *emulatedNode) powerLimitCalls() []string {
+	var out []string
+	for _, c := range e.runner.commands() {
+		if strings.HasPrefix(c, "nvidia-smi ") && strings.Contains(c, " -pl ") {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 func (r *recordingRunner) reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -437,10 +448,27 @@ func withExposure(mode string) func(*hwemu.Profile) {
 	}
 }
 
-// withUnsupportedLimits makes nvidia-smi report [N/A] for the minimum and
-// maximum power limits, as on a board that does not expose them.
-func withUnsupportedLimits(p *hwemu.Profile) {
-	p.GPUs.FieldSupport = map[string]string{"power.min_limit": "[N/A]", "power.max_limit": "[N/A]"}
+// withFieldTokens makes nvidia-smi print each token in place of its query
+// field, on every GPU, as a GPU that does not report the value prints it.
+func withFieldTokens(tokens map[string]string) func(*hwemu.Profile) {
+	return func(p *hwemu.Profile) {
+		p.GPUs.FieldSupport = tokens
+	}
+}
+
+// setNvmlToken puts token in the NVML state files of GPU i, so the fake
+// nvidia-smi prints it for those fields of that GPU only, as on a node whose
+// GPUs differ.
+func setNvmlToken(t *testing.T, e *emulatedNode, i int, token string, files ...string) {
+	t.Helper()
+	for _, f := range files {
+		if err := os.Chmod(nvmlFile(e, i, f), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(nvmlFile(e, i, f), []byte(token+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // withoutGPUTools is a node whose agent has no GPU tool, as the stock agent

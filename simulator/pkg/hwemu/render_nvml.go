@@ -41,7 +41,8 @@ var renderNVMLFields = map[string]string{
 // persistence mode, Enabled unless gpus.persistenceMode is disabled.
 //
 // A field that gpus.fieldSupport marks unsupported holds the token instead
-// of a value, such as [N/A], and the tool prints it as it is (D16).
+// of a value, such as [N/A]: the tool prints it as it is, and the emulator
+// never writes a value there.
 func renderNVML(b *renderBuilder, p *Profile, o RenderOptions) error {
 	g := p.GPUs
 	if g == nil || g.Vendor != "nvidia" {
