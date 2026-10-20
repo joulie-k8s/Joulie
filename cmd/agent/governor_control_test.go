@@ -459,6 +459,54 @@ func TestGA24RefusedWriteIsNotRetried(t *testing.T) {
 	}
 }
 
+// GA30: a write the driver refuses partway through the plan leaves the
+// status naming only what is in force: the plan's governor while every
+// policy took it, mixed when only some did, and nothing when none did.
+func TestGA30FailedWriteNamesOnlyWhatIsInForce(t *testing.T) {
+	for _, c := range []struct {
+		failAt int
+		want   string
+	}{{0, ""}, {2, joulie.GovernorCurrentMixed}} {
+		t.Run(fmt.Sprintf("policy%d", c.failAt), func(t *testing.T) {
+			root := acpiCPUFreqTree(t)
+			pointAgentAtSysfs(t, root, "", nil)
+			writes := watchWrites(t, root)
+			refused := fmt.Sprintf("policy%d/scaling_governor", c.failAt)
+			writes.fail = func(path string) error {
+				if strings.HasSuffix(path, refused) {
+					return &os.PathError{Op: "write", Path: path, Err: syscall.EINVAL}
+				}
+				return nil
+			}
+			r := newGovRig(t, plainNode(fmt.Sprintf("ga30-policy%d", c.failAt)), governorOn, efficiency, nil)
+			r.reconcile()
+			s := r.status(componentCPUGovernor)
+			if s == nil || s.Result != joulie.GovernorResultUnsupported || s.Applied != c.want {
+				t.Fatalf("cpuGovernor status %+v; want unsupported with applied %q, what is in force", s, c.want)
+			}
+		})
+	}
+}
+
+// GA31: an earlier run's unsupported status that names a lock still in
+// force, as after a lock whose reset failed, is taken as the agent's own:
+// the lock goes into the record, so a restore resets it. One that names
+// nothing in force leaves the record empty and the baseline free.
+func TestGA31SeedTakesWhatAFailedPlanLeftInForce(t *testing.T) {
+	g := &governorControl{}
+	g.seed(&DesiredState{LastGPUGovernor: &v1alpha1.ControlResult{Backend: joulie.GovernorBackendNvidiaSMI,
+		Result: joulie.GovernorResultUnsupported, Applied: "-lgc 210,210"}})
+	if !g.gpu.changed || g.gpu.nvSeed == nil || g.gpu.nvSeed.GPULockMHz == nil || g.gpu.nvSeed.MemLockMHz != nil {
+		t.Errorf("seeded changed %v, locks %+v; want changed and the graphics lock alone", g.gpu.changed, g.gpu.nvSeed)
+	}
+	g = &governorControl{}
+	g.seed(&DesiredState{LastGPUGovernor: &v1alpha1.ControlResult{Backend: joulie.GovernorBackendNvidiaSMI,
+		Result: joulie.GovernorResultUnsupported}})
+	if g.gpu.changed || g.gpu.nvSeed != nil {
+		t.Errorf("seeded changed %v, locks %+v from a status with nothing in force; want neither", g.gpu.changed, g.gpu.nvSeed)
+	}
+}
+
 // GA25: the governor status patch touches status.controlStatus.<component>
 // only, carries the native setting in applied, is skipped when unchanged,
 // and removes the entry with null.

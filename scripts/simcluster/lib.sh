@@ -269,6 +269,62 @@ sim_container_state() {
   docker inspect -f '{{.State.Running}}' "$SIMCLUSTER_NAME" 2>/dev/null || true
 }
 
+# sim_container_down prints why the cluster's container does not run, its
+# exit code and the last lines of its log, and succeeds; it fails, printing
+# nothing, while the container runs. k3s exits when its kubelet cannot get
+# an inotify instance, which every k3s container on the host takes from
+# root's fs.inotify.max_user_instances: that case is named.
+sim_container_down() {
+  local state
+  state=$(sim_container_state)
+  [[ $state == true ]] && return 1
+  if [[ -z $state ]]; then
+    sim_log "container $SIMCLUSTER_NAME does not exist"
+    return 0
+  fi
+  local code tail
+  code=$(docker inspect -f '{{.State.ExitCode}}' "$SIMCLUSTER_NAME" 2>/dev/null || true)
+  tail=$(docker logs --tail 30 "$SIMCLUSTER_NAME" 2>&1 || true)
+  sim_log "container $SIMCLUSTER_NAME exited with status ${code:-unknown}; the last lines of its log:"
+  printf '  %s\n' "${tail//$'\n'/$'\n'  }" >&2
+  if grep -q 'inotify.*too many open files\|too many open files.*inotify' <<<"$tail"; then
+    sim_log "k3s ran out of inotify instances: every k3s container on this host shares fs.inotify.max_user_instances ($(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo unknown)); raise it or run fewer clusters"
+  fi
+  return 0
+}
+
+# sim_wait_running <secs> <desc> <cmd...> is sim_wait for a step that needs
+# the cluster's container: it fails at once, with the container's exit and
+# log (sim_container_down), when the container stops running.
+sim_wait_running() {
+  local secs=$1 desc=$2
+  shift 2
+  local deadline=$((SECONDS + secs))
+  until "$@" >/dev/null 2>&1; do
+    if sim_container_down; then
+      sim_log "stopped waiting for $desc: the container is not running"
+      return 1
+    fi
+    if ((SECONDS >= deadline)); then
+      sim_log "timed out after ${secs}s waiting for $desc; last attempt:"
+      "$@" >&2 || true
+      return 1
+    fi
+    sleep 2
+  done
+}
+
+# sim_save_container_logs <dir> writes the container's log (k3s.log) and
+# containerd's (containerd.log) into dir, from a running or a stopped
+# container; it never fails.
+sim_save_container_logs() {
+  local dir=$1
+  [[ -n $(sim_container_state) ]] || return 0
+  mkdir -p "$dir"
+  docker logs "$SIMCLUSTER_NAME" >"$dir/k3s.log" 2>&1 || true
+  docker cp "$SIMCLUSTER_NAME:/var/lib/rancher/k3s/agent/containerd/containerd.log" "$dir/containerd.log" >/dev/null 2>&1 || true
+}
+
 sim_require_container() {
   [[ $(sim_container_state) == true ]] ||
     sim_die "the cluster $SIMCLUSTER_NAME is not running; start it with make simcluster-up"
@@ -344,9 +400,19 @@ sim_save_args() {
   fi
 }
 
+# The tries of one image import, and the seconds between them.
+SIM_IMPORT_TRIES=3
+SIM_IMPORT_RETRY_DELAY=5
+
 # sim_import_image <ref> copies a local Docker image into the cluster's
 # containerd, unless containerd lists it already: in SIM_CLUSTER_IMAGES when
-# the caller listed them (sim_cluster_images), else by asking for it.
+# the caller listed them (sim_cluster_images), else by asking for it. One
+# import runs at a time per cluster, under $SIMCLUSTER_DIR/import.lock, so
+# the parallel pipelines of images.sh, and two images.sh at once, never
+# stream into containerd together; the builds, pulls and saves still run in
+# parallel. A failed import is tried again, SIM_IMPORT_TRIES times in all,
+# while the container runs; once it stops, the import fails at once with
+# the container's exit and log (sim_container_down).
 sim_import_image() {
   local ref=$1 norm listed
   norm=$(sim_normalize_ref "$ref")
@@ -359,9 +425,57 @@ sim_import_image() {
     sim_log "$ref: already in the cluster"
     return 0
   fi
-  sim_log "$ref: importing"
   [[ -n ${SIM_SAVE_ARGS+set} ]] || sim_save_args
-  "${SIM_SAVE_ARGS[@]}" "$ref" | docker exec -i "$SIMCLUSTER_NAME" ctr -n k8s.io images import --platform "linux/$SIM_IMAGE_ARCH" - >/dev/null
+  mkdir -p "$SIMCLUSTER_DIR"
+  local try
+  for ((try = 1; try <= SIM_IMPORT_TRIES; try++)); do
+    if (
+      flock 8
+      sim_log "$ref: importing"
+      "${SIM_SAVE_ARGS[@]}" "$ref" | docker exec -i "$SIMCLUSTER_NAME" ctr -n k8s.io images import --platform "linux/$SIM_IMAGE_ARCH" - >/dev/null
+    ) 8>"$SIMCLUSTER_DIR/import.lock"; then
+      return 0
+    fi
+    if sim_container_down; then
+      sim_log "$ref: the import failed and the container is not running"
+      return 1
+    fi
+    if ((try < SIM_IMPORT_TRIES)); then
+      sim_log "$ref: the import failed (try $try of $SIM_IMPORT_TRIES); trying again in ${SIM_IMPORT_RETRY_DELAY}s"
+      sleep "$SIM_IMPORT_RETRY_DELAY"
+    fi
+  done
+  sim_log "$ref: the import failed $SIM_IMPORT_TRIES times"
+  return 1
+}
+
+# sim_wait_k3s_imports waits, at most 300 s, until k3s has imported every
+# tarball of $SIMCLUSTER_DIR/images (the air-gap bundle), which it does in
+# the background as it starts: an import of ours into containerd waits
+# for it, so the two never stream at once. k3s logs "Imported images from
+# <file>" when one is done, and "Error encountered while importing <file>"
+# when one failed; a wait that runs out only logs, since the bundle's
+# images are k3s's own and the imports that follow do not need them.
+sim_wait_k3s_imports() {
+  local files=() f
+  for f in "$SIMCLUSTER_DIR"/images/*.tar "$SIMCLUSTER_DIR"/images/*.tar.*; do
+    [[ -f $f ]] && files+=("/var/lib/rancher/k3s/agent/images/${f##*/}")
+  done
+  ((${#files[@]})) || return 0
+  # shellcheck disable=SC2317 # called by sim_wait_running
+  k3s_imported() {
+    local seen f
+    seen=$(docker logs "$SIMCLUSTER_NAME" 2>&1 | grep -oE '(Imported images from|while importing) /var/lib/rancher/k3s/agent/images/[^ ":]+' || true)
+    for f in "${files[@]}"; do
+      grep -qE "(from|importing) ${f//./\\.}\$" <<<"$seen" || return 1
+    done
+  }
+  k3s_imported && return 0
+  sim_log "waiting for k3s to import ${files[*]##*/} before importing images into containerd"
+  if ! sim_wait_running 300 "k3s to import ${files[*]##*/}" k3s_imported; then
+    [[ $(sim_container_state) == true ]] || return 1
+    sim_log "importing anyway"
+  fi
 }
 
 # sim_image_ids <ref> prints, comma separated, the image ID and the repo
@@ -390,16 +504,80 @@ sim_wait_pids() {
   ((failed == 0)) || sim_die "$what failed"
 }
 
-# sim_rollouts <namespace> <object>... waits for the rollout of every object
-# at once.
-sim_rollouts() {
-  local ns=$1 obj pids=()
+# The rollout wait: SIM_ROLLOUT_BASE_SECONDS, plus SIM_ROLLOUT_SECONDS_PER_OBJECT
+# for each object, since the infra Node's one kubelet starts the pods of
+# every object, one emulated agent each.
+SIM_ROLLOUT_BASE_SECONDS=300
+SIM_ROLLOUT_SECONDS_PER_OBJECT=5
+
+# The jq of a rolled out Deployment, DaemonSet or StatefulSet, with the
+# checks kubectl rollout status makes: the controller saw the latest spec,
+# every replica runs it, no older one is left, and every one is available.
+SIM_ROLLED_OUT_JQ='
+  def rolled_out:
+    ((.status.observedGeneration // 0) >= (.metadata.generation // 0)) and
+    if .kind == "Deployment" then
+      ((.status.updatedReplicas // 0) >= (.spec.replicas // 1)) and
+      ((.status.replicas // 0) == (.status.updatedReplicas // 0)) and
+      ((.status.availableReplicas // 0) >= (.status.updatedReplicas // 0))
+    elif .kind == "DaemonSet" then
+      ((.status.updatedNumberScheduled // 0) >= (.status.desiredNumberScheduled // 0)) and
+      ((.status.numberAvailable // 0) >= (.status.desiredNumberScheduled // 0))
+    elif .kind == "StatefulSet" then
+      ((.status.readyReplicas // 0) >= (.spec.replicas // 1)) and
+      ((.status.updatedReplicas // 0) >= (.spec.replicas // 1))
+    else true end;
+  def key: "\(.kind | ascii_downcase)/\(.metadata.name)";'
+
+# sim_rollout_pending <namespace> <object>... prints each object (as
+# kind/name, kind/name.apps or kind.apps/name) not rolled out yet, missing
+# ones included, and fails when it cannot list them. One list per call,
+# however many objects.
+sim_rollout_pending() {
+  local ns=$1 list
   shift
-  for obj in "$@"; do
-    kubectl -n "$ns" rollout status "$obj" --timeout=300s >/dev/null &
-    pids+=($!)
-  done
-  sim_wait_pids "the rollout in $ns of $*" ${pids[@]+"${pids[@]}"}
+  list=$(kubectl -n "$ns" get deployments,daemonsets,statefulsets -o json) || return 1
+  jq -r --args "$SIM_ROLLED_OUT_JQ"'
+    ([.items[] | select(rolled_out) | key]) as $done
+    | $ARGS.positional[] | . as $obj
+    | (sub("\\.apps/"; "/") | ascii_downcase) as $k
+    | select(($done | index($k)) == null) | $obj' "$@" <<<"$list"
+}
+
+# sim_rollout_report <namespace> <object>... prints the status of each object
+# not rolled out, and every pod of the namespace that is not ready with the
+# reason its containers wait.
+sim_rollout_report() {
+  local ns=$1 list pods
+  shift
+  list=$(kubectl -n "$ns" get deployments,daemonsets,statefulsets -o json 2>/dev/null) || list='{"items":[]}'
+  pods=$(kubectl -n "$ns" get pods -o json 2>/dev/null) || pods='{"items":[]}'
+  jq -r --args "$SIM_ROLLED_OUT_JQ"'
+    $ARGS.positional[] as $obj
+    | ($obj | sub("\\.apps/"; "/") | ascii_downcase) as $k
+    | ([.items[] | select(key == $k)][0]) as $o
+    | if $o == null then "  \($obj): not found"
+      elif ($o | rolled_out) then empty
+      else "  \($obj): generation \($o.metadata.generation // 0), observed \($o.status.observedGeneration // 0), status \($o.status | del(.conditions) | tojson)" end' "$@" <<<"$list" >&2
+  jq -r '.items[] | select(([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 0)
+    | "  pod/\(.metadata.name): \(.status.phase // "unknown")\([.status.containerStatuses[]?.state.waiting.reason // empty] | if length > 0 then ", " + join(", ") else "" end)"' <<<"$pods" >&2
+}
+
+# sim_rollouts <namespace> <object>... waits for the rollout of every object
+# at once, polling one list of the namespace's workloads every 2 s rather
+# than watching each object, for SIM_ROLLOUT_BASE_SECONDS plus
+# SIM_ROLLOUT_SECONDS_PER_OBJECT per object. On a timeout it prints what is
+# not rolled out and why, and fails.
+sim_rollouts() {
+  local ns=$1
+  shift
+  (($#)) || return 0
+  local secs=$((SIM_ROLLOUT_BASE_SECONDS + SIM_ROLLOUT_SECONDS_PER_OBJECT * $#))
+  if ! sim_wait_running "$secs" "the rollout in $ns of $*" sim_none sim_rollout_pending "$ns" "$@"; then
+    sim_log "not rolled out in $ns:"
+    sim_rollout_report "$ns" "$@"
+    sim_die "the rollout in $ns of $* failed"
+  fi
 }
 
 # sim_load_images reads images.env and checks it names every Joulie image.
@@ -551,7 +729,7 @@ sim_apply_config() {
   if [[ -n $before && $before != "$(jq -cS '.data // {}' <<<"$after")" ]]; then
     kubectl -n "$SIM_NS_MONITORING" rollout restart "$dep" >/dev/null
   fi
-  kubectl -n "$SIM_NS_MONITORING" rollout status "$dep" --timeout=300s >/dev/null
+  sim_rollouts "$SIM_NS_MONITORING" "$dep"
 }
 
 # sim_apply_backend sets up Prometheus, and the Collector of the modes that

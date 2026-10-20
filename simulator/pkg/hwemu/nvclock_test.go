@@ -2,7 +2,6 @@ package hwemu
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -167,10 +166,11 @@ func TestNV03LockBelowTheIdleClockDoesNotLowerIt(t *testing.T) {
 	}
 }
 
-// NV05: a GPU without a run-time memory lock (Hopper) refuses -lmc with
-// exit 3 and nothing changes: the lock file keeps its token, no event, the
-// clocks stay; a write past the tool is restored. Where the lock exists,
-// -lmc <max>,<max> holds clocks.mem at the maximum on an idle GPU.
+// NV05: a GPU without a run-time memory lock (Hopper) refuses -lmc with the
+// not-supported warning and exit 0, and nothing changes: the lock file
+// keeps its token, no event, the clocks stay; a write past the tool is
+// restored. Where the lock exists, -lmc <max>,<max> holds clocks.mem at the
+// maximum on an idle GPU.
 func TestNV05MemoryLockHoldsTheMemoryClockOnlyWhereItExists(t *testing.T) {
 	t.Parallel()
 	t.Run("hopper", func(t *testing.T) {
@@ -181,9 +181,8 @@ func TestNV05MemoryLockHoldsTheMemoryClockOnlyWhereItExists(t *testing.T) {
 		nodeStep(t, n, time.Second)
 		before := nvclockQuery(t, tree, 0, "clocks.sm,clocks.mem,pstate")
 		out, err := nvclockSMI(tree, "-i", "0", "-lmc", "1200,1200")
-		var ee *smi.ExitError
-		if !errors.As(err, &ee) || ee.Code != 3 || !strings.Contains(out, "not supported") {
-			t.Fatalf("-lmc on Hopper: %v, %q; want exit 3, not supported", err, out)
+		if err != nil || !strings.Contains(out, "not supported") || !strings.Contains(out, "Treating as warning and moving on.") {
+			t.Fatalf("-lmc on Hopper: %v, %q; want exit 0 and the not-supported warning", err, out)
 		}
 		lock := nodeNVMLFile(0, layout.NVMLLockedMemClocksFile)
 		nodeStep(t, n, time.Second)

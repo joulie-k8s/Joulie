@@ -25,10 +25,11 @@ workload:
       jobs: 1200
       mean-inter-arrival-sec: 14
       arrival-window-sec: 3300
-      max-duration-sec: 1200
-      gpu-ratio: 0.15
+      max-duration-sec: 900
+      gpu-ratio: 0.12
       amd-gpu-ratio: 0.2
       perf-ratio: 0.3
+      time-scale: 0.02
 joulie:
   set:
     controllerManager.env.POLICY_TYPE: queue_aware_v1

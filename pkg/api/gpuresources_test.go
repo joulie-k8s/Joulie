@@ -116,6 +116,11 @@ func TestGPUCountFromLabels(t *testing.T) {
 		{"mig invalid", map[string]string{"nvidia.com/gpu.count": "0", "nvidia.com/gpu.product": "NVIDIA-H100-NVL-MIG-INVALID"}, 0, false},
 		{"not a number", map[string]string{"nvidia.com/gpu.count": "eight"}, 0, false},
 		{"replicas only", map[string]string{"nvidia.com/gpu.replicas": "4"}, 0, false},
+		// Intel's NFD rules count the data center GPUs, whatever units the
+		// plugin advertises with shared-dev-num.
+		{"intel device count", map[string]string{"gpu.intel.com/device.count": "4", "gpu.intel.com/product": "Flex_170"}, 4, true},
+		{"intel, Joulie label first", map[string]string{"gpu.intel.com/device.count": "4", "joulie.io/hw.gpu-count": "2"}, 2, true},
+		{"intel device count zero", map[string]string{"gpu.intel.com/device.count": "0"}, 0, false},
 	}
 	for _, c := range cases {
 		got, ok := GPUCountFromLabels(c.labels)

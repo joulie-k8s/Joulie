@@ -1,0 +1,54 @@
+# The pod of one hardware measurement. hwmeasure.sh replaces each
+# placeholder (an upper case name between two at signs) with a JSON value
+# and keeps the rendered copy in the run directory.
+#
+# Pinned to the node by nodeName, so no scheduler is involved; privileged
+# and root, because cpufreq, amdgpu and nvidia-smi writes need both. The
+# host root is mounted read only at /host (its /proc/cpuinfo and the host's
+# nvidia-smi and rocm-smi, run through chroot), the host /sys read and write
+# at /host-sys. The measurement is PID 1: deleting the pod sends it TERM,
+# which restores what it changed within the grace period.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: @POD@
+  namespace: @NAMESPACE@
+  labels:
+    app.kubernetes.io/name: joulie-hw-measurement
+    app.kubernetes.io/part-of: joulie-experiment-05
+    joulie.io/hw-measurement: @MEASUREMENT@
+spec:
+  nodeName: @NODE@
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: @GRACE_S@
+  activeDeadlineSeconds: @DEADLINE_S@
+  tolerations: @TOLERATIONS@
+  imagePullSecrets: @PULL_SECRETS@
+  runtimeClassName: @RUNTIME_CLASS@
+  containers:
+  - name: probe
+    image: @IMAGE@
+    imagePullPolicy: IfNotPresent
+    command: ["bash", "/probe/probe.sh", "run"]
+    args: @ARGS@
+    env: @ENV@
+    securityContext:
+      privileged: true
+      runAsUser: 0
+    resources: @RESOURCES@
+    volumeMounts:
+    - {name: probe, mountPath: /probe, readOnly: true}
+    - {name: out, mountPath: /out}
+    - {name: host, mountPath: /host, readOnly: true}
+    - {name: host-sys, mountPath: /host-sys}
+  volumes:
+  - name: probe
+    configMap: {name: @CONFIGMAP@}
+  - name: out
+    emptyDir: {sizeLimit: 1Gi}
+  - name: host
+    hostPath: {path: @HOST_ROOT@, type: Directory}
+  - name: host-sys
+    hostPath: {path: @HOST_SYS@, type: Directory}

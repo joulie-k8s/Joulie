@@ -152,9 +152,11 @@ var (
 // defaultGPUProductLabelKeys are the node labels GPU_PRODUCT_LABEL_KEYS reads
 // by default, first match wins. The AMD node labeller names the board in
 // gpu.product-name (under both of its prefixes); amd.com/gpu.product is the
-// older key, and the family code (GC_11_0_0, AI), read last, names no board.
+// older key. Intel's NFD rules name a data center GPU in
+// gpu.intel.com/product (Flex_170, Max_1550). The AMD family code
+// (GC_11_0_0, AI), read last, names no board.
 const defaultGPUProductLabelKeys = "joulie.io/gpu.product,nvidia.com/gpu.product," +
-	"amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,amd.com/gpu.family"
+	"amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,gpu.intel.com/product,amd.com/gpu.family"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)

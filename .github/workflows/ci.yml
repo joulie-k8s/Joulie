@@ -33,6 +33,9 @@ jobs:
       - name: Verify generated code and CRDs are up to date
         run: make verify-manifests
 
+      - name: Verify Go files are gofmt-formatted
+        run: make verify-fmt
+
       - name: Run unit tests
         run: go test ./...
 

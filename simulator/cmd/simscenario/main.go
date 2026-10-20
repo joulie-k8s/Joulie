@@ -33,6 +33,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -177,12 +178,39 @@ func printPlan(w io.Writer, runDir string, p *scenario.Plan) {
 	if len(p.Load) == 0 {
 		return
 	}
+	printLoad(w, p.Load)
+	printEnd(w, "the work", p.EarliestEnd, p.Deadline)
+	for _, c := range p.Classes {
+		names := make([]string, len(c.Variants))
+		for i, v := range c.Variants {
+			names[i] = v
+			if v == "" {
+				names[i] = "(unnamed)"
+			}
+		}
+		fmt.Fprintf(w, "%s jobs on the %d Nodes %s leaves them (variants %s):\n", c.Class, c.Nodes, c.Policy, strings.Join(names, ", "))
+		printLoad(w, c.Load)
+		printEnd(w, "their work", c.EarliestEnd, c.Deadline)
+	}
+}
+
+func printLoad(w io.Writer, loads []scenario.OfferedLoad) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "RESOURCE\tOFFERED LOAD\tDEMAND\tCAPACITY")
-	for _, l := range p.Load {
+	for _, l := range loads {
 		fmt.Fprintf(tw, "%s\t%.3f\t%.4g\t%.4g\n", l.Resource, l.Load, l.Demand, l.Capacity)
 	}
 	tw.Flush()
+}
+
+// printEnd prints the earliest end of some work against the deadline, and
+// the share of the deadline it takes.
+func printEnd(w io.Writer, what string, end, deadline time.Duration) {
+	if deadline <= 0 {
+		fmt.Fprintf(w, "%s can end at %s at the earliest\n", what, end.Round(time.Second))
+		return
+	}
+	fmt.Fprintf(w, "%s can end at %s at the earliest, %.2f of the %s deadline\n", what, end.Round(time.Second), end.Seconds()/deadline.Seconds(), deadline)
 }
 
 func cmdEvaluate(_ context.Context, args []string, stdout, stderr io.Writer) int {

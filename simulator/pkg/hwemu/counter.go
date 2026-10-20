@@ -58,3 +58,14 @@ func nodeMilliJoules(seedMJ int64, joules float64) int64 {
 	}
 	return seedMJ + int64(math.Floor(joules*1000))
 }
+
+// nodeMicroJoules is an hwmon energy<N>_input counter: whole uJ since the
+// seed. The driver accumulates its 32 bit energy register into a long, so
+// the counter does not wrap (linux v7.3-rc5 i915_hwmon.c:138-167,
+// xe_hwmon.c:505-544).
+func nodeMicroJoules(seedUJ int64, joules float64) int64 {
+	if joules <= 0 {
+		return seedUJ
+	}
+	return seedUJ + int64(math.Floor(joules*1e6))
+}

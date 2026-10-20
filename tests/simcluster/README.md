@@ -37,7 +37,7 @@ Each check is one entry under `assertions` in the run's `summary.json`.
 | E06 | Prometheus holds series for every Node with a measured CPU package, and `target_info` of the jobs that carry node power names each one |
 | E07 | every check query of the mode equals the emulated truth; E07c, in mode `kepler-legacy`: each Node has two Kepler 0.7 platform series, which sum to its host power |
 | E08 | each NodeTwin's measured power is the truth, or `prometheus-no-data` where nothing measures |
-| E09, E10 | lowering the CPU and GPU caps from 80 % to 50 % lowers the enforced limits (RAPL, NVIDIA GPUs whole or shared, and AMD GPUs; a GPU cap never below the published minimum) and the NodeTwins' measured power (RAPL, DVFS, NVIDIA) |
+| E09, E10 | lowering the CPU and GPU caps from 80 % to 50 % lowers the enforced limits (RAPL, NVIDIA GPUs whole or shared, AMD and Intel GPUs; a GPU cap never below the published minimum) and the NodeTwins' measured power (RAPL, DVFS, NVIDIA) |
 | E11 | the control status of each hardware family |
 | E12 | D15, below |
 | E13 | the extender filters and scores a real pod, on the host network in the `hostnet` extender variant and off it, reached through its Service, in the `service` one |
@@ -64,7 +64,7 @@ The defects that reach users are also listed on the user pages: [GPU known limit
 
 ## Scenario library checks
 
-`simulator/pkg/scenario/scenarios_test.go` checks the scenario library without a cluster: every scenario validates and plans under the load limit, every job fits some Node of its spec (resources, node selector and taints), the nightly load stays between 0.5 and 0.8, the deadlock gang fits its Node one pod at a time but never whole, and the Nodes `perf-isolation` and `cap-cost` expect in eco are the ones `policy.BuildStaticPlan` puts there.
+`simulator/pkg/scenario/scenarios_test.go` checks the scenario library without a cluster: every scenario validates and plans under the load limit, every job fits some Node of its spec (resources, node selector and taints), the nightly load stays between 0.3 and 0.8 of the cluster and, for nightly-mixed's performance jobs, of the performance Nodes, the nightly workload sized by the cluster alone is refused, the deadlock gang fits its Node one pod at a time but never whole, and the Nodes `perf-isolation` and `cap-cost` expect in eco are the ones `policy.BuildStaticPlan` puts there.
 
 ## CI
 
@@ -79,4 +79,4 @@ The defects that reach users are also listed on the user pages: [GPU known limit
 - Sunday at 03:17 UTC: `weekly-compare`, one variant per runner (150 minute timeout) into a run directory named once for all of them, then a job that plans the same directory, collects the variants and runs `simscenario summarize`.
 - On demand (`workflow_dispatch`): `nightly` or `weekly`.
 
-Every job uploads its `runs/` directory, also when it fails; the scenario runs are kept 14 days.
+Every job uploads its `runs/` directory, also when it fails, with a 10 minute timeout on the upload; a scenario job deletes its cluster first (`down.sh` keeps `runs/`), since `scenario.sh` keeps it. The scenario runs are kept 14 days.

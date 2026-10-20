@@ -52,7 +52,8 @@ func renderHSMP(b *renderBuilder, p *Profile, o RenderOptions) error {
 }
 
 // renderPCIDevices writes the PCI devices that tools find through sysfs:
-// each listed device with drm set, then each AMD GPU. Every one gets vendor,
+// each listed device with drm set, then each AMD or Intel GPU (the Intel
+// ones by renderIntelGPUs). Every one gets vendor,
 // and device and class when known (R), and a DRM card with its device link
 // and class/drm link, cards numbered in that order. An AMD GPU also gets
 // product_name, vbios_version, its bus/pci/devices entry (the path the agent
@@ -73,6 +74,9 @@ func renderPCIDevices(b *renderBuilder, p *Profile, o RenderOptions) error {
 		card++
 	}
 	g := p.GPUs
+	if g != nil && g.Vendor == "intel" {
+		return renderIntelGPUs(b, p)
+	}
 	if g == nil || g.Vendor != "amd" {
 		return nil
 	}
@@ -81,7 +85,7 @@ func renderPCIDevices(b *renderBuilder, p *Profile, o RenderOptions) error {
 		hwmonBase = max(hwmonBase, p.CPU.Sockets.V)
 	}
 	for i := 0; i < g.Count.V; i++ {
-		gbus, gcard := renderAMDGPUCard(p, i)
+		gbus, gcard := renderGPUCard(p, i)
 		var extra []renderEntry
 		if g.Product.V != "" {
 			extra = append(extra, renderEntry{name: "product_name", content: g.Product.V + "\n", owner: layout.OwnerRender, mode: 0o444})
@@ -107,10 +111,10 @@ func renderPCIDevices(b *renderBuilder, p *Profile, o RenderOptions) error {
 	return nil
 }
 
-// renderAMDGPUCard is the PCI bus and the DRM card number of AMD GPU i of p,
-// as renderPCIDevices lays them out: GPUs from renderGPUBus on, their cards
-// after those of the listed devices with drm set.
-func renderAMDGPUCard(p *Profile, i int) (bus, card int) {
+// renderGPUCard is the PCI bus and the DRM card number of AMD or Intel GPU i
+// of p, as renderPCIDevices lays them out: GPUs from renderGPUBus on, their
+// cards after those of the listed devices with drm set.
+func renderGPUCard(p *Profile, i int) (bus, card int) {
 	for _, d := range p.PCI {
 		if d.DRM {
 			card++

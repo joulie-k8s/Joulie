@@ -2,6 +2,7 @@ package hwemu
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -54,14 +55,19 @@ func renderCorpusMachines(t testing.TB) []string {
 // zone gains or loses a file; writeRejectingZones reject writes with EISDIR;
 // the cpufreq driver reads back from policy0; the captured governor state
 // reads back byte for byte (renderCheckCorpusGovernor); dev/nvidiactl exists
-// exactly when nvidia-smi.txt does; the NVML state holds the captured values;
-// and the Node carries the captured labels and allocatable.
+// exactly when nvidia-smi.txt does; the NVML state holds the captured values
+// and tokens; and the Node carries the captured labels and allocatable. A
+// machine whose nvidia-smi.txt prints no power limit to emulate
+// (ErrCorpusNoPowerLimit) is skipped.
 func TestH21FromCorpusReplaysEveryMachine(t *testing.T) {
 	t.Parallel()
 	for _, machine := range renderCorpusMachines(t) {
 		t.Run(machine, func(t *testing.T) {
 			dir := filepath.Join(renderCorpusRoot(), machine)
 			p, err := FromCorpus(dir)
+			if errors.Is(err, ErrCorpusNoPowerLimit) {
+				t.Skipf("%s cannot be emulated: %v", machine, err)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -519,6 +525,9 @@ func renderCheckCorpusNVML(t *testing.T, tree *Tree, text string) {
 	for i, line := range strings.Split(strings.TrimSpace(text), "\n") {
 		parts := strings.Split(line, ", ")
 		mw := func(field int) string {
+			if v := parts[field]; strings.HasPrefix(v, "[") {
+				return v + "\n"
+			}
 			v, err := strconv.ParseFloat(parts[field], 64)
 			if err != nil {
 				t.Fatal(err)
@@ -526,8 +535,13 @@ func renderCheckCorpusNVML(t *testing.T, tree *Tree, text string) {
 			return fmt.Sprintf("%d\n", int64(math.Round(v*1000)))
 		}
 		// A capture without power.default_limit renders the maximum as the
-		// default, which the agent publishes for an unknown one.
+		// default, which the agent publishes for an unknown one; where the
+		// maximum is a token, the limit in force the physics holds in its
+		// place.
 		name, def := strings.Join(parts[5:], ", ")+"\n", mw(2)
+		if strings.HasPrefix(parts[2], "[") {
+			def = mw(3)
+		}
 		if len(parts) >= 7 {
 			name, def = parts[5]+"\n", mw(6)
 		}
@@ -547,6 +561,55 @@ func renderCheckCorpusNVML(t *testing.T, tree *Tree, text string) {
 				t.Errorf("gpu0 power_draw_mw = %q, want %q", got, mw(4))
 			}
 		}
+	}
+}
+
+// H21: a capture whose nvidia-smi.txt prints a token in a power column, as
+// a GPU without the value prints it, maps each token to gpus.fieldSupport,
+// so the NVML state holds the captured token where a value would be and
+// the numbers elsewhere; one that prints a token for both power.limit and
+// power.max_limit has no limit to emulate and returns ErrCorpusNoPowerLimit.
+func TestH21FromCorpusNvidiaTokenLimits(t *testing.T) {
+	t.Parallel()
+	// The T4 capture of the repository's corpus, whatever corpus is plugged in.
+	src := filepath.Join("..", "..", "..", "cmd", "agent", "testdata", "hardware", "vm-no-rapl")
+	for name, row := range map[string]string{
+		"min and max":   "0, [N/A], [N/A], 70.00, 9.97, Tesla T4",
+		"not supported": "0, [Not Supported], [Not Supported], 70.00, 9.97, Tesla T4",
+		"limit only":    "0, 60.00, 70.00, [N/A], 9.97, Tesla T4",
+		"draw only":     "0, 60.00, 70.00, 70.00, [N/A], Tesla T4",
+		"every column":  "0, [N/A], [N/A], [N/A], [N/A], Tesla T4",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := filepath.Join(t.TempDir(), "vm-token")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range []string{"cpuinfo", "machine.yaml", "node-labels.json"} {
+				b, err := os.ReadFile(filepath.Join(src, f))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, f), b, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(dir, "nvidia-smi.txt"), []byte(row+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			p, err := FromCorpus(dir)
+			if name == "every column" {
+				if !errors.Is(err, ErrCorpusNoPowerLimit) {
+					t.Fatalf("err = %v, want ErrCorpusNoPowerLimit", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FromCorpus: %v", err)
+			}
+			renderCheckCorpusNVML(t, renderTestTree(t, p), row)
+		})
 	}
 }
 

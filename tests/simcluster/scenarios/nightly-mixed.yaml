@@ -1,9 +1,20 @@
 # The nightly workload: a mixed CPU and GPU trace from workloadgen (seed 7)
-# on the 50-Node nightly spec in production timing, 60 minutes of arrivals
-# and 20 minutes to drain, at an offered load between 0.5 and 0.8 of every
-# resource (simscenario plan prints it). Nearly every job must complete,
-# performance pods must stay off eco Nodes, the run must never stall, and
-# the twin's measured power should follow the emulated energy.
+# on the 50-Node nightly spec in production timing, 55 minutes of arrivals at
+# a constant rate and 25 more for the last jobs to finish. Nearly every job
+# must complete, performance pods must stay off eco Nodes, the run must
+# never stall, and the twin's measured power should follow the emulated
+# energy.
+#
+# The workload fits its window in three ways, which simscenario plan checks
+# and prints. time-scale 0.02 keeps every sampled arrival inside
+# workloadgen's first simulated hour, whose arrival rate is constant; at
+# the default scale the sample climbs the night-to-morning ramp and three
+# quarters of the work arrive in the last 20 minutes. static_partition keeps
+# half of each hardware family in performance and performance pods run only
+# there, so the performance class is sized for those Nodes: it offers 0.58
+# of their CPUs, 0.47 of their NVIDIA and 0.36 of their AMD GPUs, the whole
+# workload 0.49, 0.36 and 0.32 of the cluster. And no job runs longer than
+# 15 minutes, so the work can end at 70 minutes, 0.87 of the deadline.
 schemaVersion: 1
 name: nightly-mixed
 description: One hour of mixed CPU and GPU arrivals on 50 Nodes in production timing.
@@ -28,10 +39,11 @@ workload:
       jobs: 1200
       mean-inter-arrival-sec: 14
       arrival-window-sec: 3300
-      max-duration-sec: 1200
-      gpu-ratio: 0.15
+      max-duration-sec: 900
+      gpu-ratio: 0.12
       amd-gpu-ratio: 0.2
       perf-ratio: 0.3
+      time-scale: 0.02
 assertions:
 - {name: jobs, type: jobs, expect: {completedFraction: ">= 0.95"}}
 - {name: placement, type: placement, class: performance, forbidden: [eco], expect: "== 0"}

@@ -72,13 +72,13 @@ func TestSimclusterE2E(t *testing.T) {
 	// and the power at 50 %. The upgrade runs in the first 50 % check that
 	// runs, so a -run filter that selects neither leaves the caps alone.
 	env.check(t, "E09.80pct", "RAPL package limits at 80 % of the maximum", e2eE09RAPLAt80)
-	env.check(t, "E10.80pct", "NVIDIA and AMD GPU limits at 80 % of the maximum, DVFS applied", e2eE10GPUAndDVFSAt80)
+	env.check(t, "E10.80pct", "NVIDIA, AMD and Intel GPU limits at 80 % of the maximum, DVFS applied", e2eE10GPUAndDVFSAt80)
 	lower := env.lowerCapsOnce(t)
 	env.check(t, "E09.50pct", "RAPL package limits at 50 %, the NodeTwin follows", func(c *e2eCase) {
 		before, lowered := lower()
 		e2eE09RAPLAt50(c, before, lowered)
 	})
-	env.check(t, "E10.50pct", "NVIDIA and AMD GPU limits at 50 %, the NVIDIA NodeTwins follow", func(c *e2eCase) {
+	env.check(t, "E10.50pct", "NVIDIA, AMD and Intel GPU limits at 50 %, the NVIDIA NodeTwins follow", func(c *e2eCase) {
 		before, lowered := lower()
 		e2eE10GPUAndDVFSAt50(c, before, lowered)
 	})
@@ -644,15 +644,17 @@ var e2eControlByFamily = map[string]e2eControlWant{
 	e2eFamilyNVIDIA:    {gpu: true, backend: "host-nvidia", result: "applied"},
 	e2eFamilyGPUShared: {gpu: true, backend: "host-nvidia", result: "applied"},
 	e2eFamilyAMDGPU:    {gpu: true, backend: "host-amd", result: "applied"},
+	e2eFamilyIntelGPU:  {gpu: true, backend: "host-intel", result: "applied"},
 }
 
 // E11: the control status per family (cmd/agent/main.go): RAPL applied on
 // the Intel host, DVFS applied on both EPYC hosts, host-nvidia applied on
 // the NVIDIA GPUs, whole or shared, host-amd applied on the AMD GPUs
-// (amdgpu sysfs, no tool), and on the VM nothing to apply.
+// (amdgpu sysfs, no tool), host-intel applied on the Intel GPUs (i915
+// hwmon, no tool), and on the VM nothing to apply.
 func e2eE11ControlStatusPerFamily(c *e2eCase) {
 	e := c.env
-	nodes := e.nodesOf(c, e2eFamilyRAPL, e2eFamilyDVFS, e2eFamilyNoCPUCap, e2eFamilyNVIDIA, e2eFamilyGPUShared, e2eFamilyAMDGPU)
+	nodes := e.nodesOf(c, e2eFamilyRAPL, e2eFamilyDVFS, e2eFamilyNoCPUCap, e2eFamilyNVIDIA, e2eFamilyGPUShared, e2eFamilyAMDGPU, e2eFamilyIntelGPU)
 	if len(nodes) == 0 {
 		c.Skipf("no Node of a family E11 knows")
 	}
@@ -1220,14 +1222,14 @@ func e2eE09RAPLAt80(c *e2eCase) {
 	e.eventuallyNone(c, e.agentSettle(), func() []string { return e.capsAt(nodes, semconv.HwTypeCPU, e2eCapPctBefore) })
 }
 
-// E10 at 80 %: on every GPU Node, NVIDIA whole or shared and AMD, each
-// GPU's limit is 80 % of the published maximum (NVL 320 W of 400, SXM 560
-// of 700, MI300X 600 of 750), or the published minimum when that is higher
-// (the W7900's pinned 241 W), and its power at most 1 % above it; the DVFS
-// hosts report dvfs applied.
+// E10 at 80 %: on every GPU Node, NVIDIA whole or shared, AMD and Intel,
+// each GPU's limit is 80 % of the published maximum (NVL 320 W of 400, SXM
+// 560 of 700, MI300X 600 of 750, Flex 170 120 of 150), or the published
+// minimum when that is higher (the W7900's pinned 241 W), and its power at
+// most 1 % above it; the DVFS hosts report dvfs applied.
 func e2eE10GPUAndDVFSAt80(c *e2eCase) {
 	e := c.env
-	gpus := e.nodesOf(c, e2eFamilyNVIDIA, e2eFamilyGPUShared, e2eFamilyAMDGPU)
+	gpus := e.nodesOf(c, e2eFamilyNVIDIA, e2eFamilyGPUShared, e2eFamilyAMDGPU, e2eFamilyIntelGPU)
 	dvfs := e.nodesOf(c, e2eFamilyDVFS)
 	if len(gpus)+len(dvfs) == 0 {
 		c.Skipf("no GPU Node and no DVFS host")
@@ -1481,16 +1483,16 @@ func e2eE09RAPLAt50(c *e2eCase, before e2eCapState, lowered bool) {
 	e.follow(c, before, nodes, nil)
 }
 
-// E10 at 50 %: after the upgrade each GPU's limit, NVIDIA whole or shared
-// and AMD, is 50 % of the maximum (NVL 200 W, SXM 350, MI300X 375), or the
-// published minimum when that is higher (W7900 241), its power at most 1 %
-// above it, and each NVIDIA NodeTwin follows as in E09; the DVFS hosts still
-// report dvfs applied, and both their truth and their NodeTwin are lower
-// than at 80 %.
+// E10 at 50 %: after the upgrade each GPU's limit, NVIDIA whole or shared,
+// AMD and Intel, is 50 % of the maximum (NVL 200 W, SXM 350, MI300X 375,
+// Flex 170 75), or the published minimum when that is higher (W7900 241),
+// its power at most 1 % above it, and each NVIDIA NodeTwin follows as in
+// E09; the DVFS hosts still report dvfs applied, and both their truth and
+// their NodeTwin are lower than at 80 %.
 func e2eE10GPUAndDVFSAt50(c *e2eCase, before e2eCapState, lowered bool) {
 	e := c.env
 	nvidia := e.nodesOf(c, e2eFamilyNVIDIA, e2eFamilyGPUShared)
-	gpus := append(append([]e2eNode(nil), nvidia...), e.nodesOf(c, e2eFamilyAMDGPU)...)
+	gpus := append(append([]e2eNode(nil), nvidia...), e.nodesOf(c, e2eFamilyAMDGPU, e2eFamilyIntelGPU)...)
 	dvfs := e.nodesOf(c, e2eFamilyDVFS)
 	if len(gpus)+len(dvfs) == 0 {
 		c.Skipf("no GPU Node and no DVFS host")

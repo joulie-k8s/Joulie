@@ -98,3 +98,31 @@ func TestClassifySortsNvidiaSMIByExitCode(t *testing.T) {
 		}
 	}
 }
+
+// ClassifyRun sorts a set command that exits 0 by its output: a line that
+// says the setting is not supported, as nvidia-smi prints it before
+// "Treating as warning and moving on.", is unsupported and named in the
+// message; a confirmation is applied. A failed run is sorted as Classify
+// sorts it.
+func TestClassifyRunSortsAWarningByItsOutput(t *testing.T) {
+	const command = "nvidia-smi -i 00000000:18:00.0 -lmc 9001,9001"
+	for _, tc := range []struct {
+		name, out string
+		err       error
+		result    string
+		message   string
+	}{
+		{"refused with exit 0", "Setting locked memory clocks is not supported for GPU 00000000:18:00.0.\nTreating as warning and moving on.\nAll done.\n", nil,
+			joulie.GovernorResultUnsupported, command + ": Setting locked memory clocks is not supported for GPU 00000000:18:00.0."},
+		{"any case", "Setting Locked GPU Clocks Is NOT SUPPORTED for GPU 00000000:18:00.0.\n", nil,
+			joulie.GovernorResultUnsupported, command + ": Setting Locked GPU Clocks Is NOT SUPPORTED for GPU 00000000:18:00.0."},
+		{"confirmed", "Memory clocks set to \"(memClkMin 9001, memClkMax 9001)\" for GPU 00000000:18:00.0\nAll done.\n", nil,
+			joulie.GovernorResultApplied, ""},
+		{"failed", "", errors.New("exit status 4: Insufficient Permissions"), joulie.GovernorResultRefused, "exit status 4: Insufficient Permissions"},
+	} {
+		result, message := ClassifyRun(command, tc.err, []byte(tc.out))
+		if result != tc.result || message != tc.message {
+			t.Errorf("%s: %q, %q; want %q, %q", tc.name, result, message, tc.result, tc.message)
+		}
+	}
+}

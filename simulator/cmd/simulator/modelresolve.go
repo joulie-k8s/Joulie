@@ -82,8 +82,10 @@ func (s *simulator) applyCatalogModelDefaults(model simModel, nodeLabels map[str
 		// After the simulator's own label, the controller manager's
 		// GPU_PRODUCT_LABEL_KEYS default, in its order: the AMD node
 		// labeller names the board in gpu.product-name, under both of its
-		// prefixes, and the family code, read last, names no board. GPU
-		// feature discovery's product loses its MIG and sharing suffixes.
+		// prefixes, Intel's NFD rules name a data center GPU in
+		// gpu.intel.com/product, and the AMD family code, read last, names
+		// no board. GPU feature discovery's product loses its MIG and
+		// sharing suffixes.
 		GPUModelRaw: firstNonEmpty(
 			nodeLabels["joulie.io/hw.gpu-model"],
 			nodeLabels["joulie.io/gpu.product"],
@@ -91,6 +93,7 @@ func (s *simulator) applyCatalogModelDefaults(model simModel, nodeLabels map[str
 			nodeLabels["amd.com/gpu.product-name"],
 			nodeLabels["beta.amd.com/gpu.product-name"],
 			nodeLabels["amd.com/gpu.product"],
+			nodeLabels["gpu.intel.com/product"],
 			nodeLabels["amd.com/gpu.family"],
 		),
 		GPUCount: hwinv.ParseIntString(nodeLabels["joulie.io/hw.gpu-count"]),
