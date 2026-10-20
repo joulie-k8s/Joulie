@@ -78,6 +78,8 @@ Workflows:
 - `.github/workflows/docs-release.yml`
 - `.github/workflows/docs-preview.yml`
 
+Each writes `gh-pages` through `scripts/gh-pages-push.sh`, which rebases a push that lost the race to another workflow's and tries again.
+
 ## Troubleshooting
 
 If modules are missing or stale:

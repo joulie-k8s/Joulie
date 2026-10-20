@@ -148,25 +148,20 @@ jobs:
             --config "hugo.yaml,${{ runner.temp }}/docsy-versions.yaml" \
             --destination ../public-stable
 
+      # A preview or the main docs can push gh-pages at the same time:
+      # gh-pages-push.sh rebases onto it and pushes again.
       - name: Deploy versioned docs to gh-pages/versions/${{ steps.vars.outputs.version }}
-        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: public-version
-          destination_dir: versions/${{ steps.vars.outputs.version }}
-          keep_files: true
-          force_orphan: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.vars.outputs.version }}
+          MESSAGE: "docs: deploy ${{ steps.vars.outputs.version }}"
+        run: bash scripts/gh-pages-push.sh publish public-version "versions/$VERSION" "$MESSAGE"
 
       - name: Deploy stable docs to gh-pages/stable
-        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: public-stable
-          destination_dir: stable
-          keep_files: true
-          force_orphan: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MESSAGE: "docs: deploy ${{ steps.vars.outputs.version }} as stable"
+        run: bash scripts/gh-pages-push.sh publish public-stable stable "$MESSAGE"
 
       - name: Update root redirect and versions manifest
         run: |
@@ -239,5 +234,5 @@ jobs:
           git add .nojekyll index.html 404.html versions.json
           if ! git diff --cached --quiet; then
             git commit -m "docs: publish ${VERSION_NAME}"
-            git push
+            bash "$GITHUB_WORKSPACE/scripts/gh-pages-push.sh" push
           fi

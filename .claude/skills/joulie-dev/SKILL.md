@@ -59,6 +59,7 @@ The per-field table lives in `architecture/_index.md` ("Who writes what"). What 
 | Rule | Why | Guard |
 |---|---|---|
 | Read CRs through `api/v1alpha1` types, never `unstructured` with a `float64` assertion | the API server returns whole numbers as `int64`; the assertion silently drops them | `TestTwinStatusFromObjectAcceptsWholeNumbers`, `TestFetchNodeHardwareKeepsWholeNumberWatts` |
+| Every write to `gh-pages` goes through `scripts/gh-pages-push.sh` (`publish`, `remove`, `push`), never `actions-gh-pages` or a bare `git push` | the docs workflows push `gh-pages` from concurrency groups of their own, so two can push at once; two previews were rejected that way when eight pull requests opened together | `TestGitHubPagesWritesGoThroughTheRetryingScript` in `tests/contracts`, `TestGP01` to `TestGP06` in `scripts` |
 | Every tracked Go file is gofmt-formatted | three unformatted files reached `main` while no check ran; the next edit of such a file mixes formatting noise into its diff | `make verify-fmt` in CI and `make ci-local` |
 | Never edit CRD YAML; edit the Go types and run `make generate manifests` | two copies are shipped (`config/crd/bases`, `charts/joulie/crds`) and drift silently | `TestCRDCopiesAreIdentical`, `make verify-manifests` in CI |
 | Every value written to an enum field is listed in `pkg/api` | the schema rejects unknown values and the write fails quietly | `TestNodeTwinSchemaAcceptsEveryPowerSourceValue` |

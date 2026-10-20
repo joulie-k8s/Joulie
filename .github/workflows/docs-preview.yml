@@ -113,16 +113,15 @@ jobs:
           hugo mod get github.com/google/docsy/dependencies@v0.7.2
           hugo --gc --minify --baseURL "${{ env.PREVIEW_URL }}" --config "hugo.yaml,${{ runner.temp }}/docsy-versions.yaml"
 
+      # Every docs workflow pushes gh-pages, in concurrency groups of their
+      # own, so a push can lose the race to another one: gh-pages-push.sh
+      # rebases onto it and pushes again.
       - name: Deploy preview to gh-pages
         if: github.event.pull_request.head.repo.full_name == github.repository
-        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: website/public
-          destination_dir: ${{ env.PREVIEW_DIR }}
-          keep_files: true
-          force_orphan: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MESSAGE: "docs: preview for PR #${{ github.event.pull_request.number }} at ${{ github.event.pull_request.head.sha }}"
+        run: bash scripts/gh-pages-push.sh publish website/public "$PREVIEW_DIR" "$MESSAGE"
 
       # The marker finds this workflow's earlier comment, so every push
       # updates that one comment instead of adding another.
@@ -153,27 +152,15 @@ jobs:
     env:
       PREVIEW_DIR: previews/pr-${{ github.event.pull_request.number }}
     steps:
-      - name: Checkout gh-pages
+      # The default branch, for scripts/gh-pages-push.sh.
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: gh-pages
-          fetch-depth: 0
-        continue-on-error: true
+          ref: ${{ github.event.repository.default_branch }}
 
       - name: Remove preview directory
         if: github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          if [ ! -d .git ]; then
-            echo "gh-pages branch does not exist yet; nothing to clean."
-            exit 0
-          fi
-          rm -rf "${{ env.PREVIEW_DIR }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No preview directory to remove."
-            exit 0
-          fi
-          git commit -m "docs: remove preview for PR #${{ github.event.pull_request.number }}"
-          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MESSAGE: "docs: remove preview for PR #${{ github.event.pull_request.number }}"
+        run: bash scripts/gh-pages-push.sh remove "$PREVIEW_DIR" "$MESSAGE"
