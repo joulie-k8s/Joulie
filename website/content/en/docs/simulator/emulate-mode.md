@@ -80,6 +80,7 @@ Each profile in `simulator/pkg/hwemu/profiles/` names the source of every value:
 | `nvidia-l40s-4gpu` | 4x L40S on the 9534 host | nvidia-smi, 100 to 350 W per GPU |
 | `amd-instinct-mi300x-8gpu` | 8x Instinct MI300X on the 9654 host | amdgpu hwmon, rocm-smi and amd-smi, 0 to 750 W per GPU; accelerator class, NFD `pci-1200_1002` |
 | `amd-radeon-pro-w7900-4gpu` | 4x Radeon PRO W7900 on the 9534 host | amdgpu hwmon, rocm-smi and amd-smi; display class, NFD `pci-0300_1002`; the cap is pinned at 241 W per GPU |
+| `intel-flex-170-4gpu` | 4x Data Center GPU Flex 170 on the 6530 host | i915 hwmon, no tool, up to 150 W per GPU (`power1_max`, `power1_rated_max`), with a floor the hardware clamps to that sysfs does not show; display class, NFD `pci-0380_8086` and Intel's NFD rule labels |
 | `vm-no-powercap` | KVM guest | none: no powercap, no cpufreq |
 
 The governor each profile ships with and the presets it can express (CPU `performance`, `balanced`, `efficiency`; GPU `auto`, `sustained`, `efficient`, `low`, `peak`, as `pkg/governor` maps them):
@@ -95,6 +96,7 @@ The governor each profile ships with and the presets it can express (CPU `perfor
 | `nvidia-h100-nvl-8gpu`, `nvidia-h100-sxm-8gpu` | as the 8260 | as the 8260 | nvidia-smi: every preset, `sustained` equivalent to `auto` |
 | `nvidia-h100-sxm-4gpu` | as the 6530 | as the 6530 | as the H100 above |
 | `nvidia-l40s-4gpu` | as the 9534 | as the 9534 | nvidia-smi: every preset, `sustained` locks the memory clock at its maximum |
+| `intel-flex-170-4gpu` | as the 6530 | as the 6530 | none |
 | `vm-no-powercap` | no cpufreq | none | none |
 
 No builtin profile turns the receiver gate on.
@@ -108,6 +110,8 @@ Profile facts that shape what the agent reads:
 - `cpuinfo_max_freq` follows turbo: it shows the top non-turbo frequency while `intel_pstate/no_turbo` or the amd-pstate boost turns turbo off.
 
 The W7900's cap is pinned as measured: hwmon and both tools report minimum, maximum, default and current at 241 W, so the driver refuses every other value written to `power1_cap` (a [`joulie.sim.write.rejected` event]({{< relref "/docs/simulator/metrics.md#events-emulate-mode" >}}) with `error.type` `einval`), `rocm-smi --setpoweroverdrive` prints the bound it violates and exits 0, and `amd-smi set -o ppt0` prints "Power cap must be between 241W and 241W". AMD publishes 295 W for the board; that is total board power, while 241 W is the package power limit the driver enforces and reports.
+
+The Flex 170's `power1_max` (class A) takes any value, as i915 does: a value in whole watts is kept, one between the hardware's bounds is enforced, and one outside them reads back, after the next tick, as the bound the hardware clamps it to, 40 W at the bottom and 150 W at the top, so the agent's readback reports it as an error. Writing 0 turns the limit off. The 40 W floor is assumed: sysfs does not show it, and Intel publishes none. `gpus.intel.driver: xe` renders the xe layout instead, with the limit on the package channel, `power2_max`.
 
 ## The cluster spec
 

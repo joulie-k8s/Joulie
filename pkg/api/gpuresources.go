@@ -150,13 +150,22 @@ const (
 	// LabelGFDGPUProduct is the GPU product GPU feature discovery publishes,
 	// with the suffixes GPUProductBase strips.
 	LabelGFDGPUProduct = "nvidia.com/gpu.product"
+	// LabelIntelGPUDeviceCount is the count Intel's NFD platform rules give
+	// a node of data center GPUs (Flex 140 and 170, Max 1100 and 1550): its
+	// PCI devices of the matched product, so the physical GPUs, while the
+	// device plugin advertises shared-dev-num units of gpu.intel.com/i915
+	// or xe per GPU (intel-device-plugins-for-kubernetes
+	// cmd/gpu_plugin/labels.md, deployments/nfd/overlays/node-feature-rules/
+	// platform-labeling-rules.yaml).
+	LabelIntelGPUDeviceCount = "gpu.intel.com/device.count"
 )
 
 // GPUCountFromLabels is the number of physical GPUs the node labels state:
 // LabelHWGPUCount, else LabelGFDGPUCount except when the single MIG
-// strategy exposes MIG devices (product suffixed -MIG-). ok is false when no
-// label states a positive count. nvidia.com/gpu.replicas is never read: it
-// is 0 on a node whose GPUs are all MIG enabled.
+// strategy exposes MIG devices (product suffixed -MIG-), else
+// LabelIntelGPUDeviceCount. ok is false when no label states a positive
+// count. nvidia.com/gpu.replicas is never read: it is 0 on a node whose GPUs
+// are all MIG enabled.
 func GPUCountFromLabels(labels map[string]string) (n int, ok bool) {
 	if v, err := strconv.Atoi(strings.TrimSpace(labels[LabelHWGPUCount])); err == nil && v > 0 {
 		return v, true
@@ -166,6 +175,9 @@ func GPUCountFromLabels(labels map[string]string) (n int, ok bool) {
 		return 0, false
 	}
 	if v, err := strconv.Atoi(strings.TrimSpace(labels[LabelGFDGPUCount])); err == nil && v > 0 {
+		return v, true
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(labels[LabelIntelGPUDeviceCount])); err == nil && v > 0 {
 		return v, true
 	}
 	return 0, false

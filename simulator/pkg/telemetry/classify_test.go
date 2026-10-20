@@ -8,7 +8,8 @@ import (
 )
 
 // EV01: Classify follows the event table: a PL1 accept is cap.applied, as
-// is any limit that took effect (powercap, hwmon power1_cap, NVML); a
+// is any limit that took effect (powercap, hwmon power1_cap, an Intel GPU's
+// power1_max or power2_max, NVML); a
 // governor, frequency bound, time window or persistence mode change is
 // setting.applied; reverted-out-of-range, parse-error and restored are
 // write.rejected with their error.type; reset-persistence-off is cap.reset.
@@ -22,6 +23,9 @@ func TestEV01ClassifyFollowsTheEventTable(t *testing.T) {
 		maxFreq  = "sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq"
 		hsmp     = "sys/devices/platform/amd_hsmp/hwmon/hwmon0/power1_cap"
 		amdgpu   = "sys/devices/pci0000:c1/0000:c1:00.0/hwmon/hwmon3/power1_cap"
+		i915     = "sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2/power1_max"
+		xe       = "sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2/power2_max"
+		interval = "sys/devices/pci0000:10/0000:10:00.0/hwmon/hwmon2/power1_max_interval"
 		level    = "sys/devices/pci0000:c1/0000:c1:00.0/power_dpm_force_performance_level"
 		epp      = "sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference"
 		nvml     = "state/nvml/gpu3/power_limit_mw"
@@ -38,6 +42,9 @@ func TestEV01ClassifyFollowsTheEventTable(t *testing.T) {
 		{pl2, hwemu.EventQuantized, "", semconv.EventSimCapApplied, ""},
 		{hsmp, hwemu.EventClamped, "", semconv.EventSimCapApplied, ""},
 		{amdgpu, hwemu.EventAccepted, "", semconv.EventSimCapApplied, ""},
+		{i915, hwemu.EventClamped, "", semconv.EventSimCapApplied, ""},
+		{xe, hwemu.EventQuantized, "", semconv.EventSimCapApplied, ""},
+		{interval, hwemu.EventAccepted, "", semconv.EventSimSettingApplied, ""},
 		{nvml, hwemu.EventResolved, "", semconv.EventSimCapApplied, ""},
 		{governor, hwemu.EventAccepted, "", semconv.EventSimSettingApplied, ""},
 		{maxFreq, hwemu.EventClamped, "", semconv.EventSimSettingApplied, ""},

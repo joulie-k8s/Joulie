@@ -71,6 +71,13 @@ package main
 //     GPU resources") and, without GPU tools, published no GPUs. Resources
 //     are classified by pkg/api.GPUResourceKind and the count is read from
 //     the labels first; A12, A12b and A12c guard it.
+//   - D19 (fixed): the agent had no Intel GPU backend, so an Intel GPU node
+//     published vendor none without control and its GPU cap ended blocked
+//     ("no supported GPU backend detected"): it ran uncapped. The agent
+//     lists Intel discrete GPUs from the i915 and xe hwmon files and caps
+//     PL1 there, every write read back (intelgpu.go);
+//     TestD19IntelGPUNodeIsCappedThroughSysfs and the hwemu tests over
+//     intel-flex-170-4gpu guard it.
 //
 // The fixes that flip them:
 //
@@ -221,6 +228,7 @@ const (
 	amdAcceleratorNFD  = "feature.node.kubernetes.io/pci-1200_1002.present"
 	amdLabellerProduct = "amd.com/gpu.product-name"
 	amdDisplayNFD      = "feature.node.kubernetes.io/pci-0300_1002.present"
+	intelFamilyLabel   = "gpu.intel.com/family"
 )
 
 // The powercap zone lists of a02Paths, in the order the agent lists them.
@@ -233,9 +241,9 @@ var (
 // a02Paths is the road each generic profile takes. Each GPU profile runs on
 // one of the CPU hosts, so it publishes that host's CPU block next to its
 // GPU block: the 8-GPU H100 profiles on the Xeon 8260 RAPL host, the 4-GPU
-// SXM profile on the Xeon 6530 RAPL host, the L40S and the W7900 on the
-// energy-only EPYC 9534 host and the MI300X on the energy-only EPYC 9654
-// host.
+// SXM profile and the Flex 170 on the Xeon 6530 RAPL host, the L40S and the
+// W7900 on the energy-only EPYC 9534 host and the MI300X on the energy-only
+// EPYC 9654 host.
 var a02Paths = map[string]a02Path{
 	"intel-xeon-2s-rapl": {
 		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 165, cpuDriverFamily: "intel_pstate", cpuControl: true, cpuModel: "INTEL_XEON_PLATINUM_8260",
@@ -311,6 +319,11 @@ var a02Paths = map[string]a02Path{
 		gpuVendor: "amd", gpuCount: 4, gpuCapMinW: 241, gpuCapMaxW: 241, gpuControl: true, gpuModel: "AMD_RADEON_PRO_W7900", gpuVendorFrom: amdDisplayNFD,
 		energyZones: a02Packages,
 	},
+	"intel-flex-170-4gpu": {
+		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 270, cpuDriverFamily: "intel_cpufreq", cpuControl: true, cpuModel: "INTEL_XEON_GOLD_6530",
+		gpuVendor: "intel", gpuCount: 4, gpuCapMinW: 0, gpuCapMaxW: 150, gpuControl: true, gpuModel: "INTEL_DATA_CENTER_GPU_FLEX_170", gpuVendorFrom: intelFamilyLabel,
+		energyZones: a02Packages, capZones: a02Packages,
+	},
 	"vm-no-powercap": {
 		cpuVendor: "GenuineIntel", cpuSockets: 8,
 		gpuVendor: "none",
@@ -332,7 +345,10 @@ var a02Paths = map[string]a02Path{
 // devices and publish their cap range from them with control, 0 to 750 W
 // and the pinned 241 to 241 W, and run no rocm-smi cap command; the MI300X
 // gets its vendor from rocm-smi --showproductname (D8), the W7900 from the
-// NFD display-class label pci-0300_1002; the VM reads one socket per vCPU
+// NFD display-class label pci-0300_1002; the Flex 170 counts its GPUs from
+// the i915 hwmon devices, publishes 0 to 150 W from power1_rated_max with
+// control, takes its vendor from Intel's data center family label and its
+// model from the PCI device id, and runs no tool; the VM reads one socket per vCPU
 // and has no control. Every CPU and GPU model string matches its hardware
 // catalog entry, except the VM's CPU, the 9282 and the 6787P, which the
 // catalog does not list. amdgpu sysfs names no product, so the AMD GPU model
@@ -490,6 +506,24 @@ func checkA02Path(t *testing.T, e *emulatedNode, node *corev1.Node, hw HardwareI
 			}
 		}
 		checkA02AMDInventory(t, e, hw, want)
+	case intelFamilyLabel:
+		// Intel's data center family label answers detectGPUVendor before
+		// any probe runs, and the GPUs are listed from their i915 hwmon
+		// devices, one per GPU, with no tool.
+		if !intelDataCenterFamilies[node.Labels[intelFamilyLabel]] {
+			t.Errorf("node has no data center %s label: %v", intelFamilyLabel, node.Labels)
+		}
+		if calls := e.runner.commands(); len(calls) > 0 {
+			t.Errorf("the agent ran %v on an Intel GPU node; it runs no tool there", calls)
+		}
+		if hw.GPUListErr != nil || len(hw.GPUDevices) != want.gpuCount {
+			t.Errorf("listed %d Intel GPUs (%v), want %d", len(hw.GPUDevices), hw.GPUListErr, want.gpuCount)
+		}
+		for _, d := range hw.GPUDevices {
+			if d.Vendor != "intel" || intelGPUCap(d) != "power1_max" || d.BusID == "" {
+				t.Errorf("device %+v, want an Intel GPU with its bus id, capped through power1_max", d)
+			}
+		}
 	case rocmProductProbe:
 		ranList, listOK := e.runner.ran(nvidiaListProbe)
 		ranProbe, probeOK := e.runner.ran(rocmProductProbe)

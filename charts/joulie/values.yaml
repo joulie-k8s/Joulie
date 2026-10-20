@@ -100,8 +100,9 @@ controllerManager:
     GPU_ECO_CAP_PCT_OF_MAX: "60"
     GPU_WRITE_ABSOLUTE_CAPS: "false"
     GPU_MODEL_CAPS_JSON: "{}"
-    # First match wins; the AMD node labeller names the board in gpu.product-name.
-    GPU_PRODUCT_LABEL_KEYS: "joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,amd.com/gpu.family"
+    # First match wins; the AMD node labeller names the board in
+    # gpu.product-name, Intel's NFD rules in gpu.intel.com/product.
+    GPU_PRODUCT_LABEL_KEYS: "joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,gpu.intel.com/product,amd.com/gpu.family"
     # Governor control, off by default: off, cpu, gpu or all. When on, the
     # controller manager writes vendor-neutral CPU and GPU governor presets
     # into each NodeTwin, by the profile the node runs at, and only presets the

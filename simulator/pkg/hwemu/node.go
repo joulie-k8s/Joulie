@@ -465,7 +465,7 @@ func (n *Node) stateComponents(dt float64) ([]ComponentState, HostState) {
 				c.Measured = g.energy != nil
 				c.DeviceEnergyJ = float64(nodeMilliJoules(g.seedMJ, c.EnergyJ)) / 1000
 			} else {
-				c.Measured = g.input != nil || g.average != nil
+				c.Measured = g.input != nil || g.average != nil || g.energyUJ != nil
 			}
 			gpus = append(gpus, c)
 			host.PowerW += c.PowerW
@@ -511,6 +511,8 @@ func stateGPUVendor(vendor string) string {
 		return "NVIDIA"
 	case "amd":
 		return "AMD"
+	case "intel":
+		return "Intel"
 	}
 	return vendor
 }
@@ -934,19 +936,23 @@ func (n *Node) buildHSMP() error {
 	return nil
 }
 
-// buildGPUs seeds each GPU from its NVML state directory or its amdgpu hwmon
-// device.
+// buildGPUs seeds each GPU from its NVML state directory, its amdgpu hwmon
+// device or its Intel GPU hwmon device.
 func (n *Node) buildGPUs() error {
 	gs := n.profile.GPUs
 	if gs == nil || gs.Count.V <= 0 {
 		return nil
 	}
-	var amd []string
-	if gs.Vendor == "amd" {
-		var err error
-		if amd, err = n.amdgpuHwmonDirs(); err != nil {
-			return err
-		}
+	var amd, intel []string
+	var err error
+	switch gs.Vendor {
+	case "amd":
+		amd, err = n.amdgpuHwmonDirs()
+	case "intel":
+		intel, err = n.intelGPUHwmonDirs()
+	}
+	if err != nil {
+		return err
 	}
 	for i := 0; i < gs.Count.V; i++ {
 		g := &nodeGPU{index: i, minW: gs.Limits.MinW.V, maxW: gs.Limits.MaxW.V}
@@ -1012,6 +1018,12 @@ func (n *Node) buildGPUs() error {
 				}
 			}
 			g.settledW = g.targetW()
+		case "intel":
+			dir := ""
+			if i < len(intel) {
+				dir = intel[i]
+			}
+			n.buildIntelGPU(g, dir)
 		default:
 			g.limitRaw = int64(math.Round(gs.Limits.DefaultW.V * 1e6))
 			g.settledW = g.targetW()
@@ -1026,6 +1038,13 @@ func (n *Node) buildGPUs() error {
 // way rocm-smi enumerates devices. Paths are resolved, so events name the
 // devices/ path rather than the class link.
 func (n *Node) amdgpuHwmonDirs() ([]string, error) {
+	return n.gpuHwmonDirs("0x1002", nil)
+}
+
+// gpuHwmonDirs lists, in DRM card order, the hwmon directory of every card
+// whose PCI device has vendor: its first hwmon device, or with names its
+// first one whose name is in names. Paths are resolved.
+func (n *Node) gpuHwmonDirs(vendor string, names map[string]bool) ([]string, error) {
 	classDir := n.sysPath(nodeDRMClassDir)
 	entries, err := os.ReadDir(classDir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -1049,15 +1068,22 @@ func (n *Node) amdgpuHwmonDirs() ([]string, error) {
 	var dirs []string
 	for _, c := range cards {
 		dev := filepath.Join(classDir, c.name, "device")
-		if v, _ := n.readString(filepath.Join(dev, "vendor")); v != "0x1002" {
+		if v, _ := n.readString(filepath.Join(dev, "vendor")); v != vendor {
 			continue
 		}
 		matches, _ := filepath.Glob(filepath.Join(dev, "hwmon", "hwmon*"))
-		if len(matches) == 0 {
+		sort.Strings(matches)
+		var hwmon string
+		for _, m := range matches {
+			if name, _ := n.readString(filepath.Join(m, "name")); names == nil || names[name] {
+				hwmon = m
+				break
+			}
+		}
+		if hwmon == "" {
 			continue
 		}
-		sort.Strings(matches)
-		real, err := filepath.EvalSymlinks(matches[0])
+		real, err := filepath.EvalSymlinks(hwmon)
 		if err != nil {
 			return nil, fmt.Errorf("hwemu: %w", err)
 		}

@@ -284,8 +284,44 @@ type GPUSpec struct {
 	DPM *DPMSpec `json:"dpm"`
 	// Clocks are the NVIDIA clock ranges and lock behaviour, NVIDIA only.
 	Clocks *NVClocksSpec `json:"clocks"`
+	// Intel is the hwmon device of an Intel discrete GPU, Intel only.
+	Intel *IntelGPUSpec `json:"intel"`
 	// Transfer is the peer link between the node's GPUs.
 	Transfer *GPUTransferSpec `json:"transfer"`
+}
+
+// IntelGPUSpec is the hwmon device the i915 or xe driver registers for an
+// Intel discrete GPU, the only kind that gets one (i915_hwmon.c:916-918,
+// xe_hwmon.c:1549-1555 in Linux v7.3-rc5). Driver names the driver, which
+// names the device and holds the sustained (PL1) limit on one channel:
+// i915 registers "i915" with it on power1, xe registers "xe" with it on
+// power2, the package channel of DG2 and PVC (i915_hwmon.c:930;
+// xe_hwmon.c:283-292, 757, 1574). The limits of the GPU's gpus.limits are
+// PKG_MIN_PWR (minW) and PKG_MAX_PWR (maxW), which sysfs does not show,
+// and the TDP (defaultW), which power<N>_rated_max shows and the limit
+// starts at. PowerUnitShift is PKG_PWR_UNIT: the limit is kept in units of
+// 1/2^shift W. MaxIntervalMS is the PL1 time window power<N>_max_interval
+// shows.
+type IntelGPUSpec struct {
+	Driver         Fact[string] `json:"driver"`
+	PowerUnitShift Fact[int]    `json:"powerUnitShift"`
+	MaxIntervalMS  Fact[int64]  `json:"maxIntervalMS"`
+}
+
+// Drivers of an Intel discrete GPU, the values of gpus.intel.driver.
+const (
+	IntelDriverI915 = "i915"
+	IntelDriverXe   = "xe"
+)
+
+// IntelPowerChannel is the hwmon power channel that holds the sustained
+// limit of a GPU the Intel driver drives: 1 under i915, 2 (the package
+// channel) under xe.
+func IntelPowerChannel(driver string) int {
+	if driver == IntelDriverXe {
+		return 2
+	}
+	return 1
 }
 
 // DPMSpec is the amdgpu dynamic power management of a family.
@@ -589,7 +625,7 @@ type State struct {
 // scaling_max_freq of its policies. Utilization is in 0..1. Measured says a
 // real collector could read the component's energy or power: a package or
 // DRAM zone with energy_uj, an NVIDIA GPU with total_energy_mj, an AMD GPU
-// with power1_input or power1_average.
+// with power1_input or power1_average, an Intel GPU with energy<N>_input.
 //
 // ClockHz is a GPU's current clock per domain, keyed by the
 // semconv.ClockDomain* values, nil when the GPU has no clock model.

@@ -62,11 +62,16 @@ func classifyErrno(errno string) string {
 
 // classifyLimitFile reports whether file sets a power limit: a powercap
 // constraint_<n>_power_limit_uw (powercap.rst), an hwmon power1_cap (amdgpu
-// and the HSMP socket limit, sysfs-interface.rst) or the NVML limit the fake
-// nvidia-smi writes, power_limit_mw.
+// and the HSMP socket limit, sysfs-interface.rst), the sustained limit
+// power1_max or power2_max of an Intel GPU (i915 and xe), or the NVML limit
+// the fake nvidia-smi writes, power_limit_mw.
 func classifyLimitFile(file string) bool {
 	base := path.Base(file)
-	return strings.HasSuffix(base, "_power_limit_uw") || base == "power1_cap" || base == "power_limit_mw"
+	switch base {
+	case "power1_cap", "power1_max", "power2_max", "power_limit_mw":
+		return true
+	}
+	return strings.HasSuffix(base, "_power_limit_uw")
 }
 
 // classifyHwType is the hw.type of component id: cpu for cpu<n>, memory for

@@ -449,7 +449,7 @@ var (
 	renderRejectWrites  = map[string]bool{"": true, "locked": true, "disabled": true}
 	renderGroupings     = map[string]bool{"": true, "per-cpu": true, "per-core": true}
 	renderHSMPLayouts   = map[string]bool{"platform": true}
-	renderGPUVendors    = map[string]bool{"nvidia": true, "amd": true}
+	renderGPUVendors    = map[string]bool{"nvidia": true, "amd": true, "intel": true}
 	renderLabellers     = map[string]bool{"gfd": true, "listed": true}
 	renderPowerSensors  = map[string]bool{"": true, "input": true, "average": true, "both": true}
 	renderPPT1Modes     = map[string]bool{"": true, "absent": true, "present": true}
@@ -463,11 +463,18 @@ var (
 )
 
 // renderExposures lists the GPU exposure modes per vendor. AMD has only
-// whole devices and DRA so far.
+// whole devices and DRA so far, Intel whole devices.
 var renderExposures = map[string]map[string]bool{
 	"nvidia": {"whole": true, "mig-single": true, "mig-mixed": true, "timeslice-rename": true, "timeslice-norename": true, "dra": true},
 	"amd":    {"whole": true, "dra": true},
+	"intel":  {"whole": true},
 }
+
+// renderIntelDrivers are the values of gpus.intel.driver.
+var renderIntelDrivers = map[string]bool{IntelDriverI915: true, IntelDriverXe: true}
+
+// renderIntelMaxPowerUnitShift is the largest PKG_PWR_UNIT, a four bit field.
+const renderIntelMaxPowerUnitShift = 15
 
 // renderToolVariants lists the pinned tool variants (package smi) and the vendor
 // each tool reports on.
@@ -586,7 +593,7 @@ func renderValidateNode(p *Profile) []error {
 		fail("reserved: %v", err)
 	}
 	for name, v := range n.ExtendedResources {
-		if strings.HasPrefix(name, "nvidia.com/") || strings.HasPrefix(name, "amd.com/") {
+		if strings.HasPrefix(name, "nvidia.com/") || strings.HasPrefix(name, "amd.com/") || name == "gpu.intel.com/i915" || name == "gpu.intel.com/xe" {
 			fail("extendedResources.%s: GPU resources come from gpus.exposure", name)
 		}
 		if v < 0 {
@@ -613,8 +620,9 @@ func renderValidatePCI(p *Profile) []error {
 		check(fmt.Sprintf("pci[%d]", i), d, true)
 	}
 	// A GPU's class may be unknown, as in a capture: it then gets no NFD
-	// label. An AMD GPU needs its vendor, which the fake tools filter on.
-	if g := p.GPUs; g != nil && (g.PCI.Vendor.V != "" || g.Vendor == "amd") {
+	// label. An AMD GPU needs its vendor, which the fake tools filter on,
+	// and an Intel GPU its vendor, which the agent lists it by.
+	if g := p.GPUs; g != nil && (g.PCI.Vendor.V != "" || g.Vendor == "amd" || g.Vendor == "intel") {
 		check("gpus.pci", g.PCI, false)
 	}
 	return errs
@@ -829,9 +837,10 @@ func renderValidateGPUs(p *Profile) []error {
 		errs = append(errs, fmt.Errorf("%s: gpus."+format, append([]any{p.Name}, args...)...))
 	}
 	if !renderGPUVendors[g.Vendor] {
-		fail("vendor %q is not nvidia or amd", g.Vendor)
+		fail("vendor %q is not nvidia, amd or intel", g.Vendor)
 		return errs
 	}
+	errs = append(errs, renderValidateIntelGPU(p)...)
 	if g.Count.V < 1 {
 		fail("count must be at least 1")
 	}

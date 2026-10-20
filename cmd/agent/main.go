@@ -178,11 +178,12 @@ type GPUDevice struct {
 	CurrentCapWatts float64
 	MinCapWatts     float64
 	MaxCapWatts     float64
-	// BusID and HwmonDir are set for AMD devices only: the PCI bus id and
-	// the amdgpu hwmon directory the cap is read from and written to.
-	// CapUnknown marks an AMD device that refused to read its cap (runtime
-	// suspended or in reset) and that the agent has neither read nor
-	// written: its cap and range are 0, and a cap is written to it.
+	// BusID and HwmonDir are set for AMD and Intel devices only: the PCI
+	// bus id and the amdgpu, i915 or xe hwmon directory the cap is read
+	// from and written to. CapUnknown marks an AMD device that refused to
+	// read its cap (runtime suspended or in reset) and that the agent has
+	// neither read nor written, or an Intel device whose cap did not read:
+	// its cap is 0, and a cap is written to it.
 	BusID      string
 	HwmonDir   string
 	CapUnknown bool
@@ -1091,6 +1092,11 @@ func applyGPUIntentFrom(
 			return "none", "blocked", "no amdgpu device has a power cap of its own", map[string]any{"vendor": vendor}, nil
 		}
 	}
+	if vendor == "intel" {
+		if resolveFrom = intelGPURanged(devices); len(resolveFrom) == 0 {
+			return "none", "blocked", intelGPUUnknownRange(devices), map[string]any{"vendor": vendor}, nil
+		}
+	}
 	capPerGPU, msg, ok := resolveGPUCapPerDevice(intent, resolveFrom)
 	if !ok {
 		return "none", "blocked", msg, map[string]any{"vendor": vendor, "deviceCount": len(devices)}, nil
@@ -1120,6 +1126,11 @@ func applyGPUIntentFrom(
 			return "host-amd", "error", err.Error(), observed, nil
 		}
 		return "host-amd", "applied", fmt.Sprintf("applied gpu cap %.1fW on %d devices", capPerGPU, len(devices)), observed, nil
+	case "intel":
+		if err := applyIntelGPUCap(devices, capPerGPU); err != nil {
+			return intelBackend, "error", err.Error(), observed, nil
+		}
+		return intelBackend, "applied", fmt.Sprintf("applied gpu cap %.1fW on %d devices", capPerGPU, len(devices)), observed, nil
 	default:
 		return "none", "blocked", fmt.Sprintf("unsupported gpu vendor %q", vendor), observed, nil
 	}
@@ -1198,6 +1209,9 @@ func detectGPUVendor(ctx context.Context, nodeLabels map[string]string) string {
 	if hasNFDGPUVendor(nodeLabels, "1002") {
 		return "amd"
 	}
+	if intelGPULabelled(nodeLabels) {
+		return "intel"
+	}
 	if _, err := os.Stat(nvidiaControlDevicePath); err == nil {
 		return "nvidia"
 	}
@@ -1210,6 +1224,9 @@ func detectGPUVendor(ctx context.Context, nodeLabels map[string]string) string {
 	if amdgpuSysfsPresent() {
 		return "amd"
 	}
+	if intelGPUSysfsPresent() {
+		return "intel"
+	}
 	return "none"
 }
 
@@ -1219,6 +1236,8 @@ func listGPUDevices(ctx context.Context, vendor string) ([]GPUDevice, error) {
 		return listNvidiaDevices(ctx)
 	case "amd":
 		return listAmdDevices()
+	case "intel":
+		return listIntelDevices()
 	default:
 		return nil, nil
 	}
@@ -1439,25 +1458,35 @@ func discoverHardwareWith(ctx context.Context, node *corev1.Node, gpuFacts *nvid
 	}
 	// The AMD node labeller names the board in gpu.product-name (under both
 	// of its prefixes); amd.com/gpu.product is the older key, and the family
-	// code (GC_11_0_0, AI), read last, names no board. The labels name the
-	// model whenever the listing does not, as amdgpu sysfs never does.
+	// code (GC_11_0_0, AI), read last, names no board; Intel's NFD rules
+	// name a data center GPU in gpu.intel.com/product (Flex_170). The labels
+	// name the model whenever the listing does not, as amdgpu sysfs never
+	// does and Intel sysfs does only for the device ids it knows.
 	labelModel := firstNonEmpty(
 		nodeLabels["joulie.io/gpu.product"],
 		joulie.GPUProductBase(nodeLabels["nvidia.com/gpu.product"]),
 		nodeLabels["amd.com/gpu.product-name"],
 		nodeLabels["beta.amd.com/gpu.product-name"],
 		nodeLabels["amd.com/gpu.product"],
+		nodeLabels["gpu.intel.com/product"],
 		nodeLabels["amd.com/gpu.family"],
 	)
 	if len(gpuDevices) > 0 {
 		// On AMD the range, the cap and control come from the first device
 		// with a cap of its own whose range is known: a secondary die, or a
 		// GPU asleep since the agent started, may come first, and a node
-		// with none has no control.
+		// with none has no control. On Intel they come from the first
+		// device whose range is known.
 		ref := gpuDevices[0]
-		if hw.GPUVendor == "amd" {
+		switch hw.GPUVendor {
+		case "amd":
 			ref = GPUDevice{}
 			if _, ranged := amdgpuCapSets(gpuDevices); len(ranged) > 0 {
+				ref = ranged[0]
+			}
+		case "intel":
+			ref = GPUDevice{}
+			if ranged := intelGPURanged(gpuDevices); len(ranged) > 0 {
 				ref = ranged[0]
 			}
 		}
