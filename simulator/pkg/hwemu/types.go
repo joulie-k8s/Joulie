@@ -577,13 +577,18 @@ type PeerTransfer struct {
 // RenderCheckInterval checks render-owned files only once per interval;
 // agent-writable files are still read back every step. Zero checks every
 // step. ReceiverGate is one of the ReceiverGate* values; empty means
-// ReceiverGateProfile.
+// ReceiverGateProfile. Live makes the Node the content of a live view of
+// its tree, such as a FUSE mount (LiveRead, LiveWrite): every write reaches
+// the Node through the view, so a Step reads back no agent-writable file and
+// checks no render-owned one, and the files on disk follow the Node, for a
+// restart to resume from.
 type Options struct {
 	Substep             time.Duration
 	Start               time.Time
 	Frozen              bool
 	RenderCheckInterval time.Duration
 	ReceiverGate        string
+	Live                bool
 }
 
 // Values of Options.ReceiverGate: the profile's receiverGate.enabled, off on

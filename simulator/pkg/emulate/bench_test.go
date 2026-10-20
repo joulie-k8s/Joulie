@@ -21,15 +21,21 @@ import (
 // under a write lease; a file a non-root caller may not write, as here
 // outside the simulator's root container, also costs two chmods per write,
 // so the harness's numbers come from a root run (see "Tick cost" in
-// website/content/en/docs/simulator/emulate-mode.md).
+// website/content/en/docs/simulator/emulate-mode.md). The -live cases start
+// the nodes with hwemu.Options.Live, as FUSE mode does, without a mount or a
+// reader: their tick reads back no file, and only writes what changed.
 func BenchmarkEM01Tick(b *testing.B) {
 	for _, bc := range []struct {
 		name, profile string
 		nodes         int
+		live          bool
 	}{
-		{"intel-16", "intel-xeon-2s-rapl", 16},
-		{"intel-200", "intel-xeon-2s-rapl", 200},
-		{"epyc-16", "amd-epyc-2s-energy-only", 16},
+		{"intel-16", "intel-xeon-2s-rapl", 16, false},
+		{"intel-200", "intel-xeon-2s-rapl", 200, false},
+		{"epyc-16", "amd-epyc-2s-energy-only", 16, false},
+		{"intel-16-live", "intel-xeon-2s-rapl", 16, true},
+		{"intel-200-live", "intel-xeon-2s-rapl", 200, true},
+		{"epyc-16-live", "amd-epyc-2s-energy-only", 16, true},
 	} {
 		b.Run(bc.name, func(b *testing.B) {
 			profiles, err := hwemu.BuiltinProfiles()
@@ -56,6 +62,10 @@ func BenchmarkEM01Tick(b *testing.B) {
 				Members: members,
 				Start:   emuStart,
 				Logf:    func(string, ...any) {},
+				NewRunner: func(p *hwemu.Profile, t *hwemu.Tree, o hwemu.Options) (Runner, error) {
+					o.Live = bc.live
+					return hwemu.NewNode(p, t, o)
+				},
 			})
 			if err != nil {
 				b.Fatal(err)

@@ -193,21 +193,26 @@ func nodeRewriteInPlace(path string, seen, data []byte, mtime time.Time, lease b
 
 // sfile returns the S file at abs, or nil when the tree has none there, so a
 // Node only ever writes files Render created. The content on disk is the
-// starting point: an unchanged value is not rewritten.
+// starting point: an unchanged value is not rewritten. A Live node indexes
+// it by path (liveS).
 func (n *Node) sfile(abs string) *nodeSFile {
 	fi, err := os.Lstat(abs)
 	if err != nil || !fi.Mode().IsRegular() {
 		return nil
 	}
 	rel := n.relPath(abs)
+	f := &nodeSFile{rel: rel, path: abs, mode: fi.Mode().Perm()}
 	if c, ok := n.tree.rendered[rel]; ok && nodeRenderedAsIs(fi, c) {
-		return &nodeSFile{rel: rel, path: abs, mode: fi.Mode().Perm(), last: c}
-	}
-	b, err := os.ReadFile(abs)
-	if err != nil {
+		f.last = c
+	} else if b, err := os.ReadFile(abs); err == nil {
+		f.last = string(b)
+	} else {
 		return nil
 	}
-	return &nodeSFile{rel: rel, path: abs, mode: fi.Mode().Perm(), last: string(b)}
+	if n.liveS != nil {
+		n.liveS[rel] = f
+	}
+	return f
 }
 
 // nodeReadWithMTime reads path and the modification time it had before the

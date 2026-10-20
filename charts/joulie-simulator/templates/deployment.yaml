@@ -24,6 +24,9 @@ applied below, still sets one. */}}
 {{- $_ := set $env "SIM_HWEMU_ROOT" ($emulate.root | toString) }}
 {{- $_ := set $env "SIM_CLUSTER_SPEC" "/etc/joulie-sim-spec/cluster-spec.yaml" }}
 {{- $_ := set $env "SIM_EMULATE_TICK" ($emulate.tick | toString) }}
+{{- if $emulate.fuse }}
+{{- $_ := set $env "SIM_HWEMU_FUSE" "true" }}
+{{- end }}
 {{- /* YAML reads an unquoted on or off as a boolean: map it back. */}}
 {{- $gate := $emulate.receiverGate }}
 {{- if kindIs "bool" $gate }}
@@ -90,6 +93,14 @@ spec:
             runAsUser: 0
             runAsGroup: 0
             runAsNonRoot: false
+            {{- if $emulate.fuse }}
+            # FUSE mode mounts the views (/dev/fuse, CAP_SYS_ADMIN) and binds
+            # them into the root, which only a privileged container may
+            # propagate to the host (Bidirectional).
+            privileged: true
+            capabilities:
+              add: ["SYS_ADMIN"]
+            {{- end }}
           {{- end }}
           env:
             - name: POD_NAME
@@ -131,6 +142,11 @@ spec:
               readOnly: true
             - name: hwemu-root
               mountPath: {{ $emulate.root }}
+              {{- if $emulate.fuse }}
+              mountPropagation: Bidirectional
+            - name: dev-fuse
+              mountPath: /dev/fuse
+              {{- end }}
             {{- end }}
       {{- $nodeSelector := .Values.nodeSelector | default dict }}
       {{- if $emulate.enabled }}
@@ -165,4 +181,10 @@ spec:
           hostPath:
             path: {{ $emulate.root }}
             type: DirectoryOrCreate
+        {{- if $emulate.fuse }}
+        - name: dev-fuse
+          hostPath:
+            path: /dev/fuse
+            type: CharDevice
+        {{- end }}
         {{- end }}

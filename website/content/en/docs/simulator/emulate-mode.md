@@ -16,13 +16,26 @@ For each spec node the simulator keeps a tree under `SIM_HWEMU_ROOT/<node>/`, re
 - `state/`: what the fake GPU tools read and write, such as NVML limits and energy, and the node's energy ledger.
 - `bin/`: `nvidia-smi`, `rocm-smi` and `amd-smi`, links to `fakesmi`, which the simulator installs in `SIM_HWEMU_ROOT/lib/`. The agent pod puts `bin/` first on its `PATH`.
 
-One tick loop steps every node to wall time each `SIM_EMULATE_TICK` (default 1 s), on `SIM_EMULATE_WORKERS` workers: it reads back the limits the agent wrote, advances power, energy and frequency, and publishes an immutable snapshot. Requests read the latest snapshot and never step a node, so reading `/telemetry/<node>` any number of times changes nothing. A value the hardware would refuse, out of range or unparsable, is reverted at the next tick where a real driver would have rejected the write, and reported as an [event]({{< relref "/docs/simulator/metrics.md#events-emulate-mode" >}}).
+One tick loop steps every node to wall time each `SIM_EMULATE_TICK` (default 1 s), on `SIM_EMULATE_WORKERS` workers: it reads back the limits the agent wrote, advances power, energy and frequency, and publishes an immutable snapshot. Requests read the latest snapshot and never step a node, so reading `/telemetry/<node>` any number of times changes nothing. With plain files, a value the hardware would refuse, out of range or unparsable, lands in the file and is reverted at the next tick, where a real driver would have failed the write; in [FUSE mode](#fuse-mode) the write fails at once. Either way it is reported as an [event]({{< relref "/docs/simulator/metrics.md#events-emulate-mode" >}}).
+
+## FUSE mode
+
+With `SIM_HWEMU_FUSE=true` (chart value `emulate.fuse`) the simulator serves each node's `sys/` and `state/` through FUSE at `SIM_HWEMU_ROOT/fuse/<node>/`, and the emulated agents mount those (`agent.emulated.fuse`); `cpuinfo`, `bin/` and `dev/nvidiactl` stay on the tree. The tree on disk becomes the simulator's own copy, kept up to date for a restart to resume from. The simulated cluster runs this mode unless `SIMCLUSTER_HWEMU=files`.
+
+- **A read is computed when it is made.** The node steps to the time of the read, on the same substep grid a tick uses, so an energy counter moves between two reads within a tick, at 1 ms resolution, never goes back, and at a tick's time reads what the tick computes. A value a reader saw is on disk before the read returns, so a restart never resumes below it.
+- **A write is answered when it is made.** A value the driver refuses fails with the kernel's errno (`ENODATA` for a locked RAPL limit, `EINVAL`, `EBUSY`, ...) and changes nothing; any other value is in effect, and reads back normalized, before the write returns. Each `write` call is one store, as on sysfs, and every one is an event of the next tick.
+- **Files look as sysfs shows them.** An attribute is 4096 bytes whatever its content, opening a file without write permission for writing fails with `EACCES` even for root, a write to a writable file the emulator does not model (such as `intel_pstate/status`) is taken and changes nothing, and nothing can be created, removed or renamed.
+- **A load change** takes effect from the node's last read when a read stepped the node past the previous tick, where plain files take it from the previous tick.
+
+It needs Linux and `/dev/fuse`. As root, as the chart runs it, the simulator mounts the file system in its own `/tmp` and bind-mounts each view at `fuse/<node>/sys` and `fuse/<node>/state`: that takes `CAP_SYS_ADMIN`, and the views reach the agents only with the root on a shared mount, propagation `Bidirectional` into the simulator and `HostToContainer` into each agent. The bind mounts are never unmounted: a restarted simulator binds its views over them, which reaches the running agents through that propagation, so they need no restart, and their reads fail with `ENOTCONN` until it does. Removing them takes `umount -l` on the host, or the end of the host's mount namespace (`make simcluster-down` for the simulated cluster). As another user one FUSE mount at `fuse/`, through `fusermount3`, serves the same paths and is unmounted when the simulator stops; the unit tests run that way.
+
+Plain files need none of this. They stay the default of the simulator, of the hwemu tests and of any host without FUSE; how they differ from a real node is under [Deviations from a real cluster]({{< relref "/docs/simulator/simulated-cluster.md#deviations-from-a-real-cluster" >}}).
 
 `/control/<node>` answers 409 for an emulated node: its limits are written to its files.
 
 ## Governors and clocks
 
-A tree also holds the CPU and GPU governor files of its profile, so the agent's governor discovery and control run against them. File classes: R is rendered and read-only, S is written by the emulator, A is writable by the agent and read back each tick, where a value the kernel would refuse is put back and reported as a `rejected` event with its errno (`joulie.sim.write.rejected`, see [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})).
+A tree also holds the CPU and GPU governor files of its profile, so the agent's governor discovery and control run against them. File classes: R is rendered and read-only, S is written by the emulator, A is writable by the agent, where a value the kernel would refuse is reported as a `rejected` event with its errno (`joulie.sim.write.rejected`, see [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})): put back at the next tick with plain files, refused at the write in [FUSE mode](#fuse-mode).
 
 | Files, under `sys/` or `state/` | Class | Where | What the emulator does |
 |---|---|---|---|
@@ -174,7 +187,7 @@ A workload runs on the v1 engine, one run at a time, started through the [run AP
 
 ## Tick cost
 
-A tick is mostly system calls on the nodes' files. The readback does one `lstat` per agent-writable file and reads only the files written since its last read, and the emulator rewrites only the files whose content changed. `SIM_EMULATE_WORKERS` defaults to `GOMAXPROCS`, at most 12, because those calls contend past about 12 workers.
+A tick is mostly system calls on the nodes' files. The readback does one `lstat` per agent-writable file and reads only the files written since its last read, and the emulator rewrites only the files whose content changed. In [FUSE mode](#fuse-mode) the tick reads back no file, since every write reached the node through its view, and the reads of the views step the nodes between ticks, a cost the agents' reads pay instead. `SIM_EMULATE_WORKERS` defaults to `GOMAXPROCS`, at most 12, because those calls contend past about 12 workers.
 
 The median tick of the benchmark below on a shared machine, approximate and machine-dependent:
 
@@ -186,7 +199,7 @@ The median tick of the benchmark below on a shared machine, approximate and mach
 
 So 200 Intel nodes fit in the default 1 s tick without tmpfs. A start on an existing root compares the live tree with the layout and creates only the missing entries: resuming 200 Intel nodes takes about 0.7 s, rendering them on a fresh root about 12 s.
 
-To measure on your machine (the trees go to `TMPDIR`; `p50-ms` is the median tick, and a run as root matches the simulator's container, since a non-root run pays two `chmod` calls per write of a file it may not write):
+To measure on your machine (the trees go to `TMPDIR`; `p50-ms` is the median tick, the `-live` cases are the tick of FUSE mode, and a run as root matches the simulator's container, since a non-root run pays two `chmod` calls per write of a file it may not write):
 
 ```bash
 go test ./simulator/pkg/emulate/ -run '^$' -bench EM01Tick -benchtime 10x

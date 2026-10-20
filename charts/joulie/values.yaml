@@ -51,12 +51,17 @@ agent:
   # over /proc/cpuinfo, state at /emu/state, the GPU tool links at /emu/bin,
   # root/lib at /emu/lib. nodes is written by "simcluster agents" (entries:
   # name, profile, devNvidiactl, extraVolumes, extraVolumeMounts). These pods
-  # ignore hostNetwork and privileged above: they get neither.
+  # ignore hostNetwork and privileged above: they get neither. fuse: true
+  # when the simulator serves the trees through FUSE (the simulator chart's
+  # emulate.fuse): sys and state then come from root/fuse/<name>, mounted
+  # with mount propagation HostToContainer, so a restarted simulator's views
+  # reach the running pods.
   emulated:
     root: /var/lib/joulie-hwemu
     hostNodeSelector:
       joulie.io/hwemu-host: "true"
     path: /emu/bin:/usr/local/bin:/usr/bin:/bin
+    fuse: false
     nodes: []
   pool:
     replicas: 2

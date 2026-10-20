@@ -73,7 +73,7 @@ type EnsureFunc func(*hwemu.Profile, string, hwemu.RenderOptions) (*hwemu.Tree, 
 // Config configures an Emulator.
 //
 // Root holds one directory per member, named after it, plus LibDir,
-// LockFile and FacilityLedgerFile. Cluster is the spec name. Facility gives
+// LockFile and FacilityLedgerFile, and FUSEDir in FUSE mode. Cluster is the spec name. Facility gives
 // the cooling zones; its temperatures are read only when a Tick has no
 // FacilityFunc.
 //
@@ -86,6 +86,12 @@ type EnsureFunc func(*hwemu.Profile, string, hwemu.RenderOptions) (*hwemu.Tree, 
 // clocks start, time.Now() when zero. ReceiverGate is every node's
 // hwemu.Options.ReceiverGate, one of the hwemu.ReceiverGate* values; empty
 // means hwemu.ReceiverGateProfile.
+//
+// FUSE serves every member's sys/ and state/ through FUSE at ViewDir
+// (fuse.go), with its nodes started with hwemu.Options.Live: a write the
+// kernel would refuse fails at once with its errno, and counters move at
+// read time. Clock is the time Run ticks at and the views read at,
+// time.Now when nil.
 //
 // Ensure and NewRunner default to hwemu.Ensure and hwemu.NewNode. Registerer
 // receives the emulator's metrics when not nil. Logf defaults to log.Printf.
@@ -100,6 +106,8 @@ type Config struct {
 	FakeSMISource       string
 	Start               time.Time
 	ReceiverGate        string
+	FUSE                bool
+	Clock               func() time.Time
 	Ensure              EnsureFunc
 	NewRunner           func(*hwemu.Profile, *hwemu.Tree, hwemu.Options) (Runner, error)
 	Registerer          prometheus.Registerer
@@ -131,6 +139,7 @@ type Emulator struct {
 	logf      func(string, ...any)
 	unlock    func() error
 	metrics   *emulatorMetrics
+	views     *views // FUSE mode (fuse.go), nil otherwise
 
 	// now and newTicker are the clock and the ticker of Run: time.Now and
 	// time.NewTicker, which tests replace to time Run exactly.
@@ -159,6 +168,7 @@ type Emulator struct {
 type member struct {
 	spec       clusterspec.Member
 	runner     Runner
+	tree       *hwemu.Tree
 	report     hwemu.EnsureReport
 	sockets    int
 	gpus       int
@@ -213,6 +223,9 @@ func New(c Config) (*Emulator, error) {
 	if c.Logf == nil {
 		c.Logf = log.Printf
 	}
+	if c.Clock == nil {
+		c.Clock = time.Now
+	}
 	members, err := emulatorMembers(c.Members)
 	if err != nil {
 		return nil, err
@@ -236,7 +249,7 @@ func New(c Config) (*Emulator, error) {
 		members:   members,
 		byName:    make(map[string]*member, len(members)),
 		lastTick:  c.Start,
-		now:       time.Now,
+		now:       c.Clock,
 		newTicker: emulatorTicker,
 		facParams: facility.Params{
 			BaseAmbientC: emulatorOr(c.Facility.AmbientC, defaultAmbientC),
@@ -254,7 +267,7 @@ func New(c Config) (*Emulator, error) {
 		e.logf("emulate: installed %s from %s", filepath.Join(root, LibDir, FakeSMIName), c.FakeSMISource)
 	}
 
-	opts := hwemu.Options{Substep: c.Substep, Start: c.Start, RenderCheckInterval: c.RenderCheckInterval, ReceiverGate: c.ReceiverGate}
+	opts := hwemu.Options{Substep: c.Substep, Start: c.Start, RenderCheckInterval: c.RenderCheckInterval, ReceiverGate: c.ReceiverGate, Live: c.FUSE}
 	errs := make([]error, len(members))
 	e.parallel(len(members), func(i int) {
 		errs[i] = e.startMember(members[i], c, opts)
@@ -267,6 +280,12 @@ func New(c Config) (*Emulator, error) {
 	}
 	if len(failed) > 0 {
 		return fail(errors.Join(failed...))
+	}
+	if c.FUSE {
+		if e.views, err = mountViews(root, members, c.Clock); err != nil {
+			return fail(err)
+		}
+		e.logf("emulate: %s", e.views)
 	}
 
 	e.zones = emulatorZones(c.Facility.CoolingZones, members)
@@ -293,7 +312,7 @@ func New(c Config) (*Emulator, error) {
 
 // emulatorMembers checks the members and returns them sorted by name. A
 // member's name is its directory under the root, so it must be one path
-// element that is neither hidden nor LibDir.
+// element that is neither hidden nor LibDir or FUSEDir.
 func emulatorMembers(in []clusterspec.Member) ([]*member, error) {
 	var errs []error
 	seen := map[string]bool{}
@@ -302,8 +321,8 @@ func emulatorMembers(in []clusterspec.Member) ([]*member, error) {
 		switch {
 		case m.Name == "" || strings.ContainsAny(m.Name, `/\`) || strings.HasPrefix(m.Name, "."):
 			errs = append(errs, fmt.Errorf("emulate: member name %q is not a directory name", m.Name))
-		case m.Name == LibDir:
-			errs = append(errs, fmt.Errorf("emulate: member name %q is the emulator's %s directory", m.Name, LibDir))
+		case m.Name == LibDir || m.Name == FUSEDir:
+			errs = append(errs, fmt.Errorf("emulate: member name %q is the emulator's %s directory", m.Name, m.Name))
 		case seen[m.Name]:
 			errs = append(errs, fmt.Errorf("emulate: member %s is listed twice", m.Name))
 		case m.Profile == nil:
@@ -364,7 +383,7 @@ func (e *Emulator) startMember(m *member, c Config, opts hwemu.Options) error {
 	if stateRoot == "" {
 		stateRoot = filepath.Join(tree.Root, layout.StateDir)
 	}
-	m.runner, m.report = runner, rep
+	m.runner, m.tree, m.report = runner, tree, rep
 	m.report.Added = append([]string(nil), rep.Added...)
 	m.ledgerPath = filepath.Join(stateRoot, LedgerFile)
 	m.tmpDir = filepath.Join(stateRoot, layout.TmpDir)
@@ -447,8 +466,9 @@ func (e *Emulator) parallel(n int, f func(int)) {
 }
 
 // Close releases the root and unregisters the metrics. The trees and
-// ledgers stay on disk for the next New. A Tick after Close fails; Latest
-// still returns the last snapshot.
+// ledgers stay on disk for the next New, and in FUSE mode the views are
+// left as views.close says. A Tick after Close fails; Latest still returns
+// the last snapshot.
 func (e *Emulator) Close() error {
 	e.tickMu.Lock()
 	defer e.tickMu.Unlock()
@@ -457,6 +477,9 @@ func (e *Emulator) Close() error {
 	}
 	e.closed = true
 	e.metrics.unregister()
+	if err := e.views.close(); err != nil {
+		e.logf("emulate: %v", err)
+	}
 	for _, m := range e.members {
 		m.ledgerFile.close()
 	}

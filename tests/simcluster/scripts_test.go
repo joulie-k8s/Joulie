@@ -577,6 +577,8 @@ func scNew(t *testing.T) *scEnv {
 		"values/simcluster.yaml",
 		"values/simcluster-simulator.yaml",
 		"values/simcluster-extender-service.yaml",
+		"values/simcluster-fuse.yaml",
+		"values/simcluster-simulator-fuse.yaml",
 	} {
 		e.copyIn(filepath.Join(scRepo, f), f)
 	}
@@ -628,6 +630,9 @@ func scNew(t *testing.T) *scEnv {
 		"FAKE_LOG":       filepath.Join(e.state, "calls.log"),
 		"FAKE_STATE":     e.state,
 		"FAKE_BIN":       e.bin,
+		// FUSE mode, the default, checks the host's FUSE device; any
+		// character device stands in for it.
+		"SIM_FUSE_DEVICE": "/dev/null",
 	}
 	e.seedCluster()
 	return e
