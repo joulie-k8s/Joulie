@@ -102,6 +102,11 @@ controllerManager:
     GPU_MODEL_CAPS_JSON: "{}"
     # First match wins; the AMD node labeller names the board in gpu.product-name.
     GPU_PRODUCT_LABEL_KEYS: "joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,amd.com/gpu.family"
+    # A GPU node's CPU gets no eco cap. true gives the CPU caps of its profile
+    # to a GPU node whose NodeHardware reports no GPU control (Intel GPUs,
+    # NVIDIA boards whose power limits read [N/A]), which otherwise runs
+    # uncapped in eco.
+    CPU_ECO_CAP_ON_UNCAPPABLE_GPU_NODES: "false"
     # Governor control, off by default: off, cpu, gpu or all. When on, the
     # controller manager writes vendor-neutral CPU and GPU governor presets
     # into each NodeTwin, by the profile the node runs at, and only presets the
@@ -123,6 +128,9 @@ controllerManager:
     # Per GPU model, keyed like GPU_MODEL_CAPS_JSON:
     # {"<model>": {"performance": "sustained", "eco": "efficient", "ecoCeilingPctOfMax": 70}}
     GPU_GOVERNOR_MODEL_PRESETS_JSON: "{}"
+    # true writes sustained only while a pod requesting 2 or more GPUs runs on
+    # the node, and no GPU governor otherwise.
+    GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU: "false"
     # Measured power and facility metrics come from this Prometheus: producers
     # push hw.* over OTLP (--web.enable-otlp-receiver), and promoting k8s.node.name
     # (otlp.promote_resource_attributes) avoids a target_info join. See values/prometheus-grafana.yaml.

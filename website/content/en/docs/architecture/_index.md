@@ -41,7 +41,7 @@ If you are new, first read:
 | `NodeHardware` | `status.cpu.landmarks` | Agent | minimum, nominal and maximum boost frequency from cpufreq |
 | `NodeTwin` | `spec.*` | Controller manager (policy) | desired profile, caps, policy name, draining |
 | `NodeTwin` | `spec.cpu.governor`, `spec.gpu.governor` | Controller manager (policy) | governor presets; absent means the agent leaves the governor as it is |
-| `NodeTwin` | `status.controlStatus.*` | Agent | what was applied on the node, per component |
+| `NodeTwin` | `status.controlStatus.*` | Agent | what was applied on the node, per component; the twin reads `gpu.result` to count only a GPU cap that applied |
 | `NodeTwin` | `status.controlStatus.cpuGovernor`, `status.controlStatus.gpuGovernor` | Agent | outcome of the last governor write, with the native setting in `applied` |
 | `NodeTwin` | every other `status` field | Controller manager (twin) | the twin's computed state: measured power, headroom, stress scores, PUE |
 

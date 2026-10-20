@@ -32,7 +32,10 @@ type Input struct {
 	Profile   string  // "eco" or "performance"
 	CPUCapPct float64 // controller manager cap percentage for CPU (0 means 100)
 	GPUCapPct float64 // controller manager cap percentage for GPU (0 means 100)
-	Draining  bool
+	// GPUCapNotApplied marks a planned GPU cap that does not reach the GPUs
+	// (GPUCapApplies is false): the GPU budget is then the uncapped power.
+	GPUCapNotApplied bool
+	Draining         bool
 
 	// Measured power from the controller manager (3-tier fallback: kepler, utilization, static).
 	MeasuredNodePowerW float64
@@ -136,6 +139,9 @@ func Compute(in Input) Output {
 
 	cpuCappedPower := cpuTDP * in.CPUCapPct / 100.0
 	gpuCappedPower := gpuTDP * in.GPUCapPct / 100.0
+	if in.GPUCapNotApplied {
+		gpuCappedPower = gpuTDP
+	}
 	nodeCappedPower := cpuCappedPower + gpuCappedPower
 
 	// Populate power measurement output.
@@ -169,6 +175,25 @@ func Compute(in Input) Output {
 	out.EstimatedPUE = 1.0 + 0.05 + (out.PredictedCoolingStressScore/100.0)*0.35
 
 	return out
+}
+
+// GPUCapApplies reports whether a planned GPU cap reaches the GPUs of a node,
+// from the GPUs its agent published in NodeHardware and the agent's last GPU
+// cap result (NodeTwin status.controlStatus.gpu, nil when there is none). A
+// blocked or failed write did not apply. An applied one did, even where
+// NodeHardware reports no GPU control: the simulator's HTTP backend caps GPUs
+// the agent cannot list. Otherwise GPUs without control (Intel GPUs, NVIDIA
+// boards whose power limits read [N/A]) are not capped.
+func GPUCapApplies(gpu joulie.NodeHardwareGPU, last *joulie.ControlResult) bool {
+	if last != nil {
+		switch last.Result {
+		case joulie.CapResultBlocked, joulie.CapResultError:
+			return false
+		case joulie.CapResultApplied:
+			return true
+		}
+	}
+	return gpu.Count <= 0 || gpu.ControlAvailable
 }
 
 // computePowerHeadroom returns a score (clamped to max 100) representing

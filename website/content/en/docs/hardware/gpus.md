@@ -51,7 +51,7 @@ The cap is per physical GPU, so the count it multiplies comes, in this order, fr
 
 NVML sets a power limit per device and has none per MIG instance, so the cap of a shared or partitioned GPU holds every MIG instance and replica on it, as a RAPL cap holds every pod on a CPU. A shared or partitioned GPU node is planned like any GPU node: the GPU cap of its profile, no eco CPU cap, and the GPU governor when governor control is on. The extender keeps performance pods off eco nodes, so every tenant of an eco GPU accepted eco; keep a node whose MIG instances must run at full clocks out of Joulie with `joulie.io/reserved=true`. A MIG reconfiguration resets the GPU and its limit, and the agent sets the cap again at its next reconcile. The limit of a MIG-enabled GPU follows the NVML documentation; it has not been measured on hardware.
 
-An Intel GPU node (`gpu.intel.com/i915`, `gpu.intel.com/xe`) is a GPU node too, but the agent has no Intel GPU backend: its GPU cap ends `blocked` with `no supported GPU backend detected`, and in eco it gets no eco CPU cap either, so it runs uncapped.
+An Intel GPU node (`gpu.intel.com/i915`, `gpu.intel.com/xe`) is a GPU node too, but the agent has no Intel GPU backend: its GPU cap ends `blocked` with `no supported GPU backend detected`, and in eco it gets no eco CPU cap either, so it runs uncapped unless `CPU_ECO_CAP_ON_UNCAPPABLE_GPU_NODES` is true.
 
 GPU feature discovery appends `-MIG-<profile>`, `-MIG-INVALID` or `-SHARED` to `nvidia.com/gpu.product`. Joulie reads the product without them, for the catalog, the GPU family and the `GPU_MODEL_CAPS_JSON` and `GPU_GOVERNOR_MODEL_PRESETS_JSON` keys.
 
@@ -112,7 +112,7 @@ Joulie GPU capping is node-level and not a GPU slicing API.
 
 ## Known limitations
 
-- **Intel GPUs are not capped.** The agent has no Intel GPU backend, so an Intel GPU node runs uncapped ([Shared and partitioned GPUs](#shared-and-partitioned-gpus)).
+- **Intel GPUs are not capped.** The agent has no Intel GPU backend, so an Intel GPU node runs uncapped in eco, CPU included, unless `CPU_ECO_CAP_ON_UNCAPPABLE_GPU_NODES` is true: then a GPU node whose `NodeHardware` reports no GPU control gets the CPU eco cap ([Shared and partitioned GPUs](#shared-and-partitioned-gpus)).
 
 Check the GPU control status of every GPU node with:
 

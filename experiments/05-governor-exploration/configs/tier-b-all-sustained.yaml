@@ -12,6 +12,9 @@ controllerManager:
        "NVIDIA_H100_NVL": {"performance": "sustained"},
        "NVIDIA L40S": {"performance": "sustained"},
        "NVIDIA_L40S": {"performance": "sustained"}}
+    # Sustained on every performance GPU Node, whatever runs there; true
+    # would hold it only while a pod of 2 or more GPUs runs on the Node.
+    GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU: "false"
 agent:
   env:
     GOVERNOR_WRITES: "true"

@@ -906,6 +906,7 @@ for gov_case in governor-defaults governor-release-values; do
 	assert_env "${gov_case}" "${CM_DEPLOY}" GPU_GOVERNOR_PERFORMANCE_PRESET ""
 	assert_env "${gov_case}" "${CM_DEPLOY}" GPU_GOVERNOR_ECO_PRESET efficient
 	assert_env "${gov_case}" "${CM_DEPLOY}" GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX 80
+	assert_env "${gov_case}" "${CM_DEPLOY}" GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU false
 done
 
 # --------------------------------------------------------------------------

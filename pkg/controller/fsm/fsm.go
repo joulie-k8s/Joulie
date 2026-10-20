@@ -17,6 +17,7 @@ import (
 	"log"
 	"strings"
 
+	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/controller/policy"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -25,10 +26,10 @@ const (
 	ProfilePerformance = "performance"
 	ProfileEco         = "eco"
 
-	StateActivePerformance  = "ActivePerformance"
+	StateActivePerformance   = "ActivePerformance"
 	StateDrainingPerformance = "DrainingPerformance"
-	StateActiveEco          = "ActiveEco"
-	StateUnknown            = "Unknown"
+	StateActiveEco           = "ActiveEco"
+	StateUnknown             = "Unknown"
 
 	PowerProfileLabelKey    = "joulie.io/power-profile"
 	WorkloadClassAnnotation = "joulie.io/workload-class"
@@ -231,6 +232,63 @@ func CountPerformanceDemand(pods []corev1.Pod) int {
 		count++
 	}
 	return count
+}
+
+// MultiGPUPodMinGPUs is the GPU units from which a pod counts as a
+// multi-GPU pod (HasRunningMultiGPUPod).
+const MultiGPUPodMinGPUs = 2
+
+// PodGPUUnits is the number of GPU units a pod requests, of every GPU
+// resource pkg/api classifies (joulie.GPUResourceKind): whole GPUs, MIG
+// devices, partitions and shared replicas, one each. A container's request
+// counts, else its limit. As the scheduler sizes a pod, the containers and
+// the sidecars (init containers with restartPolicy Always) add up, and an
+// init container that asks for more counts instead.
+func PodGPUUnits(p *corev1.Pod) int64 {
+	var sum, initMax int64
+	for i := range p.Spec.Containers {
+		sum += containerGPUUnits(&p.Spec.Containers[i])
+	}
+	for i := range p.Spec.InitContainers {
+		c := &p.Spec.InitContainers[i]
+		units := containerGPUUnits(c)
+		if c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways {
+			sum += units
+		} else if units > initMax {
+			initMax = units
+		}
+	}
+	return max(sum, initMax)
+}
+
+func containerGPUUnits(c *corev1.Container) int64 {
+	var units int64
+	seen := map[corev1.ResourceName]bool{}
+	for _, list := range []corev1.ResourceList{c.Resources.Requests, c.Resources.Limits} {
+		for name, q := range list {
+			if seen[name] || joulie.GPUResourceKind(string(name)) == "" {
+				continue
+			}
+			seen[name] = true
+			units += q.Value()
+		}
+	}
+	return units
+}
+
+// HasRunningMultiGPUPod reports whether one of pods runs, is not being
+// deleted, and requests MultiGPUPodMinGPUs or more GPU units.
+func HasRunningMultiGPUPod(pods []corev1.Pod) bool {
+	for i := range pods {
+		p := &pods[i]
+		if p.DeletionTimestamp != nil || p.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		if PodGPUUnits(p) >= MultiGPUPodMinGPUs {
+			return true
+		}
+	}
+	return false
 }
 
 // GuardedTransitionInfo returns a human-readable summary of why a node

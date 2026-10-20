@@ -95,7 +95,11 @@ type NodeHardware struct {
 	GPUCapKnown         bool
 	CPUControlAvailable bool
 	GPUControlAvailable bool
-	Warnings            []string
+	// GPUReported is true when the agent published status.gpu, so
+	// GPUControlAvailable is its finding, not the zero value of a node known
+	// only from its labels.
+	GPUReported bool
+	Warnings    []string
 	// CPUGovernorPresets and GPUGovernorPresets are the governor presets the
 	// agent found the node accepts (status.{cpu,gpu}.governor.presets); the
 	// controller manager writes no other. CPUBoostAvailable is true when the
@@ -181,6 +185,7 @@ func main() {
 	gpuWriteAbsolute := boolEnv("GPU_WRITE_ABSOLUTE_CAPS", false)
 	gpuModelCaps := parseGPUModelCaps(envOrDefault("GPU_MODEL_CAPS_JSON", "{}"))
 	gpuProductLabelKeys := parseCSVList(envOrDefault("GPU_PRODUCT_LABEL_KEYS", defaultGPUProductLabelKeys))
+	loadCapOptions().install()
 	hardwareCatalog := loadHardwareCatalog()
 	twinHardwareCatalog = hardwareCatalog // share with fetchNodeHardware in twinstate.go
 
@@ -435,6 +440,7 @@ func reconcileWithCatalog(
 	// (fsm.StateDrainingPerformance). Only the label and the scheduler see eco.
 	applyDowngradeGuards(ctx, reader, plan, nodesByName)
 	govCfg := currentGovernorConfig()
+	capOpts := currentCapOptions()
 	for i := range plan {
 		capProfile := plan[i].Profile
 		if plan[i].Draining {
@@ -442,19 +448,25 @@ func reconcileWithCatalog(
 		}
 		// Skip CPU cap on GPU nodes: CPU is ~6% of GPU node power; capping it
 		// saves ~1.2% but slows GPU data feed by ~4.5%, costing 3.8x more energy
-		// than saved (exp-03 finding). GPU nodes get only GPU caps.
-		hasGPU := nodeHardwareByName[plan[i].NodeName].GPUCount > 0
+		// than saved (exp-03 finding). GPU nodes get only GPU caps, except,
+		// with CPU_ECO_CAP_ON_UNCAPPABLE_GPU_NODES, a node whose agent reports
+		// GPUs it cannot cap: its CPU takes the caps of its profile, as on a
+		// CPU-only node, since its GPUs would run uncapped in eco anyway.
+		nh := nodeHardwareByName[plan[i].NodeName]
+		hasGPU := nh.GPUCount > 0
+		cpuCapsByProfile := !hasGPU || (capOpts.cpuCapsOnUncappableGPUNodes && agentReportsNoGPUControl(nh))
 		// The policy set CapWatts from the planned profile; reset it from the
 		// profile the node runs at. The spec writes it whenever no percent cap
-		// is set: on GPU nodes, and on the absolute path below when it cannot
-		// resolve the hardware. A GPU node's CPU gets the performance cap
-		// whatever its profile, so an eco GPU node is not CPU capped at
-		// ECO_CAP_WATTS, and a CPU an earlier release capped there is lifted.
+		// is set: on GPU nodes outside the exception above, and on the
+		// absolute path below when it cannot resolve the hardware. A GPU
+		// node's CPU gets the performance cap whatever its profile, so an eco
+		// GPU node is not CPU capped at ECO_CAP_WATTS, and a CPU an earlier
+		// release capped there is lifted.
 		plan[i].CapWatts = ecoCap
-		if capProfile == profilePerformance || hasGPU {
+		if capProfile == profilePerformance || !cpuCapsByProfile {
 			plan[i].CapWatts = perfCap
 		}
-		if !hasGPU {
+		if cpuCapsByProfile {
 			if cpuWriteAbsolute {
 				plan[i].CPUCapPctOfMax = nil
 				if nh, ok := nodeHardwareByName[plan[i].NodeName]; ok {
@@ -487,8 +499,10 @@ func reconcileWithCatalog(
 		if n := nodeObjs[plan[i].NodeName]; n != nil {
 			gpuProduct = resolveGPUProduct(n.Labels, gpuProductLabelKeys)
 		}
+		nodeName := plan[i].NodeName
+		multiGPUPod := func() bool { return runningMultiGPUPodOnNode(ctx, reader, nodeName) }
 		plan[i].CPUGovernor, plan[i].GPUGovernor = govCfg.governorIntents(
-			plan[i].NodeName, capProfile, hasGPU, nodeHardwareByName[plan[i].NodeName], gpuProduct)
+			nodeName, capProfile, hasGPU, nh, gpuProduct, multiGPUPod)
 	}
 	recordFamilySplit(plan, nodeHardwareByName)
 
@@ -752,6 +766,19 @@ var (
 	podIsEcoOnly              = fsm.PodIsEcoOnly
 )
 
+// runningMultiGPUPodOnNode reports whether a running pod on nodeName requests
+// fsm.MultiGPUPodMinGPUs or more GPU units. The pods come from the cache by
+// the spec.nodeName index; a failed list reports none, so no data path is
+// held on a guess.
+func runningMultiGPUPodOnNode(ctx context.Context, reader kube.Reader, nodeName string) bool {
+	var pods corev1.PodList
+	if err := reader.List(ctx, &pods, client.MatchingFields{podNodeNameField: nodeName}); err != nil {
+		log.Printf("warning: cannot list pods on node=%s for GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU: %v", nodeName, err)
+		return false
+	}
+	return fsm.HasRunningMultiGPUPod(pods.Items)
+}
+
 func runningPerformanceSensitivePodCountOnNode(
 	ctx context.Context,
 	reader kube.Reader,
@@ -779,6 +806,47 @@ func summarizePlan(plan []NodeAssignment) string {
 		parts = append(parts, fmt.Sprintf("%s=%s(cpu=%s%s)", p.NodeName, p.Profile, cpuPart, gpuPart))
 	}
 	return strings.Join(parts, ",")
+}
+
+// capOptions are the cap settings reconcile reads beside its arguments,
+// loaded once at start.
+type capOptions struct {
+	// cpuCapsOnUncappableGPUNodes gives a GPU node whose agent reports no
+	// GPU control the CPU caps of its profile, as a CPU-only node gets them
+	// (CPU_ECO_CAP_ON_UNCAPPABLE_GPU_NODES).
+	cpuCapsOnUncappableGPUNodes bool
+}
+
+func loadCapOptions() capOptions {
+	return capOptions{
+		cpuCapsOnUncappableGPUNodes: boolEnv("CPU_ECO_CAP_ON_UNCAPPABLE_GPU_NODES", false),
+	}
+}
+
+var (
+	capOptionsMu sync.RWMutex
+	capOpts      capOptions
+)
+
+// install makes o the cap options the reconcile reads.
+func (o capOptions) install() {
+	capOptionsMu.Lock()
+	capOpts = o
+	capOptionsMu.Unlock()
+}
+
+func currentCapOptions() capOptions {
+	capOptionsMu.RLock()
+	defer capOptionsMu.RUnlock()
+	return capOpts
+}
+
+// agentReportsNoGPUControl is true when the node's agent published its GPUs
+// in NodeHardware without GPU control (status.gpu.controlAvailable false),
+// as for Intel GPUs or NVIDIA boards whose power limits read [N/A]. A node
+// known only from its labels reports nothing.
+func agentReportsNoGPUControl(nh NodeHardware) bool {
+	return nh.GPUReported && !nh.GPUControlAvailable
 }
 
 func computeAbsoluteCPUCap(profile string, nh NodeHardware, catalog *hwinv.Catalog, perfCap, ecoCap float64) (float64, bool) {
@@ -1068,6 +1136,7 @@ func parseNodeHardware(obj *v1alpha1.NodeHardware) NodeHardware {
 			nh.GPUCapKnown = true
 		}
 		nh.GPUControlAvailable = gpu.ControlAvailable
+		nh.GPUReported = true
 		if g := gpu.Governor; g != nil {
 			nh.GPUGovernorPresets = governorPresetNames(g.Presets)
 			nh.GPUGovernorGap = g.Mechanism == "" && g.Baseline != nil

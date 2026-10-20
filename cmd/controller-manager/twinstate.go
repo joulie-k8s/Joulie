@@ -74,8 +74,13 @@ func nodeTopologyFor(nodeName, rack, zone string, rackPowerEstimates map[string]
 // The ambient temperature of the twin is the most local one known: the
 // node's inlet, then its cooling zone's, then the facility's outdoor
 // ambient. Each may be 0 or below once known.
+//
+// The GPU budget counts the planned GPU cap only where it applies
+// (twin.GPUCapApplies), from NodeHardware and the agent's last GPU cap
+// result, which the controller manager reads and never writes.
 func reconcileNodeTwin(ctx context.Context, reader kube.Reader, dynClient dynamic.Interface, nodeName, profile string, cpuCapPct, gpuCapPct float64, draining bool, topo *nodeTopology) error {
 	hw := fetchNodeHardware(ctx, reader, nodeName)
+	gpuCapNotApplied := !twin.GPUCapApplies(hw.GPU, fetchGPUControlResult(ctx, reader, nodeName))
 
 	facility := currentTwinFacility()
 	outsideTempC, outsideKnown := facility.ambientC, facility.ambientKnown
@@ -105,6 +110,7 @@ func reconcileNodeTwin(ctx context.Context, reader kube.Reader, dynClient dynami
 		Profile:            profile,
 		CPUCapPct:          cpuCapPct,
 		GPUCapPct:          gpuCapPct,
+		GPUCapNotApplied:   gpuCapNotApplied,
 		Draining:           draining,
 		ClusterTotalPowerW: facility.itPowerW,
 		OutsideTempC:       outsideTempC,
@@ -191,6 +197,24 @@ func fetchNodeHardware(ctx context.Context, reader kube.Reader, nodeName string)
 	enrichHardwareFromCatalog(&hw)
 
 	return hw
+}
+
+// fetchGPUControlResult reads the agent's last GPU cap result,
+// NodeTwin status.controlStatus.gpu, from the cache, or nil when the node has
+// none yet.
+func fetchGPUControlResult(ctx context.Context, reader kube.Reader, nodeName string) *joulie.ControlResult {
+	var obj v1alpha1.NodeTwin
+	if err := reader.Get(ctx, client.ObjectKey{Name: sanitizeName(nodeName)}, &obj); err != nil {
+		if !apierrors.IsNotFound(err) && !meta.IsNoMatchError(err) {
+			log.Printf("fetchGPUControlResult: %v", err)
+		}
+		return nil
+	}
+	cs := obj.Status.ControlStatus
+	if cs == nil || cs.GPU == nil {
+		return nil
+	}
+	return &joulie.ControlResult{Backend: cs.GPU.Backend, Result: cs.GPU.Result, Message: cs.GPU.Message}
 }
 
 // enrichHardwareFromCatalog fills in missing TDP/capRange data from the

@@ -23,6 +23,8 @@ controllerManager:
     GPU_GOVERNOR_ECO_PRESET: "efficient"
     GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX: "80"
     GPU_GOVERNOR_MODEL_PRESETS_JSON: "{}"
+    # false: an opted-in model holds sustained whatever runs on the node.
+    GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU: "false"
 
 agent:
   env:

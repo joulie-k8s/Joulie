@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/controller/fsm"
 	"github.com/matbun/joulie/pkg/controller/policy"
 	"github.com/matbun/joulie/pkg/controller/twin"
 	"github.com/matbun/joulie/pkg/hwinv"
@@ -654,7 +656,16 @@ func TestPodTransformKeepsOnlyFSMFields(t *testing.T) {
 	full.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubelet"}}
 	full.Finalizers = []string{"example.com/keep"}
 	full.Spec.NodeSelector = map[string]string{"joulie.io/power-profile": "performance"}
-	full.Spec.Containers = []corev1.Container{{Name: "main", Image: "img"}}
+	full.Spec.Containers = []corev1.Container{
+		{Name: "main", Image: "img"},
+		{Name: "trainer", Image: "img", Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4"), "nvidia.com/gpu": resource.MustParse("2")},
+			Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("8Gi"), "nvidia.com/gpu": resource.MustParse("2")},
+		}},
+	}
+	full.Spec.InitContainers = []corev1.Container{{Name: "fetch", Image: "img", Resources: corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), "nvidia.com/mig-1g.10gb": resource.MustParse("1")},
+	}}}
 	full.Spec.Volumes = []corev1.Volume{{Name: "data"}}
 	full.Spec.Tolerations = []corev1.Toleration{{Key: "gpu"}}
 	full.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "main"}}
@@ -686,8 +697,32 @@ func TestPodTransformKeepsOnlyFSMFields(t *testing.T) {
 		t.Fatalf("phase lost: %#v", pod.Status)
 	}
 	// Dropped: everything that makes a Pod large.
-	if pod.Spec.Containers != nil || pod.Spec.Volumes != nil || pod.Spec.Tolerations != nil {
+	if pod.Spec.Volumes != nil || pod.Spec.Tolerations != nil {
 		t.Fatalf("spec not stripped: %#v", pod.Spec)
+	}
+	// GC13: of the containers, only the GPU requests and limits stay, so the
+	// multi-GPU governor rule counts on the cached pod the GPUs of the full
+	// one; a container without GPUs is dropped whole.
+	if got, want := fsm.PodGPUUnits(pod), fsm.PodGPUUnits(full); got != 2 || want != 2 {
+		t.Fatalf("GPU units: stripped pod %d, full pod %d, want 2 for both", got, want)
+	}
+	if got, want := containerResources(pod.Spec.Containers), "[requests{nvidia.com/gpu=2} limits{nvidia.com/gpu=2}]"; got != want {
+		t.Fatalf("containers kept %s, want %s", got, want)
+	}
+	if got, want := containerResources(pod.Spec.InitContainers), "[requests{} limits{nvidia.com/mig-1g.10gb=1}]"; got != want {
+		t.Fatalf("init containers kept %s, want %s", got, want)
+	}
+	for _, c := range append(append([]corev1.Container{}, pod.Spec.Containers...), pod.Spec.InitContainers...) {
+		if c.Name != "" || c.Image != "" {
+			t.Fatalf("container not stripped: %#v", c)
+		}
+	}
+	noGPU, err := podTransform(podWithRequiredPowerProfile("p2", "node-a", "performance"))
+	if err != nil {
+		t.Fatalf("podTransform: %v", err)
+	}
+	if p := noGPU.(*corev1.Pod); p.Spec.Containers != nil || p.Spec.InitContainers != nil {
+		t.Fatalf("a pod without GPUs keeps containers: %#v", p.Spec)
 	}
 	if pod.Status.ContainerStatuses != nil || pod.Status.PodIP != "" || pod.Status.Conditions != nil {
 		t.Fatalf("status not stripped: %#v", pod.Status)
@@ -709,6 +744,29 @@ func TestPodTransformKeepsOnlyFSMFields(t *testing.T) {
 	if _, ok := out.(toolscache.DeletedFinalStateUnknown); !ok {
 		t.Fatalf("tombstone was replaced by %T", out)
 	}
+}
+
+// containerResources spells the requests and limits of each container,
+// sorted by name, as [requests{name=value ...} limits{...}].
+func containerResources(cs []corev1.Container) string {
+	spell := func(l corev1.ResourceList) string {
+		names := make([]string, 0, len(l))
+		for n := range l {
+			names = append(names, string(n))
+		}
+		sort.Strings(names)
+		parts := make([]string, 0, len(names))
+		for _, n := range names {
+			q := l[corev1.ResourceName(n)]
+			parts = append(parts, n+"="+q.String())
+		}
+		return "{" + strings.Join(parts, " ") + "}"
+	}
+	out := make([]string, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, "requests"+spell(c.Resources.Requests)+" limits"+spell(c.Resources.Limits))
+	}
+	return "[" + strings.Join(out, ", ") + "]"
 }
 
 func TestManagerCacheOptionsTransformPods(t *testing.T) {
