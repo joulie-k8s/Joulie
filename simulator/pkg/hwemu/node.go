@@ -975,19 +975,32 @@ func (n *Node) buildGPUs() error {
 			}
 			g.uuid, _ = n.readString(file("uuid"))
 			g.pciBusID, _ = n.readString(file("pci_bus_id"))
+			// A field gpus.fieldSupport marks unsupported holds its token for
+			// good, as the driver never reports a value there: its file is
+			// neither read back nor written by the physics.
+			token := func(name string) bool {
+				s, ok := n.readString(file(name))
+				return ok && strings.HasPrefix(strings.TrimSpace(s), "[")
+			}
 			h, cur := g.nvmlLimitHandler()
-			g.limitFile = n.addAFile(file("power_limit_mw"), g.id(), h, cur)
+			if !token("power_limit_mw") {
+				g.limitFile = n.addAFile(file("power_limit_mw"), g.id(), h, cur)
+			}
 			h, cur = n.nodeEnumHandler(file(layout.NVMLPersistenceModeFile), &g.persistence, []string{persistTextEnabled, persistTextDisabled})
 			n.addAFile(file(layout.NVMLPersistenceModeFile), g.id(), h, cur)
 			g.settledW = g.targetW()
-			if g.enforced = n.sfile(file("enforced_power_limit_mw")); g.enforced != nil {
-				if v, ok := nodeParseInt(strings.TrimSpace(g.enforced.last)); ok {
-					g.settledW = float64(v) / 1000
+			if !token("enforced_power_limit_mw") {
+				if g.enforced = n.sfile(file("enforced_power_limit_mw")); g.enforced != nil {
+					if v, ok := nodeParseInt(strings.TrimSpace(g.enforced.last)); ok {
+						g.settledW = float64(v) / 1000
+					}
 				}
 			}
-			if g.draw = n.sfile(file("power_draw_mw")); g.draw != nil {
-				if v, ok := nodeParseInt(strings.TrimSpace(g.draw.last)); ok {
-					g.avgW, g.avgSeed = float64(v)/1000, true
+			if !token("power_draw_mw") {
+				if g.draw = n.sfile(file("power_draw_mw")); g.draw != nil {
+					if v, ok := nodeParseInt(strings.TrimSpace(g.draw.last)); ok {
+						g.avgW, g.avgSeed = float64(v)/1000, true
+					}
 				}
 			}
 			if g.energy = n.sfile(file("total_energy_mj")); g.energy != nil {

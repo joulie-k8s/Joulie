@@ -156,7 +156,7 @@ stop_imports() { kill "$third_party" 2>/dev/null || true; }
 trap stop_imports EXIT
 
 # 6. The kubeconfig, pointed at the published port.
-sim_wait 180 "k3s to write its kubeconfig" docker exec "$N" test -s /etc/rancher/k3s/k3s.yaml
+sim_wait_running 180 "k3s to write its kubeconfig" docker exec "$N" test -s /etc/rancher/k3s/k3s.yaml
 port=$(docker port "$N" 6443/tcp | head -n1)
 port=${port##*:}
 [[ $port =~ ^[0-9]+$ ]] || sim_die "container $N publishes no port for 6443"
@@ -165,8 +165,8 @@ port=${port##*:}
   docker exec "$N" cat /etc/rancher/k3s/k3s.yaml | sed "s#https://127.0.0.1:6443#https://127.0.0.1:$port#" >"$KUBECONFIG.tmp"
 )
 mv "$KUBECONFIG.tmp" "$KUBECONFIG"
-sim_wait 180 "the API server" kubectl get --raw /readyz
-sim_wait 180 "Node $N-infra to register" kubectl get node "$N-infra"
+sim_wait_running 180 "the API server" kubectl get --raw /readyz
+sim_wait_running 180 "Node $N-infra to register" kubectl get node "$N-infra"
 
 # 7. Namespaces, KWOK and its Stages, Prometheus and the Collector.
 for ns in "$SIM_NS_JOULIE" "$SIM_NS_SIM" "$SIM_NS_MONITORING"; do

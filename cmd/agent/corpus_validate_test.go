@@ -630,11 +630,11 @@ func validateCorpusNvidiaOutput(p *corpusProblems, dir string) {
 		}
 		for col, what := range []string{"power.min_limit", "power.max_limit", "power.limit", "power.draw"} {
 			v := parts[col+1]
-			if corpusIsNotApplicable(v) {
+			if corpusIsNvidiaToken(v) {
 				continue
 			}
 			if _, err := strconv.ParseFloat(v, 64); err != nil {
-				p.addf(file, i+1, "field %d (%s) is %q, not a number and not [N/A]. Fix: capture with nounits, "+
+				p.addf(file, i+1, "field %d (%s) is %q, not a number and not a bracketed token such as [N/A]. Fix: capture with nounits, "+
 					"which drops the \" W\" suffix", col+2, what, v)
 			}
 		}
@@ -836,9 +836,14 @@ func corpusParsesAsDate(v string) bool {
 	return false
 }
 
-func corpusIsNotApplicable(v string) bool {
-	v = strings.TrimSpace(strings.Trim(strings.TrimSpace(v), "[]"))
-	return strings.EqualFold(v, "N/A") || strings.EqualFold(v, "Not Supported")
+// corpusIsNvidiaToken reports whether v is a bracketed token, what
+// nvidia-smi prints where the driver gives no value: [N/A], [Not Supported],
+// [Requested functionality has been deprecated] and the like. The agent
+// reads one in a limit column as no settable power limit, and
+// hwemu.FromCorpus renders it for the emulated tool to print back.
+func corpusIsNvidiaToken(v string) bool {
+	v = strings.TrimSpace(v)
+	return len(v) > 2 && strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]")
 }
 
 func corpusTruncate(s string) string {
@@ -1194,6 +1199,24 @@ func TestCorpusValidatorAcceptsAnAMDGPUCapture(t *testing.T) {
 	}
 }
 
+// TestCorpusValidatorAcceptsNvidiaTokens: every token nvidia-smi prints in
+// place of a value passes in each power column, as the agent and
+// hwemu.FromCorpus both read it.
+func TestCorpusValidatorAcceptsNvidiaTokens(t *testing.T) {
+	for _, token := range []string{"[N/A]", "[Not Supported]", "[Requested functionality has been deprecated]",
+		"[Insufficient Permissions]", "[Unknown Error]"} {
+		for col := 1; col <= 4; col++ {
+			root, machine, dir := newCorpusTestMachine(t)
+			fields := strings.Split(strings.TrimSpace(corpusGoodNvidiaCSV), ", ")
+			fields[col] = token
+			corpusWrite(t, dir, "nvidia-smi.txt", strings.Join(fields, ", ")+"\n")
+			if msgs := validateCorpusMachine(root, machine); len(msgs) != 0 {
+				t.Errorf("%s in field %d was rejected:\n%s", token, col+1, strings.Join(msgs, "\n"))
+			}
+		}
+	}
+}
+
 // TestCorpusValidatorFalsePositiveTraps names each thing that must survive
 // individually, so a regression says which one broke.
 func TestCorpusValidatorFalsePositiveTraps(t *testing.T) {
@@ -1398,6 +1421,13 @@ func TestCorpusValidatorRejects(t *testing.T) {
 				corpusWrite(t, dir, "nvidia-smi.txt", "0, 60.00 W, 70.00 W, 70.00 W, 9.97 W, Tesla T4\n")
 			},
 			want: "field 2 (power.min_limit) is \"60.00 W\", not a number",
+		},
+		{
+			name: "nvidia csv holds a word without brackets",
+			mutate: func(t *testing.T, dir string) {
+				corpusWrite(t, dir, "nvidia-smi.txt", "0, N/A, 70.00, 70.00, 9.97, Tesla T4\n")
+			},
+			want: "field 2 (power.min_limit) is \"N/A\", not a number and not a bracketed token",
 		},
 		{
 			name:   "amdgpu attribute is not microwatts",

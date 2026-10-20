@@ -64,7 +64,7 @@ The defects that reach users are also listed on the user pages: [GPU known limit
 
 ## Scenario library checks
 
-`simulator/pkg/scenario/scenarios_test.go` checks the scenario library without a cluster: every scenario validates and plans under the load limit, every job fits some Node of its spec (resources, node selector and taints), the nightly load stays between 0.5 and 0.8, the deadlock gang fits its Node one pod at a time but never whole, and the Nodes `perf-isolation` and `cap-cost` expect in eco are the ones `policy.BuildStaticPlan` puts there.
+`simulator/pkg/scenario/scenarios_test.go` checks the scenario library without a cluster: every scenario validates and plans under the load limit, every job fits some Node of its spec (resources, node selector and taints), the nightly load stays between 0.3 and 0.8 of the cluster and, for nightly-mixed's performance jobs, of the performance Nodes, the nightly workload sized by the cluster alone is refused, the deadlock gang fits its Node one pod at a time but never whole, and the Nodes `perf-isolation` and `cap-cost` expect in eco are the ones `policy.BuildStaticPlan` puts there.
 
 ## CI
 
@@ -79,4 +79,4 @@ The defects that reach users are also listed on the user pages: [GPU known limit
 - Sunday at 03:17 UTC: `weekly-compare`, one variant per runner (150 minute timeout) into a run directory named once for all of them, then a job that plans the same directory, collects the variants and runs `simscenario summarize`.
 - On demand (`workflow_dispatch`): `nightly` or `weekly`.
 
-Every job uploads its `runs/` directory, also when it fails; the scenario runs are kept 14 days.
+Every job uploads its `runs/` directory, also when it fails, with a 10 minute timeout on the upload; a scenario job deletes its cluster first (`down.sh` keeps `runs/`), since `scenario.sh` keeps it. The scenario runs are kept 14 days.

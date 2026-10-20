@@ -721,20 +721,30 @@ type PlanOptions struct {
 }
 
 // Plan is what MakePlan wrote: the effective scenario, each variant's
-// settings, and the offered load of the trace.
+// settings, and the load of the trace.
 type Plan struct {
 	Effective Scenario
 	Variants  []VariantEnv
 	// Jobs and Dropped count the trace's job records due inside the
 	// submission window, and those dropped for being due later.
 	Jobs, Dropped int
-	Load          []OfferedLoad
+	// Load is the offered load of each resource on every Node the jobs
+	// can use, EarliestEnd when their work can end there at the earliest
+	// (the function EarliestEnd), and Deadline the duration plus the drain.
+	Load                  []OfferedLoad
+	EarliestEnd, Deadline time.Duration
+	// Classes are the loads of the classes a variant's policy confines
+	// (ConfinedLoads).
+	Classes []ClassLoad
 }
 
 // MakePlan writes the run directory of the valid scenario s:
 // ScenarioEffectiveFile, and for each variant its directory with TraceFile
 // and VariantEnvFile. It returns an *OverloadError, after writing
-// everything, when the offered load of a resource exceeds MaxOfferedLoad.
+// everything, when the offered load of a resource exceeds MaxOfferedLoad or
+// the earliest end of the work takes more than MaxOfferedLoad of the
+// deadline, on every usable Node or, for a class a variant's policy
+// confines, on the Nodes left to it.
 func MakePlan(ctx context.Context, s Scenario, o PlanOptions) (*Plan, error) {
 	eff := Effective(s)
 	timing, err := simcluster.ReadTiming(o.RepoRoot, eff.Cluster.Timing)
@@ -794,14 +804,26 @@ func MakePlan(ctx context.Context, s Scenario, o PlanOptions) (*Plan, error) {
 		return p, err
 	}
 	p.Load = ComputeOfferedLoad(jobs, capacity, eff.Duration.Duration, eff.baseSpeed())
-	var over []OfferedLoad
+	p.EarliestEnd, p.Deadline = EarliestEnd(jobs, capacity, eff.baseSpeed()), eff.deadline()
+	if p.Classes, err = ConfinedLoads(eff, pools, jobs, selector, runTolerations(eff)); err != nil {
+		return p, err
+	}
+	over := &OverloadError{}
 	for _, l := range p.Load {
 		if l.Load > MaxOfferedLoad || math.IsInf(l.Load, 1) {
-			over = append(over, l)
+			over.Over = append(over.Over, l)
 		}
 	}
-	if len(over) > 0 {
-		return p, &OverloadError{Over: over}
+	if pastDeadline(p.EarliestEnd, p.Deadline) {
+		over.EarliestEnd, over.Deadline = p.EarliestEnd, p.Deadline
+	}
+	for _, c := range p.Classes {
+		if c.Over() {
+			over.Classes = append(over.Classes, c)
+		}
+	}
+	if len(over.Over) > 0 || over.Deadline > 0 || len(over.Classes) > 0 {
+		return p, over
 	}
 	return p, nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -470,36 +471,71 @@ func renderCorpusExposure(gpu map[string]string, resourceName string, count int,
 	return Fact[string]{}, fmt.Errorf("machine.yaml allocatable.gpu %v does not match %d whole GPUs as %s", gpu, count, resourceName)
 }
 
+// ErrCorpusNoPowerLimit is the error of a capture whose nvidia-smi.txt
+// prints a token for both power.limit and power.max_limit: the physics needs
+// a GPU power limit, and the capture has none to emulate.
+var ErrCorpusNoPowerLimit = errors.New("no numeric GPU power limit to emulate")
+
 // renderCorpusNvidia maps the agent's nvidia-smi query output, one line per
 // GPU: index, min limit, max limit, limit, draw, name (listNvidiaDevices in
-// cmd/agent).
+// cmd/agent). A bracketed token in a power column, such as [N/A], is what
+// nvidia-smi prints where the driver gives no value: it becomes
+// gpus.fieldSupport, so the emulated tool prints it back, and the physics
+// takes the limit in force, else the maximum, in its place. A capture with
+// neither returns ErrCorpusNoPowerLimit.
 func renderCorpusNvidia(p *Profile, text string, labels, gpu map[string]string, src func(string) string) error {
 	type line struct {
 		min, max, limit, draw float64
+		tokens                map[string]string
 		name                  string
 	}
+	fields := []string{"power.min_limit", "power.max_limit", "power.limit", "power.draw"}
 	var lines []line
 	for _, raw := range strings.Split(strings.TrimSpace(text), "\n") {
 		parts := strings.Split(raw, ",")
 		if len(parts) < 6 {
 			return fmt.Errorf("nvidia-smi.txt line %q has fewer than 6 fields", raw)
 		}
-		var l line
+		l := line{tokens: map[string]string{}}
 		for i, dst := range []*float64{&l.min, &l.max, &l.limit, &l.draw} {
-			v, err := strconv.ParseFloat(strings.TrimSpace(parts[i+1]), 64)
+			v := strings.TrimSpace(parts[i+1])
+			if strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]") {
+				l.tokens[fields[i]] = v
+				continue
+			}
+			f, err := strconv.ParseFloat(v, 64)
 			if err != nil {
 				return fmt.Errorf("nvidia-smi.txt line %q field %d: %w", raw, i+1, err)
 			}
-			*dst = v
+			*dst = f
 		}
 		l.name = strings.TrimSpace(strings.Join(parts[5:], ","))
 		lines = append(lines, l)
 	}
 	first := lines[0]
 	for _, l := range lines[1:] {
-		if l.min != first.min || l.max != first.max || l.limit != first.limit || l.name != first.name {
+		if l.min != first.min || l.max != first.max || l.limit != first.limit || l.name != first.name || !maps.Equal(l.tokens, first.tokens) {
 			return errors.New("nvidia-smi.txt: GPUs differ in limits or product; a profile holds one value for all GPUs")
 		}
+	}
+	_, minTok := first.tokens["power.min_limit"]
+	_, maxTok := first.tokens["power.max_limit"]
+	_, limTok := first.tokens["power.limit"]
+	if limTok && maxTok {
+		return fmt.Errorf("%w: nvidia-smi.txt prints no power.limit and no power.max_limit", ErrCorpusNoPowerLimit)
+	}
+	held := first.limit
+	if limTok {
+		held = first.max
+	}
+	if minTok {
+		first.min = held
+	}
+	if maxTok {
+		first.max = held
+	}
+	if limTok {
+		first.limit = held
 	}
 	exposure, err := renderCorpusExposure(gpu, "nvidia.com/gpu", len(lines), src)
 	if err != nil {
@@ -517,9 +553,14 @@ func renderCorpusNvidia(p *Profile, text string, labels, gpu map[string]string, 
 	g.Limits.MinW = Fact[float64]{V: first.min, Src: file}
 	g.Limits.MaxW = Fact[float64]{V: first.max, Src: file}
 	g.Limits.DefaultW = Fact[float64]{V: first.limit, Src: "assumed:the capture has no default limit; the current power.limit stands for it"}
+	if len(first.tokens) > 0 {
+		g.FieldSupport = first.tokens
+	}
 	g.Tools = append(g.Tools, GPUTool{Name: "nvidia-smi", Variant: "default"})
 	p.GPUs = g
-	p.Physics.GPU.IdleW = Fact[float64]{V: first.draw, Src: src("nvidia-smi.txt power.draw of GPU 0")}
+	if _, ok := first.tokens["power.draw"]; !ok {
+		p.Physics.GPU.IdleW = Fact[float64]{V: first.draw, Src: src("nvidia-smi.txt power.draw of GPU 0")}
+	}
 	return nil
 }
 

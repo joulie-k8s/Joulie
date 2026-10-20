@@ -115,15 +115,13 @@ jobs:
           hugo mod get github.com/google/docsy/dependencies@v0.7.2
           hugo --gc --minify --baseURL "${{ env.MAIN_URL }}" --config "hugo.yaml,${{ runner.temp }}/docsy-versions.yaml"
 
+      # A preview or a release can push gh-pages at the same time:
+      # gh-pages-push.sh rebases onto it and pushes again.
       - name: Deploy main docs to gh-pages/main
-        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: website/public
-          destination_dir: main
-          keep_files: true
-          force_orphan: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MESSAGE: "docs: deploy main at ${{ github.sha }}"
+        run: bash scripts/gh-pages-push.sh publish website/public main "$MESSAGE"
 
       - name: Ensure bootstrap files and versions manifest
         run: |
@@ -192,5 +190,5 @@ jobs:
           git add .nojekyll index.html 404.html versions.json
           if ! git diff --cached --quiet; then
             git commit -m "docs: update main docs metadata"
-            git push
+            bash "$GITHUB_WORKSPACE/scripts/gh-pages-push.sh" push
           fi

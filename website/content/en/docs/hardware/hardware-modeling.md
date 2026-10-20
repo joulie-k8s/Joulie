@@ -504,7 +504,7 @@ The simulator distributes the node-average GPU utilization across the devices ra
 The agent calls the vendor command-line tools and reads sysfs; it links no vendor library. Measured GPU power reaches the twin through Prometheus (`hw.power`, `hw.energy`), never through these calls.
 
 ### NVIDIA
-- Caps: `nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name` for the cap range and the current limit, and `nvidia-smi -i <index> -pl <W>` to set a per-device limit, run only for a GPU whose current limit differs from the cap.
+- Caps: `nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name` for the cap range and the current limit, and `nvidia-smi -i <index> -pl <W>` to set a per-device limit, run only for a GPU whose current limit differs from the cap. A GPU whose limits print a token such as `[N/A]` is never written.
 - Governors: `nvidia-smi --query-gpu=pci.bus_id,clocks.sm,clocks.mem,clocks.max.sm,clocks.max.mem,pstate,clocks_throttle_reasons.active` (again with `clocks_event_reasons.active` when a driver rejects that field) and `nvidia-smi -q -d SUPPORTED_CLOCKS` for discovery, and `nvidia-smi -i <pci bus id>` with `-lgc`, `-lmc`, `-rgc` or `-rmc` to set or reset clock locks. A lock has no getter, so the clock query is also how the agent sees a lock in use (see [Governor control]({{< relref "/docs/architecture/agent.md#governor-control" >}})).
 
 ### AMD

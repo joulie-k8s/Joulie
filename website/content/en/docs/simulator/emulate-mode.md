@@ -12,7 +12,7 @@ Turn it on with `SIM_EMULATE=true` and `SIM_CLUSTER_SPEC`; every variable is und
 For each spec node the simulator keeps a tree under `SIM_HWEMU_ROOT/<node>/`, rendered from a hardware profile (`simulator/pkg/hwemu/profiles/`):
 
 - `sys/`: the powercap, cpufreq, hwmon and PCI attributes as the kernel nests them. An agent pod mounts it as its `/host-sys`.
-- `cpuinfo`: mounted as the pod's `/proc/cpuinfo`.
+- `cpuinfo`: mounted as the pod's `/proc/cpuinfo`. One block per logical CPU with the profile's model and topology, and a `flags` line with the flags its facts imply: `hwp`, and `hwp_epp` under intel_pstate, where `cpufreq.hwp` is true, and `hypervisor` on a virtual machine. A profile with none of them has no `flags` line; a corpus machine keeps its captured cpuinfo verbatim.
 - `state/`: what the fake GPU tools read and write, such as NVML limits and energy, and the node's energy ledger.
 - `bin/`: `nvidia-smi`, `rocm-smi` and `amd-smi`, links to `fakesmi`, which the simulator installs in `SIM_HWEMU_ROOT/lib/`. The agent pod puts `bin/` first on its `PATH`.
 
@@ -48,7 +48,7 @@ The fake tools act on the same files:
 |---|---|
 | `rocm-smi --showperflevel`, `--setperflevel LEVEL`, `--showprofile`, `--setprofile N` | read or write the level; `--setprofile` switches to `manual` first |
 | `amd-smi set -g GPU --perf-level LEVEL`, `--clk-limit sclk max MHZ`; `amd-smi metric --perf-level` | set or read the level, or the overdrive ceiling under `manual`; `set --profile` prints `Not Yet Implemented` |
-| `nvidia-smi -i ID -lgc MIN,MAX`, `-rgc`, `-lmc MIN,MAX`, `-rmc` | set or clear a lock, one line per GPU then `All done.`; `-lmc` fails on Hopper, which has no run-time memory lock |
+| `nvidia-smi -i ID -lgc MIN,MAX`, `-rgc`, `-lmc MIN,MAX`, `-rmc` | set or clear a lock, one line per GPU then `All done.`; on a GPU without the lock, such as `-lmc` on Hopper, which has no run-time memory lock, it prints `... is not supported for GPU <bus id>.` and `Treating as warning and moving on.`, writes nothing there and exits 0, or exits 3 with `--error-on-warning` (`-eow`) |
 | `nvidia-smi --query-gpu=clocks.sm,clocks.mem,clocks.max.sm,clocks.max.mem,pstate,clocks_event_reasons.active` (or `clocks_throttle_reasons.active`, the same file); `nvidia-smi -q -d SUPPORTED_CLOCKS` | read the clock files |
 | `nvidia-smi -ac`, `-rac` | refused as deprecated, non-zero exit |
 | `nvidia-smi -pm 0`, `1`, `DISABLED`, `ENABLED` | persistence mode off or on |
@@ -106,6 +106,7 @@ Profile facts that shape what the agent reads:
 - `physics.cpu.model`: `analytic`, the power formula of `idlePkgW` and `maxPkgW`, or `catalog-curve`, the measured curve of the CPU's catalog entry split over the packages. The 2x EPYC 9654 profiles (`amd-epyc-2s-energy-only` and `amd-instinct-mi300x-8gpu`, which extends it) run the curve of SPECpower_ssj2008 result 01203; the 9534 and HSMP profiles are analytic.
 - `limitBits` of a powercap zone: the width of its power limit field, in raw power units. A limit past it wraps in the register, as on hardware. Unset, it is the MSR interface's: 15 bits for PL1 and PL2, 17 on psys, 13 for PL4; `intel-xeon6-2s-tpmi` sets 18, the TPMI field.
 - `gpus.clocks.supported.smMaxByMem`: memory clocks under which the GPU offers only the lower graphics clocks, each with the highest one. `nvidia-smi -q -d SUPPORTED_CLOCKS` lists the graphics clocks of such a memory clock up to that ceiling, and a memory clock lock holds the graphics clock at or below the ceiling of its memory clock, in the GPU's power and speed and in `clocks.sm` (`nvidia-l40s-4gpu`).
+- `gpus.fieldSupport`: an `nvidia-smi` query field and the token the tool prints in its place, such as `power.min_limit: "[N/A]"`. The emulator never writes a value into that field's file. `nvidia-smi -pl` on a GPU whose limit or range holds a token prints `Changing power management limit is not supported for GPU: <bus id>.` and `Treating as warning and moving on.`, writes nothing, sets the other GPUs it was given and exits 0 after `All done.`; with `--error-on-warning` (`-eow`) it writes nothing and exits 3. No builtin profile sets it.
 - `base_frequency` is rendered on the Intel profiles with HWP, so the agent's `cpu.landmarks.nominalFreqMHz` is set.
 - `cpuinfo_max_freq` follows turbo: it shows the top non-turbo frequency while `intel_pstate/no_turbo` or the amd-pstate boost turns turbo off.
 
