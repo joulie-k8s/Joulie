@@ -12,7 +12,7 @@ Turn it on with `SIM_EMULATE=true` and `SIM_CLUSTER_SPEC`; every variable is und
 For each spec node the simulator keeps a tree under `SIM_HWEMU_ROOT/<node>/`, rendered from a hardware profile (`simulator/pkg/hwemu/profiles/`):
 
 - `sys/`: the powercap, cpufreq, hwmon and PCI attributes as the kernel nests them. An agent pod mounts it as its `/host-sys`.
-- `cpuinfo`: mounted as the pod's `/proc/cpuinfo`.
+- `cpuinfo`: mounted as the pod's `/proc/cpuinfo`. One block per logical CPU with the profile's model and topology, and a `flags` line with the flags its facts imply: `hwp`, and `hwp_epp` under intel_pstate, where `cpufreq.hwp` is true, and `hypervisor` on a virtual machine. A profile with none of them has no `flags` line; a corpus machine keeps its captured cpuinfo verbatim.
 - `state/`: what the fake GPU tools read and write, such as NVML limits and energy, and the node's energy ledger.
 - `bin/`: `nvidia-smi`, `rocm-smi` and `amd-smi`, links to `fakesmi`, which the simulator installs in `SIM_HWEMU_ROOT/lib/`. The agent pod puts `bin/` first on its `PATH`.
 
@@ -61,7 +61,7 @@ The fake tools act on the same files:
 |---|---|
 | `rocm-smi --showperflevel`, `--setperflevel LEVEL`, `--showprofile`, `--setprofile N` | read or write the level; `--setprofile` switches to `manual` first |
 | `amd-smi set -g GPU --perf-level LEVEL`, `--clk-limit sclk max MHZ`; `amd-smi metric --perf-level` | set or read the level, or the overdrive ceiling under `manual`; `set --profile` prints `Not Yet Implemented` |
-| `nvidia-smi -i ID -lgc MIN,MAX`, `-rgc`, `-lmc MIN,MAX`, `-rmc` | set or clear a lock, one line per GPU then `All done.`; `-lmc` fails on Hopper, which has no run-time memory lock |
+| `nvidia-smi -i ID -lgc MIN,MAX`, `-rgc`, `-lmc MIN,MAX`, `-rmc` | set or clear a lock, one line per GPU then `All done.`; on a GPU without the lock, such as `-lmc` on Hopper, which has no run-time memory lock, it prints `... is not supported for GPU <bus id>.` and `Treating as warning and moving on.`, writes nothing there and exits 0, or exits 3 with `--error-on-warning` (`-eow`) |
 | `nvidia-smi --query-gpu=clocks.sm,clocks.mem,clocks.max.sm,clocks.max.mem,pstate,clocks_event_reasons.active` (or `clocks_throttle_reasons.active`, the same file); `nvidia-smi -q -d SUPPORTED_CLOCKS` | read the clock files |
 | `nvidia-smi -ac`, `-rac` | refused as deprecated, non-zero exit |
 | `nvidia-smi -pm 0`, `1`, `DISABLED`, `ENABLED` | persistence mode off or on |
@@ -93,6 +93,7 @@ Each profile in `simulator/pkg/hwemu/profiles/` names the source of every value:
 | `nvidia-l40s-4gpu` | 4x L40S on the 9534 host | nvidia-smi, 100 to 350 W per GPU |
 | `amd-instinct-mi300x-8gpu` | 8x Instinct MI300X on the 9654 host | amdgpu hwmon, rocm-smi and amd-smi, 0 to 750 W per GPU; accelerator class, NFD `pci-1200_1002` |
 | `amd-radeon-pro-w7900-4gpu` | 4x Radeon PRO W7900 on the 9534 host | amdgpu hwmon, rocm-smi and amd-smi; display class, NFD `pci-0300_1002`; the cap is pinned at 241 W per GPU |
+| `intel-flex-170-4gpu` | 4x Data Center GPU Flex 170 on the 6530 host | i915 hwmon, no tool, up to 150 W per GPU (`power1_max`, `power1_rated_max`), with a floor the hardware clamps to that sysfs does not show; display class, NFD `pci-0380_8086` and Intel's NFD rule labels |
 | `vm-no-powercap` | KVM guest | none: no powercap, no cpufreq |
 
 The governor each profile ships with and the presets it can express (CPU `performance`, `balanced`, `efficiency`; GPU `auto`, `sustained`, `efficient`, `low`, `peak`, as `pkg/governor` maps them):
@@ -108,6 +109,7 @@ The governor each profile ships with and the presets it can express (CPU `perfor
 | `nvidia-h100-nvl-8gpu`, `nvidia-h100-sxm-8gpu` | as the 8260 | as the 8260 | nvidia-smi: every preset, `sustained` equivalent to `auto` |
 | `nvidia-h100-sxm-4gpu` | as the 6530 | as the 6530 | as the H100 above |
 | `nvidia-l40s-4gpu` | as the 9534 | as the 9534 | nvidia-smi: every preset, `sustained` locks the memory clock at its maximum |
+| `intel-flex-170-4gpu` | as the 6530 | as the 6530 | none |
 | `vm-no-powercap` | no cpufreq | none | none |
 
 No builtin profile turns the receiver gate on.
@@ -117,10 +119,13 @@ Profile facts that shape what the agent reads:
 - `physics.cpu.model`: `analytic`, the power formula of `idlePkgW` and `maxPkgW`, or `catalog-curve`, the measured curve of the CPU's catalog entry split over the packages. The 2x EPYC 9654 profiles (`amd-epyc-2s-energy-only` and `amd-instinct-mi300x-8gpu`, which extends it) run the curve of SPECpower_ssj2008 result 01203; the 9534 and HSMP profiles are analytic.
 - `limitBits` of a powercap zone: the width of its power limit field, in raw power units. A limit past it wraps in the register, as on hardware. Unset, it is the MSR interface's: 15 bits for PL1 and PL2, 17 on psys, 13 for PL4; `intel-xeon6-2s-tpmi` sets 18, the TPMI field.
 - `gpus.clocks.supported.smMaxByMem`: memory clocks under which the GPU offers only the lower graphics clocks, each with the highest one. `nvidia-smi -q -d SUPPORTED_CLOCKS` lists the graphics clocks of such a memory clock up to that ceiling, and a memory clock lock holds the graphics clock at or below the ceiling of its memory clock, in the GPU's power and speed and in `clocks.sm` (`nvidia-l40s-4gpu`).
+- `gpus.fieldSupport`: an `nvidia-smi` query field and the token the tool prints in its place, such as `power.min_limit: "[N/A]"`. The emulator never writes a value into that field's file. `nvidia-smi -pl` on a GPU whose limit or range holds a token prints `Changing power management limit is not supported for GPU: <bus id>.` and `Treating as warning and moving on.`, writes nothing, sets the other GPUs it was given and exits 0 after `All done.`; with `--error-on-warning` (`-eow`) it writes nothing and exits 3. No builtin profile sets it.
 - `base_frequency` is rendered on the Intel profiles with HWP, so the agent's `cpu.landmarks.nominalFreqMHz` is set.
 - `cpuinfo_max_freq` follows turbo: it shows the top non-turbo frequency while `intel_pstate/no_turbo` or the amd-pstate boost turns turbo off.
 
 The W7900's cap is pinned as measured: hwmon and both tools report minimum, maximum, default and current at 241 W, so the driver refuses every other value written to `power1_cap` (a [`joulie.sim.write.rejected` event]({{< relref "/docs/simulator/metrics.md#events-emulate-mode" >}}) with `error.type` `einval`), `rocm-smi --setpoweroverdrive` prints the bound it violates and exits 0, and `amd-smi set -o ppt0` prints "Power cap must be between 241W and 241W". AMD publishes 295 W for the board; that is total board power, while 241 W is the package power limit the driver enforces and reports.
+
+The Flex 170's `power1_max` (class A) takes any value, as i915 does: a value in whole watts is kept, one between the hardware's bounds is enforced, and one outside them reads back, after the next tick, as the bound the hardware clamps it to, 40 W at the bottom and 150 W at the top, so the agent's readback reports it as an error. Writing 0 turns the limit off. The 40 W floor is assumed: sysfs does not show it, and Intel publishes none. `gpus.intel.driver: xe` renders the xe layout instead, with the limit on the package channel, `power2_max`.
 
 ## The cluster spec
 

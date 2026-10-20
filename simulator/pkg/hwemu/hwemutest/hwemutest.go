@@ -51,12 +51,26 @@ func NewNodeWith(t testing.TB, profile string, mutate func(*hwemu.Profile), o hw
 	if mutate != nil {
 		mutate(p)
 	}
+	n, tree := newNodeOf(t, p, o)
+	return n, tree, p
+}
+
+// NewNodeOf is NewNode for a profile the test loaded itself, such as a test
+// profile of its package's testdata read with hwemu.LoadProfileSet.
+func NewNodeOf(t testing.TB, p *hwemu.Profile) (*hwemu.Node, *hwemu.Tree) {
+	t.Helper()
+	return newNodeOf(t, p, hwemu.Options{})
+}
+
+// newNodeOf renders p into t.TempDir and starts its physics with o.
+func newNodeOf(t testing.TB, p *hwemu.Profile, o hwemu.Options) (*hwemu.Node, *hwemu.Tree) {
+	t.Helper()
 	tree := render(t, p)
 	n, err := hwemu.NewNode(p, tree, o)
 	if err != nil {
-		t.Fatalf("hwemutest: start node %s: %v", profile, err)
+		t.Fatalf("hwemutest: start node %s: %v", p.Name, err)
 	}
-	return n, tree, p
+	return n, tree
 }
 
 // SteadyPackagePower is the total power, in W, of every CPU package of p

@@ -21,7 +21,10 @@
 # again; containerd is listed once per run.
 #
 # Each image is built or pulled, imported and inspected in a pipeline of its
-# own, and the pipelines run at once. --wait-container builds the binaries
+# own, and the pipelines run at once; the imports themselves take turns, one
+# at a time per cluster, after k3s has imported its own air-gap bundle, and
+# a failed one is tried again while the container runs (sim_import_image,
+# sim_wait_k3s_imports in lib.sh). --wait-container builds the binaries
 # first and then waits for the cluster's container to run, so the build
 # overlaps the cluster's start (smoke.sh runs it next to up.sh); without it
 # a container that does not run is an error.
@@ -160,9 +163,11 @@ if ((wait_container)); then
   sim_wait 300 "container $SIMCLUSTER_NAME to run" container_runs
 fi
 
-# containerd starts a moment after the container. One containerd listing
-# and one docker save probe for every pipeline.
-sim_wait 180 "containerd in $SIMCLUSTER_NAME" docker exec "$SIMCLUSTER_NAME" ctr -n k8s.io version
+# containerd starts a moment after the container, and k3s imports its
+# air-gap bundle in the background as it starts. One containerd listing and
+# one docker save probe for every pipeline.
+sim_wait_running 180 "containerd in $SIMCLUSTER_NAME" docker exec "$SIMCLUSTER_NAME" ctr -n k8s.io version
+sim_wait_k3s_imports
 SIM_CLUSTER_IMAGES=$(sim_cluster_images)
 sim_save_args
 

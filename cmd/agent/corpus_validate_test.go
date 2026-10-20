@@ -128,11 +128,13 @@ var corpusZoneFilePattern = regexp.MustCompile(
 // corpusNvidiaQuery is the query whose stdout the fixtures hold.
 // TestCorpusGPUQueriesMatchTheAgent asserts that cmd/agent still runs exactly
 // this, so the fixture format cannot drift away from the agent.
-const corpusNvidiaQuery = "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name"
+const corpusNvidiaQuery = "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name,power.default_limit"
 
 // corpusNvidiaColumns is the number of fields that query returns per GPU:
-// index, power.min_limit, power.max_limit, power.limit, power.draw, name.
-const corpusNvidiaColumns = 6
+// index, power.min_limit, power.max_limit, power.limit, power.draw, name,
+// power.default_limit. A capture of the first six fields is valid too: the
+// agent reads the default of such a line as unknown.
+const corpusNvidiaColumns = 7
 
 // ---------------------------------------------------------------------------
 // Privacy patterns
@@ -618,11 +620,19 @@ func validateCorpusNvidiaOutput(p *corpusProblems, dir string) {
 		// splitCSVLine is the agent's own splitter, so the fixture is read
 		// exactly the way cmd/agent reads it.
 		parts := splitCSVLine(line)
-		if len(parts) < corpusNvidiaColumns {
+		if len(parts) < corpusNvidiaColumns-1 {
 			p.addf(file, i+1, "has %d comma separated fields, want %d. Fix: capture the exact query the agent runs:\n"+
 				"  nvidia-smi %s --format=csv,noheader,nounits",
 				len(parts), corpusNvidiaColumns, corpusNvidiaQuery)
 			continue
+		}
+		if len(parts) >= corpusNvidiaColumns {
+			if v := parts[6]; !corpusIsNvidiaToken(v) {
+				if _, err := strconv.ParseFloat(v, 64); err != nil {
+					p.addf(file, i+1, "field 7 (power.default_limit) is %q, not a number and not a bracketed token such as [N/A]. Fix: capture with nounits, "+
+						"which drops the \" W\" suffix", v)
+				}
+			}
 		}
 		if _, err := strconv.Atoi(parts[0]); err != nil {
 			p.addf(file, i+1, "field 1 (index) is %q, not a number. Fix: capture with --format=csv,noheader,nounits "+
@@ -630,11 +640,11 @@ func validateCorpusNvidiaOutput(p *corpusProblems, dir string) {
 		}
 		for col, what := range []string{"power.min_limit", "power.max_limit", "power.limit", "power.draw"} {
 			v := parts[col+1]
-			if corpusIsNotApplicable(v) {
+			if corpusIsNvidiaToken(v) {
 				continue
 			}
 			if _, err := strconv.ParseFloat(v, 64); err != nil {
-				p.addf(file, i+1, "field %d (%s) is %q, not a number and not [N/A]. Fix: capture with nounits, "+
+				p.addf(file, i+1, "field %d (%s) is %q, not a number and not a bracketed token such as [N/A]. Fix: capture with nounits, "+
 					"which drops the \" W\" suffix", col+2, what, v)
 			}
 		}
@@ -836,9 +846,14 @@ func corpusParsesAsDate(v string) bool {
 	return false
 }
 
-func corpusIsNotApplicable(v string) bool {
-	v = strings.TrimSpace(strings.Trim(strings.TrimSpace(v), "[]"))
-	return strings.EqualFold(v, "N/A") || strings.EqualFold(v, "Not Supported")
+// corpusIsNvidiaToken reports whether v is a bracketed token, what
+// nvidia-smi prints where the driver gives no value: [N/A], [Not Supported],
+// [Requested functionality has been deprecated] and the like. The agent
+// reads one in a limit column as no settable power limit, and
+// hwemu.FromCorpus renders it for the emulated tool to print back.
+func corpusIsNvidiaToken(v string) bool {
+	v = strings.TrimSpace(v)
+	return len(v) > 2 && strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]")
 }
 
 func corpusTruncate(s string) string {
@@ -1089,7 +1104,7 @@ const corpusGoodNodeLabels = `{
 }
 `
 
-const corpusGoodNvidiaCSV = "0, 60.00, 70.00, 70.00, 9.97, Tesla T4\n"
+const corpusGoodNvidiaCSV = "0, 60.00, 70.00, 70.00, 9.97, Tesla T4, 70.00\n"
 
 const corpusGoodExpected = `{
   "capabilities": {
@@ -1191,6 +1206,24 @@ func TestCorpusValidatorAcceptsAnAMDGPUCapture(t *testing.T) {
 	}
 	if msgs := validateCorpusMachine(root, machine); len(msgs) != 0 {
 		t.Fatalf("a good AMD capture was rejected:\n%s", strings.Join(msgs, "\n"))
+	}
+}
+
+// TestCorpusValidatorAcceptsNvidiaTokens: every token nvidia-smi prints in
+// place of a value passes in each power column, as the agent and
+// hwemu.FromCorpus both read it.
+func TestCorpusValidatorAcceptsNvidiaTokens(t *testing.T) {
+	for _, token := range []string{"[N/A]", "[Not Supported]", "[Requested functionality has been deprecated]",
+		"[Insufficient Permissions]", "[Unknown Error]"} {
+		for col := 1; col <= 4; col++ {
+			root, machine, dir := newCorpusTestMachine(t)
+			fields := strings.Split(strings.TrimSpace(corpusGoodNvidiaCSV), ", ")
+			fields[col] = token
+			corpusWrite(t, dir, "nvidia-smi.txt", strings.Join(fields, ", ")+"\n")
+			if msgs := validateCorpusMachine(root, machine); len(msgs) != 0 {
+				t.Errorf("%s in field %d was rejected:\n%s", token, col+1, strings.Join(msgs, "\n"))
+			}
+		}
 	}
 }
 
@@ -1382,7 +1415,14 @@ func TestCorpusValidatorRejects(t *testing.T) {
 		{
 			name:   "nvidia csv has too few columns",
 			mutate: func(t *testing.T, dir string) { corpusWrite(t, dir, "nvidia-smi.txt", "0, 70.00, Tesla T4\n") },
-			want:   "has 3 comma separated fields, want 6",
+			want:   "has 3 comma separated fields, want 7",
+		},
+		{
+			name: "nvidia csv default limit kept its unit",
+			mutate: func(t *testing.T, dir string) {
+				corpusWrite(t, dir, "nvidia-smi.txt", "0, 60.00, 70.00, 70.00, 9.97, Tesla T4, 70.00 W\n")
+			},
+			want: "field 7 (power.default_limit) is \"70.00 W\", not a number",
 		},
 		{
 			name: "nvidia csv kept its header",
@@ -1398,6 +1438,13 @@ func TestCorpusValidatorRejects(t *testing.T) {
 				corpusWrite(t, dir, "nvidia-smi.txt", "0, 60.00 W, 70.00 W, 70.00 W, 9.97 W, Tesla T4\n")
 			},
 			want: "field 2 (power.min_limit) is \"60.00 W\", not a number",
+		},
+		{
+			name: "nvidia csv holds a word without brackets",
+			mutate: func(t *testing.T, dir string) {
+				corpusWrite(t, dir, "nvidia-smi.txt", "0, N/A, 70.00, 70.00, 9.97, Tesla T4\n")
+			},
+			want: "field 2 (power.min_limit) is \"N/A\", not a number and not a bracketed token",
 		},
 		{
 			name:   "amdgpu attribute is not microwatts",

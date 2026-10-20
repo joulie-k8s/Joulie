@@ -1,0 +1,50 @@
+# Test profile: four Instinct MI250X OAMs on the two socket EPYC host, as
+# AMD's node-level description of MI250 pairs them (source mi250arch). Each
+# OAM is two GCDs, and each GCD is one amdgpu device, so the node lists
+# eight; the second of each pair is a secondary die, with no power limit of
+# its own (source aldebaran617).
+#
+# It is a test profile, not a builtin: hwemu gives a secondary die no limit
+# and does not share the package limit its primary holds between the two
+# dies, so the power this node draws is not an MI250X's, and the simulator
+# and the simulated cluster must not run it. The agent tests that read it
+# check discovery and capping only.
+schemaVersion: 1
+name: amd-instinct-mi250x-4oam
+extends: amd-epyc-2s-energy-only
+description: Test profile, 4x Instinct MI250X (8 GCDs, the second of each OAM a secondary die) on the two socket EPYC host, amdgpu hwmon, no AMD tool.
+sources:
+  mi250xpage:   {kind: published, ref: "https://www.amd.com/en/products/accelerators/instinct/mi200/mi250x.html", note: "Thermal Design Power (TDP) 500W | 560W Peak; GPU Form Factor OAM Module; Bus Type PCIe 4.0 x16; GPU Architecture CDNA2"}
+  mi250arch:    {kind: published, ref: "https://rocm.docs.amd.com/en/docs-7.2.4/conceptual/gpu-arch/mi250.html", note: "an OAM package of two GCDs, each of which constitutes one GPU device in the system; node-level architecture: EPYC processors in a dual-socket configuration and four MI250 GPUs, each GCD with its own PCIe x16 link"}
+  pciids:       {kind: published, ref: "https://pci-ids.ucw.cz/read/PC/1002/740c", note: "1002:740c Aldebaran/MI200 [Instinct MI250X/MI250]"}
+  llvmamdgpu:   {kind: published, ref: "https://llvm.org/docs/AMDGPUUsage.html", note: "processor table: gfx90a lists AMD Instinct MI210, MI250 and MI250X"}
+  aldebaran617: {kind: published, ref: "https://github.com/torvalds/linux/blob/v6.17/drivers/gpu/drm/amd/pm/swsmu/smu13/aldebaran_ppt.c", note: "aldebaran_get_power_limit (1239-1296): current and default limit 0 on a secondary die, maximum PptLimit and minimum 0 on every die; aldebaran_set_power_limit (1298-1306) returns -EINVAL on a secondary die; average socket power from the primary only, -EOPNOTSUPP on a secondary die (713-718); GPU_INPUT_POWER unsupported (1230-1233)"}
+  amdgpupm617:  {kind: published, ref: "https://github.com/torvalds/linux/blob/v6.17/drivers/gpu/drm/amd/pm/amdgpu_pm.c", note: "power1_average and power1_input are hidden when the sensor read fails with -EOPNOTSUPP (3478-3484); only Van Gogh has the fast PPT power2 (3565-3573)"}
+  amdgpudrv:    {kind: published, ref: "linux v7.3-rc5 drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c:2193-2206", note: "binds VGA, display-other and accelerator-processing classes"}
+gpus:
+  vendor: amd
+  count: {v: 8, src: "published:mi250arch#four MI250 OAMs of two GCDs each, each GCD one GPU device"}
+  product: {v: "AMD Instinct MI250X", src: "assumed:product_name; the hardware catalog has no MI250X entry"}
+  pci: {vendor: {v: "0x1002", src: "published:pciids#1002"}, device: {v: "0x740c", src: "published:pciids#1002:740c"}, class: "0x038000", src: "assumed:display-other class, one of the classes amdgpudrv binds"}
+  exposure: {v: whole, src: "assumed:AMD device plugin resource amd.com/gpu, one per GCD"}
+  labeller: {v: listed, src: "assumed:no labeller labels; the agent reads none for its cap path"}
+  gfxVersion: {v: gfx90a, src: "published:llvmamdgpu#processor table, gfx90a row"}
+  # The second GCD of each OAM, in the DRM card order the tools number
+  # devices by (published:aldebaran617#aldebaran_is_primary, die id 0 is the
+  # primary; which device numbers the dies get is assumed).
+  secondaryDies: [1, 3, 5, 7]
+  limits:
+    minW: {v: 0, src: "published:aldebaran617#min_power_limit 0"}
+    maxW: {v: 560, src: "published:mi250xpage#560W Peak"}
+    defaultW: {v: 560, src: "assumed:the PPT limit the firmware reports at boot is the maximum"}
+  powerSensor: {v: average, src: "published:aldebaran617#average socket power only, GPU_INPUT_POWER unsupported"}
+  ppt1: {v: absent, src: "published:amdgpupm617#only Van Gogh has the fast PPT"}
+physics:
+  gpu:
+    idleW: {v: 90, src: "assumed:placeholder; no test reads it"}
+    naturalMaxW: {v: 560, src: "published:mi250xpage#560W Peak, for the primary's share as for the secondary's (the split is not modelled)"}
+    computeGamma: {v: 1.0, src: "assumed:simulator default SIM_GPU_COMPUTE_GAMMA; throughput only"}
+    memoryEpsilon: {v: 0.2, src: "assumed:simulator default SIM_GPU_MEMORY_EPSILON; throughput only"}
+    memoryGamma: {v: 1.2, src: "assumed:simulator default SIM_GPU_MEMORY_GAMMA; throughput only"}
+    capSettleTauMS: {v: 350, src: "assumed:the MI300X profile's value"}
+    telemetryWindowMS: {v: 1000, src: "assumed:no public averaging window for power1_average"}

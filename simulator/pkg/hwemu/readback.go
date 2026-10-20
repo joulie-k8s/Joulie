@@ -668,6 +668,23 @@ func (n *Node) amdgpuCapHandler(g *nodeGPU, abs string) (func(string) (string, s
 	return handle, func() string { return nodeItoa(g.limitRaw) + "\n" }
 }
 
+// amdgpuSecondaryCapHandler is power1_cap at abs of a secondary die, which
+// reads 0 and refuses every write: a value kstrtou32 does not parse fails
+// as a parse error, and any other with EINVAL, from the range check of
+// smu_set_power_limit or from aldebaran_set_power_limit, which sets a limit
+// only through the primary die (Linux v6.17 amdgpu_pm.c:3118-3150,
+// amdgpu_smu.c:2934-2964, aldebaran_ppt.c:1298-1306).
+func (n *Node) amdgpuSecondaryCapHandler(abs string) (func(string) (string, string), func() string) {
+	rel := n.relPath(abs)
+	handle := func(v string) (string, string) {
+		if _, ok := nodeKstrtou(v, 10, 32); !ok {
+			return EventParseError, "0"
+		}
+		return n.rejectWrite(rel, ErrnoEINVAL), "0"
+	}
+	return handle, func() string { return "0\n" }
+}
+
 // nvmlLimitHandler is NVML state power_limit_mw, written by fakesmi after its
 // own range check. The value is kept as written and enforced within
 // [min, max], a defensive clamp.

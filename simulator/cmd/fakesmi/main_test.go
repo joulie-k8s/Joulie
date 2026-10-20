@@ -71,7 +71,7 @@ func fakesmiNode(t *testing.T, tools map[string]string) smi.Env {
 	for i := 0; i < 2; i++ {
 		for f, v := range map[string]string{
 			"name": "NVIDIA H100 NVL", "uuid": fmt.Sprintf("GPU-%d", i), "pci_bus_id": fmt.Sprintf("00000000:%02x:00.0", 0x20+i),
-			"power_min_limit_mw": "200000", "power_max_limit_mw": "400000", "power_limit_mw": "400000", "power_draw_mw": "50000",
+			"power_min_limit_mw": "200000", "power_max_limit_mw": "400000", "power_default_limit_mw": "400000", "power_limit_mw": "400000", "power_draw_mw": "50000",
 		} {
 			write(path.Join(layout.StateDir, layout.NVMLGPUDir(i), f), v, 0o644)
 		}
@@ -124,7 +124,7 @@ func TestB01ReExecThroughToolLinksMatchesInProcessMain(t *testing.T) {
 		argv  []string
 		code  int
 	}{
-		{nvidia, []string{"nvidia-smi", "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name", "--format=csv,noheader,nounits"}, 0},
+		{nvidia, []string{"nvidia-smi", "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name,power.default_limit", "--format=csv,noheader,nounits"}, 0},
 		{nvidia, []string{"nvidia-smi", "-i", "1", "-pl", "300"}, 0},
 		{nvidia, []string{"nvidia-smi", "-i", "9", "-pl", "300"}, 6},
 		{nvidia, []string{"nvidia-smi", "--bogus"}, 255},

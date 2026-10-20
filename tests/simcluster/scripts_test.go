@@ -55,6 +55,15 @@ const scFakeDocker = `#!/usr/bin/env bash
 # Fake docker: containers, volumes, local images and the cluster's containerd
 # images are files under $FAKE_STATE/docker; the container's file system, as
 # far as exec sh and exec tar reach it, is $FAKE_STATE/rootfs.
+# FAKE_CONTAINER_DIES=1 creates a container that has exited with status
+# $FAKE_EXIT_CODE (1), and exec into it fails; its log ends with $FAKE_K3S_LOG.
+# The first $FAKE_CTR_IMPORT_FAILS imports fail as a containerd that dropped
+# the stream does; each import lasts $FAKE_IMPORT_SECONDS and writes "import"
+# to $FAKE_STATE/events, "overlap" when another one is running. The log
+# reports k3s's import of each air-gap tarball from its
+# $FAKE_K3S_IMPORTED_AFTER-th read on (the first), writing "k3s imported" to
+# the events the first time. FAKE_IMPORT_STOPS_CONTAINER=1 stops the
+# container when an import fails.
 set -u
 source "$FAKE_BIN/fake-common.sh"
 fake_record docker "$@"
@@ -73,7 +82,9 @@ shift
 case $sub in
 inspect)
   [[ -f $S/container-$last ]] || { echo "Error: No such object: $last" >&2; exit 1; }
-  if [[ $1 == -f ]]; then cat "$S/container-$last"; else echo '[{}]'; fi
+  if [[ $1 == -f && $2 == *ExitCode* ]]; then
+    if [[ $(cat "$S/container-$last") == true ]]; then echo 0; else echo "${FAKE_EXIT_CODE:-1}"; fi
+  elif [[ $1 == -f ]]; then cat "$S/container-$last"; else echo '[{}]'; fi
   ;;
 run)
   name= images=
@@ -88,7 +99,8 @@ run)
       ;;
     esac
   done
-  echo true >"$S/container-$name"
+  if [[ ${FAKE_CONTAINER_DIES:-} == 1 ]]; then echo false >"$S/container-$name"; else echo true >"$S/container-$name"; fi
+  printf '%s\n' "$images" >"$S/images-dir-$name"
   printf 'docker run saw in the images directory: %s\n' "$(ls -1 "$images" 2>/dev/null | tr '\n' ' ')" >>"$FAKE_STATE/events"
   echo 0123456789abcdef
   ;;
@@ -96,6 +108,11 @@ start) echo true >"$S/container-$last" ;;
 port) echo 127.0.0.1:41234 ;;
 exec)
   while [[ $1 == -* ]]; do shift; done
+  name=$1
+  if [[ $(cat "$S/container-$name" 2>/dev/null) != true ]]; then
+    echo "Error response from daemon: container $name is not running" >&2
+    exit 1
+  fi
   shift
   case $1 in
   cat) printf 'apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:6443\n  name: default\n' ;;
@@ -110,9 +127,21 @@ exec)
       if grep -qxF "$ref" "$S/ctr-images" 2>/dev/null; then echo "$ref"; fi
       exit 0
     fi
+    failed=$(cat "$S/import-failures" 2>/dev/null || echo 0)
+    if ((failed < ${FAKE_CTR_IMPORT_FAILS:-0})); then
+      echo $((failed + 1)) >"$S/import-failures"
+      cat >/dev/null
+      echo "ctr: error reading from server: EOF" >&2
+      if [[ ${FAKE_IMPORT_STOPS_CONTAINER:-} == 1 ]]; then echo false >"$S/container-$name"; fi
+      exit 1
+    fi
+    mkdir "$S/importing" 2>/dev/null || echo overlap >>"$FAKE_STATE/events"
+    echo import >>"$FAKE_STATE/events"
+    sleep "${FAKE_IMPORT_SECONDS:-0}"
     while read -r line; do
       if [[ $line == "fake-image "* ]]; then norm "${line#fake-image }" >>"$S/ctr-images"; fi
     done
+    rmdir "$S/importing" 2>/dev/null || true
     ;;
   crictl)
     id=$(printf '%s' "$last" | sha256sum | cut -c1-64)
@@ -166,7 +195,28 @@ volume)
   rm) for v in "${@:2}"; do rm -f "$S/volume-$v"; done ;;
   esac
   ;;
-logs) echo "fake k3s log" ;;
+logs)
+  echo "fake k3s log"
+  reads=$(($(cat "$S/log-reads-$last" 2>/dev/null || echo 0) + 1))
+  echo "$reads" >"$S/log-reads-$last"
+  if ((reads >= ${FAKE_K3S_IMPORTED_AFTER:-1})); then
+    dir=$(cat "$S/images-dir-$last" 2>/dev/null || true)
+    for f in "$dir"/*; do
+      [[ -f $f ]] || continue
+      printf 'time="2026-10-19T00:00:00Z" level=info msg="Imported images from /var/lib/rancher/k3s/agent/images/%s in 1.5s"\n' "${f##*/}"
+      if [[ ! -e $S/k3s-imported-$last ]]; then
+        : >"$S/k3s-imported-$last"
+        echo "k3s imported" >>"$FAKE_STATE/events"
+      fi
+    done
+  fi
+  if [[ -n ${FAKE_K3S_LOG:-} ]]; then printf '%s\n' "$FAKE_K3S_LOG"; fi
+  ;;
+cp)
+  # cp <container>:<path> <dest>: a stopped container's files stay readable.
+  [[ -f $S/container-${1%%:*} ]] || { echo "Error: No such container: ${1%%:*}" >&2; exit 1; }
+  echo "fake containerd log" >"$2"
+  ;;
 esac
 exit 0
 `
@@ -607,9 +657,21 @@ func (e *scEnv) copyIn(src, rel string) {
 	e.write(filepath.Join(e.repo, rel), string(b))
 }
 
+// scRolledOut is the status of a Deployment of one replica that rolled out.
+const scRolledOut = `"status":{"observedGeneration":1,"replicas":1,"updatedReplicas":1,"readyReplicas":1,"availableReplicas":1}`
+
+// scDeployment is a rolled out Deployment of one replica named name, with
+// more metadata and spec fields (JSON members, or empty).
+func scDeployment(name, metadata, spec string) string {
+	if metadata != "" {
+		metadata = "," + metadata
+	}
+	return `{"kind":"Deployment","metadata":{"name":"` + name + `","generation":1` + metadata + `},"spec":{"replicas":1` + spec + `},` + scRolledOut + `}`
+}
+
 // seedCluster writes a cluster of one fake Node, intel-0, that is Ready, has
 // an emulated agent, a NodeHardware, a written NodeTwin and series in
-// Prometheus.
+// Prometheus, with every Deployment rolled out.
 func (e *scEnv) seedCluster() {
 	k := filepath.Join(e.state, "kube")
 	files := map[string]string{
@@ -620,9 +682,13 @@ func (e *scEnv) seedCluster() {
 		"get-nodehardwares.json": `{"items":[{"kind":"NodeHardware","metadata":{"name":"intel-0"},"spec":{"nodeName":"intel-0"}}]}`,
 		"get-nodetwins.json": `{"items":[{"kind":"NodeTwin","metadata":{"name":"intel-0"},"spec":{"nodeName":"intel-0"},
 			"status":{"lastUpdated":"2026-10-05T00:00:00Z","powerMeasurement":{"source":"prometheus","measuredNodePowerW":420}}}]}`,
-		"get-deployments-joulie-system.json": `{"items":[{"kind":"Deployment","metadata":{"name":"joulie-agent-emu-0",
-			"annotations":{"sim.joulie.io/node":"intel-0"}},
-			"spec":{"template":{"metadata":{"labels":{"app.kubernetes.io/name":"joulie-agent"}}}}}]}`,
+		"get-deployments-joulie-system.json": `{"items":[` +
+			scDeployment("joulie-agent-emu-0", `"annotations":{"sim.joulie.io/node":"intel-0"}`,
+				`,"template":{"metadata":{"labels":{"app.kubernetes.io/name":"joulie-agent"}}}`) + "," +
+			scDeployment("joulie-controller-manager", "", "") + "," + scDeployment("joulie-scheduler-extender", "", "") + `]}`,
+		"get-deployments-joulie-sim.json": `{"items":[` + scDeployment("joulie-telemetry-sim", "", "") + `]}`,
+		"get-deployments-monitoring.json": `{"items":[` + scDeployment("prometheus", "", "") + "," +
+			scDeployment("otelcol", "", "") + "," + scDeployment("otelcol-bridge", "", "") + `]}`,
 		"prom.json":                       `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"instance":"intel-0"},"value":[0,"1"]}]}}`,
 		"apply-names-prometheus.yaml":     "namespace/monitoring\ndeployment.apps/prometheus\nservice/prometheus-operated\n",
 		"apply-names-otelcol.yaml":        "deployment.apps/otelcol\n",
@@ -753,6 +819,35 @@ func (e *scEnv) setVersion(key, value string) {
 		e.t.Fatalf("versions.env has no %s", key)
 	}
 	e.write(path, re.ReplaceAllString(string(b), key+"="+value))
+}
+
+// setLib replaces the value of one constant of the temporary repository's
+// lib.sh, such as a wait the tests shorten.
+func (e *scEnv) setLib(key, value string) {
+	e.t.Helper()
+	path := filepath.Join(e.repo, "scripts/simcluster/lib.sh")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `=.*$`)
+	if !re.Match(b) {
+		e.t.Fatalf("lib.sh has no %s", key)
+	}
+	e.write(path, re.ReplaceAllString(string(b), key+"="+value))
+}
+
+// events returns the lines the fakes wrote to $FAKE_STATE/events.
+func (e *scEnv) events() []string {
+	e.t.Helper()
+	b, err := os.ReadFile(filepath.Join(e.state, "events"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return strings.Split(strings.TrimRight(string(b), "\n"), "\n")
 }
 
 // setAgents makes the fake simcluster list n emulated agents.
@@ -2315,5 +2410,167 @@ func TestSC27SmokeBuildsTheHostToolsOnce(t *testing.T) {
 	}
 	if builds != 1 {
 		t.Errorf("the host tools were built %d times, want once", builds)
+	}
+}
+
+// scInotifyLog is the line a k3s kubelet logs when the host has no inotify
+// instance left for it, before k3s exits.
+const scInotifyLog = `E1019 21:55:34.189351      54 kubelet.go:1686] "Failed to start cAdvisor" err="inotify_init: too many open files"`
+
+// TestSC28RolloutsPollOneListAndScaleTheirTimeout: a rollout wait polls one
+// list of the namespace's workloads instead of watching each object, waits
+// SIM_ROLLOUT_BASE_SECONDS plus SIM_ROLLOUT_SECONDS_PER_OBJECT per object,
+// and on a timeout names the object that did not roll out and the pod that
+// is not ready, with the reason its container waits.
+func TestSC28RolloutsPollOneListAndScaleTheirTimeout(t *testing.T) {
+	e := scNew(t)
+	e.mustRun("up.sh", nil)
+	e.setLib("SIM_ROLLOUT_BASE_SECONDS", "4")
+	e.setLib("SIM_ROLLOUT_SECONDS_PER_OBJECT", "1")
+	k := filepath.Join(e.state, "kube")
+	e.write(filepath.Join(k, "get-deployments-joulie-system.json"), `{"items":[`+
+		`{"kind":"Deployment","metadata":{"name":"joulie-agent-emu-0","generation":2,"annotations":{"sim.joulie.io/node":"intel-0"}},`+
+		`"spec":{"replicas":1,"template":{"metadata":{"labels":{"app.kubernetes.io/name":"joulie-agent"}}}},`+
+		`"status":{"observedGeneration":1,"replicas":1,"updatedReplicas":0,"availableReplicas":0}},`+
+		scDeployment("joulie-controller-manager", "", "")+","+scDeployment("joulie-scheduler-extender", "", "")+`]}`)
+	e.write(filepath.Join(k, "get-pods-joulie-system.json"), `{"items":[{"kind":"Pod","metadata":{"name":"joulie-agent-emu-0-abc"},`+
+		`"status":{"phase":"Pending","conditions":[{"type":"Ready","status":"False"}],"containerStatuses":[{"name":"agent","state":{"waiting":{"reason":"ContainerCreating"}}}]}},`+
+		`{"kind":"Pod","metadata":{"name":"joulie-controller-manager-def"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}`)
+	start := time.Now()
+	out := e.mustFail("deploy.sh", nil)
+	for _, want := range []string{
+		"timed out after 7s waiting for the rollout in joulie-system",
+		"deployment/joulie-agent-emu-0: generation 2, observed 1",
+		"pod/joulie-agent-emu-0-abc: Pending, ContainerCreating",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("deploy.sh output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "joulie-controller-manager-def") || strings.Contains(out, "deployment/joulie-controller-manager:") {
+		t.Errorf("the report names objects that rolled out:\n%s", out)
+	}
+	if d := time.Since(start); d > time.Minute {
+		t.Errorf("deploy.sh took %s; the rollout wait is 7 s", d)
+	}
+	for _, c := range e.callsOf("kubectl") {
+		if c.has("rollout", "status") {
+			t.Errorf("kubectl %v: want one polled list, no watch per object", c)
+		}
+	}
+}
+
+// TestSC29ImportsTakeTurnsAndRetryTransientFailures: the parallel image
+// pipelines of images.sh never stream into containerd at once; an import
+// that fails while the container runs is tried again; once the container
+// stops, the import fails at once and says why the container exited.
+func TestSC29ImportsTakeTurnsAndRetryTransientFailures(t *testing.T) {
+	e := scNew(t)
+	e.container("joulie-sim")
+	e.mustRun("images.sh", map[string]string{"FAKE_IMPORT_SECONDS": "0.3"})
+	var imports, overlaps int
+	for _, ev := range e.events() {
+		switch ev {
+		case "import":
+			imports++
+		case "overlap":
+			overlaps++
+		}
+	}
+	if imports != 6 || overlaps != 0 {
+		t.Errorf("%d imports, %d of them while another ran; want the 6 images one at a time", imports, overlaps)
+	}
+
+	e2 := scNew(t)
+	e2.container("joulie-sim")
+	e2.setLib("SIM_IMPORT_RETRY_DELAY", "0")
+	out := e2.mustRun("images.sh", map[string]string{"FAKE_CTR_IMPORT_FAILS": "2"}, "--third-party")
+	if n := strings.Count(out, "the import failed (try "); n != 2 {
+		t.Errorf("%d failed tries reported, want the 2 the fake made fail:\n%s", n, out)
+	}
+	if got := scEnvFile(t, filepath.Join(e2.dir, "images.env")); got["IMAGE_KWOK"] == "" || got["IMAGE_PROMETHEUS"] == "" {
+		t.Errorf("images.env %v, want both third-party images after the retries", got)
+	}
+
+	e3 := scNew(t)
+	e3.container("joulie-sim")
+	e3.setLib("SIM_IMPORT_RETRY_DELAY", "0")
+	out = e3.mustFail("images.sh", map[string]string{"FAKE_CTR_IMPORT_FAILS": "9", "FAKE_IMPORT_STOPS_CONTAINER": "1", "FAKE_K3S_LOG": scInotifyLog}, "--third-party")
+	for _, want := range []string{"container joulie-sim exited with status 1", "inotify_init: too many open files",
+		"k3s ran out of inotify instances", "the import failed and the container is not running"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("images.sh output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "trying again") {
+		t.Errorf("an import was tried again on a stopped container:\n%s", out)
+	}
+}
+
+// TestSC30UpFailsAtOnceWhenTheContainerExits: when k3s exits as it starts,
+// up.sh fails at once with the container's exit and log, instead of waiting
+// for a kubeconfig or an API server that will never come.
+func TestSC30UpFailsAtOnceWhenTheContainerExits(t *testing.T) {
+	e := scNew(t)
+	start := time.Now()
+	out := e.mustFail("up.sh", map[string]string{"FAKE_CONTAINER_DIES": "1", "FAKE_K3S_LOG": scInotifyLog})
+	for _, want := range []string{"container joulie-sim exited with status 1", "inotify_init: too many open files",
+		"k3s ran out of inotify instances", "the container is not running"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("up.sh output lacks %q:\n%s", want, out)
+		}
+	}
+	if d := time.Since(start); d > 30*time.Second {
+		t.Errorf("up.sh took %s to notice the container had exited", d)
+	}
+}
+
+// TestSC31RunsKeepTheLogsOfAContainerThatExited: smoke.sh, and scenario.sh
+// for a variant that could not run, keep k3s's and containerd's logs from a
+// container that has exited.
+func TestSC31RunsKeepTheLogsOfAContainerThatExited(t *testing.T) {
+	e := scNew(t)
+	e.mustFail("smoke.sh", map[string]string{"FAKE_CONTAINER_DIES": "1", "FAKE_K3S_LOG": scInotifyLog})
+	logs := filepath.Join(e.dir, "runs", "latest", "logs")
+	if b, err := os.ReadFile(filepath.Join(logs, "k3s.log")); err != nil || !strings.Contains(string(b), "too many open files") {
+		t.Errorf("smoke run k3s.log: %v %q, want the exited container's log", err, b)
+	}
+	if !scExists(filepath.Join(logs, "containerd.log")) {
+		t.Errorf("smoke run has no containerd.log")
+	}
+
+	e2 := scNew(t)
+	scenarioFile := filepath.Join(e2.repo, "tests/simcluster/scenarios/smoke.yaml")
+	e2.write(scenarioFile, "name: smoke\n")
+	e2.mustFail("scenario.sh", map[string]string{"FAKE_CONTAINER_DIES": "1", "FAKE_K3S_LOG": scInotifyLog}, scenarioFile)
+	matches, _ := filepath.Glob(filepath.Join(e2.dir, "runs", "*-smoke-*", "logs", "k3s.log"))
+	if len(matches) != 1 {
+		t.Fatalf("scenario run k3s.log: %v, want one in the variant's logs", matches)
+	}
+	if b, _ := os.ReadFile(matches[0]); !strings.Contains(string(b), "too many open files") {
+		t.Errorf("scenario run k3s.log %q, want the exited container's log", b)
+	}
+}
+
+// TestSC32ImportsWaitForK3sToImportItsBundle: with an air-gap bundle in
+// images/, no image of ours is imported before k3s logs that it has
+// imported the bundle.
+func TestSC32ImportsWaitForK3sToImportItsBundle(t *testing.T) {
+	content := "fake k3s air-gap bundle"
+	sum := sha256.Sum256([]byte(content))
+	e := scNew(t)
+	e.setVersion("K3S_AIRGAP_SHA256", hex.EncodeToString(sum[:]))
+	e.mustRun("up.sh", map[string]string{"SIMCLUSTER_AIRGAP": "1", "FAKE_AIRGAP_CONTENT": content, "FAKE_K3S_IMPORTED_AFTER": "3"})
+	k3s, first := -1, -1
+	for i, ev := range e.events() {
+		if ev == "k3s imported" && k3s < 0 {
+			k3s = i
+		}
+		if ev == "import" && first < 0 {
+			first = i
+		}
+	}
+	if k3s < 0 || first < 0 || first < k3s {
+		t.Errorf("events %v: k3s's import at %d, ours first at %d; want k3s's first", e.events(), k3s, first)
 	}
 }

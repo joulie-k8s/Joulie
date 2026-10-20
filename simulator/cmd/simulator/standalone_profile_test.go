@@ -170,6 +170,8 @@ var profileModelFacts = map[string]struct {
 	"nvidia-h100-sxm-4gpu":         {capMaxW: 540, capDefaultW: 540, capTauMS: 999, ecoPowerCap: true, gpuMinW: 200, gpuMaxW: 700},
 	// The W7900's limit is pinned: minimum and maximum are both 241 W.
 	"amd-radeon-pro-w7900-4gpu": {capMaxW: 560, capDefaultW: 560, capTauMS: 250, gpuMinW: 241, gpuMaxW: 241},
+	// The Xeon Gold 6530 host's PL1, and the Flex 170's assumed SKU range.
+	"intel-flex-170-4gpu": {capMaxW: 540, capDefaultW: 540, capTauMS: 999, ecoPowerCap: true, gpuMinW: 40, gpuMaxW: 150},
 }
 
 // profilesNotMappable are the builtin profiles simModelFromProfile rejects.

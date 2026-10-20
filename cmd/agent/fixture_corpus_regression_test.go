@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/matbun/joulie/pkg/agent/dvfs"
+	"github.com/matbun/joulie/simulator/pkg/hwemu"
 )
 
 // TestCorpusReplayIgnoresTheHostSysfs: the corpus replay reads the capture
@@ -65,5 +68,62 @@ func TestCorpusReplayIgnoresTheHostSysfs(t *testing.T) {
 					"the replay read the host.\ngot:\n%s\nwant:\n%s", machine, got, want)
 			}
 		})
+	}
+}
+
+// TestCorpusNvidiaTokenCaptureReplaysTheSameBothWays: a capture whose
+// nvidia-smi.txt prints [N/A] for the minimum and maximum limits, as a GPU
+// without a settable limit prints them, passes the validator and publishes
+// the same NodeHardware status through the flat replay and through the
+// emulated one: the T4 listed with its 70 W limit in force, no
+// capRangePerGpu, no control and a warning naming the token. The corpus
+// holds no such machine, so this builds one from vm-no-rapl.
+func TestCorpusNvidiaTokenCaptureReplaysTheSameBothWays(t *testing.T) {
+	t.Setenv("HARDWARE_CATALOG_PATH", "")
+	// The T4 capture of the repository's corpus, whatever corpus is plugged in.
+	src := filepath.Join(corpusDir, "vm-no-rapl")
+	root := t.TempDir()
+	const machine = "vm-token-limits"
+	dir := filepath.Join(root, machine)
+	for _, f := range []string{"cpuinfo", "machine.yaml", "node-labels.json"} {
+		b, err := os.ReadFile(filepath.Join(src, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		corpusWrite(t, dir, f, string(b))
+	}
+	corpusWrite(t, dir, "nvidia-smi.txt", "0, [N/A], [N/A], 70.00, 9.97, Tesla T4\n")
+	if msgs := validateCorpusMachine(root, machine); len(msgs) != 0 {
+		t.Fatalf("the capture was rejected:\n%s", strings.Join(msgs, "\n"))
+	}
+
+	hideHostGPUProbe(t, dir)
+	pointAgentAtFixture(t, dir, copyCorpusPowercap(t, dir))
+	node := corpusNode(t, machine, dir, readCorpusMachine(t, dir))
+	flat := publishedNodeHardwareStatus(t, node.Name, discoverHardware(context.Background(), node))
+	var status struct {
+		GPU map[string]any `json:"gpu"`
+	}
+	if err := json.Unmarshal(flat, &status); err != nil {
+		t.Fatal(err)
+	}
+	const note = "no settable power limit on gpu 0: nvidia-smi prints power.min_limit [N/A], power.max_limit [N/A]"
+	if _, ok := status.GPU["capRangePerGpu"]; ok || status.GPU["count"] != float64(1) || status.GPU["currentCapWatts"] != float64(70) ||
+		status.GPU["controlAvailable"] != false || !containsAny(status.GPU["warnings"], note) {
+		t.Fatalf("the replayed capture publishes gpu %v; want 1 GPU, 70 W in force, no capRangePerGpu, no control and the warning %q", status.GPU, note)
+	}
+
+	p, err := hwemu.FromCorpus(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := hwemu.Render(p, filepath.Join(t.TempDir(), "node"), hwemu.RenderOptions{NodeName: node.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := useEmulatedNode(t, tree, nil)
+	emulated := publishedNodeHardwareStatus(t, node.Name, discoverHardware(context.Background(), e.nodeObject(p)))
+	if string(emulated) != string(flat) {
+		t.Fatalf("the emulated capture publishes a status that differs from the flat replay.\nemulated:\n%s\nflat:\n%s", emulated, flat)
 	}
 }

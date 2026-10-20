@@ -18,7 +18,11 @@ package main
 //   - D2 (fixed): rocm-smi's exit 0 was taken as applied, while rocm-smi
 //     exits 0 when it rejects a set. applyAmdGPUCap reads every write back
 //     and never writes a device whose power1_cap reads 0 (a secondary die);
-//     A06c and TestAMDGPUSysfsInventoryAndWrite guard it.
+//     A06c, A34, A34b and TestAMDGPUSysfsInventoryAndWrite guard it. hwemu
+//     renders a secondary die as the kernel shows it (power1_cap and
+//     power1_cap_default 0, the package's range, every write refused with
+//     EINVAL), and A34 and A34b run the agent over the four MI250X of the
+//     test profile in testdata/hwemu-profiles.
 //   - D3 (fixed): rocm-smi --setpoweroverdrive asked for confirmation above
 //     max(current, default) and read EOF. No tool runs, so a cap above
 //     power1_cap_default is written like any other; A05d guards it.
@@ -63,14 +67,31 @@ package main
 //     tests are in pkg/hwinv/catalog_test.go.
 //   - D15: the agent DaemonSet has no tolerations and an amd64-only image, so
 //     a tainted or arm64 node runs no agent.
-//   - D16: listNvidiaDevices parses nvidia-smi's [N/A] limits as 0 W, so the
-//     cap range is unknown and a percent cap cannot be resolved.
+//   - D16 (fixed): listNvidiaDevices read nvidia-smi's [N/A] and the other
+//     tokens it prints in power.min_limit, power.max_limit and power.limit
+//     as 0 W, so an absolute cap ran a -pl the GPU refuses, a token in one
+//     limit alone published a range with control, and one failing GPU
+//     stopped the cap of every GPU after it. A token in a limit marks the
+//     GPU as without a settable limit (CapUnsupported): it is never written,
+//     a node with no other GPU has its caps blocked, a mixed node caps the
+//     others, and a -pl whose output says not supported is an error; A16 to
+//     A16f, TestListNvidiaDevicesReadsATokenAsNoSettableLimit,
+//     TestApplyNvidiaGPUCapWarningExitZeroIsNotApplied,
+//     TestApplyNvidiaGPUCapCarriesOnPastAFailingGPU and
+//     TestCorpusNvidiaTokenCaptureReplaysTheSameBothWays guard it.
 //   - D18 (fixed): allocatableGPUCount counted only <vendor>/gpu resources,
 //     so a node exposing its GPUs as nvidia.com/mig-<profile> or
 //     nvidia.com/gpu.shared blocked every GPU cap ("node has no allocatable
 //     GPU resources") and, without GPU tools, published no GPUs. Resources
 //     are classified by pkg/api.GPUResourceKind and the count is read from
 //     the labels first; A12, A12b and A12c guard it.
+//   - D19 (fixed): the agent had no Intel GPU backend, so an Intel GPU node
+//     published vendor none without control and its GPU cap ended blocked
+//     ("no supported GPU backend detected"): it ran uncapped. The agent
+//     lists Intel discrete GPUs from the i915 and xe hwmon files and caps
+//     PL1 there, every write read back (intelgpu.go);
+//     TestD19IntelGPUNodeIsCappedThroughSysfs and the hwemu tests over
+//     intel-flex-170-4gpu guard it.
 //
 // The fixes that flip them:
 //
@@ -79,17 +100,13 @@ package main
 //   - F2: the simulator uses phys.AnalyticCPUModel, SolveFreqScaleForCap and
 //     FirstOrderToward instead of its own copies (D13).
 //   - F3: AMD caps through the amdgpu hwmon files, each write read back
-//     (D1 to D4, fixed), and nvidia-smi's [N/A] read as unknown (D16).
+//     (D1 to D4, fixed), and an NVIDIA GPU whose limits print a token never
+//     written while the other GPUs are capped (D16, fixed).
 //   - F4: labels, vendor and zones: the NFD accelerator class, the labeller's
 //     keys, the vendor from cpuinfo without NFD, a fallback when RAPL is
 //     locked, and zone selection that leaves out psys and MMIO and splits a
 //     socket cap between dies (D8 to D11).
 //   - F5: the controller manager's node power query (D12).
-//
-// Open: hwemu renders a secondary die with the full cap attributes and
-// accepts its writes, while the kernel shows power1_cap 0 there and refuses
-// them. Until hwemu models that, the agent's secondary-die rule is guarded
-// by TestAMDGPUSysfsInventoryAndWrite only.
 //
 // Regenerate the goldens of the generic profiles after reviewing a change:
 //
@@ -128,7 +145,8 @@ import (
 )
 
 // hwemuGoldenDir holds the published NodeHardware status of each generic
-// profile, generated with -update and never hand edited.
+// profile and of the MI250X test profile (A34), generated with -update and
+// never hand edited.
 const hwemuGoldenDir = "testdata/hwemu"
 
 // A01: every corpus machine with a golden, mapped by hwemu.FromCorpus and
@@ -136,7 +154,8 @@ const hwemuGoldenDir = "testdata/hwemu"
 // cpufreq policies, NVML state and the fake nvidia-smi), publishes exactly
 // the golden the flat capture publishes. The emulated tree is
 // indistinguishable from the capture for discovery, and an NVIDIA machine
-// takes the same /dev/nvidiactl path as in the corpus test.
+// takes the same /dev/nvidiactl path as in the corpus test. A machine whose
+// nvidia-smi.txt prints no power limit to emulate is skipped.
 func TestHwemuA01CorpusReplaysThroughTheEmulatedTree(t *testing.T) {
 	for _, machine := range corpusMachines(t) {
 		t.Run(machine, func(t *testing.T) {
@@ -149,6 +168,9 @@ func TestHwemuA01CorpusReplaysThroughTheEmulatedTree(t *testing.T) {
 				t.Fatal(err)
 			}
 			p, err := hwemu.FromCorpus(dir)
+			if errors.Is(err, hwemu.ErrCorpusNoPowerLimit) {
+				t.Skipf("%s cannot be emulated: %v; the flat replay still checks its golden", machine, err)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -217,10 +239,11 @@ const (
 	nvidiaPCILabel     = "feature.node.kubernetes.io/pci-0302_10de.present"
 	rocmProductProbe   = "rocm-smi --showproductname"
 	nvidiaListProbe    = "nvidia-smi -L"
-	nvidiaQueryAgent   = "nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits"
+	nvidiaQueryAgent   = "nvidia-smi " + nvidiaInventoryQuery + " --format=csv,noheader,nounits"
 	amdAcceleratorNFD  = "feature.node.kubernetes.io/pci-1200_1002.present"
 	amdLabellerProduct = "amd.com/gpu.product-name"
 	amdDisplayNFD      = "feature.node.kubernetes.io/pci-0300_1002.present"
+	intelFamilyLabel   = "gpu.intel.com/family"
 )
 
 // The powercap zone lists of a02Paths, in the order the agent lists them.
@@ -233,9 +256,9 @@ var (
 // a02Paths is the road each generic profile takes. Each GPU profile runs on
 // one of the CPU hosts, so it publishes that host's CPU block next to its
 // GPU block: the 8-GPU H100 profiles on the Xeon 8260 RAPL host, the 4-GPU
-// SXM profile on the Xeon 6530 RAPL host, the L40S and the W7900 on the
-// energy-only EPYC 9534 host and the MI300X on the energy-only EPYC 9654
-// host.
+// SXM profile and the Flex 170 on the Xeon 6530 RAPL host, the L40S and the
+// W7900 on the energy-only EPYC 9534 host and the MI300X on the energy-only
+// EPYC 9654 host.
 var a02Paths = map[string]a02Path{
 	"intel-xeon-2s-rapl": {
 		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 165, cpuDriverFamily: "intel_pstate", cpuControl: true, cpuModel: "INTEL_XEON_PLATINUM_8260",
@@ -311,6 +334,11 @@ var a02Paths = map[string]a02Path{
 		gpuVendor: "amd", gpuCount: 4, gpuCapMinW: 241, gpuCapMaxW: 241, gpuControl: true, gpuModel: "AMD_RADEON_PRO_W7900", gpuVendorFrom: amdDisplayNFD,
 		energyZones: a02Packages,
 	},
+	"intel-flex-170-4gpu": {
+		cpuVendor: "GenuineIntel", cpuSockets: 2, cpuCapMaxW: 270, cpuDriverFamily: "intel_cpufreq", cpuControl: true, cpuModel: "INTEL_XEON_GOLD_6530",
+		gpuVendor: "intel", gpuCount: 4, gpuCapMinW: 0, gpuCapMaxW: 150, gpuControl: true, gpuModel: "INTEL_DATA_CENTER_GPU_FLEX_170", gpuVendorFrom: intelFamilyLabel,
+		energyZones: a02Packages, capZones: a02Packages,
+	},
 	"vm-no-powercap": {
 		cpuVendor: "GenuineIntel", cpuSockets: 8,
 		gpuVendor: "none",
@@ -332,7 +360,10 @@ var a02Paths = map[string]a02Path{
 // devices and publish their cap range from them with control, 0 to 750 W
 // and the pinned 241 to 241 W, and run no rocm-smi cap command; the MI300X
 // gets its vendor from rocm-smi --showproductname (D8), the W7900 from the
-// NFD display-class label pci-0300_1002; the VM reads one socket per vCPU
+// NFD display-class label pci-0300_1002; the Flex 170 counts its GPUs from
+// the i915 hwmon devices, publishes 0 to 150 W from power1_rated_max with
+// control, takes its vendor from Intel's data center family label and its
+// model from the PCI device id, and runs no tool; the VM reads one socket per vCPU
 // and has no control. Every CPU and GPU model string matches its hardware
 // catalog entry, except the VM's CPU, the 9282 and the 6787P, which the
 // catalog does not list. amdgpu sysfs names no product, so the AMD GPU model
@@ -490,6 +521,24 @@ func checkA02Path(t *testing.T, e *emulatedNode, node *corev1.Node, hw HardwareI
 			}
 		}
 		checkA02AMDInventory(t, e, hw, want)
+	case intelFamilyLabel:
+		// Intel's data center family label answers detectGPUVendor before
+		// any probe runs, and the GPUs are listed from their i915 hwmon
+		// devices, one per GPU, with no tool.
+		if !intelDataCenterFamilies[node.Labels[intelFamilyLabel]] {
+			t.Errorf("node has no data center %s label: %v", intelFamilyLabel, node.Labels)
+		}
+		if calls := e.runner.commands(); len(calls) > 0 {
+			t.Errorf("the agent ran %v on an Intel GPU node; it runs no tool there", calls)
+		}
+		if hw.GPUListErr != nil || len(hw.GPUDevices) != want.gpuCount {
+			t.Errorf("listed %d Intel GPUs (%v), want %d", len(hw.GPUDevices), hw.GPUListErr, want.gpuCount)
+		}
+		for _, d := range hw.GPUDevices {
+			if d.Vendor != "intel" || intelGPUCap(d) != "power1_max" || d.BusID == "" {
+				t.Errorf("device %+v, want an Intel GPU with its bus id, capped through power1_max", d)
+			}
+		}
 	case rocmProductProbe:
 		ranList, listOK := e.runner.ran(nvidiaListProbe)
 		ranProbe, probeOK := e.runner.ran(rocmProductProbe)
@@ -1406,55 +1455,225 @@ func TestHwemuA15EveryDieTakesTheFullSocketCap(t *testing.T) {
 	}
 }
 
-// A16: on the H100 NVL node whose minimum and maximum power limits read
-// [N/A], nvidia-smi prints the token and the agent parses it as 0 W (D16):
-// NodeHardware has no capRangePerGpu and controlAvailable false, and a
-// percent cap is blocked because it cannot be resolved without a maximum.
-func TestHwemuA16UnsupportedNvidiaLimitsBlockAPercentCap(t *testing.T) {
-	_, tree, p := hwemutest.NewNode(t, "nvidia-h100-nvl-8gpu", withUnsupportedLimits)
-	e := useEmulatedNode(t, tree, nil)
-	node := e.nodeObject(p)
+// A16: on the H100 NVL node whose minimum and maximum power limits print a
+// token, [N/A] or [Not Supported], the GPUs have no settable power limit.
+// The tool prints the token, and the agent lists every GPU with the token
+// named and no range. NodeHardware keeps the 8 GPUs and their 400 W limit
+// in force, with no capRangePerGpu, controlAvailable false and a gpu
+// warning naming the GPUs and the token; an absolute and a percent cap are
+// both blocked with that message, and no -pl runs.
+func TestHwemuA16UnsupportedNvidiaLimitsAreNeverWritten(t *testing.T) {
+	for _, token := range []string{"[N/A]", "[Not Supported]"} {
+		t.Run(token, func(t *testing.T) {
+			tokens := map[string]string{"power.min_limit": token, "power.max_limit": token}
+			_, tree, p := hwemutest.NewNode(t, "nvidia-h100-nvl-8gpu", withFieldTokens(tokens))
+			e := useEmulatedNode(t, tree, nil)
+			args := strings.Fields(nvidiaQueryAgent)
+			out, err := e.runner.Run(context.Background(), args[0], args[1:]...)
+			if err != nil {
+				t.Fatalf("%s: %v (%s)", nvidiaQueryAgent, err, out)
+			}
+			rows := strings.Split(strings.TrimSpace(string(out)), "\n")
+			if len(rows) != p.GPUs.Count.V {
+				t.Fatalf("the inventory query printed %d rows, want %d:\n%s", len(rows), p.GPUs.Count.V, out)
+			}
+			for _, row := range rows {
+				if f := splitCSVLine(row); len(f) < 3 || f[1] != token || f[2] != token {
+					t.Fatalf("inventory row %q, want %s for power.min_limit and power.max_limit", row, token)
+				}
+			}
+			devices, err := listNvidiaDevices(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "power.min_limit " + token + ", power.max_limit " + token
+			for _, d := range devices {
+				if d.CapUnsupported != want || d.MinCapWatts != 0 || d.MaxCapWatts != 0 || d.CurrentCapWatts != 400 {
+					t.Errorf("gpu %d listed as %+v; want CapUnsupported %q, no range and the 400 W limit in force", d.Index, d, want)
+				}
+			}
+			checkNoSettableNvidiaLimit(t, tokens, 400, "no settable power limit on gpu 0,1,2,3,4,5,6,7: nvidia-smi prints "+want)
+		})
+	}
+}
 
-	// The symptoms below look the same whether the tool prints [N/A] or 0,
-	// so pin both ends: the tool prints the token, and the agent records it
-	// as a 0 W limit.
-	args := strings.Fields(nvidiaQueryAgent)
-	out, err := e.runner.Run(context.Background(), args[0], args[1:]...)
-	if err != nil {
-		t.Fatalf("%s: %v (%s)", nvidiaQueryAgent, err, out)
+// A16b: a vGPU guest prints a token for every power field. Its GPUs have no
+// settable limit and no limit in force to publish: NodeHardware has no
+// capRangePerGpu, currentCapWatts 0, controlAvailable false and the warning,
+// and an absolute and a percent cap are blocked with no -pl run.
+func TestHwemuA16bEveryPowerFieldATokenIsNeverWritten(t *testing.T) {
+	tokens := map[string]string{
+		"power.min_limit": "[N/A]", "power.max_limit": "[N/A]", "power.default_limit": "[N/A]",
+		"power.limit": "[N/A]", "enforced.power.limit": "[N/A]", "power.draw": "[N/A]",
 	}
-	rows := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(rows) != p.GPUs.Count.V {
-		t.Fatalf("the inventory query printed %d rows, want %d:\n%s", len(rows), p.GPUs.Count.V, out)
+	checkNoSettableNvidiaLimit(t, tokens, 0,
+		"no settable power limit on gpu 0,1,2,3,4,5,6,7: nvidia-smi prints power.min_limit [N/A], power.max_limit [N/A], power.limit [N/A]")
+}
+
+// A16c: a token in power.min_limit alone leaves the GPU without a settable
+// limit: no range, no control, both caps blocked and no -pl run, where a
+// minimum read as 0 W gave a 0 to 400 W range with control and a -pl the
+// tool refused.
+func TestHwemuA16cMinimumLimitATokenIsNeverWritten(t *testing.T) {
+	checkNoSettableNvidiaLimit(t, map[string]string{"power.min_limit": "[N/A]"}, 400,
+		"no settable power limit on gpu 0,1,2,3,4,5,6,7: nvidia-smi prints power.min_limit [N/A]")
+}
+
+// A16d: a token in power.limit alone leaves the GPU without a settable
+// limit, though its range prints: no range, no control, currentCapWatts 0,
+// both caps blocked and no -pl run, where the limit read as 0 W published
+// the 200 to 400 W range with control and ran a -pl the tool refused on
+// every reconcile.
+func TestHwemuA16dPowerLimitATokenIsNeverWritten(t *testing.T) {
+	checkNoSettableNvidiaLimit(t, map[string]string{"power.limit": "[N/A]"}, 0,
+		"no settable power limit on gpu 0,1,2,3,4,5,6,7: nvidia-smi prints power.limit [N/A]")
+}
+
+// checkNoSettableNvidiaLimit renders the H100 NVL node with nvidia-smi
+// printing tokens, and checks it as a node without a settable GPU power
+// limit: NodeHardware lists the 8 GPUs, with currentW as the limit in force,
+// no capRangePerGpu, controlAvailable false and note as a gpu warning; then,
+// on a fresh node each, an absolute 250 W cap and a 60 % cap end blocked,
+// backend none, with note as the message, no -pl run and every limit as it
+// was.
+func checkNoSettableNvidiaLimit(t *testing.T, tokens map[string]string, currentW float64, note string) {
+	t.Helper()
+	for _, c := range []struct {
+		name     string
+		watts    *float64
+		pct      *float64
+		discover bool
+	}{{"absolute", float64Ptr(250), nil, true}, {"percent", nil, float64Ptr(60), false}} {
+		t.Run(c.name, func(t *testing.T) {
+			_, tree, p := hwemutest.NewNode(t, "nvidia-h100-nvl-8gpu", withFieldTokens(tokens))
+			e := useEmulatedNode(t, tree, nil)
+			node := e.nodeObject(p)
+			limits := make([]string, p.GPUs.Count.V)
+			for i := range limits {
+				limits[i] = readTrimmed(t, nvmlFile(e, i, "power_limit_mw"))
+			}
+			if c.discover {
+				status := publishedStatusMap(t, node.Name, discoverHardware(context.Background(), node))
+				gpu, _ := status["gpu"].(map[string]any)
+				caps, _ := status["capabilities"].(map[string]any)
+				if _, ok := gpu["capRangePerGpu"]; ok || gpu["controlAvailable"] != false || caps["gpuControl"] != false ||
+					gpu["count"] != float64(8) || gpu["currentCapWatts"] != currentW || !containsAny(gpu["warnings"], note) {
+					t.Errorf("NodeHardware gpu %v, capabilities %v; want 8 GPUs, currentCapWatts %v, no capRangePerGpu, no control and the warning %q",
+						gpu, caps, currentW, note)
+				}
+			}
+			e.runner.reset()
+			dyn, err := reconcileEmulated(t, e.controller(t), node, nodeTwinWithGPUCap(e.name, c.watts, c.pct))
+			if err != nil {
+				t.Fatalf("reconcileOnce: %v", err)
+			}
+			if s := controlStatus(t, dyn, e.name, "gpu"); s["backend"] != "none" || s["result"] != "blocked" || s["message"] != note {
+				t.Errorf("gpu control status %v; want backend none, blocked, %q", s, note)
+			}
+			if pl := e.powerLimitCalls(); len(pl) != 0 {
+				t.Errorf("ran %v; a GPU without a settable power limit is never written", pl)
+			}
+			for i, was := range limits {
+				if got := readTrimmed(t, nvmlFile(e, i, "power_limit_mw")); got != was {
+					t.Errorf("gpu %d power_limit_mw = %s, want %s as it was", i, got, was)
+				}
+			}
+		})
 	}
-	for _, row := range rows {
-		if f := splitCSVLine(row); len(f) < 3 || strings.TrimSpace(f[1]) != "[N/A]" || strings.TrimSpace(f[2]) != "[N/A]" {
-			t.Fatalf("inventory row %q, want [N/A] for power.min_limit and power.max_limit", row)
-		}
+}
+
+// A16e: on the H100 NVL node where one GPU's minimum and maximum print
+// [N/A], GPU 3 and then GPU 0, the other seven are capped and that one is
+// left out and named: NodeHardware takes the 200 to 400 W range and control
+// from a GPU that has them, with a warning naming the one without; a 60 %
+// cap is applied at 240 W on the seven, the message naming the GPU left
+// out, and no -pl runs on it.
+func TestHwemuA16eMixedNodeCapsTheSettableGPUs(t *testing.T) {
+	for _, bad := range []int{3, 0} {
+		t.Run(fmt.Sprintf("gpu%d", bad), func(t *testing.T) {
+			_, tree, p := hwemutest.NewNode(t, "nvidia-h100-nvl-8gpu", nil)
+			e := useEmulatedNode(t, tree, nil)
+			setNvmlToken(t, e, bad, "[N/A]", "power_min_limit_mw", "power_max_limit_mw")
+			note := fmt.Sprintf("no settable power limit on gpu %d: nvidia-smi prints power.min_limit [N/A], power.max_limit [N/A]", bad)
+			node := e.nodeObject(p)
+			status := publishedStatusMap(t, node.Name, discoverHardware(context.Background(), node))
+			gpu, _ := status["gpu"].(map[string]any)
+			capRange, _ := gpu["capRangePerGpu"].(map[string]any)
+			if capRange["minWatts"] != float64(200) || capRange["maxWatts"] != float64(400) || gpu["controlAvailable"] != true ||
+				gpu["count"] != float64(8) || !containsAny(gpu["warnings"], note) {
+				t.Fatalf("NodeHardware gpu %v; want 8 GPUs, the 200 to 400 W range of a settable GPU, control and the warning %q", gpu, note)
+			}
+			e.runner.reset()
+			dyn, err := reconcileEmulated(t, e.controller(t), node, nodeTwinWithGPUCap(e.name, nil, float64Ptr(60)))
+			if err != nil {
+				t.Fatalf("reconcileOnce: %v", err)
+			}
+			want := "applied gpu cap 240.0W on 7 devices; " + note
+			if s := controlStatus(t, dyn, e.name, "gpu"); s["backend"] != "host-nvidia" || s["result"] != "applied" || s["message"] != want {
+				t.Fatalf("gpu control status %v; want host-nvidia, applied, %q", s, want)
+			}
+			for _, c := range e.powerLimitCalls() {
+				if strings.Contains(c, fmt.Sprintf(" -i %d ", bad)) {
+					t.Errorf("ran %s on the GPU without a settable power limit", c)
+				}
+			}
+			for i := 0; i < p.GPUs.Count.V; i++ {
+				want := "240000"
+				if i == bad {
+					want = "400000"
+				}
+				if got := readTrimmed(t, nvmlFile(e, i, "power_limit_mw")); got != want {
+					t.Errorf("gpu %d power_limit_mw = %s, want %s", i, got, want)
+				}
+			}
+		})
 	}
+}
+
+// A16f: the listing shows every GPU with a range, but at write time GPU 3
+// refuses -pl the way nvidia-smi refuses a GPU without a settable limit,
+// printing the warning and exiting 0, and GPU 5's -pl fails outright. The
+// cap ends error naming both, and the other six GPUs are still capped.
+func TestHwemuA16fRefusedPowerLimitIsAnErrorAndTheOthersAreCapped(t *testing.T) {
+	_, tree, p := hwemutest.NewNode(t, "nvidia-h100-nvl-8gpu", nil)
+	e := useEmulatedNode(t, tree, nil)
 	devices, err := listNvidiaDevices(context.Background())
+	if err != nil || len(devices) != 8 {
+		t.Fatalf("listNvidiaDevices: %d devices, %v", len(devices), err)
+	}
+	setNvmlToken(t, e, 3, "[N/A]", "power_min_limit_mw")
+	limit5 := nvmlFile(e, 5, "power_limit_mw")
+	if err := os.Remove(limit5); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(limit5, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.runner.reset()
+	backend, result, msg, _, err := applyGPUIntentFrom(context.Background(), e.nodeObject(p),
+		&GPUPowerCap{CapWattsPerGPU: float64Ptr(250)}, nil, &gpuInventory{vendor: "nvidia", devices: devices})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range devices {
-		if d.MinCapWatts != 0 || d.MaxCapWatts != 0 {
-			t.Fatalf("gpu %d limits %v to %v W; today [N/A] parses as 0 W (D16). F3 handles the token: update this test with it",
-				d.Index, d.MinCapWatts, d.MaxCapWatts)
+	if backend != "host-nvidia" || result != "error" ||
+		!strings.Contains(msg, "nvidia-smi set cap gpu=3: Changing power management limit is not supported for GPU: 00000000:13:00.0.") ||
+		!strings.Contains(msg, "nvidia-smi set cap gpu=5: nvidia-smi -i 5 -pl 250 failed") {
+		t.Fatalf("gpu cap %s, %s, %q; want host-nvidia, error naming the refusal on gpu 3 and the failure on gpu 5", backend, result, msg)
+	}
+	if n := len(e.powerLimitCalls()); n != 8 {
+		t.Errorf("ran %d -pl, want one per GPU: %v", n, e.powerLimitCalls())
+	}
+	for i := 0; i < p.GPUs.Count.V; i++ {
+		if i == 5 {
+			continue
 		}
-	}
-
-	status := publishedStatusMap(t, node.Name, discoverHardware(context.Background(), node))
-	gpu, _ := status["gpu"].(map[string]any)
-	if _, ok := gpu["capRangePerGpu"]; ok || gpu["controlAvailable"] != false {
-		t.Fatalf("NodeHardware gpu %v; today [N/A] limits parse as 0, so there is no capRangePerGpu and no control (D16)", gpu)
-	}
-	dyn, err := reconcileEmulated(t, e.controller(t), node, nodeTwinWithGPUCap(e.name, nil, float64Ptr(80)))
-	if err != nil {
-		t.Fatalf("reconcileOnce: %v", err)
-	}
-	const want = "cannot resolve capPctOfMax without device max power limits"
-	if s := controlStatus(t, dyn, e.name, "gpu"); s["result"] != "blocked" || s["message"] != want {
-		t.Fatalf("gpu control status %v; today a percent cap is blocked with %q (D16)", s, want)
+		want := "250000"
+		if i == 3 {
+			want = "400000"
+		}
+		if got := readTrimmed(t, nvmlFile(e, i, "power_limit_mw")); got != want {
+			t.Errorf("gpu %d power_limit_mw = %s, want %s", i, got, want)
+		}
 	}
 }
 
@@ -1948,8 +2167,8 @@ func (g *govEmu) checkWritesThroughNode(t *testing.T) {
 
 // A30: on a W7900 whose driver refuses high, the first write of the level
 // fails with the driver's EINVAL, which the agent's errno classification
-// turns into unsupported; no device reads high, the emulator records the
-// refusal, and the next reconciles write nothing.
+// turns into unsupported, with nothing applied; no device reads high, the
+// emulator records the refusal, and the next reconciles write nothing.
 func TestHwemuA30W7900RefusedLevelIsUnsupported(t *testing.T) {
 	g := emulatedGovernorNode(t, "amd-radeon-pro-w7900-4gpu", func(p *hwemu.Profile) {
 		var accept []string
@@ -1965,8 +2184,8 @@ func TestHwemuA30W7900RefusedLevelIsUnsupported(t *testing.T) {
 	r := g.rig(t, nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetSustained})
 	r.reconcile()
 	s := r.status(componentGPUGovernor)
-	if s == nil || s.Result != joulie.GovernorResultUnsupported || !strings.Contains(s.Message, "EINVAL") {
-		t.Fatalf("status %+v right after the write, want unsupported with the driver's EINVAL", s)
+	if s == nil || s.Result != joulie.GovernorResultUnsupported || !strings.Contains(s.Message, "EINVAL") || s.Applied != "" {
+		t.Fatalf("status %+v right after the write, want unsupported with the driver's EINVAL and nothing applied", s)
 	}
 	for bus, f := range amdLevelFiles(t, g) {
 		if got := readTrimmed(t, f); got == "high" {
@@ -1990,6 +2209,126 @@ func TestHwemuA30W7900RefusedLevelIsUnsupported(t *testing.T) {
 	r.reconcile()
 	if w := writes.take(); len(w) != 0 {
 		t.Errorf("a level the driver refused was written again at once: %v", w)
+	}
+}
+
+// A32: on an L40S whose memory clock cannot be locked, sustained runs -lmc,
+// which nvidia-smi refuses with "Setting locked memory clocks is not
+// supported", "Treating as warning and moving on." and exit 0. The GPU
+// governor is unsupported with that line and nothing applied, never
+// applied, also after busy samples that would verify a lock, and the memory
+// lock is never set.
+func TestHwemuA32RefusedNvidiaClockLockIsUnsupported(t *testing.T) {
+	g := emulatedGovernorNode(t, "nvidia-l40s-4gpu", func(p *hwemu.Profile) {
+		p.GPUs.Clocks.Mem.RuntimeLock = hwemu.Fact[bool]{V: false, Src: variantSrc}
+	})
+	r := g.rig(t, nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetSustained})
+	check := func(when string) {
+		t.Helper()
+		s := r.status(componentGPUGovernor)
+		if s == nil || s.Result != joulie.GovernorResultUnsupported ||
+			!strings.Contains(s.Message, "Setting locked memory clocks is not supported for GPU") || s.Applied != "" {
+			t.Errorf("%s: status %+v; want unsupported naming the refused lock, nothing applied", when, s)
+		}
+	}
+	r.reconcile()
+	if c := lockCommands(g.e, "-lmc"); len(c) == 0 {
+		t.Fatal("sustained ran no -lmc, so this test proves nothing about a refused lock")
+	}
+	check("first reconcile")
+	busy := make([]float64, g.p.GPUs.Count.V)
+	for i := range busy {
+		busy[i] = 1
+	}
+	g.n.SetLoad(hwemu.Load{GPUUtil: busy})
+	for i := 0; i < nvidiaVerifySamples; i++ {
+		g.step(t)
+		r.reconcile()
+		check(fmt.Sprintf("busy reconcile %d", i+1))
+	}
+	for i := 0; i < g.p.GPUs.Count.V; i++ {
+		if got := readTrimmed(t, nvmlFile(g.e, i, layout.NVMLLockedMemClocksFile)); got != "[N/A]" {
+			t.Errorf("gpu %d memory lock %q, want [N/A]", i, got)
+		}
+	}
+}
+
+// A32b: on the same L40S, low runs -lgc <min>,<min> and then -lmc, which is
+// refused. The graphics lock that -lgc set on that GPU is reset with -rgc,
+// so the GPU is left as before the plan: its graphics lock reads none, the
+// agent records no lock for it, and the unsupported status says so with
+// nothing applied.
+func TestHwemuA32bRefusedLockUndoesTheEarlierLockOfThePlan(t *testing.T) {
+	g := emulatedGovernorNode(t, "nvidia-l40s-4gpu", func(p *hwemu.Profile) {
+		p.GPUs.Clocks.Mem.RuntimeLock = hwemu.Fact[bool]{V: false, Src: variantSrc}
+	})
+	bus := g.discoveredGovernors().GPU.NVIDIA[0].BusID
+	r := g.rig(t, nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetLow})
+	r.reconcile()
+	cmds := lockCommands(g.e, "-lgc", "-lmc", "-rgc", "-rmc")
+	if len(cmds) != 3 || !strings.Contains(cmds[0], "-i "+bus+" -lgc ") || !strings.Contains(cmds[1], "-i "+bus+" -lmc ") ||
+		cmds[2] != "nvidia-smi -i "+bus+" -rgc" {
+		t.Errorf("ran %v; want -lgc, the refused -lmc, then -rgc on %s", cmds, bus)
+	}
+	s := r.status(componentGPUGovernor)
+	if s == nil || s.Result != joulie.GovernorResultUnsupported || !strings.Contains(s.Message, "not supported") ||
+		!strings.Contains(s.Message, "the -lgc lock set before was reset with -rgc") || s.Applied != "" {
+		t.Errorf("status %+v; want unsupported naming the refused lock and the reset, nothing applied", s)
+	}
+	if got := readTrimmed(t, nvmlFile(g.e, 0, layout.NVMLLockedGPUClocksFile)); got != "none" {
+		t.Errorf("gpu 0 graphics lock %q after the plan failed, want none", got)
+	}
+	if rec := r.nc.governor.gpu.nv[bus]; rec != nil && (rec.gpu != nil || rec.mem != nil) {
+		t.Errorf("record for %s holds %v and %v; want no lock", bus, rec.gpu, rec.mem)
+	}
+}
+
+// failingFlagRunner runs every command on inner, but fails the ones that
+// hold flag, as a tool that cannot carry them out.
+type failingFlagRunner struct {
+	inner CommandRunner
+	flag  string
+}
+
+func (r failingFlagRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if slices.Contains(args, r.flag) {
+		return []byte("Unable to reset locked GPU clocks: Unknown Error\n"), errors.New("exit status 255")
+	}
+	return r.inner.Run(ctx, name, args...)
+}
+
+// A32c: when the -rgc that undoes the plan's graphics lock fails as well,
+// the status says so, applied names that lock alone, and the lock stays in
+// the agent's record, so the restore that auto runs later resets it.
+func TestHwemuA32cFailedUndoKeepsTheLockForARestore(t *testing.T) {
+	g := emulatedGovernorNode(t, "nvidia-l40s-4gpu", func(p *hwemu.Profile) {
+		p.GPUs.Clocks.Mem.RuntimeLock = hwemu.Fact[bool]{V: false, Src: variantSrc}
+	})
+	bus := g.discoveredGovernors().GPU.NVIDIA[0].BusID
+	r := g.rig(t, nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetLow})
+	commandRunner = failingFlagRunner{inner: g.e.runner, flag: "-rgc"}
+	r.reconcile()
+	s := r.status(componentGPUGovernor)
+	if s == nil || s.Result != joulie.GovernorResultUnsupported || !strings.Contains(s.Message, "the -lgc lock set before stays, its reset failed") ||
+		!strings.HasPrefix(s.Applied, "-lgc ") || strings.Contains(s.Applied, "-lmc") {
+		t.Errorf("status %+v; want unsupported saying the reset of the -lgc lock failed, applied naming that lock alone", s)
+	}
+	if rec := r.nc.governor.gpu.nv[bus]; rec == nil || rec.gpu == nil {
+		t.Fatalf("record for %s holds no graphics lock; a lock whose reset failed must stay for a later restore", bus)
+	}
+	if got := readTrimmed(t, nvmlFile(g.e, 0, layout.NVMLLockedGPUClocksFile)); got == "none" {
+		t.Fatalf("gpu 0 graphics lock reads none, but its reset failed")
+	}
+
+	commandRunner = g.e.runner
+	g.e.runner.reset()
+	r.setIntents(nil, &v1alpha1.GPUGovernorIntent{Preset: joulie.GPUGovernorPresetAuto})
+	r.reconcile()
+	if c := lockCommands(g.e, "-rgc"); len(c) != 1 || c[0] != "nvidia-smi -i "+bus+" -rgc" {
+		t.Errorf("auto ran %v; want the -rgc of the recorded lock on %s", c, bus)
+	}
+	if got := readTrimmed(t, nvmlFile(g.e, 0, layout.NVMLLockedGPUClocksFile)); got != "none" {
+		t.Errorf("gpu 0 graphics lock %q after auto, want none", got)
 	}
 }
 
@@ -2062,5 +2401,38 @@ func TestHwemuA31AMDGPUsKeyedByBusID(t *testing.T) {
 		if got := readTrimmed(t, f); got != want {
 			t.Errorf("%s level %q after the restore, want its own baseline %q", bus, got, want)
 		}
+	}
+}
+
+// A40: on an HWP Xeon the agent's governor discovery reports HWP from the
+// hwp flag of the emulated /proc/cpuinfo, also with the preference files,
+// which intel_pstate creates only with HWP and which said HWP on their
+// own, removed; on the 6530, whose profile has no HWP, it does not. hwemu
+// rendered no flags line before, so the flag path never ran on an
+// emulated node.
+func TestHwemuA40HWPFromTheCPUInfoFlag(t *testing.T) {
+	for _, c := range []struct {
+		profile string
+		want    bool
+	}{{"intel-xeon-2s-rapl", true}, {"intel-xeon-6530-2s-rapl", false}} {
+		t.Run(c.profile, func(t *testing.T) {
+			g := emulatedGovernorNode(t, c.profile, nil)
+			epp, err := filepath.Glob(filepath.Join(g.e.tree.SysRoot, "devices", "system", "cpu", "cpufreq", "policy*", "energy_performance_*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range epp {
+				if err := os.Remove(f); err != nil {
+					t.Fatal(err)
+				}
+			}
+			d := g.discoveredGovernors().CPU
+			if d == nil {
+				t.Fatal("no CPU governor discovered")
+			}
+			if d.Facts.HWP != c.want {
+				t.Errorf("discovered HWP %v, want %v from the cpuinfo flags", d.Facts.HWP, c.want)
+			}
+		})
 	}
 }

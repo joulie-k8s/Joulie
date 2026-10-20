@@ -116,6 +116,11 @@ func TestGPUCountFromLabels(t *testing.T) {
 		{"mig invalid", map[string]string{"nvidia.com/gpu.count": "0", "nvidia.com/gpu.product": "NVIDIA-H100-NVL-MIG-INVALID"}, 0, false},
 		{"not a number", map[string]string{"nvidia.com/gpu.count": "eight"}, 0, false},
 		{"replicas only", map[string]string{"nvidia.com/gpu.replicas": "4"}, 0, false},
+		// Intel's NFD rules count the data center GPUs, whatever units the
+		// plugin advertises with shared-dev-num.
+		{"intel device count", map[string]string{"gpu.intel.com/device.count": "4", "gpu.intel.com/product": "Flex_170"}, 4, true},
+		{"intel, Joulie label first", map[string]string{"gpu.intel.com/device.count": "4", "joulie.io/hw.gpu-count": "2"}, 2, true},
+		{"intel device count zero", map[string]string{"gpu.intel.com/device.count": "0"}, 0, false},
 	}
 	for _, c := range cases {
 		got, ok := GPUCountFromLabels(c.labels)
@@ -128,6 +133,18 @@ func TestGPUCountFromLabels(t *testing.T) {
 // GPU feature discovery's product suffixes come off, in the order it
 // appends them (internal/lm/resource.go getProductName, mig-strategy.go
 // newInvalidMigStrategyLabeler); a plain product is unchanged.
+// GPUPowerDomains is powerDomains when the agent published one below the
+// count, and the count otherwise.
+func TestGPUPowerDomains(t *testing.T) {
+	for _, tc := range []struct{ count, domains, want int }{
+		{8, 4, 4}, {8, 0, 8}, {8, 8, 8}, {8, 12, 8}, {0, 0, 0}, {0, 4, 0}, {8, -1, 8},
+	} {
+		if got := GPUPowerDomains(tc.count, tc.domains); got != tc.want {
+			t.Errorf("GPUPowerDomains(%d, %d) = %d, want %d", tc.count, tc.domains, got, tc.want)
+		}
+	}
+}
+
 func TestGPUProductBase(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{

@@ -103,7 +103,9 @@ var nvPersistenceWords = map[string]string{"0": "Disabled", "1": "Enabled", "DIS
 
 // runNvidiaSMI emulates nvidia-smi -L, --query-gpu, -q -d SUPPORTED_CLOCKS,
 // -pl, -pm, the clock locks -lgc (with --mode), -rgc, -lmc and -rmc, and
-// the deprecated -ac and -rac, optionally restricted by -i. An option it
+// the deprecated -ac and -rac, optionally restricted by -i, with
+// --error-on-warning (-eow) making a warning of -pl or a clock lock an
+// error. An option it
 // does not have exits 255 (nvUnknownOption); a known option without its
 // value, or a bad combination, is an invalid combination, exit 2. The
 // option syntax is nvidia-smi -h's at driver 590.48.01 (the capture of
@@ -113,7 +115,7 @@ func runNvidiaSMI(c *call) int {
 		return c.unknownVariant()
 	}
 	var (
-		help, list, rgc, rmc, rac, q                                        bool
+		help, list, rgc, rmc, rac, q, errorOnWarning                        bool
 		hasIDs, hasQuery, hasFormat, hasLimit, hasPM, hasLGC, hasLMC, hasAC bool
 		hasMode, hasDisplay                                                 bool
 		ids, query, format, limit, pm, lgc, lmc, ac, mode, display          string
@@ -173,6 +175,8 @@ func runNvidiaSMI(c *call) int {
 			ok = takeValue(&ac, &hasAC)
 		case "-rac", "--reset-applications-clocks":
 			ok = flag(&rac)
+		case "-eow", "--error-on-warning":
+			ok = flag(&errorOnWarning)
 		default:
 			return nvUnknownOption(c)
 		}
@@ -181,7 +185,7 @@ func runNvidiaSMI(c *call) int {
 		}
 	}
 	if help {
-		fmt.Fprint(c.stdout, "nvidia-smi emulated by fakesmi. Options: -L, --query-gpu=FIELDS --format=csv[,noheader][,nounits], -q -d SUPPORTED_CLOCKS, -pl WATTS, -pm 0|1, -lgc MIN[,MAX] [-m 0|1], -rgc, -lmc MIN[,MAX], -rmc, -ac MEM,GRAPHICS, -rac, -i ID\n")
+		fmt.Fprint(c.stdout, "nvidia-smi emulated by fakesmi. Options: -L, --query-gpu=FIELDS --format=csv[,noheader][,nounits], -q -d SUPPORTED_CLOCKS, -pl WATTS, -pm 0|1, -lgc MIN[,MAX] [-m 0|1], -rgc, -lmc MIN[,MAX], -rmc, -ac MEM,GRAPHICS, -rac, -i ID, -eow\n")
 		return 0
 	}
 	actions := 0
@@ -325,11 +329,11 @@ func runNvidiaSMI(c *call) int {
 	case hasPM:
 		return nvSetPersistenceMode(c, gpus, pmWord)
 	case hasLGC, hasLMC, rgc, rmc:
-		return nvSetLock(c, gpus, lock)
+		return nvSetLock(c, gpus, lock, errorOnWarning)
 	case hasAC, rac:
 		return nvApplicationsClocks(c, gpus, rac)
 	}
-	return nvSetPowerLimit(c, gpus, watts)
+	return nvSetPowerLimit(c, gpus, watts, errorOnWarning)
 }
 
 // nvUnknownOption is nvidia-smi's answer to an option it does not have: the
@@ -474,34 +478,58 @@ var nvCanonical = map[string]string{
 }
 
 // nvSetPowerLimit is -pl: it writes power_limit_mw = round(W*1000) for every
-// selected GPU. The value is checked against each GPU's range first, and
-// nothing is written unless every GPU accepts it and the caller is root. The limit does not persist
-// across driver reloads on hardware: with persistence mode Disabled, the
-// emulator puts it back to the default while no client holds the GPU
-// (package hwemu, persistReset). Message text is assumed.
-func nvSetPowerLimit(c *call, gpus []nvGPU, watts float64) int {
+// selected GPU whose limits are numbers. The value is checked against each
+// such GPU's range first, and nothing is written unless every one accepts it
+// and the caller is root. A GPU whose limits hold a token has no settable
+// limit, and nvidia-smi treats it as a warning: "Changing power management
+// limit is not supported for GPU: <bus id>.", then "Treating as warning and
+// moving on.", nothing written, and "All done." after the other GPUs
+// (NVIDIA/open-gpu-kernel-modules#483 at driver 530.41.03, and the
+// adnanpri/legion-wmi README with -i 0 at drivers 460 to 495). It exits 0,
+// as the clock locks do after the same warning at driver 580.178.04; for
+// -pl that exit code is assumed. With errorOnWarning (--error-on-warning)
+// the warning fails the call instead, with nothing written and exit 3, the
+// code of NVML_ERROR_NOT_SUPPORTED; that code and the line after the warning
+// are assumed. The limit does not persist across driver reloads on
+// hardware: with persistence mode Disabled, the emulator puts it back to the
+// default while no client holds the GPU (package hwemu, persistReset). The
+// other message text is assumed.
+func nvSetPowerLimit(c *call, gpus []nvGPU, watts float64, errorOnWarning bool) int {
 	mw := math.Round(watts * 1000)
 	limits := make([]nvLimits, len(gpus))
+	settable := -1
 	for i, g := range gpus {
 		l, err := g.limits()
 		if err != nil {
 			return nvStateError(c, err)
 		}
+		limits[i] = l
 		if !l.supported {
-			fmt.Fprintf(c.stdout, "Changing power management limit is not supported for GPU: %s.\n", l.bus)
-			return nvExitNotAvailable
+			if errorOnWarning {
+				fmt.Fprintf(c.stdout, nvPowerLimitNotSupported+"\n", l.bus)
+				fmt.Fprintln(c.stdout, "Terminating early due to previous errors.")
+				return nvExitNotAvailable
+			}
+			continue
 		}
 		if mw < l.lo || mw > l.hi {
 			fmt.Fprintf(c.stdout, "Provided power limit %.2f W is not a valid power limit which should be between %.2f W and %.2f W for GPU %s\n", mw/1000, l.lo/1000, l.hi/1000, l.bus)
 			fmt.Fprintln(c.stdout, "Terminating early due to previous errors.")
 			return nvExitInvalidArgument
 		}
-		limits[i] = l
+		if settable < 0 {
+			settable = i
+		}
 	}
-	if c.env.Unprivileged {
-		return nvNoPermission(c, "Changing power management limit", limits[0].bus)
+	if settable >= 0 && c.env.Unprivileged {
+		return nvNoPermission(c, "Changing power management limit", limits[settable].bus)
 	}
 	for i, g := range gpus {
+		if !limits[i].supported {
+			fmt.Fprintf(c.stdout, nvPowerLimitNotSupported+"\n", limits[i].bus)
+			fmt.Fprintln(c.stdout, "Treating as warning and moving on.")
+			continue
+		}
 		if err := writeAttr(filepath.Join(g.Dir, "power_limit_mw"), strconv.FormatInt(int64(mw), 10)+"\n"); err != nil {
 			fmt.Fprintf(c.stderr, "fakesmi: set power limit for GPU %s: %v\n", limits[i].bus, err)
 			return nvExitOther
@@ -511,6 +539,10 @@ func nvSetPowerLimit(c *call, gpus []nvGPU, watts float64) int {
 	fmt.Fprintln(c.stdout, "All done.")
 	return 0
 }
+
+// nvPowerLimitNotSupported is the warning -pl prints for a GPU without a
+// settable power limit, a format taking its bus id.
+const nvPowerLimitNotSupported = "Changing power management limit is not supported for GPU: %s."
 
 // nvLimits is what -pl reads of one GPU before it writes anything. supported
 // is false when any of the three limits holds a token instead of a number.
@@ -611,14 +643,29 @@ func nvParseClocks(v string) (lo, hi int64, ok bool) {
 // nvSetLock is -lgc, -rgc, -lmc and -rmc: it writes the lock, "<min>,<max>"
 // as told or none for a reset, to the lock file of every selected GPU, in
 // place, and prints one line per GPU and All done. A lock is stored as told;
-// the emulator clamps the clocks it holds (package hwemu). Every GPU is
-// checked before anything is written: one whose lock file holds [N/A] has
-// no such lock, as Hopper has no run-time memory lock (the documentation:
-// -lmc "does not work on GPUs based on NVIDIA Hopper architectures"), and
-// fails the call with exit 3; then the caller must be root ("Requires
-// root"). Message text is assumed.
-func nvSetLock(c *call, gpus []nvGPU, cmd nvLockCmd) int {
+// the emulator clamps the clocks it holds (package hwemu). A GPU whose lock
+// file holds [N/A] has no such lock, as Hopper has no run-time memory lock
+// (the documentation: -lmc "does not work on GPUs based on NVIDIA Hopper
+// architectures"), and nvidia-smi treats it as a warning: "<action> is not
+// supported for GPU <bus id>.", then "Treating as warning and moving on.",
+// nothing written there, the other GPUs still set, and exit 0. That is what
+// -lgc, -lmc and -ac print and return on a GPU that cannot lock its clocks
+// (LucaSct/rime docs/adr/0050 at 6ddfab6, measured at driver 580.178.04;
+// the -ac line as printed in ailzhang/EfficientPyTorch); the nvidia-smi
+// change log of v3.295 treats N/A errors as warnings when a command runs on
+// several GPUs at once, and these were measured with one GPU. The action
+// words of each command, the warning for -rgc and -rmc and the All done that
+// follows the warning are assumed. With errorOnWarning (--error-on-warning,
+// documented as "Return a non-zero error for warnings") the warning fails
+// the call instead, with nothing written and exit 3, the code of
+// NVML_ERROR_NOT_SUPPORTED; that code and the line after the warning are
+// assumed, as for -pl. Every GPU is checked before anything is written; then
+// the caller must be root ("Requires root") when any GPU has the lock. Other
+// message text is assumed.
+func nvSetLock(c *call, gpus []nvGPU, cmd nvLockCmd, errorOnWarning bool) int {
 	buses := make([]string, len(gpus))
+	lockable := make([]bool, len(gpus))
+	settable := -1
 	for i, g := range gpus {
 		bus, err := g.field("pci_bus_id")
 		if err != nil {
@@ -628,15 +675,22 @@ func nvSetLock(c *call, gpus []nvGPU, cmd nvLockCmd) int {
 		if err != nil {
 			return nvStateError(c, err)
 		}
-		if strings.TrimSpace(cur) == nvTokenNA {
-			fmt.Fprintf(c.stdout, "%s is not supported for GPU %s.\n", cmd.action, bus)
-			fmt.Fprintln(c.stdout, "Terminating early due to previous errors.")
-			return nvExitNotAvailable
-		}
 		buses[i] = bus
+		if strings.TrimSpace(cur) == nvTokenNA {
+			if errorOnWarning {
+				fmt.Fprintf(c.stdout, nvLockNotSupported+"\n", cmd.action, bus)
+				fmt.Fprintln(c.stdout, "Terminating early due to previous errors.")
+				return nvExitNotAvailable
+			}
+			continue
+		}
+		lockable[i] = true
+		if settable < 0 {
+			settable = i
+		}
 	}
-	if c.env.Unprivileged {
-		return nvNoPermission(c, cmd.action, buses[0])
+	if settable >= 0 && c.env.Unprivileged {
+		return nvNoPermission(c, cmd.action, buses[settable])
 	}
 	value := nvLockNone
 	if cmd.hi > 0 {
@@ -644,6 +698,11 @@ func nvSetLock(c *call, gpus []nvGPU, cmd nvLockCmd) int {
 	}
 	var out strings.Builder
 	for i, g := range gpus {
+		if !lockable[i] {
+			fmt.Fprintf(&out, nvLockNotSupported+"\n", cmd.action, buses[i])
+			fmt.Fprintln(&out, "Treating as warning and moving on.")
+			continue
+		}
 		if err := writeAttr(filepath.Join(g.Dir, cmd.file), value+"\n"); err != nil {
 			fmt.Fprintf(c.stderr, "fakesmi: %s for GPU %s: %v\n", cmd.action, buses[i], err)
 			return nvExitOther
@@ -658,6 +717,10 @@ func nvSetLock(c *call, gpus []nvGPU, cmd nvLockCmd) int {
 	io.WriteString(c.stdout, out.String())
 	return 0
 }
+
+// nvLockNotSupported is the warning a clock lock command prints for a GPU
+// without that lock, a format taking the action and the bus id.
+const nvLockNotSupported = "%s is not supported for GPU %s."
 
 // nvApplicationsClocks is -ac and -rac: application clocks are deprecated
 // (nvml.h marks them DEPRECATED(13.0)), so both fail on the first selected

@@ -279,13 +279,16 @@ func (n *NodeController) governorControl() *governorControl {
 	return n.governor
 }
 
-// governorResultWrote reports whether a status result means the agent may
-// have changed the node: everything but nothing to do, discovery only and a
-// restore.
-func governorResultWrote(result string) bool {
-	switch result {
-	case "", joulie.GovernorResultUnsupported, joulie.GovernorResultDisabled, joulie.GovernorResultRestored:
+// governorResultWrote reports whether a status means the agent may have
+// changed the node: every result but nothing to do, discovery only and a
+// restore, and unsupported only when applied names something of the plan
+// still in force, as after a lock whose reset failed.
+func governorResultWrote(r *v1alpha1.ControlResult) bool {
+	switch r.Result {
+	case "", joulie.GovernorResultDisabled, joulie.GovernorResultRestored:
 		return false
+	case joulie.GovernorResultUnsupported:
+		return r.Applied != ""
 	}
 	return true
 }
@@ -391,11 +394,11 @@ func (g *governorControl) seed(desired *DesiredState) {
 			last.c.statusWritten = true
 		}
 	}
-	if r := desired.LastCPUGovernor; r != nil && governorResultWrote(r.Result) {
+	if r := desired.LastCPUGovernor; r != nil && governorResultWrote(r) {
 		g.cpu.changed = true
 		g.cpu.boostWritten = governor.ParseNative(r.Backend, r.Applied).Boost != ""
 	}
-	if r := desired.LastGPUGovernor; r != nil && governorResultWrote(r.Result) {
+	if r := desired.LastGPUGovernor; r != nil && governorResultWrote(r) {
 		g.gpu.changed = true
 		st := governor.ParseNative(r.Backend, r.Applied)
 		switch r.Backend {
@@ -684,22 +687,23 @@ func (g *governorControl) setState(c *governorComponent) {
 
 // writeVerified writes each attribute in order and reads it back before the
 // next. It stops at the first write the driver refuses or does not take,
-// and returns how many succeeded and, when one failed, its status result and
-// message.
-func writeVerified(writes []governor.Write) (wrote int, result, message string) {
+// and returns how many succeeded, the writes read back as written, and,
+// when one failed, its status result and message.
+func writeVerified(writes []governor.Write) (wrote int, taken []governor.Write, result, message string) {
 	for _, w := range writes {
 		path := hostSysPath(w.RelPath)
 		if err := writeSysfsAttr(path, w.Value); err != nil {
 			result, message = governor.Classify(err, w.Value, "")
-			return wrote, result, message
+			return wrote, taken, result, message
 		}
 		wrote++
 		got, _ := readSysfsWord(path)
 		if result, message = governor.Classify(nil, w.Value, got); result != joulie.GovernorResultApplied {
-			return wrote, result, w.RelPath + ": " + message
+			return wrote, taken, result, w.RelPath + ": " + message
 		}
+		taken = append(taken, w)
 	}
-	return wrote, "", ""
+	return wrote, taken, "", ""
 }
 
 // checkWrites reports whether every attribute still reads what the agent
@@ -772,12 +776,12 @@ func (g *governorControl) applyCPU(d *cpuGovernorDiscovery, intent *joulie.CPUGo
 		// The boost field disappeared: boost goes back to the baseline.
 		writes = append(slices.Clone(writes), cpuBaselineBoostWrites(d, g.cpuBaseline, c.globalBoostSeen)...)
 	}
-	wrote, result, msg := writeVerified(writes)
+	wrote, taken, result, msg := writeVerified(writes)
 	if wrote > 0 && intent.Boost != "" {
 		c.boostWritten = true
 	}
 	if result != "" {
-		return governorOutcome{status: governorStatus{backend: backend, result: result, message: msg, applied: native}, wrote: wrote, attempted: true}
+		return governorOutcome{status: governorStatus{backend: backend, result: result, message: msg, applied: governor.InForce(plan, taken)}, wrote: wrote, attempted: true}
 	}
 	if intent.Boost == "" && c.boostWritten {
 		c.boostWritten, c.globalBoostSeen = false, ""
@@ -878,7 +882,7 @@ func (g *governorControl) restoreCPU(d *cpuGovernorDiscovery) governorOutcome {
 		},
 	}
 	for _, phase := range phases {
-		wrote, result, msg := writeVerified(phase())
+		wrote, _, result, msg := writeVerified(phase())
 		total += wrote
 		if result != "" {
 			return governorOutcome{status: governorStatus{backend: backend, result: result, message: "restore: " + msg}, wrote: total, attempted: true}
@@ -1003,9 +1007,10 @@ func waitODReadback(ctx context.Context, writes []governor.Write) error {
 // the next. Overdrive commands are not read back as written (the file
 // prints the table): the step waits for every device's table instead, so
 // "c" follows "s 1 <MHz>" only once the edit was taken, and the devices
-// share one wait. It returns the writes it read back equal, the
-// successful writes, and the failure as a status result and message.
-func writeAMDSteps(ctx context.Context, steps [][]governor.Write) (expect []governor.Write, wrote int, result, message string) {
+// share one wait. It returns the writes it read back equal, those and the
+// overdrive commands whose table printed again (taken), the successful
+// writes, and the failure as a status result and message.
+func writeAMDSteps(ctx context.Context, steps [][]governor.Write) (expect, taken []governor.Write, wrote int, result, message string) {
 	for k := 0; ; k++ {
 		var od []governor.Write
 		more := false
@@ -1018,34 +1023,48 @@ func writeAMDSteps(ctx context.Context, steps [][]governor.Write) (expect []gove
 			if governor.IsODWrite(w) {
 				if err := writeSysfsAttr(hostSysPath(w.RelPath), w.Value); err != nil {
 					result, message = governor.Classify(err, w.Value, "")
-					return expect, wrote, result, w.RelPath + ": " + message
+					return expect, taken, wrote, result, w.RelPath + ": " + message
 				}
 				wrote++
 				od = append(od, w)
 				continue
 			}
-			n, res, msg := writeVerified([]governor.Write{w})
+			n, _, res, msg := writeVerified([]governor.Write{w})
 			wrote += n
 			if res != "" {
-				return expect, wrote, res, msg
+				return expect, taken, wrote, res, msg
 			}
 			expect = append(expect, w)
+			taken = append(taken, w)
 		}
 		if !more {
-			return expect, wrote, "", ""
+			return expect, taken, wrote, "", ""
 		}
 		if len(od) > 0 {
 			if err := waitODReadback(ctx, od); err != nil {
-				return expect, wrote, joulie.GovernorResultError, err.Error()
+				return expect, taken, wrote, joulie.GovernorResultError, err.Error()
 			}
+			taken = append(taken, od...)
 		}
 	}
+}
+
+// amdInForce is the controlStatus applied field after a write of plans, one
+// per device, failed: what taken put in force on each device
+// (governor.InForce), mixed when the devices differ, empty when nothing is.
+func amdInForce(plans []governor.Plan, taken []governor.Write) string {
+	natives := make([]string, len(plans))
+	for i, p := range plans {
+		natives[i] = governor.InForce(p, taken)
+	}
+	return uniformOrMixed(natives)
 }
 
 func (g *governorControl) applyAMD(ctx context.Context, d *gpuGovernorDiscovery, preset string, ceiling float64) governorOutcome {
 	c := &g.gpu
 	backend := joulie.GovernorBackendAMDGPUSysfs
 	var steps [][]governor.Write
+	var plans []governor.Plan
 	var natives []string
 	od := map[string]int{}
 	result := joulie.GovernorResultApplied
@@ -1062,13 +1081,14 @@ func (g *governorControl) applyAMD(ctx context.Context, d *gpuGovernorDiscovery,
 			result = joulie.GovernorResultEquivalent
 		}
 		steps = append(steps, plan.Writes)
+		plans = append(plans, plan)
 		natives = append(natives, plan.Native)
 		if plan.SclkMaxMHz > 0 {
 			od[f.BusID] = plan.SclkMaxMHz
 		}
 	}
 	native := uniformOrMixed(natives)
-	expect, wrote, res, msg := writeAMDSteps(ctx, steps)
+	expect, taken, wrote, res, msg := writeAMDSteps(ctx, steps)
 	if wrote > 0 && len(od) > 0 {
 		if c.odDevices == nil {
 			c.odDevices = map[string]bool{}
@@ -1078,11 +1098,13 @@ func (g *governorControl) applyAMD(ctx context.Context, d *gpuGovernorDiscovery,
 		}
 	}
 	if res != "" {
-		return governorOutcome{status: governorStatus{backend: backend, result: res, message: msg, applied: native}, wrote: wrote, attempted: true}
+		return governorOutcome{status: governorStatus{backend: backend, result: res, message: msg, applied: amdInForce(plans, taken)}, wrote: wrote, attempted: true}
 	}
 	for bus, mhz := range od {
 		if ok, msg := checkODCeiling(bus, mhz); !ok {
-			return governorOutcome{status: governorStatus{backend: backend, result: joulie.GovernorResultNotApplied, message: msg, applied: native}, wrote: wrote, attempted: true}
+			odFile := governor.AMDDeviceRelPath(bus, governor.AMDODFile)
+			kept := slices.DeleteFunc(slices.Clone(taken), func(w governor.Write) bool { return w.RelPath == odFile })
+			return governorOutcome{status: governorStatus{backend: backend, result: joulie.GovernorResultNotApplied, message: msg, applied: amdInForce(plans, kept)}, wrote: wrote, attempted: true}
 		}
 	}
 	c.expect, c.od = expect, od
@@ -1157,7 +1179,7 @@ func (g *governorControl) restoreAMD(ctx context.Context, d *gpuGovernorDiscover
 	}
 	total := 0
 	for _, steps := range [][][]governor.Write{odSteps, levels} {
-		_, wrote, res, msg := writeAMDSteps(ctx, steps)
+		_, _, wrote, res, msg := writeAMDSteps(ctx, steps)
 		total += wrote
 		if res != "" {
 			return governorOutcome{status: governorStatus{backend: backend, result: res, message: "restore: " + msg}, wrote: total, attempted: true}
@@ -1233,18 +1255,72 @@ func (g *governorControl) recordNvidia(bus string, args []string, plan governor.
 }
 
 // runNvidiaPlans runs every GPU's commands in order and records each lock.
-func (g *governorControl) runNvidiaPlans(ctx context.Context, plans map[string]governor.Plan, order []string) (issued int, result, message string) {
+// It stops at the first command governor.ClassifyRun does not call applied,
+// a lock nvidia-smi refuses with a warning and exit 0 included, records no
+// lock for it, and resets the locks the earlier commands of that GPU's plan
+// set (undoNvidiaLocks), so that GPU is left without the plan. inForce is
+// then the controlStatus applied field: the plan's native words on the GPUs
+// it went through, on the one that failed what of it stayed (a reset, or a
+// lock whose reset failed) or nothing, mixed when they differ.
+func (g *governorControl) runNvidiaPlans(ctx context.Context, plans map[string]governor.Plan, order []string) (issued int, result, message, inForce string) {
+	var natives []string
 	for _, bus := range order {
+		var done [][]string
 		for _, args := range plans[bus].Args {
-			if _, err := runCommand(ctx, "nvidia-smi", args...); err != nil {
-				result, message = governor.Classify(err, "", "")
-				return issued, result, message
+			out, err := runCommand(ctx, "nvidia-smi", args...)
+			if result, message = governor.ClassifyRun("nvidia-smi "+strings.Join(args, " "), err, out); result != joulie.GovernorResultApplied {
+				undone, kept, note := g.undoNvidiaLocks(ctx, bus, done)
+				stayed := ""
+				if kept || slices.ContainsFunc(done, func(a []string) bool { return slices.Contains(a, "-rgc") || slices.Contains(a, "-rmc") }) {
+					var st governor.State
+					if r := g.gpu.nv[bus]; r != nil {
+						st.GPULockMHz, st.MemLockMHz = r.gpu, r.mem
+					}
+					stayed = governor.NativeNvidia(st)
+				}
+				return issued + undone, result, message + note, uniformOrMixed(append(natives, stayed))
 			}
 			issued++
 			g.recordNvidia(bus, args, plans[bus])
+			done = append(done, args)
 		}
+		natives = append(natives, plans[bus].Native)
 	}
-	return issued, "", ""
+	return issued, "", "", ""
+}
+
+// nvidiaLockResets maps a lock command to the reset that clears its lock.
+var nvidiaLockResets = map[string]string{"-lgc": "-rgc", "-lmc": "-rmc"}
+
+// undoNvidiaLocks resets, last first, every lock that done, the commands of
+// one GPU's plan that ran before a command that failed, set on the GPU at
+// bus: -rgc for a graphics lock, -rmc for a memory lock. A reset that
+// succeeds clears the lock from the record; one that fails leaves it there,
+// so a later restore resets it. note tells both for the status message,
+// undone counts the resets that succeeded, and kept is true when one failed.
+func (g *governorControl) undoNvidiaLocks(ctx context.Context, bus string, done [][]string) (undone int, kept bool, note string) {
+	for i := len(done) - 1; i >= 0; i-- {
+		var lock, reset string
+		for _, a := range done[i] {
+			if r, ok := nvidiaLockResets[a]; ok {
+				lock, reset = a, r
+			}
+		}
+		if reset == "" {
+			continue
+		}
+		args := []string{"-i", bus, reset}
+		out, err := runCommand(ctx, "nvidia-smi", args...)
+		if res, msg := governor.ClassifyRun("nvidia-smi "+strings.Join(args, " "), err, out); res != joulie.GovernorResultApplied {
+			note += fmt.Sprintf("; the %s lock set before stays, its reset failed: %s", lock, msg)
+			kept = true
+			continue
+		}
+		undone++
+		g.recordNvidia(bus, args, governor.Plan{})
+		note += fmt.Sprintf("; the %s lock set before was reset with %s", lock, reset)
+	}
+	return undone, kept, note
 }
 
 func (g *governorControl) applyNvidia(ctx context.Context, d *gpuGovernorDiscovery, preset string, ceiling float64) governorOutcome {
@@ -1269,9 +1345,9 @@ func (g *governorControl) applyNvidia(ctx context.Context, d *gpuGovernorDiscove
 		natives = append(natives, plan.Native)
 	}
 	native := uniformOrMixed(natives)
-	issued, res, msg := g.runNvidiaPlans(ctx, plans, order)
+	issued, res, msg, inForce := g.runNvidiaPlans(ctx, plans, order)
 	if res != "" {
-		return governorOutcome{status: governorStatus{backend: backend, result: res, message: msg, applied: native}, wrote: issued, attempted: true}
+		return governorOutcome{status: governorStatus{backend: backend, result: res, message: msg, applied: inForce}, wrote: issued, attempted: true}
 	}
 	if result == joulie.GovernorResultApplied && g.nvidiaLocked() && !g.nvidiaVerified() {
 		result = joulie.GovernorResultAppliedUnverified
@@ -1402,7 +1478,7 @@ func (g *governorControl) restoreNvidia(ctx context.Context, d *gpuGovernorDisco
 		plans[n.BusID] = plan
 		order = append(order, n.BusID)
 	}
-	issued, res, msg := g.runNvidiaPlans(ctx, plans, order)
+	issued, res, msg, _ := g.runNvidiaPlans(ctx, plans, order)
 	if res != "" {
 		return governorOutcome{status: governorStatus{backend: backend, result: res, message: "restore: " + msg}, wrote: issued, attempted: true}
 	}

@@ -331,7 +331,10 @@ func TestPlanRejectsOverload(t *testing.T) {
 	if !errors.As(err, &over) || over.Over[0].Resource != "nvidia.com/gpu" {
 		t.Errorf("error %v, want an overload of nvidia.com/gpu", err)
 	}
-	p, dir, err = plan(head + "  - {name: ok, class: performance, count: 10, every: 50s, requests: {cpu: \"90\"}, gpus: {resource: nvidia.com/gpu, count: 2}, runtime: 100s}\n" +
+	// The last of these jobs is due at 7m30s and runs 100 s: with a minute
+	// of drain it can end at 9m10s, 0.83 of the 11 m deadline.
+	drained := strings.Replace(head, "duration: 10m\n", "duration: 10m\ndrain: 1m\n", 1)
+	p, dir, err = plan(drained + "  - {name: ok, class: performance, count: 10, every: 50s, requests: {cpu: \"90\"}, gpus: {resource: nvidia.com/gpu, count: 2}, runtime: 100s}\n" +
 		"joulie: {inputPreset: kepler, set: {controllerManager.env.PROMETHEUS_RATE_WINDOW: 2m}}\nvariants: [{name: a}, {name: b, joulie: {enabled: false}}]\n")
 	if err != nil {
 		t.Fatalf("a load of %v: %v", p.Load, err)

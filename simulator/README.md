@@ -24,10 +24,10 @@ Current scope includes CPU and GPU-cap simulation with trace-driven completion s
 - `config/node-classes.yaml`: sample class mapping by node labels
 - `cmd/workloadgen`: synthetic trace generator (`distribution -> trace`)
 - `cmd/traceextract`: trace normalizer/extractor helper (`input telemetry/export -> trace schema`)
-- `pkg/hwemu`: bare-metal node emulator for agent tests: hardware profile schema and loader, a renderer that writes a node's sysfs tree, cpuinfo and GPU tool state, and physics that turns the limits the agent writes into power and energy readings; `pkg/hwemu/profiles/` holds the builtin profiles, each with its hardware in the [simulator docs](../website/content/en/docs/simulator/simulator.md#builtin-hardware-profiles):
+- `pkg/hwemu`: bare-metal node emulator for agent tests: hardware profile schema and loader, a renderer that writes a node's sysfs tree, cpuinfo and GPU tool state, and physics that turns the limits the agent writes into power and energy readings; `pkg/hwemu/profiles/` holds the builtin profiles, each with its hardware in the [simulator docs](../website/content/en/docs/simulator/emulate-mode.md#builtin-hardware-profiles):
   - Intel hosts: `intel-xeon-2s-rapl`, `intel-xeon-6530-2s-rapl`, `intel-xeon-2s-psys`, `intel-xeon-2s-multidie`, `intel-xeon6-2s-no-powercap`, `intel-xeon6-2s-tpmi`
   - AMD hosts: `amd-epyc-2s-energy-only`, `amd-epyc-9534-2s-energy-only`, `amd-epyc-2s-hsmp`
-  - GPU nodes: `nvidia-h100-nvl-8gpu`, `nvidia-h100-sxm-8gpu`, `nvidia-h100-sxm-4gpu`, `nvidia-l40s-4gpu`, `amd-instinct-mi300x-8gpu`, `amd-radeon-pro-w7900-4gpu` (power cap pinned at 241 W)
+  - GPU nodes: `nvidia-h100-nvl-8gpu`, `nvidia-h100-sxm-8gpu`, `nvidia-h100-sxm-4gpu`, `nvidia-l40s-4gpu`, `amd-instinct-mi300x-8gpu`, `amd-radeon-pro-w7900-4gpu` (power cap pinned at 241 W), `intel-flex-170-4gpu` (i915 hwmon, no GPU tool)
   - a VM: `vm-no-powercap`
 - `pkg/hwemu/smi` and `cmd/fakesmi`: fake `nvidia-smi`, `rocm-smi` and `amd-smi` that read and write an emulated node's state (environment in the [configuration reference](../website/content/en/docs/getting-started/05-configuration-reference.md))
 - `pkg/hwemu/hwemutest`: test helpers that render a builtin profile into a test's temporary directory

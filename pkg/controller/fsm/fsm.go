@@ -25,10 +25,10 @@ const (
 	ProfilePerformance = "performance"
 	ProfileEco         = "eco"
 
-	StateActivePerformance  = "ActivePerformance"
+	StateActivePerformance   = "ActivePerformance"
 	StateDrainingPerformance = "DrainingPerformance"
-	StateActiveEco          = "ActiveEco"
-	StateUnknown            = "Unknown"
+	StateActiveEco           = "ActiveEco"
+	StateUnknown             = "Unknown"
 
 	PowerProfileLabelKey    = "joulie.io/power-profile"
 	WorkloadClassAnnotation = "joulie.io/workload-class"

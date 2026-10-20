@@ -108,7 +108,7 @@ sim_helm_sim "${sim_files[@]}"
 
 # 4. Ready once its first snapshot is published, so every hwemu tree exists
 # before an agent mounts one.
-kubectl -n "$SIM_NS_SIM" rollout status "deployment/$SIM_SIM_DEPLOYMENT" --timeout=300s >/dev/null
+sim_rollouts "$SIM_NS_SIM" "deployment/$SIM_SIM_DEPLOYMENT"
 sim_wait 300 "the simulator's /readyz" sim_sim readyz
 
 # 5. The emulated agents: the Nodes the real DaemonSet would reach with
