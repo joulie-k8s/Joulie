@@ -179,6 +179,7 @@ func TestNodeHardwareAcceptsTheStatusTheAgentWrites(t *testing.T) {
 			"model":              "nvidia-a100-40gb",
 			"vendor":             "nvidia",
 			"count":              int64(4),
+			"powerDomains":       int64(2),
 			"currentCapWatts":    400.0,
 			"controlAvailable":   true,
 			"telemetryAvailable": true,
@@ -238,7 +239,7 @@ func TestNodeHardwareAcceptsTheStatusTheAgentWrites(t *testing.T) {
 	if got.Status.CPU == nil || got.Status.CPU.Sockets != 2 || got.Status.CPU.CapRange == nil {
 		t.Fatalf("cpu block did not survive: %+v", got.Status.CPU)
 	}
-	if got.Status.GPU == nil || got.Status.GPU.Count != 4 || got.Status.GPU.CapRangePerGPU == nil {
+	if got.Status.GPU == nil || got.Status.GPU.Count != 4 || got.Status.GPU.PowerDomains != 2 || got.Status.GPU.CapRangePerGPU == nil {
 		t.Fatalf("gpu block did not survive: %+v", got.Status.GPU)
 	}
 	if got.Status.Capabilities == nil || !got.Status.Capabilities.CPUControl {

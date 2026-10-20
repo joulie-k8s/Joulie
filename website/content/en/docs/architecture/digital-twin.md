@@ -63,7 +63,7 @@ Both power formulas need the node's hardware limits, derived from `NodeHardware.
 
 ```
 cpuTdp  = cpuMaxWattsPerSocket * sockets
-gpuTdp  = gpuMaxWatts * gpuCount          (0 when no GPU is present)
+gpuTdp  = gpuMaxWatts * gpuPowerDomains   (0 when no GPU is present)
 nodeTdp = cpuTdp + gpuTdp
 
 cpuCappedPower  = cpuTdp * cpuCapPct/100
@@ -72,6 +72,8 @@ nodeCappedPower = cpuCappedPower + gpuCappedPower
 ```
 
 `cpuCapPct` and `gpuCapPct` come from the resolved `NodeTwin.spec` intent, defaulting to 100 when unset or non-positive.
+
+`gpuPowerDomains` is the number of GPUs that hold a power limit of their own, `status.gpu.powerDomains`, and `status.gpu.count` when the agent publishes none, which it does whenever every counted GPU holds its own. On a two-die AMD package such as an MI250X both dies are counted GPUs, and only the primary holds a limit, which bounds the package: four MI250X are eight GPUs, four power domains of 560 W and a `gpuTdp` of 2240 W. The planned node power the rack PSU estimate adds up counts the GPU cap the same way.
 
 When the socket count is unknown but a per-socket maximum is known, the twin assumes a single socket. A zero socket count would multiply the per-socket maximum down to zero, and a zero budget reads as unlimited headroom further down, so a busy node would look like the emptiest one in the cluster. Assuming one socket underestimates the budget on a multi-socket machine, which is the safe direction: the node looks fuller than it is rather than infinitely free.
 

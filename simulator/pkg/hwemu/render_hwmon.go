@@ -96,10 +96,11 @@ func renderPCIDevices(b *renderBuilder, p *Profile, o RenderOptions) error {
 		if err := b.link(renderSys(link), target); err != nil {
 			return err
 		}
-		if err := renderAMDGPUHwmon(b, p, gbus, hwmonBase+i); err != nil {
+		secondary := slices.Contains(g.SecondaryDies, i)
+		if err := renderAMDGPUHwmon(b, p, gbus, hwmonBase+i, secondary); err != nil {
 			return err
 		}
-		if err := renderAMDGPUState(b, g, gcard, slices.Contains(g.SecondaryDies, i)); err != nil {
+		if err := renderAMDGPUState(b, g, gcard, secondary); err != nil {
 			return err
 		}
 	}
@@ -171,25 +172,37 @@ func renderPCIDevice(b *renderBuilder, bus, card int, d PCIDevice, extra []rende
 // or power1_average or both (S), all in microwatts (amdgpu_pm.c:3591-3600,
 // 3664-3669, 3827-3834). A product with ppt1 present also gets the power2_cap
 // set, with the same limits (assumed).
-func renderAMDGPUHwmon(b *renderBuilder, p *Profile, bus, h int) error {
+//
+// A secondary die has no power limit of its own and no power reading: its
+// power1_cap and power1_cap_default read 0 while power1_cap_min and
+// power1_cap_max read the package's range, and it has neither power1_input
+// nor power1_average, which the driver hides when the sensor read fails with
+// EOPNOTSUPP (Linux v6.17 aldebaran_ppt.c:713-718, 1230-1233 and 1264-1293;
+// amdgpu_pm.c:3478-3484).
+func renderAMDGPUHwmon(b *renderBuilder, p *Profile, bus, h int, secondary bool) error {
 	g := p.GPUs
 	uw := func(w float64) string { return renderUint(int64(w * 1e6)) }
-	current := g.Limits.DefaultW.V
+	current, def := g.Limits.DefaultW.V, g.Limits.DefaultW.V
 	if g.Limits.CurrentW.Src != "" {
 		current = g.Limits.CurrentW.V
+	}
+	if secondary {
+		current, def = 0, 0
 	}
 	entries := []renderEntry{
 		{name: "name", content: "amdgpu\n", owner: layout.OwnerRender, mode: 0o444},
 		{name: "power1_cap", content: uw(current), owner: layout.OwnerAgent, mode: 0o644},
 		{name: "power1_cap_min", content: uw(g.Limits.MinW.V), owner: layout.OwnerRender, mode: 0o444},
 		{name: "power1_cap_max", content: uw(g.Limits.MaxW.V), owner: layout.OwnerRender, mode: 0o444},
-		{name: "power1_cap_default", content: uw(g.Limits.DefaultW.V), owner: layout.OwnerRender, mode: 0o444},
+		{name: "power1_cap_default", content: uw(def), owner: layout.OwnerRender, mode: 0o444},
 	}
 	idle := uw(p.Physics.GPU.IdleW.V)
-	switch g.PowerSensor.V {
-	case "input":
+	switch {
+	case secondary:
+		// No sensor: the package's power reads on the primary.
+	case g.PowerSensor.V == "input":
 		entries = append(entries, renderEntry{name: "power1_input", content: idle, owner: layout.OwnerEmulator, mode: 0o444})
-	case "both":
+	case g.PowerSensor.V == "both":
 		entries = append(entries,
 			renderEntry{name: "power1_average", content: idle, owner: layout.OwnerEmulator, mode: 0o444},
 			renderEntry{name: "power1_input", content: idle, owner: layout.OwnerEmulator, mode: 0o444})

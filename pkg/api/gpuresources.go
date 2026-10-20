@@ -171,6 +171,21 @@ func GPUCountFromLabels(labels map[string]string) (n int, ok bool) {
 	return 0, false
 }
 
+// GPUPowerDomains is the number of a node's GPUs that hold a power limit of
+// their own, the factor a per-GPU power maximum or cap is multiplied by for
+// the node: powerDomains as the agent publishes it in NodeHardware
+// (status.gpu.powerDomains), when it is below count, and count otherwise.
+// The agent publishes none when every counted GPU holds its own limit, and
+// an older agent never does. On a two-die AMD package such as an MI250X
+// both dies are counted GPUs, and only the primary holds a limit, which
+// bounds the whole package.
+func GPUPowerDomains(count, powerDomains int) int {
+	if powerDomains > 0 && powerDomains < count {
+		return powerDomains
+	}
+	return count
+}
+
 // GPUProductBase is the GPU model a product label names, without the
 // suffixes GPU feature discovery appends to nvidia.com/gpu.product: -SHARED
 // for time-slicing or MPS without renaming, -MIG-<profile> under the single

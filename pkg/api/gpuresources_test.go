@@ -128,6 +128,18 @@ func TestGPUCountFromLabels(t *testing.T) {
 // GPU feature discovery's product suffixes come off, in the order it
 // appends them (internal/lm/resource.go getProductName, mig-strategy.go
 // newInvalidMigStrategyLabeler); a plain product is unchanged.
+// GPUPowerDomains is powerDomains when the agent published one below the
+// count, and the count otherwise.
+func TestGPUPowerDomains(t *testing.T) {
+	for _, tc := range []struct{ count, domains, want int }{
+		{8, 4, 4}, {8, 0, 8}, {8, 8, 8}, {8, 12, 8}, {0, 0, 0}, {0, 4, 0}, {8, -1, 8},
+	} {
+		if got := GPUPowerDomains(tc.count, tc.domains); got != tc.want {
+			t.Errorf("GPUPowerDomains(%d, %d) = %d, want %d", tc.count, tc.domains, got, tc.want)
+		}
+	}
+}
+
 func TestGPUProductBase(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{

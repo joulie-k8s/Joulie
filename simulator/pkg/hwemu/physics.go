@@ -307,6 +307,8 @@ type nodePackage struct {
 // puts the limit back while persistence, the persistence_mode word, is
 // Disabled. uuid and pciBusID are the GPU's identity as its tools print it,
 // and sysfsPath its PCI device relative to sys/, when the tree has one.
+// secondary marks the secondary die of an AMD package (gpus.secondaryDies),
+// which has no limit of its own.
 type nodeGPU struct {
 	index    int
 	nvml     bool
@@ -326,6 +328,7 @@ type nodeGPU struct {
 	uuid        string
 	pciBusID    string
 	sysfsPath   string
+	secondary   bool
 
 	// NVML only: the energy of each substep of the last telemetry window, a
 	// ring starting at winAt, and the channel energy at the last boundary.
@@ -376,9 +379,16 @@ func (g *nodeGPU) targetMW() int64 {
 	return v
 }
 
+// targetW is the limit the GPU settles toward, in W. A secondary die has
+// none of its own, so nothing caps it; the package limit its primary holds
+// is not shared out between the dies (assumed: the firmware's split of the
+// package power between the dies is not published).
 func (g *nodeGPU) targetW() float64 {
 	if g.nvml {
 		return float64(g.targetMW()) / 1000
+	}
+	if g.secondary {
+		return g.maxW
 	}
 	return g.limitW()
 }

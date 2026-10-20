@@ -262,6 +262,11 @@ spec:
                       not the sum over all GPUs.
                     properties:
                       defaultWatts:
+                        description: |-
+                          DefaultWatts is the limit the driver sets when it loads, NVIDIA's
+                          power.default_limit. It is MaxWatts where the driver gives none within
+                          the range, and on AMD, whose driver rewrites its default with the cap
+                          in force.
                         type: number
                       maxWatts:
                         type: number
@@ -386,6 +391,15 @@ spec:
                     type: object
                   model:
                     type: string
+                  powerDomains:
+                    description: |-
+                      PowerDomains is the number of GPUs that hold a power limit of their
+                      own, published only when it is below Count: on a two-die AMD package
+                      such as an MI250X both dies are counted, and only the primary holds a
+                      limit, which bounds the package. Absent, every counted GPU holds its
+                      own.
+                    minimum: 0
+                    type: integer
                   present:
                     type: boolean
                   rawModel:

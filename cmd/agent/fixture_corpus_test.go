@@ -88,7 +88,7 @@ func (r corpusCommandRunner) Run(_ context.Context, name string, args ...string)
 		if r.hasNvidia {
 			return nil, nil
 		}
-	case "nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits":
+	case "nvidia-smi " + nvidiaInventoryQuery + " --format=csv,noheader,nounits":
 		if r.hasNvidia {
 			return []byte(r.nvidiaQuery), nil
 		}

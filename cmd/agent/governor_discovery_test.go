@@ -178,7 +178,7 @@ func TestGA16AMDGPUsArePublishedByBusID(t *testing.T) {
 
 // Command keys of the fake runner for the NVIDIA tests.
 var (
-	nvidiaInventoryKey = "nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits"
+	nvidiaInventoryKey = "nvidia-smi " + nvidiaInventoryQuery + " --format=csv,noheader,nounits"
 	nvidiaClockKey     = "nvidia-smi " + strings.Join(discover.NvidiaClockQueryArgs, " ")
 	nvidiaSupportedKey = "nvidia-smi " + strings.Join(discover.NvidiaSupportedClocksArgs, " ")
 )

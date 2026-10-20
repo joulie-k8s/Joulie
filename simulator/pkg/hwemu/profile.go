@@ -892,6 +892,11 @@ func renderValidateGPUs(p *Profile) []error {
 			fail("secondaryDies entry %d must be an AMD device index in [1, count)", d)
 		}
 	}
+	// Secondary dies are Aldebaran's, and only Van Gogh has the fast PPT
+	// (Linux v6.17 amdgpu_pm.c:3565-3573).
+	if len(g.SecondaryDies) > 0 && g.PPT1.V == "present" {
+		fail("secondaryDies needs ppt1 absent: the GPUs with secondary dies have no fast PPT")
+	}
 	names := map[string]bool{}
 	for i, t := range g.Tools {
 		tv, ok := renderToolVariants[t.Name]

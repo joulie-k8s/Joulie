@@ -876,7 +876,7 @@ func TestApplyGPUIntentHTTP(t *testing.T) {
 	defer func() { commandRunner = old }()
 	commandRunner = fakeCommandRunner{
 		responses: map[string]fakeCommandResult{
-			"nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits": {
+			"nvidia-smi " + nvidiaInventoryQuery + " --format=csv,noheader,nounits": {
 				out: "0, 200, 350, 300, 250, NVIDIA L40S\n",
 			},
 			"nvidia-smi -L": {out: "GPU 0: NVIDIA L40S"},

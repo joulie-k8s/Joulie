@@ -11,9 +11,10 @@ import (
 	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 )
 
-// The corpus capture is what a real nvidia-smi printed for the agent's query
-// on a T4. The same values as NVML state must print the same bytes, or the
-// agent would parse emulated nodes differently from real ones.
+// The corpus capture is what a real nvidia-smi printed for the first six
+// fields of the agent's query on a T4. The same values as NVML state must
+// print the same bytes, or the agent would parse emulated nodes differently
+// from real ones.
 func TestS01AgentQueryMatchesCorpusT4Capture(t *testing.T) {
 	t.Parallel()
 	want, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "cmd", "agent", "testdata", "hardware", "vm-no-rapl", "nvidia-smi.txt"))
@@ -36,7 +37,7 @@ func TestS01AgentQueryMatchesCorpusT4Capture(t *testing.T) {
 		"power_draw_mw":           "9970",
 		"utilization_gpu_pct":     "0",
 	})
-	out, err := n.run(agentNvidiaQuery...)
+	out, err := n.run(corpusNvidiaQuery...)
 	if err != nil {
 		t.Fatalf("query: %v (%q)", err, out)
 	}
@@ -120,10 +121,10 @@ func TestS14UnsupportedFieldPrintsItsToken(t *testing.T) {
 		t.Fatalf("query: %v (%q)", err, out)
 	}
 	first := strings.SplitN(string(out), "\n", 2)[0]
-	if want := "0, [N/A], 400.00, 400.00, 50.00, NVIDIA H100 NVL"; first != want {
+	if want := "0, [N/A], 400.00, 400.00, 50.00, NVIDIA H100 NVL, 400.00"; first != want {
 		t.Fatalf("gpu0 line %q, want %q", first, want)
 	}
-	if !strings.Contains(string(out), "\n1, 200.00, 400.00, 400.00, 50.00, NVIDIA H100 NVL\n") {
+	if !strings.Contains(string(out), "\n1, 200.00, 400.00, 400.00, 50.00, NVIDIA H100 NVL, 400.00\n") {
 		t.Fatalf("gpu1 line missing or wrong in %q", out)
 	}
 }

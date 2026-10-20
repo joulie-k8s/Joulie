@@ -87,6 +87,7 @@ type NodeHardware struct {
 	GPUModel            string
 	GPURawModel         string
 	GPUCount            int
+	GPUPowerDomains     int // status.gpu.powerDomains, 0 when absent (pkg/api.GPUPowerDomains)
 	CPUCapMinWatts      float64
 	CPUCapMaxWatts      float64
 	CPUCapKnown         bool
@@ -1062,6 +1063,7 @@ func parseNodeHardware(obj *v1alpha1.NodeHardware) NodeHardware {
 		nh.GPUModel = gpu.Model
 		nh.GPURawModel = gpu.RawModel
 		nh.GPUCount = gpu.Count
+		nh.GPUPowerDomains = gpu.PowerDomains
 		if cr := gpu.CapRangePerGPU; cr != nil {
 			nh.GPUCapMinWatts = cr.MinWatts
 			nh.GPUCapMaxWatts = cr.MaxWatts
@@ -1137,13 +1139,14 @@ func firstNonEmpty(values ...string) string {
 
 // estimateNodePowerW estimates the total power draw of a node from its hardware
 // specs and current cap percentages. Used for per-rack PSU stress aggregation.
+// The per-GPU maximum counts once per GPU that holds a limit of its own.
 func estimateNodePowerW(nh NodeHardware, cpuCapPct, gpuCapPct float64) float64 {
 	var powerW float64
 	if nh.CPUCapMaxWatts > 0 {
 		powerW += nh.CPUCapMaxWatts * float64(nh.CPUSockets) * (cpuCapPct / 100.0)
 	}
 	if nh.GPUCapMaxWatts > 0 {
-		powerW += nh.GPUCapMaxWatts * float64(nh.GPUCount) * (gpuCapPct / 100.0)
+		powerW += nh.GPUCapMaxWatts * float64(joulie.GPUPowerDomains(nh.GPUCount, nh.GPUPowerDomains)) * (gpuCapPct / 100.0)
 	}
 	return powerW
 }

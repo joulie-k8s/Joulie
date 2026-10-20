@@ -118,8 +118,12 @@ the same way: the agent reads and caps AMD GPUs through sysfs.
 The captured NVIDIA query is the exact one `cmd/agent/main.go` runs:
 
 ```
-nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name --format=csv,noheader,nounits
+nvidia-smi --query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name,power.default_limit --format=csv,noheader,nounits
 ```
+
+A capture of the first six fields, without `power.default_limit`, replays
+with the default unknown, so `NodeHardware` publishes the maximum as
+`defaultWatts`.
 
 `nvidia-smi -L`, which `detectGPUVendor` uses only as a presence probe, is not
 captured: its output is a list of GPU UUIDs and nothing reads it. The stub

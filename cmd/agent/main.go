@@ -83,8 +83,12 @@ type HardwareInfo struct {
 	GPURawModel     string
 	GPUModel        string
 	GPUCount        int
+	// GPUPowerDomains is how many of the listed GPUs hold a power limit of
+	// their own; 0 leaves it to GPUCount (pkg/api.GPUPowerDomains).
+	GPUPowerDomains int
 	GPUCapMinWatts  float64
 	GPUCapMaxWatts  float64
+	GPUCapDefaultW  float64
 	GPUCurrentCapW  float64
 	GPUCapKnown     bool
 	GPUControl      bool
@@ -178,6 +182,10 @@ type GPUDevice struct {
 	CurrentCapWatts float64
 	MinCapWatts     float64
 	MaxCapWatts     float64
+	// DefaultCapWatts is NVIDIA's power.default_limit, 0 when nvidia-smi
+	// prints none. AMD devices leave it 0: power1_cap_default is not read
+	// (amdgpu.go).
+	DefaultCapWatts float64
 	// BusID and HwmonDir are set for AMD devices only: the PCI bus id and
 	// the amdgpu hwmon directory the cap is read from and written to.
 	// CapUnknown marks an AMD device that refused to read its cap (runtime
@@ -1224,8 +1232,14 @@ func listGPUDevices(ctx context.Context, vendor string) ([]GPUDevice, error) {
 	}
 }
 
+// nvidiaInventoryQuery is the --query-gpu argument of the NVIDIA inventory,
+// the fields listNvidiaDevices reads in the order it reads them.
+// power.default_limit comes after name, so a line of the first six fields
+// alone still parses, with the default unknown.
+const nvidiaInventoryQuery = "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name,power.default_limit"
+
 func listNvidiaDevices(ctx context.Context) ([]GPUDevice, error) {
-	out, err := runCommand(ctx, "nvidia-smi", "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name", "--format=csv,noheader,nounits")
+	out, err := runCommand(ctx, "nvidia-smi", nvidiaInventoryQuery, "--format=csv,noheader,nounits")
 	if err != nil {
 		return nil, err
 	}
@@ -1250,9 +1264,25 @@ func listNvidiaDevices(ctx context.Context) ([]GPUDevice, error) {
 			CurrentCapWatts: curCap,
 			MinCapWatts:     minW,
 			MaxCapWatts:     maxW,
+			DefaultCapWatts: nvidiaDefaultLimit(parts),
 		})
 	}
 	return devices, nil
+}
+
+// nvidiaDefaultLimit is power.default_limit, the seventh field of an
+// inventory line, in W: the limit the driver sets when it loads. It is 0,
+// unknown, when the line has no seventh field or nvidia-smi prints a token
+// such as [N/A] there.
+func nvidiaDefaultLimit(parts []string) float64 {
+	if len(parts) < 7 {
+		return 0
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(parts[6]), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return 0
+	}
+	return v
 }
 
 // applyNvidiaGPUCap sets the power limit of every device to capWatts,
@@ -1465,9 +1495,15 @@ func discoverHardwareWith(ctx context.Context, node *corev1.Node, gpuFacts *nvid
 		hw.GPUCurrentCapW = ref.CurrentCapWatts
 		hw.GPUCapMinWatts = ref.MinCapWatts
 		hw.GPUCapMaxWatts = ref.MaxCapWatts
+		hw.GPUCapDefaultW = ref.DefaultCapWatts
 		hw.GPUCapKnown = ref.MaxCapWatts > 0
 		hw.GPUControl = hw.GPUCapKnown
 		hw.GPUTelemetry = true
+		// Every listed NVIDIA GPU holds its own limit; on AMD a secondary
+		// die holds none, its primary's bounding the package.
+		if hw.GPUVendor == "amd" {
+			hw.GPUPowerDomains = len(amdgpuCapDevices(gpuDevices))
+		}
 	} else {
 		hw.GPURawModel = labelModel
 		hw.GPUControl = false
@@ -1969,8 +2005,16 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 			gpuMap["capRangePerGpu"] = map[string]any{
 				"minWatts":     hw.GPUCapMinWatts,
 				"maxWatts":     hw.GPUCapMaxWatts,
-				"defaultWatts": hw.GPUCapMaxWatts,
+				"defaultWatts": gpuCapDefaultWatts(hw),
 			}
+		}
+	}
+	// powerDomains is published only when fewer GPUs hold a limit than are
+	// counted, so a reader that finds none uses the count, as with an older
+	// agent.
+	if hw.GPUPowerDomains > 0 && hw.GPUPowerDomains < hw.GPUCount {
+		if gpuMap, ok := status["gpu"].(map[string]any); ok {
+			gpuMap["powerDomains"] = int64(hw.GPUPowerDomains)
 		}
 	}
 
@@ -2030,6 +2074,21 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 // object name. Shared with the controller manager through pkg/api so both sides agree.
 func sanitizeNodeObjectName(nodeName string) string {
 	return joulie.ObjectNameForNode(nodeName)
+}
+
+// gpuCapDefaultWatts is the defaultWatts NodeHardware publishes: the
+// driver's default limit where the agent reads one it can trust, and the
+// maximum otherwise. On NVIDIA that is power.default_limit, the limit the
+// driver loads with, when nvidia-smi prints one within the range. On AMD it
+// is always the maximum: amdgpu sets power1_cap_default from the cap in
+// force each time it initialises the GPU (smu_late_init in amdgpu_smu.c,
+// kernel 6.17), so after a resume or a reset it reads the agent's own last
+// cap, and the agent does not read it.
+func gpuCapDefaultWatts(hw HardwareInfo) float64 {
+	if d := hw.GPUCapDefaultW; d > 0 && d >= hw.GPUCapMinWatts && d <= hw.GPUCapMaxWatts {
+		return d
+	}
+	return hw.GPUCapMaxWatts
 }
 
 func overallQuality(hw HardwareInfo) string {

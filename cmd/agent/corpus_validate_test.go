@@ -128,11 +128,13 @@ var corpusZoneFilePattern = regexp.MustCompile(
 // corpusNvidiaQuery is the query whose stdout the fixtures hold.
 // TestCorpusGPUQueriesMatchTheAgent asserts that cmd/agent still runs exactly
 // this, so the fixture format cannot drift away from the agent.
-const corpusNvidiaQuery = "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name"
+const corpusNvidiaQuery = "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name,power.default_limit"
 
 // corpusNvidiaColumns is the number of fields that query returns per GPU:
-// index, power.min_limit, power.max_limit, power.limit, power.draw, name.
-const corpusNvidiaColumns = 6
+// index, power.min_limit, power.max_limit, power.limit, power.draw, name,
+// power.default_limit. A capture of the first six fields is valid too: the
+// agent reads the default of such a line as unknown.
+const corpusNvidiaColumns = 7
 
 // ---------------------------------------------------------------------------
 // Privacy patterns
@@ -618,11 +620,19 @@ func validateCorpusNvidiaOutput(p *corpusProblems, dir string) {
 		// splitCSVLine is the agent's own splitter, so the fixture is read
 		// exactly the way cmd/agent reads it.
 		parts := splitCSVLine(line)
-		if len(parts) < corpusNvidiaColumns {
+		if len(parts) < corpusNvidiaColumns-1 {
 			p.addf(file, i+1, "has %d comma separated fields, want %d. Fix: capture the exact query the agent runs:\n"+
 				"  nvidia-smi %s --format=csv,noheader,nounits",
 				len(parts), corpusNvidiaColumns, corpusNvidiaQuery)
 			continue
+		}
+		if len(parts) >= corpusNvidiaColumns {
+			if v := parts[6]; !corpusIsNotApplicable(v) {
+				if _, err := strconv.ParseFloat(v, 64); err != nil {
+					p.addf(file, i+1, "field 7 (power.default_limit) is %q, not a number and not [N/A]. Fix: capture with nounits, "+
+						"which drops the \" W\" suffix", v)
+				}
+			}
 		}
 		if _, err := strconv.Atoi(parts[0]); err != nil {
 			p.addf(file, i+1, "field 1 (index) is %q, not a number. Fix: capture with --format=csv,noheader,nounits "+
@@ -1089,7 +1099,7 @@ const corpusGoodNodeLabels = `{
 }
 `
 
-const corpusGoodNvidiaCSV = "0, 60.00, 70.00, 70.00, 9.97, Tesla T4\n"
+const corpusGoodNvidiaCSV = "0, 60.00, 70.00, 70.00, 9.97, Tesla T4, 70.00\n"
 
 const corpusGoodExpected = `{
   "capabilities": {
@@ -1382,7 +1392,14 @@ func TestCorpusValidatorRejects(t *testing.T) {
 		{
 			name:   "nvidia csv has too few columns",
 			mutate: func(t *testing.T, dir string) { corpusWrite(t, dir, "nvidia-smi.txt", "0, 70.00, Tesla T4\n") },
-			want:   "has 3 comma separated fields, want 6",
+			want:   "has 3 comma separated fields, want 7",
+		},
+		{
+			name: "nvidia csv default limit kept its unit",
+			mutate: func(t *testing.T, dir string) {
+				corpusWrite(t, dir, "nvidia-smi.txt", "0, 60.00, 70.00, 70.00, 9.97, Tesla T4, 70.00 W\n")
+			},
+			want: "field 7 (power.default_limit) is \"70.00 W\", not a number",
 		},
 		{
 			name: "nvidia csv kept its header",

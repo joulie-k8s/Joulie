@@ -130,7 +130,7 @@ func Compute(in Input) Output {
 	cpuTDP := in.Hardware.CPU.CapRange.MaxWattsPerSocket * float64(cpuSockets)
 	var gpuTDP float64
 	if in.Hardware.GPU.Present {
-		gpuTDP = in.Hardware.GPU.CapRange.MaxWatts * float64(in.Hardware.GPU.Count)
+		gpuTDP = in.Hardware.GPU.CapRange.MaxWatts * float64(joulie.GPUPowerDomains(in.Hardware.GPU.Count, in.Hardware.GPU.PowerDomains))
 	}
 	nodeTDP := cpuTDP + gpuTDP
 
