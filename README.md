@@ -10,16 +10,16 @@
   <a href="https://github.com/joulie-k8s/Joulie/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/joulie-k8s/Joulie/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white"></a>
   <a href="https://github.com/joulie-k8s/Joulie/actions/workflows/simcluster.yml"><img alt="Simulated cluster" src="https://img.shields.io/github/actions/workflow/status/joulie-k8s/Joulie/simcluster.yml?branch=main&label=simulated%20cluster&logo=kubernetes&logoColor=white"></a>
   <a href="https://github.com/joulie-k8s/Joulie/actions/workflows/vulnscan-nightly.yml"><img alt="Vulnerability scan" src="https://img.shields.io/github/actions/workflow/status/joulie-k8s/Joulie/vulnscan-nightly.yml?branch=main&label=vulnerability%20scan&logo=springsecurity&logoColor=white"></a>
+  <a href="https://www.bestpractices.dev/projects/15770"><img alt="OpenSSF Best Practices" src="https://www.bestpractices.dev/projects/15770/badge"></a>
+  <br>
   <a href="https://github.com/joulie-k8s/Joulie/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/joulie-k8s/Joulie?label=release&color=F5B400&logo=helm&logoColor=white"></a>
   <a href="go.mod"><img alt="Go" src="https://img.shields.io/github/go-mod/go-version/joulie-k8s/Joulie?logo=go&logoColor=white"></a>
-</p>
-<p align="center">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache_2.0-blue"></a>
   <a href="https://joulie-k8s.github.io/Joulie/stable/docs/"><img alt="Docs" src="https://img.shields.io/badge/docs-joulie--k8s.github.io-F5B400?logo=hugo&logoColor=white"></a>
+  <br>
   <a href="https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/quickstart/#kubectl-plugin"><img alt="kubectl plugin" src="https://img.shields.io/badge/kubectl_plugin-kubectl_joulie-326CE5?logo=kubernetes&logoColor=white"></a>
   <a href="https://joulie-k8s.github.io/Joulie/stable/docs/architecture/telemetry/"><img alt="OpenTelemetry" src="https://img.shields.io/badge/telemetry-OpenTelemetry-425CC7?logo=opentelemetry&logoColor=white"></a>
   <a href="ci/"><img alt="Tested with Dagger" src="https://img.shields.io/badge/tested_with-Dagger_v0.21-6E40C9"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache_2.0-blue"></a>
-  <a href="https://www.bestpractices.dev/projects/15770"><img alt="OpenSSF Best Practices" src="https://www.bestpractices.dev/projects/15770/badge"></a>
 </p>
 
 <p align="center">
