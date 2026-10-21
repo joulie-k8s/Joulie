@@ -19,6 +19,7 @@
   <a href="https://joulie-k8s.github.io/Joulie/stable/docs/architecture/telemetry/"><img alt="OpenTelemetry" src="https://img.shields.io/badge/telemetry-OpenTelemetry-425CC7?logo=opentelemetry&logoColor=white"></a>
   <a href="ci/"><img alt="Tested with Dagger" src="https://img.shields.io/badge/tested_with-Dagger_v0.21-6E40C9"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache_2.0-blue"></a>
+  <a href="https://www.bestpractices.dev/projects/15770"><img alt="OpenSSF Best Practices" src="https://www.bestpractices.dev/projects/15770/badge"></a>
 </p>
 
 <p align="center">
