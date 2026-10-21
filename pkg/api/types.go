@@ -229,6 +229,24 @@ type ControlStatus struct {
 	GPUGovernor *ControlResult `json:"gpuGovernor,omitempty"`
 }
 
+// Values of NodeTwin.status.controlStatus.cpu.result and gpu.result, the
+// outcome of the agent's last cap write. The CRD does not enumerate them,
+// since ControlResult also carries the governor results; tests/contracts
+// checks that every GPU cap result the agent writes is one of them.
+const (
+	CapResultApplied = "applied"
+	// CapResultBlocked: the node offers no way to apply the cap (no
+	// backend, no device, no cap range).
+	CapResultBlocked = "blocked"
+	// CapResultError: the write or the inventory before it failed.
+	CapResultError = "error"
+	// CapResultNone: no cap intent, so nothing was written.
+	CapResultNone = "none"
+)
+
+// CapResultValues lists every value a cap result takes.
+var CapResultValues = []string{CapResultApplied, CapResultBlocked, CapResultError, CapResultNone}
+
 type ControlResult struct {
 	Backend string `json:"backend,omitempty"`
 	Result  string `json:"result,omitempty"`

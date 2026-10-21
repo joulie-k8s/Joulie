@@ -30,7 +30,7 @@ In addition to the reconcile loop, the controller manager runs a background cont
 
 ## Reads, writes and leader election
 
-All reads (nodes, pods, `NodeHardware`, `NodeTwin`) come from an informer cache maintained by a controller-runtime manager, so a reconcile touches the API server only when it writes. The pod informer keeps only the fields the policy needs (node name, node selector, affinity, annotations, phase); container specs and statuses are dropped before they reach memory. Writes carry the `joulie-controller-manager` field manager and are skipped when nothing changed.
+All reads (nodes, pods, `NodeHardware`, `NodeTwin`) come from an informer cache maintained by a controller-runtime manager, so a reconcile touches the API server only when it writes. The pod informer keeps only the fields the policy needs (node name, node selector, affinity, annotations, phase, and the GPU requests and limits of each container); the rest of the container specs and the statuses are dropped before they reach memory. Writes carry the `joulie-controller-manager` field manager and are skipped when nothing changed.
 
 The reconcile loop and the facility poller run as manager runnables: they start once the cache has synced and, with `LEADER_ELECT=true` (Helm `controllerManager.leaderElection.enabled`), only on the holder of the `joulie-controller-manager` lease. Leader election is off by default, which matches the single replica the chart deploys.
 

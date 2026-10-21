@@ -452,3 +452,95 @@ func TestGC17DefaultGPUPresetsAndTheModelMap(t *testing.T) {
 	reconcileGovernors(t, "static_partition", reader, client, dyn)
 	wantGovernors(t, dyn, map[string]string{"g0": "cpu=none gpu=sustained", "g1": "cpu=none gpu=efficient@80"})
 }
+
+// gpuPodOn is a pod on node in phase whose one container asks for units of
+// the GPU resource res, as a limit (the request defaults to it), in the form
+// the controller manager's cache holds it (podTransform).
+func gpuPodOn(name, node string, phase corev1.PodPhase, res string, units int64) *corev1.Pod {
+	full := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: corev1.PodSpec{NodeName: node, Containers: []corev1.Container{{Name: "main", Image: "img", Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4")},
+			Limits:   corev1.ResourceList{corev1.ResourceName(res): *resource.NewQuantity(units, resource.DecimalSI)},
+		}}}},
+		Status: corev1.PodStatus{Phase: phase},
+	}
+	cached, _ := podTransform(full)
+	return cached.(*corev1.Pod)
+}
+
+// multiGPUSustainedEnv opts testGPUProduct in to sustained on performance
+// nodes; rule is the value of GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU, "" for
+// unset.
+func multiGPUSustainedEnv(rule string) map[string]string {
+	env := map[string]string{
+		"GOVERNOR_CONTROL":                "all",
+		"GPU_GOVERNOR_MODEL_PRESETS_JSON": `{"` + testGPUProduct + `": {"performance": "sustained"}}`,
+	}
+	if rule != "" {
+		env["GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU"] = rule
+	}
+	return env
+}
+
+// singleGPUWork is what GC14 runs on the performance GPU node g0: running
+// pods of one GPU each, a pending pod and a finished one with more.
+func singleGPUWork() []runtime.Object {
+	return []runtime.Object{
+		gpuPodOn("one-a", "g0", corev1.PodRunning, "nvidia.com/gpu", 1),
+		gpuPodOn("one-b", "g0", corev1.PodRunning, "nvidia.com/gpu", 1),
+		gpuPodOn("waiting", "g0", corev1.PodPending, "nvidia.com/gpu", 2),
+		gpuPodOn("done", "g0", corev1.PodSucceeded, "nvidia.com/gpu", 4),
+		// A multi-GPU pod on the eco node does not make g0 sustained.
+		gpuPodOn("eco-multi", "g1", corev1.PodRunning, "nvidia.com/gpu", 4),
+	}
+}
+
+// GC14: with GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU on, a performance node of
+// a model opted in to sustained that runs only single-GPU pods carries no
+// spec.gpu.governor, so its agent restores the baseline; the eco node keeps
+// its preset.
+func TestGC14SingleGPUPodsHoldNoDataPath(t *testing.T) {
+	useGovernorEnv(t, multiGPUSustainedEnv("true"))
+	reader, client, dyn := fakeClients(t, governorCluster(t, singleGPUWork()...)...)
+	reconcileGovernors(t, "static_partition", reader, client, dyn)
+	wantGovernors(t, dyn, map[string]string{"g0": "cpu=none gpu=none", "g1": "cpu=none gpu=efficient@80"})
+}
+
+// GC15: a running pod that requests 2 or more GPUs, of any GPU resource
+// kind, makes the node sustained; once it is gone, the next reconcile takes
+// the preset out of the spec.
+func TestGC15RunningMultiGPUPodMakesTheNodeSustained(t *testing.T) {
+	for _, tc := range []struct{ name, res string }{
+		{"whole GPUs", "nvidia.com/gpu"},
+		{"MIG devices", "nvidia.com/mig-3g.40gb"},
+		{"shared replicas", "nvidia.com/gpu.shared"},
+		{"AMD partitions", "amd.com/cpx_nps4"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useGovernorEnv(t, multiGPUSustainedEnv("true"))
+			objs := governorCluster(t, append(singleGPUWork(), gpuPodOn("multi", "g0", corev1.PodRunning, tc.res, 2))...)
+			reader, client, dyn := fakeClients(t, objs...)
+			reconcileGovernors(t, "static_partition", reader, client, dyn)
+			wantGovernors(t, dyn, map[string]string{"g0": "cpu=none gpu=sustained", "g1": "cpu=none gpu=efficient@80"})
+
+			// The pod ends: the same cluster without it.
+			after, _, _ := fakeClients(t, governorCluster(t, singleGPUWork()...)...)
+			reconcileGovernors(t, "static_partition", after, client, dyn)
+			wantGovernors(t, dyn, map[string]string{"g0": "cpu=none gpu=none"})
+		})
+	}
+}
+
+// GC16: with the rule off, unset or false, an opted-in performance node is
+// sustained whatever runs on it, as before the rule (GC17).
+func TestGC16RuleOffKeepsSustainedWithoutMultiGPUPods(t *testing.T) {
+	for _, rule := range []string{"", "false"} {
+		t.Run("rule="+rule, func(t *testing.T) {
+			useGovernorEnv(t, multiGPUSustainedEnv(rule))
+			reader, client, dyn := fakeClients(t, governorCluster(t, singleGPUWork()...)...)
+			reconcileGovernors(t, "static_partition", reader, client, dyn)
+			wantGovernors(t, dyn, map[string]string{"g0": "cpu=none gpu=sustained", "g1": "cpu=none gpu=efficient@80"})
+		})
+	}
+}

@@ -55,6 +55,9 @@ type governorConfig struct {
 	// label value, also matched against the catalog key and the raw model
 	// the agent reports.
 	gpuModelPresets map[string]gpuGovernorModelPresets
+	// gpuSustainedOnlyMultiGPU writes sustained only while a pod requesting
+	// fsm.MultiGPUPodMinGPUs or more GPUs runs on the node.
+	gpuSustainedOnlyMultiGPU bool
 }
 
 // defaultGovernorConfig is the configuration with no variable set: control
@@ -74,7 +77,8 @@ func defaultGovernorConfig() governorConfig {
 // loadGovernorConfig reads GOVERNOR_CONTROL, CPU_GOVERNOR_PERFORMANCE_PRESET,
 // CPU_GOVERNOR_ECO_PRESET, CPU_GOVERNOR_ECO_BOOST, CPU_GOVERNOR_ON_GPU_NODES,
 // GPU_GOVERNOR_PERFORMANCE_PRESET, GPU_GOVERNOR_ECO_PRESET,
-// GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX and GPU_GOVERNOR_MODEL_PRESETS_JSON.
+// GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX, GPU_GOVERNOR_MODEL_PRESETS_JSON and
+// GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU.
 func loadGovernorConfig() governorConfig {
 	cfg := defaultGovernorConfig()
 
@@ -119,6 +123,7 @@ func loadGovernorConfig() governorConfig {
 		}
 	}
 	cfg.gpuModelPresets = parseGPUGovernorModelPresets(envOrDefault("GPU_GOVERNOR_MODEL_PRESETS_JSON", "{}"))
+	cfg.gpuSustainedOnlyMultiGPU = boolEnv("GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU", cfg.gpuSustainedOnlyMultiGPU)
 	return cfg
 }
 
@@ -237,9 +242,9 @@ func (c governorConfig) logSummary() {
 		models = append(models, m)
 	}
 	sort.Strings(models)
-	log.Printf("governor control: %s cpu performance=%q eco=%q eco_boost=%q on_gpu_nodes=%t gpu performance=%q eco=%q ceiling_pct_of_max=%g model_presets=%v",
+	log.Printf("governor control: %s cpu performance=%q eco=%q eco_boost=%q on_gpu_nodes=%t gpu performance=%q eco=%q ceiling_pct_of_max=%g model_presets=%v sustained_only_multi_gpu=%t",
 		c.control, c.cpuPerformancePreset, c.cpuEcoPreset, c.cpuEcoBoost, c.cpuOnGPUNodes,
-		c.gpuPerformancePreset, c.gpuEcoPreset, c.gpuCeilingPctOfMax, models)
+		c.gpuPerformancePreset, c.gpuEcoPreset, c.gpuCeilingPctOfMax, models, c.gpuSustainedOnlyMultiGPU)
 }
 
 // gpuPresetFor returns the GPU preset and the ceiling of the efficient preset
@@ -280,8 +285,11 @@ func (c governorConfig) gpuPresetFor(profile string, keys ...string) (string, fl
 // configured GPU preset is written as usual.
 //
 // GPU nodes get no CPU governor unless CPU_GOVERNOR_ON_GPU_NODES is set, the
-// rule the CPU cap follows; only GPU nodes get a GPU governor.
-func (c governorConfig) governorIntents(nodeName, profile string, hasGPU bool, nh NodeHardware, gpuProduct string) (*joulie.CPUGovernorIntent, *joulie.GPUGovernorIntent) {
+// rule the CPU cap follows; only GPU nodes get a GPU governor. With
+// GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU, a node whose GPU preset is sustained
+// gets it only while multiGPUPod, called only then (nil: never), reports a
+// running multi-GPU pod on the node, and no GPU governor otherwise.
+func (c governorConfig) governorIntents(nodeName, profile string, hasGPU bool, nh NodeHardware, gpuProduct string, multiGPUPod func() bool) (*joulie.CPUGovernorIntent, *joulie.GPUGovernorIntent) {
 	var cpu *joulie.CPUGovernorIntent
 	if c.cpuEnabled() && (!hasGPU || c.cpuOnGPUNodes) {
 		preset, boost := c.cpuEcoPreset, c.cpuEcoBoost
@@ -309,6 +317,12 @@ func (c governorConfig) governorIntents(nodeName, profile string, hasGPU bool, n
 	var gpu *joulie.GPUGovernorIntent
 	if c.gpuEnabled() && hasGPU {
 		preset, ceiling := c.gpuPresetFor(profile, gpuProduct, nh.GPUModel, nh.GPURawModel)
+		// Held data paths cost idle power and pay off in transfers between
+		// GPUs, so with the rule on a node holds them only while a pod spans
+		// several GPUs; the agent restores its baseline otherwise.
+		if preset == joulie.GPUGovernorPresetSustained && c.gpuSustainedOnlyMultiGPU && (multiGPUPod == nil || !multiGPUPod()) {
+			preset = ""
+		}
 		switch {
 		case preset == "":
 		case !slices.Contains(nh.GPUGovernorPresets, preset) && !nh.GPUGovernorGap:

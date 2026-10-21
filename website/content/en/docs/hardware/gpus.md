@@ -114,7 +114,7 @@ Joulie GPU capping is node-level and not a GPU slicing API.
 ## Known limitations
 
 - **Intel GPUs without a default limit in sysfs are not capped.** The xe platforms whose limits go through the firmware mailbox (Battlemage, Crescent Island), and Flex under Intel's out-of-tree i915 (`intel-gpu-i915-backports`, which gives DG2 no `power1_rated_max`), show no `power<N>_rated_max`, so the range is unknown and the GPU cap ends `blocked` with `the power limit range of the Intel GPUs is unknown`.
-- **A GPU node whose GPUs cannot be capped runs uncapped in eco.** Such a node, one whose Intel GPUs show no default limit in sysfs or whose NVIDIA GPUs print `[N/A]` for their power limits, gets neither a GPU cap nor the eco CPU cap.
+- **A GPU node whose GPUs cannot be capped runs uncapped in eco.** Such a node, one whose Intel GPUs show no default limit in sysfs or whose NVIDIA GPUs print `[N/A]` for their power limits, gets neither a GPU cap nor the eco CPU cap, unless `CPU_ECO_CAP_ON_UNCAPPABLE_GPU_NODES` is true: then a GPU node whose `NodeHardware` reports no GPU control gets the CPU eco cap of its profile.
 
 Check the GPU control status of every GPU node with:
 

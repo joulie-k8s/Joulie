@@ -16,7 +16,7 @@ var governorEnvVars = []string{
 	"GOVERNOR_CONTROL",
 	"CPU_GOVERNOR_PERFORMANCE_PRESET", "CPU_GOVERNOR_ECO_PRESET", "CPU_GOVERNOR_ECO_BOOST", "CPU_GOVERNOR_ON_GPU_NODES",
 	"GPU_GOVERNOR_PERFORMANCE_PRESET", "GPU_GOVERNOR_ECO_PRESET", "GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX",
-	"GPU_GOVERNOR_MODEL_PRESETS_JSON",
+	"GPU_GOVERNOR_MODEL_PRESETS_JSON", "GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU",
 }
 
 // setGovernorEnv unsets every governor variable, then sets env, for the
@@ -76,7 +76,7 @@ func TestGovernorConfigDefaults(t *testing.T) {
 	}
 	if cfg.cpuPerformancePreset != "performance" || cfg.cpuEcoPreset != "efficiency" ||
 		cfg.gpuPerformancePreset != "" || cfg.gpuEcoPreset != "efficient" || cfg.gpuCeilingPctOfMax != 80 ||
-		cfg.cpuEcoBoost != "" || cfg.cpuOnGPUNodes {
+		cfg.cpuEcoBoost != "" || cfg.cpuOnGPUNodes || cfg.gpuSustainedOnlyMultiGPU {
 		t.Fatalf("defaults = %+v, want the documented ones", cfg)
 	}
 	if strings.Contains(buf.String(), "warning") {
@@ -169,7 +169,7 @@ func TestGC06ModelPresetsOverrideTheDefaultsPerModel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			n := nh
 			n.GPURawModel = tc.raw
-			_, gpu := cfg.governorIntents("g", tc.profile, true, n, tc.product)
+			_, gpu := cfg.governorIntents("g", tc.profile, true, n, tc.product, nil)
 			if !reflect.DeepEqual(gpu, tc.want) {
 				t.Fatalf("GPU governor = %s, want %s", intentString(gpu), intentString(tc.want))
 			}
@@ -185,7 +185,7 @@ func TestGC07CeilingOnlyWithEfficientAndOutOfRangeFallsBack(t *testing.T) {
 	for _, v := range []string{"0", "-5", "100.5", "150", "abc"} {
 		buf := captureLog(t)
 		cfg := useGovernorEnv(t, map[string]string{"GOVERNOR_CONTROL": "all", "GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX": v})
-		_, gpu := cfg.governorIntents("g", profileEco, true, nh, "")
+		_, gpu := cfg.governorIntents("g", profileEco, true, nh, "", nil)
 		if gpu == nil || gpu.ComputeClockCeilingPctOfMax == nil || *gpu.ComputeClockCeilingPctOfMax != 80 {
 			t.Errorf("ceiling %q: GPU governor = %s, want efficient at 80", v, intentString(gpu))
 		}
@@ -216,7 +216,7 @@ func TestGC07CeilingOnlyWithEfficientAndOutOfRangeFallsBack(t *testing.T) {
 		{profileEco, "LOW-ECO", &joulie.GPUGovernorIntent{Preset: "low"}},
 		{profileEco, "BAD-CEILING", &joulie.GPUGovernorIntent{Preset: "efficient", ComputeClockCeilingPctOfMax: floatPtr(100)}},
 	} {
-		_, gpu := cfg.governorIntents("g", tc.profile, true, nh, tc.product)
+		_, gpu := cfg.governorIntents("g", tc.profile, true, nh, tc.product, nil)
 		if !reflect.DeepEqual(gpu, tc.want) {
 			t.Errorf("%s %q: GPU governor = %s, want %s", tc.profile, tc.product, intentString(gpu), intentString(tc.want))
 		}
@@ -228,15 +228,15 @@ func TestGC07CeilingOnlyWithEfficientAndOutOfRangeFallsBack(t *testing.T) {
 func TestGovernorEcoBoostNeedsABoostControl(t *testing.T) {
 	cfg := useGovernorEnv(t, map[string]string{"GOVERNOR_CONTROL": "cpu", "CPU_GOVERNOR_ECO_BOOST": "off"})
 	nh := allPresetsHardware()
-	if cpu, _ := cfg.governorIntents("c", profileEco, false, nh, ""); cpu == nil || cpu.Preset != "efficiency" || cpu.Boost != "off" {
+	if cpu, _ := cfg.governorIntents("c", profileEco, false, nh, "", nil); cpu == nil || cpu.Preset != "efficiency" || cpu.Boost != "off" {
 		t.Fatalf("eco CPU governor = %+v, want efficiency with boost off", cpu)
 	}
-	if cpu, _ := cfg.governorIntents("c", profilePerformance, false, nh, ""); cpu == nil || cpu.Boost != "" {
+	if cpu, _ := cfg.governorIntents("c", profilePerformance, false, nh, "", nil); cpu == nil || cpu.Boost != "" {
 		t.Fatalf("performance CPU governor = %+v, want no boost", cpu)
 	}
 	buf := captureLog(t)
 	nh.CPUBoostAvailable = false
-	if cpu, _ := cfg.governorIntents("c", profileEco, false, nh, ""); cpu == nil || cpu.Preset != "efficiency" || cpu.Boost != "" {
+	if cpu, _ := cfg.governorIntents("c", profileEco, false, nh, "", nil); cpu == nil || cpu.Preset != "efficiency" || cpu.Boost != "" {
 		t.Fatalf("eco CPU governor without a boost control = %+v, want efficiency and boost left alone", cpu)
 	}
 	if !strings.Contains(buf.String(), "no boost control") {
@@ -283,9 +283,43 @@ func TestGPUGovernorIntentKeptThroughADiscoveryGap(t *testing.T) {
 		{"no block", nil, nil},
 	} {
 		obj := &v1alpha1.NodeHardware{Status: v1alpha1.NodeHardwareStatus{GPU: &v1alpha1.NodeHardwareGPU{Governor: tc.block}}}
-		_, gpu := cfg.governorIntents("g", profileEco, true, parseNodeHardware(obj), "")
+		_, gpu := cfg.governorIntents("g", profileEco, true, parseNodeHardware(obj), "", nil)
 		if !reflect.DeepEqual(gpu, tc.want) {
 			t.Errorf("%s: GPU governor = %s, want %s", tc.name, intentString(gpu), intentString(tc.want))
 		}
+	}
+}
+
+// The pods of a node are looked at only when the rule is on and the node's
+// GPU preset is sustained, so the rule costs nothing elsewhere, and any
+// other preset is written as without the rule.
+func TestGovernorMultiGPURuleListsPodsOnlyForSustained(t *testing.T) {
+	nh := allPresetsHardware()
+	for _, tc := range []struct {
+		name, rule, profile string
+		multiGPU            bool
+		want                string
+		calls               int
+	}{
+		{"rule on, sustained, multi-GPU pod", "true", profilePerformance, true, "sustained", 1},
+		{"rule on, sustained, no multi-GPU pod", "true", profilePerformance, false, "none", 1},
+		{"rule on, eco preset", "true", profileEco, false, "efficient ceiling 80", 0},
+		{"rule off, sustained", "false", profilePerformance, false, "sustained", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := useGovernorEnv(t, map[string]string{
+				"GOVERNOR_CONTROL":                      "gpu",
+				"GPU_GOVERNOR_PERFORMANCE_PRESET":       "sustained",
+				"GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU": tc.rule,
+			})
+			calls := 0
+			_, gpu := cfg.governorIntents("g", tc.profile, true, nh, "", func() bool { calls++; return tc.multiGPU })
+			if got := intentString(gpu); got != tc.want {
+				t.Errorf("GPU governor = %s, want %s", got, tc.want)
+			}
+			if calls != tc.calls {
+				t.Errorf("pods looked at %d times, want %d", calls, tc.calls)
+			}
+		})
 	}
 }

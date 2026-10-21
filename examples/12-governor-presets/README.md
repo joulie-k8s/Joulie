@@ -153,7 +153,7 @@ After the controller manager restarts, the W7900 performance Node shows `GPU-Gov
 scripts/simcluster/tree.sh w7900-0 sys/bus/pci/devices/0000:10:00.0/power_dpm_force_performance_level   # high
 ```
 
-The eco W7900 Node still gets nothing: the entry sets only `performance`, and the eco default `efficient` is not in its presets. An entry can also set `eco` and `ecoCeilingPctOfMax`.
+The eco W7900 Node still gets nothing: the entry sets only `performance`, and the eco default `efficient` is not in its presets. An entry can also set `eco` and `ecoCeilingPctOfMax`. With `GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU=true` the performance Node holds `sustained` only while a pod requesting 2 or more GPUs runs on it, and its agent puts the baseline back otherwise.
 
 ## 5. Try a preset by hand
 

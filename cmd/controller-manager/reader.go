@@ -35,10 +35,11 @@ func managerCacheOptions() cache.Options {
 }
 
 // podTransform keeps only what pkg/controller/fsm reads (annotations,
-// spec.nodeSelector, spec.affinity, deletionTimestamp, status.phase), the
-// spec.nodeName index key, and the identity and ownership metadata. Containers,
-// volumes and container statuses, which dominate a Pod's size, never enter the
-// cache.
+// spec.nodeSelector, spec.affinity, deletionTimestamp, status.phase, and the
+// GPU requests and limits of each container, for fsm.PodGPUUnits), the
+// spec.nodeName index key, and the identity and ownership metadata. The rest
+// of the containers, volumes and container statuses, which dominate a Pod's
+// size, never enter the cache: a pod without GPUs keeps no container at all.
 func podTransform(obj any) (any, error) {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
@@ -59,12 +60,47 @@ func podTransform(obj any) (any, error) {
 			OwnerReferences:   pod.OwnerReferences,
 		},
 		Spec: corev1.PodSpec{
-			NodeName:     pod.Spec.NodeName,
-			NodeSelector: pod.Spec.NodeSelector,
-			Affinity:     pod.Spec.Affinity,
+			NodeName:       pod.Spec.NodeName,
+			NodeSelector:   pod.Spec.NodeSelector,
+			Affinity:       pod.Spec.Affinity,
+			InitContainers: gpuResourcesOnly(pod.Spec.InitContainers),
+			Containers:     gpuResourcesOnly(pod.Spec.Containers),
 		},
 		Status: corev1.PodStatus{Phase: pod.Status.Phase},
 	}, nil
+}
+
+// gpuResourcesOnly keeps, of each container that requests or limits a GPU
+// resource (joulie.GPUResourceKind), those entries and the restart policy
+// that makes an init container a sidecar; nil when no container has one.
+func gpuResourcesOnly(containers []corev1.Container) []corev1.Container {
+	var out []corev1.Container
+	for i := range containers {
+		c := &containers[i]
+		requests, limits := gpuEntries(c.Resources.Requests), gpuEntries(c.Resources.Limits)
+		if requests == nil && limits == nil {
+			continue
+		}
+		out = append(out, corev1.Container{
+			Resources:     corev1.ResourceRequirements{Requests: requests, Limits: limits},
+			RestartPolicy: c.RestartPolicy,
+		})
+	}
+	return out
+}
+
+func gpuEntries(in corev1.ResourceList) corev1.ResourceList {
+	var out corev1.ResourceList
+	for name, q := range in {
+		if joulie.GPUResourceKind(string(name)) == "" {
+			continue
+		}
+		if out == nil {
+			out = corev1.ResourceList{}
+		}
+		out[name] = q
+	}
+	return out
 }
 
 // twinHardwareFromNodeHardware copies the inventory fields the twin model
@@ -90,6 +126,7 @@ func twinHardwareFromNodeHardware(nodeName string, obj *v1alpha1.NodeHardware) j
 		hw.GPU.Model = gpu.Model
 		hw.GPU.RawModel = gpu.RawModel
 		hw.GPU.Count = gpu.Count
+		hw.GPU.ControlAvailable = gpu.ControlAvailable
 		hw.GPU.PowerDomains = gpu.PowerDomains
 		if cr := gpu.CapRangePerGPU; cr != nil {
 			hw.GPU.CapRange.MaxWatts = cr.MaxWatts

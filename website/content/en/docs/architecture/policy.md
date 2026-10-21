@@ -79,6 +79,7 @@ What the controller manager typically writes today:
 
 - CPU intent is commonly emitted as `packagePowerCapPctOfMax` on CPU-only nodes.
 - A GPU node's CPU gets `packagePowerCapWatts` at `PERFORMANCE_CAP_WATTS` whatever the node's profile: capping the CPU of a GPU node slows the GPU data feed by more than it saves, so a GPU node gets only GPU caps.
+- With `CPU_ECO_CAP_ON_UNCAPPABLE_GPU_NODES=true`, a GPU node whose `NodeHardware` reports GPUs without control (`status.gpu.controlAvailable` false: Intel GPUs, NVIDIA boards whose power limits read `[N/A]`) gets the CPU caps of its profile instead, as a CPU-only node does, so it does not run uncapped in eco. A node with no `NodeHardware` keeps the GPU node rule.
 - GPU intent may be emitted as:
   - `capPctOfMax` only, when the agent is expected to resolve percentage to watts from device limits,
   - `capWattsPerGpu` plus `capPctOfMax`, when the controller manager has deterministic model-based mapping available and wants the absolute target to be explicit.
@@ -131,6 +132,7 @@ Off by default: the controller manager writes presets only with `GOVERNOR_CONTRO
 - A `gpu.governor` block that holds a `baseline` and no `mechanism` is a discovery gap: the agent's GPU discovery did not answer and it had no earlier block to keep. The block lists no presets, and the configured GPU preset is still written, since dropping it would make the agent restore the baseline and set the preset again a reconcile later.
 - `GPU_GOVERNOR_MODEL_PRESETS_JSON` sets the GPU presets and the ceiling per GPU model. Its keys are matched against the node's GPU product label value (the first of `GPU_PRODUCT_LABEL_KEYS` the node carries), as in `GPU_MODEL_CAPS_JSON`, and against the model the agent reports. It is how a model is opted in to `sustained`, which no default selects.
 - An empty GPU preset, in a variable or a model entry, writes none. A preset or ceiling the controller manager cannot use logs a warning and keeps the default.
+- With `GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU=true`, a node whose GPU preset is `sustained` gets it only while a running pod on it requests 2 or more GPUs, and no GPU governor otherwise, so its agent restores the baseline: held data paths cost idle power and pay off in transfers between GPUs. A pod's GPUs are the units of every GPU resource (`pkg/api.GPUResourceKind`: whole GPUs, MIG devices, partitions, shared replicas), from its requests, else its limits; pending, finished and terminating pods do not count. The rule is checked at every reconcile, so the preset follows such a pod within one `RECONCILE_INTERVAL`.
 - When a field leaves the spec, because control was turned off or the node stopped listing the preset, the agent puts back the state it recorded before its first write.
 
 Both eco defaults are provisional until measured on hardware. In the simulator's [governor exploration]({{< relref "/docs/experiments/governor-exploration.md" >}}), CPU `efficiency` saved 0.5 % energy for a +22.2 % eco p95 slowdown, above the experiment's 20 % limit; GPU `efficient` at 80 % saved 10.3 % for +17.3 %.
