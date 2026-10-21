@@ -18,10 +18,10 @@ CPU cap values are generated per profile and written into &lt;code&gt;NodeTwin.s
 &lt;li&gt;eco profile maps to a lower cap&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;For heterogeneous nodes, percentage-based intent remains useful because each node resolves normalized intent using node-local capabilities.
-If percentage intent cannot be converted to watts (for example missing RAPL range), the agent applies a DVFS percent fallback path when possible.&lt;/p&gt;</description></item><item><title>GPU Support (NVIDIA + AMD)</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-83/docs/hardware/gpus/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-83/docs/hardware/gpus/</guid><description>&lt;p&gt;Joulie supports node-level GPU power-cap intents for NVIDIA and AMD.&lt;/p&gt;
+If percentage intent cannot be converted to watts (for example missing RAPL range), the agent applies a DVFS percent fallback path when possible.&lt;/p&gt;</description></item><item><title>GPU Support (NVIDIA, AMD, Intel)</title><link>https://joulie-k8s.github.io/Joulie/previews/pr-83/docs/hardware/gpus/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/previews/pr-83/docs/hardware/gpus/</guid><description>&lt;p&gt;Joulie supports node-level GPU power-cap intents for NVIDIA, AMD and Intel.&lt;/p&gt;
 &lt;h2 id="validation-status"&gt;Validation status&lt;/h2&gt;
 &lt;p&gt;GPU support has been validated in simulator mode only (no bare-metal GPU access yet).
-The host code paths are designed to work on bare metal (NVIDIA + AMD) when GPU nodes are available.&lt;/p&gt;
+The host code paths are designed to work on bare metal (NVIDIA, AMD, Intel) when GPU nodes are available.&lt;/p&gt;
 &lt;h2 id="contract-model"&gt;Contract model&lt;/h2&gt;
 &lt;p&gt;&lt;code&gt;NodeTwin.spec.gpu.powerCap&lt;/code&gt; defines a per-GPU cap intent:&lt;/p&gt;
 &lt;ul&gt;
