@@ -359,9 +359,10 @@ physics:
 	}
 }
 
-// CS08: smoke.yaml validates and expands to 8 members, 7 of them bare
+// CS08: smoke.yaml validates and expands to 9 members, 8 of them bare
 // metal; intel-tainted-0, and only it, carries the example.com/dedicated
-// taint.
+// taint, and intel-arm64-0, and only it, is arm64, as its label and node
+// info say.
 func TestCS08SmokeSpecExpands(t *testing.T) {
 	t.Parallel()
 	s, err := LoadFile(testSmokeSpec)
@@ -375,8 +376,8 @@ func TestCS08SmokeSpecExpands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
-	if len(members) != 8 {
-		t.Fatalf("%d members, want 8", len(members))
+	if len(members) != 9 {
+		t.Fatalf("%d members, want 9", len(members))
 	}
 	bare := 0
 	for _, m := range members {
@@ -395,9 +396,16 @@ func TestCS08SmokeSpecExpands(t *testing.T) {
 		if tainted != (m.Name == "intel-tainted-0") {
 			t.Errorf("%s: example.com/dedicated=batch:NoSchedule taint %v", m.Name, tainted)
 		}
+		wantArch := "amd64"
+		if m.Name == "intel-arm64-0" {
+			wantArch = "arm64"
+		}
+		if arch := m.Node.Labels[corev1.LabelArchStable]; arch != wantArch || m.Node.Status.NodeInfo.Architecture != wantArch {
+			t.Errorf("%s: architecture label %q, node info %q, want %s", m.Name, arch, m.Node.Status.NodeInfo.Architecture, wantArch)
+		}
 	}
-	if bare != 7 {
-		t.Errorf("%d bare-metal members, want 7", bare)
+	if bare != 8 {
+		t.Errorf("%d bare-metal members, want 8", bare)
 	}
 }
 

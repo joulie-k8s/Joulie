@@ -65,7 +65,7 @@ func TestTwinGPUBudgetCountsOnlyAGPUCapThatApplies(t *testing.T) {
 				nt.Status.ControlStatus = &v1alpha1.ControlStatus{GPU: &v1alpha1.ControlResult{Backend: "none", Result: tc.result}}
 			}
 			reader, _, dyn := fakeClients(t, hw, nt)
-			if err := reconcileNodeTwin(context.Background(), reader, dyn, "g1", profileEco, 60, 60, false, nil); err != nil {
+			if _, err := reconcileNodeTwin(context.Background(), reader, dyn, "g1", profileEco, 60, 60, false, nil); err != nil {
 				t.Fatalf("reconcileNodeTwin: %v", err)
 			}
 			u, err := dyn.Resource(nodeTwinGVR).Get(context.Background(), "g1", metav1.GetOptions{})

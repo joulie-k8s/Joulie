@@ -231,7 +231,7 @@ func renderGPUDPM(b *renderBuilder, p *Profile, o RenderOptions) error {
 	}
 	d := g.DPM
 	for i := 0; i < g.Count.V; i++ {
-		bus, card := renderAMDGPUCard(p, i)
+		bus, card := renderGPUCard(p, i)
 		dev := renderSys(layout.PCIDevDir(bus))
 		st := newDPMState(d)
 		v := st.view(d, false, false)

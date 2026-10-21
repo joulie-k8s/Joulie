@@ -106,8 +106,10 @@ type e2eEnv struct {
 	// Install is the tool delivery of the Joulie install deploy.sh ran
 	// (simcluster.Placement.ToolDelivery of its agent DaemonSet render),
 	// the delivery of every pool the spec leaves to it; Extender is how
-	// kube-scheduler reaches the extender (SIMCLUSTER_EXTENDER).
-	Install, Extender string
+	// kube-scheduler reaches the extender (SIMCLUSTER_EXTENDER); Hwemu how
+	// the agents reach their Nodes' files (SIMCLUSTER_HWEMU, files when
+	// deploy.env records none).
+	Install, Extender, Hwemu string
 	// Mode, Scope and Timing are the settings deploy.sh installed with
 	// (deploy.env); Parts are their telemetry parts, with Wait.Nodes set.
 	Mode   simcluster.Mode
@@ -165,6 +167,9 @@ func (e *e2eEnv) load(t *testing.T) {
 	e.summary.InputPreset = string(e.Mode.InputPreset())
 	if e.Extender = deploy["EXTENDER"]; e.Extender == "" {
 		e.Extender = e2eExtenderHostNet
+	}
+	if e.Hwemu = deploy["HWEMU"]; e.Hwemu == "" {
+		e.Hwemu = "files"
 	}
 
 	e.SpecPath = filepath.Join(e.Dir, "spec.yaml")
@@ -582,11 +587,12 @@ const (
 	e2eFamilyNoCPUCap  = "no-cpu-cap" // CPU-only, no power control (E11)
 	e2eFamilyNVIDIA    = "nvidia"     // NVIDIA GPUs, whole (E10, E11)
 	e2eFamilyAMDGPU    = "amd-gpu"    // AMD GPUs, capped through sysfs with or without tools (E10, E11)
+	e2eFamilyIntelGPU  = "intel-gpu"  // Intel GPUs, capped through sysfs (E10, E11)
 	e2eFamilyGPUShared = "gpu-shared" // NVIDIA GPUs, MIG or renamed time-slicing (MD01, E10, E11)
 	e2eFamilyNoNFD     = "no-nfd"     // NFD absent (MD02)
 	e2eFamilyNoTools   = "no-tools"   // NVIDIA GPUs, nvidia-smi not delivered (MD03)
 	e2eFamilyUnmanaged = "unmanaged"  // joulie.io/managed is not true (MD04)
-	e2eFamilyUnreached = "unreached"  // managed, no agent (E12, D15)
+	e2eFamilyUnreached = "unreached"  // managed, no agent (E12)
 	e2eFamilyOther     = "other"      // a profile the checks have no expectation for
 )
 
@@ -622,6 +628,8 @@ func (n e2eNode) family() string {
 		return e2eFamilyNVIDIA
 	case p.GPUs != nil && p.GPUs.Vendor == "amd":
 		return e2eFamilyAMDGPU
+	case p.GPUs != nil && p.GPUs.Vendor == "intel":
+		return e2eFamilyIntelGPU
 	case p.GPUs != nil:
 		return e2eFamilyOther
 	case p.Node.NFD == "absent":

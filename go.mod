@@ -6,6 +6,7 @@ toolchain go1.26.9
 
 require (
 	github.com/go-logr/logr v1.4.2
+	github.com/hanwen/go-fuse/v2 v2.11.0
 	github.com/prometheus/client_golang v1.19.1
 	github.com/prometheus/client_model v0.6.1
 	k8s.io/api v0.31.1

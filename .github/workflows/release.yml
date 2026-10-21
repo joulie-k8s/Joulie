@@ -33,6 +33,8 @@ jobs:
           username: ${{ secrets.CERN_REGISTRY_USER }}
           password: ${{ secrets.CERN_REGISTRY_PASSWORD }}
 
+      # Every image is a multi-arch index of these platforms. The Dockerfiles
+      # cross-compile in a builder on the runner's platform, so no QEMU.
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -42,6 +44,7 @@ jobs:
           context: .
           file: Dockerfile
           build-args: COMPONENT=agent
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             registry.cern.ch/joulie/joulie-agent:${{ steps.vars.outputs.version }}
@@ -57,6 +60,7 @@ jobs:
           context: .
           file: Dockerfile
           build-args: COMPONENT=controller-manager
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             registry.cern.ch/joulie/joulie-controller-manager:${{ steps.vars.outputs.version }}
@@ -70,6 +74,7 @@ jobs:
           context: .
           file: Dockerfile
           build-args: COMPONENT=scheduler
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             registry.cern.ch/joulie/joulie-scheduler:${{ steps.vars.outputs.version }}
@@ -80,6 +85,7 @@ jobs:
         with:
           context: .
           file: simulator/Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             registry.cern.ch/joulie/joulie-simulator:${{ steps.vars.outputs.version }}

@@ -179,6 +179,7 @@ func TestNodeHardwareAcceptsTheStatusTheAgentWrites(t *testing.T) {
 			"model":              "nvidia-a100-40gb",
 			"vendor":             "nvidia",
 			"count":              int64(4),
+			"powerDomains":       int64(2),
 			"currentCapWatts":    400.0,
 			"controlAvailable":   true,
 			"telemetryAvailable": true,
@@ -238,7 +239,7 @@ func TestNodeHardwareAcceptsTheStatusTheAgentWrites(t *testing.T) {
 	if got.Status.CPU == nil || got.Status.CPU.Sockets != 2 || got.Status.CPU.CapRange == nil {
 		t.Fatalf("cpu block did not survive: %+v", got.Status.CPU)
 	}
-	if got.Status.GPU == nil || got.Status.GPU.Count != 4 || got.Status.GPU.CapRangePerGPU == nil {
+	if got.Status.GPU == nil || got.Status.GPU.Count != 4 || got.Status.GPU.PowerDomains != 2 || got.Status.GPU.CapRangePerGPU == nil {
 		t.Fatalf("gpu block did not survive: %+v", got.Status.GPU)
 	}
 	if got.Status.Capabilities == nil || !got.Status.Capabilities.CPUControl {
@@ -344,5 +345,38 @@ func TestNodeTwinStatusPatchMayClearRemovedHardwareDensityScore(t *testing.T) {
 	}
 	if got.Status.SchedulableClass != "performance" {
 		t.Fatalf("the rest of the patch was lost: schedulableClass=%q", got.Status.SchedulableClass)
+	}
+}
+
+// TestNodeTwinStatusAcceptsTheAgentReportingCondition writes the
+// AgentReporting condition the way the controller manager's status merge
+// patch carries it (cmd/controller-manager nodeTwinStatusToMap) and reads it
+// back typed: the CRD's conditions schema, with its required fields and
+// patterns, must accept it, or a managed node without an agent would go
+// unreported with nothing failing but a logged patch error.
+func TestNodeTwinStatusAcceptsTheAgentReportingCondition(t *testing.T) {
+	c := newClient(t)
+	ctx := testContext(t)
+	twin := newNodeTwin(t, c, objectName(t, ""))
+
+	patch := []byte(`{"status":{"schedulableClass":"performance","conditions":[{"type":"` + joulie.ConditionAgentReporting +
+		`","status":"False","reason":"` + joulie.ReasonNoNodeHardware + `","message":"no agent has published NodeHardware for this node","lastTransitionTime":"2026-10-01T12:00:00Z"}]}}`)
+	if err := c.Status().Patch(ctx, twin, client.RawPatch(types.MergePatchType, patch)); err != nil {
+		t.Fatalf("API server rejected the AgentReporting condition: %v", err)
+	}
+	var got v1alpha1.NodeTwin
+	if err := c.Get(ctx, types.NamespacedName{Name: twin.Name}, &got); err != nil {
+		t.Fatalf("read back NodeTwin: %v", err)
+	}
+	if len(got.Status.Conditions) != 1 || got.Status.Conditions[0].Type != joulie.ConditionAgentReporting ||
+		got.Status.Conditions[0].Status != metav1.ConditionFalse || got.Status.Conditions[0].Reason != joulie.ReasonNoNodeHardware {
+		t.Fatalf("conditions %+v did not survive the write", got.Status.Conditions)
+	}
+	for _, reason := range []string{joulie.ReasonNodeHardwareCurrent, joulie.ReasonNodeHardwareStale} {
+		p := []byte(`{"status":{"conditions":[{"type":"` + joulie.ConditionAgentReporting + `","status":"True","reason":"` + reason +
+			`","message":"m","lastTransitionTime":"2026-10-01T12:00:00Z"}]}}`)
+		if err := c.Status().Patch(ctx, twin, client.RawPatch(types.MergePatchType, p)); err != nil {
+			t.Errorf("API server rejected reason %s: %v", reason, err)
+		}
 	}
 }

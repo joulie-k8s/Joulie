@@ -33,7 +33,18 @@ jobs:
       - name: Verify generated code and CRDs are up to date
         run: make verify-manifests
 
+      - name: Verify Go files are gofmt-formatted
+        run: make verify-fmt
+
+      # The tests of the FUSE views (simulator/pkg/hwemu/hwfuse and the
+      # agent tests over them) mount through fusermount3, as a user other
+      # than root; JOULIE_REQUIRE_FUSE=1 fails them where they would skip.
+      - name: Install fusermount3
+        run: command -v fusermount3 || { sudo apt-get update -q && sudo apt-get install -y -q fuse3; }
+
       - name: Run unit tests
+        env:
+          JOULIE_REQUIRE_FUSE: "1"
         run: go test ./...
 
   helm:

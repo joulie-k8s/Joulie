@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -36,12 +37,15 @@ const (
 
 // spMediumNodes and spMediumAgents are the size of medium.yaml: every Node,
 // and those the agent DaemonSet reaches with the chart's default
-// tolerations, which cover the GPU vendor taints: all but the unmanaged
-// pool and the nvl-tainted pool, whose own taint is not tolerated.
+// tolerations, which take every taint: all but the unmanaged pool.
 const (
 	spMediumNodes  = 50
-	spMediumAgents = 46
+	spMediumAgents = 48
 )
+
+// spSimLib is the simulated cluster's shared script, which names the one
+// architecture the images are built for (SIM_IMAGE_ARCH).
+var spSimLib = filepath.Join("..", "..", "scripts", "simcluster", "lib.sh")
 
 // spChartValues is the Joulie chart's values file. Its agent.tolerations
 // are the tolerations the agent DaemonSet carries by default.
@@ -191,6 +195,24 @@ func spAgentTolerations(t *testing.T) []corev1.Toleration {
 	return values.Agent.Tolerations
 }
 
+// spImageArch returns SIM_IMAGE_ARCH of scripts/simcluster/lib.sh: the
+// agent image of the simulated cluster is built for it alone, so a Node of
+// another architecture gets no agent.
+func spImageArch(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(spSimLib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(line, "SIM_IMAGE_ARCH="); ok {
+			return v
+		}
+	}
+	t.Fatalf("%s sets no SIM_IMAGE_ARCH", spSimLib)
+	return ""
+}
+
 // spUntolerated returns the taints of a pool, profile's then pool's, that
 // keep the agent DaemonSet off its Nodes: every NoSchedule and NoExecute
 // taint none of tolerations tolerates. The KWOK taint is not among them:
@@ -306,36 +328,49 @@ func TestSP01SpecsLoadWithBuiltinProfiles(t *testing.T) {
 }
 
 // TestSP02SmokeCoversEachFamilyOnce checks that the smoke pools the agent
-// DaemonSet reaches, with the chart's default tolerations, use each profile
-// of spSmokeProfiles exactly once and no other profile, so the smoke run
-// exercises each hardware family with an agent, GPU Nodes with their vendor
-// taint included (D15). It also checks that one managed pool has a
-// NoSchedule taint the agent does not tolerate: a Node Joulie plans for and
-// no agent reaches.
+// DaemonSet reaches with the chart's default tolerations, those with a
+// taint of their own left out, use each profile of spSmokeProfiles exactly
+// once and no other profile, so the smoke run exercises each hardware family
+// with an agent, GPU Nodes with their vendor taint included. It also checks
+// the two Nodes E12 needs: a managed pool with a NoSchedule taint of its
+// own, which the agent still reaches (D15), and a managed pool of an
+// architecture the images are not built for, which no agent reaches.
 func TestSP02SmokeCoversEachFamilyOnce(t *testing.T) {
 	s, profiles := spLoadSpec(t, "smoke.yaml")
 	tolerations := spAgentTolerations(t)
+	imageArch := spImageArch(t)
 	builtins, err := hwemu.BuiltinProfiles()
 	if err != nil {
 		t.Fatal(err)
 	}
+	members, err := s.Expand(clusterspec.Profiles(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	arch := map[string]string{}
+	for _, m := range members {
+		arch[m.Pool] = m.Node.Labels[corev1.LabelArchStable]
+	}
 	reached := map[string][]string{}
-	var unreached []string
+	var tainted, otherArch []string
 	for _, pool := range s.Spec.Pools {
 		p := profiles[pool.Name]
 		if p == nil || !spManaged(s, pool) {
 			continue
 		}
-		taints := spUntolerated(t, pool, p, tolerations)
-		if len(taints) == 0 {
-			reached[pool.Profile] = append(reached[pool.Profile], pool.Name)
+		if arch[pool.Name] != imageArch {
+			otherArch = append(otherArch, pool.Name)
+			continue
 		}
-		for _, taint := range taints {
-			if taint.Effect == corev1.TaintEffectNoSchedule {
-				unreached = append(unreached, pool.Name)
-				break
-			}
+		if taints := spUntolerated(t, pool, p, tolerations); len(taints) > 0 {
+			t.Errorf("smoke pool %s: the agent DaemonSet does not tolerate %v, while its default takes every taint (D15)", pool.Name, taints)
+			continue
 		}
+		if slices.ContainsFunc(pool.Taints, func(taint corev1.Taint) bool { return taint.Effect == corev1.TaintEffectNoSchedule }) {
+			tainted = append(tainted, pool.Name)
+			continue
+		}
+		reached[pool.Profile] = append(reached[pool.Profile], pool.Name)
 	}
 	covered := map[string]bool{}
 	for _, name := range spSmokeProfiles {
@@ -352,17 +387,20 @@ func TestSP02SmokeCoversEachFamilyOnce(t *testing.T) {
 			t.Errorf("smoke pools %v that the agent reaches use profile %s, which is not in spSmokeProfiles", reached[name], name)
 		}
 	}
-	if len(unreached) == 0 {
-		t.Error("no managed smoke pool has a NoSchedule taint the agent DaemonSet does not tolerate")
+	if len(tainted) == 0 {
+		t.Error("no managed smoke pool has a NoSchedule taint of its own, so the run never shows the agent on a tainted Node (D15)")
+	}
+	if len(otherArch) == 0 {
+		t.Errorf("no managed smoke pool has an architecture other than %s, the images', so no Node reports AgentReporting False in E12", imageArch)
 	}
 }
 
 // TestSP03MediumCoversTheHarnessCases checks the medium spec: every pool,
 // and so every hardware family, has at least 2 Nodes; there is a pool for
 // each case the harness checks beyond smoke (MIG, renamed time-slicing, no
-// NFD labels, no GPU tool delivery, a tainted managed pool, an unmanaged
-// pool); and the agent DaemonSet, with the chart's default tolerations,
-// reaches 46 of its 50 Nodes. The MIG pool's profile and device count are
+// NFD labels, no GPU tool delivery, a pool with a taint of its own, an
+// unmanaged pool); and the agent DaemonSet, with the chart's default
+// tolerations, reaches 48 of its 50 Nodes. The MIG pool's profile and device count are
 // checked against its GPU by spLoadSpec.
 func TestSP03MediumCoversTheHarnessCases(t *testing.T) {
 	s, profiles := spLoadSpec(t, "medium.yaml")
@@ -390,13 +428,13 @@ func TestSP03MediumCoversTheHarnessCases(t *testing.T) {
 		if p.GPUs != nil && h.Pools[pool.Name].ToolDelivery == simcluster.ToolDeliveryNone {
 			cases["toolDelivery: none"] = append(cases["toolDelivery: none"], pool.Name)
 		}
-		taints := spUntolerated(t, pool, p, tolerations)
+		if len(pool.Taints) > 0 {
+			cases["tainted"] = append(cases["tainted"], pool.Name)
+		}
 		switch {
 		case !spManaged(s, pool):
 			cases["unmanaged"] = append(cases["unmanaged"], pool.Name)
-		case len(taints) > 0:
-			cases["tainted"] = append(cases["tainted"], pool.Name)
-		default:
+		case len(spUntolerated(t, pool, p, tolerations)) == 0:
 			agents += pool.Count
 		}
 	}

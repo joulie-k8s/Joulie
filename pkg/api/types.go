@@ -3,6 +3,8 @@ package api
 import (
 	"strings"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Field manager names recorded in managedFields on every write, so
@@ -102,6 +104,9 @@ type NodeHardwareGPU struct {
 	RawModel string `json:"rawModel,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Count    int    `json:"count,omitempty"`
+	// PowerDomains is the number of GPUs that hold a power limit of their
+	// own, 0 when it is Count (GPUPowerDomains).
+	PowerDomains int `json:"powerDomains,omitempty"`
 	// CapRange is per-GPU power cap range (not total for all GPUs).
 	CapRange           GPUCapRange `json:"capRangePerGpu,omitempty"`
 	CurrentCapWatts    float64     `json:"currentCapWatts,omitempty"`
@@ -211,6 +216,9 @@ type NodeTwinStatus struct {
 	EstimatedPUE  float64        `json:"estimatedPUE,omitempty"`
 	ControlStatus *ControlStatus `json:"controlStatus,omitempty"`
 	LastUpdated   time.Time      `json:"lastUpdated,omitempty"`
+	// Conditions the controller manager writes, such as
+	// ConditionAgentReporting. Empty leaves the stored ones as they are.
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // ControlStatus holds agent feedback on applied controls.

@@ -183,7 +183,7 @@ disable_joulie() {
   # shellcheck disable=SC2086
   docker exec "$SIMCLUSTER_NAME" sh -c 'root=$1; shift; for n in "$@"; do rm -rf "${root:?}/$n"; done' sh "$SIM_HWEMU_ROOT" $nodes
   kubectl -n "$SIM_NS_SIM" scale "deployment/$SIM_SIM_DEPLOYMENT" --replicas=1 >/dev/null
-  kubectl -n "$SIM_NS_SIM" rollout status "deployment/$SIM_SIM_DEPLOYMENT" --timeout=300s >/dev/null
+  sim_rollouts "$SIM_NS_SIM" "deployment/$SIM_SIM_DEPLOYMENT"
   sim_wait 300 "the simulator's /readyz" sim_sim readyz
 }
 
@@ -386,7 +386,8 @@ for v in "${variants[@]}"; do
   vrc=$?
   set -e
   if [[ ! -e $work/evaluated ]]; then
-    sim_log "variant ${v:-(unnamed)} could not be run (status $vrc); writing its summary as aborted"
+    sim_log "variant ${v:-(unnamed)} could not be run (status $vrc); writing its summary as aborted, with the cluster's logs in $(variant_dir "$v")/logs"
+    sim_save_container_logs "$(variant_dir "$v")/logs"
     simscenario evaluate "$(variant_dir "$v")" >/dev/null || true
     vrc=$scenario_exit_error
   fi

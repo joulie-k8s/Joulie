@@ -24,6 +24,8 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       nodeSelector:
         joulie.io/managed: "true"
+      tolerations:
+        - operator: Exists
       containers:
         - name: agent
           image: "joulie.local/joulie-agent:latest"
@@ -37,6 +39,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: GOVERNOR_RESTORE_ON_EXIT
+              value: "true"
+            - name: GOVERNOR_WRITES
+              value: "false"
             - name: METRICS_ADDR
               value: ":8080"
             - name: RECONCILE_INTERVAL

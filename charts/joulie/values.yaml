@@ -28,17 +28,20 @@ agent:
   daemonset:
     nodeSelector:
       joulie.io/managed: "true"
-  # Taints the DaemonSet and emulated agents tolerate. The default covers the
-  # NoSchedule taint GPU nodes usually carry, so the agent also runs on them
-  # and enforces the caps planned there. A node whose taints the agent does
-  # not tolerate gets planned caps that nothing enforces.
+  # Taints the DaemonSet and emulated agents tolerate. The default, operator
+  # Exists with no key, tolerates every taint, so the agent runs on every
+  # managed node: GPU nodes with their vendor's taint, dedicated pools, nodes
+  # being drained with NoExecute. That is safe because the DaemonSet's
+  # nodeSelector, not the taints, decides where it runs: only nodes labelled
+  # joulie.io/managed=true, the ones the controller manager plans caps for.
+  # A taint keeps workloads off a node; the agent runs no workload and takes
+  # no slot, and on a managed node without it the planned caps are never
+  # enforced. Node agents do the same: kube-proxy and the Cilium agent
+  # tolerate every taint, node-exporter every NoSchedule one. List the taints
+  # to tolerate instead to keep the agent off some managed nodes; the
+  # controller manager then reports them with AgentReporting False.
   tolerations:
-    - key: nvidia.com/gpu
-      operator: Exists
-      effect: NoSchedule
-    - key: amd.com/gpu
-      operator: Exists
-      effect: NoSchedule
+    - operator: Exists
   # Hooks into the DaemonSet and emulated agent pods, for example to reach
   # the GPU tools of a node through a runtime class or a hostPath mount (the
   # agent image ships none). Each renders only when set.
@@ -51,12 +54,17 @@ agent:
   # over /proc/cpuinfo, state at /emu/state, the GPU tool links at /emu/bin,
   # root/lib at /emu/lib. nodes is written by "simcluster agents" (entries:
   # name, profile, devNvidiactl, extraVolumes, extraVolumeMounts). These pods
-  # ignore hostNetwork and privileged above: they get neither.
+  # ignore hostNetwork and privileged above: they get neither. fuse: true
+  # when the simulator serves the trees through FUSE (the simulator chart's
+  # emulate.fuse): sys and state then come from root/fuse/<name>, mounted
+  # with mount propagation HostToContainer, so a restarted simulator's views
+  # reach the running pods.
   emulated:
     root: /var/lib/joulie-hwemu
     hostNodeSelector:
       joulie.io/hwemu-host: "true"
     path: /emu/bin:/usr/local/bin:/usr/bin:/bin
+    fuse: false
     nodes: []
   pool:
     replicas: 2
@@ -100,12 +108,13 @@ controllerManager:
     GPU_ECO_CAP_PCT_OF_MAX: "60"
     GPU_WRITE_ABSOLUTE_CAPS: "false"
     GPU_MODEL_CAPS_JSON: "{}"
-    # First match wins; the AMD node labeller names the board in gpu.product-name.
-    GPU_PRODUCT_LABEL_KEYS: "joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,amd.com/gpu.family"
+    # First match wins; the AMD node labeller names the board in
+    # gpu.product-name, Intel's NFD rules in gpu.intel.com/product.
+    GPU_PRODUCT_LABEL_KEYS: "joulie.io/gpu.product,nvidia.com/gpu.product,amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,gpu.intel.com/product,amd.com/gpu.family"
     # A GPU node's CPU gets no eco cap. true gives the CPU caps of its profile
-    # to a GPU node whose NodeHardware reports no GPU control (Intel GPUs,
-    # NVIDIA boards whose power limits read [N/A]), which otherwise runs
-    # uncapped in eco.
+    # to a GPU node whose NodeHardware reports no GPU control (Intel GPUs
+    # without a default limit, NVIDIA boards whose power limits read [N/A]),
+    # which otherwise runs uncapped in eco.
     CPU_ECO_CAP_ON_UNCAPPABLE_GPU_NODES: "false"
     # Governor control, off by default: off, cpu, gpu or all. When on, the
     # controller manager writes vendor-neutral CPU and GPU governor presets

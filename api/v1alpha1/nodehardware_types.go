@@ -148,6 +148,13 @@ type NodeHardwareGPU struct {
 	Model    string `json:"model,omitempty"`
 	Vendor   string `json:"vendor,omitempty"`
 	Count    int    `json:"count,omitempty"`
+	// PowerDomains is the number of GPUs that hold a power limit of their
+	// own, published only when it is below Count: on a two-die AMD package
+	// such as an MI250X both dies are counted, and only the primary holds a
+	// limit, which bounds the package. Absent, every counted GPU holds its
+	// own.
+	// +kubebuilder:validation:Minimum=0
+	PowerDomains int `json:"powerDomains,omitempty"`
 	// CapRangePerGPU is the power cap range of one GPU, not the sum over all GPUs.
 	CapRangePerGPU     *GPUCapRange `json:"capRangePerGpu,omitempty"`
 	CurrentCapWatts    float64      `json:"currentCapWatts,omitempty"`
@@ -220,8 +227,12 @@ type GPUGovernorDeviceState struct {
 
 // GPUCapRange is the settable power cap range of one GPU.
 type GPUCapRange struct {
-	MinWatts     float64 `json:"minWatts,omitempty"`
-	MaxWatts     float64 `json:"maxWatts,omitempty"`
+	MinWatts float64 `json:"minWatts,omitempty"`
+	MaxWatts float64 `json:"maxWatts,omitempty"`
+	// DefaultWatts is the limit the driver sets when it loads, NVIDIA's
+	// power.default_limit. It is MaxWatts where the driver gives none within
+	// the range, and on AMD, whose driver rewrites its default with the cap
+	// in force.
 	DefaultWatts float64 `json:"defaultWatts,omitempty"`
 }
 

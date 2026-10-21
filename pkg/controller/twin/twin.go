@@ -133,7 +133,7 @@ func Compute(in Input) Output {
 	cpuTDP := in.Hardware.CPU.CapRange.MaxWattsPerSocket * float64(cpuSockets)
 	var gpuTDP float64
 	if in.Hardware.GPU.Present {
-		gpuTDP = in.Hardware.GPU.CapRange.MaxWatts * float64(in.Hardware.GPU.Count)
+		gpuTDP = in.Hardware.GPU.CapRange.MaxWatts * float64(joulie.GPUPowerDomains(in.Hardware.GPU.Count, in.Hardware.GPU.PowerDomains))
 	}
 	nodeTDP := cpuTDP + gpuTDP
 
@@ -182,8 +182,9 @@ func Compute(in Input) Output {
 // cap result (NodeTwin status.controlStatus.gpu, nil when there is none). A
 // blocked or failed write did not apply. An applied one did, even where
 // NodeHardware reports no GPU control: the simulator's HTTP backend caps GPUs
-// the agent cannot list. Otherwise GPUs without control (Intel GPUs, NVIDIA
-// boards whose power limits read [N/A]) are not capped.
+// the agent cannot list. Otherwise GPUs without control (Intel GPUs without
+// a default limit, NVIDIA boards whose power limits read [N/A]) are not
+// capped.
 func GPUCapApplies(gpu joulie.NodeHardwareGPU, last *joulie.ControlResult) bool {
 	if last != nil {
 		switch last.Result {

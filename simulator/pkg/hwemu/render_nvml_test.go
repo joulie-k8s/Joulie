@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/matbun/joulie/simulator/pkg/hwemu/layout"
 )
@@ -12,7 +13,8 @@ import (
 // The NVML state holds what the fake nvidia-smi reports: limits in mW, the
 // default limit as the starting limit, idle power, a GPU- uuid that differs
 // per node and per GPU, and, for a field gpus.fieldSupport marks
-// unsupported, the token in place of the value (D16).
+// unsupported, the token in place of the value, which no Step replaces, the
+// limit in force and the readings the emulator writes included.
 func TestH02NVMLState(t *testing.T) {
 	t.Parallel()
 	p := renderBuiltin(t, "nvidia-h100-nvl-8gpu")
@@ -56,6 +58,26 @@ func TestH02NVMLState(t *testing.T) {
 	}
 	if got := gpu(3, "power_limit_mw"); got != "400000\n" {
 		t.Errorf("a supported field changed: power_limit_mw = %q", got)
+	}
+	// A vGPU guest prints a token for every power field.
+	p.GPUs.FieldSupport = map[string]string{
+		"power.min_limit": "[N/A]", "power.max_limit": "[N/A]", "power.default_limit": "[N/A]",
+		"power.limit": "[N/A]", "enforced.power.limit": "[N/A]", "power.draw": "[N/A]",
+	}
+	tree = renderTestTree(t, p)
+	n, err := NewNode(p, tree, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for step := 0; step < 2; step++ {
+		if err := n.Step(time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, file := range []string{"power_min_limit_mw", "power_max_limit_mw", "power_default_limit_mw", "power_limit_mw", "enforced_power_limit_mw", "power_draw_mw"} {
+		if got := gpu(3, file); got != "[N/A]\n" {
+			t.Errorf("unsupported %s = %q after two steps, want the token", file, got)
+		}
 	}
 	p.GPUs.FieldSupport = map[string]string{"power.minimum": "[N/A]"}
 	if err := p.Validate(); err == nil {

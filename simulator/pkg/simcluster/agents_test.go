@@ -58,8 +58,8 @@ func TestG01DevNvidiactlOnNVIDIAOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]bool{"nvl-0": true, "sxm-nopm-0": true}
-	if len(agents) != 8 {
-		t.Fatalf("%d agents, want one per smoke Node (8)", len(agents))
+	if len(agents) != 9 {
+		t.Fatalf("%d agents, want one per smoke Node (9)", len(agents))
 	}
 	for _, a := range agents {
 		if a.DevNvidiactl != want[a.Name] {

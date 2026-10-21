@@ -1,6 +1,7 @@
 package governor
 
 import (
+	"path"
 	"strconv"
 	"strings"
 
@@ -71,4 +72,67 @@ func parseLockArg(v string) *[2]int {
 		return nil
 	}
 	return &[2]int{a, b}
+}
+
+// InForce spells, as Plan.Native does, the part of a cpufreq or amdgpu plan
+// that taken, the writes read back as written (an overdrive command once
+// the table printed again), put in force: what the controlStatus applied
+// field names after a write failed. A field of the plan is in force when
+// every write of the plan that sets it was taken. The governor or level
+// leads: taken on some policies or devices only, it reads mixed, and taken
+// on none, nothing is in force and InForce is empty.
+func InForce(p Plan, taken []Write) string {
+	got := map[Write]bool{}
+	for _, w := range taken {
+		got[w] = true
+	}
+	all, done := map[string]int{}, map[string]int{}
+	for _, w := range p.Writes {
+		f := writeField(w)
+		all[f]++
+		if got[w] {
+			done[f]++
+		}
+	}
+	words := strings.Fields(p.Native)
+	head := "governor"
+	if all["level"] > 0 {
+		head = "level"
+	}
+	if len(words) == 0 || done[head] == 0 {
+		return ""
+	}
+	out := []string{words[0]}
+	if done[head] < all[head] {
+		out[0] = joulie.GovernorCurrentMixed
+	}
+	for _, w := range words[1:] {
+		f, _, _ := strings.Cut(w, "=")
+		if f == "no_turbo" {
+			f = "boost"
+		}
+		if all[f] > 0 && done[f] == all[f] {
+			out = append(out, w)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+// writeField names the field of State a write sets, by the file it writes,
+// with the key Plan.Native spells it by: governor, epp, boost, level or
+// sclk_max; empty for any other file.
+func writeField(w Write) string {
+	switch path.Base(w.RelPath) {
+	case PolicyGovernorFile:
+		return "governor"
+	case PolicyEPPFile:
+		return "epp"
+	case PolicyBoostFile, path.Base(NoTurboRelPath):
+		return "boost"
+	case AMDLevelFile:
+		return "level"
+	case AMDODFile:
+		return "sclk_max"
+	}
+	return ""
 }

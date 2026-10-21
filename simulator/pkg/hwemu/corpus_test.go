@@ -2,6 +2,7 @@ package hwemu
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -54,14 +55,19 @@ func renderCorpusMachines(t testing.TB) []string {
 // zone gains or loses a file; writeRejectingZones reject writes with EISDIR;
 // the cpufreq driver reads back from policy0; the captured governor state
 // reads back byte for byte (renderCheckCorpusGovernor); dev/nvidiactl exists
-// exactly when nvidia-smi.txt does; the NVML state holds the captured values;
-// and the Node carries the captured labels and allocatable.
+// exactly when nvidia-smi.txt does; the NVML state holds the captured values
+// and tokens; and the Node carries the captured labels and allocatable. A
+// machine whose nvidia-smi.txt prints no power limit to emulate
+// (ErrCorpusNoPowerLimit) is skipped.
 func TestH21FromCorpusReplaysEveryMachine(t *testing.T) {
 	t.Parallel()
 	for _, machine := range renderCorpusMachines(t) {
 		t.Run(machine, func(t *testing.T) {
 			dir := filepath.Join(renderCorpusRoot(), machine)
 			p, err := FromCorpus(dir)
+			if errors.Is(err, ErrCorpusNoPowerLimit) {
+				t.Skipf("%s cannot be emulated: %v", machine, err)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -519,17 +525,32 @@ func renderCheckCorpusNVML(t *testing.T, tree *Tree, text string) {
 	for i, line := range strings.Split(strings.TrimSpace(text), "\n") {
 		parts := strings.Split(line, ", ")
 		mw := func(field int) string {
+			if v := parts[field]; strings.HasPrefix(v, "[") {
+				return v + "\n"
+			}
 			v, err := strconv.ParseFloat(parts[field], 64)
 			if err != nil {
 				t.Fatal(err)
 			}
 			return fmt.Sprintf("%d\n", int64(math.Round(v*1000)))
 		}
+		// A capture without power.default_limit renders the maximum as the
+		// default, which the agent publishes for an unknown one; where the
+		// maximum is a token, the limit in force the physics holds in its
+		// place.
+		name, def := strings.Join(parts[5:], ", ")+"\n", mw(2)
+		if strings.HasPrefix(parts[2], "[") {
+			def = mw(3)
+		}
+		if len(parts) >= 7 {
+			name, def = parts[5]+"\n", mw(6)
+		}
 		for file, want := range map[string]string{
-			"power_min_limit_mw": mw(1),
-			"power_max_limit_mw": mw(2),
-			"power_limit_mw":     mw(3),
-			"name":               strings.Join(parts[5:], ", ") + "\n",
+			"power_min_limit_mw":     mw(1),
+			"power_max_limit_mw":     mw(2),
+			"power_limit_mw":         mw(3),
+			"power_default_limit_mw": def,
+			"name":                   name,
 		} {
 			if got := renderReadFile(t, tree, path.Join(layout.StateDir, layout.NVMLGPUDir(i), file)); got != want {
 				t.Errorf("gpu%d %s = %q, want %q", i, file, got, want)
@@ -540,6 +561,103 @@ func renderCheckCorpusNVML(t *testing.T, tree *Tree, text string) {
 				t.Errorf("gpu0 power_draw_mw = %q, want %q", got, mw(4))
 			}
 		}
+	}
+}
+
+// H21: a capture whose nvidia-smi.txt prints a token in a power column, as
+// a GPU without the value prints it, maps each token to gpus.fieldSupport,
+// so the NVML state holds the captured token where a value would be and
+// the numbers elsewhere; one that prints a token for both power.limit and
+// power.max_limit has no limit to emulate and returns ErrCorpusNoPowerLimit.
+func TestH21FromCorpusNvidiaTokenLimits(t *testing.T) {
+	t.Parallel()
+	// The T4 capture of the repository's corpus, whatever corpus is plugged in.
+	src := filepath.Join("..", "..", "..", "cmd", "agent", "testdata", "hardware", "vm-no-rapl")
+	for name, row := range map[string]string{
+		"min and max":   "0, [N/A], [N/A], 70.00, 9.97, Tesla T4",
+		"not supported": "0, [Not Supported], [Not Supported], 70.00, 9.97, Tesla T4",
+		"limit only":    "0, 60.00, 70.00, [N/A], 9.97, Tesla T4",
+		"draw only":     "0, 60.00, 70.00, 70.00, [N/A], Tesla T4",
+		"every column":  "0, [N/A], [N/A], [N/A], [N/A], Tesla T4",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := filepath.Join(t.TempDir(), "vm-token")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range []string{"cpuinfo", "machine.yaml", "node-labels.json"} {
+				b, err := os.ReadFile(filepath.Join(src, f))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, f), b, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(dir, "nvidia-smi.txt"), []byte(row+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			p, err := FromCorpus(dir)
+			if name == "every column" {
+				if !errors.Is(err, ErrCorpusNoPowerLimit) {
+					t.Fatalf("err = %v, want ErrCorpusNoPowerLimit", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FromCorpus: %v", err)
+			}
+			renderCheckCorpusNVML(t, renderTestTree(t, p), row)
+		})
+	}
+}
+
+// H46: an NVIDIA capture renders the default limit the agent publishes
+// from it. power.default_limit, the seventh field, is the default and the
+// captured power.limit the limit in force; without it, or with a token
+// there, the default is the maximum, which the agent publishes for an
+// unknown default, and the limit in force is still the captured one. The
+// GPU name is the sixth field alone, as the agent reads it.
+func TestH46FromCorpusNvidiaDefaultLimit(t *testing.T) {
+	t.Parallel()
+	cpuinfo := "processor\t: 0\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 85\nmodel name\t: Intel(R) Xeon(R) Gold 6252 CPU @ 2.10GHz\nstepping\t: 7\nphysical id\t: 0\ncore id\t\t: 0\ncpu cores\t: 1\nsiblings\t: 1\n\n"
+	for _, tc := range []struct {
+		name, line             string
+		wantDefault, wantLimit string
+	}{
+		{"default captured", "0, 100.00, 300.00, 200.00, 40.00, Test GPU, 250.00", "250000\n", "200000\n"},
+		{"six fields", "0, 100.00, 300.00, 200.00, 40.00, Test GPU", "300000\n", "200000\n"},
+		{"token", "0, 100.00, 300.00, 200.00, 40.00, Test GPU, [N/A]", "300000\n", "200000\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "nvidia-test-machine")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			files := map[string]string{
+				"machine.yaml":     "description: test NVIDIA machine\nallocatable:\n  cpu: \"1\"\n  memory: 1024Ki\n  gpu:\n    nvidia.com/gpu: \"1\"\nwriteRejectingZones: []\n",
+				"cpuinfo":          cpuinfo,
+				"node-labels.json": `{"feature.node.kubernetes.io/pci-0302_10de.present": "true"}`,
+				"nvidia-smi.txt":   tc.line + "\n",
+			}
+			for name, body := range files {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p, err := FromCorpus(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tree := renderTestTree(t, p)
+			gpu := path.Join(layout.StateDir, layout.NVMLGPUDir(0))
+			for file, want := range map[string]string{"power_default_limit_mw": tc.wantDefault, "power_limit_mw": tc.wantLimit, "name": "Test GPU\n"} {
+				if got := renderReadFile(t, tree, path.Join(gpu, file)); got != want {
+					t.Errorf("%s = %q, want %q", file, got, want)
+				}
+			}
+		})
 	}
 }
 

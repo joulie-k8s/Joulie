@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -62,6 +63,11 @@ func TestNodeTwinRoundTrip(t *testing.T) {
 				GPU: &ControlResult{Backend: "nvml", Result: "failed", Message: "no device", UpdatedAt: "2026-01-01T00:00:01Z"},
 			},
 			LastUpdated: "2026-01-01T00:00:02Z",
+			Conditions: []metav1.Condition{{
+				Type: "AgentReporting", Status: metav1.ConditionFalse, Reason: "NoNodeHardware", Message: "no agent",
+				// metav1.Time decodes in the local zone.
+				LastTransitionTime: metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 3, 0, time.UTC).Local()),
+			}},
 		},
 	}
 	u := roundTrip(t, in, &NodeTwin{})
@@ -75,6 +81,7 @@ func TestNodeTwinRoundTrip(t *testing.T) {
 		"status.effectiveCapState.cpuPct", "status.effectiveCapState.gpuPct",
 		"status.estimatedPUE",
 		"status.controlStatus.cpu.backend", "status.controlStatus.gpu.updatedAt", "status.lastUpdated",
+		"status.conditions",
 	} {
 		mustHavePath(t, u, p)
 	}
@@ -106,6 +113,7 @@ func TestNodeHardwareRoundTrip(t *testing.T) {
 				Model:              "h100-sxm",
 				Vendor:             "nvidia",
 				Count:              4,
+				PowerDomains:       2,
 				CapRangePerGPU:     &GPUCapRange{MinWatts: 200, MaxWatts: 700, DefaultWatts: 700},
 				CurrentCapWatts:    700,
 				Slicing:            &GPUSlicing{Supported: true, Modes: []string{"mig", "mps"}},
@@ -130,7 +138,7 @@ func TestNodeHardwareRoundTrip(t *testing.T) {
 		"status.cpu.rawModel", "status.cpu.sockets", "status.cpu.coresPerSocket", "status.cpu.driverFamily",
 		"status.cpu.capRange.type", "status.cpu.capRange.minWattsPerSocket", "status.cpu.capRange.maxWattsPerSocket",
 		"status.cpu.landmarks.lowestNonlinearFreqMHz", "status.cpu.controlAvailable", "status.cpu.telemetryAvailable", "status.cpu.warnings",
-		"status.gpu.present", "status.gpu.count", "status.gpu.capRangePerGpu.defaultWatts", "status.gpu.currentCapWatts",
+		"status.gpu.present", "status.gpu.count", "status.gpu.powerDomains", "status.gpu.capRangePerGpu.defaultWatts", "status.gpu.currentCapWatts",
 		"status.gpu.slicing.modes", "status.gpu.warnings",
 		"status.memory.totalBytes", "status.network.linkClass",
 		"status.inventoryResolution.hardwareCatalogKey.cpu", "status.inventoryResolution.exactness.gpu",

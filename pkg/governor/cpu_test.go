@@ -348,3 +348,43 @@ func TestPlansRejectUnknownWords(t *testing.T) {
 		t.Error("PlanNvidia planned without a bus id: nvidia-smi without -i acts on every GPU")
 	}
 }
+
+// GA32: InForce spells what the taken writes of a plan put in force: every
+// field whose writes were all taken, the governor or level first; mixed
+// when only some policies or devices took it; nothing when none did; a
+// later field such as the preference, boost or an overdrive ceiling only
+// once all of its writes were taken.
+func TestGA32InForceSpellsTheTakenPartOfAPlan(t *testing.T) {
+	f := CPUFacts{Driver: "intel_pstate", HWP: true, Governors: []string{"performance", "powersave"}, EPPs: allEPPs,
+		BoostScope: joulie.CPUBoostScopeNoTurbo, Policies: []int{0, 1}}
+	p, err := PlanCPU(f, joulie.CPUGovernorPresetEfficiency, joulie.CPUGovernorBoostOff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Writes) != 5 || p.Native != "powersave epp=balance_power no_turbo=1" {
+		t.Fatalf("plan writes %v native %q; want two governors, two preferences and no_turbo", p.Writes, p.Native)
+	}
+	od := odPlan(1125)
+	for _, c := range []struct {
+		name  string
+		plan  Plan
+		taken []Write
+		want  string
+	}{
+		{"nothing taken", p, nil, ""},
+		{"one policy's governor", p, p.Writes[:1], joulie.GovernorCurrentMixed},
+		{"every governor", p, p.Writes[:2], "powersave"},
+		{"one preference", p, p.Writes[:3], "powersave"},
+		{"governors and preferences", p, p.Writes[:4], "powersave epp=balance_power"},
+		{"everything", p, p.Writes, p.Native},
+		{"an unrelated write alongside", p, append([]Write{{GlobalBoostRelPath, "1"}}, p.Writes[:2]...), "powersave"},
+		{"level only", od, od.Writes[:1], "manual"},
+		{"edit without commit", od, od.Writes[:2], "manual"},
+		{"level and ceiling", od, od.Writes, "manual sclk_max=1125"},
+		{"no level", od, od.Writes[1:], ""},
+	} {
+		if got := InForce(c.plan, c.taken); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}

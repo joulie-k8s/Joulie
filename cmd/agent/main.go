@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -83,13 +84,20 @@ type HardwareInfo struct {
 	GPURawModel     string
 	GPUModel        string
 	GPUCount        int
+	// GPUPowerDomains is how many of the listed GPUs hold a power limit of
+	// their own; 0 leaves it to GPUCount (pkg/api.GPUPowerDomains).
+	GPUPowerDomains int
 	GPUCapMinWatts  float64
 	GPUCapMaxWatts  float64
+	GPUCapDefaultW  float64
 	GPUCurrentCapW  float64
 	GPUCapKnown     bool
 	GPUControl      bool
 	GPUTelemetry    bool
-	Warnings        []string
+	// GPUWarnings are the warnings of the gpu block other than an
+	// unrecognised model, such as the GPUs without a settable power limit.
+	GPUWarnings []string
+	Warnings    []string
 	// CPULandmarks and Governors are read from cpufreq, amdgpu sysfs and
 	// nvidia-smi without writing anything (governor_discovery.go).
 	CPULandmarks *v1alpha1.CPULandmarks
@@ -178,14 +186,26 @@ type GPUDevice struct {
 	CurrentCapWatts float64
 	MinCapWatts     float64
 	MaxCapWatts     float64
-	// BusID and HwmonDir are set for AMD devices only: the PCI bus id and
-	// the amdgpu hwmon directory the cap is read from and written to.
-	// CapUnknown marks an AMD device that refused to read its cap (runtime
-	// suspended or in reset) and that the agent has neither read nor
-	// written: its cap and range are 0, and a cap is written to it.
+	// DefaultCapWatts is NVIDIA's power.default_limit, 0 when nvidia-smi
+	// prints none. AMD and Intel devices leave it 0, so the maximum is
+	// published: power1_cap_default is not read (amdgpu.go), and Intel's
+	// default limit, power<N>_rated_max, is the maximum.
+	DefaultCapWatts float64
+	// BusID and HwmonDir are set for AMD and Intel devices only: the PCI
+	// bus id and the amdgpu, i915 or xe hwmon directory the cap is read
+	// from and written to. CapUnknown marks an AMD device that refused to
+	// read its cap (runtime suspended or in reset) and that the agent has
+	// neither read nor written, or an Intel device whose cap did not read:
+	// its cap is 0, and a cap is written to it.
 	BusID      string
 	HwmonDir   string
 	CapUnknown bool
+	// CapUnsupported is set for an NVIDIA device whose power.min_limit,
+	// power.max_limit or power.limit printed a token instead of a number,
+	// such as [N/A] or [Not Supported]: it has no settable power limit and
+	// is never written. It names each such field with its token, for
+	// messages; the numeric fields behind them stay 0, which means unknown.
+	CapUnsupported string
 }
 
 type GPUTelemetry struct {
@@ -1085,10 +1105,29 @@ func applyGPUIntentFrom(
 		return "none", "blocked", "no GPU devices discovered", map[string]any{"vendor": vendor}, nil
 	}
 	resolveFrom := devices
+	// An NVIDIA GPU without a settable power limit is never written, whether
+	// the cap is absolute or a percentage: the cap is resolved against and
+	// written to the others, and the note names the GPUs left out.
+	skippedNote := ""
+	if vendor == "nvidia" {
+		settable, unsupported := nvidiaCapSets(devices)
+		if len(unsupported) > 0 {
+			skippedNote = nvidiaUnsupportedNote(unsupported)
+		}
+		if len(settable) == 0 {
+			return "none", "blocked", skippedNote, map[string]any{"vendor": vendor, "deviceCount": len(devices)}, nil
+		}
+		devices, resolveFrom = settable, settable
+	}
 	if vendor == "amd" {
 		devices, resolveFrom = amdgpuCapSets(devices)
 		if len(devices) == 0 {
 			return "none", "blocked", "no amdgpu device has a power cap of its own", map[string]any{"vendor": vendor}, nil
+		}
+	}
+	if vendor == "intel" {
+		if resolveFrom = intelGPURanged(devices); len(resolveFrom) == 0 {
+			return "none", "blocked", intelGPUUnknownRange(devices), map[string]any{"vendor": vendor}, nil
 		}
 	}
 	capPerGPU, msg, ok := resolveGPUCapPerDevice(intent, resolveFrom)
@@ -1111,15 +1150,24 @@ func applyGPUIntentFrom(
 
 	switch vendor {
 	case "nvidia":
+		result, msg := "applied", fmt.Sprintf("applied gpu cap %.1fW on %d devices", capPerGPU, len(devices))
 		if err := applyNvidiaGPUCap(ctx, devices, capPerGPU); err != nil {
-			return "host-nvidia", "error", err.Error(), observed, nil
+			result, msg = "error", err.Error()
 		}
-		return "host-nvidia", "applied", fmt.Sprintf("applied gpu cap %.1fW on %d devices", capPerGPU, len(devices)), observed, nil
+		if skippedNote != "" {
+			msg += "; " + skippedNote
+		}
+		return "host-nvidia", result, msg, observed, nil
 	case "amd":
 		if err := applyAmdGPUCap(devices, capPerGPU); err != nil {
 			return "host-amd", "error", err.Error(), observed, nil
 		}
 		return "host-amd", "applied", fmt.Sprintf("applied gpu cap %.1fW on %d devices", capPerGPU, len(devices)), observed, nil
+	case "intel":
+		if err := applyIntelGPUCap(devices, capPerGPU); err != nil {
+			return intelBackend, "error", err.Error(), observed, nil
+		}
+		return intelBackend, "applied", fmt.Sprintf("applied gpu cap %.1fW on %d devices", capPerGPU, len(devices)), observed, nil
 	default:
 		return "none", "blocked", fmt.Sprintf("unsupported gpu vendor %q", vendor), observed, nil
 	}
@@ -1198,6 +1246,9 @@ func detectGPUVendor(ctx context.Context, nodeLabels map[string]string) string {
 	if hasNFDGPUVendor(nodeLabels, "1002") {
 		return "amd"
 	}
+	if intelGPULabelled(nodeLabels) {
+		return "intel"
+	}
 	if _, err := os.Stat(nvidiaControlDevicePath); err == nil {
 		return "nvidia"
 	}
@@ -1210,6 +1261,9 @@ func detectGPUVendor(ctx context.Context, nodeLabels map[string]string) string {
 	if amdgpuSysfsPresent() {
 		return "amd"
 	}
+	if intelGPUSysfsPresent() {
+		return "intel"
+	}
 	return "none"
 }
 
@@ -1219,13 +1273,21 @@ func listGPUDevices(ctx context.Context, vendor string) ([]GPUDevice, error) {
 		return listNvidiaDevices(ctx)
 	case "amd":
 		return listAmdDevices()
+	case "intel":
+		return listIntelDevices()
 	default:
 		return nil, nil
 	}
 }
 
+// nvidiaInventoryQuery is the --query-gpu argument of the NVIDIA inventory,
+// the fields listNvidiaDevices reads in the order it reads them.
+// power.default_limit comes after name, so a line of the first six fields
+// alone still parses, with the default unknown.
+const nvidiaInventoryQuery = "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name,power.default_limit"
+
 func listNvidiaDevices(ctx context.Context) ([]GPUDevice, error) {
-	out, err := runCommand(ctx, "nvidia-smi", "--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name", "--format=csv,noheader,nounits")
+	out, err := runCommand(ctx, "nvidia-smi", nvidiaInventoryQuery, "--format=csv,noheader,nounits")
 	if err != nil {
 		return nil, err
 	}
@@ -1237,40 +1299,127 @@ func listNvidiaDevices(ctx context.Context) ([]GPUDevice, error) {
 			continue
 		}
 		idx, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
-		minW, _ := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-		maxW, _ := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
-		curCap, _ := strconv.ParseFloat(strings.TrimSpace(parts[3]), 64)
-		pwr, _ := strconv.ParseFloat(strings.TrimSpace(parts[4]), 64)
-		name := strings.TrimSpace(parts[5])
-		devices = append(devices, GPUDevice{
-			Index:           idx,
-			Vendor:          "nvidia",
-			Product:         name,
-			PowerWatts:      pwr,
-			CurrentCapWatts: curCap,
-			MinCapWatts:     minW,
-			MaxCapWatts:     maxW,
-		})
+		d := GPUDevice{Index: idx, Vendor: "nvidia", Product: strings.TrimSpace(parts[5])}
+		limits := []struct {
+			field string
+			dst   *float64
+		}{
+			{"power.min_limit", &d.MinCapWatts},
+			{"power.max_limit", &d.MaxCapWatts},
+			{"power.limit", &d.CurrentCapWatts},
+		}
+		var tokens []string
+		for i, l := range limits {
+			v, ok := nvidiaWatts(parts[i+1])
+			if ok {
+				*l.dst = v
+				continue
+			}
+			token := parts[i+1]
+			if token == "" {
+				token = "(empty)"
+			}
+			tokens = append(tokens, l.field+" "+token)
+		}
+		// A token in power.draw leaves the draw at 0 and the limit settable.
+		d.PowerWatts, _ = nvidiaWatts(parts[4])
+		d.CapUnsupported = strings.Join(tokens, ", ")
+		d.DefaultCapWatts = nvidiaDefaultLimit(parts)
+		devices = append(devices, d)
 	}
 	return devices, nil
+}
+
+// nvidiaDefaultLimit is power.default_limit, the seventh field of an
+// inventory line, in W: the limit the driver sets when it loads. It is 0,
+// unknown, when the line has no seventh field or nvidia-smi prints a token
+// such as [N/A] there.
+func nvidiaDefaultLimit(parts []string) float64 {
+	if len(parts) < 7 {
+		return 0
+	}
+	v, _ := nvidiaWatts(parts[6])
+	return v
+}
+
+// nvidiaWatts reads one watts column of the inventory query. nvidia-smi
+// prints a token in place of a value the driver does not give: [N/A],
+// [Not Supported], [Requested functionality has been deprecated],
+// [Insufficient Permissions], [Unknown Error]. That, and anything else that
+// is not a finite number of at least 0, is not a value.
+func nvidiaWatts(s string) (float64, bool) {
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+// nvidiaCapSets splits an NVIDIA inventory for a cap: settable is every
+// device with a settable power limit, which the cap is resolved against and
+// written to, and the published range comes from; unsupported is the
+// others, which are never written.
+func nvidiaCapSets(devices []GPUDevice) (settable, unsupported []GPUDevice) {
+	for _, d := range devices {
+		if d.CapUnsupported != "" {
+			unsupported = append(unsupported, d)
+		} else {
+			settable = append(settable, d)
+		}
+	}
+	return settable, unsupported
+}
+
+// nvidiaUnsupportedNote names the devices without a settable power limit
+// and the tokens nvidia-smi printed for them, devices that printed the same
+// together, in listing order. It depends on the listing alone, so it reads
+// the same on every reconcile and the control status is not rewritten.
+func nvidiaUnsupportedNote(unsupported []GPUDevice) string {
+	var order []string
+	indexes := map[string][]string{}
+	for _, d := range unsupported {
+		if _, ok := indexes[d.CapUnsupported]; !ok {
+			order = append(order, d.CapUnsupported)
+		}
+		indexes[d.CapUnsupported] = append(indexes[d.CapUnsupported], strconv.Itoa(d.Index))
+	}
+	groups := make([]string, len(order))
+	for i, tokens := range order {
+		groups[i] = fmt.Sprintf("gpu %s: nvidia-smi prints %s", strings.Join(indexes[tokens], ","), tokens)
+	}
+	return "no settable power limit on " + strings.Join(groups, "; ")
 }
 
 // applyNvidiaGPUCap sets the power limit of every device to capWatts,
 // rounded to whole watts as -pl takes it. A device whose listed limit
 // already rounds to that value is left alone: the listing is this
 // reconcile's, so a limit the driver put back after a reset or a reload
-// shows there and is set again.
+// shows there and is set again. A device without a settable power limit is
+// never written. A -pl that fails, or whose output says the limit is not
+// supported, is an error naming the GPU, and the other devices are still
+// capped: nvidia-smi reports a GPU that refuses the limit as a warning,
+// "Changing power management limit is not supported for GPU ...",
+// "Treating as warning and moving on.", and can exit 0.
 func applyNvidiaGPUCap(ctx context.Context, devices []GPUDevice, capWatts float64) error {
 	target := math.Round(capWatts)
+	var errs []error
 	for _, d := range devices {
-		if math.Round(d.CurrentCapWatts) == target {
+		if d.CapUnsupported != "" || math.Round(d.CurrentCapWatts) == target {
 			continue
 		}
-		if _, err := runCommand(ctx, "nvidia-smi", "-i", strconv.Itoa(d.Index), "-pl", strconv.Itoa(int(target))); err != nil {
-			return fmt.Errorf("nvidia-smi set cap gpu=%d: %w", d.Index, err)
+		out, err := runCommand(ctx, "nvidia-smi", "-i", strconv.Itoa(d.Index), "-pl", strconv.Itoa(int(target)))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("nvidia-smi set cap gpu=%d: %w", d.Index, err))
+			continue
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.Contains(strings.ToLower(line), "not supported") {
+				errs = append(errs, fmt.Errorf("nvidia-smi set cap gpu=%d: %s", d.Index, strings.TrimSpace(line)))
+				break
+			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -1439,35 +1588,67 @@ func discoverHardwareWith(ctx context.Context, node *corev1.Node, gpuFacts *nvid
 	}
 	// The AMD node labeller names the board in gpu.product-name (under both
 	// of its prefixes); amd.com/gpu.product is the older key, and the family
-	// code (GC_11_0_0, AI), read last, names no board. The labels name the
-	// model whenever the listing does not, as amdgpu sysfs never does.
+	// code (GC_11_0_0, AI), read last, names no board; Intel's NFD rules
+	// name a data center GPU in gpu.intel.com/product (Flex_170). The labels
+	// name the model whenever the listing does not, as amdgpu sysfs never
+	// does and Intel sysfs does only for the device ids it knows.
 	labelModel := firstNonEmpty(
 		nodeLabels["joulie.io/gpu.product"],
 		joulie.GPUProductBase(nodeLabels["nvidia.com/gpu.product"]),
 		nodeLabels["amd.com/gpu.product-name"],
 		nodeLabels["beta.amd.com/gpu.product-name"],
 		nodeLabels["amd.com/gpu.product"],
+		nodeLabels["gpu.intel.com/product"],
 		nodeLabels["amd.com/gpu.family"],
 	)
 	if len(gpuDevices) > 0 {
-		// On AMD the range, the cap and control come from the first device
-		// with a cap of its own whose range is known: a secondary die, or a
-		// GPU asleep since the agent started, may come first, and a node
-		// with none has no control.
 		ref := gpuDevices[0]
-		if hw.GPUVendor == "amd" {
+		switch hw.GPUVendor {
+		case "amd":
+			// The range, the cap and control come from the first device
+			// with a cap of its own whose range is known: a secondary die,
+			// or a GPU asleep since the agent started, may come first, and
+			// a node with none has no control.
 			ref = GPUDevice{}
 			if _, ranged := amdgpuCapSets(gpuDevices); len(ranged) > 0 {
 				ref = ranged[0]
+			}
+		case "intel":
+			// The range, the cap and control come from the first device
+			// whose range is known.
+			ref = GPUDevice{}
+			if ranged := intelGPURanged(gpuDevices); len(ranged) > 0 {
+				ref = ranged[0]
+			}
+		case "nvidia":
+			// The range, the cap and control come from the first device
+			// with a settable power limit, and the others are named in a
+			// warning. A node with none has no range and no control, and
+			// publishes the limit in force of its first GPU when it prints
+			// one.
+			settable, unsupported := nvidiaCapSets(gpuDevices)
+			if len(unsupported) > 0 {
+				hw.GPUWarnings = append(hw.GPUWarnings, nvidiaUnsupportedNote(unsupported))
+			}
+			if len(settable) > 0 {
+				ref = settable[0]
+			} else {
+				ref = GPUDevice{CurrentCapWatts: gpuDevices[0].CurrentCapWatts}
 			}
 		}
 		hw.GPURawModel = firstNonEmpty(gpuDevices[0].Product, labelModel)
 		hw.GPUCurrentCapW = ref.CurrentCapWatts
 		hw.GPUCapMinWatts = ref.MinCapWatts
 		hw.GPUCapMaxWatts = ref.MaxCapWatts
+		hw.GPUCapDefaultW = ref.DefaultCapWatts
 		hw.GPUCapKnown = ref.MaxCapWatts > 0
 		hw.GPUControl = hw.GPUCapKnown
 		hw.GPUTelemetry = true
+		// Every listed NVIDIA and Intel GPU holds its own limit; on AMD a
+		// secondary die holds none, its primary's bounding the package.
+		if hw.GPUVendor == "amd" {
+			hw.GPUPowerDomains = len(amdgpuCapDevices(gpuDevices))
+		}
 	} else {
 		hw.GPURawModel = labelModel
 		hw.GPUControl = false
@@ -1631,14 +1812,25 @@ func loadHardwareCatalog() *hwinv.Catalog {
 	return hardwareCatalog
 }
 
+// nfdGPUClasses are the PCI classes a GPU of any vendor enumerates as, in
+// the four hex digits NFD keeps of the class code (it drops the
+// programming interface): VGA 0300, 3D controller 0302, other display
+// controller 0380 and processing accelerator 1200. The GPU drivers bind
+// these: nvidia 0300 and 0302, amdgpu 0300, 0380 and 1200 (an MI300X is a
+// processing accelerator), i915 and xe every display class 03xx. NFD's
+// default deviceClassWhitelist (03, 0b40, 12) labels all four.
+var nfdGPUClasses = []string{"0300", "0302", "0380", "1200"}
+
+// hasNFDGPUVendor reports whether NFD labelled a GPU of vendorHex (the PCI
+// vendor id, such as 1002) on the node: pci-<class>_<vendor>.present for a
+// class of nfdGPUClasses, the default deviceLabelFields class and vendor,
+// or pci-<vendor>.present when NFD labels by vendor alone.
 func hasNFDGPUVendor(nodeLabels map[string]string, vendorHex string) bool {
-	keys := []string{
-		fmt.Sprintf("feature.node.kubernetes.io/pci-%s.present", vendorHex),
-		fmt.Sprintf("feature.node.kubernetes.io/pci-0300_%s.present", vendorHex),
-		fmt.Sprintf("feature.node.kubernetes.io/pci-0302_%s.present", vendorHex),
+	if nodeLabels[fmt.Sprintf("feature.node.kubernetes.io/pci-%s.present", vendorHex)] == "true" {
+		return true
 	}
-	for _, k := range keys {
-		if nodeLabels[k] == "true" {
+	for _, class := range nfdGPUClasses {
+		if nodeLabels[fmt.Sprintf("feature.node.kubernetes.io/pci-%s_%s.present", class, vendorHex)] == "true" {
 			return true
 		}
 	}
@@ -1800,7 +1992,7 @@ type lastWrite struct {
 	at      time.Time
 }
 
-const rewriteInterval = 5 * time.Minute
+const rewriteInterval = joulie.StatusRewriteInterval
 
 // shouldWrite reports whether payload differs from what was last written
 // under key, or the last write is older than rewriteInterval. It records the
@@ -1940,7 +2132,7 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 			"currentCapWatts":    hw.GPUCurrentCapW,
 			"controlAvailable":   hw.GPUControl,
 			"telemetryAvailable": hw.GPUTelemetry,
-			"warnings":           stringAnySlice(warningSlice(hw.GPUCount > 0 && hw.GPUModel == "" && hw.GPURawModel != "", "gpu model not recognized")),
+			"warnings":           stringAnySlice(append(warningSlice(hw.GPUCount > 0 && hw.GPUModel == "" && hw.GPURawModel != "", "gpu model not recognized"), hw.GPUWarnings...)),
 		},
 		"capabilities": map[string]any{
 			"cpuControl":   hw.CPUControl,
@@ -1969,8 +2161,16 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 			gpuMap["capRangePerGpu"] = map[string]any{
 				"minWatts":     hw.GPUCapMinWatts,
 				"maxWatts":     hw.GPUCapMaxWatts,
-				"defaultWatts": hw.GPUCapMaxWatts,
+				"defaultWatts": gpuCapDefaultWatts(hw),
 			}
+		}
+	}
+	// powerDomains is published only when fewer GPUs hold a limit than are
+	// counted, so a reader that finds none uses the count, as with an older
+	// agent.
+	if hw.GPUPowerDomains > 0 && hw.GPUPowerDomains < hw.GPUCount {
+		if gpuMap, ok := status["gpu"].(map[string]any); ok {
+			gpuMap["powerDomains"] = int64(hw.GPUPowerDomains)
 		}
 	}
 
@@ -2030,6 +2230,21 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 // object name. Shared with the controller manager through pkg/api so both sides agree.
 func sanitizeNodeObjectName(nodeName string) string {
 	return joulie.ObjectNameForNode(nodeName)
+}
+
+// gpuCapDefaultWatts is the defaultWatts NodeHardware publishes: the
+// driver's default limit where the agent reads one it can trust, and the
+// maximum otherwise. On NVIDIA that is power.default_limit, the limit the
+// driver loads with, when nvidia-smi prints one within the range. On AMD it
+// is always the maximum: amdgpu sets power1_cap_default from the cap in
+// force each time it initialises the GPU (smu_late_init in amdgpu_smu.c,
+// kernel 6.17), so after a resume or a reset it reads the agent's own last
+// cap, and the agent does not read it.
+func gpuCapDefaultWatts(hw HardwareInfo) float64 {
+	if d := hw.GPUCapDefaultW; d > 0 && d >= hw.GPUCapMinWatts && d <= hw.GPUCapMaxWatts {
+		return d
+	}
+	return hw.GPUCapMaxWatts
 }
 
 func overallQuality(hw HardwareInfo) string {

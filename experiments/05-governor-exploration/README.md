@@ -46,6 +46,7 @@ flip its sign.
 | `scripts/run_tier_b.sh` | one arm on a fresh simulated cluster, the governor checks of the harness, then removes the cluster |
 | `analysis/summarize.py` | the Markdown summary of a Tier A run (standard library only) |
 | `analysis/test_summarize.py` | its tests: `python3 -B -m unittest experiments/05-governor-exploration/analysis/test_summarize.py` |
+| `hardware/` | the measurements on real hardware that replace the assumed facts, one command each |
 
 Results are written outside the repository, under
 `${XDG_CACHE_HOME:-~/.cache}/joulie/experiments/05/`.
@@ -146,6 +147,8 @@ power of `sustained` against `auto` per GPU model, whether each GPU family
 gates inbound peer copies on an idle receiver, the idle power of an NVIDIA
 clock lock floor, and the energy of each CPU governor under steady loads on
 each driver.
+[`hardware/`](hardware/README.md) runs each of these measurements on one
+node with a single command, and restores what it changes.
 
 ## Results
 

@@ -1,0 +1,62 @@
+# Four Intel Data Center GPU Flex 170 cards on the two socket Xeon Gold 6530
+# host, under the mainline i915 driver, which binds the ATS-M ids. The cards
+# are display controllers (PCI class 0x038000), so NFD publishes
+# pci-0380_8086 and the Intel NFD rules name the product. i915 gives each
+# discrete GPU one hwmon device: the sustained limit power1_max, its TDP
+# power1_rated_max and the energy counter energy1_input, with no power
+# sensor. The range the hardware clamps a limit to (PKG_MIN_PWR and
+# PKG_MAX_PWR) is not in sysfs and not published: both bounds are assumed.
+schemaVersion: 1
+name: intel-flex-170-4gpu
+extends: intel-xeon-6530-2s-rapl
+description: 4x Intel Data Center GPU Flex 170 on the two socket Xeon Gold 6530 host; i915 hwmon power1_max with the TDP in power1_rated_max, no GPU tool.
+sources:
+  flex170:    {kind: published, ref: "https://www.intel.com/content/www/us/en/products/sku/230019/intel-data-center-gpu-flex-170/specifications.html", note: "TBP 150 W; 16 GB GDDR6, 256 bit, 576 GB/s; 32 Xe-cores; graphics max dynamic clock 2050 MHz; PCI device ID 0x56C0; launched Q3'22 (fetched 2026-10-19)"}
+  pciids8086: {kind: published, ref: "https://github.com/pciutils/pciids/blob/ad4bc5c5d708dc5086581646f30374553cd06e8c/pci.ids", note: "8086:56c0 ATS-M [Data Center GPU Flex 170], 8086:56c1 Flex 140, 8086:56c2 Flex 170V"}
+  intelids:   {kind: published, ref: "linux v7.3-rc5 include/drm/intel/pciids.h:790-799", note: "INTEL_ATS_M150_IDS 0x56C0 and 0x56C2, INTEL_ATS_M75_IDS 0x56C1"}
+  i915pci:    {kind: published, ref: "linux v7.3-rc5 drivers/gpu/drm/i915/i915_pci.c:743,868", note: "INTEL_ATS_M_IDS bound to ats_m_info, a DG2 platform"}
+  i915hwmon:  {kind: published, ref: "linux v7.3-rc5 drivers/gpu/drm/i915/i915_hwmon.c", note: "hwmon only for a discrete GPU (916-918), named i915 (930); power1_max shown when the RAPL limit register is valid, mode 0664, power1_rated_max when the SKU register is (382-398); a write of power1_max takes any value, 0 disables PL1, a value above 0 is stored rounded to the nearest power unit, and a read shows the limit clamped to PKG_MIN_PWR and PKG_MAX_PWR of the SKU register when both are set (400-498); DG1 and DG2 have the RAPL limit, SKU, SKU unit and package energy registers and no per-tile energy register (852-860); energy1_input accumulates the 32 bit register into a long (138-167)"}
+  i915abi:    {kind: published, ref: "linux v7.3-rc5 Documentation/ABI/testing/sysfs-driver-intel-i915-hwmon", note: "power1_max RW, card sustained (PL1/Tau) limit in microwatts, 0 disables it (9-21); power1_rated_max RO, the default TDP setting (23-29); power1_max_interval RW, Tau in milliseconds (31-38); energy1_input RO, microjoules (66-77)"}
+  l0sysman:   {kind: published, ref: "https://github.com/intel/compute-runtime/blob/9e3457492de4e93e2265c4508f7b7c0de79798e8/level_zero/sysman/source/api/power/linux/sysman_os_power_imp.cpp", note: "getProperties (22-41): maxLimit is the default limit read from power1_rated_max, minLimit the product helper's, which is -1, unknown, for every product (level_zero/sysman/source/shared/linux/product_helper/sysman_product_helper_hw.inl:391-394)"}
+  intelnfd:   {kind: published, ref: "https://github.com/intel/intel-device-plugins-for-kubernetes/blob/8405fa30bbaf03f3108bbe1cff2b7a140e9fb601/deployments/nfd/overlays/node-feature-rules", note: "node-feature-rules.yaml 20-41: intel.feature.node.kubernetes.io/gpu for an 8086 device of class 0300 or 0380 with i915 or xe enabled; platform-labeling-rules.yaml: gpu.intel.com/device-id.<class>-<device>.present for every 0300 and 0380 device (7-23), gpu.intel.com/device-id.0380-<device>.count (37-49), and for device 56c0 under class 0380 gpu.intel.com/family Flex_Series, gpu.intel.com/product Flex_170 and gpu.intel.com/device.count (112-131)"}
+  gpuplugin:  {kind: published, ref: "https://github.com/intel/intel-device-plugins-for-kubernetes/blob/8405fa30bbaf03f3108bbe1cff2b7a140e9fb601/cmd/gpu_plugin/README.md", note: "lines 48-49: gpu.intel.com/i915, a GPU of the i915 driver; gpu.intel.com/xe, one of the xe driver"}
+node:
+  labels:
+    intelgpu:
+      src: "published:intelnfd#the labels its rules give four Flex 170 devices with i915 enabled"
+      values:
+        intel.feature.node.kubernetes.io/gpu: "true"
+        gpu.intel.com/device-id.0380-56c0.present: "true"
+        gpu.intel.com/device-id.0380-56c0.count: "4"
+        gpu.intel.com/family: Flex_Series
+        gpu.intel.com/product: Flex_170
+        gpu.intel.com/device.count: "4"
+gpus:
+  vendor: intel
+  count: {v: 4, src: "assumed:four cards, a common Flex 170 server configuration"}
+  product: {v: "Intel Data Center GPU Flex 170", src: "published:flex170#the product name"}
+  pci:
+    vendor: {v: "0x8086", src: "published:pciids8086#8086"}
+    device: {v: "0x56c0", src: "published:flex170#PCI device ID 0x56C0; pciids8086 and intelids agree"}
+    class: {v: "0x038000", src: "published:intelnfd#the Flex 170 rule matches class 0380; prog-if 00 assumed"}
+  exposure: {v: whole, src: "published:gpuplugin#gpu.intel.com/i915, one per GPU of the i915 driver, no sharing configured (assumed)"}
+  labeller: {v: listed, src: published:intelnfd}
+  intel:
+    driver: {v: i915, src: "published:i915pci#mainline i915 binds the ATS-M ids"}
+    powerUnitShift: {v: 3, src: "assumed:PKG_PWR_UNIT 3, 1/8 W, as the Xeon host's RAPL power unit; the GPU's SKU unit register is not in sysfs"}
+    maxIntervalMS: {v: 1000, src: "assumed:a one second PL1 window; not published"}
+  # The limit starts at the TDP; the hardware clamps any limit to
+  # [minW, maxW], which sysfs does not show.
+  limits:
+    minW: {v: 40, src: "assumed:PKG_MIN_PWR; not published, and Level Zero Sysman reports the minimum as unknown (l0sysman)"}
+    maxW: {v: 150, src: "assumed:PKG_MAX_PWR at the TDP; not published"}
+    defaultW: {v: 150, src: "published:flex170#TBP 150 W; that power1_rated_max and the boot limit read the TBP is assumed"}
+physics:
+  gpu:
+    idleW: {v: 30, src: "assumed:no published idle power"}
+    naturalMaxW: {v: 150, src: "published:flex170#TBP 150 W; the board runs at full speed up to it (assumed)"}
+    computeGamma: {v: 1.0, src: "assumed:simulator default SIM_GPU_COMPUTE_GAMMA; throughput only"}
+    memoryEpsilon: {v: 0.2, src: "assumed:simulator default SIM_GPU_MEMORY_EPSILON; throughput only"}
+    memoryGamma: {v: 1.2, src: "assumed:simulator default SIM_GPU_MEMORY_GAMMA; throughput only"}
+    capSettleTauMS: {v: 150, src: "assumed:simulator default SIM_GPU_CAP_APPLY_TAU_MS"}
+    telemetryWindowMS: {v: 1000, src: "assumed:no power sensor; the window of the emulator's own average"}

@@ -1,0 +1,10 @@
+{"type":"job","schemaVersion":"v3","jobId":"burst-0","submitTimeOffsetSec":500,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"95"}},"work":{"cpuUnits":9500,"gpuUnits":0}}
+{"type":"job","schemaVersion":"v3","jobId":"burst-1","submitTimeOffsetSec":505,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"95"}},"work":{"cpuUnits":9500,"gpuUnits":0}}
+{"type":"job","schemaVersion":"v3","jobId":"burst-2","submitTimeOffsetSec":510,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"95"}},"work":{"cpuUnits":9500,"gpuUnits":0}}
+{"type":"job","schemaVersion":"v3","jobId":"burst-3","submitTimeOffsetSec":515,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"95"}},"work":{"cpuUnits":9500,"gpuUnits":0}}
+{"type":"job","schemaVersion":"v3","jobId":"burst-4","submitTimeOffsetSec":520,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"95"}},"work":{"cpuUnits":9500,"gpuUnits":0}}
+{"type":"job","schemaVersion":"v3","jobId":"burst-5","submitTimeOffsetSec":525,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"95"}},"work":{"cpuUnits":9500,"gpuUnits":0}}
+{"type":"job","schemaVersion":"v3","jobId":"burst-6","submitTimeOffsetSec":530,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"95"}},"work":{"cpuUnits":9500,"gpuUnits":0}}
+{"type":"job","schemaVersion":"v3","jobId":"burst-7","submitTimeOffsetSec":535,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"95"}},"work":{"cpuUnits":9500,"gpuUnits":0}}
+{"type":"job","schemaVersion":"v3","jobId":"burst-8","submitTimeOffsetSec":540,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"95"}},"work":{"cpuUnits":9500,"gpuUnits":0}}
+{"type":"job","schemaVersion":"v3","jobId":"burst-9","submitTimeOffsetSec":545,"namespace":"default","intentClass":"standard","podTemplate":{"requests":{"cpu":"95"}},"work":{"cpuUnits":9500,"gpuUnits":0}}

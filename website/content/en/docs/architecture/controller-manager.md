@@ -131,7 +131,7 @@ The `joulie_policy_family_nodes` and `joulie_policy_family_performance_nodes` ga
 
 If `NodeHardware` is not available yet:
 
-- the controller manager derives a best-effort hardware view from labels such as `joulie.io/hw.cpu-model`, `joulie.io/hw.gpu-model`, `joulie.io/hw.gpu-count`, GPU feature discovery's `nvidia.com/gpu.product` (without its `-MIG-<profile>` and `-SHARED` suffixes) and `nvidia.com/gpu.count`,
+- the controller manager derives a best-effort hardware view from labels such as `joulie.io/hw.cpu-model`, `joulie.io/hw.gpu-model`, `joulie.io/hw.gpu-count`, GPU feature discovery's `nvidia.com/gpu.product` (without its `-MIG-<profile>` and `-SHARED` suffixes) and `nvidia.com/gpu.count`, and Intel's NFD rule labels `gpu.intel.com/product` and `gpu.intel.com/device.count`,
 - and from allocatable GPU resources: whole GPUs, MIG devices, AMD partitions and shared replicas (`nvidia.com/gpu`, `amd.com/gpu`, `nvidia.com/mig-<profile>`, `amd.com/cpx_nps4`, `nvidia.com/gpu.shared`, ...).
 
 That keeps simulator-first and bootstrap scenarios working without making `NodeHardware` a hand-authored prerequisite.

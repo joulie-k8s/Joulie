@@ -150,6 +150,16 @@ func lockArg(l *[2]int) string {
 	return fmt.Sprintf("%d,%d", l[0], l[1])
 }
 
+// NativeNvidia spells the locks of s as Plan.Native does for nvidia-smi,
+// such as "-lgc 300,1100 -lmc 405,405", and "unlocked" without a lock: the
+// controlStatus applied field for locks a failed plan left in force.
+func NativeNvidia(s State) string {
+	if n := nvidiaNative(s); n != "" {
+		return n
+	}
+	return joulie.GovernorStateUnlocked
+}
+
 // nvidiaNative spells the locks of s as nvidia-smi is told them, such as
 // "-lgc 300,1100 -lmc 405,405"; empty without a lock.
 func nvidiaNative(s State) string {

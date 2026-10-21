@@ -27,6 +27,11 @@
 #                            Service's fixed ClusterIP (hostnet); the
 #                            container is created with the scheduler
 #                            configuration of one of them
+#   SIMCLUSTER_HWEMU         how emulated agents reach their node's files:
+#                            fuse, the simulator's FUSE views, which need
+#                            /dev/fuse on the host, or files, the trees
+#                            themselves (fuse); fuse makes the hwemu root a
+#                            shared mount in the container
 #   SIMCLUSTER_AIRGAP=1      preload the k3s system images from the release bundle
 #   SIMCLUSTER_EXTRA_VALUES  Joulie values files, space separated, also used
 #                            to decide which Nodes get an emulated agent
@@ -44,6 +49,9 @@ case ${1:-} in
 esac
 sim_init
 sim_require docker kubectl helm jq sha256sum
+if [[ $SIMCLUSTER_HWEMU == fuse && ! -c $SIM_FUSE_DEVICE ]]; then
+  sim_die "SIMCLUSTER_HWEMU=fuse needs the FUSE device $SIM_FUSE_DEVICE on this host; load the fuse module, or run with SIMCLUSTER_HWEMU=files"
+fi
 
 N=$SIMCLUSTER_NAME
 D=$SIMCLUSTER_DIR
@@ -130,8 +138,13 @@ else
     ((BASH_REMATCH[1] > 1 || BASH_REMATCH[2] >= 35)); then
     args+=(--kubelet-arg=fail-cgroupv1=false)
   fi
+  # The FUSE device, for the simulator's views (SIMCLUSTER_HWEMU=fuse).
+  devices=()
+  if [[ $SIMCLUSTER_HWEMU == fuse ]]; then
+    devices=(--device "$SIM_FUSE_DEVICE")
+  fi
   sim_log "creating container $N ($K3S_IMAGE)"
-  docker run -d --privileged --name "$N" --hostname "$N" \
+  docker run -d --privileged ${devices[@]+"${devices[@]}"} --name "$N" --hostname "$N" \
     -v "$N-k3s:/var/lib/rancher/k3s" -v "$N-hwemu:$SIM_HWEMU_ROOT" -v "$D/images:/var/lib/rancher/k3s/agent/images" \
     -v "$SIM_SCHEDULER_CONFIG:/etc/rancher/k3s/scheduler-config.yaml:ro" \
     -p 127.0.0.1::6443 "$K3S_IMAGE" server --node-name "$N-infra" --node-label joulie.io/infra=true --node-label joulie.io/hwemu-host=true \
@@ -147,6 +160,11 @@ else
   } >"$cluster_env"
 fi
 
+# The simulator's FUSE views reach the agents only from a shared mount.
+if [[ $SIMCLUSTER_HWEMU == fuse ]]; then
+  sim_wait_running 60 "the container to make $SIM_HWEMU_ROOT a shared mount" sim_hwemu_shared
+fi
+
 # 5. The third-party images (Prometheus, KWOK, the Collector of the mode),
 # imported while the cluster starts; waited for before KWOK is applied.
 bash "$SIM_SCRIPTS/images.sh" --third-party &
@@ -156,7 +174,7 @@ stop_imports() { kill "$third_party" 2>/dev/null || true; }
 trap stop_imports EXIT
 
 # 6. The kubeconfig, pointed at the published port.
-sim_wait 180 "k3s to write its kubeconfig" docker exec "$N" test -s /etc/rancher/k3s/k3s.yaml
+sim_wait_running 180 "k3s to write its kubeconfig" docker exec "$N" test -s /etc/rancher/k3s/k3s.yaml
 port=$(docker port "$N" 6443/tcp | head -n1)
 port=${port##*:}
 [[ $port =~ ^[0-9]+$ ]] || sim_die "container $N publishes no port for 6443"
@@ -165,8 +183,8 @@ port=${port##*:}
   docker exec "$N" cat /etc/rancher/k3s/k3s.yaml | sed "s#https://127.0.0.1:6443#https://127.0.0.1:$port#" >"$KUBECONFIG.tmp"
 )
 mv "$KUBECONFIG.tmp" "$KUBECONFIG"
-sim_wait 180 "the API server" kubectl get --raw /readyz
-sim_wait 180 "Node $N-infra to register" kubectl get node "$N-infra"
+sim_wait_running 180 "the API server" kubectl get --raw /readyz
+sim_wait_running 180 "Node $N-infra to register" kubectl get node "$N-infra"
 
 # 7. Namespaces, KWOK and its Stages, Prometheus and the Collector.
 for ns in "$SIM_NS_JOULIE" "$SIM_NS_SIM" "$SIM_NS_MONITORING"; do

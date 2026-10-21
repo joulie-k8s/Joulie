@@ -514,7 +514,7 @@ fi
 
 if command -v nvidia-smi >/dev/null 2>&1; then
 	if nvidia-smi \
-		--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name \
+		--query-gpu=index,power.min_limit,power.max_limit,power.limit,power.draw,name,power.default_limit \
 		--format=csv,noheader,nounits >"$DEST/nvidia-smi.txt" 2>/dev/null; then
 		redact "$DEST/nvidia-smi.txt"
 		echo "$SCRIPT_NAME: captured nvidia-smi query output"

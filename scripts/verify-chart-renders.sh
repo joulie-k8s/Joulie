@@ -65,8 +65,12 @@ Cases:
   C07                      a host network scheduler extender uses Recreate
   C09                      values/simcluster.yaml pulls only joulie.local
                            images, IfNotPresent
-  C10                      the agent tolerates the GPU vendor taints by
-                           default
+  C10                      the agent tolerates every taint by default; a
+                           list replaces the default, [] renders none
+  C11                      agent.emulated.fuse=true: sys and state from the
+                           simulator's views under root/fuse, mounted with
+                           HostToContainer, and nothing else changes; the
+                           DaemonSet ignores it
   joulie-simulator         the simulator chart; asserts its ConfigMap volumes
                            are optional, so a bare install starts
   joulie-simulator emulate emulate.enabled with the smoke cluster spec; asserts
@@ -74,6 +78,9 @@ Cases:
                            and OTEL_* env, the spec ConfigMap, the exporter
                            endpoints and the workload run rules, and that
                            replicas=2 and a missing spec fail
+  joulie-simulator fuse    emulate.fuse: SIM_HWEMU_FUSE, privileged with
+                           SYS_ADMIN, /dev/fuse and Bidirectional on the root,
+                           none of which emulate mode renders without it
   rbac.workloadRuns        the workload run rules follow emulate.enabled
                            unless forced; extraEnv sets a trace path in
                            emulate mode
@@ -521,6 +528,9 @@ c01 daemonset-defaults
 c01 daemonset-joulie-values -f "${REPO_ROOT}/values/joulie.yaml"
 c01 daemonset-catalog --set 'hardwareCatalog.enabled=true'
 c01 daemonset-nohost --set 'agent.hostNetwork=false' --set 'agent.privileged=false'
+# The emulated agents' FUSE setting never reaches the DaemonSet.
+render daemonset-fuse "${CHART}" --set 'agent.emulated.fuse=true' &&
+	assert_golden_doc daemonset-fuse DaemonSet joulie-agent daemonset-defaults
 
 # --------------------------------------------------------------------------
 # C02: the pool StatefulSet does not use the helper and stays its golden.
@@ -627,6 +637,7 @@ for i in "${!EMU_NODES[@]}"; do
 	assert_entry emulated has "${d}" volumes hwemu-lib '^ +type: Directory$'
 	assert_entry emulated has "${d}" volumeMounts host-sys '^ +mountPath: /host-sys$'
 	assert_entry emulated lacks "${d}" volumeMounts host-sys 'readOnly'
+	assert_entry emulated lacks "${d}" volumeMounts host-sys 'mountPropagation'
 	assert_entry emulated has "${d}" volumeMounts hwemu-cpuinfo '^ +mountPath: /proc/cpuinfo$'
 	assert_entry emulated has "${d}" volumeMounts hwemu-cpuinfo '^ +readOnly: true$'
 	assert_entry emulated has "${d}" volumeMounts hwemu-state '^ +mountPath: /emu/state$'
@@ -645,6 +656,40 @@ for i in "${!EMU_NODES[@]}"; do
 		assert_doc emulated lacks Deployment "${d}" 'driver-stub' "another node's extra mount"
 	fi
 done
+
+# --------------------------------------------------------------------------
+# C11: with agent.emulated.fuse each emulated agent mounts sys and state from
+# the simulator's FUSE views (root/fuse/<node>) with mount propagation
+# HostToContainer, so a restarted simulator's views reach the running pod;
+# cpuinfo, the tools and /dev/nvidiactl stay on the tree, and no other line
+# of the C04 render changes.
+# --------------------------------------------------------------------------
+case_start "C11 agent.emulated.fuse mounts the simulator's views"
+if render emulated-fuse "${CHART}" --set 'agent.mode=emulated' -f "${EMULATED_VALUES}" --set 'agent.emulated.fuse=true'; then
+	for i in "${!EMU_NODES[@]}"; do
+		d="joulie-agent-emu-${i}"
+		n="${EMU_NODES[$i]}"
+		view="/var/lib/joulie-hwemu/fuse/${n}"
+		assert_entry emulated-fuse has "${d}" volumes host-sys "^ +path: ${view}/sys\$"
+		assert_entry emulated-fuse has "${d}" volumes hwemu-state "^ +path: ${view}/state\$"
+		assert_entry emulated-fuse has "${d}" volumeMounts host-sys '^ +mountPropagation: HostToContainer$'
+		assert_entry emulated-fuse has "${d}" volumeMounts hwemu-state '^ +mountPropagation: HostToContainer$'
+		assert_entry emulated-fuse has "${d}" volumes hwemu-cpuinfo "^ +path: /var/lib/joulie-hwemu/${n}/cpuinfo\$"
+		assert_entry emulated-fuse lacks "${d}" volumeMounts hwemu-cpuinfo 'mountPropagation'
+	done
+	changed="$(diff "${WORKDIR}/emulated.yaml" "${WORKDIR}/emulated-fuse.yaml" | grep -E '^[<>]' |
+		grep -vE '^< +path: /var/lib/joulie-hwemu/[a-z0-9-]+/(sys|state)$' |
+		grep -vE '^> +path: /var/lib/joulie-hwemu/fuse/[a-z0-9-]+/(sys|state)$' |
+		grep -vE '^> +mountPropagation: HostToContainer$')" || true
+	if [ -n "${changed}" ]; then
+		fail "agent.emulated.fuse changes more than the sys and state mounts:"
+		printf '%s\n' "${changed}" | sed 's/^/    /' >&2
+	fi
+fi
+# The simulated cluster's FUSE values file turns it on.
+if render simcluster-fuse "${CHART}" -f "${REPO_ROOT}/values/simcluster.yaml" -f "${EMULATED_VALUES}" -f "${REPO_ROOT}/values/simcluster-fuse.yaml"; then
+	assert_entry simcluster-fuse has joulie-agent-emu-0 volumes host-sys "^ +path: /var/lib/joulie-hwemu/fuse/${EMU_NODES[0]}/sys\$"
+fi
 
 # --------------------------------------------------------------------------
 # C06: agent.mode=none renders no agent workload.
@@ -688,25 +733,36 @@ if render simcluster "${CHART}" -f "${REPO_ROOT}/values/simcluster.yaml" -f "${E
 fi
 
 # --------------------------------------------------------------------------
-# C10: the agent tolerates the GPU vendor taints by default (D15), so GPU
-# nodes tainted nvidia.com/gpu or amd.com/gpu:NoSchedule get an agent, and
-# an empty list renders no tolerations.
+# C10: the agent tolerates every taint by default (D15), so every node its
+# nodeSelector picks, a tainted one included, gets an agent; a list replaces
+# the default rather than adding to it, and an empty list renders no
+# tolerations.
 # --------------------------------------------------------------------------
-case_start "C10 agent DaemonSet tolerates the GPU taints by default"
+case_start "C10 agent DaemonSet tolerates every taint by default"
+# c10_tolerations <slug>: the tolerations block of the agent DaemonSet.
+c10_tolerations() {
+	doc "$1" DaemonSet joulie-agent | awk '/^      tolerations:$/ { on=1; print; next } on == 1 && /^        / { print; next } { on=0 }'
+}
+# c10_expect <slug> <want>: the block equals want.
+c10_expect() {
+	local got
+	got="$(c10_tolerations "$1")"
+	if [ "${got}" != "$2" ]; then
+		fail "DaemonSet/joulie-agent ($1): tolerations differ (- want, + got)"
+		diff -u <(printf '%s\n' "$2") <(printf '%s\n' "${got}") | sed 's/^/    /' >&2
+	fi
+}
 C10_WANT='      tolerations:
+        - operator: Exists'
+for slug in daemonset-defaults daemonset-joulie-values; do
+	c10_expect "${slug}" "${C10_WANT}"
+done
+if render daemonset-tolerations-list "${CHART}" --set-json 'agent.tolerations=[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]'; then
+	c10_expect daemonset-tolerations-list '      tolerations:
         - effect: NoSchedule
           key: nvidia.com/gpu
-          operator: Exists
-        - effect: NoSchedule
-          key: amd.com/gpu
           operator: Exists'
-for slug in daemonset-defaults daemonset-joulie-values; do
-	got="$(doc "${slug}" DaemonSet joulie-agent | awk '/^      tolerations:$/ { on=1; print; next } on == 1 && /^        / { print; next } { on=0 }')"
-	if [ "${got}" != "${C10_WANT}" ]; then
-		fail "DaemonSet/joulie-agent (${slug}): tolerations differ (- want, + got)"
-		diff -u <(printf '%s\n' "${C10_WANT}") <(printf '%s\n' "${got}") | sed 's/^/    /' >&2
-	fi
-done
+fi
 if render daemonset-notolerations "${CHART}" --set-json 'agent.tolerations=[]'; then
 	assert_doc daemonset-notolerations lacks DaemonSet joulie-agent 'tolerations:' "no tolerations when the list is empty"
 fi
@@ -783,6 +839,28 @@ if render simulator-emulate "${SIM_CHART}" "${EMULATE_ARGS[@]}"; then
 	if [ "$(doc simulator-emulate ServiceMonitor "${SIM_DEPLOY}" | grep -cE '^ +honorLabels: false$')" != 3 ]; then
 		fail "ServiceMonitor/${SIM_DEPLOY}: want honorLabels: false on all three exporter endpoints"
 	fi
+	assert_env simulator-emulate "${SIM_DEPLOY}" SIM_HWEMU_FUSE -
+	assert_doc simulator-emulate lacks Deployment "${SIM_DEPLOY}" 'privileged' "unprivileged without emulate.fuse"
+	assert_doc simulator-emulate lacks Deployment "${SIM_DEPLOY}" 'mountPropagation' "no mount propagation without emulate.fuse"
+	assert_doc simulator-emulate lacks Deployment "${SIM_DEPLOY}" '/dev/fuse' "no /dev/fuse without emulate.fuse"
+fi
+
+# --------------------------------------------------------------------------
+# emulate.fuse: the simulator serves the views through FUSE, which takes
+# /dev/fuse and CAP_SYS_ADMIN, and binds them into the root, which reaches
+# the host only from a privileged container with Bidirectional propagation.
+# --------------------------------------------------------------------------
+case_start "joulie-simulator emulate.fuse"
+if render simulator-fuse "${SIM_CHART}" "${EMULATE_ARGS[@]}" -f "${REPO_ROOT}/values/simcluster-simulator-fuse.yaml"; then
+	assert_workloads simulator-fuse "Deployment/${SIM_DEPLOY}"
+	assert_env simulator-fuse "${SIM_DEPLOY}" SIM_HWEMU_FUSE true
+	assert_doc simulator-fuse has Deployment "${SIM_DEPLOY}" '^ +privileged: true$' "privileged"
+	assert_doc simulator-fuse has Deployment "${SIM_DEPLOY}" '^ +add: \["SYS_ADMIN"\]$' "CAP_SYS_ADMIN"
+	assert_entry simulator-fuse has "${SIM_DEPLOY}" volumeMounts hwemu-root '^ +mountPropagation: Bidirectional$'
+	assert_entry simulator-fuse has "${SIM_DEPLOY}" volumeMounts dev-fuse '^ +mountPath: /dev/fuse$'
+	assert_entry simulator-fuse has "${SIM_DEPLOY}" volumes dev-fuse '^ +path: /dev/fuse$'
+	assert_entry simulator-fuse has "${SIM_DEPLOY}" volumes dev-fuse '^ +type: CharDevice$'
+	assert_doc simulator-fuse has Deployment "${SIM_DEPLOY}" '^    type: Recreate$' "strategy Recreate"
 fi
 render_fails simulator-emulate-replicas "${SIM_CHART}" 'requires replicas: 1' \
 	--set 'emulate.enabled=true' --set 'emulate.clusterSpecConfigMap=existing-spec' --set 'replicas=2'

@@ -9,11 +9,10 @@ import (
 	"github.com/matbun/joulie/simulator/pkg/hwemu/hwemutest"
 )
 
-// A06b: the stock agent image has no rocm-smi. On the MI300X node, whose
-// NFD accelerator-class label the agent does not read (D8), the vendor, the
-// cap range and the cap still come from amdgpu sysfs: vendor amd, 8 GPUs,
-// 0 to 750 W with control, and a 60 % cap writes 450 W to every power1_cap
-// (D1).
+// A06b: the stock agent image has no rocm-smi. On the MI300X node the
+// vendor comes from the NFD accelerator-class label (D8), and the cap range
+// and the cap from amdgpu sysfs: vendor amd, 8 GPUs, 0 to 750 W with
+// control, and a 60 % cap writes 450 W to every power1_cap (D1).
 func TestHwemuA06bMI300XCapsWithoutAnyAMDTool(t *testing.T) {
 	_, tree, p := hwemutest.NewNode(t, "amd-instinct-mi300x-8gpu", withoutGPUTools)
 	e := useEmulatedNode(t, tree, nil)

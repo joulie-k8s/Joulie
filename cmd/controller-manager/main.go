@@ -87,6 +87,7 @@ type NodeHardware struct {
 	GPUModel            string
 	GPURawModel         string
 	GPUCount            int
+	GPUPowerDomains     int // status.gpu.powerDomains, 0 when absent (pkg/api.GPUPowerDomains)
 	CPUCapMinWatts      float64
 	CPUCapMaxWatts      float64
 	CPUCapKnown         bool
@@ -155,9 +156,11 @@ var (
 // defaultGPUProductLabelKeys are the node labels GPU_PRODUCT_LABEL_KEYS reads
 // by default, first match wins. The AMD node labeller names the board in
 // gpu.product-name (under both of its prefixes); amd.com/gpu.product is the
-// older key, and the family code (GC_11_0_0, AI), read last, names no board.
+// older key. Intel's NFD rules name a data center GPU in
+// gpu.intel.com/product (Flex_170, Max_1550). The AMD family code
+// (GC_11_0_0, AI), read last, names no board.
 const defaultGPUProductLabelKeys = "joulie.io/gpu.product,nvidia.com/gpu.product," +
-	"amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,amd.com/gpu.family"
+	"amd.com/gpu.product-name,beta.amd.com/gpu.product-name,amd.com/gpu.product,gpu.intel.com/product,amd.com/gpu.family"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
@@ -299,6 +302,7 @@ func registerMetrics(reg prometheus.Registerer) {
 	reg.MustRegister(policyNodeProfileLabel.collectors()...)
 	reg.MustRegister(policyStateTransitions.collectors()...)
 	reg.MustRegister(policyFamilyNodes, policyFamilyPerformanceNodes)
+	reg.MustRegister(twinNodesAgentReporting)
 	reg.MustRegister(inputMetricCollectors()...)
 }
 
@@ -404,6 +408,7 @@ func reconcileWithCatalog(
 	if len(eligible) == 0 {
 		log.Printf("no eligible nodes matched selector=%q", selector.String())
 		recordFamilySplit(nil, nil) // no families left, so no stale split either
+		recordAgentReporting(nil)
 		return nil
 	}
 
@@ -539,6 +544,7 @@ func reconcileWithCatalog(
 		}
 	}
 
+	var agentConditions []metav1.Condition
 	for _, a := range plan {
 		if err := upsertNodeTwinSpec(ctx, dyn, a); err != nil {
 			return err
@@ -555,13 +561,18 @@ func reconcileWithCatalog(
 			gpuPct = *a.GPU.CapPctOfMax
 		}
 		topo := nodeTopologyFor(a.NodeName, nodeRack[a.NodeName], nodeZone[a.NodeName], rackPowerEstimates, facility)
-		if err := reconcileNodeTwin(ctx, reader, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo); err != nil {
+		agent, err := reconcileNodeTwin(ctx, reader, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo)
+		if err != nil {
 			log.Printf("warning: reconcileNodeTwin %s: %v", a.NodeName, err)
+		}
+		if agent != nil {
+			agentConditions = append(agentConditions, *agent)
 		}
 		recordNodeStateMetrics(a.NodeName, a.State)
 		recordNodeProfileLabelMetrics(a.NodeName, a.Profile)
 		recordTransitionMetrics(a)
 	}
+	recordAgentReporting(agentConditions)
 
 	log.Printf("assigned profiles policy=%s interval=%s nodes=%d plan=%s", policyType, interval, len(eligible), summarizePlan(plan))
 	return nil
@@ -843,8 +854,8 @@ func currentCapOptions() capOptions {
 
 // agentReportsNoGPUControl is true when the node's agent published its GPUs
 // in NodeHardware without GPU control (status.gpu.controlAvailable false),
-// as for Intel GPUs or NVIDIA boards whose power limits read [N/A]. A node
-// known only from its labels reports nothing.
+// as for Intel GPUs without a default limit or NVIDIA boards whose power
+// limits read [N/A]. A node known only from its labels reports nothing.
 func agentReportsNoGPUControl(nh NodeHardware) bool {
 	return nh.GPUReported && !nh.GPUControlAvailable
 }
@@ -1130,6 +1141,7 @@ func parseNodeHardware(obj *v1alpha1.NodeHardware) NodeHardware {
 		nh.GPUModel = gpu.Model
 		nh.GPURawModel = gpu.RawModel
 		nh.GPUCount = gpu.Count
+		nh.GPUPowerDomains = gpu.PowerDomains
 		if cr := gpu.CapRangePerGPU; cr != nil {
 			nh.GPUCapMinWatts = cr.MinWatts
 			nh.GPUCapMaxWatts = cr.MaxWatts
@@ -1206,13 +1218,14 @@ func firstNonEmpty(values ...string) string {
 
 // estimateNodePowerW estimates the total power draw of a node from its hardware
 // specs and current cap percentages. Used for per-rack PSU stress aggregation.
+// The per-GPU maximum counts once per GPU that holds a limit of its own.
 func estimateNodePowerW(nh NodeHardware, cpuCapPct, gpuCapPct float64) float64 {
 	var powerW float64
 	if nh.CPUCapMaxWatts > 0 {
 		powerW += nh.CPUCapMaxWatts * float64(nh.CPUSockets) * (cpuCapPct / 100.0)
 	}
 	if nh.GPUCapMaxWatts > 0 {
-		powerW += nh.GPUCapMaxWatts * float64(nh.GPUCount) * (gpuCapPct / 100.0)
+		powerW += nh.GPUCapMaxWatts * float64(joulie.GPUPowerDomains(nh.GPUCount, nh.GPUPowerDomains)) * (gpuCapPct / 100.0)
 	}
 	return powerW
 }

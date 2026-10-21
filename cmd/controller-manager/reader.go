@@ -127,6 +127,7 @@ func twinHardwareFromNodeHardware(nodeName string, obj *v1alpha1.NodeHardware) j
 		hw.GPU.RawModel = gpu.RawModel
 		hw.GPU.Count = gpu.Count
 		hw.GPU.ControlAvailable = gpu.ControlAvailable
+		hw.GPU.PowerDomains = gpu.PowerDomains
 		if cr := gpu.CapRangePerGPU; cr != nil {
 			hw.GPU.CapRange.MaxWatts = cr.MaxWatts
 			hw.GPU.CapRange.MinWatts = cr.MinWatts

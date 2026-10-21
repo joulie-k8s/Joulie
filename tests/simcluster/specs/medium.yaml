@@ -1,8 +1,8 @@
-# Medium cluster for the nightly run: 50 Nodes, of which 46 get an agent.
+# Medium cluster for the nightly run: 50 Nodes, of which 48 get an agent.
 # The pools are chosen for coverage, not to mirror any deployment: every
 # builtin hardware family with at least 2 Nodes, and one pool per case the
 # smoke spec leaves out (GPU sharing, no NFD labels, no GPU driver tools, GPU
-# Nodes the agent does not reach, Nodes Joulie does not manage).
+# Nodes with a taint of their own, Nodes Joulie does not manage).
 # Every profile is builtin; local profiles never appear in a committed spec.
 apiVersion: sim.joulie.io/v1alpha1
 kind: ClusterSpec
@@ -22,8 +22,8 @@ spec:
   - {name: nvl-mig, profile: nvidia-h100-nvl-8gpu, count: 2, overrides: {gpus: {exposure: mig-mixed, migProfile: 1g.12gb, migDevicesPerGPU: 7}}}
   # The harness section below gives these Nodes no driver stub, so the GPU tools fail.
   - {name: nvl-nodriver, profile: nvidia-h100-nvl-8gpu, count: 2}
-  # GPU Nodes reserved by a taint the agent does not tolerate (its defaults cover only the GPU vendor
-  # taints, which the profile already sets): Joulie plans caps for these Nodes that no agent enforces.
+  # GPU Nodes reserved by a taint of their own, beside the GPU vendor taint the profile sets: the
+  # agent tolerates every taint, so it enforces the caps Joulie plans here.
   - {name: nvl-tainted, profile: nvidia-h100-nvl-8gpu, count: 2, taints: [{key: example.com/dedicated, value: gpu, effect: NoSchedule}]}
   - {name: sxm, profile: nvidia-h100-sxm-8gpu, count: 2}
   # Time-slicing with renamed resources, 4 replicas: the example of the NVIDIA GPU Operator

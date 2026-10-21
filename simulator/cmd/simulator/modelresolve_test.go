@@ -342,3 +342,27 @@ func TestAMDLabelOnlyNodeResolvesLikeTheControllerManager(t *testing.T) {
 		})
 	}
 }
+
+// A node whose only GPU facts are the labels of Intel's NFD rules resolves
+// to the catalogue entry gpu.intel.com/product names, as the controller
+// manager reads that label before the AMD family code.
+func TestIntelLabelOnlyNodeResolvesLikeTheControllerManager(t *testing.T) {
+	clearSimEnv(t)
+	s, _ := mrSimulator(t, nil)
+	for _, tc := range []struct {
+		name   string
+		labels map[string]string
+		want   string
+	}{
+		{"flex 170", map[string]string{"gpu.intel.com/family": "Flex_Series", "gpu.intel.com/product": "Flex_170"}, "INTEL_DATA_CENTER_GPU_FLEX_170"},
+		{"max 1550", map[string]string{"gpu.intel.com/family": "Max_Series", "gpu.intel.com/product": "Max_1550"}, "INTEL_DATA_CENTER_GPU_MAX_1550"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			labels := mrMergeLabels(tc.labels, map[string]string{"joulie.io/hw.gpu-count": "4"})
+			model, class := s.resolveModelForNode(labels)
+			if model.GPU.Product != tc.want {
+				t.Fatalf("GPU %q (class %s), want the catalogue's %s, as the controller manager resolves it", model.GPU.Product, class, tc.want)
+			}
+		})
+	}
+}

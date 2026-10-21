@@ -1,0 +1,7 @@
+# Simulator values for the simulated cluster in FUSE mode
+# (SIMCLUSTER_HWEMU=fuse, the default; scripts/simcluster/lib.sh adds this
+# file after values/simcluster-simulator.yaml). The simulator serves every
+# emulated node's sys and state through FUSE under emulate.root/fuse, which
+# the agents of values/simcluster-fuse.yaml mount.
+emulate:
+  fuse: true

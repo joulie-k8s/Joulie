@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -206,27 +207,30 @@ func TestPL07ArchitectureMustMatchTheImage(t *testing.T) {
 		map[string]string{"both": "taint example.com/x:NoSchedule; architecture arm64, the agent image is amd64"})
 }
 
-// PL08: with the chart's real DaemonSet render, smoke's intel-tainted-0 is
-// left out for its taint and nothing else (D15).
-func TestPL08SmokeTaintedNodeExcluded(t *testing.T) {
-	_, excluded := EligibleNodes(testNodes(testExpand(t, testSmokeSpec)), testRenderPlacement(t))
-	for _, e := range excluded {
-		if e.Node == "intel-tainted-0" {
-			if e.Reason != "taint example.com/dedicated=batch:NoSchedule" {
-				t.Errorf("intel-tainted-0 excluded for %q, want taint example.com/dedicated=batch:NoSchedule", e.Reason)
-			}
-			return
+// PL08: with the chart's real DaemonSet render, which tolerates every taint,
+// smoke's intel-tainted-0 and its GPU Nodes, tainted by their vendor, are
+// eligible (D15), and intel-arm64-0 is the one Node left out, for its
+// architecture alone.
+func TestPL08SmokeLeavesOutOnlyTheOtherArchitecture(t *testing.T) {
+	eligible, excluded := EligibleNodes(testNodes(testExpand(t, testSmokeSpec)), testRenderPlacement(t))
+	for _, want := range []string{"intel-tainted-0", "mi300x-0", "nvl-0", "sxm-nopm-0"} {
+		if !slices.Contains(eligible, want) {
+			t.Errorf("%s is not eligible (D15); excluded: %v", want, excluded)
 		}
 	}
-	t.Errorf("intel-tainted-0 is eligible; excluded: %v", excluded)
+	want := []Exclusion{{Node: "intel-arm64-0", Reason: "architecture arm64, the agent image is amd64"}}
+	if !reflect.DeepEqual(excluded, want) {
+		t.Errorf("excluded %v, want %v", excluded, want)
+	}
 }
 
 // PL09: the agent DaemonSet the chart renders today, with the values of the
-// simulated cluster, reaches 46 of medium's 50 Nodes. It renders the chart
+// simulated cluster, reaches 48 of medium's 50 Nodes: all but the unmanaged
+// pool. It renders the chart
 // with helm, as the scripts do, and skips without helm. A medium.yaml
 // that does not expand fails it: up.sh and simcluster validate refuse such
 // a spec too, and no other test loads it through clusterspec.
-func TestPL09MediumGives46EligibleNodes(t *testing.T) {
+func TestPL09MediumGives48EligibleNodes(t *testing.T) {
 	helm, err := exec.LookPath("helm")
 	if err != nil {
 		t.Skip("helm is not on PATH")
@@ -252,12 +256,12 @@ func TestPL09MediumGives46EligibleNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	eligible, excluded := EligibleNodes(testNodes(members), p)
-	if len(members) != 50 || len(eligible) != 46 {
+	if len(members) != 50 || len(eligible) != 48 {
 		var lines []string
 		for _, e := range excluded {
 			lines = append(lines, e.Node+": "+e.Reason)
 		}
-		t.Errorf("medium: %d of %d Nodes eligible, want 46 of 50; excluded:\n  %s", len(eligible), len(members), strings.Join(lines, "\n  "))
+		t.Errorf("medium: %d of %d Nodes eligible, want 48 of 50; excluded:\n  %s", len(eligible), len(members), strings.Join(lines, "\n  "))
 	}
 }
 
@@ -265,7 +269,7 @@ func TestPL09MediumGives46EligibleNodes(t *testing.T) {
 // network from the render, and refuses a render it cannot model.
 func TestPlacementFromRender(t *testing.T) {
 	p := testRenderPlacement(t)
-	want := Placement{NodeSelector: testManaged, HostNetwork: true, ImageArch: "amd64"}
+	want := Placement{NodeSelector: testManaged, Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpExists}}, HostNetwork: true, ImageArch: "amd64"}
 	if !reflect.DeepEqual(p, want) {
 		t.Errorf("placement %+v, want %+v", p, want)
 	}
