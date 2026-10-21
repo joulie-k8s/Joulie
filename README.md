@@ -1,13 +1,36 @@
-[![CI](https://github.com/joulie-k8s/Joulie/actions/workflows/ci.yml/badge.svg)](https://github.com/joulie-k8s/Joulie/actions/workflows/ci.yml)
-[![Release](https://github.com/joulie-k8s/Joulie/actions/workflows/release.yml/badge.svg)](https://github.com/joulie-k8s/Joulie/actions/workflows/release.yml)
+<p align="center">
+  <img src="website/static/images/logo.png" alt="Joulie" width="110">
+</p>
 
-# Joulie
+<h1 align="center">Joulie</h1>
 
-**Kubernetes-native energy management for data centers, powered by digital twins.**
+<p align="center">Kubernetes-native energy management for data centers, powered by digital twins.</p>
 
-![kubectl joulie: the cluster status, a node in detail and the live dashboard on a simulated 10-node cluster](website/static/images/kubectl-joulie.gif)
+<p align="center">
+  <a href="https://github.com/joulie-k8s/Joulie/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/joulie-k8s/Joulie/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white"></a>
+  <a href="https://github.com/joulie-k8s/Joulie/actions/workflows/simcluster.yml"><img alt="Simulated cluster" src="https://img.shields.io/github/actions/workflow/status/joulie-k8s/Joulie/simcluster.yml?branch=main&label=simulated%20cluster&logo=kubernetes&logoColor=white"></a>
+  <a href="https://github.com/joulie-k8s/Joulie/actions/workflows/vulnscan-nightly.yml"><img alt="Vulnerability scan" src="https://img.shields.io/github/actions/workflow/status/joulie-k8s/Joulie/vulnscan-nightly.yml?branch=main&label=vulnerability%20scan&logo=springsecurity&logoColor=white"></a>
+  <a href="https://github.com/joulie-k8s/Joulie/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/joulie-k8s/Joulie?label=release&color=F5B400&logo=helm&logoColor=white"></a>
+  <a href="go.mod"><img alt="Go" src="https://img.shields.io/github/go-mod/go-version/joulie-k8s/Joulie?logo=go&logoColor=white"></a>
+</p>
+<p align="center">
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/"><img alt="Docs" src="https://img.shields.io/badge/docs-joulie--k8s.github.io-F5B400?logo=hugo&logoColor=white"></a>
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/quickstart/#kubectl-plugin"><img alt="kubectl plugin" src="https://img.shields.io/badge/kubectl_plugin-kubectl_joulie-326CE5?logo=kubernetes&logoColor=white"></a>
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/architecture/telemetry/"><img alt="OpenTelemetry" src="https://img.shields.io/badge/telemetry-OpenTelemetry-425CC7?logo=opentelemetry&logoColor=white"></a>
+  <a href="ci/"><img alt="Tested with Dagger" src="https://img.shields.io/badge/tested_with-Dagger_v0.21-6E40C9"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache_2.0-blue"></a>
+</p>
 
-Visit the docs at [joulie-k8s.github.io/Joulie](https://joulie-k8s.github.io/Joulie/)
+<p align="center">
+  <img src="website/static/images/kubectl-joulie.gif" alt="kubectl joulie: the cluster status, a node in detail and the live dashboard on a simulated 10-node cluster" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/">Documentation</a> ·
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/quickstart/">Quickstart</a> ·
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/architecture/">Architecture</a> ·
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/experiments/">Experiments</a>
+</p>
 
 ## What it is
 

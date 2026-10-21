@@ -520,6 +520,22 @@ The `kubectl joulie` plugin reads the cluster through your kubeconfig, as kubect
 | `-n`, `--namespace` | all namespaces | `pods` only: list the pods of this namespace alone, which needs no permission to list pods cluster-wide. The node columns of the live dashboard then count these pods only |
 | `--kubeconfig`, `--context`, `--cluster`, `--user`, `--server`, `--token` | as kubectl | As in kubectl |
 
-The node table drops the columns that do not fit the terminal, in this order: `MEM`, `TREND`, `HARDWARE`, `COOLING`, `HEADROOM`.
+The node table of `status` and `top`:
+
+| Column | Shows |
+|--------|-------|
+| `NODE` | The node name |
+| `HARDWARE` | The node's GPUs (count and model) or, on a node without GPUs, its CPUs (sockets and model), from its `NodeHardware` |
+| `CLASS` | The `NodeTwin`'s schedulable class: `performance`, `eco`, `draining` or `unknown` |
+| `POWER` | The measured node power, and a bar of it against the node's capped power (its TDP while no cap is known); the power source when nothing measures it |
+| `TREND` | The twin's power trend in W/min; in `top`, a sparkline of the measured power, each block the share of the capped power it reaches |
+| `CAP CPU·GPU` | The effective CPU and GPU caps in percent of the maximum; `-` for the GPU of a node without GPUs, and for both while the twin has no cap state |
+| `HEADROOM`, `COOLING` | The twin's predicted power headroom and cooling stress, 0 to 100 |
+| `CPU`, `MEM` | Requested over allocatable, summed over the pods bound to the node that have not finished |
+| `GPU` | GPUs requested over allocatable, counting whole GPUs, MIG devices, AMD partitions and shared replicas, each weighted by its share of a GPU; `-` for a node without GPU resources |
+| `PODS` | The pods on the node; `▲n` counts its performance pods |
+| `AGENT` | The `AgentReporting` condition: `✓`, `✗` with its reason, `?` before the controller manager writes it |
+
+The table drops the columns that do not fit the terminal, in this order: `MEM`, `TREND`, `HARDWARE`, `COOLING`, `HEADROOM`.
 
 `-o json` prints `time`, `summary` (`nodes` per class, `pods`, `performancePods`, `misplacedPods`, `podsError`, `measuredPowerW`, `cappedPowerW`, `tdpW`, `powerTrendWPerMin`, `avgHeadroomPct`, `avgCoolingStressPct`, `avgPsuStressPct`, `avgPUE`, `agentsReporting`, `agentsNotReporting`), `nodes` for `status` and `node` (`name`, `class`, `cpuModel`, `sockets`, `gpuModel`, `gpus`, `powerSource`, `measuredPowerW`, `cappedPowerW`, `tdpW`, `powerTrendWPerMin`, `cpuCapPct`, `gpuCapPct`, `headroomPct`, `coolingStressPct`, `psuStressPct`, `cpuRequestedPct`, `memoryRequestedPct`, `gpuRequestedPct`, `pods`, `performancePods`, `agentReporting`, `agentReason`) and `pods` for `pods` and `node` (`namespace`, `name`, `class`, `node`, `nodeClass`, `misplaced`, `cpu`, `gpus`). `cpuCapPct` and `gpuCapPct` are left out while the twin has no cap state yet, and the GPU fields for a node without GPUs. `podsError` is set when the pods could not be listed; the pod counts are then unknown, not zero. A command's list is present even when empty (`"pods": []`).

@@ -5,7 +5,7 @@ Output out/kubectl-joulie.gif
 Set Shell bash
 Set FontSize 14
 Set Width 1500
-Set Height 760
+Set Height 500
 Set Padding 18
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 40ms

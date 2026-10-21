@@ -201,7 +201,7 @@ func nodeDetail(c cluster, n nodeView, context string, width int, history []floa
 	}
 	updated := ""
 	if !n.updated.IsZero() {
-		updated = stMuted.Render("twin updated " + ago(c.taken.Sub(n.updated)) + " ago")
+		updated = stMuted.Render("digital twin updated " + ago(c.taken.Sub(n.updated)) + " ago")
 	}
 	title := stBold.Render(n.name) + "  " + classBadge(n.class)
 	if n.profile != "" && n.profile != n.class {
@@ -210,7 +210,7 @@ func nodeDetail(c cluster, n nodeView, context string, width int, history []floa
 	title += "  " + agent + "  " + updated
 
 	top := pair("Hardware", kv(hw), "Power", kv(power), width)
-	mid := pair("Twin", kv(scores), "Control", kv(ctl), width)
+	mid := pair("Digital Twin", kv(scores), "Control", kv(ctl), width)
 
 	var pods []podView
 	for _, p := range c.pods {

@@ -17,7 +17,7 @@ Results from simulated benchmark experiments (Kind + KWOK clusters with physics-
 - **20-29% cluster power savings** in heterogeneous GPU/CPU workloads through combined capping and scheduling.
 - **6.4% savings from scheduling alone** -- energy-aware pod placement reduces consumption without any power cap enforcement (validated on a simulated 2,500-node cluster).
 - **Zero application impact** -- workload-class annotations let performance-critical pods bypass power constraints while background jobs absorb savings.
-- **Full observability** -- `kubectl joulie status`, Grafana dashboards, and Prometheus metrics give immediate visibility into per-node energy state.
+- **Full observability** -- `kubectl joulie` (cluster status, live dashboard, node details, pod placement), Grafana dashboards, and Prometheus metrics give immediate visibility into per-node energy state.
 
 ## Where to start
 

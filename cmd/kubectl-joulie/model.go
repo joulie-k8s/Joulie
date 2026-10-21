@@ -27,7 +27,7 @@ var (
 
 // errNotInstalled is returned when the cluster serves no NodeTwin, which
 // means Joulie's CRDs are not installed.
-var errNotInstalled = errors.New("the cluster has no NodeTwin resource: is Joulie installed? (https://joulie-k8s.github.io/Joulie/docs/getting-started/)")
+var errNotInstalled = errors.New("the cluster has no NodeTwin resource: is Joulie installed? (https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/quickstart/)")
 
 // The schedulable classes of NodeTwin.status.schedulableClass.
 const (

@@ -3,7 +3,7 @@
 End-to-end demo of the Joulie energy management system on a 6-node simulated
 heterogeneous cluster. Uses KWOK fake nodes, the Joulie simulator for power
 telemetry, and the full Joulie control loop (controller manager + agent + scheduler).
-The `kubectl joulie status` plugin shows live cluster energy state.
+The `kubectl joulie` plugin shows live cluster energy state.
 
 **Cluster layout:**
 
@@ -64,30 +64,20 @@ pods appear across the cluster with realistic CPU, memory, and GPU requests.
 **Step 3: watch the live energy state**
 
 ```
-kubectl joulie status -W
+kubectl joulie top
 ```
 
-Watch mode refreshes every 2 seconds: headroom drops, cooling stress rises,
-caps get applied. Open Grafana to see the "Joulie Overview" dashboard.
+The live dashboard refreshes every 2 seconds: headroom drops, cooling stress
+rises, caps get applied; `enter` opens a node, `p` the pod placement. Open Grafana to see the "Joulie Overview" dashboard.
 
 **Step 4: reset**
 
 Stops the simulator, deletes all workload pods, and shows the cluster returning
 to idle.
 
-## kubectl joulie status columns
+## kubectl joulie columns
 
-| Column | Meaning |
-|--------|---------|
-| CLASS | Controller-manager-assigned power profile (eco / performance / draining) |
-| HEADROOM | % of capped power budget remaining unused |
-| COOLING | Thermal stress: fraction of physical cooling capacity in use |
-| CPU% | CPU cores requested vs allocatable |
-| MEM% | Memory requested vs allocatable |
-| GPU% | GPUs requested vs allocatable, counting whole GPUs, MIG devices, AMD partitions and shared replicas, each weighted by its share of a GPU (`-` for nodes without GPU resources) |
-| PODS | Running pods on this node |
-| CPU CAP | Current CPU power cap percentage |
-| GPU CAP | Current GPU power cap percentage (`-` for CPU-only nodes) |
+The columns of the node table are described in the [configuration reference](../../website/content/en/docs/getting-started/05-configuration-reference.md#kubectl-plugin).
 
 ## Architecture
 

@@ -23,4 +23,4 @@ By the end, you should understand:
 - how workload placement intent is expressed via pod annotations,
 - how to configure and run Joulie in real-node and simulator workflows.
 
-Once installed, use `kubectl joulie status` (the kubectl plugin) for a quick per-node overview of power profiles, cap settings, and twin stress scores.
+Once installed, use `kubectl joulie` (the kubectl plugin) for a per-node overview of power, power profiles, applied caps and digital twin scores, and `kubectl joulie top` for the live dashboard.
