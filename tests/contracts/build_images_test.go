@@ -16,20 +16,21 @@ import (
 )
 
 // The Joulie images are built by the Dockerfiles (the release workflow builds
-// Dockerfile and simulator/Dockerfile) and by the Dagger module of the
-// integration run. The golang image sets GOTOOLCHAIN=local and builds with its
+// Dockerfile and simulator/Dockerfile) and by the Dagger module of CI. The golang image sets GOTOOLCHAIN=local and builds with its
 // own release whatever go.mod asks for, so its tag must be the go.mod
 // toolchain: otherwise a toolchain bump that fixes a vulnerability never
 // reaches the shipped binaries. Every base image is named by digest, so a
 // moved tag cannot change a shipped image without a diff in this repository.
 
-const daggerModule = "ci/src/joulie_ci/__init__.py"
+// daggerLiterals holds every image the Dagger module of CI runs.
+const daggerLiterals = "ci/src/joulie_ci/literals.py"
 
 var (
 	golangTagRE = regexp.MustCompile(`golang:([0-9][0-9.]*[0-9])`)
 	digestRE    = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
 	fromRE      = regexp.MustCompile(`(?i)^FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?`)
-	daggerRefRE = regexp.MustCompile(`"((?:golang:|gcr\.io/distroless/)[^"]*)"`)
+	// daggerImageRE is an image constant of daggerLiterals, NAME_IMAGE = "...".
+	daggerImageRE = regexp.MustCompile(`^([A-Z0-9_]+_IMAGE)\s*=\s*"([^"]+)"`)
 )
 
 // goModToolchain returns the release of the go.mod toolchain line, without
@@ -170,11 +171,23 @@ func baseImageRefs(t *testing.T, root string) []imageRef {
 	if dockerfiles < 2 {
 		t.Fatalf("found %d Dockerfiles, want at least Dockerfile and simulator/Dockerfile", dockerfiles)
 	}
-	lines(t, root, daggerModule, func(n int, line string) {
-		for _, m := range daggerRefRE.FindAllStringSubmatch(line, -1) {
-			refs = append(refs, imageRef{daggerModule + ":" + strconv.Itoa(n), m[1]})
+	// Every image the Dagger module runs is pinned by digest too, except
+	// K3S_IMAGE: that one is versions.env's K3S_IMAGE, which the simulated
+	// cluster pins by tag (TestM03K3sImageMatchesDagger in tests/simcluster).
+	daggerImages := 0
+	lines(t, root, daggerLiterals, func(n int, line string) {
+		m := daggerImageRE.FindStringSubmatch(line)
+		if m == nil {
+			return
+		}
+		daggerImages++
+		if m[1] != "K3S_IMAGE" {
+			refs = append(refs, imageRef{daggerLiterals + ":" + strconv.Itoa(n), m[2]})
 		}
 	})
+	if daggerImages == 0 {
+		t.Fatalf("%s names no NAME_IMAGE constant; if the module's images moved, update daggerLiterals", daggerLiterals)
+	}
 	return refs
 }
 
@@ -208,9 +221,9 @@ const imageIndexDir = "tests/contracts/testdata/image-indexes"
 // publishes; each base image must provide all of them.
 var releasePlatforms = []string{"linux/amd64", "linux/arm64"}
 
-// TestImageBasesAreMultiArchIndexes checks that every pinned base image
-// (the Dockerfiles, the Dagger module and DISTROLESS_STATIC) names a
-// multi-arch index, not the manifest of one platform, and that the index
+// TestImageBasesAreMultiArchIndexes checks that every pinned base image of
+// the release (the Dockerfiles and DISTROLESS_STATIC) names a multi-arch
+// index, not the manifest of one platform, and that the index
 // lists every release platform: a single-platform digest would build an
 // image of another architecture, or fail, for the other platforms.
 func TestImageBasesAreMultiArchIndexes(t *testing.T) {
@@ -218,6 +231,12 @@ func TestImageBasesAreMultiArchIndexes(t *testing.T) {
 	refs := append(baseImageRefs(t, root), imageRef{"scripts/simcluster/versions.env DISTROLESS_STATIC", simDistrolessBase(t, root)})
 	checked := map[string]bool{}
 	for _, r := range refs {
+		// The Dagger module's own images run the checks on the runner's
+		// platform and are no release base; its golang image is the
+		// Dockerfiles' one, which TestImageBasesArePinnedByDigest holds equal.
+		if strings.HasPrefix(r.where, daggerLiterals+":") {
+			continue
+		}
 		image, digest, ok := strings.Cut(r.image, "@sha256:")
 		if !ok || checked[digest] {
 			continue // a missing digest is TestImageBasesArePinnedByDigest's to report

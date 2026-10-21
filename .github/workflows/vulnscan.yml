@@ -1,0 +1,45 @@
+name: vulnscan
+
+# The dependency gate: on a pull request that changes a dependency manifest,
+# osv-scanner and govulncheck (the vulnscan function of the Dagger module in
+# ci/) must find no vulnerability the code reaches, unless osv-scanner.toml
+# ignores it. It runs only then: an advisory published today would fail any
+# other pull request for a reason the change did not bring. The nightly scan
+# (vulnscan-nightly.yml) catches those, and dispatches this workflow on the
+# pull request of its fixes. The paths are the manifests of VULN_MANIFESTS
+# in ci/src/joulie_ci/literals.py with their go.sum; tests/contracts checks.
+on:
+  pull_request:
+    paths:
+      - "go.mod"
+      - "go.sum"
+      - "tests/promql/go.mod"
+      - "tests/promql/go.sum"
+      - "website/go.mod"
+      - "website/go.sum"
+      - "experiments/01-cpu-only-benchmark/requirements.txt"
+      - "experiments/02-heterogeneous-benchmark/requirements.txt"
+      - "experiments/03-homogeneous-h100-benchmark/requirements.txt"
+      - "osv-scanner.toml"
+      - ".github/workflows/vulnscan.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vulnscan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Scan the dependencies
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.21.10"
+          verb: call
+          module: ./ci
+          args: vulnscan --source=.
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
