@@ -4,21 +4,13 @@ The user-visible changes of each release, what to check when upgrading, and the 
 
 ## Unreleased
 
+## v0.2.4 (2026-10-21)
+
 ### kubectl plugin
 
 - `kubectl joulie status` draws the cluster as styled tables: a summary of measured, capped and TDP power, nodes and power per class, pods per class and the facility scores, then one row per node with its hardware, class, power against its cap, trend, applied caps, digital twin scores, requested resources, pods and agent condition. Columns that do not fit the terminal are dropped. (#85)
 - New commands: `top`, a live dashboard with a power sparkline per node, node details and pod placement; `node NAME`; `pods`, which flags a performance pod on an eco node; `version`. `-o json` prints the same data for scripts, and the kubectl flags (`--kubeconfig`, `--context`, `-n` and the others) work as in kubectl. (#85)
 - Install with Krew, `kubectl krew install joulie`, once the plugin is in the Krew index. Each release attaches `kubectl-joulie_<tag>_<os>_<arch>.tar.gz` archives, Windows included, besides the bare binaries. (#85)
-
-### Upgrading
-
-- A script that parsed the text of `kubectl joulie status` reads `kubectl joulie status -o json` instead.
-
-### Security
-
-- Vulnerabilities are reported privately through a GitHub security advisory, as [SECURITY.md](SECURITY.md) describes. (#85)
-
-## v0.2.4 (2026-10-21)
 
 ### GPU control
 
@@ -48,11 +40,13 @@ The user-visible changes of each release, what to check when upgrading, and the 
 
 - Apply the new CRDs before `helm upgrade`: the governor fields and the `AgentReporting` condition need them. The [upgrade guide](https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/06-upgrading/) lists every step.
 - Agent pods now start on tainted managed nodes. To keep the agent off some of them, list the taints it may tolerate in `agent.tolerations`.
+- A script that parsed the text of `kubectl joulie status` reads `kubectl joulie status -o json` instead.
 
 ### Security
 
 - The binaries and images are built with Go 1.26.10 instead of Go 1.22.9, with every Go standard library fix in between, GO-2026-6809 (`crypto/x509`) among them. (#74, #84)
 - CI actions are pinned by commit and container base images by digest, and the dependencies are scanned with osv-scanner and govulncheck on every change to a manifest and nightly. (#74, #84)
+- Vulnerabilities are reported privately through a GitHub security advisory, as [SECURITY.md](SECURITY.md) describes. (#85)
 
 ## Earlier releases
 
