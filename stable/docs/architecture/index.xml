@@ -41,7 +41,7 @@ which nodes should currently supply &lt;code&gt;performance&lt;/code&gt; capacit
 &lt;li&gt;classifies workload demand from pod scheduling constraints,&lt;/li&gt;
 &lt;li&gt;runs a policy algorithm (&lt;code&gt;pkg/controller/policy/&lt;/code&gt;) to compute a plan,&lt;/li&gt;
 &lt;li&gt;applies transition guards for safe downgrades,&lt;/li&gt;
-&lt;li&gt;writes desired node targets (&lt;code&gt;NodeTwin.spec&lt;/code&gt;) and the &lt;code&gt;joulie.io/power-profile&lt;/code&gt; node label.&lt;/li&gt;
+&lt;li&gt;writes desired node targets (&lt;code&gt;NodeTwin.spec&lt;/code&gt;: caps and, with governor control on, governor presets) and the &lt;code&gt;joulie.io/power-profile&lt;/code&gt; node label.&lt;/li&gt;
 &lt;/ol&gt;
 &lt;p&gt;The agent then enforces those targets node-by-node.&lt;/p&gt;</description></item><item><title>Joulie Agent</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/agent/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/agent/</guid><description>&lt;p&gt;The agent is Joulie&amp;rsquo;s node-side enforcement component.&lt;/p&gt;
 &lt;p&gt;It consumes desired state and applies node-local controls through configured backends.&lt;/p&gt;
@@ -136,11 +136,11 @@ the agent is the component that turns that intent into concrete control actions.
 6. kube-scheduler combines Joulie scores with its own plugin scores
  |
 7. Pod is bound to the highest-scoring node
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;The extender participates in steps 4 and 5 only. It does not replace the Kubernetes scheduler — it extends it with energy-aware filter and scoring logic.&lt;/p&gt;</description></item><item><title>Energy-Aware Scheduling</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/energy-aware-scheduling/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/energy-aware-scheduling/</guid><description>&lt;p&gt;Joulie&amp;rsquo;s scheduler extender makes placement decisions informed by real-time energy telemetry, workload characteristics, and facility-level power conditions. This page describes the full pipeline from metrics collection through scoring and optional rescheduling.&lt;/p&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;The extender participates in steps 4 and 5 only. It does not replace the Kubernetes scheduler; it extends it with energy-aware filter and scoring logic.&lt;/p&gt;</description></item><item><title>Energy-Aware Scheduling</title><link>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/energy-aware-scheduling/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/stable/docs/architecture/energy-aware-scheduling/</guid><description>&lt;p&gt;Joulie&amp;rsquo;s scheduler extender makes placement decisions informed by real-time energy telemetry, workload characteristics, and facility-level power conditions. This page describes the full pipeline from metrics collection through scoring and optional rescheduling.&lt;/p&gt;
 &lt;h2 id="end-to-end-pipeline"&gt;End-to-end pipeline&lt;/h2&gt;
 &lt;p&gt;The energy-aware scheduling pipeline has five stages:&lt;/p&gt;
-&lt;pre tabindex="0"&gt;&lt;code&gt;Kepler + RAPL/NVML telemetry
- -&amp;gt; Prometheus (scrape &amp;amp; store)
+&lt;pre tabindex="0"&gt;&lt;code&gt;RAPL/NVML readings as OpenTelemetry metrics (or Kepler)
+ -&amp;gt; Prometheus (OTLP receiver, or scrape)
  -&amp;gt; Digital twin (NodeTwin.status)
  -&amp;gt; Scheduler extender (filter + score)
  -&amp;gt; Placement decision
@@ -272,13 +272,5 @@ Simulator metrics are documented separately in:&lt;/p&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
-&lt;h3 id="reliability"&gt;Reliability&lt;/h3&gt;
-&lt;ul&gt;
-&lt;li&gt;&lt;code&gt;joulie_reconcile_errors_total{node}&lt;/code&gt; (counter)
-&lt;ul&gt;
-&lt;li&gt;reconcile-loop errors&lt;/li&gt;
-&lt;/ul&gt;
-&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id="policy-controller-metrics"&gt;Policy controller metrics&lt;/h2&gt;
-&lt;p&gt;Exported by the controller manager. Until the next minor release each metric is also exported under its old &lt;code&gt;joulie_operator_*&lt;/code&gt; name (same labels, same values, help text &lt;code&gt;Deprecated, use joulie_policy_...&lt;/code&gt;); update dashboards and alerts to the &lt;code&gt;joulie_policy_*&lt;/code&gt; names before that release.&lt;/p&gt;</description></item></channel></rss>
+&lt;h3 id="governors"&gt;Governors&lt;/h3&gt;
+&lt;p&gt;Written by the agent&amp;rsquo;s &lt;a href="https://joulie-k8s.github.io/Joulie/stable/docs/architecture/agent/#governor-control"&gt;governor control&lt;/a&gt;.&lt;/p&gt;</description></item></channel></rss>
