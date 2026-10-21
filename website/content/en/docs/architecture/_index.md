@@ -44,6 +44,7 @@ If you are new, first read:
 | `NodeTwin` | `spec.cpu.governor`, `spec.gpu.governor` | Controller manager (policy) | governor presets; absent means the agent leaves the governor as it is |
 | `NodeTwin` | `status.controlStatus.*` | Agent | what was applied on the node, per component |
 | `NodeTwin` | `status.controlStatus.cpuGovernor`, `status.controlStatus.gpuGovernor` | Agent | outcome of the last governor write, with the native setting in `applied` |
+| `NodeTwin` | `status.conditions` | Controller manager (twin) | `AgentReporting`: whether an agent publishes the node's `NodeHardware`, so whether anything enforces the caps in `spec` |
 | `NodeTwin` | every other `status` field | Controller manager (twin) | the twin's computed state: measured power, headroom, stress scores, PUE |
 
 Rules that follow from the table:

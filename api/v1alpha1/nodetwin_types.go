@@ -124,6 +124,15 @@ type NodeTwinStatus struct {
 	ControlStatus *ControlStatus `json:"controlStatus,omitempty"`
 	// LastUpdated is the RFC3339 time of the last controller manager write.
 	LastUpdated string `json:"lastUpdated,omitempty"`
+	// Conditions are the controller manager's observations of the node.
+	// AgentReporting is True while an agent publishes the node's
+	// NodeHardware, and False when none has published it (reason
+	// NoNodeHardware) or its last write is older than 15 minutes (reason
+	// NodeHardwareStale): the caps in spec are then planned, not enforced.
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // PowerMeasurement holds the measured power data and TDP/cap breakdowns.
@@ -198,6 +207,7 @@ type ControlResult struct {
 // +kubebuilder:printcolumn:name="Draining",type=boolean,JSONPath=".spec.scheduling.draining"
 // +kubebuilder:printcolumn:name="CPU-Gov",type=string,JSONPath=".spec.cpu.governor.preset"
 // +kubebuilder:printcolumn:name="GPU-Gov",type=string,JSONPath=".spec.gpu.governor.preset"
+// +kubebuilder:printcolumn:name="Agent",type=string,JSONPath=".status.conditions[?(@.type==\"AgentReporting\")].status"
 
 // NodeTwin combines a node's desired power state and its computed twin
 // output. spec is written by the controller manager, status by its twin

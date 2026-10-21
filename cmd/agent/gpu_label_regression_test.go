@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/matbun/joulie/simulator/pkg/hwemu/hwemutest"
@@ -48,6 +50,58 @@ func TestGPULabelRegressionAMDModelFromLabellerProductName(t *testing.T) {
 			}
 			if hw.GPUModel != tc.wantModel {
 				t.Errorf("GPU model %q, want catalog key %q", hw.GPUModel, tc.wantModel)
+			}
+		})
+	}
+}
+
+// Regression for D8: hasNFDGPUVendor read only the display classes 0300 and
+// 0302, while an AMD Instinct MI300X enumerates as a processing accelerator
+// (class 0x120000) and NFD labels it pci-1200_1002, so on a node without
+// the GPU tools and amdgpu sysfs the agent found no GPU vendor. The node is
+// a CPU-only emulated node, whose BMC VGA gives the one label
+// pci-0300_102b, so the labels a case adds are the only evidence of a GPU:
+// the vendor must come from them, with no probe run. Every class a GPU
+// driver binds counts for every vendor (nfdGPUClasses).
+func TestD8GPUVendorFromEveryNFDGPUClass(t *testing.T) {
+	const nfd = "feature.node.kubernetes.io/"
+	for _, tc := range []struct {
+		name        string
+		labels      map[string]string
+		wantVendor  string // detectGPUVendor, which knows nvidia and amd only
+		wantVendors []string
+	}{
+		{name: "MI300X processing accelerator", labels: map[string]string{
+			nfd + "pci-1200_1002.present": "true", amdLabellerProduct: "AMD_Instinct_MI300X_OAM",
+		}, wantVendor: "amd", wantVendors: []string{"amd"}},
+		{name: "AMD other display controller", labels: map[string]string{nfd + "pci-0380_1002.present": "true"}, wantVendor: "amd", wantVendors: []string{"amd"}},
+		{name: "NVIDIA processing accelerator", labels: map[string]string{nfd + "pci-1200_10de.present": "true"}, wantVendor: "nvidia", wantVendors: []string{"nvidia"}},
+		{name: "Intel processing accelerator", labels: map[string]string{nfd + "pci-1200_8086.present": "true"}, wantVendor: "none", wantVendors: []string{"intel"}},
+		{name: "Intel other display controller", labels: map[string]string{nfd + "pci-0380_8086.present": "true"}, wantVendor: "none", wantVendors: []string{"intel"}},
+		{name: "a BMC VGA only", wantVendor: "none"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, tree, p := hwemutest.NewNode(t, "intel-xeon-2s-rapl", nil)
+			e := useEmulatedNode(t, tree, nil)
+			node := e.nodeObject(p)
+			for k := range node.Labels {
+				if strings.HasPrefix(k, nfd+"pci-") && k != nfd+"pci-0300_102b.present" {
+					t.Fatalf("the CPU-only node carries %s, so the case does not decide the vendor alone: %v", k, node.Labels)
+				}
+			}
+			for k, v := range tc.labels {
+				node.Labels[k] = v
+			}
+			hw := discoverHardware(context.Background(), node)
+			if hw.GPUVendor != tc.wantVendor || !slices.Equal(hw.GPUVendors, tc.wantVendors) {
+				t.Errorf("gpu vendor %q, vendors %v; want %q and %v from the labels %v (D8)", hw.GPUVendor, hw.GPUVendors, tc.wantVendor, tc.wantVendors, tc.labels)
+			}
+			if tc.wantVendor != "none" {
+				for _, probe := range []string{nvidiaListProbe, rocmProductProbe} {
+					if ran, _ := e.runner.ran(probe); ran {
+						t.Errorf("%s ran, so the vendor did not come from the labels %v (D8); commands: %v", probe, tc.labels, e.runner.commands())
+					}
+				}
 			}
 		})
 	}

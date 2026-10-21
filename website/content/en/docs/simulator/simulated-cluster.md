@@ -53,7 +53,7 @@ kubectl get nodetwins -o custom-columns=NODE:.spec.nodeName,SRC:.status.powerMea
 make simcluster-down SIMCLUSTER_NAME=joulie-sim-smoke
 ```
 
-`make simcluster-smoke` creates the cluster `joulie-sim-smoke` from `tests/simcluster/specs/smoke.yaml`, deploys with `tests/simcluster/smoke-values.yaml`, runs `TestSimclusterE2E`, collects the results and deletes the cluster unless `SIMCLUSTER_KEEP=1`. It builds the images and compiles the test while the cluster starts. The test times out after ten rate windows of the [timing](#timing), at least 20 minutes, unless `SIMCLUSTER_TEST_TIMEOUT` sets another. The smoke spec has eight Nodes: an Intel Xeon with RAPL, an AMD EPYC with energy counters only, an AMD EPYC with HSMP, an H100 NVL node, an H100 SXM node with persistence mode off, an MI300X node, a virtual machine, and a managed Intel node whose taint the agent does not tolerate. The smoke values put every node in performance with CPU and GPU caps at 80 %; the test lowers them to 50 % halfway.
+`make simcluster-smoke` creates the cluster `joulie-sim-smoke` from `tests/simcluster/specs/smoke.yaml`, deploys with `tests/simcluster/smoke-values.yaml`, runs `TestSimclusterE2E`, collects the results and deletes the cluster unless `SIMCLUSTER_KEEP=1`. It builds the images and compiles the test while the cluster starts. The test times out after ten rate windows of the [timing](#timing), at least 20 minutes, unless `SIMCLUSTER_TEST_TIMEOUT` sets another. The smoke spec has nine Nodes: an Intel Xeon with RAPL, an AMD EPYC with energy counters only, an AMD EPYC with HSMP, an H100 NVL node, an H100 SXM node with persistence mode off, an MI300X node, a virtual machine, a managed Intel node with a taint of its own, which the agent tolerates, and a managed arm64 node, which no agent reaches because the images are built for amd64 only. The smoke values put every node in performance with CPU and GPU caps at 80 %; the test lowers them to 50 % halfway.
 
 To keep a cluster and work on it step by step:
 
@@ -87,7 +87,7 @@ The scripts read these variables from the environment; `make` passes on the ones
 |---|---|---|
 | `SIMCLUSTER_NAME` | `joulie-sim`; `joulie-sim-smoke` for the smoke run | Container name and prefix of its volumes. It must match `^joulie-sim(-[a-z0-9]+)*$`: the scripts touch no container or volume named otherwise. |
 | `SIMCLUSTER_DIR` | `${XDG_CACHE_HOME:-~/.cache}/joulie/simcluster/<name>` | State directory, outside the repository (below). |
-| `SIMCLUSTER_SPEC` | `tests/simcluster/specs/smoke.yaml` | The cluster spec. `tests/simcluster/specs/medium.yaml` has 50 Nodes, 46 of them reached by the agent, with GPU sharing, AMD GPUs with a pinned power cap, Nodes without NFD labels or GPU driver tools, and an unmanaged pool. `tests/simcluster/specs/profiles.yaml` has one Node of every builtin profile. |
+| `SIMCLUSTER_SPEC` | `tests/simcluster/specs/smoke.yaml` | The cluster spec. `tests/simcluster/specs/medium.yaml` has 50 Nodes, 48 of them reached by the agent, with GPU sharing, AMD GPUs with a pinned power cap, Nodes without NFD labels or GPU driver tools, and an unmanaged pool. `tests/simcluster/specs/profiles.yaml` has one Node of every builtin profile. |
 | `SIMCLUSTER_NODES` | (empty) | Instead of a spec, this many Nodes of one profile, for scale runs. |
 | `SIMCLUSTER_SCALE_PROFILE` | `intel-xeon-2s-rapl` | The profile of `SIMCLUSTER_NODES`. |
 | `SIMCLUSTER_TELEMETRY` | `otel` | The [telemetry mode](#telemetry-modes). |

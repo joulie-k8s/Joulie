@@ -1,8 +1,9 @@
-# Smoke cluster: 8 Nodes, one per hardware family below plus one tainted
-# Node, all on full background load so every power reading moves. 7 are bare
-# metal; vm-0 is a VM with no power telemetry. The pools are chosen for
-# coverage, not to mirror any deployment. sxm-nopm has GPU persistence off:
-# whenever its GPUs go idle, their power limits fall back to the default.
+# Smoke cluster: 9 Nodes, one per hardware family below plus a tainted Node
+# and an arm64 Node, all on full background load so every power reading
+# moves. 8 are bare metal; vm-0 is a VM with no power telemetry. The pools
+# are chosen for coverage, not to mirror any deployment. sxm-nopm has GPU
+# persistence off: whenever its GPUs go idle, their power limits fall back
+# to the default.
 apiVersion: sim.joulie.io/v1alpha1
 kind: ClusterSpec
 metadata: {name: smoke}
@@ -20,12 +21,22 @@ spec:
   - {name: sxm-nopm,      profile: nvidia-h100-sxm-8gpu,     count: 1, rack: rack-2, coolingZone: zone-b, overrides: {gpus: {persistenceMode: disabled}}}
   - {name: mi300x,        profile: amd-instinct-mi300x-8gpu, count: 1, rack: rack-2, coolingZone: zone-b}
   - {name: vm,            profile: vm-no-powercap,           count: 1}
-  - name: intel-tainted   # a managed node the agent DaemonSet cannot reach (D15)
+  - name: intel-tainted   # a managed node with a taint of its own, which the agent tolerates (D15)
     profile: intel-xeon-2s-rapl
     count: 1
     rack: rack-1
     coolingZone: zone-a
     taints: [{key: example.com/dedicated, value: batch, effect: NoSchedule}]
+  # A managed node no agent reaches (E12): the simulated cluster builds the
+  # agent image for amd64 only (SIM_IMAGE_ARCH), so only the architecture
+  # label matters here, and the profile is the one whose uncapped limits E12
+  # checks.
+  - name: intel-arm64
+    profile: intel-xeon-2s-rapl
+    count: 1
+    rack: rack-1
+    coolingZone: zone-a
+    labels: {kubernetes.io/arch: arm64}
   # The GPU pools get the GPU tools a node with the driver installed has (a
   # driver stub at each path the tools need). A pool left out follows the
   # Joulie install, which by default delivers none (agent.runtimeClassName and

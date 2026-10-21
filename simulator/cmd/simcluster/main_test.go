@@ -46,7 +46,7 @@ func TestCLI01SubcommandsEqualTheLibrary(t *testing.T) {
 
 	t.Run("validate", func(t *testing.T) {
 		code, out, errOut := testRun("validate", "--spec", testSmokeSpec)
-		if code != 0 || !strings.Contains(out, "harness section of cluster spec smoke is valid: 8 Nodes, 7 with measured CPU packages, tool delivery set for pools [nvl: mounted, sxm-nopm: mounted, mi300x: mounted], the install's for the others") {
+		if code != 0 || !strings.Contains(out, "harness section of cluster spec smoke is valid: 9 Nodes, 8 with measured CPU packages, tool delivery set for pools [nvl: mounted, sxm-nopm: mounted, mi300x: mounted], the install's for the others") {
 			t.Errorf("validate: exit %d, stdout %q, stderr %q", code, out, errOut)
 		}
 	})

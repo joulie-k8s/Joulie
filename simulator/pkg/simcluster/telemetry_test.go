@@ -836,7 +836,7 @@ func TestTelemetryChecksPerModeAndScope(t *testing.T) {
 // leaves out the VM.
 func TestWaitNodes(t *testing.T) {
 	got := WaitNodes(testExpand(t, testSmokeSpec))
-	want := []string{"epyc-0", "hsmp-0", "intel-0", "intel-tainted-0", "mi300x-0", "nvl-0", "sxm-nopm-0"}
+	want := []string{"epyc-0", "hsmp-0", "intel-0", "intel-arm64-0", "intel-tainted-0", "mi300x-0", "nvl-0", "sxm-nopm-0"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("wait nodes %v, want %v", got, want)
 	}

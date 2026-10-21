@@ -104,7 +104,7 @@ func TestCS09RenderNodesDecodesIntoExpandedNodes(t *testing.T) {
 func TestValidateExitStatus(t *testing.T) {
 	t.Parallel()
 	code, stdout, stderr := testRun("validate", "-spec", testSmokeSpec)
-	if code != 0 || !strings.Contains(stdout, "cluster spec smoke is valid: 8 pools, 8 Nodes") {
+	if code != 0 || !strings.Contains(stdout, "cluster spec smoke is valid: 9 pools, 9 Nodes") {
 		t.Errorf("smoke: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 	code, _, stderr = testRun("validate", "-spec", filepath.Join(testdata, "invalid.yaml"))
@@ -151,6 +151,7 @@ func TestListPrintsOneLinePerNode(t *testing.T) {
 		"epyc-0 epyc amd-epyc-2s-energy-only rack-1 zone-a",
 		"hsmp-0 hsmp amd-epyc-2s-hsmp rack-1 zone-a",
 		"intel-0 intel intel-xeon-2s-rapl rack-1 zone-a",
+		"intel-arm64-0 intel-arm64 intel-xeon-2s-rapl rack-1 zone-a",
 		"intel-tainted-0 intel-tainted intel-xeon-2s-rapl rack-1 zone-a",
 		"mi300x-0 mi300x amd-instinct-mi300x-8gpu rack-2 zone-b",
 		"nvl-0 nvl nvidia-h100-nvl-8gpu rack-2 zone-b",

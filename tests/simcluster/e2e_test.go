@@ -20,6 +20,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -61,7 +62,7 @@ func TestSimclusterE2E(t *testing.T) {
 	env.check(t, "E06", "series for every Node with a measured CPU package", e2eE06EveryMeasuredNodeReports)
 	e2eInputChecks(t, env)
 	env.check(t, "E11", "the control status of each family", e2eE11ControlStatusPerFamily)
-	env.check(t, "E12", "a cap planned on the unreached Node (D15)", e2eE12UnreachedNodeIsPlannedNotEnforced)
+	env.check(t, "E12", "every managed Node reports whether an agent runs there", e2eE12AgentReportingFollowsTheAgents)
 	env.check(t, "MD01", "shared GPU Nodes planned and capped as GPU Nodes", e2eMD01SharedGPUsArePlannedAsGPUNodes)
 	env.check(t, "MD02", "nfd absent caps through DVFS", e2eMD02NoNFDTakesDVFS)
 	env.check(t, "MD03", "no GPU tools leaves the NVIDIA GPUs alone", e2eMD03NoToolsLeavesGPUsAlone)
@@ -758,18 +759,39 @@ func e2eAllNear(vs []float64, want, tol float64) bool {
 	return len(vs) > 0
 }
 
-// E12, known D15: a managed Node the agent DaemonSet does not reach (in the
-// smoke spec intel-tainted-0, whose taint the agent does not tolerate) has
-// a NodeTwin with a cap and no NodeHardware, as it must; while D15 lasts it
-// also has no controlStatus and its hardware runs at the uncapped limit.
-func e2eE12UnreachedNodeIsPlannedNotEnforced(c *e2eCase) {
+// E12: every managed Node's NodeTwin says whether an agent runs there. A
+// Node with an agent reports AgentReporting True, a tainted one included,
+// since the agent tolerates every taint (D15). A managed Node no agent
+// reaches (in the smoke spec intel-arm64-0: the images are built for amd64
+// only) keeps a NodeTwin with a cap, as the policy plans it, and reports
+// AgentReporting False with reason NoNodeHardware; it has no NodeHardware
+// and no controlStatus, and its hardware runs at the uncapped limit.
+func e2eE12AgentReportingFollowsTheAgents(c *e2eCase) {
 	e := c.env
-	nodes := e.nodesOf(c, e2eFamilyUnreached)
-	if len(nodes) == 0 {
-		c.Skipf("every managed Node has an agent")
+	all, err := e.nodes()
+	if err != nil {
+		c.Fatalf("spec Nodes: %v", err)
+	}
+	var managed, unreached []e2eNode
+	for _, n := range all {
+		if !n.Managed {
+			continue
+		}
+		managed = append(managed, n)
+		if !n.Agent {
+			unreached = append(unreached, n)
+		}
+		for _, taint := range n.Node.Spec.Taints {
+			if taint.Key != clusterspec.KWOKTaintKey && (taint.Effect == corev1.TaintEffectNoSchedule || taint.Effect == corev1.TaintEffectNoExecute) && !n.Agent {
+				c.Errorf("node %s: taint %s keeps the agent off, while the chart's default tolerations take every taint (D15)", n.Name, taint.ToString())
+			}
+		}
+	}
+	if len(managed) == 0 {
+		c.Skipf("no managed Node")
 	}
 	var problems []string
-	err := e2eEventually(e.agentSettle(), func() error {
+	err = e2eEventually(e.agentSettle(), func() error {
 		problems = problems[:0]
 		twins, err := e.twins()
 		if err != nil {
@@ -779,12 +801,21 @@ func e2eE12UnreachedNodeIsPlannedNotEnforced(c *e2eCase) {
 		if err != nil {
 			return err
 		}
-		for _, n := range nodes {
-			if tw, ok := twins[n.Name]; !ok || !e2eHasIntent(tw) {
+		for _, n := range managed {
+			tw, ok := twins[n.Name]
+			if !ok || !e2eHasIntent(tw) {
 				problems = append(problems, fmt.Sprintf("node %s: no NodeTwin with a cap intent", n.Name))
+				continue
 			}
-			if _, ok := hw[n.Name]; ok {
-				problems = append(problems, fmt.Sprintf("node %s has no agent but a NodeHardware", n.Name))
+			want, reason := metav1.ConditionTrue, joulie.ReasonNodeHardwareCurrent
+			if !n.Agent {
+				want, reason = metav1.ConditionFalse, joulie.ReasonNoNodeHardware
+				if _, ok := hw[n.Name]; ok {
+					problems = append(problems, fmt.Sprintf("node %s has no agent but a NodeHardware", n.Name))
+				}
+			}
+			if got := meta.FindStatusCondition(tw.Status.Conditions, joulie.ConditionAgentReporting); got == nil || got.Status != want || got.Reason != reason {
+				problems = append(problems, fmt.Sprintf("node %s (agent %v): AgentReporting %s, want %s with reason %s", n.Name, n.Agent, e2eCondition(got), want, reason))
 			}
 		}
 		if len(problems) > 0 {
@@ -798,6 +829,10 @@ func e2eE12UnreachedNodeIsPlannedNotEnforced(c *e2eCase) {
 		}
 		c.Fatalf("%v", err)
 	}
+	if len(unreached) == 0 {
+		c.Logf("every managed Node has an agent, so no Node reports AgentReporting False")
+		return
+	}
 	twins, err := e.twins()
 	if err != nil {
 		c.Fatalf("NodeTwins: %v", err)
@@ -806,8 +841,11 @@ func e2eE12UnreachedNodeIsPlannedNotEnforced(c *e2eCase) {
 	if err != nil {
 		c.Fatalf("%v", err)
 	}
-	for _, n := range nodes {
+	for _, n := range unreached {
 		tw := twins[n.Name]
+		if tw.Status.ControlStatus != nil {
+			c.Errorf("node %s has no agent but a controlStatus: %s", n.Name, e2eControlStatus(tw.Status.ControlStatus))
+		}
 		sn, ok := e2eSnapshotNode(snap, n.Name)
 		if !ok {
 			c.Errorf("node %s is not in /debug/emulate", n.Name)
@@ -815,13 +853,21 @@ func e2eE12UnreachedNodeIsPlannedNotEnforced(c *e2eCase) {
 		}
 		cpuDefault, gpuDefault := e2eDefaultPackageLimitW(n.Profile), e2eDefaultGPULimitW(n.Profile)
 		cpu, gpu := e2eLimits(sn, semconv.HwTypeCPU), e2eLimits(sn, semconv.HwTypeGPU)
-		uncapped := (cpuDefault == 0 || e2eAllNear(cpu, cpuDefault, e2eLimitTolW)) &&
-			(gpuDefault == 0 || e2eAllNear(gpu, gpuDefault, e2eLimitTolW))
-		reproduced := tw.Status.ControlStatus == nil && uncapped
-		c.knownDefect("D15", reproduced, fmt.Sprintf("node %s: NodeTwin %s, no NodeHardware, controlStatus %s, package limits %v W "+
-			"(uncapped %.1f), GPU limits %v W (uncapped %.1f)", n.Name, e2eIntent(tw), e2eControlStatus(tw.Status.ControlStatus),
-			cpu, cpuDefault, gpu, gpuDefault))
+		if (cpuDefault != 0 && !e2eAllNear(cpu, cpuDefault, e2eLimitTolW)) || (gpuDefault != 0 && !e2eAllNear(gpu, gpuDefault, e2eLimitTolW)) {
+			c.Errorf("node %s has no agent, yet its package limits are %v W (uncapped %.1f) and GPU limits %v W (uncapped %.1f)",
+				n.Name, cpu, cpuDefault, gpu, gpuDefault)
+		}
+		c.Logf("node %s: NodeTwin %s, AgentReporting %s, no NodeHardware, package limits %v W", n.Name, e2eIntent(tw),
+			e2eCondition(meta.FindStatusCondition(tw.Status.Conditions, joulie.ConditionAgentReporting)), cpu)
 	}
+}
+
+// e2eCondition is a condition for messages.
+func e2eCondition(c *metav1.Condition) string {
+	if c == nil {
+		return "absent"
+	}
+	return fmt.Sprintf("%s (%s: %s)", c.Status, c.Reason, c.Message)
 }
 
 func e2eControlStatus(cs *v1alpha1.ControlStatus) string {

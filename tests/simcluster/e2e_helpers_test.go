@@ -592,7 +592,7 @@ const (
 	e2eFamilyNoNFD     = "no-nfd"     // NFD absent (MD02)
 	e2eFamilyNoTools   = "no-tools"   // NVIDIA GPUs, nvidia-smi not delivered (MD03)
 	e2eFamilyUnmanaged = "unmanaged"  // joulie.io/managed is not true (MD04)
-	e2eFamilyUnreached = "unreached"  // managed, no agent (E12, D15)
+	e2eFamilyUnreached = "unreached"  // managed, no agent (E12)
 	e2eFamilyOther     = "other"      // a profile the checks have no expectation for
 )
 

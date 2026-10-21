@@ -15,6 +15,8 @@ The chart values `agent.image.tag`, `controllerManager.image.tag` and `scheduler
 
 Pre-releases (a GitHub pre-release, or a version such as `0.2.0-rc0`) are published under their version only and never move `latest`.
 
+Every image (`joulie-agent`, `joulie-controller-manager`, `joulie-scheduler`, `joulie-simulator`) is a multi-arch index of `linux/amd64` and `linux/arm64`, so each node pulls the image of its own architecture. The kubectl plugin is released for `linux` and `darwin`, each on `amd64` and `arm64`.
+
 ## Agent
 
 | Variable | Default | Description |
@@ -89,7 +91,7 @@ Helm values of `charts/joulie` that shape the agent pods. The DaemonSet and the 
 | Value | Default | Effect |
 |-------|---------|--------|
 | `agent.mode` | `daemonset` | `daemonset`: one agent per node matching `agent.daemonset.nodeSelector`. `pool`: the StatefulSet `joulie-agent-pool` (see "Agent pool mode"). `emulated`: one Deployment per `agent.emulated.nodes` entry, for the simulated cluster. `none`: no agent. |
-| `agent.tolerations` | `nvidia.com/gpu` and `amd.com/gpu`, operator `Exists`, effect `NoSchedule` | Tolerations of the agent pods. GPU nodes usually carry their vendor's `NoSchedule` taint; an agent that does not tolerate it never runs there, and the caps the controller manager plans for those nodes are never enforced. Add any other taint your managed nodes carry; `[]` tolerates none. |
+| `agent.tolerations` | `- operator: Exists` (every taint) | Tolerations of the agent pods. The default tolerates every taint, so the agent runs on every node `agent.daemonset.nodeSelector` picks, GPU nodes with their vendor's taint and dedicated pools included: the node selector, not the taints, decides where it runs. A list replaces the default, and `[]` tolerates none. A managed node the agent does not reach is still planned, its caps are never enforced, and its `NodeTwin` says so (see [Managed nodes without an agent](#managed-nodes-without-an-agent)). |
 | `agent.runtimeClassName` | `""` | RuntimeClass of the agent pods, for example the one of the NVIDIA container runtime, which puts the node's driver tools into the container. |
 | `agent.extraEnv` | `[]` | EnvVar entries added after the chart's own. |
 | `agent.extraVolumes` | `[]` | Volume entries added after the chart's own. |
@@ -115,6 +117,14 @@ kubectl get nodetwins -o custom-columns=NODE:.spec.nodeName,GPU:.status.controlS
 ```
 
 A tool that cannot run shows as `error` with a message starting `gpu inventory failed`, or as `blocked` with `no supported GPU backend detected` when the vendor cannot be told either; the GPUs then keep their limits. On an AMD node without the amdgpu driver the message is `gpu inventory failed: no amdgpu hwmon device under bus/pci/devices`, and a cap the driver refuses, or a read-only `/host-sys`, is `error` naming the GPU's bus id. On an Intel node labelled as one without an i915 or xe hwmon device it is `gpu inventory failed: no i915 or xe hwmon device with a power limit under bus/pci/devices`; Intel GPUs whose driver shows no `power<N>_rated_max` end `blocked` with `the power limit range of the Intel GPUs is unknown`, and a limit the hardware clamps is `error` with the value it reads back. The simulated cluster reproduces both sides: `fakesmi` fails as the real tool does when something it needs is missing (`HWEMU_ROOTFS` under [Simulator hardware emulation](#simulator-hardware-emulation)), and the harness either mounts those files (`toolDelivery: mounted`) or not (`toolDelivery: none`).
+
+### Managed nodes without an agent
+
+The controller manager plans every managed node, whether or not an agent runs there, and says in the node's `NodeTwin` whether one does: the condition `AgentReporting` in `status.conditions`, shown in the `Agent` column of `kubectl get nodetwins`. It is `True` (reason `NodeHardwareCurrent`) while an agent publishes the node's `NodeHardware`, and `False` when no agent has published it (`NoNodeHardware`) or its last write is more than 15 minutes old (`NodeHardwareStale`): the caps in `spec` are then planned and not enforced. The controller manager logs a warning each time a node turns `False`, and counts the managed nodes per status and reason in the gauge `joulie_twin_nodes_agent_reporting` ([Twin agent coverage]({{< relref "/docs/architecture/metrics.md#twin-agent-coverage" >}})). The usual causes are a taint the agent does not tolerate (`agent.tolerations`), a node outside `agent.daemonset.nodeSelector`, or an image without the node's platform.
+
+```bash
+kubectl get nodetwins -o custom-columns='NODE:.spec.nodeName,AGENT:.status.conditions[?(@.type=="AgentReporting")].status,REASON:.status.conditions[?(@.type=="AgentReporting")].reason'
+```
 
 ## Controller manager
 
