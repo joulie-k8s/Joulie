@@ -157,6 +157,27 @@ jobs:
             "dist/kubectl-joulie_${TAG}_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz" \
             "dist/kubectl-joulie-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}"
 
+  # Publishes the version's CHANGELOG.md section as the release notes when the
+  # release was published without any, so every release carries notes. A tag
+  # the changelog does not describe fails the job instead of publishing empty
+  # notes.
+  release-notes:
+    runs-on: ubuntu-24.04
+    if: ${{ github.event.release.body == '' }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Publish the CHANGELOG.md section as the release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          bash scripts/changelog-section.sh "${TAG}" >notes.md
+          gh release edit "${TAG}" --notes-file notes.md
+
   # Opens the version bump of the joulie plugin in kubernetes-sigs/krew-index
   # once every archive is attached: krew-release-bot renders
   # cmd/kubectl-joulie/krew.yaml with the tag and each archive's sha256, and

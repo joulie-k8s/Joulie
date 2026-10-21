@@ -29,7 +29,9 @@
   <a href="https://joulie-k8s.github.io/Joulie/stable/docs/">Documentation</a> ·
   <a href="https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/quickstart/">Quickstart</a> ·
   <a href="https://joulie-k8s.github.io/Joulie/stable/docs/architecture/">Architecture</a> ·
-  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/experiments/">Experiments</a>
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/experiments/">Experiments</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href="SECURITY.md">Security</a>
 </p>
 
 ## What it is
