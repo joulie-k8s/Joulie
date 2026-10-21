@@ -5,6 +5,7 @@ on:
     types: [opened, synchronize, reopened, closed]
     paths:
       - "website/**"
+      - "ci/**"
       - ".github/workflows/docs-preview.yml"
       - ".github/workflows/docs-main.yml"
       - ".github/workflows/docs-release.yml"
@@ -25,7 +26,6 @@ jobs:
     if: github.event.action != 'closed'
     runs-on: ubuntu-24.04
     env:
-      HUGO_VERSION: 0.157.0
       PREVIEW_DIR: previews/pr-${{ github.event.pull_request.number }}
       PREVIEW_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/previews/pr-${{ github.event.pull_request.number }}/
     steps:
@@ -33,27 +33,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: website/go.mod
-
-      - name: Setup Hugo
-        uses: peaceiris/actions-hugo@2752ce1d29631191ea3f27c23495fa06139a5b78 # v3.2.1
-        with:
-          hugo-version: ${{ env.HUGO_VERSION }}
-          extended: true
-
-      - name: Setup Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "20"
-
-      - name: Install PostCSS toolchain
-        working-directory: website
-        run: |
-          npm install --no-save postcss postcss-cli autoprefixer
 
       - name: Generate Docsy versions config
         env:
@@ -106,12 +85,17 @@ jobs:
           print(out)
           PY
 
+      # The docs function of the Dagger module in ci/ builds the site with
+      # Hugo, Docsy and PostCSS as `dagger -m ./ci call docs` does anywhere,
+      # and exports it to website/public for the deploy.
       - name: Build preview site
-        working-directory: website
-        run: |
-          hugo mod get github.com/google/docsy@v0.14.3
-          hugo mod get github.com/google/docsy/dependencies@v0.7.2
-          hugo --gc --minify --baseURL "${{ env.PREVIEW_URL }}" --config "hugo.yaml,${{ runner.temp }}/docsy-versions.yaml"
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.21.10"
+          verb: call
+          module: ./ci
+          args: docs --source=. --base-url=${{ env.PREVIEW_URL }} --versions-config=${{ runner.temp }}/docsy-versions.yaml export --path=website/public
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
 
       # Every docs workflow pushes gh-pages, in concurrency groups of their
       # own, so a push can lose the race to another one: gh-pages-push.sh

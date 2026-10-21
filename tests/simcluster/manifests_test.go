@@ -44,7 +44,8 @@ const (
 	mSchedulerConfigService = mManifestsDir + "/scheduler-config-service.yaml"
 	mExtenderServiceValues  = "values/simcluster-extender-service.yaml"
 	mOtelcolBridgeFile      = mManifestsDir + "/otelcol-bridge.yaml"
-	mDaggerFile             = "ci/src/joulie_ci/__init__.py"
+	mDaggerFile             = "ci/src/joulie_ci/main.py"
+	mDaggerLiterals         = "ci/src/joulie_ci/literals.py"
 	mWorkflowFile           = ".github/workflows/integration-tests.yml"
 )
 
@@ -412,15 +413,15 @@ func mRuleAllows(rules []rbacv1.PolicyRule, group, resource, verb string) bool {
 	return false
 }
 
-// mDaggerConstant returns the string a top-level Python assignment
+// mDaggerConstant returns the string a top-level Python assignment of file
 // NAME = "..." in the Dagger module holds, and fails unless there is exactly
 // one.
-func mDaggerConstant(t *testing.T, src []byte, name string) string {
+func mDaggerConstant(t *testing.T, file, name string) string {
 	t.Helper()
 	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `\s*=\s*"([^"\n]*)"\s*$`)
-	m := re.FindAllSubmatch(src, -1)
+	m := re.FindAllSubmatch(mRead(t, file), -1)
 	if len(m) != 1 {
-		t.Fatalf("%s: %d assignments %s = \"...\", want 1", mDaggerFile, len(m), name)
+		t.Fatalf("%s: %d assignments %s = \"...\", want 1", file, len(m), name)
 	}
 	return string(m[0][1])
 }
@@ -614,8 +615,8 @@ func mContainsString(list []string, s string) bool {
 // integration pipeline run the same k3s.
 func TestM03K3sImageMatchesDagger(t *testing.T) {
 	want := mVersion(t, mVersions(t), "K3S_IMAGE")
-	if got := mDaggerConstant(t, mRead(t, mDaggerFile), "_K3S_IMAGE"); got != want {
-		t.Errorf("%s: _K3S_IMAGE is %q, but %s pins K3S_IMAGE=%s", mDaggerFile, got, mVersionsFile, want)
+	if got := mDaggerConstant(t, mDaggerLiterals, "K3S_IMAGE"); got != want {
+		t.Errorf("%s: K3S_IMAGE is %q, but %s pins K3S_IMAGE=%s", mDaggerLiterals, got, mVersionsFile, want)
 	}
 }
 

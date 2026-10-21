@@ -41,7 +41,8 @@ help:
 	@echo "  make test-envtest                     Run the CRD suite against a real API server (downloads control-plane binaries)"
 	@echo "  make test-promql                      Evaluate the controller's input queries in the Prometheus PromQL engine (tests/promql)"
 	@echo "  make test-examples                    Validate example YAML manifests (kubectl dry-run client)"
-	@echo "  make ci-local                         Run every check a pull request runs, then print a summary"
+	@echo "  make ci-local                         Run every check a pull request runs, in Dagger, then print a summary"
+	@echo "  make ci-local-host                    The same checks with the host's tools, without Dagger"
 	@echo "  make generate                         Regenerate DeepCopy code for api/"
 	@echo "  make manifests                        Regenerate CRDs from api/ into config/ and the Helm chart"
 	@echo "  make verify-manifests                 Fail if generated code or CRDs are stale (CI)"
@@ -240,15 +241,23 @@ test-examples:
 	done; \
 	echo "All example manifests validated."
 
-.PHONY: ci-local
-# ci-local runs, in the same order, every check a pull request runs, so a red
-# CI is found before pushing rather than after. Each step runs even when an
-# earlier one failed, because the useful answer is the whole list of what is
-# broken; the summary at the end names every step and the target exits
-# non-zero if any of them failed. The envtest step downloads control plane
-# binaries into bin/ and the promql step its module dependencies the first
-# time, so the first run needs network access.
+.PHONY: ci-local ci-local-host
+# ci-local runs every check a pull request runs, so a red CI is found before
+# pushing rather than after: the `all` function of the Dagger module in ci/,
+# the same functions the workflows call, in the same pinned images. Every
+# check runs even when another failed, and the summary names each one. It
+# needs the dagger CLI and Docker.
 ci-local:
+	dagger -m ./ci call all --source=.
+
+# ci-local-host runs the same checks with the tools on this machine instead,
+# one after another. Each step runs even when an earlier one failed, because
+# the useful answer is the whole list of what is broken; the summary at the
+# end names every step and the target exits non-zero if any of them failed.
+# The envtest step downloads control plane binaries into bin/ and the promql
+# step its module dependencies the first time, so the first run needs network
+# access.
+ci-local-host:
 	@set -u; \
 	failed=""; results=""; \
 	run() { \
@@ -272,13 +281,13 @@ ci-local:
 	run "scripts/verify-chart-renders.sh" bash scripts/verify-chart-renders.sh; \
 	run "helm lint" helm lint charts/joulie charts/joulie-simulator; \
 	run "make test-experiments" $(MAKE) --no-print-directory test-experiments; \
-	printf '\n==================== ci-local summary ====================\n'; \
+	printf '\n==================== ci-local-host summary ====================\n'; \
 	printf '%b\n' "$$results"; \
 	if [ -n "$$failed" ]; then \
-		printf '\nci-local: FAIL (failed steps:%s)\n' "$$failed"; \
+		printf '\nci-local-host: FAIL (failed steps:%s)\n' "$$failed"; \
 		exit 1; \
 	fi; \
-	printf '\nci-local: PASS\n'
+	printf '\nci-local-host: PASS\n'
 
 simulator-build:
 	docker build -f simulator/Dockerfile -t "$(REGISTRY)/$(SIM_IMAGE):$(TAG)" .

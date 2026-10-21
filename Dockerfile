@@ -5,7 +5,7 @@
 # The builder runs on the build host's platform and cross-compiles for the
 # target one (docker buildx build --platform linux/amd64,linux/arm64), so no
 # stage needs emulation: the final stage only copies the static binary.
-FROM --platform=$BUILDPLATFORM golang:1.26.9@sha256:37cfcca63222ec499bec5e8ad7aad52dbf7529db36d5812b8eae2f0621aa92d6 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.10@sha256:3745f1aa11822297b79113f5e84ce2bffeb039734571c39855809cfe9e5d7be6 AS builder
 WORKDIR /src
 ARG COMPONENT=agent
 ARG TARGETOS

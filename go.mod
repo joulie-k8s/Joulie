@@ -2,7 +2,7 @@ module github.com/matbun/joulie
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/go-logr/logr v1.4.2

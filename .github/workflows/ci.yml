@@ -3,75 +3,84 @@ name: ci
 # Every pull request, whatever its base branch. A PR stacked on another feature
 # branch used to get no unit tests and no helm lint, which is how a chart that
 # rendered a template twice reached main once.
+#
+# Each job runs one function of the Dagger module in ci/, so
+# `dagger -m ./ci call <function>` runs the same job on any machine with
+# Docker, in the same pinned images (ci/README.md). The Dagger version is the
+# module's engineVersion (ci/dagger.json); tests/contracts checks both.
 on:
   pull_request:
   push:
     branches: [main]
+  # The nightly vulnerability scan dispatches it on the branch of its fixes,
+  # whose pull request, opened with GITHUB_TOKEN, starts no pull_request run.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # go mod tidy -diff for both modules, make verify-manifests and
+  # verify-fmt, go build, go vet, and go test ./... with the FUSE tests
+  # required.
   test:
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - name: Test
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
         with:
-          go-version-file: go.mod
+          version: "0.21.10"
+          verb: call
+          module: ./ci
+          args: test --source=.
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
 
-      # go mod tidy -diff prints what tidy would change in go.mod or go.sum
-      # and fails when that is anything, for each of the two modules.
-      - name: Verify go.mod and go.sum are tidy
-        run: |
-          go mod tidy -diff
-          cd tests/promql && go mod tidy -diff
+  # go test -race ./cmd/..., which CLAUDE.md asks for whenever a change
+  # touches caches or goroutines; a job of its own, since the race detector
+  # makes the tests several times slower.
+  race:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Verify generated code and CRDs are up to date
-        run: make verify-manifests
+      - name: Race detector
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.21.10"
+          verb: call
+          module: ./ci
+          args: race --source=.
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
 
-      - name: Verify Go files are gofmt-formatted
-        run: make verify-fmt
-
-      # The tests of the FUSE views (simulator/pkg/hwemu/hwfuse and the
-      # agent tests over them) mount through fusermount3, as a user other
-      # than root; JOULIE_REQUIRE_FUSE=1 fails them where they would skip.
-      - name: Install fusermount3
-        run: command -v fusermount3 || { sudo apt-get update -q && sudo apt-get install -y -q fuse3; }
-
-      - name: Run unit tests
-        env:
-          JOULIE_REQUIRE_FUSE: "1"
-        run: go test ./...
-
+  # helm lint of both charts, and scripts/verify-chart-renders.sh, which
+  # renders the chart under the value combinations that have broken before
+  # (defaults, the deprecated operator: key, leader election, agent pool
+  # mode) and asserts the workload objects.
   helm:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-
-      - name: Lint charts
-        run: |
-          helm lint charts/joulie
-          helm lint charts/joulie-simulator
-
-      # Renders the chart under the value combinations that have broken before
-      # (defaults, the deprecated operator: key, leader election, agent pool
-      # mode) and asserts the workload objects. Run it locally with the same
-      # command.
-      - name: Verify chart renders
-        run: bash scripts/verify-chart-renders.sh --verbose
+      - name: Lint and render the charts
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.21.10"
+          verb: call
+          module: ./ci
+          args: helm --source=.
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
 
   # envtest runs the Go tests behind the "envtest" build tag against a real
   # kube-apiserver and etcd, which setup-envtest downloads at test time. It is
-  # a separate job so the fast "test" job above still reports in a minute and
-  # is never held up by the control-plane download.
+  # a separate job so the "test" job is never held up by the control-plane
+  # download.
   envtest:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -79,13 +88,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-
       - name: Run envtest suite
-        run: make test-envtest
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.21.10"
+          verb: call
+          module: ./ci
+          args: envtest --source=.
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
 
   # tests/promql is a module of its own (go 1.26, Prometheus v0.315.0), which
   # `go test ./...` at the root skips: it evaluates every input query of
@@ -97,69 +107,43 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: tests/promql/go.mod
-          cache-dependency-path: tests/promql/go.sum
-
       - name: Run PromQL tests
-        run: make test-promql
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.21.10"
+          verb: call
+          module: ./ci
+          args: promql --source=.
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
 
   # Pushes OTLP JSON to a real Prometheus with the OTLP receiver and reads it
   # back with the input queries (pkg/controller/inputs/live_test.go, build
   # tag promlive). The tests read the receiver's otlp settings from the
   # server, so each configuration runs the same command: k8s.node.name
-  # promoted or not, under the default and a UTF-8 translation strategy.
+  # promoted or not, under the default and a UTF-8 translation strategy. The
+  # settings of each configuration are in ci/src/joulie_ci/literals.py.
   prometheus-otlp-live:
     name: prometheus-otlp-live (${{ matrix.config }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - config: promoted
-            otlp: "{promote_resource_attributes: [k8s.node.name, host.name], translation_strategy: UnderscoreEscapingWithSuffixes}"
-          - config: unpromoted
-            otlp: "{translation_strategy: UnderscoreEscapingWithSuffixes}"
-          - config: utf8
-            otlp: "{promote_resource_attributes: [k8s.node.name, host.name], translation_strategy: NoUTF8EscapingWithSuffixes}"
-          - config: utf8-unpromoted
-            otlp: "{translation_strategy: NoUTF8EscapingWithSuffixes}"
+        config: [promoted, unpromoted, utf8, utf8-unpromoted]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-
-      - name: Start Prometheus
-        env:
-          OTLP: ${{ matrix.otlp }}
-        run: |
-          . scripts/simcluster/versions.env
-          mkdir -p "$RUNNER_TEMP/prometheus"
-          printf 'storage:\n  tsdb:\n    out_of_order_time_window: 30m\notlp: %s\n' "$OTLP" > "$RUNNER_TEMP/prometheus/prometheus.yml"
-          docker run -d --name prometheus -p 127.0.0.1:19190:9090 \
-            -v "$RUNNER_TEMP/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
-            "$PROMETHEUS_IMAGE@$PROMETHEUS_DIGEST" \
-            --config.file=/etc/prometheus/prometheus.yml --web.enable-otlp-receiver
-          for _ in $(seq 1 60); do
-            curl -sf http://127.0.0.1:19190/-/ready && exit 0
-            sleep 1
-          done
-          docker logs prometheus
-          exit 1
-
       - name: Run live tests
-        env:
-          JOULIE_PROM_URL: http://127.0.0.1:19190
-        run: go test -tags promlive -count=1 -run Live -v ./pkg/controller/inputs/
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.21.10"
+          verb: call
+          module: ./ci
+          args: prometheus-otlp-live --source=. --config=${{ matrix.config }}
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
 
   # The experiment sanity tests check the sweep scripts and the benchmark
-  # configs. They need the experiments' own requirements (pandas pulls numpy,
+  # configs, with the experiments' own requirements (pandas pulls numpy,
   # which the sweep scripts import at module level).
   experiments:
     runs-on: ubuntu-24.04
@@ -167,15 +151,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: experiments/*/requirements.txt
-
-      - name: Install experiment requirements
-        run: pip install $(printf -- '-r %s ' experiments/*/requirements.txt)
-
       - name: Run experiment sanity tests
-        run: make test-experiments
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.21.10"
+          verb: call
+          module: ./ci
+          args: experiments --source=.
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}

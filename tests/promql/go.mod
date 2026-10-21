@@ -8,7 +8,7 @@ module github.com/matbun/joulie/tests/promql
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/matbun/joulie v0.0.0-00010101000000-000000000000

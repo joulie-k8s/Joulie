@@ -1,0 +1,133 @@
+name: vulnscan-nightly
+
+# Every night: the vulnerability scan of every dependency manifest
+# (vulnscan-report of the Dagger module in ci/), its SARIF files uploaded to
+# code scanning, one category per scan, then the fixes it names applied by
+# scripts/vulnfix.sh (vulnfix): go get and go mod tidy for each Go module,
+# plain Python pins bumped in place, a package whose fix fails reverted. The
+# fixes are verified with the test function and opened as one pull request
+# on a fixed branch, whose body lists what was bumped, what needs a
+# toolchain bump (standard library findings) and what was not fixed.
+#
+# A pull request opened with GITHUB_TOKEN starts no pull_request workflow, so
+# the last step dispatches the pull request checks on its branch; a
+# workflow_dispatch from GITHUB_TOKEN does run. Opening the pull request
+# needs the repository setting "Allow GitHub Actions to create and approve
+# pull requests".
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vulnscan-nightly
+  cancel-in-progress: false
+
+jobs:
+  scan-and-fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      security-events: write
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Scan the dependencies
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.21.10"
+          verb: call
+          module: ./ci
+          args: vulnscan-report --source=. export --path=${{ runner.temp }}/vulnscan
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+
+      - name: Summary
+        run: tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/vulnscan/summary.txt"
+
+      - name: Upload the osv-scanner results
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: ${{ runner.temp }}/vulnscan/osv.sarif
+          category: osv-scanner
+
+      - name: Upload the govulncheck results of the root module
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: ${{ runner.temp }}/vulnscan/govulncheck-root.sarif
+          category: govulncheck-root
+
+      - name: Upload the govulncheck results of tests/promql
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: ${{ runner.temp }}/vulnscan/govulncheck-tests-promql.sarif
+          category: govulncheck-tests-promql
+
+      - name: Fix
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.21.10"
+          verb: call
+          module: ./ci
+          args: vulnfix --source=. --report=${{ runner.temp }}/vulnscan export --path=${{ runner.temp }}/vulnfix
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+
+      - name: Apply the fixes
+        id: apply
+        run: |
+          cp -R "$RUNNER_TEMP/vulnfix/changes/." .
+          git status --short
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify the fixes
+        id: verify
+        if: steps.apply.outputs.changed == 'true'
+        continue-on-error: true
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: "0.21.10"
+          verb: call
+          module: ./ci
+          args: test --source=.
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+
+      - name: Note a failed verification
+        if: steps.verify.outcome == 'failure'
+        run: printf '\n**`dagger -m ./ci call test` failed with these fixes; see the nightly run.**\n' >>"$RUNNER_TEMP/vulnfix/report.md"
+
+      - name: Open the pull request
+        id: pr
+        if: steps.apply.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: vulnscan/fixes
+          delete-branch: true
+          commit-message: "fix(deps): apply the fixes of the nightly vulnerability scan"
+          title: "fix(deps): fixes of the nightly vulnerability scan"
+          body-path: ${{ runner.temp }}/vulnfix/report.md
+          add-paths: |
+            go.mod
+            go.sum
+            tests/promql/go.mod
+            tests/promql/go.sum
+            website/go.mod
+            website/go.sum
+            experiments/*/requirements.txt
+
+      - name: Run the pull request checks on its branch
+        if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.pr.outputs.pull-request-branch }}
+        run: |
+          for workflow in ci.yml integration-tests.yml vulnscan.yml; do
+            gh workflow run "$workflow" --ref "$BRANCH"
+          done
