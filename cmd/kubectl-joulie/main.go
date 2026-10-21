@@ -1,69 +1,213 @@
-// kubectl-joulie is a kubectl plugin that displays Joulie cluster energy state.
+// kubectl-joulie is the kubectl plugin of Joulie: the energy state of a
+// cluster in the terminal, as styled tables or as a live dashboard.
 //
-// Install: go build -o kubectl-joulie ./cmd/kubectl-joulie && mv kubectl-joulie /usr/local/bin/
-// Usage:   kubectl joulie status
+// Install: kubectl krew install joulie, or go build -o kubectl-joulie ./cmd/kubectl-joulie
+// Usage:   kubectl joulie [status|top|node NAME|pods|version]
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"math"
+	"io"
 	"os"
-	"sort"
-	"strings"
-	"text/tabwriter"
+	"strconv"
 	"time"
 
-	joulie "github.com/matbun/joulie/pkg/api"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	"github.com/charmbracelet/colorprofile"
+	"github.com/spf13/pflag"
+	"golang.org/x/term"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	_ "k8s.io/client-go/plugin/pkg/client/auth" // cloud and OIDC auth providers
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-var nodeTwinGVR = schema.GroupVersionResource{Group: "joulie.io", Version: "v1alpha1", Resource: "nodetwins"}
+// version is set at build time: -ldflags "-X main.version=v0.3.0".
+var version = "dev"
 
-func main() {
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
-	}
+const usage = `kubectl joulie shows the energy state of a cluster that Joulie manages.
 
-	switch os.Args[1] {
-	case "status":
-		// Check for -W / --watch flag
-		watch := false
-		for _, arg := range os.Args[2:] {
-			if arg == "-W" || arg == "--watch" {
-				watch = true
-			}
-		}
-		if watch {
-			runStatusWatch()
-		} else {
-			runStatus()
-		}
-	case "help", "--help", "-h":
-		printUsage()
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", os.Args[1])
-		printUsage()
-		os.Exit(1)
-	}
-}
-
-func printUsage() {
-	fmt.Println(`Usage: kubectl joulie <command> [flags]
+Usage:
+  kubectl joulie [command] [flags]
 
 Commands:
-  status              Show cluster energy state overview
-  status -W           Watch mode — refresh every 2 seconds
-  help                Show this help`)
+  status       the cluster summary and one row per managed node (default)
+  top          the live dashboard: nodes, power history, node details, pods
+  node NAME    one node: hardware, power, twin scores, applied caps, pods
+  pods         workload placement: each pod, its class and its node's class
+  version      the plugin version
+
+Flags:
+  -o, --output string       table (default) or json
+  -w, --watch               status and pods: open the live dashboard
+      --interval duration   refresh period of the live dashboard (default 2s)
+      --no-color            no colors; NO_COLOR=1 does the same
+  -h, --help                this help
+
+The kubectl flags --kubeconfig, --context, --cluster, --user, --server,
+--token and -n/--namespace (pods only) work as in kubectl.
+
+In the live dashboard: ↑/↓ select, enter details, p pods, n nodes,
+s sort, r refresh, q quit.
+`
+
+// options are the parsed command line.
+type options struct {
+	command  string
+	args     []string
+	output   string
+	watch    bool
+	interval time.Duration
+	noColor  bool
+	help     bool
+
+	kubeconfig   string
+	overrides    clientcmd.ConfigOverrides
+	namespaceSet bool
+}
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// parseArgs reads the command, its arguments and the flags, which may come
+// in any order.
+func parseArgs(argv []string, stderr io.Writer) (options, error) {
+	var o options
+	fs := pflag.NewFlagSet("kubectl joulie", pflag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {}
+	fs.StringVarP(&o.output, "output", "o", "table", "")
+	fs.BoolVarP(&o.watch, "watch", "w", false, "")
+	fs.BoolVarP(&o.watch, "Watch", "W", false, "")
+	_ = fs.MarkHidden("Watch")
+	fs.DurationVar(&o.interval, "interval", 2*time.Second, "")
+	fs.BoolVar(&o.noColor, "no-color", false, "")
+	fs.BoolVarP(&o.help, "help", "h", false, "")
+	fs.StringVar(&o.kubeconfig, "kubeconfig", "", "")
+	clientcmd.BindOverrideFlags(&o.overrides, fs, clientcmd.RecommendedConfigOverrideFlags(""))
+	if err := fs.Parse(argv); err != nil {
+		return o, err
+	}
+	o.namespaceSet = fs.Changed("namespace")
+	rest := fs.Args()
+	o.command = "status"
+	if len(rest) > 0 {
+		o.command, o.args = rest[0], rest[1:]
+	}
+	if o.output != "table" && o.output != "json" {
+		return o, fmt.Errorf("--output %q: want table or json", o.output)
+	}
+	if o.interval < 500*time.Millisecond {
+		return o, fmt.Errorf("--interval %s: want at least 500ms", o.interval)
+	}
+	return o, nil
+}
+
+func run(argv []string, stdout, stderr io.Writer) int {
+	o, err := parseArgs(argv, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n\n%s", err, usage)
+		return 2
+	}
+	if o.help || o.command == "help" {
+		fmt.Fprint(stdout, usage)
+		return 0
+	}
+	if o.command == "version" {
+		fmt.Fprintf(stdout, "kubectl-joulie %s\n", version)
+		return 0
+	}
+
+	switch o.command {
+	case "status", "top", "node", "pods":
+	default:
+		fmt.Fprintf(stderr, "error: unknown command %q\n\n%s", o.command, usage)
+		return 2
+	}
+	if o.command == "node" && len(o.args) != 1 {
+		fmt.Fprintf(stderr, "error: node takes one node name, as in kubectl joulie node gpu-0\n")
+		return 2
+	}
+
+	c, contextName, err := connect(o)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if o.command == "top" || (o.watch && o.output == "table") {
+		if err := runDashboard(c, contextName, o); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	snap, err := readCluster(context.Background(), c, podNamespace(o))
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if o.command == "node" {
+		if _, ok := findNode(snap, o.args[0]); !ok {
+			fmt.Fprintf(stderr, "error: no NodeTwin for node %q\n", o.args[0])
+			return 1
+		}
+	}
+
+	if o.output == "json" {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(toJSON(snap, o.command, o.args)); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	w := colorprofile.NewWriter(stdout, os.Environ())
+	if o.noColor {
+		w.Profile = colorprofile.NoTTY
+	}
+	width := terminalWidth(stdout)
+	var out string
+	switch o.command {
+	case "status":
+		out = statusView(snap, contextName, width, -1, nil, nil)
+	case "pods":
+		out = podsView(snap, contextName, width, -1)
+	case "node":
+		n, _ := findNode(snap, o.args[0])
+		out = nodeDetail(snap, n, contextName, width, nil)
+	}
+	fmt.Fprintln(w, out)
+	return 0
+}
+
+// podNamespace is the namespace the pods are listed in: the -n of the pods
+// command, else every namespace.
+func podNamespace(o options) string {
+	if o.command == "pods" && o.namespaceSet {
+		return o.overrides.Context.Namespace
+	}
+	return ""
+}
+
+// terminalWidth is the width of the terminal behind w, COLUMNS when it is
+// not a terminal, and 0, meaning no limit, when neither says.
+func terminalWidth(w io.Writer) int {
+	if f, ok := w.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		if width, _, err := term.GetSize(int(f.Fd())); err == nil && width > 0 {
+			return width
+		}
+	}
+	if v, err := strconv.Atoi(os.Getenv("COLUMNS")); err == nil && v > 0 {
+		return v
+	}
+	return 0
 }
 
 type clients struct {
@@ -71,333 +215,37 @@ type clients struct {
 	kube kubernetes.Interface
 }
 
-func newClients() clients {
+// connect builds the clients; tests replace it with fakes.
+var connect = newClients
+
+// newClients loads the kubeconfig as kubectl does, with the kubectl flags
+// applied, and returns the clients and the context name.
+func newClients(o options) (clients, string, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	overrides := &clientcmd.ConfigOverrides{}
-	config := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides)
-	restConfig, err := config.ClientConfig()
+	rules.ExplicitPath = o.kubeconfig
+	overrides := o.overrides
+	cfg := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &overrides)
+	rest, err := cfg.ClientConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot connect to cluster: %v\n", err)
-		os.Exit(1)
+		if clientcmd.IsEmptyConfig(err) {
+			return clients{}, "", errors.New("no kubeconfig: set KUBECONFIG or pass --kubeconfig")
+		}
+		return clients{}, "", fmt.Errorf("loading the kubeconfig: %w", err)
 	}
-	dynClient, err := dynamic.NewForConfig(restConfig)
+	rest.UserAgent = "kubectl-joulie/" + version
+	contextName := overrides.CurrentContext
+	if contextName == "" {
+		if raw, err := cfg.RawConfig(); err == nil {
+			contextName = raw.CurrentContext
+		}
+	}
+	dyn, err := dynamic.NewForConfig(rest)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot create dynamic client: %v\n", err)
-		os.Exit(1)
+		return clients{}, "", err
 	}
-	kubeClient, err := kubernetes.NewForConfig(restConfig)
+	kube, err := kubernetes.NewForConfig(rest)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot create kube client: %v\n", err)
-		os.Exit(1)
+		return clients{}, "", err
 	}
-	return clients{dyn: dynClient, kube: kubeClient}
+	return clients{dyn: dyn, kube: kube}, contextName, nil
 }
-
-type nodeState struct {
-	name          string
-	class         string
-	headroom      float64
-	coolingStress float64
-	psuStress     float64
-	cpuCapPct     float64
-	gpuCapPct     float64
-	// gpuCapPlanned is set when the twin's spec carries a GPU power cap,
-	// which the controller manager writes only for GPU nodes, a node with
-	// no GPU resource (DRA) included.
-	gpuCapPlanned bool
-	lastUpdated   string
-	// Resource allocation
-	cpuAllocPct float64
-	memAllocPct float64
-	gpuAllocPct float64
-	hasGPU      bool
-	pods        int
-}
-
-func fetchTwinStates(client dynamic.Interface) []nodeState {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	list, err := client.Resource(nodeTwinGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot list NodeTwins: %v\n", err)
-		os.Exit(1)
-	}
-
-	var states []nodeState
-	for _, item := range list.Items {
-		states = append(states, parseNodeState(item))
-	}
-	sort.Slice(states, func(i, j int) bool { return states[i].name < states[j].name })
-	return states
-}
-
-// nodeResources holds allocatable and requested resources for a node.
-type nodeResources struct {
-	cpuAllocatable int64   // millicores
-	memAllocatable int64   // bytes
-	gpuAllocatable float64 // GPUs, weighted as gpuUnits weighs them
-	cpuRequested   int64
-	memRequested   int64
-	gpuRequested   float64
-	pods           int
-}
-
-func fetchNodeResources(kube kubernetes.Interface) map[string]*nodeResources {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	res := map[string]*nodeResources{}
-
-	// Get node allocatable resources
-	nodes, err := kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return res
-	}
-	for _, n := range nodes.Items {
-		nr := &nodeResources{}
-		if cpu, ok := n.Status.Allocatable[corev1.ResourceCPU]; ok {
-			nr.cpuAllocatable = cpu.MilliValue()
-		}
-		if mem, ok := n.Status.Allocatable[corev1.ResourceMemory]; ok {
-			nr.memAllocatable = mem.Value()
-		}
-		nr.gpuAllocatable = gpuUnits(n.Status.Allocatable)
-		res[n.Name] = nr
-	}
-
-	// Sum pod requests per node
-	pods, err := kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{
-		FieldSelector: "status.phase!=Succeeded,status.phase!=Failed",
-	})
-	if err != nil {
-		return res
-	}
-	for _, p := range pods.Items {
-		nodeName := p.Spec.NodeName
-		if nodeName == "" {
-			continue
-		}
-		nr, ok := res[nodeName]
-		if !ok {
-			continue
-		}
-		nr.pods++
-		for _, c := range p.Spec.Containers {
-			if cpu, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
-				nr.cpuRequested += cpu.MilliValue()
-			}
-			if mem, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
-				nr.memRequested += mem.Value()
-			}
-			nr.gpuRequested += gpuUnits(c.Resources.Requests)
-		}
-	}
-
-	return res
-}
-
-// gpuUnits is the GPUs in list: the units of every GPU resource pkg/api
-// classifies (whole GPUs, MIG devices, partitions, shared replicas), each
-// weighted by the share of a GPU it stands for (joulie.GPUResourceShare),
-// so a node mixing MIG profiles adds up in GPUs. A replica weighs as the
-// device it shares, so requested over allocatable is the share of replicas
-// taken.
-func gpuUnits(list corev1.ResourceList) float64 {
-	var gpus float64
-	for name, q := range list {
-		gpus += float64(q.Value()) * joulie.GPUResourceShare(string(name))
-	}
-	return gpus
-}
-
-// nestedNumber extracts a numeric value from an unstructured object,
-// handling both float64 and int64 representations (Kubernetes stores
-// whole numbers as int64 in unstructured objects).
-func nestedNumber(obj map[string]interface{}, fields ...string) float64 {
-	val, found, err := unstructured.NestedFieldNoCopy(obj, fields...)
-	if !found || err != nil {
-		return 0
-	}
-	switch v := val.(type) {
-	case float64:
-		return v
-	case int64:
-		return float64(v)
-	default:
-		return 0
-	}
-}
-
-func parseNodeState(u unstructured.Unstructured) nodeState {
-	ns := nodeState{name: u.GetName()}
-	_, ns.gpuCapPlanned, _ = unstructured.NestedMap(u.Object, "spec", "gpu", "powerCap")
-	status, _, _ := unstructured.NestedMap(u.Object, "status")
-	if status == nil {
-		return ns
-	}
-
-	ns.class, _, _ = unstructured.NestedString(u.Object, "status", "schedulableClass")
-	ns.headroom = math.Max(0, nestedNumber(u.Object, "status", "predictedPowerHeadroomScore"))
-	ns.coolingStress = nestedNumber(u.Object, "status", "predictedCoolingStressScore")
-	ns.psuStress = nestedNumber(u.Object, "status", "predictedPsuStressScore")
-	ns.lastUpdated, _, _ = unstructured.NestedString(u.Object, "status", "lastUpdated")
-
-	if cap, ok := status["effectiveCapState"].(map[string]interface{}); ok {
-		ns.cpuCapPct = nestedNumber(cap, "cpuPct")
-		ns.gpuCapPct = nestedNumber(cap, "gpuPct")
-	}
-
-	return ns
-}
-
-func pct(used, total int64) float64 {
-	if total <= 0 {
-		return 0
-	}
-	return float64(used) / float64(total) * 100.0
-}
-
-func enrichWithResources(states []nodeState, resources map[string]*nodeResources) {
-	for i := range states {
-		nr, ok := resources[states[i].name]
-		if !ok {
-			continue
-		}
-		states[i].cpuAllocPct = pct(nr.cpuRequested, nr.cpuAllocatable)
-		states[i].memAllocPct = pct(nr.memRequested, nr.memAllocatable)
-		states[i].gpuAllocPct = 0
-		if nr.gpuAllocatable > 0 {
-			states[i].gpuAllocPct = nr.gpuRequested / nr.gpuAllocatable * 100.0
-		}
-		states[i].hasGPU = nr.gpuAllocatable > 0
-		states[i].pods = nr.pods
-	}
-}
-
-func renderStatus(out *os.File, states []nodeState) {
-	if len(states) == 0 {
-		fmt.Fprintln(out, "No NodeTwin resources found. Is Joulie installed?")
-		return
-	}
-
-	// Summary
-	var eco, perf, draining, unknown int
-	var totalCooling, totalPSU, totalHeadroom float64
-	var peakCooling float64
-	var peakCoolingNode string
-	var totalPods int
-
-	for _, s := range states {
-		switch s.class {
-		case "eco":
-			eco++
-		case "performance":
-			perf++
-		case "draining":
-			draining++
-		default:
-			unknown++
-		}
-		totalCooling += s.coolingStress
-		totalPSU += s.psuStress
-		totalHeadroom += s.headroom
-		if s.coolingStress > peakCooling {
-			peakCooling = s.coolingStress
-			peakCoolingNode = s.name
-		}
-		totalPods += s.pods
-	}
-
-	n := float64(len(states))
-	fmt.Fprintln(out, "CLUSTER ENERGY STATE")
-	fmt.Fprintf(out, "  Nodes: %d total", len(states))
-	parts := []string{}
-	if eco > 0 {
-		parts = append(parts, fmt.Sprintf("%d eco", eco))
-	}
-	if perf > 0 {
-		parts = append(parts, fmt.Sprintf("%d performance", perf))
-	}
-	if draining > 0 {
-		parts = append(parts, fmt.Sprintf("%d draining", draining))
-	}
-	if unknown > 0 {
-		parts = append(parts, fmt.Sprintf("%d unknown", unknown))
-	}
-	if len(parts) > 0 {
-		fmt.Fprintf(out, " (%s)", strings.Join(parts, ", "))
-	}
-	fmt.Fprintln(out)
-
-	fmt.Fprintf(out, "  Avg cooling stress: %.0f%%", totalCooling/n)
-	if peakCoolingNode != "" {
-		fmt.Fprintf(out, "  |  Peak: %.0f%% (%s)", peakCooling, peakCoolingNode)
-	}
-	fmt.Fprintln(out)
-	fmt.Fprintf(out, "  Avg PSU stress: %.0f%%\n", totalPSU/n)
-	fmt.Fprintf(out, "  Avg power headroom: %.0f%%\n", totalHeadroom/n)
-	fmt.Fprintf(out, "  Running pods: %d\n", totalPods)
-
-	// Per-node table
-	fmt.Fprintln(out)
-	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NODE\tCLASS\tHEADROOM\tCOOLING\tCPU%\tMEM%\tGPU%\tPODS\tCPU CAP\tGPU CAP")
-	for _, s := range states {
-		gpuAlloc := "-"
-		gpuCap := "-"
-		if s.hasGPU {
-			gpuAlloc = fmt.Sprintf("%.0f%%", s.gpuAllocPct)
-		}
-		if s.hasGPU || s.gpuCapPlanned {
-			gpuCap = fmt.Sprintf("%.0f%%", s.gpuCapPct)
-		}
-		fmt.Fprintf(w, "%s\t%s\t%.0f%%\t%.0f%%\t%.0f%%\t%.0f%%\t%s\t%d\t%.0f%%\t%s\n",
-			s.name, s.class,
-			s.headroom, s.coolingStress,
-			s.cpuAllocPct, s.memAllocPct, gpuAlloc, s.pods,
-			s.cpuCapPct, gpuCap)
-	}
-	w.Flush()
-}
-
-func runStatus() {
-	c := newClients()
-	states := fetchTwinStates(c.dyn)
-	resources := fetchNodeResources(c.kube)
-	enrichWithResources(states, resources)
-	renderStatus(os.Stdout, states)
-}
-
-func runStatusWatch() {
-	c := newClients()
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	// First render immediately
-	fmt.Print("\033[2J\033[H") // clear screen + cursor home
-	states := fetchTwinStates(c.dyn)
-	resources := fetchNodeResources(c.kube)
-	enrichWithResources(states, resources)
-	renderStatus(os.Stdout, states)
-	fmt.Printf("\n  (watching — refresh every 2s, Ctrl-C to stop)")
-
-	for range ticker.C {
-		fmt.Print("\033[2J\033[H")
-		states = fetchTwinStates(c.dyn)
-		resources = fetchNodeResources(c.kube)
-		enrichWithResources(states, resources)
-		renderStatus(os.Stdout, states)
-		fmt.Printf("\n  (watching — refresh every 2s, Ctrl-C to stop)")
-	}
-}
-
-// jsonPrint is a debug helper (unused in normal operation, kept for development).
-func jsonPrint(v interface{}) {
-	b, _ := json.MarshalIndent(v, "", "  ")
-	fmt.Println(string(b))
-}
-
-// Ensure imports are used.
-var _ = json.Marshal
-var _ resource.Quantity

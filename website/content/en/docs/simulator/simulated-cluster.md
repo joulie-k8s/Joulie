@@ -87,7 +87,7 @@ The scripts read these variables from the environment; `make` passes on the ones
 |---|---|---|
 | `SIMCLUSTER_NAME` | `joulie-sim`; `joulie-sim-smoke` for the smoke run | Container name and prefix of its volumes. It must match `^joulie-sim(-[a-z0-9]+)*$`: the scripts touch no container or volume named otherwise. |
 | `SIMCLUSTER_DIR` | `${XDG_CACHE_HOME:-~/.cache}/joulie/simcluster/<name>` | State directory, outside the repository (below). |
-| `SIMCLUSTER_SPEC` | `tests/simcluster/specs/smoke.yaml` | The cluster spec. `tests/simcluster/specs/medium.yaml` has 50 Nodes, 48 of them reached by the agent, with GPU sharing, AMD GPUs with a pinned power cap, Nodes without NFD labels or GPU driver tools, and an unmanaged pool. `tests/simcluster/specs/profiles.yaml` has one Node of every builtin profile. |
+| `SIMCLUSTER_SPEC` | `tests/simcluster/specs/smoke.yaml` | The cluster spec. `tests/simcluster/specs/medium.yaml` has 50 Nodes, 48 of them reached by the agent, with GPU sharing, AMD GPUs with a pinned power cap, Nodes without NFD labels or GPU driver tools, and an unmanaged pool. `tests/simcluster/specs/profiles.yaml` has one Node of every builtin profile. `tests/simcluster/specs/demo.yaml` has 10 Nodes in five hardware families, the cluster of the `kubectl joulie` recording (`scripts/kubectl-joulie-demo.sh`). |
 | `SIMCLUSTER_NODES` | (empty) | Instead of a spec, this many Nodes of one profile, for scale runs. |
 | `SIMCLUSTER_SCALE_PROFILE` | `intel-xeon-2s-rapl` | The profile of `SIMCLUSTER_NODES`. |
 | `SIMCLUSTER_TELEMETRY` | `otel` | The [telemetry mode](#telemetry-modes). |

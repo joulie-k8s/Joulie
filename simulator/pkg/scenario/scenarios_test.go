@@ -36,7 +36,7 @@ const (
 
 // libScenarios is the library: a file added or removed must change this
 // list, the docs page and the nightly workflow together.
-var libScenarios = []string{"cap-cost", "deadlock-visible", "nightly-mixed", "perf-isolation", "smoke", "weekly-compare"}
+var libScenarios = []string{"cap-cost", "deadlock-visible", "demo", "nightly-mixed", "perf-isolation", "smoke", "weekly-compare"}
 
 func libRead(t *testing.T, name string) scenario.Scenario {
 	t.Helper()

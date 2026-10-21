@@ -5,6 +5,8 @@
 
 **Kubernetes-native energy management for data centers, powered by digital twins.**
 
+![kubectl joulie: the cluster status, a node in detail and the live dashboard on a simulated 10-node cluster](website/static/images/kubectl-joulie.gif)
+
 Visit the docs at [joulie-k8s.github.io/Joulie](https://joulie-k8s.github.io/Joulie/)
 
 ## What it is
@@ -57,7 +59,7 @@ Joulie has five components:
 | **Agent** (`cmd/agent`) | Runs on every node. Discovers hardware (CPU/GPU caps, slicing modes). Enforces RAPL/NVML power caps. Applies governor presets when `GOVERNOR_WRITES=true`. Publishes `NodeHardware` CR. Reads `NodeTwin.spec` for desired state. Writes control feedback to `NodeTwin.status.controlStatus`. |
 | **Controller manager** (`cmd/controller-manager`) | Cluster-wide control loop. Reads `NodeHardware` + Prometheus metrics. Runs the digital twin model. Writes `NodeTwin` (spec = desired power state, status = twin output). |
 | **Scheduler extender** (`cmd/scheduler`) | HTTP extender for kube-scheduler. Reads `NodeTwin.status` (30s TTL cache). Rejects eco nodes for performance pods. Scores nodes by projected power headroom, cooling stress and power trend. |
-| **kubectl plugin** (`cmd/kubectl-joulie`) | `kubectl joulie status` for cluster energy overview. |
+| **kubectl plugin** (`cmd/kubectl-joulie`) | `kubectl joulie` for the cluster's energy state, `kubectl joulie top` for the live dashboard; `kubectl krew install joulie`. |
 | **Digital twin** (`pkg/controller/twin`) | O(1) parametric model. From a measured node power reading it computes power headroom (% of the capped budget still unused), cooling stress (% of node TDP in use, scaled by ambient temperature), PSU stress (% of rack PDU capacity), and estimated PUE. The last two are published for observability; the scheduler does not read them. |
 
 ## CRDs
@@ -93,7 +95,7 @@ api/v1alpha1/           CRD types: the source of truth for NodeHardware and Node
 cmd/agent/              Node agent: hardware discovery, reconcile loop, RAPL/NVML enforcement
 cmd/controller-manager/ Cluster control loop: policy, twin computation, NodeTwin writes
 cmd/scheduler/          HTTP scheduler extender: filter + score via NodeTwin.status
-cmd/kubectl-joulie/     kubectl plugin: `kubectl joulie status`
+cmd/kubectl-joulie/     kubectl plugin: `kubectl joulie status`, `top`, `node`, `pods`; its Krew manifest
 pkg/agent/dvfs/         RAPL powercap zones and DVFS (EMA smoothing, hysteresis, frequency capping)
 pkg/agent/control/      HTTP control and telemetry clients
 pkg/api/                In-memory structs and shared constants (field managers, object names)

@@ -85,11 +85,13 @@ The score is **pod-specific**: the extender estimates how many watts the pod wil
 
 ### kubectl plugin
 
-The `kubectl joulie` plugin (`cmd/kubectl-joulie`) provides immediate visibility into the cluster's energy state:
+The `kubectl joulie` plugin (`cmd/kubectl-joulie`) shows the cluster's energy state in the terminal. It reads the `NodeTwin` and `NodeHardware` objects through the API server, nothing else of Joulie's, so it shows the twin data the scheduler extender and the agents act on:
 
-- `kubectl joulie status`: per-node overview of power profiles, cap settings, twin stress scores.
+- `kubectl joulie status`: the cluster summary and one row per node: power against its cap, profile, applied caps, twin scores, requested resources, agent condition.
+- `kubectl joulie top`: the same as a live dashboard, with node details and pod placement.
+- `kubectl joulie node <node>`, `kubectl joulie pods`: one node in detail; where performance and standard pods run.
 
-No configuration is needed. The plugin reads your current kubeconfig context.
+No configuration is needed. The plugin reads your current kubeconfig context ([commands and flags]({{< relref "/docs/getting-started/05-configuration-reference.md#kubectl-plugin" >}})).
 
 ### Digital twin model
 
