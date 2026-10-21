@@ -14,8 +14,11 @@ energy-aware node power orchestration, simulation, and experiment reproducibilit
 
 1. Fork the repository (or create a branch if you have write access).
 2. Create a focused branch from `main`.
-3. Implement your change with tests/docs updates as needed.
-4. Open a pull request against `main`.
+3. Implement your change with tests/docs updates as needed. A bug fix comes with a test that fails without it.
+4. For a user-visible change, add a line under Unreleased in [CHANGELOG.md](CHANGELOG.md).
+5. Open a pull request against `main`.
+
+Report a security vulnerability privately, as [SECURITY.md](SECURITY.md) says, not in a public issue or pull request.
 
 Please include in the PR:
 

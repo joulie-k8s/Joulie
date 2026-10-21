@@ -501,13 +501,41 @@ A local profile may extend (`extends:`) a builtin profile or another local one, 
 
 ## kubectl plugin
 
-The `kubectl joulie` plugin requires no configuration. It reads your current kubeconfig context.
+The `kubectl joulie` plugin reads the cluster through your kubeconfig, as kubectl does, and needs no configuration. It lists `NodeTwin`, `NodeHardware`, `Node` and `Pod` objects; without permission to list `NodeHardware` it shows no hardware and works otherwise. Install it with `kubectl krew install joulie`, or see the [quickstart]({{< relref "/docs/getting-started/01-quickstart.md#kubectl-plugin" >}}).
 
-```bash
-# Install
-go build -o kubectl-joulie ./cmd/kubectl-joulie
-mv kubectl-joulie /usr/local/bin/
+| Command | Shows |
+|---------|-------|
+| `kubectl joulie`, `kubectl joulie status` | the cluster summary (measured, capped and TDP power, nodes and their power per class, pods per class, average headroom, cooling and PSU stress, PUE) and one row per managed node |
+| `kubectl joulie top` | the live dashboard: the status screen refreshed every `--interval`, with a power sparkline per node that takes one point per `NodeTwin` update; `↑` `↓` select, `enter` opens the node, `p` the pods, `s` sorts, `r` refreshes, `q` quits |
+| `kubectl joulie node <node>` | one node: hardware, power, twin scores, the caps and governor presets planned and what its agent applied, its pods |
+| `kubectl joulie pods` | every pod on a managed node: its class, its node and the node's class; a performance pod on an eco node is flagged. A pod is `performance` when it asks for a performance node, as the controller manager reads it: the `joulie.io/workload-class: performance` annotation, or a node selector or node affinity on `joulie.io/power-profile: performance`; any other pod is `standard` |
+| `kubectl joulie version` | the plugin version |
 
-# Usage
-kubectl joulie status      # cluster energy overview
-```
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `-o`, `--output` | `table` | `json`: the same data as one JSON document, for scripts |
+| `-w`, `--watch` | off | `status` and `pods`: open the live dashboard (`-W` is an alias) |
+| `--interval` | `2s` | Refresh period of the live dashboard, at least `500ms` |
+| `--no-color` | off | No colors. `NO_COLOR=1` does the same, and output that is not a terminal has none |
+| `-n`, `--namespace` | all namespaces | `pods` only: list the pods of this namespace alone, which needs no permission to list pods cluster-wide. The node columns of the live dashboard then count these pods only |
+| `--kubeconfig`, `--context`, `--cluster`, `--user`, `--server`, `--token` | as kubectl | As in kubectl |
+
+The node table of `status` and `top`:
+
+| Column | Shows |
+|--------|-------|
+| `NODE` | The node name |
+| `HARDWARE` | The node's GPUs (count and model) or, on a node without GPUs, its CPUs (sockets and model), from its `NodeHardware` |
+| `CLASS` | The `NodeTwin`'s schedulable class: `performance`, `eco`, `draining` or `unknown` |
+| `POWER` | The measured node power, and a bar of it against the node's capped power (its TDP while no cap is known); the power source when nothing measures it |
+| `TREND` | The twin's power trend in W/min; in `top`, a sparkline of the measured power, each block the share of the capped power it reaches |
+| `CAP CPU·GPU` | The effective CPU and GPU caps in percent of the maximum; `-` for the GPU of a node without GPUs, and for both while the twin has no cap state |
+| `HEADROOM`, `COOLING` | The twin's predicted power headroom and cooling stress, 0 to 100 |
+| `CPU`, `MEM` | Requested over allocatable, summed over the pods bound to the node that have not finished |
+| `GPU` | GPUs requested over allocatable, counting whole GPUs, MIG devices, AMD partitions and shared replicas, each weighted by its share of a GPU; `-` for a node without GPU resources |
+| `PODS` | The pods on the node; `▲n` counts its performance pods |
+| `AGENT` | The `AgentReporting` condition: `✓`, `✗` with its reason, `?` before the controller manager writes it |
+
+The table drops the columns that do not fit the terminal, in this order: `MEM`, `TREND`, `HARDWARE`, `COOLING`, `HEADROOM`.
+
+`-o json` prints `time`, `summary` (`nodes` per class, `pods`, `performancePods`, `misplacedPods`, `podsError`, `measuredPowerW`, `cappedPowerW`, `tdpW`, `powerTrendWPerMin`, `avgHeadroomPct`, `avgCoolingStressPct`, `avgPsuStressPct`, `avgPUE`, `agentsReporting`, `agentsNotReporting`), `nodes` for `status` and `node` (`name`, `class`, `cpuModel`, `sockets`, `gpuModel`, `gpus`, `powerSource`, `measuredPowerW`, `cappedPowerW`, `tdpW`, `powerTrendWPerMin`, `cpuCapPct`, `gpuCapPct`, `headroomPct`, `coolingStressPct`, `psuStressPct`, `cpuRequestedPct`, `memoryRequestedPct`, `gpuRequestedPct`, `pods`, `performancePods`, `agentReporting`, `agentReason`) and `pods` for `pods` and `node` (`namespace`, `name`, `class`, `node`, `nodeClass`, `misplaced`, `cpu`, `gpus`). `cpuCapPct` and `gpuCapPct` are left out while the twin has no cap state yet, and the GPU fields for a node without GPUs. `podsError` is set when the pods could not be listed; the pod counts are then unknown, not zero. A command's list is present even when empty (`"pods": []`).

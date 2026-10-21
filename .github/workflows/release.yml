@@ -104,6 +104,8 @@ jobs:
             goarch: amd64
           - goos: darwin
             goarch: arm64
+          - goos: windows
+            goarch: amd64
     steps:
       - name: Checkout release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -123,16 +125,12 @@ jobs:
           PRERELEASE: ${{ github.event.release.prerelease }}
         run: bash scripts/release-version.sh "${TAG}" "${PRERELEASE}" >> "$GITHUB_OUTPUT"
 
+      # The archive Krew installs (binary and LICENSE) and the bare binary,
+      # both in dist/.
       - name: Build kubectl-joulie
         env:
-          CGO_ENABLED: "0"
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          BINARY="kubectl-joulie-${{ matrix.goos }}-${{ matrix.goarch }}"
-          go build -ldflags="-s -w -X main.version=${{ steps.vars.outputs.version }}" \
-            -o "${BINARY}" ./cmd/kubectl-joulie
-          chmod +x "${BINARY}"
+          TAG: ${{ github.event.release.tag_name }}
+        run: bash scripts/kubectl-plugin-archive.sh "${TAG}" "${{ matrix.goos }}" "${{ matrix.goarch }}" dist
 
       - name: Login to CERN registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -143,19 +141,66 @@ jobs:
 
       - name: Push binary as OCI artifact to Harbor
         run: |
-          BINARY="kubectl-joulie-${{ matrix.goos }}-${{ matrix.goarch }}"
+          BINARY="kubectl-joulie-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}"
           TAG="${{ steps.vars.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}"
           curl -sLO "https://github.com/oras-project/oras/releases/download/v1.2.2/oras_1.2.2_linux_amd64.tar.gz"
           tar xzf oras_1.2.2_linux_amd64.tar.gz oras
-          ./oras push "registry.cern.ch/joulie/kubectl-joulie:${TAG}" \
+          cd dist && ../oras push "registry.cern.ch/joulie/kubectl-joulie:${TAG}" \
             "${BINARY}:application/octet-stream"
 
-      - name: Attach binary to GitHub release
+      - name: Attach archive and binary to GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
-          BINARY="kubectl-joulie-${{ matrix.goos }}-${{ matrix.goarch }}"
-          gh release upload "${{ github.event.release.tag_name }}" "${BINARY}" --clobber
+          gh release upload "${TAG}" --clobber \
+            "dist/kubectl-joulie_${TAG}_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz" \
+            "dist/kubectl-joulie-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}"
+
+  # Publishes the version's CHANGELOG.md section as the release notes when the
+  # release was published without any, so every release carries notes. A tag
+  # the changelog does not describe fails the job instead of publishing empty
+  # notes.
+  release-notes:
+    runs-on: ubuntu-24.04
+    if: ${{ github.event.release.body == '' }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Publish the CHANGELOG.md section as the release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          bash scripts/changelog-section.sh "${TAG}" >notes.md
+          gh release edit "${TAG}" --notes-file notes.md
+
+  # Opens the version bump of the joulie plugin in kubernetes-sigs/krew-index
+  # once every archive is attached: krew-release-bot renders
+  # cmd/kubectl-joulie/krew.yaml with the tag and each archive's sha256, and
+  # krew-index merges a bump of version, uri and sha256 alone without review.
+  # The bot cannot submit a plugin's first version, and fails on a
+  # pre-release, so the job runs for stable releases once the repository
+  # variable KREW_INDEX is "true", set after the first submission merged.
+  krew-index:
+    runs-on: ubuntu-24.04
+    needs: publish-kubectl-plugin
+    if: ${{ vars.KREW_INDEX == 'true' && !github.event.release.prerelease && !contains(github.event.release.tag_name, '-') }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Open the krew-index version bump
+        uses: rajatjindal/krew-release-bot@c970b8a8f6dbc2f2285a26e3ae160903b87002c3 # v0.0.51
+        with:
+          krew_template_file: cmd/kubectl-joulie/krew.yaml
 
   publish-helm-chart:
     runs-on: ubuntu-24.04

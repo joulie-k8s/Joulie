@@ -1,0 +1,21 @@
+# Demo cluster: 10 Nodes in five hardware families, the cluster the
+# kubectl joulie recording runs on (tests/simcluster/scenarios/demo.yaml,
+# scripts/kubectl-joulie-demo.sh). Two racks in two cooling zones, so the
+# cooling stress differs between the CPU and the GPU racks. No baseLoad: a
+# Node idles until the scenario's jobs load it, as in a real cluster.
+apiVersion: sim.joulie.io/v1alpha1
+kind: ClusterSpec
+metadata: {name: demo}
+spec:
+  defaults:
+    labels: {joulie.io/managed: "true"}
+  facility: {ambientC: 22, amplitudeC: 4, periodH: 24, coolingZones: [{name: zone-a, offsetC: 0}, {name: zone-b, offsetC: 4}]}
+  pools:
+  - {name: xeon,   profile: intel-xeon-6530-2s-rapl,      count: 3, rack: rack-1, coolingZone: zone-a}
+  - {name: epyc,   profile: amd-epyc-9534-2s-energy-only, count: 2, rack: rack-1, coolingZone: zone-a}
+  - {name: h100,   profile: nvidia-h100-sxm-8gpu,         count: 2, rack: rack-2, coolingZone: zone-b}
+  - {name: mi300x, profile: amd-instinct-mi300x-8gpu,     count: 2, rack: rack-2, coolingZone: zone-b}
+  - {name: l40s,   profile: nvidia-l40s-4gpu,             count: 1, rack: rack-2, coolingZone: zone-b}
+  # The GPU pools get the GPU tools a node with the driver installed has (a
+  # driver stub at each path the tools need), as in the other specs.
+  harness: {pools: {h100: {toolDelivery: mounted}, mi300x: {toolDelivery: mounted}, l40s: {toolDelivery: mounted}}}

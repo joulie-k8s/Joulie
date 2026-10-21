@@ -9,7 +9,7 @@ The end-to-end test of the [simulated cluster](../../website/content/en/docs/sim
 | `e2e_test.go` | `TestSimclusterE2E`, the end-to-end test, behind the `simcluster` build tag |
 | `*_test.go` (others) | its helpers, and the harness's own tests (`TestE2E*`, and the specs, scripts and manifests checks), which need no cluster |
 | `known_defects_test.go` | the known-defect registry (below) |
-| `specs/` | cluster specs: `smoke.yaml` (9 Nodes), `medium.yaml` (50), `profiles.yaml` (one Node of every builtin profile), `policy.yaml` and `nightly.yaml` for the scenarios, `governor.yaml` for experiment 05. Every GPU pool sets its `toolDelivery` in `spec.harness`: a pool left out follows the Joulie install, which delivers no GPU tools by default |
+| `specs/` | cluster specs: `smoke.yaml` (9 Nodes), `medium.yaml` (50), `profiles.yaml` (one Node of every builtin profile), `policy.yaml` and `nightly.yaml` for the scenarios, `governor.yaml` for experiment 05, `demo.yaml` for the `kubectl joulie` recording (`scripts/kubectl-joulie-demo.sh`). Every GPU pool sets its `toolDelivery` in `spec.harness`: a pool left out follows the Joulie install, which delivers no GPU tools by default |
 | `smoke-values.yaml` | the Joulie values of the smoke run |
 | `scenarios/` | the [workload scenario](../../website/content/en/docs/simulator/scenarios.md) library |
 

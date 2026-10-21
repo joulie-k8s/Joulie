@@ -210,41 +210,29 @@ Or from source: `make simulator-install TAG=<version>`.
 
 ## kubectl plugin
 
-The `kubectl-joulie` plugin adds `kubectl joulie status` for inspecting Joulie cluster energy state.
+`kubectl joulie` shows the energy state of the cluster in the terminal: the power each node draws against its cap, its power profile, the caps its agent applied, the digital twin's scores, and where performance and standard pods run.
 
-### Install from release (Harbor/OCI)
+{{< img src="images/kubectl-joulie.gif" alt="kubectl joulie: status, node and the live dashboard on a simulated 10-node cluster" >}}
 
-Download the pre-built binary for your platform from the CERN OCI registry using [ORAS](https://oras.land/):
-
-```bash
-# Pick your platform: linux-amd64, linux-arm64, darwin-amd64, darwin-arm64
-PLATFORM="linux-amd64"
-VERSION="<version>"
-
-oras pull "registry.cern.ch/joulie/kubectl-joulie:${VERSION}-${PLATFORM}"
-chmod +x "kubectl-joulie-${PLATFORM}"
-# User-local install (no sudo required, ensure ~/.local/bin is in your PATH)
-install "kubectl-joulie-${PLATFORM}" ~/.local/bin/kubectl-joulie
-
-# Or system-wide install (requires sudo)
-sudo install "kubectl-joulie-${PLATFORM}" /usr/local/bin/kubectl-joulie
-```
-
-Alternatively, download from the [GitHub release assets](https://github.com/joulie-k8s/Joulie/releases):
+### Install with Krew
 
 ```bash
-PLATFORM="linux-amd64"
-VERSION="<version>"
-
-curl -sLO "https://github.com/joulie-k8s/Joulie/releases/download/v${VERSION}/kubectl-joulie-${PLATFORM}"
-chmod +x "kubectl-joulie-${PLATFORM}"
-
-# User-local install (no sudo required, ensure ~/.local/bin is in your PATH)
-install "kubectl-joulie-${PLATFORM}" ~/.local/bin/kubectl-joulie
-
-# Or system-wide install (requires sudo)
-sudo install "kubectl-joulie-${PLATFORM}" /usr/local/bin/kubectl-joulie
+kubectl krew install joulie
+kubectl krew upgrade joulie   # later, for a new release
 ```
+
+### Install from a release
+
+Each [GitHub release](https://github.com/joulie-k8s/Joulie/releases) carries an archive per platform (`linux_amd64`, `linux_arm64`, `darwin_amd64`, `darwin_arm64`, `windows_amd64`), with the binary and the license, and the bare binary:
+
+```bash
+VERSION=v<version>
+PLATFORM=linux_amd64
+curl -sL "https://github.com/joulie-k8s/Joulie/releases/download/${VERSION}/kubectl-joulie_${VERSION}_${PLATFORM}.tar.gz" | tar xz kubectl-joulie
+install kubectl-joulie ~/.local/bin/   # any directory in your PATH
+```
+
+The bare binaries are also in the CERN registry: `oras pull "registry.cern.ch/joulie/kubectl-joulie:<version>-linux-amd64"` (the version without the `v`).
 
 ### Install from source
 
@@ -255,8 +243,14 @@ make kubectl-plugin-install
 ### Usage
 
 ```bash
-kubectl joulie status      # Show energy state of all Joulie-managed nodes
+kubectl joulie                 # the cluster summary and one row per managed node
+kubectl joulie top             # the live dashboard
+kubectl joulie node <node>     # one node: hardware, power, twin, applied caps, pods
+kubectl joulie pods            # where performance and standard pods run
+kubectl joulie -o json         # the same data for scripts
 ```
+
+The commands and flags are in the [configuration reference]({{< relref "/docs/getting-started/05-configuration-reference.md#kubectl-plugin" >}}).
 
 ## Next step
 

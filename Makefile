@@ -137,7 +137,8 @@ build-push-install: build-push install
 		kubectl -n "$(NAMESPACE)" rollout status deploy/joulie-scheduler-extender || true
 
 kubectl-plugin:
-	CGO_ENABLED=0 go build -o bin/kubectl-joulie ./cmd/kubectl-joulie
+	CGO_ENABLED=0 go build -ldflags "-X main.version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" \
+		-o bin/kubectl-joulie ./cmd/kubectl-joulie
 
 kubectl-plugin-install: kubectl-plugin
 	install bin/kubectl-joulie /usr/local/bin/kubectl-joulie

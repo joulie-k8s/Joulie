@@ -1,0 +1,54 @@
+# The Krew manifest of the plugin, as the template krew-release-bot renders:
+# on every stable release the release workflow's krew-index job fills in the
+# tag and each archive's sha256 and opens the version bump in
+# kubernetes-sigs/krew-index, which merges a bump of version, uri and sha256
+# alone without review. The archives are those scripts/kubectl-plugin-archive.sh
+# packs for the release workflow's publish-kubectl-plugin matrix;
+# tests/contracts/krew_test.go keeps the three in step.
+apiVersion: krew.googlecontainertools.github.com/v1alpha2
+kind: Plugin
+metadata:
+  name: joulie
+spec:
+  version: {{ .TagName }}
+  homepage: https://joulie-k8s.github.io/Joulie/
+  shortDescription: Energy dashboard of a Joulie-managed cluster
+  description: |
+    Shows the energy state of a cluster that Joulie manages: the measured and
+    capped power of each node, its power profile (performance or eco), the
+    CPU and GPU caps its agent applied, the digital twin's power headroom and
+    cooling stress, and which nodes run performance and standard pods. As
+    tables, as JSON, or as a live terminal dashboard.
+  caveats: |
+    Needs Joulie installed in the cluster: https://joulie-k8s.github.io/Joulie/
+  platforms:
+  - selector:
+      matchLabels:
+        os: linux
+        arch: amd64
+    {{addURIAndSha "https://github.com/joulie-k8s/Joulie/releases/download/{{ .TagName }}/kubectl-joulie_{{ .TagName }}_linux_amd64.tar.gz" .TagName }}
+    bin: kubectl-joulie
+  - selector:
+      matchLabels:
+        os: linux
+        arch: arm64
+    {{addURIAndSha "https://github.com/joulie-k8s/Joulie/releases/download/{{ .TagName }}/kubectl-joulie_{{ .TagName }}_linux_arm64.tar.gz" .TagName }}
+    bin: kubectl-joulie
+  - selector:
+      matchLabels:
+        os: darwin
+        arch: amd64
+    {{addURIAndSha "https://github.com/joulie-k8s/Joulie/releases/download/{{ .TagName }}/kubectl-joulie_{{ .TagName }}_darwin_amd64.tar.gz" .TagName }}
+    bin: kubectl-joulie
+  - selector:
+      matchLabels:
+        os: darwin
+        arch: arm64
+    {{addURIAndSha "https://github.com/joulie-k8s/Joulie/releases/download/{{ .TagName }}/kubectl-joulie_{{ .TagName }}_darwin_arm64.tar.gz" .TagName }}
+    bin: kubectl-joulie
+  - selector:
+      matchLabels:
+        os: windows
+        arch: amd64
+    {{addURIAndSha "https://github.com/joulie-k8s/Joulie/releases/download/{{ .TagName }}/kubectl-joulie_{{ .TagName }}_windows_amd64.tar.gz" .TagName }}
+    bin: kubectl-joulie.exe

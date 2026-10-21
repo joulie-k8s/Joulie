@@ -63,7 +63,7 @@ Older releases and dashboards called the controller manager "the operator"; its 
   - rejects eco nodes for performance pods
   - scores nodes by power headroom and facility stress
 - **kubectl plugin** (`cmd/kubectl-joulie`): cluster observability
-  - `kubectl joulie status` shows per-node energy state, power profiles, and cap settings
+  - `kubectl joulie status` shows per-node energy state, power profiles, and cap settings; `kubectl joulie top` is the live dashboard
 - **Simulator** (`simulator/`): digital-twin execution environment
   - enables repeatable experiments without requiring real hardware
 

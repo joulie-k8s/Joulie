@@ -1,11 +1,39 @@
-[![CI](https://github.com/joulie-k8s/Joulie/actions/workflows/ci.yml/badge.svg)](https://github.com/joulie-k8s/Joulie/actions/workflows/ci.yml)
-[![Release](https://github.com/joulie-k8s/Joulie/actions/workflows/release.yml/badge.svg)](https://github.com/joulie-k8s/Joulie/actions/workflows/release.yml)
+<p align="center">
+  <img src="website/static/images/logo.png" alt="Joulie" width="110">
+</p>
 
-# Joulie
+<h1 align="center">Joulie</h1>
 
-**Kubernetes-native energy management for data centers, powered by digital twins.**
+<p align="center">Kubernetes-native energy management for data centers, powered by digital twins.</p>
 
-Visit the docs at [joulie-k8s.github.io/Joulie](https://joulie-k8s.github.io/Joulie/)
+<p align="center">
+  <a href="https://github.com/joulie-k8s/Joulie/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/joulie-k8s/Joulie/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white"></a>
+  <a href="https://github.com/joulie-k8s/Joulie/actions/workflows/simcluster.yml"><img alt="Simulated cluster" src="https://img.shields.io/github/actions/workflow/status/joulie-k8s/Joulie/simcluster.yml?branch=main&label=simulated%20cluster&logo=kubernetes&logoColor=white"></a>
+  <a href="https://github.com/joulie-k8s/Joulie/actions/workflows/vulnscan-nightly.yml"><img alt="Vulnerability scan" src="https://img.shields.io/github/actions/workflow/status/joulie-k8s/Joulie/vulnscan-nightly.yml?branch=main&label=vulnerability%20scan&logo=springsecurity&logoColor=white"></a>
+  <a href="https://www.bestpractices.dev/projects/15770"><img alt="OpenSSF Best Practices" src="https://www.bestpractices.dev/projects/15770/badge"></a>
+  <br>
+  <a href="https://github.com/joulie-k8s/Joulie/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/joulie-k8s/Joulie?label=release&color=F5B400&logo=helm&logoColor=white"></a>
+  <a href="go.mod"><img alt="Go" src="https://img.shields.io/github/go-mod/go-version/joulie-k8s/Joulie?logo=go&logoColor=white"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache_2.0-blue"></a>
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/"><img alt="Docs" src="https://img.shields.io/badge/docs-joulie--k8s.github.io-F5B400?logo=hugo&logoColor=white"></a>
+  <br>
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/quickstart/#kubectl-plugin"><img alt="kubectl plugin" src="https://img.shields.io/badge/kubectl_plugin-kubectl_joulie-326CE5?logo=kubernetes&logoColor=white"></a>
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/architecture/telemetry/"><img alt="OpenTelemetry" src="https://img.shields.io/badge/telemetry-OpenTelemetry-425CC7?logo=opentelemetry&logoColor=white"></a>
+  <a href="ci/"><img alt="Tested with Dagger" src="https://img.shields.io/badge/tested_with-Dagger_v0.21-6E40C9"></a>
+</p>
+
+<p align="center">
+  <img src="website/static/images/kubectl-joulie.gif" alt="kubectl joulie: the cluster status, a node in detail and the live dashboard on a simulated 10-node cluster" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/">Documentation</a> ·
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/quickstart/">Quickstart</a> ·
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/architecture/">Architecture</a> ·
+  <a href="https://joulie-k8s.github.io/Joulie/stable/docs/experiments/">Experiments</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href="SECURITY.md">Security</a>
+</p>
 
 ## What it is
 
@@ -57,7 +85,7 @@ Joulie has five components:
 | **Agent** (`cmd/agent`) | Runs on every node. Discovers hardware (CPU/GPU caps, slicing modes). Enforces RAPL/NVML power caps. Applies governor presets when `GOVERNOR_WRITES=true`. Publishes `NodeHardware` CR. Reads `NodeTwin.spec` for desired state. Writes control feedback to `NodeTwin.status.controlStatus`. |
 | **Controller manager** (`cmd/controller-manager`) | Cluster-wide control loop. Reads `NodeHardware` + Prometheus metrics. Runs the digital twin model. Writes `NodeTwin` (spec = desired power state, status = twin output). |
 | **Scheduler extender** (`cmd/scheduler`) | HTTP extender for kube-scheduler. Reads `NodeTwin.status` (30s TTL cache). Rejects eco nodes for performance pods. Scores nodes by projected power headroom, cooling stress and power trend. |
-| **kubectl plugin** (`cmd/kubectl-joulie`) | `kubectl joulie status` for cluster energy overview. |
+| **kubectl plugin** (`cmd/kubectl-joulie`) | `kubectl joulie` for the cluster's energy state, `kubectl joulie top` for the live dashboard; `kubectl krew install joulie`. |
 | **Digital twin** (`pkg/controller/twin`) | O(1) parametric model. From a measured node power reading it computes power headroom (% of the capped budget still unused), cooling stress (% of node TDP in use, scaled by ambient temperature), PSU stress (% of rack PDU capacity), and estimated PUE. The last two are published for observability; the scheduler does not read them. |
 
 ## CRDs
@@ -93,7 +121,7 @@ api/v1alpha1/           CRD types: the source of truth for NodeHardware and Node
 cmd/agent/              Node agent: hardware discovery, reconcile loop, RAPL/NVML enforcement
 cmd/controller-manager/ Cluster control loop: policy, twin computation, NodeTwin writes
 cmd/scheduler/          HTTP scheduler extender: filter + score via NodeTwin.status
-cmd/kubectl-joulie/     kubectl plugin: `kubectl joulie status`
+cmd/kubectl-joulie/     kubectl plugin: `kubectl joulie status`, `top`, `node`, `pods`; its Krew manifest
 pkg/agent/dvfs/         RAPL powercap zones and DVFS (EMA smoothing, hysteresis, frequency capping)
 pkg/agent/control/      HTTP control and telemetry clients
 pkg/api/                In-memory structs and shared constants (field managers, object names)

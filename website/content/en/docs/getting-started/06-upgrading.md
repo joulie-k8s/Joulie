@@ -16,6 +16,12 @@ What to check when you upgrade a Joulie installation from v0.2 to v0.3. Go throu
   Without a checkout, take them from the release chart: `helm pull oci://registry.cern.ch/joulie/joulie --version <version> --untar --untardir /tmp/joulie-chart`, then `kubectl apply -f /tmp/joulie-chart/joulie/crds/`.
 - [ ] **Registry.** Charts, images and the kubectl plugin are published under `registry.cern.ch/joulie`. A values file that sets an `image.repository` under `registry.cern.ch/mbunino/joulie` must point at `registry.cern.ch/joulie`; every tag up to 0.2.0 exists there with the same digest.
 
+## kubectl plugin
+
+- [ ] **Scripts.** `kubectl joulie status` prints styled tables and drops columns that do not fit the terminal. A script that parsed its text reads `kubectl joulie status -o json` instead ([fields]({{< relref "/docs/getting-started/05-configuration-reference.md#kubectl-plugin" >}})).
+- [ ] **Watch.** `kubectl joulie status -W` opens the live dashboard, also `kubectl joulie top`: `q` quits it.
+- [ ] **Install.** `kubectl krew install joulie`. A release attaches `kubectl-joulie_<tag>_<os>_<arch>.tar.gz` archives, Windows included, besides the bare binaries.
+
 ## Measured node power
 
 - [ ] **Prometheus.** The chart sets `NODE_POWER_SOURCE=prometheus`, which reads the `otel` preset from `http://prometheus-operated.monitoring:9090`. Without Prometheus and node power data, every node reads 0 W with source `prometheus-no-data`. Set up Prometheus as the [quickstart]({{< relref "/docs/getting-started/01-quickstart.md#prerequisites" >}}) says, or set `controllerManager.env.NODE_POWER_SOURCE=static` to keep 0 W.

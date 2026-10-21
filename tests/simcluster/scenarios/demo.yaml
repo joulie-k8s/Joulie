@@ -1,0 +1,63 @@
+# The workload of the kubectl joulie recording (scripts/kubectl-joulie-demo.sh):
+# steady CPU and GPU arrivals of both classes for 40 minutes on the demo
+# cluster, about half of it busy, with half the Nodes in eco so the caps,
+# the placement and the power readings all have something to show.
+schemaVersion: 1
+name: demo
+description: Forty minutes of mixed CPU and GPU work on the 10 Node demo cluster.
+cluster: {spec: tests/simcluster/specs/demo.yaml, timing: dev}
+seed: 3
+duration: 40m
+drain: 10m
+abortOnRunStalled: 10m
+workload:
+  namespace: sim-workload
+  jobs:
+  - name: train
+    class: performance
+    count: 14
+    every: 160s
+    requests: {cpu: "16", memory: 64Gi}
+    gpus: {resource: nvidia.com/gpu, count: 4}
+    runtime: 7m
+    workClass: {cpu: cpu.compute_bound, gpu: gpu.compute_bound}
+    tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+  - name: finetune
+    class: standard
+    count: 12
+    every: 190s
+    requests: {cpu: "16", memory: 64Gi}
+    gpus: {resource: amd.com/gpu, count: 4}
+    runtime: 8m
+    workClass: {cpu: cpu.compute_bound, gpu: gpu.compute_bound}
+    tolerations: [{key: amd.com/gpu, operator: Exists, effect: NoSchedule}]
+  - name: infer
+    class: standard
+    count: 16
+    every: 140s
+    requests: {cpu: "8", memory: 32Gi}
+    gpus: {resource: nvidia.com/gpu, count: 1}
+    runtime: 5m
+    workClass: {cpu: cpu.compute_bound, gpu: gpu.memory_bound}
+    tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+  - name: sim
+    class: performance
+    count: 30
+    every: 75s
+    requests: {cpu: "32", memory: 64Gi}
+    runtime: 5m
+    workClass: {cpu: cpu.compute_bound}
+  - name: etl
+    class: standard
+    count: 40
+    every: 55s
+    requests: {cpu: "24", memory: 32Gi}
+    runtime: 4m
+    workClass: {cpu: cpu.memory_bound}
+joulie:
+  set:
+    controllerManager.env.POLICY_TYPE: static_partition
+    controllerManager.env.STATIC_HP_FRAC: "0.5"
+assertions:
+- {name: placement, type: placement, class: performance, forbidden: [eco], expect: "== 0"}
+- {name: jobs, type: jobs, expect: {completedFraction: ">= 0.9"}}

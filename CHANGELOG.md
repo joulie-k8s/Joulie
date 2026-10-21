@@ -1,0 +1,59 @@
+# Changelog
+
+The user-visible changes of each release, what to check when upgrading, and the security fixes. A pull request with a user-visible change adds its line under Unreleased. When a release is published without notes, the release workflow copies its section here into the GitHub release (`scripts/changelog-section.sh`).
+
+## Unreleased
+
+### kubectl plugin
+
+- `kubectl joulie status` draws the cluster as styled tables: a summary of measured, capped and TDP power, nodes and power per class, pods per class and the facility scores, then one row per node with its hardware, class, power against its cap, trend, applied caps, digital twin scores, requested resources, pods and agent condition. Columns that do not fit the terminal are dropped. (#85)
+- New commands: `top`, a live dashboard with a power sparkline per node, node details and pod placement; `node NAME`; `pods`, which flags a performance pod on an eco node; `version`. `-o json` prints the same data for scripts, and the kubectl flags (`--kubeconfig`, `--context`, `-n` and the others) work as in kubectl. (#85)
+- Install with Krew, `kubectl krew install joulie`, once the plugin is in the Krew index. Each release attaches `kubectl-joulie_<tag>_<os>_<arch>.tar.gz` archives, Windows included, besides the bare binaries. (#85)
+
+### Upgrading
+
+- A script that parsed the text of `kubectl joulie status` reads `kubectl joulie status -o json` instead.
+
+### Security
+
+- Vulnerabilities are reported privately through a GitHub security advisory, as [SECURITY.md](SECURITY.md) describes. (#85)
+
+## v0.2.4 (2026-10-21)
+
+### GPU control
+
+- AMD GPUs are capped through the amdgpu hwmon files under `/host-sys`; the agent no longer calls `rocm-smi`, which has no power cap flag. MIG devices, shared replicas and AMD partitions are capped and counted by the share of a GPU they stand for. (#75)
+- Intel discrete GPUs are capped through their `i915` or `xe` hwmon files (backend `host-intel`), and the catalogue knows the Flex 170 and the Max 1100 and 1550. (#78)
+- An NVIDIA GPU whose limits print a token, such as `[N/A]`, is never written: its caps end `blocked` with a message naming the GPU. (#77)
+- Two-die AMD boards (MI250X) cap their primary dies only, and `capRangePerGpu.defaultWatts` is NVIDIA's `power.default_limit`. (#79)
+
+### Agents and nodes
+
+- The agent runs on every node labelled `joulie.io/managed=true`, tainted ones included: `agent.tolerations` defaults to `[{operator: Exists}]`. (#82)
+- Every image is built for `linux/amd64` and `linux/arm64`. (#82)
+- Each `NodeTwin` carries the condition `AgentReporting`, `False` on a managed node no agent reports for, where the planned caps are not enforced. `kubectl get nodetwins` shows it in an `Agent` column, and `joulie_twin_nodes_agent_reporting` counts the nodes. (#82)
+
+### Controller manager
+
+- CPU and GPU governor presets, a second energy dimension next to the power caps, off by default (`GOVERNOR_CONTROL=off`). (#73)
+- Two opt-in GPU rules, both off by default: `GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU` and `CPU_ECO_CAP_ON_UNCAPPABLE_GPU_NODES`. (#83)
+
+### Simulator and testing
+
+- A simulated bare-metal cluster: real Joulie components on emulated nodes in one k3s container, with OpenTelemetry `hw.*` telemetry and the Kepler, dcgm-exporter and AMD device-metrics-exporter formats. (#72, #73)
+- The emulated sysfs is served through FUSE, so a write the kernel would refuse fails at once and energy counters move between reads. (#81)
+- Hardware measurement tooling for the governor work. (#80)
+
+### Upgrading
+
+- Apply the new CRDs before `helm upgrade`: the governor fields and the `AgentReporting` condition need them. The [upgrade guide](https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/06-upgrading/) lists every step.
+- Agent pods now start on tainted managed nodes. To keep the agent off some of them, list the taints it may tolerate in `agent.tolerations`.
+
+### Security
+
+- The binaries and images are built with Go 1.26.10 instead of Go 1.22.9, with every Go standard library fix in between, GO-2026-6809 (`crypto/x509`) among them. (#74, #84)
+- CI actions are pinned by commit and container base images by digest, and the dependencies are scanned with osv-scanner and govulncheck on every change to a manifest and nightly. (#74, #84)
+
+## Earlier releases
+
+The notes of v0.2.3 and earlier are on their GitHub releases: [v0.2.3](https://github.com/joulie-k8s/Joulie/releases/tag/v0.2.3), [v0.2.2](https://github.com/joulie-k8s/Joulie/releases/tag/v0.2.2), [v0.2.1](https://github.com/joulie-k8s/Joulie/releases/tag/v0.2.1), [v0.2.0](https://github.com/joulie-k8s/Joulie/releases/tag/v0.2.0).

@@ -237,3 +237,38 @@ func checkCrossCompilingDockerfile(t *testing.T, root, rel string) {
 		t.Errorf("%s: no go build for ${TARGETOS}/${TARGETARCH}", rel)
 	}
 }
+
+// Every release carries notes: a release published without any gets its
+// CHANGELOG.md section, through scripts/changelog-section.sh, which fails on a
+// tag the changelog does not describe.
+func TestReleaseWorkflowPublishesChangelogNotes(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wf struct {
+		Jobs map[string]struct {
+			If    string `json:"if"`
+			Steps []struct {
+				Run string `json:"run"`
+			} `json:"steps"`
+		} `json:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &wf); err != nil {
+		t.Fatal(err)
+	}
+	job, ok := wf.Jobs["release-notes"]
+	if !ok {
+		t.Fatal("release.yml has no release-notes job")
+	}
+	if job.If != "${{ github.event.release.body == '' }}" {
+		t.Errorf("release-notes runs if %q, want only for a release without notes", job.If)
+	}
+	var run string
+	for _, s := range job.Steps {
+		run += s.Run
+	}
+	if !strings.Contains(run, "scripts/changelog-section.sh") || !strings.Contains(run, "gh release edit") {
+		t.Errorf("release-notes does not publish the changelog section:\n%s", run)
+	}
+}
