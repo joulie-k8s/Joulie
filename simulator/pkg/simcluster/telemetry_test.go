@@ -567,6 +567,69 @@ func TestKeplerNamesMatchTheCompatExporters(t *testing.T) {
 	}
 }
 
+// The otel-bridge checks count a Node's GPUs exactly when the bridge's GPU
+// scrape jobs keep a series of that Node: two ticks of a real emulator over
+// a CPU-only Node, an NVIDIA, two AMD and an Intel GPU Node, served by the
+// dcgm-4.8.4 and amd-dme-1.5.2 exporters and filtered by each job's keep
+// rule. The Intel Flex Node has no exporter, so its GPUs are no part of the
+// truth (the profiles nightly compared flex-170-0's four GPUs with a bridge
+// that never sees them).
+func TestOTelBridgeTruthCountsTheGPUsItsExportersServe(t *testing.T) {
+	from, to := testEmulatedSnapshots(t, map[string]string{
+		"intel-0":  "intel-xeon-2s-rapl",
+		"nvl-0":    "nvidia-h100-nvl-8gpu",
+		"mi300x-0": "amd-instinct-mi300x-8gpu",
+		"w7900-0":  "amd-radeon-pro-w7900-4gpu",
+		"flex-0":   "intel-flex-170-4gpu",
+	})
+	truths := NodeTruths(to)
+	if len(truths["flex-0"].GPUsW) == 0 {
+		t.Fatalf("the Intel Flex Node has no measured GPU: %+v", truths["flex-0"])
+	}
+	served := map[string]bool{}
+	for _, j := range telBridgeJobs {
+		if j.exporter == compat.Kepler012 {
+			continue
+		}
+		set, err := compat.NewSet([]string{j.exporter}, compat.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		set.Observe(from)
+		set.Observe(to)
+		rec := httptest.NewRecorder()
+		set.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, compat.Path(j.exporter), nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: HTTP %d", j.exporter, rec.Code)
+		}
+		keep := regexp.MustCompile("^(?:" + j.keep.Regex + ")$")
+		for _, s := range testExposition(t, rec.Body.String()) {
+			if keep.MatchString(s.name) {
+				served[s.labels["hostname"]] = true
+			}
+		}
+	}
+	checks := testTelemetry(t, ModeOTelBridge, ScopeComponents, testTimings(t)[0]).Checks
+	used := []string{checks.JoulieTruth}
+	for _, c := range checks.Checks {
+		used = append(used, c.Truth)
+	}
+	for n, nt := range truths {
+		if len(nt.GPUsW) == 0 {
+			continue
+		}
+		for _, truth := range used {
+			want, err := EvalTruth(truth, nt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if counted := want > checkSum(nt.PackagesW); counted != served[n] {
+				t.Errorf("Node %s (%s GPUs): truth %s counts its GPUs %t, the bridge scrapes them %t", n, nt.GPUVendor, truth, counted, served[n])
+			}
+		}
+	}
+}
+
 type testSeries struct {
 	name   string
 	labels map[string]string
@@ -784,7 +847,7 @@ func TestTelemetryChecksPerModeAndScope(t *testing.T) {
 		ModeOTelLabelsUnpromoted: {"k8s_node_name", "", []string{"otel-components-target-info", "otel-host-target-info"}},
 		ModeOTelUTF8:             {"k8s.node.name", TruthPackagesGPUs, []string{"otel-components-labels", "otel-components-target-info", "otel-host-labels", "otel-host-target-info"}},
 		ModeOTelCollector:        {"k8s_node_name", TruthPackagesGPUs, []string{"otel-components-labels", "otel-components-target-info", "otel-host-labels", "otel-host-target-info"}},
-		ModeOTelBridge:           {"k8s_node_name", TruthPackagesGPUs, []string{"otel-components-labels", "otel-components-target-info"}},
+		ModeOTelBridge:           {"k8s_node_name", TruthPackagesNVIDIAAMDGPUs, []string{"otel-components-labels", "otel-components-target-info"}},
 		ModeKepler:               {"node_name", TruthPackagesNVIDIAGPUs, []string{"kepler-0.12-components"}},
 		ModeKeplerLegacy:         {"exported_instance", TruthPackagesNVIDIAGPUs, []string{"kepler-0.7-components", "kepler-0.7-platform-series", "kepler-0.7-platform-sum"}},
 	} {

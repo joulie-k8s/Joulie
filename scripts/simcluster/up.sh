@@ -194,7 +194,10 @@ done
 sim_wait_pids "importing the third-party images" "$third_party"
 kwok=$SIM_MANIFESTS/kwok-$KWOK_VERSION
 kubectl apply --server-side --field-manager="$SIM_FIELD_MANAGER" --force-conflicts -f "$kwok/kwok.yaml" >/dev/null
-kubectl wait --for=condition=Established crd/stages.kwok.x-k8s.io --timeout=120s >/dev/null
+# A new CRD's status.conditions is null until the API server sets it, and
+# kubectl wait fails on the null instead of waiting, so the wait is retried.
+sim_wait_running 120 "CRD stages.kwok.x-k8s.io to be established" \
+  kubectl wait --for=condition=Established crd/stages.kwok.x-k8s.io --timeout=10s
 kubectl apply --server-side --field-manager="$SIM_FIELD_MANAGER" --force-conflicts -f "$kwok/stage-fast.yaml" >/dev/null
 # Overrides of the vendored Stages, after them and in lexical order, so a
 # later file wins.

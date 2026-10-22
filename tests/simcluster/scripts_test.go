@@ -225,8 +225,10 @@ const scFakeKubectl = `#!/usr/bin/env bash
 # Fake kubectl: get answers from $FAKE_STATE/kube/get-<resource>[-<name>][-<namespace>].json
 # (several resources merged), get --raw answers readiness probes and
 # Prometheus queries ($FAKE_STATE/kube/prom.json), apply -o name prints
-# $FAKE_STATE/kube/apply-names-<file>; everything else succeeds. A
-# <file>.later becomes <file> on its second read, for the waits.
+# $FAKE_STATE/kube/apply-names-<file>, wait <target> fails as many times
+# as $FAKE_STATE/kube/wait-fails-<target with / as _> counts down;
+# everything else succeeds. A <file>.later becomes <file> on its second
+# read, for the waits.
 set -u
 source "$FAKE_BIN/fake-common.sh"
 fake_record kubectl "$@"
@@ -298,6 +300,14 @@ create)
     cat "$FAKE_STATE/fake-create-configmap.json" 2>/dev/null || echo '{"apiVersion":"v1","kind":"ConfigMap","data":{}}'
   else
     printf 'apiVersion: v1\nkind: Fake\n'
+  fi
+  ;;
+wait)
+  f=$K/wait-fails-${pos[1]//\//_}
+  if [[ -f $f ]] && (($(<"$f") > 0)); then
+    echo $(($(<"$f") - 1)) >"$f"
+    echo 'error: .status.conditions accessor error: <nil> is of the type <nil>, expected []interface{}' >&2
+    exit 1
   fi
   ;;
 esac
@@ -1791,6 +1801,18 @@ func TestSCStageOverridesApplyAfterKWOKInLexicalOrder(t *testing.T) {
 	want := []string{"kwok.yaml", "stage-fast.yaml", "stage-a.yaml", "stage-pod-complete.yaml"}
 	if strings.Join(applied, " ") != strings.Join(want, " ") {
 		t.Errorf("applied %v, want %v", applied, want)
+	}
+}
+
+// A CRD the API server has not yet marked has status.conditions null, and
+// kubectl wait fails on it at once instead of waiting: up.sh retries the
+// wait for the KWOK Stage CRD (the smoke-otel-bridge nightly failed on it).
+func TestSCKWOKCRDWaitRetriesWhileConditionsAreNull(t *testing.T) {
+	e := scNew(t)
+	e.write(filepath.Join(e.state, "kube", "wait-fails-crd_stages.kwok.x-k8s.io"), "2\n")
+	e.mustRun("up.sh", nil)
+	if w := e.callsOf("kubectl", "wait"); len(w) < 3 || !w[2].has("crd/stages.kwok.x-k8s.io") {
+		t.Errorf("kubectl wait calls %v, want three on crd/stages.kwok.x-k8s.io", w)
 	}
 }
 

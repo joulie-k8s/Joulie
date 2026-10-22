@@ -96,19 +96,19 @@ controllerManager:
 # checks, scope components:
 {
   "nodeLabel": "k8s_node_name",
-  "joulieTruth": "packages+gpus",
+  "joulieTruth": "packages+nvidia-amd-gpus",
   "checks": [
     {
       "id": "otel-components-labels",
       "query": "sum by (k8s_node_name) (max by (k8s_node_name, hw_type, hw_id) (rate(hw_energy_joules_total{hw_type=~\"cpu|gpu\"}[30s])) or on (k8s_node_name, hw_type, hw_id) max by (k8s_node_name, hw_type, hw_id) (hw_power_watts{hw_type=~\"cpu|gpu\"}))",
-      "truth": "packages+gpus",
+      "truth": "packages+nvidia-amd-gpus",
       "tolerance": 0.03,
       "absFloorW": 1
     },
     {
       "id": "otel-components-target-info",
       "query": "sum by (k8s_node_name) (max by (k8s_node_name, hw_type, hw_id) (rate(hw_energy_joules_total{hw_type=~\"cpu|gpu\"}[30s]) * on (job, instance) group_left (k8s_node_name) max by (job, instance, k8s_node_name) (target_info and on (job, instance) rate(hw_energy_joules_total{hw_type=~\"cpu|gpu\"}[30s]))) or on (k8s_node_name, hw_type, hw_id) max by (k8s_node_name, hw_type, hw_id) (hw_power_watts{hw_type=~\"cpu|gpu\"} * on (job, instance) group_left (k8s_node_name) max by (job, instance, k8s_node_name) (target_info and on (job, instance) hw_power_watts{hw_type=~\"cpu|gpu\"})))",
-      "truth": "packages+gpus",
+      "truth": "packages+nvidia-amd-gpus",
       "tolerance": 0.03,
       "absFloorW": 1
     }
