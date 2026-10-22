@@ -738,7 +738,7 @@ func telChecks(mode Mode, scope Scope, rateWindow time.Duration, window string) 
 		}}, nil
 	case ModeOTelBridge:
 		n := telNamesFor(mode.Strategy())
-		set := CheckSet{NodeLabel: n.node, JoulieTruth: TruthPackagesGPUs}
+		set := CheckSet{NodeLabel: n.node, JoulieTruth: TruthPackagesNVIDIAAMDGPUs}
 		for _, f := range []struct {
 			form  string
 			attrs inputs.ResourceAttributes
@@ -747,7 +747,7 @@ func telChecks(mode Mode, scope Scope, rateWindow time.Duration, window string) 
 			if err != nil {
 				return CheckSet{}, err
 			}
-			set.Checks = append(set.Checks, telCheck("otel-components-"+f.form, q, TruthPackagesGPUs))
+			set.Checks = append(set.Checks, telCheck("otel-components-"+f.form, q, TruthPackagesNVIDIAAMDGPUs))
 		}
 		return set, nil
 	}

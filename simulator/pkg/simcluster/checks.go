@@ -30,7 +30,7 @@ const (
 
 // Truths returns every truth a Check may name.
 func Truths() []string {
-	return []string{TruthPackagesGPUs, TruthPackagesNVIDIAGPUs, TruthHost, TruthKepler07PlatformSeries, TruthKepler07Host}
+	return []string{TruthPackagesGPUs, TruthPackagesNVIDIAGPUs, TruthPackagesNVIDIAAMDGPUs, TruthHost, TruthKepler07PlatformSeries, TruthKepler07Host}
 }
 
 // EvalTruth returns the value of truth for one Node:
@@ -38,6 +38,8 @@ func Truths() []string {
 //   - TruthPackagesGPUs: the CPU packages plus every GPU;
 //   - TruthPackagesNVIDIAGPUs: the CPU packages, plus the GPUs when they
 //     are NVIDIA's;
+//   - TruthPackagesNVIDIAAMDGPUs: the CPU packages, plus the GPUs when they
+//     are NVIDIA's or AMD's;
 //   - TruthHost: whole-node power;
 //   - TruthKepler07PlatformSeries: 2;
 //   - TruthKepler07Host: whole-node power.
@@ -59,6 +61,12 @@ func EvalTruth(truth string, n NodeTruth) (float64, error) {
 			v += checkSum(n.GPUsW)
 		}
 		return v, nil
+	case TruthPackagesNVIDIAAMDGPUs:
+		v := checkSum(n.PackagesW)
+		if bridgeScrapesGPUs(n.GPUVendor) {
+			v += checkSum(n.GPUsW)
+		}
+		return v, nil
 	case TruthHost:
 		return n.HostW, nil
 	case TruthKepler07PlatformSeries:
@@ -73,6 +81,14 @@ func EvalTruth(truth string, n NodeTruth) (float64, error) {
 		return 0, nil
 	}
 	return 0, fmt.Errorf("unknown truth %q; truths are %s", truth, strings.Join(Truths(), ", "))
+}
+
+// bridgeScrapesGPUs reports whether the otel-bridge Collector scrapes the
+// GPUs of vendor: by vendor name or PCI vendor id, as the simulator's
+// dcgm-exporter and AMD device-metrics-exporter formats select them.
+func bridgeScrapesGPUs(vendor string) bool {
+	v := strings.ToLower(vendor)
+	return strings.Contains(v, "nvidia") || v == "0x10de" || strings.Contains(v, "amd") || v == "0x1002"
 }
 
 func checkSum(vs []float64) float64 {

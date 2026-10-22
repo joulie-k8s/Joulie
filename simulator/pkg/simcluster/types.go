@@ -312,6 +312,11 @@ const (
 	// TruthPackagesNVIDIAGPUs is the sum of the CPU packages and the NVIDIA
 	// GPUs, the GPUs a Kepler release reports.
 	TruthPackagesNVIDIAGPUs = "packages+nvidia-gpus"
+	// TruthPackagesNVIDIAAMDGPUs is the sum of the CPU packages and the
+	// NVIDIA and AMD GPUs, the GPUs the otel-bridge Collector scrapes
+	// (dcgm-exporter, AMD device-metrics-exporter); an Intel GPU has no
+	// exporter there.
+	TruthPackagesNVIDIAAMDGPUs = "packages+nvidia-amd-gpus"
 	// TruthHost is whole-node power.
 	TruthHost = "host"
 )

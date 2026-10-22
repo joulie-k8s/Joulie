@@ -43,11 +43,11 @@ func TestK01TruthExpressionsOnTheFixture(t *testing.T) {
 		t.Errorf("nvl-0 truth %+v, want %+v", truths["nvl-0"], wantNVL)
 	}
 	for node, want := range map[string]map[string]float64{
-		"intel-0":      {TruthPackagesGPUs: 290, TruthPackagesNVIDIAGPUs: 290, TruthHost: 362, TruthKepler07PlatformSeries: 2, TruthKepler07Host: 362},
-		"nvl-0":        {TruthPackagesGPUs: 800, TruthPackagesNVIDIAGPUs: 800, TruthHost: 900, TruthKepler07PlatformSeries: 2, TruthKepler07Host: 900},
-		"mi300x-0":     {TruthPackagesGPUs: 1480, TruthPackagesNVIDIAGPUs: 230, TruthHost: 1600, TruthKepler07PlatformSeries: 2, TruthKepler07Host: 1600},
-		"nopowercap-0": {TruthPackagesGPUs: 0, TruthPackagesNVIDIAGPUs: 0, TruthHost: 300, TruthKepler07PlatformSeries: 0, TruthKepler07Host: 0},
-		"vm-0":         {TruthPackagesGPUs: 0, TruthPackagesNVIDIAGPUs: 0, TruthHost: 0, TruthKepler07PlatformSeries: 0, TruthKepler07Host: 0},
+		"intel-0":      {TruthPackagesGPUs: 290, TruthPackagesNVIDIAGPUs: 290, TruthPackagesNVIDIAAMDGPUs: 290, TruthHost: 362, TruthKepler07PlatformSeries: 2, TruthKepler07Host: 362},
+		"nvl-0":        {TruthPackagesGPUs: 800, TruthPackagesNVIDIAGPUs: 800, TruthPackagesNVIDIAAMDGPUs: 800, TruthHost: 900, TruthKepler07PlatformSeries: 2, TruthKepler07Host: 900},
+		"mi300x-0":     {TruthPackagesGPUs: 1480, TruthPackagesNVIDIAGPUs: 230, TruthPackagesNVIDIAAMDGPUs: 1480, TruthHost: 1600, TruthKepler07PlatformSeries: 2, TruthKepler07Host: 1600},
+		"nopowercap-0": {TruthPackagesGPUs: 0, TruthPackagesNVIDIAGPUs: 0, TruthPackagesNVIDIAAMDGPUs: 0, TruthHost: 300, TruthKepler07PlatformSeries: 0, TruthKepler07Host: 0},
+		"vm-0":         {TruthPackagesGPUs: 0, TruthPackagesNVIDIAGPUs: 0, TruthPackagesNVIDIAAMDGPUs: 0, TruthHost: 0, TruthKepler07PlatformSeries: 0, TruthKepler07Host: 0},
 	} {
 		nt, ok := truths[node]
 		if !ok {
@@ -66,9 +66,16 @@ func TestK01TruthExpressionsOnTheFixture(t *testing.T) {
 	}
 	// A GPU Node without a measured CPU package: Kepler reports nothing.
 	gpuOnly := NodeTruth{GPUsW: []float64{300}, GPUVendor: "NVIDIA", HostW: 400}
-	for truth, want := range map[string]float64{TruthPackagesGPUs: 300, TruthPackagesNVIDIAGPUs: 0, TruthHost: 400, TruthKepler07PlatformSeries: 0, TruthKepler07Host: 0} {
+	for truth, want := range map[string]float64{TruthPackagesGPUs: 300, TruthPackagesNVIDIAGPUs: 0, TruthPackagesNVIDIAAMDGPUs: 300, TruthHost: 400, TruthKepler07PlatformSeries: 0, TruthKepler07Host: 0} {
 		if got, err := EvalTruth(truth, gpuOnly); err != nil || got != want {
 			t.Errorf("GPU-only Node %s = %g, %v; want %g", truth, got, err, want)
+		}
+	}
+	// An Intel GPU Node: the bridge's exporters see its packages only.
+	flex := NodeTruth{PackagesW: []float64{100}, GPUsW: []float64{120, 120}, GPUVendor: "intel", HostW: 400}
+	for truth, want := range map[string]float64{TruthPackagesGPUs: 340, TruthPackagesNVIDIAGPUs: 100, TruthPackagesNVIDIAAMDGPUs: 100} {
+		if got, err := EvalTruth(truth, flex); err != nil || got != want {
+			t.Errorf("Intel GPU Node %s = %g, %v; want %g", truth, got, err, want)
 		}
 	}
 	if _, err := EvalTruth("packages", NodeTruth{}); err == nil {
