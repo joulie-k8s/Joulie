@@ -45,6 +45,10 @@ kubectl get --raw "/api/v1/namespaces/telemetry/services/telemetry-kube-promethe
   jq -r '.data.activeTargets[] | select(.labels.namespace | startswith("joulie")) | "\(.health) \(.labels.job)"' | sort | uniq -c
 ```
 
+<!-- tutorials: check
+eventually '[ "$(kubectl get --raw "/api/v1/namespaces/telemetry/services/telemetry-kube-prometheus-prometheus:9090/proxy/api/v1/targets" | jq "[.data.activeTargets[] | select(.labels.namespace | startswith(\"joulie\")) | select(.health == \"up\")] | length")" -ge 13 ]'
+-->
+
 ```text
      10 up joulie-agent-metrics
       1 up joulie-controller-manager-metrics
@@ -64,6 +68,14 @@ them.
 
 ```bash
 helm -n joulie-system upgrade joulie charts/joulie --reuse-values --set grafanaDashboard.enabled=true
+```
+
+<!-- tutorials: check
+eventually 'kubectl -n telemetry logs deploy/telemetry-grafana -c grafana-sc-dashboard | grep joulie-overview.json >/dev/null'
+-->
+
+<!-- tutorials: skip -->
+```bash
 kubectl -n telemetry port-forward svc/telemetry-grafana 3000:80
 ```
 

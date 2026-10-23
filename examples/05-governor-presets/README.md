@@ -51,6 +51,11 @@ The last two columns, `CPU-Gov` and `GPU-Gov`, are the presets the controller ma
 kubectl get nodetwins -o custom-columns=NAME:.metadata.name,PROFILE:.spec.profile,CPU-GOV:.spec.cpu.governor.preset,CPU-RESULT:.status.controlStatus.cpuGovernor.result,GPU-GOV:.spec.gpu.governor.preset,GPU-RESULT:.status.controlStatus.gpuGovernor.result
 ```
 
+<!-- tutorials: check
+eventually '[ "$(kubectl get nodetwins -o json | jq "[.items[] | select(.status.controlStatus.cpuGovernor.result == \"applied\")] | length")" -eq 4 ]'
+eventually '[ "$(kubectl get nodetwin mi300x-1 -o jsonpath="{.status.controlStatus.gpuGovernor.result}")" = applied ]'
+-->
+
 ```text
 NAME       PROFILE       CPU-GOV       CPU-RESULT   GPU-GOV     GPU-RESULT
 epyc-0     performance   performance   applied      <none>      <none>
@@ -63,8 +68,8 @@ mi300x-0   performance   <none>        <none>       <none>      <none>
 mi300x-1   eco           <none>        <none>       efficient   applied
 w7900-0    performance   <none>        <none>       <none>      <none>
 w7900-1    eco           <none>        <none>       <none>      <none>
-xeon-0     eco           efficiency    applied      <none>      <none>
-xeon-1     performance   performance   applied      <none>      <none>
+xeon-0     performance   performance   applied      <none>      <none>
+xeon-1     eco           efficiency    applied      <none>      <none>
 ```
 
 `status.controlStatus.cpuGovernor.applied` and `gpuGovernor.applied` hold the native setting:
@@ -82,10 +87,10 @@ The NVIDIA result stays `applied-unverified` while the GPUs idle: a clock lock c
 ## 2. What each node accepts: NodeHardware
 
 ```bash
-kubectl get nodehardware xeon-0 -o yaml
+kubectl get nodehardware xeon-1 -o yaml
 ```
 
-On the eco Xeon Node (`xeon-0` in the run above), the governor block under `status.cpu` (and under `status.gpu` on a GPU node) is discovery, read-only (abridged):
+On the eco Xeon Node (`xeon-1` in the run above), the governor block under `status.cpu` (and under `status.gpu` on a GPU node) is discovery, read-only (abridged):
 
 ```yaml
 governor:
@@ -115,14 +120,23 @@ governor:
 The agent writes the files of the node's `/sys`; in the simulated cluster they live in each Node's hwemu tree:
 
 ```bash
-scripts/simcluster/tree.sh xeon-0 sys/devices/system/cpu/cpufreq/policy0/scaling_governor               # powersave
-scripts/simcluster/tree.sh xeon-0 sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference   # balance_power
+scripts/simcluster/tree.sh xeon-1 sys/devices/system/cpu/cpufreq/policy0/scaling_governor               # powersave
+scripts/simcluster/tree.sh xeon-1 sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference   # balance_power
 scripts/simcluster/tree.sh epyc-1 sys/devices/system/cpu/cpufreq/policy0/scaling_governor               # conservative
 scripts/simcluster/tree.sh mi300x-1 sys/bus/pci/devices/0000:10:00.0/power_dpm_force_performance_level  # manual
 scripts/simcluster/tree.sh mi300x-1 sys/bus/pci/devices/0000:10:00.0/pp_od_clk_voltage                  # OD_SCLK 1: 1680Mhz
 scripts/simcluster/tree.sh w7900-1 sys/bus/pci/devices/0000:10:00.0/power_dpm_force_performance_level   # auto
 scripts/simcluster/tree.sh l40s-1 state/nvml/gpu0/locked_gpu_clocks                                     # <min>,<max> of the lock
 ```
+
+<!-- tutorials: check
+eventually '[ "$(scripts/simcluster/tree.sh xeon-1 sys/devices/system/cpu/cpufreq/policy0/scaling_governor)" = powersave ]'
+eventually '[ "$(scripts/simcluster/tree.sh xeon-1 sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference)" = balance_power ]'
+eventually '[ "$(scripts/simcluster/tree.sh epyc-1 sys/devices/system/cpu/cpufreq/policy0/scaling_governor)" = conservative ]'
+eventually '[ "$(scripts/simcluster/tree.sh mi300x-1 sys/bus/pci/devices/0000:10:00.0/power_dpm_force_performance_level)" = manual ]'
+eventually 'scripts/simcluster/tree.sh mi300x-1 sys/bus/pci/devices/0000:10:00.0/pp_od_clk_voltage | grep "1: 1680Mhz" >/dev/null'
+eventually '[ "$(scripts/simcluster/tree.sh w7900-1 sys/bus/pci/devices/0000:10:00.0/power_dpm_force_performance_level)" = auto ]'
+-->
 
 Use the names of your eco Nodes. `make simcluster-tree NODE=<node>` prints the whole tree. An NVIDIA lock has no file on a real node, and no query prints it: the fake `nvidia-smi` keeps it under `state/nvml` so the emulated clocks can follow it.
 
@@ -153,6 +167,10 @@ After the controller manager restarts, the W7900 performance Node shows `GPU-Gov
 scripts/simcluster/tree.sh w7900-0 sys/bus/pci/devices/0000:10:00.0/power_dpm_force_performance_level   # high
 ```
 
+<!-- tutorials: check
+eventually '[ "$(scripts/simcluster/tree.sh w7900-0 sys/bus/pci/devices/0000:10:00.0/power_dpm_force_performance_level)" = high ]'
+-->
+
 The eco W7900 Node still gets nothing: the entry sets only `performance`, and the eco default `efficient` is not in its presets. An entry can also set `eco` and `ecoCeilingPctOfMax`. With `GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU=true` the performance Node holds `sustained` only while a pod requesting 2 or more GPUs runs on it, and its agent puts the baseline back otherwise.
 
 ## 5. Try a preset by hand
@@ -162,9 +180,14 @@ The eco W7900 Node still gets nothing: the entry sets only `performance`, and th
 ```bash
 kubectl -n joulie-system scale deploy/joulie-controller-manager --replicas=0
 kubectl apply -f examples/05-governor-presets/nodetwin-governor.yaml
+sleep 30
 kubectl get nodetwin mi300x-1 -o jsonpath='{.status.controlStatus.cpuGovernor}{"\n"}'   # result applied, applied conservative
 kubectl -n joulie-system scale deploy/joulie-controller-manager --replicas=1
 ```
+
+<!-- tutorials: check
+eventually '[ "$(kubectl get nodetwin mi300x-1 -o jsonpath="{.status.controlStatus.cpuGovernor.result}")" = restored ]'
+-->
 
 Once the controller manager is back, it drops the CPU preset (a GPU node), and the agent puts the baseline back: `cpuGovernor.result` `restored`, `applied` `schedutil`.
 
@@ -173,6 +196,11 @@ Once the controller manager is back, it drops the CPU preset (a GPU node), and t
 ```bash
 helm -n joulie-system upgrade joulie charts/joulie --reuse-values --set controllerManager.env.GOVERNOR_CONTROL=off
 ```
+
+<!-- tutorials: check
+eventually '[ "$(kubectl get nodetwins -o json | jq "[.items[] | select(.status.controlStatus.cpuGovernor.result == \"applied\")] | length")" -eq 0 ]'
+eventually '[ "$(kubectl get nodetwins -o json | jq "[.items[] | select(.status.controlStatus.cpuGovernor.result == \"restored\")] | length")" -ge 4 ]'
+-->
 
 Every governor field leaves the `NodeTwin`s, and each agent writes its baseline back to what it changed: the results turn `restored`, with `applied` the baseline (`schedutil`, `powersave epp=balance_performance`, `auto`, `unlocked`), and the files read it again. The agent also restores on exit (`GOVERNOR_RESTORE_ON_EXIT=true`), so a rolling update of the agent puts the baseline back before the new agent applies the preset again. Remove the cluster with `make simcluster-down`.
 
