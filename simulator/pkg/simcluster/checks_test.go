@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matbun/joulie/simulator/pkg/compat"
 	"github.com/matbun/joulie/simulator/pkg/emulate"
 )
 
@@ -43,11 +44,11 @@ func TestK01TruthExpressionsOnTheFixture(t *testing.T) {
 		t.Errorf("nvl-0 truth %+v, want %+v", truths["nvl-0"], wantNVL)
 	}
 	for node, want := range map[string]map[string]float64{
-		"intel-0":      {TruthPackagesGPUs: 290, TruthPackagesNVIDIAGPUs: 290, TruthPackagesNVIDIAAMDGPUs: 290, TruthHost: 362, TruthKepler07PlatformSeries: 2, TruthKepler07Host: 362},
-		"nvl-0":        {TruthPackagesGPUs: 800, TruthPackagesNVIDIAGPUs: 800, TruthPackagesNVIDIAAMDGPUs: 800, TruthHost: 900, TruthKepler07PlatformSeries: 2, TruthKepler07Host: 900},
-		"mi300x-0":     {TruthPackagesGPUs: 1480, TruthPackagesNVIDIAGPUs: 230, TruthPackagesNVIDIAAMDGPUs: 1480, TruthHost: 1600, TruthKepler07PlatformSeries: 2, TruthKepler07Host: 1600},
-		"nopowercap-0": {TruthPackagesGPUs: 0, TruthPackagesNVIDIAGPUs: 0, TruthPackagesNVIDIAAMDGPUs: 0, TruthHost: 300, TruthKepler07PlatformSeries: 0, TruthKepler07Host: 0},
-		"vm-0":         {TruthPackagesGPUs: 0, TruthPackagesNVIDIAGPUs: 0, TruthPackagesNVIDIAAMDGPUs: 0, TruthHost: 0, TruthKepler07PlatformSeries: 0, TruthKepler07Host: 0},
+		"intel-0":      {TruthPackagesGPUs: 290, TruthPackagesNVIDIAGPUs: 290, TruthPackagesNVIDIAAMDGPUs: 290, TruthHost: 362, TruthKepler07PlatformSeries: 2, TruthKepler07Host: 362, TruthKepler07Components: 290},
+		"nvl-0":        {TruthPackagesGPUs: 800, TruthPackagesNVIDIAGPUs: 800, TruthPackagesNVIDIAAMDGPUs: 800, TruthHost: 900, TruthKepler07PlatformSeries: 2, TruthKepler07Host: 900, TruthKepler07Components: 800},
+		"mi300x-0":     {TruthPackagesGPUs: 1480, TruthPackagesNVIDIAGPUs: 230, TruthPackagesNVIDIAAMDGPUs: 1480, TruthHost: 1600, TruthKepler07PlatformSeries: 2, TruthKepler07Host: 1600, TruthKepler07Components: 230},
+		"nopowercap-0": {TruthPackagesGPUs: 0, TruthPackagesNVIDIAGPUs: 0, TruthPackagesNVIDIAAMDGPUs: 0, TruthHost: 300, TruthKepler07PlatformSeries: 0, TruthKepler07Host: 0, TruthKepler07Components: 0},
+		"vm-0":         {TruthPackagesGPUs: 0, TruthPackagesNVIDIAGPUs: 0, TruthPackagesNVIDIAAMDGPUs: 0, TruthHost: 0, TruthKepler07PlatformSeries: 0, TruthKepler07Host: 0, TruthKepler07Components: 0},
 	} {
 		nt, ok := truths[node]
 		if !ok {
@@ -85,6 +86,58 @@ func TestK01TruthExpressionsOnTheFixture(t *testing.T) {
 
 // NodeTruthsOver reads power from the energy the ledgers added, as rate()
 // does, and leaves out a Node missing from either snapshot.
+// The kepler-legacy checks count the idle power Kepler 0.7 reports beyond
+// the measured one as part of the truth. In the nightly smoke of
+// 2026-10-23 a frequency cap held hsmp-0's package below the idle power
+// Kepler had recorded at a lower load; Kepler kept reporting that idle,
+// Joulie read it faithfully, and E07, E07c and E08 failed. A reading off
+// what Kepler reports still fails.
+func TestK07Kepler07ChecksCountTheIdleReportedBeyondTheMeasure(t *testing.T) {
+	set, err := telChecks(ModeKeplerLegacy, ScopeComponents, 30*time.Second, "30s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Kepler07Excess == nil || set.JoulieTruth != TruthKepler07Components {
+		t.Fatalf("kepler-legacy check set: excess queries %+v, Joulie truth %q; want both queries and %q", set.Kepler07Excess, set.JoulieTruth, TruthKepler07Components)
+	}
+	for _, q := range []string{set.Kepler07Excess.Components, set.Kepler07Excess.Platform} {
+		if !strings.Contains(q, compat.Kepler07IdleExcessJoules) || !strings.Contains(q, set.NodeLabel) {
+			t.Errorf("excess query %q, want a rate of %s by %s", q, compat.Kepler07IdleExcessJoules, set.NodeLabel)
+		}
+	}
+	// hsmp-0 in that run: 637.851 W measured, 750.496 W reported.
+	measured := map[string]NodeTruth{"hsmp-0": {PackagesW: []float64{237.851, 400}, HostW: 653.851}}
+	truth := WithKepler07Excess(measured, map[string]float64{"hsmp-0": 112.645}, map[string]float64{"hsmp-0": 112.647})
+	if got, _ := EvalTruth(set.JoulieTruth, truth["hsmp-0"]); math.Abs(got-750.496) > 1e-9 {
+		t.Errorf("Joulie truth %g, want 750.496", got)
+	}
+	for _, tc := range []struct {
+		id       string
+		observed float64
+		pass     bool
+	}{
+		{"kepler-0.7-components", 750.496, true},
+		{"kepler-0.7-components", 637.851, false},
+		{"kepler-0.7-components", 870, false},
+		{"kepler-0.7-platform-sum", 766.498, true},
+		{"kepler-0.7-platform-sum", 653.851, false},
+	} {
+		var ck *Check
+		for i := range set.Checks {
+			if set.Checks[i].ID == tc.id {
+				ck = &set.Checks[i]
+			}
+		}
+		if ck == nil {
+			t.Fatalf("no check %s", tc.id)
+		}
+		_, err := Evaluate(*ck, map[string]float64{"hsmp-0": tc.observed}, truth)
+		if (err == nil) != tc.pass {
+			t.Errorf("%s observed %g: error %v, want pass %v", tc.id, tc.observed, err, tc.pass)
+		}
+	}
+}
+
 func TestNodeTruthsOver(t *testing.T) {
 	from := testSnapshot(t)
 	to := testSnapshot(t)

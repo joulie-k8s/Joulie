@@ -849,7 +849,7 @@ func TestTelemetryChecksPerModeAndScope(t *testing.T) {
 		ModeOTelCollector:        {"k8s_node_name", TruthPackagesGPUs, []string{"otel-components-labels", "otel-components-target-info", "otel-host-labels", "otel-host-target-info"}},
 		ModeOTelBridge:           {"k8s_node_name", TruthPackagesNVIDIAAMDGPUs, []string{"otel-components-labels", "otel-components-target-info"}},
 		ModeKepler:               {"node_name", TruthPackagesNVIDIAGPUs, []string{"kepler-0.12-components"}},
-		ModeKeplerLegacy:         {"exported_instance", TruthPackagesNVIDIAGPUs, []string{"kepler-0.7-components", "kepler-0.7-platform-series", "kepler-0.7-platform-sum"}},
+		ModeKeplerLegacy:         {"exported_instance", TruthKepler07Components, []string{"kepler-0.7-components", "kepler-0.7-platform-series", "kepler-0.7-platform-sum"}},
 	} {
 		set := testTelemetry(t, m, ScopeComponents, tm).Checks
 		var ids []string

@@ -4,6 +4,10 @@ The user-visible changes of each release, what to check when upgrading, and the 
 
 ## Unreleased
 
+### Simulator
+
+- The emulated Kepler 0.7 exporter also serves `joulie_sim_kepler07_idle_excess_joules_total{instance, family}`, the idle energy its series report beyond the energy they measured, which Kepler 0.7 reports while a cap holds a package below the idle power it recorded. It is the simulator's own series, not Kepler's. The simulated cluster adds it to the truth of the `kepler-legacy` checks and warns about every node that has some, so the nightly smoke no longer fails on a reading Kepler 0.7 itself inflates. (#91)
+
 ## v0.2.4 (2026-10-21)
 
 ### kubectl plugin

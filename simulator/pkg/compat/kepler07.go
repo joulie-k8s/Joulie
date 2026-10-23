@@ -36,12 +36,32 @@ import (
 // other reports both from the start, as upstream creates both at zero.
 type kepler07 struct {
 	compatPublished
-	descs map[string]*prometheus.Desc
-	nodes map[string]*k07Node
+	descs  map[string]*prometheus.Desc
+	excess *prometheus.Desc
+	nodes  map[string]*k07Node
 }
 
+// Kepler07IdleExcessJoules is the simulator's own counter beside the Kepler
+// 0.7 families, never a Kepler series: per node (label instance, as the
+// families have it) and family (label Kepler07IdleExcessFamily), the idle
+// energy the families reported beyond the energy their series measured,
+// which upstream reports while a cap holds a series below the idle power it
+// recorded at a lower load (k07Split). A check of the kepler-legacy preset
+// adds its rate to the truth, so a reading that Kepler 0.7 itself inflates
+// is told apart from one Joulie got wrong.
+const (
+	Kepler07IdleExcessJoules = "joulie_sim_kepler07_idle_excess_joules_total"
+	Kepler07IdleExcessFamily = "family"
+)
+
 func newKepler07() *kepler07 {
-	k := &kepler07{descs: map[string]*prometheus.Desc{}, nodes: map[string]*k07Node{}}
+	k := &kepler07{
+		descs: map[string]*prometheus.Desc{},
+		excess: prometheus.NewDesc(Kepler07IdleExcessJoules,
+			"Idle energy the emulated Kepler 0.7 reported beyond the energy its series measured (simulator only, not a Kepler series).",
+			[]string{k07LabelInstance, Kepler07IdleExcessFamily}, nil),
+		nodes: map[string]*k07Node{},
+	}
 	for _, family := range k07Families {
 		source := k07SourceRAPL
 		if family == k07GPU {
@@ -77,7 +97,7 @@ func (k *kepler07) observe(snap *emulate.Snapshot) {
 			k.nodes[n.Name] = st
 		}
 		st.update(n, snap.Time)
-		out = st.appendPoints(out, k.descs)
+		out = st.appendPoints(out, k.descs, k.excess)
 	}
 	for name := range k.nodes {
 		if !live[name] {
@@ -191,19 +211,28 @@ func (st *k07Node) update(n *emulate.NodeSnapshot, now time.Time) {
 	st.otherIdleJ += math.Max(0, platIdle-compIdle)
 }
 
-// appendPoints appends the node's series to out.
-func (st *k07Node) appendPoints(out []compatPoint, descs map[string]*prometheus.Desc) []compatPoint {
+// appendPoints appends the node's series to out, then its idle excess per
+// family, in k07Families order, for each family the node has series of.
+func (st *k07Node) appendPoints(out []compatPoint, descs map[string]*prometheus.Desc, excess *prometheus.Desc) []compatPoint {
+	excessJ := map[string]float64{}
 	for _, s := range st.order {
 		desc := descs[s.key.family]
 		out = append(out, compatPoint{desc, prometheus.CounterValue, s.split.dynJ, s.dynLabels})
 		if s.split.seen {
 			out = append(out, compatPoint{desc, prometheus.CounterValue, s.split.idleJ, s.idleLabels})
 		}
+		excessJ[s.key.family] += s.split.excessJ
 	}
-	return append(out,
+	out = append(out,
 		compatPoint{descs[k07Other], prometheus.CounterValue, st.otherDynJ, st.otherDyn},
 		compatPoint{descs[k07Other], prometheus.CounterValue, st.otherIdleJ, st.otherIdle},
 	)
+	for _, family := range k07Families {
+		if j, ok := excessJ[family]; ok {
+			out = append(out, compatPoint{excess, prometheus.CounterValue, j, []string{st.name, family}})
+		}
+	}
+	return out
 }
 
 // k07DRAMOf returns the DRAM zone of a CPU package, or nil.

@@ -122,11 +122,24 @@ const telOutOfOrderWindow = 30 * time.Minute
 // CheckSet is the checks part: the Checks of a mode and scope, the label
 // that names the Node in every series their queries return, and the truth
 // Joulie's measured node power must equal (empty when the mode leaves
-// Joulie without data, as otel-labels-unpromoted does).
+// Joulie without data, as otel-labels-unpromoted does). Kepler07Excess is
+// set in mode kepler-legacy alone.
 type CheckSet struct {
-	NodeLabel   string  `json:"nodeLabel"`
-	JoulieTruth string  `json:"joulieTruth"`
-	Checks      []Check `json:"checks"`
+	NodeLabel      string          `json:"nodeLabel"`
+	JoulieTruth    string          `json:"joulieTruth"`
+	Checks         []Check         `json:"checks"`
+	Kepler07Excess *Kepler07Excess `json:"kepler07Excess,omitempty"`
+}
+
+// Kepler07Excess holds the queries, one series per Node by
+// CheckSet.NodeLabel, of the idle power the emulated Kepler 0.7 reports
+// beyond the measured one: Components for its package and GPU series,
+// Platform for its platform series. The caller sets their results as
+// NodeTruth.Kepler07ExcessW and Kepler07PlatformExcessW, at the time and
+// over the window of the check queries.
+type Kepler07Excess struct {
+	Components string `json:"components"`
+	Platform   string `json:"platform"`
 }
 
 // Wait is the wait part: Query returns one series per Node that has
@@ -731,11 +744,15 @@ func telChecks(mode Mode, scope Scope, rateWindow time.Duration, window string) 
 		platform := telRate(inputs.KeplerLegacyPlatformJoules, window)
 		series := telCheck("kepler-0.7-platform-series", fmt.Sprintf("count by %s (%s)", telLabels(node), platform), TruthKepler07PlatformSeries)
 		series.Tolerance, series.AbsFloorW = 0, 0
-		return CheckSet{NodeLabel: node, JoulieTruth: TruthPackagesNVIDIAGPUs, Checks: []Check{
-			telCheck("kepler-0.7-components", q, TruthPackagesNVIDIAGPUs),
+		excess := func(families string) string {
+			sel := fmt.Sprintf(`%s{%s=~"%s"}`, compat.Kepler07IdleExcessJoules, compat.Kepler07IdleExcessFamily, families)
+			return fmt.Sprintf("sum by %s (%s)", telLabels(node), telRate(sel, window))
+		}
+		return CheckSet{NodeLabel: node, JoulieTruth: TruthKepler07Components, Checks: []Check{
+			telCheck("kepler-0.7-components", q, TruthKepler07Components),
 			series,
 			telCheck("kepler-0.7-platform-sum", fmt.Sprintf("sum by %s (%s)", telLabels(node), platform), TruthKepler07Host),
-		}}, nil
+		}, Kepler07Excess: &Kepler07Excess{Components: excess("package|gpu"), Platform: excess("platform")}}, nil
 	case ModeOTelBridge:
 		n := telNamesFor(mode.Strategy())
 		set := CheckSet{NodeLabel: n.node, JoulieTruth: TruthPackagesNVIDIAAMDGPUs}

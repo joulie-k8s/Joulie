@@ -64,12 +64,12 @@ controllerManager:
 # checks, scope components:
 {
   "nodeLabel": "exported_instance",
-  "joulieTruth": "packages+nvidia-gpus",
+  "joulieTruth": "kepler-0.7-components",
   "checks": [
     {
       "id": "kepler-0.7-components",
       "query": "sum by (exported_instance) (label_replace(rate(kepler_node_package_joules_total[30s]), \"joulie_component\", \"cpu\", \"\", \"\") or label_replace(rate(kepler_node_gpu_joules_total[30s]), \"joulie_component\", \"gpu\", \"\", \"\"))",
-      "truth": "packages+nvidia-gpus",
+      "truth": "kepler-0.7-components",
       "tolerance": 0.03,
       "absFloorW": 1
     },
@@ -87,7 +87,11 @@ controllerManager:
       "tolerance": 0.03,
       "absFloorW": 1
     }
-  ]
+  ],
+  "kepler07Excess": {
+    "components": "sum by (exported_instance) (rate(joulie_sim_kepler07_idle_excess_joules_total{family=~\"package|gpu\"}[30s]))",
+    "platform": "sum by (exported_instance) (rate(joulie_sim_kepler07_idle_excess_joules_total{family=~\"platform\"}[30s]))"
+  }
 }
 ---
 # wait, scope components:
