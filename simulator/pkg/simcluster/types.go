@@ -339,14 +339,19 @@ type Check struct {
 // NodeTruth is one Node as the emulator saw it, from the simulator's
 // /debug/emulate snapshot: power and limit in effect per CPU package and
 // per GPU in index order, the GPU vendor, the summed DRAM power, the
-// platform's other power, and whole-node power.
+// platform's other power, and whole-node power. In mode kepler-legacy the
+// caller adds, from the exporter rather than the snapshot, the idle power
+// Kepler 0.7 reports beyond the measured one, for its package and GPU
+// series and for its platform series (CheckSet.Kepler07Excess).
 type NodeTruth struct {
-	PackagesW      []float64 `json:"packagesW"`
-	PackageCapW    []float64 `json:"packageCapW"`
-	GPUsW          []float64 `json:"gpusW,omitempty"`
-	GPULimitW      []float64 `json:"gpuLimitW,omitempty"`
-	GPUVendor      string    `json:"gpuVendor,omitempty"`
-	DRAMW          float64   `json:"dramW"`
-	PlatformOtherW float64   `json:"platformOtherW"`
-	HostW          float64   `json:"hostW"`
+	PackagesW               []float64 `json:"packagesW"`
+	PackageCapW             []float64 `json:"packageCapW"`
+	GPUsW                   []float64 `json:"gpusW,omitempty"`
+	GPULimitW               []float64 `json:"gpuLimitW,omitempty"`
+	GPUVendor               string    `json:"gpuVendor,omitempty"`
+	DRAMW                   float64   `json:"dramW"`
+	PlatformOtherW          float64   `json:"platformOtherW"`
+	HostW                   float64   `json:"hostW"`
+	Kepler07ExcessW         float64   `json:"kepler07ExcessW,omitempty"`
+	Kepler07PlatformExcessW float64   `json:"kepler07PlatformExcessW,omitempty"`
 }

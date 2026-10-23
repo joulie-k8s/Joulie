@@ -34,7 +34,9 @@ func (c *compatCounter) delta(v float64) float64 {
 // component below the idle power recorded at a lower load, idle plus dynamic
 // exceeds the energy measured, and a reader that sums both modes, as the
 // kepler-legacy preset does, reads the recorded idle power. A zero increment
-// is skipped, so a series that never moved has no idle energy yet.
+// is skipped, so a series that never moved has no idle energy yet. excessJ
+// counts that difference, the idle energy reported beyond the energy
+// measured, so a check can tell it from a misread (Kepler07IdleExcessJoules).
 //
 // assumed: the lowest interval is kept as a power, not as an energy, because
 // emulator ticks need not be the fixed 3 s Kepler sample period.
@@ -44,6 +46,7 @@ type k07Split struct {
 	idleW   float64
 	idleJ   float64
 	dynJ    float64
+	excessJ float64
 }
 
 // add splits deltaJ, measured over dt seconds at the given load, and
@@ -63,6 +66,8 @@ func (s *k07Split) add(deltaJ, dt, load float64) (idle, dyn float64) {
 		idle = float64(s.idleW * dt)
 		if deltaJ > idle {
 			dyn = deltaJ - idle
+		} else {
+			s.excessJ += idle - deltaJ
 		}
 	}
 	s.idleJ += idle

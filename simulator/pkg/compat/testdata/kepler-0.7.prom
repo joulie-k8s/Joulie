@@ -1,3 +1,16 @@
+# HELP joulie_sim_kepler07_idle_excess_joules_total Idle energy the emulated Kepler 0.7 reported beyond the energy its series measured (simulator only, not a Kepler series).
+# TYPE joulie_sim_kepler07_idle_excess_joules_total counter
+joulie_sim_kepler07_idle_excess_joules_total{family="core",instance="intel-0"} 0
+joulie_sim_kepler07_idle_excess_joules_total{family="core",instance="nvl-0"} 0
+joulie_sim_kepler07_idle_excess_joules_total{family="dram",instance="intel-0"} 0
+joulie_sim_kepler07_idle_excess_joules_total{family="dram",instance="nvl-0"} 0
+joulie_sim_kepler07_idle_excess_joules_total{family="gpu",instance="nvl-0"} 0
+joulie_sim_kepler07_idle_excess_joules_total{family="package",instance="intel-0"} 0
+joulie_sim_kepler07_idle_excess_joules_total{family="package",instance="nvl-0"} 0
+joulie_sim_kepler07_idle_excess_joules_total{family="platform",instance="intel-0"} 0
+joulie_sim_kepler07_idle_excess_joules_total{family="platform",instance="nvl-0"} 0
+joulie_sim_kepler07_idle_excess_joules_total{family="uncore",instance="intel-0"} 0
+joulie_sim_kepler07_idle_excess_joules_total{family="uncore",instance="nvl-0"} 0
 # HELP kepler_node_core_joules_total Aggregated value in core value from rapl-sysfs
 # TYPE kepler_node_core_joules_total counter
 kepler_node_core_joules_total{instance="intel-0",mode="dynamic",package="0",source="rapl-sysfs"} 0

@@ -485,8 +485,12 @@ func (e *e2eEnv) joulieTruth(s *emulate.Snapshot) (map[string]float64, bool, err
 	if truth == "" {
 		return nil, false, nil
 	}
+	truths, err := e.withKepler07Excess(simcluster.NodeTruths(s), s.Time)
+	if err != nil {
+		return nil, false, err
+	}
 	out := map[string]float64{}
-	for name, nt := range simcluster.NodeTruths(s) {
+	for name, nt := range truths {
 		v, err := simcluster.EvalTruth(truth, nt)
 		if err != nil {
 			return nil, false, err
@@ -494,6 +498,26 @@ func (e *e2eEnv) joulieTruth(s *emulate.Snapshot) (map[string]float64, bool, err
 		out[name] = v
 	}
 	return out, true, nil
+}
+
+// withKepler07Excess sets, in mode kepler-legacy, the idle power the
+// emulated Kepler 0.7 reports beyond the measured one on each Node's truth,
+// over the rate window ending at at (CheckSet.Kepler07Excess). Other modes
+// get truth back as it is.
+func (e *e2eEnv) withKepler07Excess(truth map[string]simcluster.NodeTruth, at time.Time) (map[string]simcluster.NodeTruth, error) {
+	q := e.Parts.Checks.Kepler07Excess
+	if q == nil {
+		return truth, nil
+	}
+	components, err := e.promByLabel(q.Components, e.Parts.Checks.NodeLabel, at)
+	if err != nil {
+		return nil, fmt.Errorf("Kepler 0.7 idle excess: %w", err)
+	}
+	platform, err := e.promByLabel(q.Platform, e.Parts.Checks.NodeLabel, at)
+	if err != nil {
+		return nil, fmt.Errorf("Kepler 0.7 platform idle excess: %w", err)
+	}
+	return simcluster.WithKepler07Excess(truth, components, platform), nil
 }
 
 // twins returns the NodeTwins by spec.nodeName.

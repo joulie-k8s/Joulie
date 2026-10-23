@@ -394,6 +394,7 @@ func inputE07(c *e2eCase, rec *inputRecorder, platform bool) {
 	}
 	var failures []string
 	var end time.Time
+	var truth map[string]simcluster.NodeTruth
 	err := e2eEventually(e.twinFollow(), func() error {
 		failures = failures[:0]
 		latest, err := rec.latest()
@@ -401,8 +402,10 @@ func inputE07(c *e2eCase, rec *inputRecorder, platform bool) {
 			return err
 		}
 		end = latest.Time
-		truth, _, err := rec.truthOver(end, w)
-		if err != nil {
+		if truth, _, err = rec.truthOver(end, w); err != nil {
+			return err
+		}
+		if truth, err = e.withKepler07Excess(truth, end); err != nil {
 			return err
 		}
 		for _, ck := range checks {
@@ -432,6 +435,15 @@ func inputE07(c *e2eCase, rec *inputRecorder, platform bool) {
 		return
 	}
 	c.Logf("%d check queries of mode %s equal the truth over %s", len(checks), e.Mode, w)
+	if platform {
+		return
+	}
+	for _, name := range e2eKeys(truth) {
+		if nt := truth[name]; nt.Kepler07ExcessW > simcluster.CheckAbsFloorW || nt.Kepler07PlatformExcessW > simcluster.CheckAbsFloorW {
+			e.warn(c.T, "node %s: Kepler 0.7 reports %.1f W of package and GPU idle and %.1f W of platform idle beyond the measured power, "+
+				"which a cap below the idle it recorded at a lower load leaves; the kepler-legacy preset reads it", name, nt.Kepler07ExcessW, nt.Kepler07PlatformExcessW)
+		}
+	}
 }
 
 // inputTwinTime is the time of a NodeTwin's last update. lastUpdated is
@@ -482,7 +494,7 @@ func inputE08(c *e2eCase, rec *inputRecorder) {
 			return err
 		}
 		for _, n := range managed {
-			p, dev, ok := inputTwinProblem(rec, truthName, w, n.Name, twins)
+			p, dev, ok := inputTwinProblem(rec, truthName, w, n.Name, twins, e.withKepler07Excess)
 			if p != "" {
 				problems = append(problems, fmt.Sprintf("node %s: %s", n.Name, p))
 			}
@@ -521,8 +533,11 @@ func inputE08(c *e2eCase, rec *inputRecorder) {
 // inputTwinProblem checks the NodeTwin of node against truth over w ending
 // at its last update, and returns what is wrong ("" when nothing is). ok
 // says whether its measured power was compared with a non-zero truth, and
-// dev is then its deviation over the tolerance.
-func inputTwinProblem(rec *inputRecorder, truth string, w time.Duration, node string, twins map[string]v1alpha1.NodeTwin) (problem string, dev float64, ok bool) {
+// dev is then its deviation over the tolerance. adjust, when not nil, adds
+// what the mode reads beyond the emulator at that time
+// (e2eEnv.withKepler07Excess).
+func inputTwinProblem(rec *inputRecorder, truth string, w time.Duration, node string, twins map[string]v1alpha1.NodeTwin,
+	adjust func(map[string]simcluster.NodeTruth, time.Time) (map[string]simcluster.NodeTruth, error)) (problem string, dev float64, ok bool) {
 	tw, found := twins[node]
 	if !found {
 		return "no NodeTwin", 0, false
@@ -544,6 +559,11 @@ func inputTwinProblem(rec *inputRecorder, truth string, w time.Duration, node st
 	truths, _, err := rec.truthOver(end, w)
 	if err != nil {
 		return fmt.Sprintf("no truth at the NodeTwin's last update: %v", err), 0, false
+	}
+	if adjust != nil {
+		if truths, err = adjust(truths, end); err != nil {
+			return err.Error(), 0, false
+		}
 	}
 	nt, emulated := truths[node]
 	if !emulated {
@@ -1008,12 +1028,12 @@ func TestInputTwinProblem(t *testing.T) {
 		{"no data expected, data read", "", "n", mk(joulie.PowerSourcePrometheus, 150), "does not promote", false},
 		{"no data expected, none read", "", "n", mk(joulie.PowerSourcePrometheusNoData, 0), "", false},
 	} {
-		p, _, ok := inputTwinProblem(r, tc.truth, 30*time.Second, tc.node, map[string]v1alpha1.NodeTwin{tc.node: tc.tw})
+		p, _, ok := inputTwinProblem(r, tc.truth, 30*time.Second, tc.node, map[string]v1alpha1.NodeTwin{tc.node: tc.tw}, nil)
 		if ok != tc.compared || (tc.problem == "") != (p == "") || !strings.Contains(p, tc.problem) {
 			t.Errorf("%s: problem %q compared %v, want a problem with %q compared %v", tc.name, p, ok, tc.problem, tc.compared)
 		}
 	}
-	if p, _, _ := inputTwinProblem(r, simcluster.TruthHost, 30*time.Second, "n", nil); p != "no NodeTwin" {
+	if p, _, _ := inputTwinProblem(r, simcluster.TruthHost, 30*time.Second, "n", nil, nil); p != "no NodeTwin" {
 		t.Errorf("a missing NodeTwin: problem %q", p)
 	}
 }
@@ -1049,10 +1069,10 @@ func TestInputTruthIsTheEnergyOverTheWindow(t *testing.T) {
 		tw.Status.PowerMeasurement = &v1alpha1.PowerMeasurement{Source: joulie.PowerSourcePrometheus, MeasuredNodePowerW: measuredW}
 		return map[string]v1alpha1.NodeTwin{"n": tw}
 	}
-	if p, _, ok := inputTwinProblem(r, simcluster.TruthPackagesGPUs, w, "n", twin(190)); p != "" || !ok {
+	if p, _, ok := inputTwinProblem(r, simcluster.TruthPackagesGPUs, w, "n", twin(190), nil); p != "" || !ok {
 		t.Errorf("a NodeTwin at 190 W, the truth over the window ending at its last update: problem %q compared %v", p, ok)
 	}
-	if p, _, _ := inputTwinProblem(r, simcluster.TruthPackagesGPUs, w, "n", twin(210)); !strings.Contains(p, "measuredNodePowerW 210.0") {
+	if p, _, _ := inputTwinProblem(r, simcluster.TruthPackagesGPUs, w, "n", twin(210), nil); !strings.Contains(p, "measuredNodePowerW 210.0") {
 		t.Errorf("a NodeTwin at 210 W, the power drawn at its last update: problem %q, want one", p)
 	}
 	if u := r.unsteady(simcluster.TruthPackagesGPUs, at(90), w); len(u) != 1 || !strings.Contains(u[0], "node n: 150.0 W, then 210.0 W") {

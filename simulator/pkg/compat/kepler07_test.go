@@ -32,6 +32,13 @@ func TestCP01Kepler07FamiliesLabelsAndGolden(t *testing.T) {
 	want[k07Family(k07GPU)] = k07SourceNVML
 	seen := map[string]bool{}
 	for _, s := range samples {
+		if s.family == Kepler07IdleExcessJoules {
+			// The simulator's own counter (CP12), with its own labels.
+			if got := strings.Join(compatLabelNames(s), ","); got != "family,instance" {
+				t.Errorf("%s labels %s, want family,instance", s.family, got)
+			}
+			continue
+		}
 		source, ok := want[s.family]
 		if !ok {
 			t.Errorf("unexpected family %s", s.family)
@@ -262,6 +269,50 @@ func TestCP11Kepler07CapBelowTheRecordedIdleReportsTheFullIdle(t *testing.T) {
 		compatNear(t, fmt.Sprintf("package %d idle increment under the cap", comp.Index), inc(k07ModeIdle), recordedW*10)
 		compatNear(t, fmt.Sprintf("package %d dynamic increment under the cap", comp.Index), inc(k07ModeDynamic), 0)
 	}
+}
+
+// CP12: joulie_sim_kepler07_idle_excess_joules_total counts what the
+// package family reports beyond the energy measured: nothing while the
+// packages draw above the idle they recorded, then (recorded - drawn) x dt
+// per package, summed per node, while a cap holds them below it. This is
+// how a check tells the reading Kepler 0.7 inflates, as hsmp-0's in a
+// nightly smoke, from a misread.
+func TestCP12Kepler07IdleExcessCountsTheReportBeyondTheMeasure(t *testing.T) {
+	set, err := NewSet([]string{Kepler07}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := compatNewCluster(t, compatIntel())
+	snap := func(dt, powerLoad, util float64) *emulate.Snapshot {
+		s := c.snap(dt, powerLoad, 0)
+		for i := range s.Nodes[0].Components {
+			s.Nodes[0].Components[i].Utilization = util
+		}
+		return s
+	}
+	excess := func(samples []compatSample) float64 {
+		return compatOne(t, samples, Kepler07IdleExcessJoules, map[string]string{k07LabelInstance: "intel-0", Kepler07IdleExcessFamily: k07Package})
+	}
+	set.Observe(snap(0, 0.125, 0.125))
+	idle := snap(10, 0.125, 0.125)
+	set.Observe(idle)
+	set.Observe(snap(10, 0.5, 0.5)) // busy, above the recorded idle
+	before := compatGather(t, set, Kepler07)
+	compatNear(t, "package idle excess above the recorded idle", excess(before), 0)
+	capped := snap(10, 0, 0.9)
+	set.Observe(capped)
+	after := compatGather(t, set, Kepler07)
+
+	want := 0.0
+	for i, comp := range capped.Nodes[0].Components {
+		if comp.Type == semconv.HwTypeCPU {
+			want += (idle.Nodes[0].Components[i].PowerW - comp.PowerW) * 10
+		}
+	}
+	if !(want > 0) {
+		t.Fatalf("the cap leaves the packages at or above the recorded idle (excess %g J); the test needs them below", want)
+	}
+	compatNear(t, "package idle excess under the cap", excess(after)-excess(before), want)
 }
 
 // CP03: kepler_node_platform_joules_total has two series per node, dynamic

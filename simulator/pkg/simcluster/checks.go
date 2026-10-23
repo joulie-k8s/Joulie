@@ -24,13 +24,20 @@ const (
 	// series Kepler 0.7 exports for a Node: 2, modes idle and dynamic.
 	TruthKepler07PlatformSeries = "kepler-0.7-platform-series"
 	// TruthKepler07Host is whole-node power, which Kepler 0.7 reports as
-	// platform energy.
+	// platform energy, plus the idle power its platform series report
+	// beyond it.
 	TruthKepler07Host = "kepler-0.7-host"
+	// TruthKepler07Components is what the kepler-legacy preset reads: the
+	// CPU packages, plus the GPUs when they are NVIDIA's, plus the idle
+	// power those Kepler 0.7 series report beyond the measured one. A cap
+	// that holds a series below the idle power it recorded at a lower load
+	// leaves Kepler reporting that idle (simulator/pkg/compat, k07Split).
+	TruthKepler07Components = "kepler-0.7-components"
 )
 
 // Truths returns every truth a Check may name.
 func Truths() []string {
-	return []string{TruthPackagesGPUs, TruthPackagesNVIDIAGPUs, TruthPackagesNVIDIAAMDGPUs, TruthHost, TruthKepler07PlatformSeries, TruthKepler07Host}
+	return []string{TruthPackagesGPUs, TruthPackagesNVIDIAGPUs, TruthPackagesNVIDIAAMDGPUs, TruthHost, TruthKepler07PlatformSeries, TruthKepler07Host, TruthKepler07Components}
 }
 
 // EvalTruth returns the value of truth for one Node:
@@ -42,9 +49,11 @@ func Truths() []string {
 //     are NVIDIA's or AMD's;
 //   - TruthHost: whole-node power;
 //   - TruthKepler07PlatformSeries: 2;
-//   - TruthKepler07Host: whole-node power.
+//   - TruthKepler07Host: whole-node power, plus Kepler07PlatformExcessW;
+//   - TruthKepler07Components: TruthPackagesNVIDIAGPUs plus
+//     Kepler07ExcessW.
 //
-// The Kepler truths (packages+nvidia-gpus and both kepler-0.7 ones) are 0
+// The Kepler truths (packages+nvidia-gpus and every kepler-0.7 one) are 0
 // for a Node without a measured CPU package, for which no Kepler release
 // reports anything.
 func EvalTruth(truth string, n NodeTruth) (float64, error) {
@@ -52,13 +61,16 @@ func EvalTruth(truth string, n NodeTruth) (float64, error) {
 	switch truth {
 	case TruthPackagesGPUs:
 		return checkSum(n.PackagesW) + checkSum(n.GPUsW), nil
-	case TruthPackagesNVIDIAGPUs:
+	case TruthPackagesNVIDIAGPUs, TruthKepler07Components:
 		if !kepler {
 			return 0, nil
 		}
 		v := checkSum(n.PackagesW)
 		if strings.EqualFold(n.GPUVendor, agentVendorNVIDIA) {
 			v += checkSum(n.GPUsW)
+		}
+		if truth == TruthKepler07Components {
+			v += n.Kepler07ExcessW
 		}
 		return v, nil
 	case TruthPackagesNVIDIAAMDGPUs:
@@ -76,7 +88,7 @@ func EvalTruth(truth string, n NodeTruth) (float64, error) {
 		return 0, nil
 	case TruthKepler07Host:
 		if kepler {
-			return n.HostW, nil
+			return n.HostW + n.Kepler07PlatformExcessW, nil
 		}
 		return 0, nil
 	}
@@ -223,6 +235,19 @@ func NodeTruthsOver(from, to *emulate.Snapshot) (map[string]NodeTruth, error) {
 		}
 	}
 	return out, nil
+}
+
+// WithKepler07Excess returns truth with the idle excess of mode
+// kepler-legacy set per Node: components and platform are the results of
+// the queries of CheckSet.Kepler07Excess by Node, and a Node missing from
+// one keeps 0 there.
+func WithKepler07Excess(truth map[string]NodeTruth, components, platform map[string]float64) map[string]NodeTruth {
+	out := make(map[string]NodeTruth, len(truth))
+	for name, n := range truth {
+		n.Kepler07ExcessW, n.Kepler07PlatformExcessW = components[name], platform[name]
+		out[name] = n
+	}
+	return out
 }
 
 // nodeTruth is the truth of n: the CPU packages, DRAM zones and GPUs a
