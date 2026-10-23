@@ -713,6 +713,17 @@ fi
 assert_doc scheduler-extender lacks Deployment joulie-scheduler-extender 'type: Recreate' "Recreate off the host network"
 
 # --------------------------------------------------------------------------
+# C12: the extender's Service asks for a scrape of its metrics port, as the
+# agent's and the controller manager's do; without it a Prometheus that
+# discovers targets by annotation never reads joulie_scheduler_*, and the
+# Scheduler row of the chart's dashboard stays empty.
+# --------------------------------------------------------------------------
+case_start "C12 scheduler extender Service asks for a scrape of its metrics"
+assert_doc scheduler-extender has Service joulie-scheduler-extender '^    prometheus.io/scrape: "true"$' "scrape annotation"
+assert_doc scheduler-extender has Service joulie-scheduler-extender '^    prometheus.io/port: "9877"$' "metrics port annotation"
+assert_doc scheduler-extender has Service joulie-scheduler-extender '^      targetPort: metrics$' "metrics port"
+
+# --------------------------------------------------------------------------
 # C09: the simulated cluster's values with emulated agents pull only images
 # built from the working tree and imported, never from a registry.
 # --------------------------------------------------------------------------

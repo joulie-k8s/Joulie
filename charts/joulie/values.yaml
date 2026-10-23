@@ -182,6 +182,15 @@ schedulerExtender:
   nodeName: ""  # set to bypass scheduler (needed when ignorable=false)
   nodeSelector: {}
   env: {}
+  service:
+    # The Service joulie-scheduler-extender exposes the extender on port and
+    # its metrics on 9877. These annotations ask a Prometheus that discovers
+    # targets by annotation to scrape the metrics, as for the agent and the
+    # controller manager.
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9877"
+      prometheus.io/path: /metrics
 
 hardwareCatalog:
   enabled: false  # mount hardware catalog ConfigMap into controller manager and agent

@@ -137,8 +137,7 @@ The chart then runs one replica as root with strategy `Recreate`, on the node la
 
 See:
 
-- `examples/05-simulated-telemetry-control/README.md`
-- `examples/07-simulator-gpu-powercaps/README.md`
+- `experiments/kwok-cluster/README.md`
 - `https://joulie-k8s.github.io/Joulie/docs/simulator/simulator/`
 
 ## Node Discovery and Class Mapping

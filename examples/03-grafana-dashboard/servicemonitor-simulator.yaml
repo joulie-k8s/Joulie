@@ -1,0 +1,14 @@
+# The simulated cluster only: the simulator's own metrics, for the
+# dashboard's Simulator row.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: joulie-simulator
+  namespace: joulie-sim
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: joulie-telemetry-sim
+  endpoints:
+    - port: http
+      interval: 15s

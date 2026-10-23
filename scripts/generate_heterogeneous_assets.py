@@ -21,8 +21,8 @@ Usage:
   python scripts/generate_heterogeneous_assets.py \
     --input inventory.xlsx \
     --sheet Nodes \
-    --out-nodes "examples/07-simulator-gpu-powercaps/manifests/00-kwok-nodes.yaml" \
-    --out-classes "examples/07-simulator-gpu-powercaps/manifests/10-node-classes.yaml"
+    --out-nodes "experiments/kwok-cluster/manifests/00-kwok-nodes.yaml" \
+    --out-classes "experiments/kwok-cluster/manifests/10-node-classes.yaml"
 """
 
 from __future__ import annotations

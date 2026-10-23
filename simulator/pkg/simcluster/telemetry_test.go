@@ -1046,9 +1046,9 @@ func TestModeStrategyAndPreset(t *testing.T) {
 }
 
 // testBridgeExample is the bridge the otel-bridge mode runs.
-var testBridgeExample = filepath.Join(testRepo, "examples", "11-otel-collector-bridge", "collector.yaml")
+var testBridgeExample = filepath.Join(testRepo, "examples", "04-otel-collector-bridge", "collector.yaml")
 
-// T09: the otel-bridge Collector reads examples/11-otel-collector-bridge's
+// T09: the otel-bridge Collector reads examples/04-otel-collector-bridge's
 // collector.yaml and then the generated file, which replaces only its
 // scrape jobs: the same jobs in the same order, each keeping the series the
 // example keeps, pointed at the simulator's exporter of its format. The

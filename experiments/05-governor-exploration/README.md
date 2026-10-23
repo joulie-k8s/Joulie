@@ -10,6 +10,8 @@ parameters the simulator assumes.
 
 Docs page: [Governor exploration](../../website/content/en/docs/experiments/governor-exploration.md).
 
+> **Checked (2026-10-23, #89):** Tier A on one CPU profile (`amd-epyc-9534-2s-energy-only`), one GPU profile (`amd-radeon-pro-w7900-4gpu`), one seed and the 50 % steady load ran 1022 cells with none failed, and Tier B arm `all` passed its governor checks (`TestSimclusterE2E`, 231 s).
+
 ## Questions
 
 | ID | Question | Decides |

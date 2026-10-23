@@ -83,7 +83,7 @@ SIM_IMAGE_REGISTRY=joulie.local
 SIM_PROM_CONFIG_KEY=prometheus.yml
 SIM_OTELCOL_CONFIG_KEY=config.yaml
 SIM_BRIDGE_EXAMPLE_KEY=collector.yaml
-SIM_BRIDGE_EXAMPLE=$SIM_REPO/examples/11-otel-collector-bridge/collector.yaml
+SIM_BRIDGE_EXAMPLE=$SIM_REPO/examples/04-otel-collector-bridge/collector.yaml
 
 # sim_usage <script> prints the script's header comment, its usage.
 sim_usage() {

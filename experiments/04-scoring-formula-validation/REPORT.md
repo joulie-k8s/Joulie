@@ -1,5 +1,7 @@
 # Experiment 04: Scoring Formula Validation
 
+> **Checked (2026-10-23, #89):** `sim_scoring.py --steps 50` runs in 14 s. The scripts model the cluster, the cooling and the scheduler's formula in Python and import no Joulie code: they still run, and do not follow later changes to the extender.
+
 ## Objective
 
 Validate Joulie's energy-aware scheduling formula by demonstrating that

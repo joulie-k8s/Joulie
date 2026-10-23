@@ -1,0 +1,50 @@
+{
+  "title": "TestDB02 fixture: a removed metric and a label name among names Joulie exports",
+  "panels": [
+    {
+      "title": "Node state",
+      "type": "timeseries",
+      "targets": [{"expr": "sum by (state) (joulie_policy_node_state{node=~\"$node\"})"}]
+    },
+    {
+      "title": "Deprecated alias",
+      "type": "timeseries",
+      "targets": [{"expr": "joulie_operator_node_state{node=~\"${node:regex}\"}"}]
+    },
+    {
+      "title": "Filter latency",
+      "type": "timeseries",
+      "targets": [{"expr": "histogram_quantile(0.99, sum by (le) (rate(joulie_scheduler_filter_duration_seconds_bucket[$__rate_interval])))"}]
+    },
+    {
+      "title": "Node power",
+      "type": "timeseries",
+      "targets": [{"expr": "sum by (k8s_node_name) (hw_power_watts{hw_type=~\"cpu|gpu\"})"}, {"expr": ""}]
+    },
+    {
+      "title": "A label, not a metric",
+      "type": "timeseries",
+      "targets": [{"expr": "count(joulie_component)"}]
+    },
+    {
+      "title": "Removed in #67",
+      "type": "row",
+      "collapsed": true,
+      "panels": [
+        {
+          "title": "Compute density",
+          "type": "timeseries",
+          "targets": [{"expr": "joulie_policy_node_compute_density{node=~\"$node\"}"}]
+        }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {"name": "datasource", "type": "datasource", "query": "prometheus"},
+      {"name": "node", "type": "query", "query": {"query": "label_values(joulie_policy_node_state, node)", "refId": "A"}},
+      {"name": "dense", "type": "query", "query": "label_values(joulie_policy_node_compute_density, node)"},
+      {"name": "namespace", "type": "textbox", "query": "default"}
+    ]
+  }
+}

@@ -644,8 +644,6 @@ func TestWorkloadgenCallersPinSchemaVersion(t *testing.T) {
 		{file: "experiments/03-homogeneous-h100-benchmark/scripts/04_run_one.py"},
 		{file: "experiments/03-homogeneous-h100-benchmark/scripts/05_sweep.py"},
 		{file: "scripts/standalone_sweep.py"},
-		{file: "examples/10-kubectl-joulie-demo/demo.sh"},
-		{file: "examples/10-kubectl-joulie-demo/Makefile"},
 		{file: "tests/contracts/contracts_test.go", fn: "generateTrace"},
 	}
 	for _, site := range legacy {

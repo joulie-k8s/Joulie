@@ -1,6 +1,6 @@
 package docs
 
-// The governor example (examples/12-governor-presets) is what an adopter
+// The governor example (examples/05-governor-presets) is what an adopter
 // copies to turn the governors on. Its files spell the frozen preset words,
 // the two gates and a cluster spec for the simulated cluster, so a renamed
 // preset, a spec the harness refuses or a values file that no longer turns
@@ -33,7 +33,7 @@ import (
 )
 
 // geExampleDir is the example, relative to the repository root.
-const geExampleDir = "examples/12-governor-presets"
+const geExampleDir = "examples/05-governor-presets"
 
 // geChartValues holds the chart defaults the example spells out.
 const geChartValues = "charts/joulie/values.yaml"

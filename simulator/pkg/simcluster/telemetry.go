@@ -62,7 +62,7 @@ const (
 const telJob = telemetry.ServiceNamespace + "/" + telemetry.DefaultServiceName
 
 // telBridgeJob is one scrape job of the bridge of
-// examples/11-otel-collector-bridge (collector.yaml): its name, which
+// examples/04-otel-collector-bridge (collector.yaml): its name, which
 // becomes the job label of the series it pushes, the compatibility
 // exporter of the simulator that serves its format, and the series it
 // keeps, as the example writes them.
@@ -181,7 +181,7 @@ type TelemetryParts struct {
 //   - otelcol-config: in mode otel-collector, an OTLP receiver and a
 //     prometheus exporter that puts k8s.node.name and host.name on every
 //     series; in mode otel-bridge, the file the Collector reads after
-//     examples/11-otel-collector-bridge/collector.yaml: the bridge's scrape
+//     examples/04-otel-collector-bridge/collector.yaml: the bridge's scrape
 //     jobs pointed at the simulator's compatibility exporters at the
 //     timing's scrape interval.
 //   - sim-values: the OTLP endpoint (Prometheus, the Collector, or none in
@@ -508,7 +508,7 @@ func telOtelcolConfig() otelcolConfig {
 }
 
 // The bridge's Collector configuration: what the harness changes in
-// examples/11-otel-collector-bridge/collector.yaml, and the health check
+// examples/04-otel-collector-bridge/collector.yaml, and the health check
 // the readiness probe of the bridge's Deployment reads. The Collector
 // merges this file over the example and replaces a list whole, so each job
 // repeats the example's metric_relabel_configs.

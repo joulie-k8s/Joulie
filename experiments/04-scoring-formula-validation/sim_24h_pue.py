@@ -40,7 +40,7 @@ from datetime import datetime, timedelta
 # Default FMU path
 _SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent.parent
-DEFAULT_FMU = _REPO_ROOT / "examples" / "08-fmu-cooling-pue" / "cooling_models" / "DXCooledAirsideEconomizer.fmu"
+DEFAULT_FMU = _REPO_ROOT / "examples" / "06-cooling-pue" / "cooling_models" / "DXCooledAirsideEconomizer.fmu"
 DOCKER_IMAGE = "openmodelica/openmodelica:v1.26.3-ompython"
 
 # ---------------------------------------------------------------------------

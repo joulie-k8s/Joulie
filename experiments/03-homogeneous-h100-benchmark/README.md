@@ -4,6 +4,8 @@ This experiment is structurally identical to [02 - heterogeneous-benchmark](../0
 
 > **Note (2026-10-09):** `REPORT.md` and `REPORT-standalone.md` were produced with an older simulator model and have not been rerun. Runs made now read the hardware catalog embedded in the simulator, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Simulator changes](../../simulator/CHANGES.md) lists each change and how far it moves `configs/benchmark-debug.yaml`.
 
+> **Checked (2026-10-23, #89):** `configs/benchmark-debug.yaml` with the 0.2.4 release images (`images.joulie_tag` and `images.sim_tag` set to `"0.2.4"`) runs the three baselines, the collection and the plots. The debug configuration stops each run after 300 s, so its numbers are a check, not results.
+
 ## Purpose
 
 The experiment tests the hypothesis that Joulie's energy-aware scheduling policy is more effective on a homogeneous cluster, where every GPU node can accept any GPU job without vendor- or product-specific placement constraints. On a heterogeneous cluster, family-first placement and per-family hardware physics can cause:

@@ -1,0 +1,22 @@
+# kube-prometheus-stack values for the Joulie dashboard: Prometheus reads
+# every ServiceMonitor, whatever its labels or namespace, and the Grafana
+# sidecar loads every dashboard ConfigMap labelled grafana_dashboard: "1",
+# the label the Joulie chart puts on its own (grafanaDashboard.labels).
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+grafana:
+  adminPassword: joulie  # a tutorial password: set your own
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+# Neither is needed by the Joulie dashboard. The node exporter cannot start on
+# the simulated cluster, whose one real node runs in a container.
+alertmanager:
+  enabled: false
+nodeExporter:
+  enabled: false

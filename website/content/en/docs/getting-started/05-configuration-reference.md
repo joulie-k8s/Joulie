@@ -272,6 +272,8 @@ Nodes without topology labels fall back to cluster-wide stress computation, and 
 | `CACHE_TTL` | `30s` | Minimum interval between rebuilding the scoring maps from the informer cache, which watches NodeTwin and NodeHardware, so a score never reads the API server. |
 | `TWIN_STALENESS_THRESHOLD` | `5m` | Duration after which NodeTwin data is considered stale |
 
+The Service `joulie-scheduler-extender` carries `schedulerExtender.service.annotations`, by default `prometheus.io/scrape: "true"`, `prometheus.io/port: "9877"` and `prometheus.io/path: /metrics`, as the agent's and the controller manager's metrics Services carry theirs, so a Prometheus that discovers targets by annotation scrapes the `joulie_scheduler_*` metrics. With the Prometheus Operator, a ServiceMonitor selects the Service's `metrics` port instead; [tutorial 03](https://github.com/joulie-k8s/Joulie/tree/main/examples/03-grafana-dashboard) has one for each component.
+
 With `schedulerExtender.hostNetwork: true` the chart deploys the extender with strategy `Recreate`: an old and a new pod cannot hold the host port on one node, so a rolling update would never finish. Pods are still scheduled while the extender restarts only if the scheduler configuration marks it `ignorable: true`; otherwise also set `schedulerExtender.nodeName`, so the new extender pod does not wait for the scheduler that waits for it.
 
 ## Simulator

@@ -27,7 +27,7 @@ Set it up:
 3. Give the simulator a trace (`SIM_WORKLOAD_TRACE_PATH`), or create pods that tolerate the KWOK taint and select `type=kwok`.
 4. Watch power, caps and job completion in [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}}).
 
-Runnable versions: [`examples/06-simulator-kwok`](https://github.com/joulie-k8s/Joulie/tree/main/examples/06-simulator-kwok), [`examples/07-simulator-gpu-powercaps`](https://github.com/joulie-k8s/Joulie/tree/main/examples/07-simulator-gpu-powercaps), and the experiment scripts `experiments/01-cpu-only-benchmark/scripts/10_setup_cluster.sh` and `20_run_benchmark.sh` ([CPU-Only Benchmark]({{< relref "/docs/experiments/cpu-only-benchmark.md" >}})).
+Runnable versions: [`experiments/kwok-cluster`](https://github.com/joulie-k8s/Joulie/tree/main/experiments/kwok-cluster), and the experiment scripts `experiments/01-cpu-only-benchmark/scripts/10_setup_cluster.sh` and `20_run_benchmark.sh` ([CPU-Only Benchmark]({{< relref "/docs/experiments/cpu-only-benchmark.md" >}})).
 
 ### Pointing Joulie at the simulator
 

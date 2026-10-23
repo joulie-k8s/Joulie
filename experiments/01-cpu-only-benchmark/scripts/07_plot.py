@@ -50,7 +50,7 @@ def plot_runtime_distribution(df: pd.DataFrame):
     groups = [d[d["baseline"] == b][metric].values for b in baselines]
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    box = ax.boxplot(groups, labels=baselines, patch_artist=True, showfliers=True)
+    box = ax.boxplot(groups, tick_labels=baselines, patch_artist=True, showfliers=True)
     for patch, b in zip(box["boxes"], baselines):
         patch.set_facecolor(BASELINE_COLORS.get(b, "#cccccc"))
         patch.set_alpha(0.45)
