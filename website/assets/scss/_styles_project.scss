@@ -145,21 +145,17 @@
   }
 }
 
+/* The logo with its own shadow: drop-shadow follows the flame, not a box. */
 .jl-emblem {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 104px;
-  height: 104px;
-  margin: 0 auto 1.75rem;
-  border: 1px solid rgba(255, 122, 0, 0.35);
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 14px 36px rgba(255, 122, 0, 0.28), 0 4px 10px rgba(240, 20, 30, 0.12);
+  margin: 0 auto 1.25rem;
 
   img {
-    width: 66px;
-    height: 66px;
+    width: 128px;
+    height: 128px;
+    filter: drop-shadow(0 14px 22px rgba(255, 122, 0, 0.35)) drop-shadow(0 4px 8px rgba(240, 20, 30, 0.18));
   }
 }
 
