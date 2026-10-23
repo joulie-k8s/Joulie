@@ -124,4 +124,5 @@ kubectl get nodetwins -o custom-columns=NODE:.spec.nodeName,GPU:.status.controlS
 
 ## Example
 
-- [Example 07: simulator-gpu-powercaps](https://github.com/joulie-k8s/Joulie/tree/main/examples/07-simulator-gpu-powercaps)
+- [Simulated cluster tutorial](https://github.com/joulie-k8s/Joulie/tree/main/examples/01-simulated-cluster): GPU caps on emulated NVIDIA and AMD nodes, applied by the real agent
+- [`experiments/kwok-cluster`](https://github.com/joulie-k8s/Joulie/tree/main/experiments/kwok-cluster): GPU caps on 33 KWOK H100 NVL nodes, applied through the simulator's HTTP control

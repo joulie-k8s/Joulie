@@ -811,3 +811,25 @@ class TestEmbeddedCatalog:
         assert (tmp_path / "00-kwok-nodes.yaml").exists()
         assert not catalog.exists()
         assert "--out-catalog is deprecated" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# 07_plot.py
+# ---------------------------------------------------------------------------
+
+def test_runtime_distribution_plots_with_current_matplotlib(tmp_path, monkeypatch):
+    """The runtime box plot is drawn with the matplotlib the requirements
+    install: matplotlib 3.11 removed boxplot's labels argument (tick_labels
+    since 3.9), so 20_run_benchmark.sh stopped at plot generation."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import pandas as pd
+
+    monkeypatch.setenv("RESULTS_DIR", str(tmp_path))
+    spec = importlib.util.spec_from_file_location("plot_01", SCRIPTS_DIR / "07_plot.py")
+    plot = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plot)
+    monkeypatch.setattr(plot, "PLOTS", tmp_path)
+    df = pd.DataFrame({"baseline": ["A", "B", "C", "A"], "wall_seconds": [310.0, 309.0, 311.0, 305.0]})
+    plot.plot_runtime_distribution(df)
+    assert (tmp_path / "runtime_distribution.png").exists()

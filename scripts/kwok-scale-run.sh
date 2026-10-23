@@ -183,7 +183,7 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 # 1. Cluster and KWOK
 # ---------------------------------------------------------------------------
-KIND_CONFIG="$REPO_ROOT/examples/06-simulator-kwok/manifests/01-kind-cluster.yaml"
+KIND_CONFIG="$REPO_ROOT/experiments/kwok-cluster/manifests/01-kind-cluster.yaml"
 [[ -f "$KIND_CONFIG" ]] || die "missing kind config: $KIND_CONFIG"
 
 if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then

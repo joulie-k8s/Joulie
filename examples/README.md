@@ -1,16 +1,21 @@
 # Examples
 
-This directory contains runnable Joulie examples, ordered by setup complexity.
+Six tutorials, in the order a new user meets Joulie. The first three run on the
+[simulated cluster](https://joulie-k8s.github.io/Joulie/main/docs/simulator/simulated-cluster/):
+the real controller manager, agent and scheduler extender, built from your
+checkout, managing emulated bare-metal nodes in one Docker container. They need
+no hardware and no cluster of your own.
 
-- [01-stress-ng-throttling](./01-stress-ng-throttling/README.md): apply high/low node profiles and observe throughput/frequency impact.
-- [02-prometheus-grafana](./02-prometheus-grafana/README.md): wire dashboards and monitoring for Joulie metrics.
-- [03-workload-intent-classes](./03-workload-intent-classes/README.md): workload scheduling via affinity (`performance` via `NotIn eco`, `eco`, and unconstrained/general).
-- [04-operator-configuration](./04-operator-configuration/README.md): tune controller manager policies and control-loop env settings.
-- [05-simulated-telemetry-control](./05-simulated-telemetry-control/README.md): run agent telemetry/control against simulator HTTP endpoints.
-- [06-simulator-kwok](./06-simulator-kwok/README.md): mixed real+KWOK setup with simulator-driven workload and power behavior.
-- [07-simulator-gpu-powercaps](./07-simulator-gpu-powercaps/README.md): heterogeneous GPU simulation (NVIDIA + AMD) with node-level GPU cap effects on power and completion time.
-- [08-fmu-cooling-pue](./08-fmu-cooling-pue/README.md): FMU-based cooling and PUE simulation.
-- [09-scheduler-steering](./09-scheduler-steering/README.md): energy-aware scheduler extender steering workloads to optimal nodes.
-- [10-kubectl-joulie-demo](./10-kubectl-joulie-demo/README.md): end-to-end demo with `kubectl joulie status` plugin on a 6-node heterogeneous KWOK cluster.
-- [11-otel-collector-bridge](./11-otel-collector-bridge/README.md): OpenTelemetry Collector config that turns Kepler, dcgm-exporter and AMD device-metrics-exporter series into the `hw.*` metrics the default node power preset reads.
-- [12-governor-presets](./12-governor-presets/README.md): CPU and GPU governor presets on a simulated cluster of six hardware families: the two gates, the presets each node lists, the native settings they become, opting a GPU model in to `sustained`, and the restore.
+| Tutorial | What it shows | Needs |
+|---|---|---|
+| [01 Simulated cluster](01-simulated-cluster/README.md) | A first install; the hardware the agent discovers; the digital twin; power profiles and the caps the agent writes; capping a node by hand; `kubectl joulie` on a live workload | Docker, Go, `kubectl`, `helm`, `jq` |
+| [02 Workload classes](02-workload-classes/README.md) | Performance and standard pods; the scheduler extender keeping performance pods off eco nodes; its scores | the cluster of 01 |
+| [03 Grafana dashboard](03-grafana-dashboard/README.md) | The dashboard the chart ships, on the simulated cluster; scraping Joulie on a real cluster | the cluster of 01 |
+| [04 OpenTelemetry Collector bridge](04-otel-collector-bridge/README.md) | Kepler, dcgm-exporter and the AMD device-metrics-exporter as the `hw.*` metrics the digital twin reads | Docker |
+| [05 Governor presets](05-governor-presets/README.md) | CPU and GPU governor presets, a second energy dimension next to the caps, on six hardware families | Docker, Go, `kubectl`, `helm`, `jq` |
+| [06 Cooling and PUE](06-cooling-pue/README.md) | Cooling models and the PUE they give for a power trace, with a Modelica FMU | Python, Docker |
+
+To install Joulie on a real cluster, follow the
+[quickstart](https://joulie-k8s.github.io/Joulie/main/docs/getting-started/01-quickstart/).
+The benchmark experiments and the cluster they run on are in
+[`experiments/`](../experiments/README.md).

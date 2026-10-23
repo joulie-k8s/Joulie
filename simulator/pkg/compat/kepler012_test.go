@@ -26,7 +26,7 @@ var compatKepler012GPU = Options{Kepler012GPU: true}
 // node_name; zones of one name over two sockets are one zone with path
 // aggregated-<zone>, and a single zone has its class/powercap entry as path;
 // there are no AMD GPU series; and the exposition for an Intel and an NVL
-// host, with the GPU series on, matches the golden that example 11 reads.
+// host, with the GPU series on, matches the golden that example 04 reads.
 func TestCP04Kepler012FamiliesLabelsPathsAndGolden(t *testing.T) {
 	set, _ := compatRun(t, []string{Kepler012}, compatKepler012GPU, compatIntel(), compatNVL(), compatMI300X(), compatSingle())
 	samples := compatGather(t, set, Kepler012)

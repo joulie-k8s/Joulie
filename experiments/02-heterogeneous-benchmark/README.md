@@ -4,11 +4,13 @@ This experiment packages the heterogeneous-cluster inventory and the asset-gener
 
 > **Note (2026-10-09):** `REPORT.md` and `REPORT-standalone.md` were produced with an older simulator model and have not been rerun. Runs made now read the hardware catalog embedded in the simulator, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Simulator changes](../../simulator/CHANGES.md) lists each change and how far it moves `configs/benchmark-debug.yaml`.
 
+> **Checked (2026-10-23, #89):** `configs/benchmark-debug.yaml` with the 0.2.4 release images (`images.joulie_tag` and `images.sim_tag` set to `"0.2.4"`) runs the three baselines, the collection and the plots. The debug configuration stops each run after 300 s, so its numbers are a check, not results.
+
 It is centered on four things:
 
 - a checked-in heterogeneous cluster description in YAML,
 - generation of KWOK nodes and simulator node classes from that description,
-- a quick end-to-end smoke validation path that exercises the heterogeneous GPU example on the generated assets.
+- a quick check of the whole path on the debug configuration,
 - a full sweep/collect/plot benchmark harness comparable to `experiments/01-cpu-only-benchmark`, but targeting the heterogeneous inventory.
 
 The workflow:
@@ -42,8 +44,6 @@ The workflow:
   - produces plots under `results/plots/`
 - `scripts/20_run_benchmark.sh`
   - convenience wrapper for sweep + collect + plot
-- `scripts/10_run_smoke.sh`
-  - refreshes assets and runs a heterogeneous smoke validation using the GPU simulator example
 
 ## Cluster inventory source
 
@@ -69,8 +69,8 @@ By default, this reads:
 
 and refreshes:
 
-- `examples/07-simulator-gpu-powercaps/manifests/00-kwok-nodes.yaml`
-- `examples/07-simulator-gpu-powercaps/manifests/10-node-classes.yaml`
+- `experiments/kwok-cluster/manifests/00-kwok-nodes.yaml`
+- `experiments/kwok-cluster/manifests/10-node-classes.yaml`
 
 No hardware catalog is generated: the simulator matches each node's CPU and GPU
 against the catalog embedded in `pkg/hwinv/assets/hardware.yaml`, and the
@@ -95,35 +95,13 @@ python -m pip install --upgrade pip
 python -m pip install -r experiments/02-heterogeneous-benchmark/requirements.txt
 ```
 
-## Quick smoke validation
+## Quick check
 
-For a runnable, debug-friendly heterogeneous validation path, use:
-
-```bash
-experiments/02-heterogeneous-benchmark/scripts/10_run_smoke.sh
-```
-
-This does two things:
-
-1. regenerates assets from the checked-in heterogeneous cluster YAML
-2. runs the heterogeneous GPU simulator example end to end using those generated assets
-
-The smoke run is intentionally meant as a short validation path for:
-
-- inventory matching,
-- `NodeHardware` publication,
-- controller manager planning against heterogeneous hardware,
-- simulator GPU/CPU mixed-node behavior,
-- GPU-cap application on supported fake nodes.
-
-Artifacts are written under `tmp/heterogeneous-smoke-*` unless `ARTIFACT_DIR` is set.
-
-Useful overrides:
+`configs/benchmark-debug.yaml` runs each baseline once and stops it after 300 s, which checks that the cluster, the simulator and Joulie work together without measuring anything:
 
 ```bash
-CLUSTER_NAME=joulie-heterogeneous \
-ARTIFACT_DIR="$(pwd)/tmp/heterogeneous-smoke" \
-experiments/02-heterogeneous-benchmark/scripts/10_run_smoke.sh
+experiments/02-heterogeneous-benchmark/scripts/10_setup_cluster.sh
+experiments/02-heterogeneous-benchmark/scripts/20_run_benchmark.sh experiments/02-heterogeneous-benchmark/configs/benchmark-debug.yaml
 ```
 
 ## Full benchmark workflow
@@ -270,7 +248,7 @@ Today this experiment provides:
 
 - a checked-in heterogeneous inventory,
 - asset generation from that inventory,
-- a smoke validation path,
+- a quick check on the debug configuration,
 - a sweep/collect/plot benchmark harness.
 
 It also records a basic reproducibility bundle for each run:

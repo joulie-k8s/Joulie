@@ -1,5 +1,5 @@
 # OpenTelemetry Collector for the otel-bridge telemetry mode: the bridge of
-# examples/11-otel-collector-bridge, run unchanged. The simulator pushes no
+# examples/04-otel-collector-bridge, run unchanged. The simulator pushes no
 # OTLP in this mode and serves the Kepler 0.12, dcgm-exporter 4.8.4 and AMD
 # device-metrics-exporter 1.5.2 formats instead; the Collector scrapes them,
 # rewrites their series as hw.* and pushes them over OTLP to Prometheus.

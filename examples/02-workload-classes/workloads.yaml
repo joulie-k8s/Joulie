@@ -1,0 +1,57 @@
+# Two Deployments that differ only in their workload class. On the simulated
+# cluster of example 01 the pods run on its fake Nodes: they tolerate the KWOK
+# taint and select the cluster's label. On a real cluster, drop both.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: joulie-tutorial
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: performance
+  namespace: joulie-tutorial
+spec:
+  replicas: 6
+  selector:
+    matchLabels: {app: performance}
+  template:
+    metadata:
+      labels: {app: performance}
+      annotations:
+        joulie.io/workload-class: performance
+    spec:
+      nodeSelector:
+        sim.joulie.io/cluster: demo
+      tolerations:
+        - {key: kwok.x-k8s.io/node, operator: Equal, value: fake, effect: NoSchedule}
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.9
+          resources:
+            requests: {cpu: "4", memory: 4Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: standard
+  namespace: joulie-tutorial
+spec:
+  replicas: 6
+  selector:
+    matchLabels: {app: standard}
+  template:
+    metadata:
+      labels: {app: standard}
+      annotations:
+        joulie.io/workload-class: standard
+    spec:
+      nodeSelector:
+        sim.joulie.io/cluster: demo
+      tolerations:
+        - {key: kwok.x-k8s.io/node, operator: Equal, value: fake, effect: NoSchedule}
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.9
+          resources:
+            requests: {cpu: "4", memory: 4Gi}

@@ -46,6 +46,12 @@ What to check when you upgrade a Joulie installation from v0.2 to v0.3. Go throu
 - [ ] **Extender GPU estimate.** A pod that requests MIG devices, AMD partitions, shared replicas or `gpu.intel.com/xe` adds GPU watts to the extender's marginal estimate, a MIG device or partition by its share of a GPU ([Scheduler]({{< relref "/docs/architecture/scheduler.md" >}})).
 - [ ] **Governors.** Governor control is new and off by default (`GOVERNOR_CONTROL`, `GOVERNOR_WRITES`); nothing changes until you turn it on. `GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU=true` holds `sustained` only while a pod of 2 or more GPUs runs on the node. See [Governor policy]({{< relref "/docs/architecture/policy.md#governor-policy" >}}).
 
+## Monitoring and examples
+
+- [ ] **Extender metrics.** The scheduler extender's Service carries the `prometheus.io/*` annotations the agent's and the controller manager's carry (`schedulerExtender.service.annotations`), so a Prometheus that discovers targets by annotation starts scraping `joulie_scheduler_*`, and the Scheduler row of the chart's dashboard gets data. Set the value to `{}` to keep the extender unscraped.
+- [ ] **Example dashboards.** The four dashboards under `examples/` are gone; each showed a subset of the dashboard the chart ships (`grafanaDashboard.enabled`), which now holds the CPU frequency panel the DVFS one added. A copy you imported keeps working for as long as its metrics do.
+- [ ] **Example paths.** The examples are six tutorials (`examples/01-simulated-cluster` to `examples/06-cooling-pue`); a script or link to an old path needs the new one. The KWOK cluster of the benchmark experiments moved from `examples/07-simulator-gpu-powercaps` to `experiments/kwok-cluster`.
+
 ## Simulator
 
 - [ ] **Telemetry format.** `/telemetry/{node}` serves OTLP JSON. Joulie up to v0.2 reading the simulator needs `?format=legacy` on that URL (deprecated, removed in v0.4.0), or the `/otlp/telemetry/{node}` endpoint with a v0.3 agent.

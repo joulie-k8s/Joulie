@@ -44,11 +44,11 @@ menu:
     - name: Docs
       url: /docs/
       weight: 10
-    - name: Examples
-      url: https://github.com/joulie-k8s/Joulie/tree/main/examples
+    - name: Tutorials
+      url: /docs/getting-started/tutorials/
       weight: 20
     - name: Experiments
-      url: https://github.com/joulie-k8s/Joulie/tree/main/experiments
+      url: /docs/experiments/
       weight: 30
     - name: GitHub
       url: https://github.com/joulie-k8s/Joulie

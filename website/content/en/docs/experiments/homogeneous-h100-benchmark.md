@@ -66,7 +66,7 @@ All 33 GPU nodes are identical: any GPU job can be scheduled on any GPU node wit
 
 ### PUE model (DXCooledAirsideEconomizer FMU)
 
-PUE is computed using the **DXCooledAirsideEconomizer** Functional Mock-up Unit (FMU), a physics-based cooling model adapted from the Lawrence Berkeley National Lab (LBL) Buildings Library v12.1.0. The FMU is compiled from a [Modelica model](https://github.com/joulie-k8s/Joulie/blob/main/examples/08-fmu-cooling-pue/cooling_models/DXCooledAirsideEconomizer.mo) and executed as an FMI 2.0 co-simulation.
+PUE is computed using the **DXCooledAirsideEconomizer** Functional Mock-up Unit (FMU), a physics-based cooling model adapted from the Lawrence Berkeley National Lab (LBL) Buildings Library v12.1.0. The FMU is compiled from a [Modelica model](https://github.com/joulie-k8s/Joulie/blob/main/examples/06-cooling-pue/cooling_models/DXCooledAirsideEconomizer.mo) and executed as an FMI 2.0 co-simulation.
 
 The model captures:
 - **Three cooling modes**: free cooling (airside economizer), partial mechanical (economizer + DX compressor), full mechanical (DX only)

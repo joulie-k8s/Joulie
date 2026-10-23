@@ -602,7 +602,7 @@ func scNew(t *testing.T) *scEnv {
 		"scripts/simcluster/manifests/otelcol-bridge.yaml":           "# stub\n",
 		"scripts/simcluster/manifests/scheduler-config.yaml":         "ignorable: true\n",
 		"scripts/simcluster/manifests/scheduler-config-service.yaml": "ignorable: true\nurl: service\n",
-		"examples/11-otel-collector-bridge/collector.yaml":           "# stub\n",
+		"examples/04-otel-collector-bridge/collector.yaml":           "# stub\n",
 		"scripts/simcluster/manifests/kwok-v0.8.0/kwok.yaml":         "# stub\n",
 		"scripts/simcluster/manifests/kwok-v0.8.0/stage-fast.yaml":   "# stub\n",
 		"charts/joulie/crds/joulie.io_nodetwins.yaml":                "# stub\n",
@@ -2248,7 +2248,7 @@ func TestSC23BridgeCollector(t *testing.T) {
 	e := scNew(t)
 	vars := map[string]string{"SIMCLUSTER_TELEMETRY": "otel-bridge"}
 	e.mustRun("up.sh", vars)
-	example := filepath.Join(e.repo, "examples/11-otel-collector-bridge/collector.yaml")
+	example := filepath.Join(e.repo, "examples/04-otel-collector-bridge/collector.yaml")
 	var created scCall
 	for _, c := range e.callsOf("kubectl", "-n", "monitoring", "create", "configmap", "otelcol-bridge-config") {
 		created = c

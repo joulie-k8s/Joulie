@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare current Joulie formula vs scoring-redesign.md proposal.
+"""Compare the Joulie formula of the time with the redesign it proposed.
 
 Runs BASELINE, JOULIE (current), and REDESIGN across 8 seeds using multiprocessing.
 """
@@ -14,7 +14,8 @@ MAX_WORKERS = min(14, mp.cpu_count() - 2)
 
 
 def make_redesign_scheduler():
-    """Scoring from docs/design/scoring-redesign.md.
+    """The redesigned scoring, which the scheduler extender adopted; its
+    formula is in website/content/en/docs/architecture/energy-aware-scheduling.md.
 
     score = projectedHeadroom * 0.7
           + (100 - coolingStress) * 0.15

@@ -163,7 +163,7 @@ Prerequisite: the chart reads node power from Prometheus (`NODE_POWER_SOURCE: "p
 `charts/joulie/values.yaml`). It expects Prometheus at `http://prometheus-operated.monitoring:9090`
 with its OTLP receiver on (`--web.enable-otlp-receiver`), receiving `hw.energy` or `hw.power` for
 every node. `values/prometheus-grafana.yaml` configures kube-prometheus-stack that way, and
-`examples/11-otel-collector-bridge` converts Kepler, dcgm-exporter and AMD exporter series.
+`examples/04-otel-collector-bridge` converts Kepler, dcgm-exporter and AMD exporter series.
 Without that data every node reads 0 W, with source `prometheus-no-data`; to run without
 Prometheus, set `controllerManager.env.NODE_POWER_SOURCE=static`.
 

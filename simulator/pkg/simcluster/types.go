@@ -39,7 +39,7 @@ const (
 	// ModeOTelBridge: the simulator pushes no OTLP of its own and serves
 	// the Kepler 0.12, dcgm-exporter 4.8.4 and AMD device-metrics-exporter
 	// 1.5.2 formats instead; an OpenTelemetry Collector (contrib) runs the
-	// bridge of examples/11-otel-collector-bridge, which scrapes them and
+	// bridge of examples/04-otel-collector-bridge, which scrapes them and
 	// pushes hw.* over OTLP to Prometheus. Joulie runs with its defaults,
 	// facility metrics off as the chart has them, since no facility series
 	// reaches Prometheus in this mode.

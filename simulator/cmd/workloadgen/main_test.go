@@ -1378,8 +1378,8 @@ func jobsOf(records []map[string]any) []map[string]any {
 }
 
 // The goldens were written by workloadgen before v3 existed, with these flags
-// and no -schema-version. Experiments 01 to 03, the standalone sweep and
-// example 10 pin v2, so their traces must not move by a byte.
+// and no -schema-version. Experiments 01 to 03 and the standalone sweep pin
+// v2, so their traces must not move by a byte.
 func TestWorkloadgenSchemaV2ByteIdentical(t *testing.T) {
 	for _, tc := range []struct {
 		golden string
@@ -1408,9 +1408,10 @@ func TestWorkloadgenSchemaV2ByteIdentical(t *testing.T) {
 	}
 	// The flags the legacy callers pass, which the goldens leave at their
 	// defaults, checked by the SHA-256 of the trace the a94f345 binary wrote
-	// with them: example 10, the exp01 sweep, the exp02 and exp03 sweeps, the
-	// v2 rate flags without affinity, the standalone diurnal sweep, diurnal
-	// without affinity or workload records, and the standalone default sweep.
+	// with them: the kubectl joulie demo the examples had until #89, the exp01
+	// sweep, the exp02 and exp03 sweeps, the v2 rate flags without affinity,
+	// the standalone diurnal sweep, diurnal without affinity or workload
+	// records, and the standalone default sweep.
 	for i, tc := range []struct {
 		args   string
 		sha256 string

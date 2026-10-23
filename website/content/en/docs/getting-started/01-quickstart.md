@@ -17,7 +17,7 @@ For conceptual context first, read [Core Concepts]({{< relref "/docs/getting-sta
   - cpufreq sysfs interfaces
 - Prometheus, for measured node power. The chart reads node power from Prometheus by default (`NODE_POWER_SOURCE=prometheus`): it expects Prometheus at `http://prometheus-operated.monitoring:9090` with its OTLP receiver on (`--web.enable-otlp-receiver`), receiving `hw.energy` or `hw.power` for each node. Without that data every node reads 0 W, with source `prometheus-no-data`.
   - `values/prometheus-grafana.yaml` configures kube-prometheus-stack this way ([Prometheus settings]({{< relref "/docs/architecture/telemetry.md#prometheus-settings" >}})).
-  - [`examples/11-otel-collector-bridge`](https://github.com/joulie-k8s/Joulie/tree/main/examples/11-otel-collector-bridge) converts Kepler, dcgm-exporter and AMD device-metrics-exporter metrics into those names.
+  - [`examples/04-otel-collector-bridge`](https://github.com/joulie-k8s/Joulie/tree/main/examples/04-otel-collector-bridge) converts Kepler, dcgm-exporter and AMD device-metrics-exporter metrics into those names.
   - To run without it, set `controllerManager.env.NODE_POWER_SOURCE=static` (0 W for every node).
 
 ## Install from release (recommended)
@@ -159,8 +159,7 @@ Configuration details:
 
 - [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
 - [Controller Manager]({{< relref "/docs/architecture/controller-manager.md" >}})
-- Optional runnable manifest walkthrough:
-  - [Controller Manager Configuration Example](https://github.com/joulie-k8s/Joulie/tree/main/examples/04-operator-configuration/README.md)
+- Every setting: [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md" >}})
 
 Verify:
 
@@ -195,7 +194,7 @@ kubectl get nodes --show-labels | grep 'joulie.io/managed=true'
 To try Joulie without the hardware it manages:
 
 - [Simulated Cluster]({{< relref "/docs/simulator/simulated-cluster.md" >}}): Joulie on emulated bare-metal nodes, on one machine with Docker (`make simcluster-smoke`).
-- [KWOK mode]({{< relref "/docs/simulator/simulator.md" >}}): many fake nodes with the agent in pool mode, as the benchmark experiments run; [`examples/06-simulator-kwok`](https://github.com/joulie-k8s/Joulie/tree/main/examples/06-simulator-kwok) is a runnable version.
+- [KWOK mode]({{< relref "/docs/simulator/simulator.md" >}}): many fake nodes with the agent in pool mode, as the benchmark experiments run; [`experiments/kwok-cluster`](https://github.com/joulie-k8s/Joulie/tree/main/experiments/kwok-cluster) is a runnable version.
 
 The simulator has its own Helm chart, published next to the Joulie chart ([Installation]({{< relref "/docs/simulator/installation.md" >}})):
 

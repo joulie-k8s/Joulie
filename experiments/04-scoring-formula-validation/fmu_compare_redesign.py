@@ -31,7 +31,8 @@ from sim_24h_pue import (
 
 
 def make_redesign_scheduler():
-    """Scoring from docs/design/scoring-redesign.md."""
+    """The redesigned scoring, which the scheduler extender adopted; its
+    formula is in website/content/en/docs/architecture/energy-aware-scheduling.md."""
     def sched(job_cpu, job_gpu, job_is_perf, trends, cluster_trend):
         from sim_24h_pue import (
             _cpu_cores, _has_gpu, _gpu_count, _peak_power, _cpu_max_w, _gpu_max_w_per,
@@ -86,7 +87,7 @@ def plot_three_way(results, outdir, sim_hours):
     fig, axes = plt.subplots(7, 1, figsize=(16, 24), sharex=True)
     fig.suptitle(
         f"Datacenter Simulation: {sim_hours:.0f}h, {N_NODES}-node H100 Cluster\n"
-        f"BASELINE vs JOULIE (current) vs REDESIGN (scoring-redesign.md)\n"
+        f"BASELINE vs JOULIE (current) vs REDESIGN\n"
         f"PUE from Modelica DXCooledAirsideEconomizer FMU",
         fontsize=14, fontweight="bold",
     )

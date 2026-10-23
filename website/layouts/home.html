@@ -1,5 +1,6 @@
 {{ define "main" }}
 {{- $quickstart := site.GetPage "/docs/getting-started/01-quickstart" -}}
+{{- $tutorials := site.GetPage "/docs/getting-started/04-tutorials" -}}
 {{- $architecture := site.GetPage "/docs/architecture" -}}
 {{- $twin := site.GetPage "/docs/architecture/digital-twin" -}}
 {{- $scheduling := site.GetPage "/docs/architecture/energy-aware-scheduling" -}}
@@ -164,10 +165,11 @@
         <h2 class="jl-h2">Up in two commands</h2>
         <p class="jl-muted">
           Install the chart from the OCI registry, then look at your nodes.
-          No hardware at hand? The simulator runs the whole stack on one machine with Docker.
+          No hardware at hand? The tutorials start on a simulated cluster that runs the whole stack on one machine with Docker.
         </p>
         <div class="jl-links">
           <a href="{{ $quickstart.RelPermalink }}">Quickstart <i class="fas fa-arrow-right"></i></a>
+          <a href="{{ $tutorials.RelPermalink }}">Tutorials <i class="fas fa-arrow-right"></i></a>
           <a href="{{ $simulator.RelPermalink }}">Simulator <i class="fas fa-arrow-right"></i></a>
           <a href="{{ $experiments.RelPermalink }}">Experiments <i class="fas fa-arrow-right"></i></a>
         </div>

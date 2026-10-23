@@ -84,6 +84,10 @@ metadata:
   labels:
     {{- include "joulie.labels" . | nindent 4 }}
     app.kubernetes.io/component: scheduler-extender
+  {{- with (.Values.schedulerExtender.service).annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   {{- if .Values.schedulerExtender.clusterIP }}
   clusterIP: {{ .Values.schedulerExtender.clusterIP }}
