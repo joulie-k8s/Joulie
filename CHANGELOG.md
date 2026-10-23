@@ -6,9 +6,9 @@ The user-visible changes of each release, what to check when upgrading, and the 
 
 ### Examples and dashboards
 
-- The examples are six tutorials that take a new user from a first install to the main features: a simulated cluster with the digital twin, the caps and `kubectl joulie`, workload classes and the scheduler extender, the Grafana dashboard, the OpenTelemetry Collector bridge, governor presets, and cooling and PUE. The first three need only Docker. Examples that no longer ran (stress-ng throttling, controller manager configuration, scheduler steering) or that the simulated cluster replaces (the simulated telemetry, KWOK and kubectl joulie demos, the Prometheus and workload class examples) are removed, and the KWOK cluster of the benchmark experiments moved to `experiments/kwok-cluster`. (#92)
-- The scheduler extender's Service carries `prometheus.io/*` annotations (`schedulerExtender.service.annotations`), as the agent's and the controller manager's do, so the Scheduler row of the chart's dashboard gets data from a Prometheus that discovers targets by annotation. (#92)
-- The chart's dashboard is the only one: the four under `examples/` each showed a subset of it. It draws each node's policy state, profile and cap backend as a timeline, one row per node, where it drew every state of every node as a line, and its CPU frequency panel shows the current frequency beside the maximum, in GHz where it showed MHz as kHz. A test parses every query of every dashboard in the PromQL parser and fails on a metric Joulie does not export. (#92)
+- The examples are six tutorials that take a new user from a first install to the main features: a simulated cluster with the digital twin, the caps and `kubectl joulie`, workload classes and the scheduler extender, the Grafana dashboard, the OpenTelemetry Collector bridge, governor presets, and cooling and PUE. The first three need only Docker. Examples that no longer ran (stress-ng throttling, controller manager configuration, scheduler steering) or that the simulated cluster replaces (the simulated telemetry, KWOK and kubectl joulie demos, the Prometheus and workload class examples) are removed, and the KWOK cluster of the benchmark experiments moved to `experiments/kwok-cluster`. (#95)
+- The scheduler extender's Service carries `prometheus.io/*` annotations (`schedulerExtender.service.annotations`), as the agent's and the controller manager's do, so the Scheduler row of the chart's dashboard gets data from a Prometheus that discovers targets by annotation. (#95)
+- The chart's dashboard is the only one: the four under `examples/` each showed a subset of it. It draws each node's policy state, profile and cap backend as a timeline, one row per node, where it drew every state of every node as a line, and its CPU frequency panel shows the current frequency beside the maximum, in GHz where it showed MHz as kHz. A test parses every query of every dashboard in the PromQL parser and fails on a metric Joulie does not export. (#95)
 
 ### Simulator
 
@@ -16,8 +16,8 @@ The user-visible changes of each release, what to check when upgrading, and the 
 
 ### Upgrading
 
-- A link or script to an example needs its new path: the examples are `examples/01-simulated-cluster` to `examples/06-cooling-pue`, and `examples/07-simulator-gpu-powercaps` is `experiments/kwok-cluster`. (#92)
-- A Prometheus that discovers targets by annotation now scrapes the scheduler extender; `schedulerExtender.service.annotations: {}` keeps it out. (#92)
+- A link or script to an example needs its new path: the examples are `examples/01-simulated-cluster` to `examples/06-cooling-pue`, and `examples/07-simulator-gpu-powercaps` is `experiments/kwok-cluster`. (#95)
+- A Prometheus that discovers targets by annotation now scrapes the scheduler extender; `schedulerExtender.service.annotations: {}` keeps it out. (#95)
 
 ## v0.2.4 (2026-10-21)
 
