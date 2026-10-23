@@ -44,6 +44,9 @@ read from Prometheus as the OpenTelemetry hardware metrics `hw.energy` and
 energy counters, and per-pod resource utilization via cAdvisor) to maintain an
 up-to-date model of every node's thermal and power state.
 
+Joulie was started at [CERN](https://home.cern) and is developed in the open;
+contributions from other sites and teams are welcome (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+
 These per-node digital twins drive two things:
 
 1. **Energy control**: the controller manager writes desired power state into `NodeTwin` CRs

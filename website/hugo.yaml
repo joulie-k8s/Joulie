@@ -32,6 +32,7 @@ params:
     sidebar_menu_compact: true
     sidebar_menu_foldable: true
     showLightDarkModeMenu: true
+    navbar_theme: dark
 
 markup:
   goldmark:

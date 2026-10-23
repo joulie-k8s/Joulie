@@ -1,0 +1,213 @@
+{{ define "main" }}
+{{- $quickstart := site.GetPage "/docs/getting-started/01-quickstart" -}}
+{{- $architecture := site.GetPage "/docs/architecture" -}}
+{{- $twin := site.GetPage "/docs/architecture/digital-twin" -}}
+{{- $scheduling := site.GetPage "/docs/architecture/energy-aware-scheduling" -}}
+{{- $telemetry := site.GetPage "/docs/architecture/telemetry" -}}
+{{- $agent := site.GetPage "/docs/architecture/agent" -}}
+{{- $simulator := site.GetPage "/docs/simulator" -}}
+{{- $experiments := site.GetPage "/docs/experiments" -}}
+{{- $repo := site.Params.github_repo -}}
+
+<section class="jl-hero">
+  <div class="container text-center">
+    <a class="jl-pill" href="{{ $quickstart.RelPermalink }}#kubectl-plugin">
+      <span class="jl-pill__tag">New</span>
+      <span><code>kubectl joulie</code>, a live power dashboard</span>
+      <i class="fas fa-arrow-right ms-1"></i>
+    </a>
+
+    <div class="jl-emblem">
+      <img src="{{ "images/logo.png" | relURL }}" alt="Joulie logo">
+    </div>
+
+    <h1 class="jl-hero__title">
+      <span class="jl-gradient">Joulie</span>: energy-aware Kubernetes
+    </h1>
+    <p class="jl-hero__lead">
+      Per-node digital twins model your cluster's power and cooling in real time.
+      Joulie caps CPUs and GPUs where it is safe and steers new pods to the nodes
+      that can take them, so racks stay inside their power and cooling budget.
+    </p>
+
+    <div class="jl-cta">
+      <a class="btn btn-lg jl-btn-primary" href="{{ $quickstart.RelPermalink }}">
+        Get started <i class="fas fa-arrow-right ms-2"></i>
+      </a>
+      <a class="btn btn-lg jl-btn-outline" href="{{ "docs/" | relURL }}">
+        Read the docs <i class="fas fa-book ms-2"></i>
+      </a>
+      <a class="btn btn-lg jl-btn-outline" href="{{ $repo }}" target="_blank" rel="noopener">
+        GitHub <i class="fab fa-github ms-2"></i>
+      </a>
+    </div>
+
+    <div class="jl-window">
+      <div class="jl-window__bar">
+        <span></span><span></span><span></span>
+        <code>kubectl joulie</code>
+      </div>
+      <img src="{{ "images/kubectl-joulie.gif" | relURL }}" loading="lazy"
+           alt="kubectl joulie: the cluster status, a node in detail and the live dashboard on a simulated 10-node cluster">
+    </div>
+  </div>
+</section>
+
+<section class="jl-section jl-section--alt">
+  <div class="container">
+    <div class="jl-heading">
+      <h2>Why it matters</h2>
+      <p>As AI and scientific workloads scale, the limits of a cluster are physical before they are logical.</p>
+    </div>
+    <div class="row g-4">
+      <div class="col-md-4">
+        <div class="jl-card jl-card--problem">
+          <i class="fas fa-temperature-high"></i>
+          <h3>Cooling bottlenecks</h3>
+          <p>GPU-dense racks exceed their cooling capacity during training bursts.</p>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="jl-card jl-card--problem">
+          <i class="fas fa-plug"></i>
+          <h3>Power overcommit</h3>
+          <p>Peak draw exceeds the PSU and PDU budget of a rack.</p>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="jl-card jl-card--problem">
+          <i class="fas fa-leaf"></i>
+          <h3>Energy and carbon cost</h3>
+          <p>Flat power profiles waste energy when demand is low.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="jl-section">
+  <div class="container">
+    <div class="jl-heading">
+      <h2>What Joulie does</h2>
+      <p>It makes the scheduler and the controller aware of the physical energy state of every node.</p>
+    </div>
+    <div class="row g-4">
+      <div class="col-md-6 col-lg-4">
+        <a class="jl-card" href="{{ $twin.RelPermalink }}">
+          <i class="fas fa-cubes"></i>
+          <h3>A digital twin per node</h3>
+          <p>A <code>NodeTwin</code> tracks power, headroom, predicted cooling stress and trend from live telemetry.</p>
+        </a>
+      </div>
+      <div class="col-md-6 col-lg-4">
+        <a class="jl-card" href="{{ $agent.RelPermalink }}">
+          <i class="fas fa-sliders-h"></i>
+          <h3>CPU and GPU power caps</h3>
+          <p>The node agent enforces caps through RAPL and NVML and, when enabled, CPU governor presets.</p>
+        </a>
+      </div>
+      <div class="col-md-6 col-lg-4">
+        <a class="jl-card" href="{{ $scheduling.RelPermalink }}">
+          <i class="fas fa-route"></i>
+          <h3>Energy-aware scheduling</h3>
+          <p>A scheduler extender keeps performance pods on uncapped nodes and steers the rest toward eco nodes.</p>
+        </a>
+      </div>
+      <div class="col-md-6 col-lg-4">
+        <a class="jl-card" href="{{ $telemetry.RelPermalink }}">
+          <i class="fas fa-satellite-dish"></i>
+          <h3>Telemetry you already have</h3>
+          <p>OpenTelemetry <code>hw.power</code> and <code>hw.energy</code> or Kepler counters from Prometheus, plus cAdvisor.</p>
+        </a>
+      </div>
+      <div class="col-md-6 col-lg-4">
+        <a class="jl-card" href="{{ $quickstart.RelPermalink }}#kubectl-plugin">
+          <i class="fas fa-terminal"></i>
+          <h3>kubectl joulie</h3>
+          <p>Cluster status, a node in detail and a live dashboard, read from the twins.</p>
+        </a>
+      </div>
+      <div class="col-md-6 col-lg-4">
+        <a class="jl-card" href="{{ $simulator.RelPermalink }}">
+          <i class="fas fa-flask"></i>
+          <h3>A simulator for experiments</h3>
+          <p>Try policies on KWOK or emulated bare-metal nodes on one machine, before real hardware.</p>
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="jl-section jl-section--alt">
+  <div class="container">
+    <div class="jl-heading">
+      <h2>How it works</h2>
+      <p>A closed loop between the hardware and the scheduler keeps the power envelope of the cluster stable.</p>
+    </div>
+    <ol class="jl-loop">
+      <li><i class="fas fa-wave-square"></i><span>Telemetry</span></li>
+      <li><i class="fas fa-cubes"></i><span>Twin update</span></li>
+      <li><i class="fas fa-sliders-h"></i><span>Cap decisions</span></li>
+      <li><i class="fas fa-route"></i><span>Pod placement</span></li>
+    </ol>
+    <a class="jl-figure" href="{{ $architecture.RelPermalink }}">
+      <img src="{{ "images/joulie-arch.png" | relURL }}" loading="lazy"
+           alt="Joulie architecture: the controller manager, the scheduler extender and the node agent around the Kubernetes control plane">
+    </a>
+  </div>
+</section>
+
+<section class="jl-section">
+  <div class="container">
+    <div class="row g-5 align-items-center">
+      <div class="col-lg-5">
+        <h2 class="jl-h2">Up in two commands</h2>
+        <p class="jl-muted">
+          Install the chart from the OCI registry, then look at your nodes.
+          No hardware at hand? The simulator runs the whole stack on one machine with Docker.
+        </p>
+        <div class="jl-links">
+          <a href="{{ $quickstart.RelPermalink }}">Quickstart <i class="fas fa-arrow-right"></i></a>
+          <a href="{{ $simulator.RelPermalink }}">Simulator <i class="fas fa-arrow-right"></i></a>
+          <a href="{{ $experiments.RelPermalink }}">Experiments <i class="fas fa-arrow-right"></i></a>
+        </div>
+      </div>
+      <div class="col-lg-7">
+        <div class="jl-code">
+<pre><span class="jl-code__c"># Controller manager, node agent and scheduler extender</span>
+<span class="jl-code__p">$</span> helm upgrade --install joulie oci://registry.cern.ch/joulie/joulie \
+    --version &lt;version&gt; -n joulie-system --create-namespace \
+    -f values/joulie.yaml
+
+<span class="jl-code__c"># Live dashboard: power, caps and headroom of every node</span>
+<span class="jl-code__p">$</span> kubectl joulie top</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="jl-section jl-section--alt jl-community">
+  <div class="container text-center">
+    <h2 class="jl-h2">Open source, built in the open</h2>
+    <p class="jl-muted mx-auto">
+      Joulie was started at <a href="https://home.cern" target="_blank" rel="noopener">CERN</a>
+      and is released under the Apache 2.0 license. Contributions from other sites and teams are welcome.
+    </p>
+    <div class="jl-cta">
+      <a class="btn jl-btn-outline" href="{{ $repo }}/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">
+        <i class="fas fa-code-branch me-2"></i>Contribute
+      </a>
+      <a class="btn jl-btn-outline" href="{{ $repo }}/issues" target="_blank" rel="noopener">
+        <i class="far fa-comments me-2"></i>Issues
+      </a>
+      <a class="btn jl-btn-outline" href="{{ $repo }}/blob/main/CHANGELOG.md" target="_blank" rel="noopener">
+        <i class="fas fa-history me-2"></i>Changelog
+      </a>
+    </div>
+    <a href="https://www.bestpractices.dev/projects/15770" target="_blank" rel="noopener">
+      <img class="jl-badge" src="https://www.bestpractices.dev/projects/15770/badge" alt="OpenSSF Best Practices">
+    </a>
+  </div>
+</section>
+{{ end }}
