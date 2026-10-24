@@ -168,6 +168,41 @@ pq 'sum by (k8s_node_name) (rate(hw_host_energy_joules_total[30s]))'
 kubectl get --raw /api/v1/namespaces/joulie-sim/services/joulie-telemetry-sim:80/proxy/debug/emulate | jq '[.nodes[] | {name, hostW: .host.powerW}]'
 ```
 
+## Dashboard
+
+The simulator chart ships the Grafana dashboard **Joulie - Simulated Cluster** (`charts/joulie-simulator/dashboards/joulie-simulated-cluster.json`). Its matrix has one cell per Node that Joulie plans or the simulator measures, coloured by the Node's inlet temperature and labelled with the power profile Joulie applied. Below it are each Node's profile and inlet temperature over the time range, the outside air and the ambient of each cooling zone, IT and cooling power, PUE, host power, the power limits in force and the power of each rack.
+
+{{< img src="images/simulated-cluster-dashboard.png" alt="Joulie - Simulated Cluster on the demo spec under the workloads of tutorial 02, with the outside air raised from 22 to 30 °C halfway" >}}
+
+The demo spec under the workloads of [tutorial 02](https://github.com/joulie-k8s/Joulie/tree/main/examples/02-workload-classes), with the spec's outside air raised from 22 to 30 °C halfway through the range.
+
+- **Time of day** is the time picker. The matrix shows the end of the range, so moving the end shows another moment; the rows below show the whole range. The outside air is a sine of the spec's `facility.periodH` hours that starts when the simulator starts, not at midnight.
+- **Outside air** cannot be set from Grafana. Edit the spec's `facility` block (`ambientC`, `amplitudeC`, `periodH`), then run `make simcluster-up` and `make simcluster-deploy`: the new spec restarts the simulator. `SIM_FACILITY_AMBIENT_TEMP_C`, `SIM_FACILITY_TEMP_AMPLITUDE_C` and `SIM_FACILITY_TEMP_PERIOD_H` fill only what the spec leaves unset.
+- **Temperature** is the inlet temperature the simulator models, `hw.host.ambient_temperature`: the outside air plus the offset of the Node's cooling zone, so the Nodes of one zone share a colour. An emulated Node exports no die temperature, and a hypervisor guest, such as the profile `vm-no-powercap`, exports no `hw.*` metric at all, so its cell and row are grey, `no inlet sensor`.
+- **Profile** is the policy controller's state of the Node, `joulie_policy_node_state`: `performance`, `draining` (planned in eco, still on performance caps until its performance pods finish) or `eco`; `unmanaged` is a Node Joulie does not plan. When two controller manager pods report a Node at once, as during a rolling update, the matrix and the timeline show the state further toward eco.
+
+The dashboard reads the controller manager's `joulie_policy_*` and `joulie_twin_*`, and the simulator's OTLP metrics as Prometheus stores them in the default [telemetry mode](#telemetry-modes), `otel`: under their underscore names, with `k8s.node.name` promoted to the label `k8s_node_name`. The modes `otel-collector`, `kepler` and `kepler-legacy` store them the same way. In `otel-unpromoted` and `otel-labels-unpromoted` no series carries `k8s_node_name`, so no panel can tell the Nodes' temperatures and power apart; in `otel-utf8`, which keeps the dotted names, and `otel-bridge`, which pushes no temperature or facility series, the panels of the simulator's metrics stay empty. The dashboard selects no `joulie_sim_*` metric, since no mode scrapes the simulator's own `/metrics`. On a cluster whose Grafana loads dashboards from ConfigMaps, as kube-prometheus-stack's sidecar does, `grafanaDashboard.enabled=true` puts it in the ConfigMap `joulie-simulator-grafana-dashboard`, labelled `grafana_dashboard: "1"`; its Prometheus data source must be the one the simulator pushes to. The simulated cluster runs no Grafana, so run one beside it, with the dashboard file and a port-forward to its Prometheus:
+
+```bash
+export KUBECONFIG=~/.cache/joulie/simcluster/joulie-sim/kubeconfig
+kubectl -n monitoring port-forward svc/prometheus-operated 19090:9090 &
+G=$(mktemp -d) && mkdir $G/datasources $G/dashboards && chmod -R a+rX $G
+cat >$G/datasources/prometheus.yaml <<'EOF'
+apiVersion: 1
+datasources: [{name: Prometheus, uid: prometheus, type: prometheus, access: proxy, url: "http://127.0.0.1:19090", isDefault: true}]
+EOF
+cat >$G/dashboards/joulie.yaml <<'EOF'
+apiVersion: 1
+providers: [{name: joulie, type: file, options: {path: /var/lib/grafana/dashboards}}]
+EOF
+docker run -d --name joulie-grafana --network host -e GF_SERVER_HTTP_ADDR=127.0.0.1 \
+  -e GF_AUTH_ANONYMOUS_ENABLED=true -e GF_AUTH_ANONYMOUS_ORG_ROLE=Admin -e GF_AUTH_DISABLE_LOGIN_FORM=true \
+  -v $G/datasources:/etc/grafana/provisioning/datasources:ro -v $G/dashboards:/etc/grafana/provisioning/dashboards:ro \
+  -v $PWD/charts/joulie-simulator/dashboards:/var/lib/grafana/dashboards:ro grafana/grafana:13.2.4
+```
+
+Open <http://127.0.0.1:3000/d/joulie-simulated-cluster>. Grafana listens on `127.0.0.1` only, with anonymous admin access; `docker rm -f joulie-grafana` and `kill %1` stop both.
+
 ## Deviations from a real cluster
 
 - **KWOK taint.** Every fake Node carries the KWOK annotation and the taint `kwok.x-k8s.io/node=fake:NoSchedule`, which keeps infrastructure pods off it. A pod meant for a fake Node must tolerate it. Placement ignores this taint, since a real Node does not have it.

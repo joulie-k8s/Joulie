@@ -88,6 +88,11 @@ Cases:
                            asserts every image is tagged with the appVersion,
                            also under values/joulie.yaml and for emulated
                            agents, unless a tag is set
+  C13 simulator dashboard  grafanaDashboard is off by default; on, one
+                           ConfigMap labelled grafana_dashboard: "1" holds
+                           dashboards/joulie-simulated-cluster.json byte for
+                           byte, also from the packaged chart; the dashboard
+                           selects no joulie_sim_* metric
   GC12 governor control    the controller manager writes no governor by
                            default: GOVERNOR_CONTROL=off, with the documented
                            preset defaults, also under values/joulie.yaml
@@ -943,6 +948,46 @@ if helm package "${CHART}" "${SIM_CHART}" --version "${APP_VERSION}" --app-versi
 else
 	fail "helm package failed"
 	sed 's/^/    /' "${WORKDIR}/package.err" >&2
+fi
+
+# --------------------------------------------------------------------------
+# C13: grafanaDashboard ships "Joulie - Simulated Cluster" in a ConfigMap of
+# the release namespace that a Grafana sidecar loads (grafana_dashboard: "1"),
+# off by default, holding the file under dashboards/ byte for byte, from a
+# checkout and from the packaged chart, which must carry the file. The
+# dashboard selects no joulie_sim_* metric: the simulated cluster's
+# Prometheus never scrapes the simulator's /metrics, so such a panel would
+# stay empty there.
+# --------------------------------------------------------------------------
+case_start "C13 joulie-simulator grafanaDashboard ships the simulated cluster dashboard"
+SIM_DASH_CM="joulie-simulator-grafana-dashboard"
+SIM_DASH_FILE="${SIM_CHART}/dashboards/joulie-simulated-cluster.json"
+# c13_expect <file> <regex> <what>: the ConfigMap, saved to a file, has a line
+# matching regex. A file, not a pipe from doc: grep -q leaving early would
+# fail the pipeline with SIGPIPE under pipefail on a document this long.
+c13_expect() {
+	grep -qE -- "$2" "$1" || fail "ConfigMap/${SIM_DASH_CM}: $3: no line matches /$2/"
+}
+assert_count simulator "^ConfigMap/${SIM_DASH_CM}\$" 0
+for c13_slug in sim-dashboard packaged-sim-dashboard; do
+	c13_chart="${SIM_CHART}"
+	[ "${c13_slug}" = packaged-sim-dashboard ] && c13_chart="${WORKDIR}/pkg/joulie-sim-${APP_VERSION}.tgz"
+	render "${c13_slug}" "${c13_chart}" --namespace joulie-sim --set 'grafanaDashboard.enabled=true' || continue
+	assert_count "${c13_slug}" "^ConfigMap/${SIM_DASH_CM}\$" 1
+	c13_cm="${WORKDIR}/${c13_slug}.configmap.yaml"
+	doc "${c13_slug}" ConfigMap "${SIM_DASH_CM}" >"${c13_cm}"
+	c13_expect "${c13_cm}" '^  namespace: joulie-sim$' "the release namespace"
+	c13_expect "${c13_cm}" '^    grafana_dashboard: "1"$' "the label the Grafana sidecar selects"
+	# The JSON under the data key, without the 4 spaces of its block scalar.
+	awk 'on == 1 { if (substr($0, 1, 4) != "    ") exit; print substr($0, 5); next }
+		/^  joulie-simulated-cluster\.json: \|-$/ { on = 1 }' "${c13_cm}" >"${c13_cm}.json"
+	if ! diff -u "${SIM_DASH_FILE}" "${c13_cm}.json" >"${WORKDIR}/${c13_slug}.diff"; then
+		fail "ConfigMap/${SIM_DASH_CM} (${c13_slug}): the dashboard differs from charts/joulie-simulator/dashboards/joulie-simulated-cluster.json"
+		head -20 "${WORKDIR}/${c13_slug}.diff" | sed 's/^/    /' >&2
+	fi
+done
+if grep -qE 'joulie_sim_[a-z]' "${SIM_DASH_FILE}"; then
+	fail "the simulated cluster dashboard selects a joulie_sim_* metric, which its Prometheus never scrapes"
 fi
 
 # --------------------------------------------------------------------------

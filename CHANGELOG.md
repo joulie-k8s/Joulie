@@ -16,6 +16,7 @@ The user-visible changes of each release, what to check when upgrading, and the 
 
 ### Simulator
 
+- The simulator chart ships the Grafana dashboard `Joulie - Simulated Cluster`, off by default (`grafanaDashboard.enabled`): one cell per node that Joulie plans or the simulator measures, coloured by its inlet temperature and labelled with the power profile Joulie applied (`performance`, `draining` or `eco`), at the end of the time picker's range, then the profiles and inlet temperatures over the range, the outside air, IT and cooling power, PUE, host power, power limits and rack power. (#100)
 - The emulated Kepler 0.7 exporter also serves `joulie_sim_kepler07_idle_excess_joules_total{instance, family}`, the idle energy its series report beyond the energy they measured, which Kepler 0.7 reports while a cap holds a package below the idle power it recorded. It is the simulator's own series, not Kepler's. The simulated cluster adds it to the truth of the `kepler-legacy` checks and warns about every node that has some, so the nightly smoke no longer fails on a reading Kepler 0.7 itself inflates. (#91)
 
 ### Upgrading

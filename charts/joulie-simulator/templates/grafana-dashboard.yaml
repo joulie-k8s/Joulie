@@ -1,0 +1,15 @@
+{{- if .Values.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: joulie-simulator-grafana-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "joulie-simulator.labels" . | nindent 4 }}
+    {{- with .Values.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  joulie-simulated-cluster.json: |-
+    {{- .Files.Get "dashboards/joulie-simulated-cluster.json" | nindent 4 }}
+{{- end }}

@@ -4,11 +4,16 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
-// overviewDashboard is the Grafana dashboard the chart ships.
+// overviewDashboard is the Grafana dashboard the Joulie chart ships.
 const overviewDashboard = "charts/joulie/dashboards/joulie-overview.json"
+
+// shippedDashboards are the Grafana dashboards the charts ship, relative to
+// the repository root.
+const shippedDashboards = "charts/*/dashboards/*.json"
 
 type dashboardGridPos struct {
 	H, W, X, Y int
@@ -28,14 +33,32 @@ func (p dashboardPanel) overlaps(q dashboardPanel) bool {
 	return a.X < b.X+b.W && b.X < a.X+a.W && a.Y < b.Y+b.H && b.Y < a.Y+a.H
 }
 
-// No two panels of the overview dashboard share grid cells, as Grafana lays
-// them out: the top-level panels, collapsed rows included at their height of
-// 1, and the panels inside each collapsed row, which Grafana places right
-// below the row when it opens. A collapsed row left at y 46 sat on the
-// Scheduler Extender panels, and its panels and those of the row above it
-// opened at y 46 and 47 instead of below their rows.
-func TestOverviewDashboardPanelsDoNotOverlap(t *testing.T) {
-	b, err := os.ReadFile(filepath.Join(repoRoot(t), overviewDashboard))
+// No two panels of a dashboard a chart ships share grid cells, as Grafana
+// lays them out: the top-level panels, collapsed rows included at their
+// height of 1, and the panels inside each collapsed row, which Grafana places
+// right below the row when it opens. A collapsed row of the overview left at
+// y 46 sat on the Scheduler Extender panels, and its panels and those of the
+// row above it opened at y 46 and 47 instead of below their rows.
+func TestDashboardPanelsDoNotOverlap(t *testing.T) {
+	root := repoRoot(t)
+	paths, err := filepath.Glob(filepath.Join(root, shippedDashboards))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(paths, filepath.Join(root, overviewDashboard)) {
+		t.Fatalf("%s matches %v, without %s; were the dashboards moved?", shippedDashboards, paths, overviewDashboard)
+	}
+	for _, path := range paths {
+		rel, _ := filepath.Rel(root, path)
+		t.Run(rel, func(t *testing.T) { checkDashboardLayout(t, path) })
+	}
+}
+
+// checkDashboardLayout fails when two panels of the dashboard at path share
+// grid cells, or a collapsed row's panels do not start right below it.
+func checkDashboardLayout(t *testing.T, path string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +69,7 @@ func TestOverviewDashboardPanelsDoNotOverlap(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(d.Panels) == 0 {
-		t.Fatalf("%s has no panels", overviewDashboard)
+		t.Fatalf("%s has no panels", path)
 	}
 	checkNoOverlap := func(where string, ps []dashboardPanel) {
 		for i := range ps {
