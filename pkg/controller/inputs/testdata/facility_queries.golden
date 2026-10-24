@@ -113,3 +113,23 @@ rack_power group="joulie_rack_name" per_node=false
     sum by (joulie_rack_name) (label_replace(pdu_power_watts, "joulie_rack_name", "$1", "pdu", "(.*)"))
 node_inlet_temp group="k8s_node_name" per_node=false
     max by (k8s_node_name) (hw_host_ambient_temperature_celsius{k8s_node_name!=""} or hw_host_ambient_temperature_celsius{k8s_node_name=""} * on (job, instance) group_left (k8s_node_name) max by (job, instance, k8s_node_name) (target_info and on (job, instance) hw_host_ambient_temperature_celsius{k8s_node_name=""}))
+
+preset=otel override.carbon_intensity="electricitymaps_carbon_intensity" carbon.signal=average
+ambient_temp group="" per_node=false
+    avg(joulie_facility_ambient_temperature_celsius)
+it_power group="" per_node=false
+    sum(rate(joulie_facility_it_energy_joules_total[5m])) or sum(joulie_facility_it_power_watts)
+cooling_power group="" per_node=false
+    sum(rate(joulie_facility_cooling_energy_joules_total[5m])) or sum(joulie_facility_cooling_power_watts)
+zone_ambient_temp group="joulie_cooling_zone_name" per_node=false
+    avg by (joulie_cooling_zone_name) (joulie_cooling_zone_ambient_temperature_celsius)
+rack_power group="joulie_rack_name" per_node=false
+    sum by (joulie_rack_name) (rate(joulie_rack_energy_joules_total[5m])) or on (joulie_rack_name) sum by (joulie_rack_name) (joulie_rack_power_watts)
+node_inlet_temp group="k8s_node_name" per_node=false
+    max by (k8s_node_name) (hw_host_ambient_temperature_celsius{k8s_node_name!=""} or hw_host_ambient_temperature_celsius{k8s_node_name=""} * on (job, instance) group_left (k8s_node_name) max by (job, instance, k8s_node_name) (target_info and on (job, instance) hw_host_ambient_temperature_celsius{k8s_node_name=""}))
+carbon_intensity group="" per_node=false
+    avg(electricitymaps_carbon_intensity)
+
+preset=custom override.carbon_intensity="watttime_co2_moer{region=\"CAISO_NORTH\"}" carbon.unit="lbsCO2/MWh" carbon.signal=marginal
+carbon_intensity group="" per_node=false
+    watttime_co2_moer{region="CAISO_NORTH"}

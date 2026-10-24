@@ -873,6 +873,7 @@ func TestBuildPlanByPolicyQueueAware(t *testing.T) {
 		nodes,
 		hw,
 		nil,
+		policy.Facility{},
 		time.Minute,
 		5000,
 		120,
@@ -920,7 +921,7 @@ func TestQueueAwareCountsPendingPerformancePodsAsDemand(t *testing.T) {
 		hw[n] = NodeHardware{CPUModel: "same-cpu"}
 	}
 	// base fraction 0, min 0, max 4, one performance pod per performance node.
-	plan := buildPlanByPolicy(context.Background(), client, "queue_aware_v1", nodes, hw, nil,
+	plan := buildPlanByPolicy(context.Background(), client, "queue_aware_v1", nodes, hw, nil, policy.Facility{},
 		time.Minute, 5000, 120, 0.6, 0, 0, 4, 1)
 
 	perf := 0
@@ -951,6 +952,7 @@ func TestBuildPlanByPolicyUnknownFallsBackToStatic(t *testing.T) {
 		nodes,
 		hw,
 		nil,
+		policy.Facility{},
 		time.Minute,
 		5000,
 		120,

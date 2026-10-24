@@ -233,22 +233,40 @@ The overview dashboard's "Agent: Governors" row plots the presets in effect (`jo
 
 ### Facility metrics
 
-The facility poller reads six inputs from Prometheus, each with one grouped query per poll. The outdoor ambient temperature, IT power and cooling power are one value each; the twin uses the IT power for PSU stress and the ambient temperature for cooling stress, and the controller manager logs PUE as `(IT power + cooling power) / IT power`. The zone, rack and node inputs return one series per cooling zone, rack or node (see "Node topology" below). An input whose query fails or returns nothing is unknown until a later poll reads it, never the value of an earlier poll. Every query is counted in `joulie_twin_input_queries_total{input,result}`, and the three single values are exported as `joulie_twin_facility_*` ([Metrics]({{< relref "/docs/architecture/metrics.md#twin-input-metrics" >}})).
+The facility poller reads seven inputs from Prometheus, each with one grouped query per poll. The outdoor ambient temperature, IT power and cooling power are one value each; the twin uses the IT power for PSU stress and the ambient temperature for cooling stress, and the controller manager logs PUE as `(IT power + cooling power) / IT power`. The zone, rack and node inputs return one series per cooling zone, rack or node (see "Node topology" below). The grid carbon intensity is one value, read only when `FACILITY_CARBON_INTENSITY_QUERY` is set (see "Grid carbon intensity" below). An input whose query fails or returns nothing is unknown until a later poll reads it, never the value of an earlier poll. The policy and the twins of a reconcile read the same poll. Every query is counted in `joulie_twin_input_queries_total{input,result}`, the three single values are exported as `joulie_twin_facility_*`, and the carbon intensity as `joulie_grid_carbon_intensity_grams_per_kW_h` ([Metrics]({{< relref "/docs/architecture/metrics.md#twin-input-metrics" >}})).
 
 | Variable | Default | Chart | Description |
 |----------|---------|-------|-------------|
 | `ENABLE_FACILITY_METRICS` | `false` | `false` | Poll the facility inputs. The first poll runs at start. |
 | `FACILITY_PROMETHEUS_ADDRESS` | `PROMETHEUS_ADDRESS`, or `http://prometheus-operated.monitoring:9090` when that is unset | unset | Prometheus of the facility queries only. |
 | `FACILITY_POLL_INTERVAL` | `30s` | `30s` | How often the inputs are polled. 0 or less stops the controller manager at start. |
-| `FACILITY_PRESET` | `otel` | `otel` | `otel`: the facility, cooling zone, rack and host metrics of the [input contract]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}}), all six inputs. `legacy`: the `datacenter_ambient_temperature_celsius`, `datacenter_total_it_power_watts` and `datacenter_cooling_power_watts` names, the three single inputs only; deprecated, removed in v0.4.0. `custom`: only the inputs whose query is set below. |
+| `FACILITY_PRESET` | `otel` | `otel` | `otel`: the facility, cooling zone, rack and host metrics of the [input contract]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}}), every input but the carbon intensity. `legacy`: the `datacenter_ambient_temperature_celsius`, `datacenter_total_it_power_watts` and `datacenter_cooling_power_watts` names, the three single inputs only; deprecated, removed in v0.4.0. `custom`: only the inputs whose query is set below. |
 | `FACILITY_AMBIENT_TEMP_QUERY` | from the preset | unset | Outdoor ambient temperature, one value in degrees Celsius. |
 | `FACILITY_IT_POWER_QUERY` | from the preset | unset | Power of the IT equipment, one value in watts. |
 | `FACILITY_COOLING_POWER_QUERY` | from the preset | unset | Power of the cooling, one value in watts. |
 | `FACILITY_ZONE_AMBIENT_TEMP_QUERY` | from the preset | unset | Ambient temperature of each cooling zone, keyed by the translated `joulie.cooling_zone.name` label (`joulie_cooling_zone_name` by default), whose values are the nodes' `joulie.io/cooling-zone` label values. |
 | `FACILITY_RACK_POWER_QUERY` | from the preset | unset | Power of each rack in watts, keyed by the translated `joulie.rack.name` label (`joulie_rack_name`), whose values are the nodes' `joulie.io/rack` label values. |
 | `FACILITY_NODE_INLET_TEMP_QUERY` | from the preset | unset | Inlet temperature of each node, keyed by the translated `k8s.node.name` label (`k8s_node_name`). |
+| `FACILITY_CARBON_INTENSITY_QUERY` | unset (no preset reads it) | unset | Carbon intensity of the grid that supplies the cluster, one value. Unset reads none. |
+| `FACILITY_CARBON_INTENSITY_UNIT` | `gCO2eq/kWh` | unset | Unit of the carbon intensity query's value: a mass `g`, `kg`, `t`, `lb` or `lbs`, optionally followed by `CO2`, `CO2e` or `CO2eq`, over `kWh` or `MWh`, in any case, such as `lbsCO2/MWh` for WattTime's `co2_moer`. Converted to gCO2eq/kWh. Any other unit stops the controller manager at start while the query is set. |
+| `FACILITY_CARBON_INTENSITY_SIGNAL` | none | unset | What the value measures: `marginal` (the generators that follow a change in demand, such as WattTime's MOER) or `average` (the whole generation mix, such as Electricity Maps). Required with the query: the controller manager does not start without it. |
 
-A query variable replaces its input's query under any preset. A bare metric name is aggregated by the input's key label, `avg` for a temperature and `sum` for a power, so `FACILITY_IT_POWER_QUERY=ups_output_power_watts` runs `sum(ups_output_power_watts)`. Any other query is kept as written and must return one series, or for the zone, rack and node inputs one series per key carrying the key label.
+A query variable replaces its input's query under any preset. A bare metric name is aggregated by the input's key label, `avg` for a temperature and the carbon intensity and `sum` for a power, so `FACILITY_IT_POWER_QUERY=ups_output_power_watts` runs `sum(ups_output_power_watts)`. Any other query is kept as written and must return one series, or for the zone, rack and node inputs one series per key carrying the key label.
+
+### Grid carbon intensity
+
+Joulie ships no carbon intensity provider. An operator who already exports it to Prometheus (an exporter of WattTime or Electricity Maps, or one of their own) points `FACILITY_CARBON_INTENSITY_QUERY` at it, with `ENABLE_FACILITY_METRICS=true`, and says what the value is:
+
+```yaml
+controllerManager:
+  env:
+    ENABLE_FACILITY_METRICS: "true"
+    FACILITY_CARBON_INTENSITY_QUERY: 'watttime_co2_moer{region="CAISO_NORTH"}'
+    FACILITY_CARBON_INTENSITY_UNIT: "lbsCO2/MWh"
+    FACILITY_CARBON_INTENSITY_SIGNAL: "marginal"
+```
+
+The query must return one series: select the grid zone of the cluster with a label matcher, since a bare metric name that holds several zones is averaged across them. The reading is converted to gCO2eq/kWh (1000 lbs CO2/MWh is 453.59 gCO2eq/kWh; kgCO2eq/MWh equals gCO2eq/kWh) and keeps its signal, so a marginal value is never compared with an average one; the mass basis, CO2 or CO2 equivalent, stays the provider's. A negative or non-finite value, which no grid has, is an error: that poll's reading is unknown and counted under `result="error"`. It is a cluster reading, exported as `joulie_grid_carbon_intensity_grams_per_kW_h{joulie_grid_carbon_intensity_signal}` and handed to the policy with the rest of the facility snapshot; it is not a `NodeTwin` field, and no policy acts on it yet.
 
 Deprecated aliases, removed in v0.4.0: `FACILITY_AMBIENT_TEMP_METRIC`, `FACILITY_IT_POWER_METRIC`, `FACILITY_COOLING_POWER_METRIC`, the former names of the first three query variables. They are read only when the new name is unset, with a warning naming the replacement, and the bare metric name they hold keeps its meaning.
 

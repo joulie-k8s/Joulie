@@ -227,6 +227,14 @@ A calibration sweep records these two names beside the hardware metrics above, a
 | `system.cpu.utilization` | 1 | Gauge | `cpu.mode`, `cpu.logical_number` (opt-in) | `system_cpu_utilization_ratio` |
 | `joulie.calibration.setpoint` | `{setpoint}` | Gauge | `joulie.calibration.knob`, `joulie.calibration.class`, `joulie.calibration.memory_intensity` | `joulie_calibration_setpoint` |
 
+## Controller manager names
+
+The controller manager exports this name itself, from the grid carbon intensity its facility input reads (`FACILITY_CARBON_INTENSITY_QUERY`); the simulator does not emit it. See [Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#grid-carbon-intensity" >}}).
+
+| OTel name | Unit | Instrument | Point attributes | Prometheus name |
+|---|---|---|---|---|
+| `joulie.grid.carbon_intensity` | `g/(kW.h)` | Gauge | `joulie.grid.carbon_intensity.signal` (`marginal` or `average`) | `joulie_grid_carbon_intensity_grams_per_kW_h` |
+
 ## Compatibility exporters (emulate mode)
 
 `SIM_EXPORTERS` turns on exporters that reproduce the Prometheus format of a pinned release of a real exporter, at `/exporters/<name>/metrics`. They are computed from the same counters the agent and the fake GPU tools read, so a query written for the real exporter reads the emulated nodes. They exist to test Joulie's `kepler` and `kepler-legacy` input presets and Collector bridges; the OpenTelemetry export above is the default. With the chart, the ServiceMonitor scrapes each listed exporter with `honorLabels: false`.

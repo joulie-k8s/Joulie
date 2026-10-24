@@ -62,8 +62,11 @@ func (c nodePowerConfig) query() (primary, fallback inputs.Query, err error) {
 // NODE_POWER_HTTP_ENDPOINT.
 //
 // Facility: ENABLE_FACILITY_METRICS, FACILITY_PROMETHEUS_ADDRESS,
-// FACILITY_POLL_INTERVAL, FACILITY_PRESET (otel, legacy, custom) and
-// FACILITY_<INPUT>_QUERY for each input of inputs.FacilityInputs.
+// FACILITY_POLL_INTERVAL, FACILITY_PRESET (otel, legacy, custom),
+// FACILITY_<INPUT>_QUERY for each input of inputs.FacilityInputs, and
+// FACILITY_CARBON_INTENSITY_UNIT (default gCO2eq/kWh) and
+// FACILITY_CARBON_INTENSITY_SIGNAL (marginal or average, no default), which
+// FACILITY_CARBON_INTENSITY_QUERY needs.
 func loadInputConfig() (inputConfig, error) {
 	var cfg inputConfig
 	cfg.prometheusAddress = envOrDefault("PROMETHEUS_ADDRESS", "")
@@ -135,7 +138,19 @@ func loadInputConfig() (inputConfig, error) {
 			overrides[input] = v
 		}
 	}
-	fc.spec = inputs.FacilitySpec{Preset: fpreset, Naming: naming, Window: window, Overrides: overrides}
+	carbon := inputs.CarbonIntensitySpec{
+		Unit:   envOrDefault("FACILITY_CARBON_INTENSITY_UNIT", ""),
+		Signal: inputs.CarbonSignal(strings.ToLower(strings.TrimSpace(envOrDefault("FACILITY_CARBON_INTENSITY_SIGNAL", "")))),
+	}
+	if _, set := overrides[inputs.FacilityInputCarbonIntensity]; set {
+		if err := carbon.Check(); err != nil {
+			return cfg, fmt.Errorf("FACILITY_CARBON_INTENSITY_QUERY needs FACILITY_CARBON_INTENSITY_SIGNAL (%s or %s) and a known FACILITY_CARBON_INTENSITY_UNIT: %w",
+				inputs.CarbonSignalMarginal, inputs.CarbonSignalAverage, err)
+		}
+	} else if carbon != (inputs.CarbonIntensitySpec{}) {
+		log.Printf("warning: FACILITY_CARBON_INTENSITY_UNIT or FACILITY_CARBON_INTENSITY_SIGNAL is set without FACILITY_CARBON_INTENSITY_QUERY; no carbon intensity is read")
+	}
+	fc.spec = inputs.FacilitySpec{Preset: fpreset, Naming: naming, Window: window, Overrides: overrides, CarbonIntensity: carbon}
 	if _, err := fc.spec.Queries(); err != nil {
 		return cfg, fmt.Errorf("facility input (FACILITY_PRESET, FACILITY_*_QUERY): %w", err)
 	}
@@ -197,9 +212,19 @@ func (c inputConfig) logSummary() {
 		return
 	}
 	for _, input := range inputs.FacilityInputs() {
-		if q, ok := queries[input]; ok {
-			log.Printf("input facility %s: address=%s preset=%s interval=%s query=%q",
-				input, fc.prometheusAddress, facilityPresetName(fc.spec), fc.pollInterval, q.PromQL)
+		q, ok := queries[input]
+		if !ok {
+			continue
 		}
+		line := fmt.Sprintf("input facility %s: address=%s preset=%s interval=%s query=%q",
+			input, fc.prometheusAddress, facilityPresetName(fc.spec), fc.pollInterval, q.PromQL)
+		if input == inputs.FacilityInputCarbonIntensity {
+			unit := fc.spec.CarbonIntensity.Unit
+			if unit == "" {
+				unit = inputs.CarbonUnitGramsPerKWh
+			}
+			line += fmt.Sprintf(" unit=%q signal=%s", unit, fc.spec.CarbonIntensity.Signal)
+		}
+		log.Print(line)
 	}
 }

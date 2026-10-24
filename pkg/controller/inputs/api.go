@@ -1,7 +1,7 @@
 // Package inputs reads the controller manager's measured inputs from
 // Prometheus: node power, and the facility readings (outdoor ambient
 // temperature, IT and cooling power, the ambient temperature of each cooling
-// zone, rack power and node inlet temperature).
+// zone, rack power, node inlet temperature and the grid carbon intensity).
 //
 // A spec names a preset and the package builds the PromQL. The otel presets
 // read the metrics of semconv.NodeInputs and semconv.FacilityInputs as a
@@ -116,6 +116,11 @@ const (
 	// FacilityInputNodeInletTemp is the inlet temperature of each node,
 	// keyed by node name.
 	FacilityInputNodeInletTemp FacilityInput = "node_inlet_temp"
+	// FacilityInputCarbonIntensity is the carbon intensity of the grid
+	// that supplies the cluster, one value in the unit and of the signal
+	// of FacilitySpec.CarbonIntensity. No preset reads it: it has a query
+	// only when FacilitySpec.Overrides sets one.
+	FacilityInputCarbonIntensity FacilityInput = "carbon_intensity"
 )
 
 // FacilityInputs returns every facility input, in the order declared above.
@@ -123,6 +128,7 @@ func FacilityInputs() []FacilityInput {
 	return []FacilityInput{
 		FacilityInputAmbientTemp, FacilityInputITPower, FacilityInputCoolingPower,
 		FacilityInputZoneAmbientTemp, FacilityInputRackPower, FacilityInputNodeInletTemp,
+		FacilityInputCarbonIntensity,
 	}
 }
 
@@ -181,8 +187,12 @@ type FacilitySpec struct {
 	// Window is the rate() window, at least MinWindow.
 	Window time.Duration
 	// Overrides replaces the query of an input. A bare metric name is
-	// wrapped as avg(...) for a temperature and sum(...) for a power.
+	// wrapped as avg(...) for a temperature and the carbon intensity and
+	// sum(...) for a power.
 	Overrides map[FacilityInput]string
+	// CarbonIntensity is how the value of the carbon intensity query is
+	// read; Queries checks it when that input has a query.
+	CarbonIntensity CarbonIntensitySpec
 }
 
 // Client runs instant queries against the Prometheus HTTP API.

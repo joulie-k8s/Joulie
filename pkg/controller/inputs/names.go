@@ -195,7 +195,8 @@ func parseNaming(s promname.Strategy) (promname.Strategy, error) {
 // select, under every preset and translation strategy, without duplicates:
 // the otel names under each strategy in promname.Strategies order, then the
 // legacy name. The simulator's fake Prometheus resolves a query by these
-// exact names. An unknown input has none.
+// exact names. An unknown input has none, and so has the carbon intensity,
+// which no preset reads.
 func FacilityMetricNames(input FacilityInput) []string {
 	var out []string
 	seen := map[string]bool{}

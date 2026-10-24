@@ -24,7 +24,7 @@ Each reconcile tick:
 
 1. Select eligible nodes from `NODE_SELECTOR`, excluding reserved and unschedulable nodes.
 2. Build a hardware view from `NodeHardware` when available, otherwise from node labels/inventory fallback.
-3. Build a desired plan with the selected policy.
+3. Build a desired plan with the selected policy. The policy gets the facility snapshot of the reconcile (`policy.Facility`: the grid carbon intensity with its signal, IT and cooling power, ambient, zone, rack and inlet readings, each known or not), from the same poll the twins read in step 5. No policy reads it yet, so it changes no plan; a carbon-aware policy will.
 4. Apply downgrade guard (sets `NodeTwin.status.schedulableClass` to `draining` while blocking pods still run).
 5. Write `NodeTwin.spec` and update the `joulie.io/power-profile` node label.
 
