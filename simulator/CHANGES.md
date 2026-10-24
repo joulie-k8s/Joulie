@@ -2,7 +2,7 @@
 
 This file lists every change since Joulie v0.2.3 that moves the numbers the simulator produces for its modelled nodes (standalone mode, and Kubernetes mode without emulation), and how far each one moved them. A result produced with an older simulator holds for the model it ran; read it together with this table. Emulated nodes (`SIM_EMULATE`) run the physics of `simulator/pkg/hwemu` and are not covered here.
 
-The reports of experiments 01 to 03 in [`experiments/`](../experiments) were produced before every change below and have not been rerun; each carries a dated note that says which of its model statements did not hold.
+The reports of experiments 01 to 03 in [`experiments/`](../experiments) were produced before every change below; each carries a dated note that says which of its model statements did not hold, followed by a rerun of its benchmark with the 0.2.4 release images (2026-10-24, one seed).
 
 ## Two yardsticks
 

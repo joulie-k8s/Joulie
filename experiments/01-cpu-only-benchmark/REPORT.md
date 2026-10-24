@@ -4,7 +4,25 @@ This page reports results from the CPU-only KWOK benchmark experiment:
 
 - [`experiments/01-cpu-only-benchmark/`](.)
 
-> **Note (2026-10-09):** Section 1.3 does not describe the CPU model these runs used. With the scripts in this repository, from the commit that added this report to v0.2.3, the installer pointed the simulator at a hardware catalog generated from the inventory, which holds no measured curves, so every CPU ran the analytic fallback model, not a SPECpower curve; the RAPL caps the agent wrote were enforced on that model by lowering the frequency. Thermal throttling was on by default (85 to 97 °C) and is opt-in now. These results have not been rerun with the current model; [Simulator changes](../../simulator/CHANGES.md) lists every change to the simulated numbers since v0.2.3 and how far each one moves this experiment's `configs/benchmark-debug.yaml`.
+> **Note (2026-10-09, updated 2026-10-24):** Section 1.3 does not describe the CPU model these runs used. With the scripts in this repository, from the commit that added this report to v0.2.3, the installer pointed the simulator at a hardware catalog generated from the inventory, which holds no measured curves, so every CPU ran the analytic fallback model, not a SPECpower curve; the RAPL caps the agent wrote were enforced on that model by lowering the frequency. Thermal throttling was on by default (85 to 97 °C) and is opt-in now. The sections from Scope on report those runs, and the next section reruns the benchmark with Joulie 0.2.4; [Simulator changes](../../simulator/CHANGES.md) lists every change to the simulated numbers since v0.2.3 and how far each one moves this experiment's `configs/benchmark-debug.yaml`.
+
+## Rerun with Joulie 0.2.4 (2026-10-24)
+
+The rerun used `configs/benchmark-40n.yaml`, the configuration of the original runs, with `images.joulie_tag` and `images.sim_tag` set to `"0.2.4"`, so the Joulie images and the simulator image were those of the 0.2.4 release. One seed, one run per baseline. Each run lasts a fixed window of 660 s wall at time scale 120, about 22 simulated hours, and ends at the window with jobs still running (`run_outcome` is `incomplete`), so the makespan is the same for every baseline by design. All three runs read their energy from the simulator's debug endpoints (`energy_source` is `debug_energy`). The table comes from the run's `baseline_summary.csv`: average cluster power is `avg_cluster_power_w_est`, and energy is `energy_sim_kwh_est` over the window.
+
+| Baseline | Average cluster power (W) | Energy over the window (kWh) | Power vs A |
+|---|---:|---:|---:|
+| A (no mgmt) | 17,310 | 383.7 | n/a |
+| B (static) | 15,402 | 340.6 | -11.0% |
+| C (queue-aware) | 15,426 | 340.7 | -10.9% |
+
+B and C drew 11.0% and 10.9% less average cluster power than A. These runs do not measure throughput: `throughput_jobs_per_sim_hour` divides the trace's job count by the run's length, every run stopped at the window with jobs still running, and `summary.csv` holds no count of completed jobs, so the table leaves throughput out, and the throughput panel of the first plot below shows only each run's length.
+
+![Baseline means, rerun with 0.2.4](./img/rerun-0.2.4/baseline_means.png)
+
+![Cumulative energy, rerun with 0.2.4](./img/rerun-0.2.4/timeseries_cumulative_energy.png)
+
+The rest of this report describes the original runs, made with the older simulator model of the note above; none of its numbers come from this rerun.
 
 ## Scope
 

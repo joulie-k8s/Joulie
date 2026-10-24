@@ -912,3 +912,61 @@ class TestEmbeddedCatalog:
         assert (tmp_path / "00-kwok-nodes.yaml").exists()
         assert not catalog.exists()
         assert "--out-catalog is deprecated" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# 04_run_one.py: the simulator's debug artifacts
+# ---------------------------------------------------------------------------
+
+def _load_run_one():
+    spec = importlib.util.spec_from_file_location("run_one_02", SCRIPTS_DIR / "04_run_one.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _FakePortForward:
+    """A kubectl port-forward that prints the given stdout and stderr."""
+
+    def __init__(self, out, err=""):
+        self.out, self.err, self.args = out, err, None
+
+    def __call__(self, args, **kwargs):
+        import io
+        self.args = args
+        self.stdout = io.StringIO(self.out)
+        return self
+
+    def terminate(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):
+        pass
+
+    def communicate(self, timeout=None):
+        return self.out, self.err
+
+
+def test_debug_fetch_uses_the_local_port_kubectl_picks(monkeypatch):
+    """The port-forward asks kubectl for a free local port and reads it back:
+    the fixed port 18080 failed whenever another process held it, and the
+    run's energy then came back empty."""
+    import io
+    run_one = _load_run_one()
+    pf = _FakePortForward("Forwarding from 127.0.0.1:41234 -> 18080\n")
+    urls = []
+    monkeypatch.setattr(run_one.subprocess, "Popen", pf)
+    monkeypatch.setattr(run_one, "urlopen", lambda url, timeout: (urls.append(url), io.BytesIO(b'{"totalJoules": 1}'))[1])
+    assert run_one.fetch_via_port_forward("/debug/energy", 5) == '{"totalJoules": 1}'
+    assert pf.args[-1] == ":18080"
+    assert urls == ["http://127.0.0.1:41234/debug/energy"]
+
+
+def test_debug_fetch_reports_why_the_port_forward_failed(monkeypatch):
+    run_one = _load_run_one()
+    monkeypatch.setattr(run_one.subprocess, "Popen", _FakePortForward("", "error: unable to listen on any of the requested ports"))
+    with pytest.raises(RuntimeError, match="unable to listen"):
+        run_one.fetch_via_port_forward("/debug/energy", 5)
