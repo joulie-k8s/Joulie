@@ -149,11 +149,17 @@ The agent enforces CPU power intent with this backend order:
 
 1. Resolve desired CPU cap:
    - use `packagePowerCapWatts` when present,
-   - otherwise try to resolve `packagePowerCapPctOfMax` to watts from node-local cap range.
+   - otherwise resolve `packagePowerCapPctOfMax` to watts, `pct` of the range's maximum clamped to the range, from the first range known:
+     1. the node's RAPL files (`constraint_0_max_power_uw` and `constraint_0_min_power_uw` of the package zones), one package's range; when the cap goes to an HTTP control backend, which takes the node's total, the range of every package together,
+     2. when the cap goes to an HTTP control backend as `rapl.set_power_cap_watts` (`TELEMETRY_CPU_CONTROL=http`, `TELEMETRY_CPU_CONTROL_MODE` not `dvfs`), the CPU package cap range of the [hardware catalog]({{< relref "/docs/hardware/hardware-modeling.md" >}}) for the node's CPU model, times its socket count: per socket, the TDP at the top and the low end of the cTDP range, or 0.55 x TDP without one, at the bottom. It is the range the simulator models the node's sockets with, so a pool agent driving the simulator's KWOK nodes gets a watt cap where it used to throttle. The model and the socket count are read from the node's labels as the simulator reads them: `joulie.io/hw.cpu-model`, else NFD's `feature.node.kubernetes.io/cpu-model.name`, and `joulie.io/hw.cpu-sockets` alone. Never from `/proc/cpuinfo`, which a pool agent reads from its own host.
 2. If watts are available, try RAPL first (`rapl.set_power_cap_watts` via HTTP control backend, or host RAPL files).
-3. If RAPL is unavailable/fails, switch to DVFS fallback controller.
+3. If RAPL is unavailable/fails, switch to DVFS fallback controller. A percent cap whose watts an HTTP backend refuses keeps the DVFS percent throttle (`dvfs.set_throttle_pct`) instead.
 4. If percentage intent cannot be resolved to watts, apply a DVFS percent fallback path (`dvfs.set_throttle_pct`) when available.
-5. If RAPL becomes available again later, restore DVFS throttle and return to RAPL mode.
+5. If RAPL becomes available again later, restore DVFS throttle and return to RAPL mode. Over HTTP the agent sends `dvfs.set_throttle_pct` with 0 after the first watt cap a backend accepts, and again after each throttle it sends, since the backend keeps a throttle beside the watt cap: a throttle sent for a percent cap, by this agent or by one before an upgrade, would otherwise hold the node below its cap.
+
+The log line `resolved cpu cap from pct` names the range and its source for every node. When the range came from the catalog, the CPU message of `NodeTwin.status.controlStatus` names it too, for example `RAPL package cap applied: 640.00W for 60.00%, range from the hardware catalog AMD_EPYC_9654: 2 sockets x 320.00-360.00W`. A CPU missing from the catalog, or a node without the `joulie.io/hw.cpu-sockets` label, keeps the DVFS percent fallback.
+
+Over HTTP, `capWatts` of `rapl.set_power_cap_watts` is the node's CPU total, which the simulator splits evenly over the sockets; a cap written to the RAPL files applies to each package. The digital twin budgets a percent cap the same way, clamped up to the bottom of the cap range (`cpuCappedPowerW`).
 
 A cap in watts is clamped to each RAPL zone's `constraint_N_max_power_uw` before it is written: the kernel masks a larger value to the register's width, which on hardware wraps to a small cap.
 

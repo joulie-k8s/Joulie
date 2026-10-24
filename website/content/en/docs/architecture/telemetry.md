@@ -74,8 +74,10 @@ This allows desired vs applied behavior auditing.
 
 Supported intent actions:
 
-- `rapl.set_power_cap_watts`
+- `rapl.set_power_cap_watts`, with `capWatts` the node's CPU total; the simulator splits it evenly over the sockets
 - `dvfs.set_throttle_pct`
+
+A percent CPU cap reaches an HTTP backend as `rapl.set_power_cap_watts` when the agent knows a range to resolve it against: the node's RAPL files, else the hardware catalog's range for the node's CPU ([CPU enforcement algorithm]({{< relref "/docs/architecture/agent.md#cpu-enforcement-algorithm" >}})). Without one, or with `TELEMETRY_CPU_CONTROL_MODE=dvfs`, it goes as `dvfs.set_throttle_pct`. So does a percent cap whose `rapl.set_power_cap_watts` the backend refuses. A backend keeps the throttle beside the watt cap, so after the first watt cap it accepts, and after each throttle the agent sends, the agent sends `dvfs.set_throttle_pct` with `throttlePct` 0 once.
 
 DVFS intent is normalized as `throttlePct` (`0..100`) to stay portable across heterogeneous CPUs.
 Backend-specific frequency writes remain implementation details.

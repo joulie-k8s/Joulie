@@ -96,7 +96,7 @@ Emulate mode does not serve this endpoint: it exports the facility as OpenTeleme
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SIM_SA_CPU_ECO_PCT` | `60` | Eco CPU frequency scale, in percent; on a profile node with a writable PL1, the eco CPU power cap as a share of the PL1 maximum |
+| `SIM_SA_CPU_ECO_PCT` | `60` | Eco CPU frequency scale, in percent; on a profile node with a writable PL1, the eco CPU power cap as a share of the PL1 maximum; on a legacy CPU-only node whose CPU the catalog knows, the eco CPU power cap as a share of the catalog range, as the agent resolves it |
 | `SIM_SA_GPU_ECO_PCT` | `70` | Eco GPU cap, in percent of the maximum |
 | `SIM_SA_HP_FRAC` | `0.30` | Baseline B: fraction of performance nodes |
 | `SIM_SA_HP_BASE_FRAC`, `SIM_SA_HP_MIN`, `SIM_SA_HP_MAX` | `0.30`, `1`, `25` | Baseline C: base fraction and bounds of the performance nodes |
@@ -145,7 +145,8 @@ A profile with no CPU package power (`maxPkgW` 0, such as `vm-no-powercap`), one
 
 - on a GPU node runs as on a performance node, as the controller manager plans it;
 - on a CPU-only profile node with a PL1 the agent can write gets a CPU power cap of `SIM_SA_CPU_ECO_PCT` of its PL1 maximum, as the agent writes one: 60 % of 2 x 165 W is 198 W on `intel-xeon-2s-rapl`;
-- on every other node, HSMP profiles included since the agent has no HSMP path, runs at the frequency scale `SIM_SA_CPU_ECO_PCT`.
+- on a CPU-only legacy node whose CPU the catalog knows gets the watt cap its pool agent sends over HTTP: `SIM_SA_CPU_ECO_PCT` of the catalog range, sockets x the TDP, clamped up to sockets x the low end of the cTDP range or 0.55 x TDP ([CPU enforcement algorithm]({{< relref "/docs/architecture/agent.md#cpu-enforcement-algorithm" >}})): 60 % on 2 x EPYC 9654 is 640 W. The same node in performance, or draining, gets the top of that range, 720 W, the cap the agent sends for 100 %, where a node whose power curve peaks above its TDP is held;
+- on every other node, HSMP profiles and CPUs the catalog does not know included, since the agent then has no watt cap to send, runs at the frequency scale `SIM_SA_CPU_ECO_PCT`.
 
 ## HTTP API
 
@@ -155,7 +156,7 @@ The simulator listens on `SIM_ADDR` (default `127.0.0.1:18080`, and `:18080` in 
 |---|---|---|
 | `/otlp/telemetry/{node}` | GET | One node's telemetry as an OTLP JSON `ExportMetricsServiceRequest`, with the names of [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}}) |
 | `/telemetry/{node}` | GET | The same OTLP JSON. `?format=legacy` serves the deprecated `packagePowerWatts` JSON until v0.4.0, with one warning per process; `?format=otlp` asks for the default, any other `format` answers 400 |
-| `/control/{node}` | POST | Control actions (`rapl.set_power_cap_watts`, `dvfs.set_throttle_pct`, `gpu.set_power_cap_watts`). Returns `result=applied\|blocked\|error`. An emulated node answers 409: its limits are written to its files |
+| `/control/{node}` | POST | Control actions (`rapl.set_power_cap_watts`, `dvfs.set_throttle_pct`, `gpu.set_power_cap_watts`). The `capWatts` of `rapl.set_power_cap_watts` is the node's CPU total, split evenly over its sockets; the agent resolves a percent cap to it from the [catalog range]({{< relref "/docs/architecture/agent.md#cpu-enforcement-algorithm" >}}) the simulator models each socket with. Returns `result=applied\|blocked\|error`. An emulated node answers 409: its limits are written to its files |
 | `/state/{node}` | GET | Current internal node state; for an emulated node `{node, emulated: true, snapshot}` |
 | `/metrics` | GET | [Prometheus metrics]({{< relref "/docs/simulator/metrics.md" >}}) |
 | `/healthz` | GET | Health check |

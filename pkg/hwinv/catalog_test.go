@@ -1,6 +1,7 @@
 package hwinv
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -283,6 +284,28 @@ func TestMatchGPUMI300XLabellerProductName(t *testing.T) {
 	for _, raw := range []string{"AMD_Instinct_MI300X_OAM", "AMD Instinct MI300X OAM"} {
 		if key, _, ok := c.MatchGPU(raw); !ok || key != "AMD_INSTINCT_MI300X" {
 			t.Errorf("MatchGPU(%q) = %q, %v; want AMD_INSTINCT_MI300X", raw, key, ok)
+		}
+	}
+}
+
+// The socket cap range is TDP at the top and the low end of the cTDP range,
+// or 0.55 x TDP without one, at the bottom, never above the top. The
+// simulator and the agent both read it (issue #36).
+func TestSocketCapRangeW(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		spec       CPUOfficialSpec
+		minW, maxW float64
+		ok         bool
+	}{
+		{"cTDP low end", CPUOfficialSpec{TDPW: 360, CTdpRangeW: []float64{320, 400}}, 320, 360, true},
+		{"no cTDP", CPUOfficialSpec{TDPW: 165}, 0.55 * 165, 165, true},
+		{"cTDP above TDP", CPUOfficialSpec{TDPW: 300, CTdpRangeW: []float64{320, 400}}, 300, 300, true},
+		{"no TDP", CPUOfficialSpec{CTdpRangeW: []float64{320, 400}}, 0, 0, false},
+	} {
+		minW, maxW, ok := tc.spec.SocketCapRangeW()
+		if math.Abs(minW-tc.minW) > 1e-9 || maxW != tc.maxW || ok != tc.ok {
+			t.Errorf("%s: SocketCapRangeW() = %v, %v, %v; want %v, %v, %v", tc.name, minW, maxW, ok, tc.minW, tc.maxW, tc.ok)
 		}
 	}
 }

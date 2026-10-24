@@ -250,6 +250,9 @@ type NodeController struct {
 	governor *governorControl
 	// gpuFacts keeps the static NVIDIA governor facts between reconciles.
 	gpuFacts *nvidiaFactsCache
+	// httpThrottleCleared is true once the agent has set the HTTP control
+	// backend's DVFS throttle of this node to 0 and sent none since.
+	httpThrottleCleared bool
 }
 
 // DVFSController is an alias for the extracted dvfs.Controller type.
@@ -714,12 +717,26 @@ func reconcileOnce(
 		log.Printf("warning: ignoring invalid cpu cap watts=%.2f for node=%s", *cpuCapWatts, nodeName)
 		cpuCapWatts = nil
 	}
+	// A cap in watts goes to an HTTP control backend as
+	// rapl.set_power_cap_watts unless its mode asks for DVFS.
+	preferDVFS := telemetry != nil && telemetry.CPUControlType == "http" && telemetry.ControlMode == "dvfs"
+	httpRAPL := controlClient != nil && !preferDVFS
+	// appliedNote is added to the RAPL status when the range a percent cap
+	// resolved against is not the node's own.
+	appliedNote := ""
+	// fromPct marks a cap in watts resolved from a percent cap, which keeps
+	// its DVFS throttle when the HTTP control backend refuses the watts.
+	fromPct := false
 	if cpuCapWatts == nil && selected.PowerPctOfMax != nil {
-		if resolved, msg, ok := resolveCPUCapFromPct(ctx, *selected.PowerPctOfMax); ok {
+		if resolved, r, ok := resolveCPUCapFromPct(*selected.PowerPctOfMax, node.Labels, httpRAPL); ok {
 			cpuCapWatts = &resolved
-			log.Printf("resolved cpu cap from pct node=%s pct=%.2f%% cap=%.2fW (%s)", nodeName, *selected.PowerPctOfMax, resolved, msg)
+			fromPct = true
+			log.Printf("resolved cpu cap from pct node=%s pct=%.2f%% cap=%.2fW (%s)", nodeName, *selected.PowerPctOfMax, resolved, r.source)
+			if r.catalog {
+				appliedNote = fmt.Sprintf(": %.2fW for %.2f%%, range from the %s", resolved, *selected.PowerPctOfMax, r.source)
+			}
 		} else {
-			log.Printf("warning: unable to resolve cpu cap from pct node=%s pct=%.2f%% (%s)", nodeName, *selected.PowerPctOfMax, msg)
+			log.Printf("warning: unable to resolve cpu cap from pct node=%s pct=%.2f%% (%s)", nodeName, *selected.PowerPctOfMax, r.source)
 		}
 	}
 
@@ -764,16 +781,11 @@ func reconcileOnce(
 
 	if cpuCapWatts == nil {
 		if selected.PowerPctOfMax != nil {
-			backend, result, msg, err := applyCPUPercentIntent(*selected.PowerPctOfMax, controlClient, dvfsCtl, metrics)
-			_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nodeName, backend, result, msg)
-			if err != nil {
-				return err
-			}
+			return applyCPUPercentFallback(ctx, dyn, telemetry, nc, *selected.PowerPctOfMax, controlClient)
 		}
 		return nil
 	}
 
-	preferDVFS := telemetry != nil && telemetry.CPUControlType == "http" && telemetry.ControlMode == "dvfs"
 	appliedRapl := false
 	raplFiles := 0
 	if !preferDVFS {
@@ -783,6 +795,12 @@ func reconcileOnce(
 				raplFiles = 1
 			} else {
 				log.Printf("warning: HTTP RAPL control failed for node=%s: %v (trying fallback backend)", nodeName, err)
+				if fromPct {
+					// The percent cap keeps the DVFS throttle it had
+					// before it resolved into watts.
+					*lastRaplKey = ""
+					return applyCPUPercentFallback(ctx, dyn, telemetry, nc, *selected.PowerPctOfMax, controlClient)
+				}
 			}
 		} else {
 			appliedRapl, raplFiles, err = applyRAPLPackageCap(hw, *cpuCapWatts)
@@ -793,7 +811,7 @@ func reconcileOnce(
 	}
 	if appliedRapl {
 		metrics.setBackendMode("rapl")
-		_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nodeName, "rapl", "applied", "RAPL package cap applied")
+		_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nodeName, "rapl", "applied", "RAPL package cap applied"+appliedNote)
 		key := fmt.Sprintf("%s|rapl|%.2f", selected.Name, *cpuCapWatts)
 		if key != *lastRaplKey {
 			log.Printf("applied policy=%s backend=rapl cap=%.2fW files=%d cpuVendor=%s", selected.Name, *cpuCapWatts, raplFiles, hw.CPUVendor)
@@ -801,6 +819,17 @@ func reconcileOnce(
 		}
 		if dvfsCtl != nil {
 			dvfsCtl.Warned = false
+		}
+		if controlClient != nil && !nc.httpThrottleCleared {
+			// The backend keeps a DVFS throttle beside the watt cap, and
+			// this agent, or one before it, may have set one: a percent cap
+			// went out as dvfs.set_throttle_pct until the catalog range.
+			// Clear it once, as the restore below does for host files.
+			if err := controlClient.ApplyCPUControl("dvfs.set_throttle_pct", 0, 0); err != nil {
+				log.Printf("warning: could not clear the HTTP DVFS throttle of node=%s after a RAPL cap: %v", nodeName, err)
+			} else {
+				nc.httpThrottleCleared = true
+			}
 		}
 		if dvfsCtl != nil && dvfsCtl.Active() {
 			if restored, rerr := dvfsCtl.RestoreAllMax(); rerr != nil {
@@ -827,6 +856,9 @@ func reconcileOnce(
 	if raplFiles == 0 && !dvfsCtl.Warned {
 		log.Printf("warning: RAPL power-limit files not available on node %s (vendor=%s); using DVFS fallback controller", nodeName, hw.CPUVendor)
 		dvfsCtl.Warned = true
+	}
+	if controlClient != nil {
+		nc.httpThrottleCleared = false
 	}
 	action, err := dvfsCtl.Reconcile(*cpuCapWatts, controlClient)
 	if err != nil {
@@ -905,23 +937,80 @@ func raplConstraintMaxUW(limitFile string) (int64, bool) {
 	return v, true
 }
 
-func resolveCPUCapFromPct(ctx context.Context, pct float64) (float64, string, bool) {
+// cpuCapRange is the range a percent CPU cap resolves against: minW and maxW
+// in watts, and source, which names where they come from for the logs and the
+// control status. catalog marks a range from the hardware catalog rather
+// than the node's RAPL files.
+type cpuCapRange struct {
+	minW, maxW float64
+	source     string
+	catalog    bool
+}
+
+// resolveCPUCapFromPct turns a percent CPU cap into watts: pct of the
+// range's maximum, clamped to the range (hwinv.CapForPctW). The range is the
+// node's RAPL files when it has them. Without them, a cap the agent sends to
+// an HTTP control backend as rapl.set_power_cap_watts (httpRAPL) resolves
+// against the node's range in the hardware catalog, the one the simulator
+// models the node with (cpuCapRangeFromCatalog). Over HTTP the cap is the
+// node's total, which the backend splits over the sockets, so a range read
+// from the files, one package's, counts every package. ok is false when
+// neither range is known; the caller then falls back to the DVFS percent
+// throttle.
+func resolveCPUCapFromPct(pct float64, nodeLabels map[string]string, httpRAPL bool) (float64, cpuCapRange, bool) {
 	if pct <= 0 {
-		return 0, "pct must be > 0", false
+		return 0, cpuCapRange{source: "pct must be > 0"}, false
 	}
-	maxW, minW, ok := readRAPLPackageCapRangeWatts()
-	if !ok || maxW <= 0 {
-		return 0, "rapl cap range unavailable", false
+	var r cpuCapRange
+	if maxW, minW, ok := readRAPLPackageCapRangeWatts(); ok && maxW > 0 {
+		r = cpuCapRange{minW: minW, maxW: maxW, source: fmt.Sprintf("rapl files min=%.2fW max=%.2fW", minW, maxW)}
+		if zones, err := dvfs.RAPLPackageZones(); httpRAPL && err == nil && len(zones) > 1 {
+			n := float64(len(zones))
+			r = cpuCapRange{minW: minW * n, maxW: maxW * n, source: fmt.Sprintf("rapl files: %d packages x %.2f-%.2fW", len(zones), minW, maxW)}
+		}
+	} else if !httpRAPL {
+		return 0, cpuCapRange{source: "rapl cap range unavailable"}, false
+	} else if cr, err := cpuCapRangeFromCatalog(nodeLabels); err != nil {
+		return 0, cpuCapRange{source: "rapl cap range unavailable and " + err.Error()}, false
+	} else {
+		r = cr
 	}
-	target := (pct / 100.0) * maxW
-	if target < minW {
-		target = minW
+	return hwinv.CapForPctW(pct, r.minW, r.maxW), r, true
+}
+
+// cpuCapRangeFromCatalog is the CPU package cap range of the whole node from
+// the hardware catalog (hwinv.Catalog.NodeCPUCapRangeW), for the CPU model
+// and socket count the node's labels give the simulator
+// (hwinv.SimulatedNodeCPU): never the agent's own host, whose /proc/cpuinfo
+// a pool agent would otherwise read. The total is what an HTTP control
+// backend takes as the capWatts of rapl.set_power_cap_watts: the simulator
+// caps the node's CPU power with it and splits it evenly over the sockets.
+// The error says why there is no range: a CPU the catalog does not know, or
+// no socket label.
+func cpuCapRangeFromCatalog(nodeLabels map[string]string) (cpuCapRange, error) {
+	model, sockets := hwinv.SimulatedNodeCPU(nodeLabels)
+	nr, err := loadHardwareCatalog().NodeCPUCapRangeW(model, sockets)
+	if err != nil {
+		return cpuCapRange{}, err
 	}
-	if target > maxW {
-		target = maxW
+	return cpuCapRange{
+		minW:    nr.MinW(),
+		maxW:    nr.MaxW(),
+		source:  fmt.Sprintf("hardware catalog %s: %d sockets x %.2f-%.2fW", nr.Key, nr.Sockets, nr.SocketMinW, nr.SocketMaxW),
+		catalog: true,
+	}, nil
+}
+
+// applyCPUPercentFallback applies a percent CPU cap as a DVFS throttle
+// (applyCPUPercentIntent), the fallback when it has no cap range or its watts
+// are refused, and records the result in the CPU control status.
+func applyCPUPercentFallback(ctx context.Context, dyn dynamic.Interface, telemetry *TelemetryConfig, nc *NodeController, pct float64, controlClient *HTTPControlClient) error {
+	if controlClient != nil {
+		nc.httpThrottleCleared = false
 	}
-	_ = ctx
-	return target, fmt.Sprintf("min=%.2fW max=%.2fW", minW, maxW), true
+	backend, result, msg, err := applyCPUPercentIntent(pct, controlClient, nc.dvfs, nc.metrics)
+	_ = updateTelemetryControlStatus(ctx, dyn, telemetry, nc.nodeName, backend, result, msg)
+	return err
 }
 
 func applyCPUPercentIntent(

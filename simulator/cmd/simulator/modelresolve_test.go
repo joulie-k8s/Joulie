@@ -2,7 +2,11 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"log"
+	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -364,5 +368,72 @@ func TestIntelLabelOnlyNodeResolvesLikeTheControllerManager(t *testing.T) {
 				t.Fatalf("GPU %q (class %s), want the catalogue's %s, as the controller manager resolves it", model.GPU.Product, class, tc.want)
 			}
 		})
+	}
+}
+
+// Every catalog CPU gets the socket cap range of hwinv's SocketCapRangeW,
+// the range the agent resolves a percent cap against when it controls the
+// node over HTTP (cmd/agent cpuCapRangeFromCatalog). A second derivation
+// here would let the agent ask for a cap the modelled node clamps (#36).
+func TestCatalogCPUSocketCapRangeIsTheAgentsRange(t *testing.T) {
+	clearSimEnv(t)
+	s, catalog := mrSimulator(t, nil)
+	if len(catalog.CPUModels) == 0 {
+		t.Fatal("test setup: the embedded catalogue has no CPU")
+	}
+	for key, spec := range catalog.CPUModels {
+		minW, maxW, ok := spec.Official.SocketCapRangeW()
+		if !ok {
+			t.Fatalf("%s: no socket cap range", key)
+		}
+		model, _ := s.resolveModelForNode(map[string]string{"joulie.io/hw.cpu-model": key, "joulie.io/hw.cpu-sockets": "2"})
+		if model.CPUModel != key {
+			t.Fatalf("test setup: %s matched %q", key, model.CPUModel)
+		}
+		if model.CPUSocketCapMinW != minW || model.CPUSocketCapMaxW != maxW {
+			t.Errorf("%s: socket caps %v to %v W, want hwinv's %v to %v W", key, model.CPUSocketCapMinW, model.CPUSocketCapMaxW, minW, maxW)
+		}
+	}
+}
+
+// The agent sends a catalog-resolved percent cap as the node's total, sockets
+// x the socket range, and the simulator splits rapl.set_power_cap_watts
+// evenly over the sockets: every cap of the agent's range lands on the same
+// point of each socket's range, unclamped. The middle of the range tells a
+// node total from a per-socket cap, which the socket maximum would clamp
+// (#36).
+func TestAgentCatalogCapIsTheNodeTotalTheSimulatorSplits(t *testing.T) {
+	clearSimEnv(t)
+	s, catalog := mrSimulator(t, nil)
+	const node = "kwok-epyc-9654"
+	model, _ := s.resolveModelForNode(map[string]string{"joulie.io/hw.cpu-model": "AMD-EPYC-9654-96-Core-Processor", "joulie.io/hw.cpu-sockets": "2"})
+	s.mu.Lock()
+	s.nodeModels[node] = model
+	s.mu.Unlock()
+	minW, maxW, _ := catalog.CPUModels["AMD_EPYC_9654"].Official.SocketCapRangeW()
+	for _, perSocket := range []float64{minW, (minW + maxW) / 2, maxW} {
+		total := 2 * perSocket
+		w := httptest.NewRecorder()
+		s.handleControl(w, httptest.NewRequest(http.MethodPost, "/control/"+node,
+			strings.NewReader(fmt.Sprintf(`{"action":"rapl.set_power_cap_watts","capWatts":%v}`, total))))
+		if w.Code != http.StatusOK {
+			t.Fatalf("control status=%d body=%s", w.Code, w.Body)
+		}
+		st := s.getNode(node)
+		s.mu.Lock()
+		stepNode(st, model, 10, physMaxSubstep) // 10 s of simulated time
+		target, sockets := st.TargetCapWatts, append([]cpuSocketState(nil), st.CPUSockets...)
+		s.mu.Unlock()
+		if target != total {
+			t.Fatalf("node cap target %v W, want the %v W the agent sent", target, total)
+		}
+		if len(sockets) != 2 {
+			t.Fatalf("%d sockets, want 2", len(sockets))
+		}
+		for _, sk := range sockets {
+			if math.Abs(sk.CapWatts-perSocket) > 1e-3 {
+				t.Errorf("socket %d cap %v W, want %v W: the node total %v W split over 2 sockets", sk.Index, sk.CapWatts, perSocket, total)
+			}
+		}
 	}
 }

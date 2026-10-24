@@ -3,6 +3,7 @@ package hwinv
 import (
 	_ "embed"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -39,6 +40,97 @@ type CPUOfficialSpec struct {
 	TDPW         float64   `yaml:"tdpW"`
 	CTdpRangeW   []float64 `yaml:"cTdpRangeW,omitempty"`
 	DriverFamily string    `yaml:"driverFamily,omitempty"`
+}
+
+// SocketCapMinFractionOfTDP is the lowest package power cap of one socket, as
+// a fraction of its TDP, for a CPU whose cTDP range is not published
+// (assumed: no public minimum).
+const SocketCapMinFractionOfTDP = 0.55
+
+// SocketCapRangeW is the package power cap range of one socket of this CPU:
+// the TDP is the maximum, and the low end of the cTDP range, or
+// SocketCapMinFractionOfTDP x TDP without one, the minimum, never above the
+// maximum. ok is false without a TDP. The simulator models a node's socket
+// cap range with it, and the agent resolves a percent CPU cap against it on
+// a node it controls over HTTP that has no RAPL files, so the two agree.
+func (o CPUOfficialSpec) SocketCapRangeW() (minW, maxW float64, ok bool) {
+	if o.TDPW <= 0 {
+		return 0, 0, false
+	}
+	maxW = o.TDPW
+	minW = SocketCapMinFractionOfTDP * maxW
+	if len(o.CTdpRangeW) > 0 && o.CTdpRangeW[0] > 0 {
+		minW = o.CTdpRangeW[0]
+	}
+	return math.Min(minW, maxW), maxW, true
+}
+
+// CapForPctW is pct of maxW clamped to minW and maxW: how the agent turns a
+// percent CPU cap into watts against a cap range, whether the range comes
+// from RAPL files or from the catalog.
+func CapForPctW(pct, minW, maxW float64) float64 {
+	target := pct / 100 * maxW
+	if target < minW {
+		target = minW
+	}
+	if target > maxW {
+		target = maxW
+	}
+	return target
+}
+
+// SimulatedNodeCPU is the CPU the simulator models a node with, read from
+// the node's labels as the simulator reads them: the model from
+// joulie.io/hw.cpu-model, else from NFD's cpu-model.name, and the socket
+// count from joulie.io/hw.cpu-sockets alone, 0 without it (the simulator
+// then models SIM_CPU_SOCKETS, which the agent cannot see).
+func SimulatedNodeCPU(labels map[string]string) (rawModel string, sockets int) {
+	for _, k := range []string{"joulie.io/hw.cpu-model", "feature.node.kubernetes.io/cpu-model.name"} {
+		if v := strings.TrimSpace(labels[k]); v != "" {
+			rawModel = v
+			break
+		}
+	}
+	return rawModel, ParseIntString(labels["joulie.io/hw.cpu-sockets"])
+}
+
+// NodeCPUCapRange is the CPU package cap range of a whole node from the
+// catalog: Sockets x the socket range of the catalog CPU Key.
+type NodeCPUCapRange struct {
+	Key                    string
+	Sockets                int
+	SocketMinW, SocketMaxW float64
+}
+
+// MinW is the node's lowest CPU cap, MaxW its highest.
+func (r NodeCPUCapRange) MinW() float64 { return r.SocketMinW * float64(r.Sockets) }
+func (r NodeCPUCapRange) MaxW() float64 { return r.SocketMaxW * float64(r.Sockets) }
+
+// CapForPctW is the node's CPU cap for a percent cap (CapForPctW).
+func (r NodeCPUCapRange) CapForPctW(pct float64) float64 {
+	return CapForPctW(pct, r.MinW(), r.MaxW())
+}
+
+// NodeCPUCapRangeW is the CPU package cap range of a node of sockets sockets
+// of the CPU rawModel names: SocketCapRangeW of its catalog entry, times
+// sockets. It is what the agent resolves a percent cap against on a node it
+// controls over HTTP without RAPL files, as one total the simulator splits
+// over the sockets, and what standalone mode applies for that agent. The
+// error says why there is no range: a CPU the catalog does not know, an entry
+// without a TDP, or an unknown socket count.
+func (c *Catalog) NodeCPUCapRangeW(rawModel string, sockets int) (NodeCPUCapRange, error) {
+	key, spec, ok := c.MatchCPU(rawModel)
+	if !ok {
+		return NodeCPUCapRange{}, fmt.Errorf("cpu model %q not in the hardware catalog", rawModel)
+	}
+	minW, maxW, ok := spec.Official.SocketCapRangeW()
+	if !ok {
+		return NodeCPUCapRange{}, fmt.Errorf("hardware catalog %s has no TDP", key)
+	}
+	if sockets <= 0 {
+		return NodeCPUCapRange{}, fmt.Errorf("socket count of %s unknown", key)
+	}
+	return NodeCPUCapRange{Key: key, Sockets: sockets, SocketMinW: minW, SocketMaxW: maxW}, nil
 }
 
 type CPUMeasuredCurveSet struct {
