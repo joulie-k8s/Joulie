@@ -38,6 +38,10 @@ kubectl get nodes -L sim.joulie.io/pool,joulie.io/power-profile
 kubectl get nodehardware
 ```
 
+<!-- tutorials: check
+eventually '[ "$(kubectl get nodehardware -o json | jq "[.items[] | select(.status.cpu.rawModel)] | length")" -eq 10 ]'
+-->
+
 ```text
 NAME       NODE       CPU                        GPU                   GPUCOUNT   QUALITY
 epyc-0     epyc-0     AMD_EPYC_9534                                    0          exact
@@ -115,6 +119,12 @@ scripts/simcluster/tree.sh xeon-0 sys/class/powercap/intel-rapl:0/constraint_0_p
 scripts/simcluster/tree.sh h100-1 state/nvml/gpu0/power_limit_mw                                # 420000: what nvidia-smi -pl set
 ```
 
+<!-- tutorials: check
+eventually '[ "$(scripts/simcluster/tree.sh xeon-1 sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw)" = 162000000 ]'
+eventually '[ "$(scripts/simcluster/tree.sh xeon-0 sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw)" = 270000000 ]'
+eventually '[ "$(scripts/simcluster/tree.sh h100-1 state/nvml/gpu0/power_limit_mw)" = 420000 ]'
+-->
+
 ## 4. Cap a node by hand
 
 The controller manager owns the twin's `spec` and writes it back at every
@@ -128,6 +138,10 @@ kubectl get nodetwin xeon-0 -o jsonpath='{.status.controlStatus.cpu.result}{"\n"
 scripts/simcluster/tree.sh xeon-0 sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw   # 108000000
 ```
 
+<!-- tutorials: check
+eventually '[ "$(scripts/simcluster/tree.sh xeon-0 sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw)" = 108000000 ]'
+-->
+
 The twin is named after its node: the agent reads only the twin of its own
 node, so a `NodeTwin` under another name is never applied. Start the controller
 manager again and it puts back the performance cap within a reconcile:
@@ -138,6 +152,10 @@ sleep 30
 scripts/simcluster/tree.sh xeon-0 sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw   # 270000000
 ```
 
+<!-- tutorials: check
+eventually '[ "$(scripts/simcluster/tree.sh xeon-0 sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw)" = 270000000 ]'
+-->
+
 ## 5. A workload, seen through `kubectl joulie`
 
 The `demo` scenario submits 112 jobs over 40 minutes: NVIDIA training and
@@ -146,6 +164,7 @@ Kubernetes Jobs, placed by the scheduler and the Joulie extender on the fake
 Nodes, where the simulator runs them on the emulated hardware. In a second
 terminal, from the repository root:
 
+<!-- tutorials: skip -->
 ```bash
 make simcluster-scenario SCENARIO=tests/simcluster/scenarios/demo.yaml SIMCLUSTER_NAME=joulie-sim-demo
 ```
@@ -170,8 +189,12 @@ plugin and watch:
 make kubectl-plugin
 export PATH=$PWD/bin:$PATH
 kubectl joulie status        # the cluster, then one row per node
-kubectl joulie top           # the live view; q quits
 kubectl joulie pods          # where each pod runs, by workload class
+```
+
+<!-- tutorials: skip -->
+```bash
+kubectl joulie top           # the live view; q quits
 ```
 
 ```text
@@ -211,6 +234,7 @@ lists every command and flag.
 
 ## Clean up
 
+<!-- tutorials: skip -->
 ```bash
 make simcluster-down SIMCLUSTER_NAME=joulie-sim-demo
 ```

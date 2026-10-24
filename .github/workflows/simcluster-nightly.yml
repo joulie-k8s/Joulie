@@ -3,7 +3,10 @@ name: simcluster-nightly
 # The workload scenarios of the simulated cluster (tests/simcluster/scenarios,
 # scripts/simcluster/scenario.sh). Monday to Saturday: nightly-mixed, one hour
 # of mixed arrivals on the 50-Node nightly spec, and deadlock-visible, a gang
-# that must stall visibly. Sunday: weekly-compare, the nightly workload with
+# that must stall visibly, and the tutorials under examples/ that run on the
+# simulated cluster (scripts/simcluster/tutorials.sh: their commands as
+# written, and the checks beside them). Sunday: weekly-compare, the nightly
+# workload with
 # Joulie off, on queue_aware_v1 and on the Kepler inputs, one variant per
 # runner on a fresh cluster, then one job that compares them. Each job
 # uploads its run directory (summary.json, the OTLP files, the objects and
@@ -150,6 +153,76 @@ jobs:
 
   # The weekly run directory is shared by the variant jobs and the
   # comparison: its name is fixed once, here.
+  tutorials:
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '17 3 * * 1-6') ||
+      (github.event_name == 'workflow_dispatch' && inputs.scenarios == 'nightly')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      SIMCLUSTER_NAME: joulie-sim-demo
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Read the pinned Helm version
+        id: versions
+        run: echo "helm=$(sed -n 's/^HELM_VERSION=//p' scripts/simcluster/versions.env)" >>"$GITHUB_OUTPUT"
+      - name: Setup Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ steps.versions.outputs.helm }}
+      # The tutorials name their cluster and read its kubeconfig from the
+      # default state directory, ~/.cache/joulie/simcluster/<name>.
+      - name: Cache the image tarballs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/joulie/simcluster/*/images
+          key: simcluster-images-${{ hashFiles('scripts/simcluster/versions.env') }}
+      - name: tutorials
+        run: bash scripts/simcluster/tutorials.sh examples/01-simulated-cluster examples/02-workload-classes examples/03-grafana-dashboard
+      - name: Delete the cluster
+        if: always()
+        timeout-minutes: 5
+        run: bash scripts/simcluster/down.sh
+  tutorial-governors:
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '17 3 * * 1-6') ||
+      (github.event_name == 'workflow_dispatch' && inputs.scenarios == 'nightly')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SIMCLUSTER_NAME: joulie-sim-governor
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Read the pinned Helm version
+        id: versions
+        run: echo "helm=$(sed -n 's/^HELM_VERSION=//p' scripts/simcluster/versions.env)" >>"$GITHUB_OUTPUT"
+      - name: Setup Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ steps.versions.outputs.helm }}
+      # The tutorials name their cluster and read its kubeconfig from the
+      # default state directory, ~/.cache/joulie/simcluster/<name>.
+      - name: Cache the image tarballs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/joulie/simcluster/*/images
+          key: simcluster-images-${{ hashFiles('scripts/simcluster/versions.env') }}
+      - name: tutorial-governors
+        run: bash scripts/simcluster/tutorials.sh examples/05-governor-presets
+      - name: Delete the cluster
+        if: always()
+        timeout-minutes: 5
+        run: bash scripts/simcluster/down.sh
   weekly-plan:
     if: >-
       (github.event_name == 'schedule' && github.event.schedule == '17 3 * * 0') ||

@@ -31,6 +31,14 @@ kubectl apply -f examples/02-workload-classes/workloads.yaml
 kubectl -n joulie-tutorial get pods -o custom-columns=POD:.metadata.name,CLASS:.metadata.annotations.joulie\\.io/workload-class,NODE:.spec.nodeName
 ```
 
+<!-- tutorials: check
+kubectl -n joulie-tutorial wait --for=condition=Ready pod --all --timeout=180s
+eco=" $(kubectl get nodes -l joulie.io/power-profile=eco -o jsonpath='{.items[*].metadata.name}') "
+for node in $(kubectl -n joulie-tutorial get pods -l app=performance -o jsonpath='{.items[*].spec.nodeName}'); do
+  [[ $eco != *" $node "* ]] || { echo "a performance pod runs on the eco node $node" >&2; exit 1; }
+done
+-->
+
 ```text
 POD                            CLASS         NODE
 performance-7498875957-8pzc9   performance   xeon-0
@@ -64,6 +72,11 @@ q() { kubectl get --raw "/api/v1/namespaces/monitoring/services/prometheus-opera
 q 'sum%20by%20(workload_class)%20(joulie_scheduler_filter_requests_total)'
 q 'joulie_scheduler_final_node_score' | sort -k2,2 -k3,3nr
 ```
+
+<!-- tutorials: check
+eventually '[ -n "$(q "sum%20by%20(workload_class)%20(joulie_scheduler_filter_requests_total)" | awk "\$1 == \"performance\" && \$2 > 0")" ]'
+eventually '[ -n "$(q joulie_scheduler_final_node_score | awk "\$2 == \"standard\"")" ]'
+-->
 
 ```text
  standard 13
