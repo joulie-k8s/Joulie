@@ -124,7 +124,7 @@ Exported by the controller manager. They show whether the measured inputs (see [
 
 - `joulie_twin_input_queries_total{input,result}` (counter)
   - one increment per Prometheus query of a measured input
-  - `input`: `node_power`, or the facility input: `ambient_temp`, `it_power`, `cooling_power`, `zone_ambient_temp`, `rack_power`, `node_inlet_temp`
+  - `input`: `node_power`, or the facility input: `ambient_temp`, `it_power`, `cooling_power`, `zone_ambient_temp`, `rack_power`, `node_inlet_temp`, `carbon_intensity`
   - `result`:
     - `success`: every series was read
     - `partial`: some series were skipped, for a missing key label or a value that is not finite
@@ -136,6 +136,10 @@ Exported by the controller manager. They show whether the measured inputs (see [
   - IT power the facility input last read, in watts
 - `joulie_twin_facility_cooling_power_watts{preset}` (gauge)
   - cooling power the facility input last read, in watts
+- `joulie_grid_carbon_intensity_grams_per_kW_h{joulie_grid_carbon_intensity_signal}` (gauge)
+  - grid carbon intensity the facility input last read (`FACILITY_CARBON_INTENSITY_QUERY`), converted to gCO2eq/kWh
+  - `joulie_grid_carbon_intensity_signal`: `marginal` or `average`, from `FACILITY_CARBON_INTENSITY_SIGNAL`; compare values of one signal only
+  - the default Prometheus spelling of the OpenTelemetry metric `joulie.grid.carbon_intensity` (unit `g/(kW.h)`, grams per kilowatt-hour, attribute `joulie.grid.carbon_intensity.signal`), a cluster metric with no node label
 
 `preset` is `FACILITY_PRESET` (`otel`, `legacy` or `custom`). A facility gauge is absent while its input is unknown, so a stale reading never outlives the poll that lost it. PUE is `(it_power + cooling_power) / it_power`; the overview dashboard's "Twin inputs" row plots it.
 

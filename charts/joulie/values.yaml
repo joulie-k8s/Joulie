@@ -150,6 +150,12 @@ controllerManager:
     ENABLE_FACILITY_METRICS: "false"
     FACILITY_PRESET: "otel"
     FACILITY_POLL_INTERVAL: "30s"
+    # Grid carbon intensity, read only with ENABLE_FACILITY_METRICS: a query
+    # that returns one value, its unit (converted to gCO2eq/kWh) and its signal,
+    # marginal or average, which has no default. For example, for WattTime:
+    # FACILITY_CARBON_INTENSITY_QUERY: 'watttime_co2_moer{region="CAISO_NORTH"}'
+    # FACILITY_CARBON_INTENSITY_UNIT: "lbsCO2/MWh"
+    # FACILITY_CARBON_INTENSITY_SIGNAL: "marginal"
   service:
     enabled: true
     port: 8081

@@ -342,11 +342,22 @@ Install it into the `monitoring` namespace (`helm install telemetry prometheus-c
 - **Kepler GPUs.** Kepler reports node GPU energy only from 0.12, and only with its experimental GPU feature on, which is off by default. Without it the `kepler` preset reads the CPU packages alone, and a GPU node looks to have more headroom than it has.
 - **Counters are not watts.** A custom query over a `*_joules_total` counter needs `rate()`.
 
+### Grid carbon intensity
+
+The facility input also reads the carbon intensity of the grid that supplies the cluster, but no preset does: Joulie defines no metric for a producer to push, and reads only the query of `FACILITY_CARBON_INTENSITY_QUERY`, written for whatever the operator already exports (an exporter of WattTime or Electricity Maps, or their own). The query must return one value; a bare metric name is wrapped in `avg(...)`, so two replicas of an exporter count once, while two grid zones are averaged, which a label matcher avoids. Two settings say what the value is:
+
+- `FACILITY_CARBON_INTENSITY_UNIT`, a mass of CO2 or CO2 equivalent over an energy (default `gCO2eq/kWh`). The reading is converted to gCO2eq/kWh: WattTime's `co2_moer` in `lbsCO2/MWh` times 0.45359237, `kgCO2eq/MWh` unchanged. An unknown unit stops the controller manager at start.
+- `FACILITY_CARBON_INTENSITY_SIGNAL`, `marginal` or `average`, with no default. A marginal value (the generators that follow a change in demand) and an average one (the whole generation mix) differ by design, so each reading keeps its signal and is compared only with readings of the same signal.
+
+A value that is negative or not finite is an error, since no grid emits less than nothing by either signal: that poll's reading is unknown, counted in `joulie_twin_input_queries_total{input="carbon_intensity",result="error"}`, and not exported. Zero is a reading.
+
+The controller manager exports what it read as the OpenTelemetry metric `joulie.grid.carbon_intensity` (gauge, unit `g/(kW.h)`, grams per kilowatt-hour in UCUM, attribute `joulie.grid.carbon_intensity.signal`), which Prometheus scrapes as `joulie_grid_carbon_intensity_grams_per_kW_h{joulie_grid_carbon_intensity_signal}`, the default translation of that name. It is a cluster metric, not a `NodeTwin` field. Each reconcile hands the facility snapshot, carbon intensity included, to the policy before it plans (`policy.Facility`), from the same poll the twins read; no policy acts on it yet.
+
 ### Diagnostics
 
-- At start the controller manager logs one line per input with the source, the address, the preset, the scope, the naming, the resource attribute mode, the window and the query: `input node_power: ...` and `input facility <input>: ...`.
+- At start the controller manager logs one line per input with the source, the address, the preset, the scope, the naming, the resource attribute mode, the window and the query: `input node_power: ...` and `input facility <input>: ...`, the carbon intensity line with its unit and signal.
 - When a query reads nothing, or not every node, it logs a hint once per kind: promote `k8s.node.name` (or use `auto`), enable `--web.enable-otlp-receiver` and match `otlp.translation_strategy`, or give every producer its own `service.instance.id`.
-- `joulie_twin_input_queries_total{input,result}` counts every query by input and result (`success`, `partial`, `no_data`, `error`), and `joulie_twin_facility_*` holds the facility readings; see [Metrics]({{< relref "/docs/architecture/metrics.md#twin-input-metrics" >}}).
+- `joulie_twin_input_queries_total{input,result}` counts every query by input and result (`success`, `partial`, `no_data`, `error`), and `joulie_twin_facility_*` and `joulie_grid_carbon_intensity_grams_per_kW_h` hold the facility readings; see [Metrics]({{< relref "/docs/architecture/metrics.md#twin-input-metrics" >}}).
 - `NodeTwin.status.powerMeasurement.source` is `prometheus` for a node read, `prometheus-no-data` otherwise.
 
 ## Current host contracts

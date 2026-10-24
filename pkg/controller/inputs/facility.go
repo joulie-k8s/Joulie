@@ -6,17 +6,19 @@ import (
 )
 
 // Queries returns the query of every input the spec reads, keyed by input.
-// The otel preset reads all six inputs; legacy reads the outdoor ambient
-// temperature, IT power and cooling power, the three inputs it had before;
-// custom reads only the overridden ones. Zero fields take their defaults:
+// The otel preset reads every input but the carbon intensity; legacy reads
+// the outdoor ambient temperature, IT power and cooling power, the three
+// inputs it had before; custom reads only the overridden ones. The carbon
+// intensity has a query only as an override, under any preset, and then its
+// CarbonIntensity spec must pass Check. Zero fields take their defaults:
 // the otel preset, the default translation strategy and DefaultWindow.
 //
 // Naming spells the otel names and, under every preset, the key labels of
 // the zone, rack and node inputs. An override replaces its input's query: a
 // bare metric name is aggregated by the input's key label, avg for a
-// temperature and sum for a power; any other query is kept as written and
-// must return one series, or one series per key carrying the key label
-// (Query.GroupLabel); an empty one is no override.
+// temperature and the carbon intensity and sum for a power; any other query
+// is kept as written and must return one series, or one series per key
+// carrying the key label (Query.GroupLabel); an empty one is no override.
 //
 // The otel node inlet query reads the node from the series' label where
 // Prometheus promotes k8s.node.name and from target_info where it does not,
@@ -69,15 +71,16 @@ func (s FacilitySpec) Queries() (map[FacilityInput]Query, error) {
 		if strings.TrimSpace(q) == "" {
 			continue
 		}
-		key, temperature, ok := facilityInputShape(input, n)
+		key, op, ok := facilityInputShape(input, n)
 		if !ok {
 			return nil, fmt.Errorf("inputs: unknown facility input %q", input)
 		}
-		if isBareMetricName(q) {
-			op := "sum"
-			if temperature {
-				op = "avg"
+		if input == FacilityInputCarbonIntensity {
+			if err := s.CarbonIntensity.Check(); err != nil {
+				return nil, fmt.Errorf("inputs: %w", err)
 			}
+		}
+		if isBareMetricName(q) {
 			q = wrapAggregation(op, key, q)
 		}
 		out[input] = Query{PromQL: q, GroupLabel: key}
@@ -86,21 +89,23 @@ func (s FacilitySpec) Queries() (map[FacilityInput]Query, error) {
 }
 
 // facilityInputShape returns the key label of input (empty for a single
-// value) and whether it is a temperature.
-func facilityInputShape(input FacilityInput, n otelNames) (key string, temperature, ok bool) {
+// value) and the aggregation of a bare metric name: avg for a temperature,
+// which several sensors report, and for the carbon intensity, which several
+// replicas of an exporter may report; sum for a power, which adds up.
+func facilityInputShape(input FacilityInput, n otelNames) (key, op string, ok bool) {
 	switch input {
-	case FacilityInputAmbientTemp:
-		return "", true, true
+	case FacilityInputAmbientTemp, FacilityInputCarbonIntensity:
+		return "", "avg", true
 	case FacilityInputITPower, FacilityInputCoolingPower:
-		return "", false, true
+		return "", "sum", true
 	case FacilityInputZoneAmbientTemp:
-		return n.zone, true, true
+		return n.zone, "avg", true
 	case FacilityInputRackPower:
-		return n.rack, false, true
+		return n.rack, "sum", true
 	case FacilityInputNodeInletTemp:
-		return n.node, true, true
+		return n.node, "avg", true
 	}
-	return "", false, false
+	return "", "", false
 }
 
 // energyOrPower sums the rate of the energy counter by key, or the power

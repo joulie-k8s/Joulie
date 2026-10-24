@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -477,6 +478,27 @@ func TestFacilityMetricsLoopPollsAtStart(t *testing.T) {
 			t.Fatal("no facility reading 5 s after start with a 1 h poll interval")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// No preset reads the carbon intensity, so a failed carbon query never
+// points at the OTLP receiver or the name translation, which only a preset
+// query depends on; the hint names the query and its unit instead.
+func TestFacilityCarbonIntensityHintNamesTheOperatorsQuery(t *testing.T) {
+	for _, preset := range []inputs.FacilityPreset{inputs.FacilityPresetOTel, inputs.FacilityPresetLegacy, inputs.FacilityPresetCustom} {
+		for _, err := range []error{inputs.ErrNoData, errors.New("carbon intensity -250 is negative")} {
+			h := facilityHint(inputs.FacilityInputCarbonIntensity, string(preset), err)
+			for _, want := range []string{"FACILITY_CARBON_INTENSITY_QUERY", "FACILITY_CARBON_INTENSITY_UNIT"} {
+				if !strings.Contains(h, want) {
+					t.Errorf("preset %s, %v: hint %q does not name %s", preset, err, h, want)
+				}
+			}
+			for _, wrong := range []string{"otlp", "PROMETHEUS_NAME_TRANSLATION", "FACILITY_PRESET"} {
+				if strings.Contains(h, wrong) {
+					t.Errorf("preset %s, %v: hint %q names %s, which no carbon intensity query depends on", preset, err, h, wrong)
+				}
+			}
+		}
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -252,6 +253,42 @@ func TestInputMetricNamesDocumented(t *testing.T) {
 	}
 }
 
+// The controller manager names the grid carbon intensity gauge from the
+// semconv table, not with a literal; the metrics page check must still see
+// it, and must refuse a Name it cannot read rather than skip it. Before,
+// only literal names were collected, so the gauge's entry on the metrics
+// page could be deleted with every test green.
+func TestRegisteredMetricNamesResolveSemconvNames(t *testing.T) {
+	const src = `package x
+var (
+	a = prometheus.GaugeOpts{Name: "joulie_twin_literal"}
+	b = prometheus.GaugeOpts{Name: promname.Default.MetricName(semconv.JoulieGridCarbonIntensity)}
+	c = prometheus.GaugeOpts{Name: someName()}
+)`
+	f, err := parser.ParseFile(token.NewFileSet(), "x.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, unresolved := metricNamesIn(f, semconvMetricVars(t))
+	want := []string{"joulie_twin_literal", promname.Default.MetricName(semconv.JoulieGridCarbonIntensity)}
+	if strings.Join(names, " ") != strings.Join(want, " ") {
+		t.Errorf("names %q, want %q", names, want)
+	}
+	if len(unresolved) != 1 || unresolved[0] != "someName()" {
+		t.Errorf("unresolved %q, want [someName()]", unresolved)
+	}
+
+	registered := registeredMetricNames(t, filepath.Join(controllerManagerDir, "input_metrics.go"))
+	carbon := promname.Default.MetricName(semconv.JoulieGridCarbonIntensity)
+	found := false
+	for _, n := range registered {
+		found = found || n == carbon
+	}
+	if !found {
+		t.Errorf("input_metrics.go registers %q; want %s among them", registered, carbon)
+	}
+}
+
 // controllerManagerEnvReads returns every environment variable the
 // controller manager's non-test Go files read, each with the file and line
 // of one read: string literals passed first to a function whose name
@@ -388,22 +425,110 @@ func stringConsts(f *ast.File) map[string]string {
 }
 
 // registeredMetricNames returns the Name fields of the composite literals in
-// a Go file, such as prometheus.CounterOpts{Name: "..."}.
+// a Go file, such as prometheus.CounterOpts{Name: "..."} and
+// prometheus.GaugeOpts{Name: promname.Default.MetricName(semconv.X)}. A
+// Name it cannot resolve fails the test, so a metric is never skipped.
 func registeredMetricNames(t *testing.T, rel string) []string {
 	t.Helper()
-	var out []string
-	ast.Inspect(parseGoFile(t, rel), func(n ast.Node) bool {
+	names, unresolved := metricNamesIn(parseGoFile(t, rel), semconvMetricVars(t))
+	for _, u := range unresolved {
+		t.Errorf("%s: metric Name %s is neither a string literal nor promname.Default.MetricName(semconv.<Metric>); teach registeredMetricNames to read it", rel, u)
+	}
+	return names
+}
+
+// metricNamesIn returns the Name fields of the composite literals in f:
+// string literals as written, and promname.Default.MetricName(semconv.X)
+// as the default Prometheus spelling of the semconv metric whose Go name X
+// semconvVars maps to its OpenTelemetry name. unresolved lists, as source,
+// every other Name value.
+func metricNamesIn(f *ast.File, semconvVars map[string]string) (names, unresolved []string) {
+	byName := map[string]semconv.Metric{}
+	for _, m := range semconv.Metrics() {
+		byName[m.Name] = m
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
 		kv, ok := n.(*ast.KeyValueExpr)
 		if !ok {
 			return true
 		}
-		if id, ok := kv.Key.(*ast.Ident); ok && id.Name == "Name" {
-			if v, ok := stringLit(kv.Value); ok {
-				out = append(out, v)
+		if id, ok := kv.Key.(*ast.Ident); !ok || id.Name != "Name" {
+			return true
+		}
+		if v, ok := stringLit(kv.Value); ok {
+			names = append(names, v)
+			return true
+		}
+		if x, ok := defaultMetricNameArg(kv.Value); ok {
+			if m, ok := byName[semconvVars[x]]; ok {
+				names = append(names, promname.Default.MetricName(m))
+				return true
 			}
 		}
+		unresolved = append(unresolved, types.ExprString(kv.Value))
 		return true
 	})
+	return names, unresolved
+}
+
+// defaultMetricNameArg returns X of promname.Default.MetricName(semconv.X).
+func defaultMetricNameArg(e ast.Expr) (string, bool) {
+	call, ok := e.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 || types.ExprString(call.Fun) != "promname.Default.MetricName" {
+		return "", false
+	}
+	arg, ok := call.Args[0].(*ast.SelectorExpr)
+	if !ok || types.ExprString(arg.X) != "semconv" {
+		return "", false
+	}
+	return arg.Sel.Name, true
+}
+
+// semconvMetricVars maps the Go name of every metric pkg/otel/semconv
+// registers (var X = Register(Metric{Name: "..."})) to its OpenTelemetry
+// name.
+func semconvMetricVars(t *testing.T) map[string]string {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(repoRoot, "pkg/otel/semconv", "*.go"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("pkg/otel/semconv: %v, %d files", err, len(paths))
+	}
+	out := map[string]string{}
+	for _, p := range paths {
+		if strings.HasSuffix(p, "_test.go") {
+			continue
+		}
+		rel, _ := filepath.Rel(repoRoot, p)
+		for _, d := range parseGoFile(t, rel).Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.VAR {
+				continue
+			}
+			for _, sp := range gd.Specs {
+				vs := sp.(*ast.ValueSpec)
+				for i, id := range vs.Names {
+					if i >= len(vs.Values) {
+						continue
+					}
+					call, ok := vs.Values[i].(*ast.CallExpr)
+					if !ok || types.ExprString(call.Fun) != "Register" || len(call.Args) != 1 {
+						continue
+					}
+					lit, ok := call.Args[0].(*ast.CompositeLit)
+					if !ok {
+						continue
+					}
+					for _, el := range lit.Elts {
+						if kv, ok := el.(*ast.KeyValueExpr); ok && types.ExprString(kv.Key) == "Name" {
+							if v, ok := stringLit(kv.Value); ok {
+								out[id.Name] = v
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 	return out
 }
 

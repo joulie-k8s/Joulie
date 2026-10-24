@@ -10,13 +10,15 @@ import (
 	"time"
 
 	"github.com/matbun/joulie/pkg/controller/inputs"
+	"github.com/matbun/joulie/pkg/controller/policy"
 )
 
 // facilitySnapshot is one poll's facility readings: the outdoor ambient
-// temperature, IT and cooling power, and the ambient temperature of each
-// cooling zone, the power of each rack and the inlet temperature of each
-// node. A reading the poll could not get is unknown (a false flag, or no map
-// entry), never the value of an earlier poll.
+// temperature, IT and cooling power, the grid carbon intensity, and the
+// ambient temperature of each cooling zone, the power of each rack and the
+// inlet temperature of each node. A reading the poll could not get is
+// unknown (a false flag, or no map entry), never the value of an earlier
+// poll.
 type facilitySnapshot struct {
 	ambientC      float64
 	ambientKnown  bool
@@ -24,9 +26,24 @@ type facilitySnapshot struct {
 	itKnown       bool
 	coolingPowerW float64
 	coolingKnown  bool
+	carbon        inputs.CarbonIntensity // gCO2eq/kWh, with its signal
+	carbonKnown   bool
 	zoneAmbientC  map[string]float64 // joulie.io/cooling-zone value -> ambient temp
 	rackPowerW    map[string]float64 // joulie.io/rack value -> measured power draw
 	nodeInletC    map[string]float64 // node name -> inlet temp
+}
+
+// forPolicy is the snapshot as the policy reads it. The maps are copies, so
+// a policy never shares them with the twins of its reconcile.
+func (s facilitySnapshot) forPolicy() policy.Facility {
+	c := s.clone()
+	return policy.Facility{
+		CarbonIntensity: c.carbon, CarbonIntensityKnown: c.carbonKnown,
+		AmbientC: c.ambientC, AmbientKnown: c.ambientKnown,
+		ITPowerW: c.itPowerW, ITPowerKnown: c.itKnown,
+		CoolingPowerW: c.coolingPowerW, CoolingPowerKnown: c.coolingKnown,
+		ZoneAmbientC: c.zoneAmbientC, RackPowerW: c.rackPowerW, NodeInletC: c.nodeInletC,
+	}
 }
 
 // clone copies the maps, so a reconcile never shares them with the poller.
@@ -50,7 +67,8 @@ func cloneFloatMap(m map[string]float64) map[string]float64 {
 
 // facilityMetrics holds the readings of the last facility poll. They feed
 // the twin: the ambient temperatures its cooling stress, the IT and rack
-// power its PSU stress.
+// power its PSU stress. The policy gets all of them, the carbon intensity
+// included (facilitySnapshot.forPolicy).
 type facilityMetrics struct {
 	mu          sync.RWMutex
 	readings    facilitySnapshot
@@ -72,8 +90,9 @@ func (f *facilityMetrics) snapshot() facilitySnapshot {
 	return f.readings.clone()
 }
 
-// twinFacility is the facility snapshot the twin reads during a reconcile.
-// reconcileWithCatalogAndFacility stores it before every reconcile.
+// twinFacility is the facility snapshot the policy and the twin read during
+// a reconcile. reconcileWithCatalogAndFacility stores it before every
+// reconcile.
 var (
 	twinFacilityMu sync.RWMutex
 	twinFacility   facilitySnapshot
@@ -92,8 +111,9 @@ func currentTwinFacility() facilitySnapshot {
 }
 
 // facilityConfig is the facility input: ENABLE_FACILITY_METRICS,
-// FACILITY_PROMETHEUS_ADDRESS, FACILITY_POLL_INTERVAL and the queries of
-// FACILITY_PRESET with the FACILITY_*_QUERY overrides.
+// FACILITY_PROMETHEUS_ADDRESS, FACILITY_POLL_INTERVAL, the queries of
+// FACILITY_PRESET with the FACILITY_*_QUERY overrides, and the unit and
+// signal of the carbon intensity query (spec.CarbonIntensity).
 type facilityConfig struct {
 	enabled           bool
 	prometheusAddress string
@@ -184,6 +204,9 @@ func fetchFacilityMetrics(ctx context.Context, client *http.Client, fm *facility
 		}
 		if q.GroupLabel == "" {
 			v, err := queryPrometheusScalar(ctx, client, cfg.prometheusAddress, q.PromQL)
+			if err == nil && input == inputs.FacilityInputCarbonIntensity {
+				s.carbon, err = cfg.spec.CarbonIntensity.Read(v)
+			}
 			known, result := err == nil, facilitySingleResult(err)
 			recordInputQuery(string(input), result)
 			noteFacilityResult(input, preset, q, result, err)
@@ -194,6 +217,8 @@ func fetchFacilityMetrics(ctx context.Context, client *http.Client, fm *facility
 				s.itPowerW, s.itKnown = v, known
 			case inputs.FacilityInputCoolingPower:
 				s.coolingPowerW, s.coolingKnown = v, known
+			case inputs.FacilityInputCarbonIntensity:
+				s.carbonKnown = known
 			default:
 				// An override of a keyed input without its key label lands
 				// here; Queries always gives keyed inputs a GroupLabel.
@@ -218,6 +243,7 @@ func fetchFacilityMetrics(ctx context.Context, client *http.Client, fm *facility
 	setFacilityGauge(twinFacilityAmbientTemp, preset, s.ambientC, s.ambientKnown)
 	setFacilityGauge(twinFacilityITPower, preset, s.itPowerW, s.itKnown)
 	setFacilityGauge(twinFacilityCoolingPower, preset, s.coolingPowerW, s.coolingKnown)
+	setCarbonIntensityGauge(s.carbon, s.carbonKnown)
 
 	if s.itKnown && s.coolingKnown && s.itPowerW > 0 {
 		pue := (s.itPowerW + s.coolingPowerW) / s.itPowerW
@@ -292,6 +318,10 @@ func noteFacilityResult(input inputs.FacilityInput, preset string, q inputs.Quer
 // the legacy preset also reads, FACILITY_PRESET=legacy.
 func facilityHint(input inputs.FacilityInput, preset string, err error) string {
 	env := facilityQueryEnv(input)
+	if input == inputs.FacilityInputCarbonIntensity {
+		// No preset reads it: the query is the operator's own.
+		return fmt.Sprintf(" (%s sets the query; it must return one series, in the unit of FACILITY_CARBON_INTENSITY_UNIT)", env)
+	}
 	if errors.Is(err, inputs.ErrNoData) && preset == string(inputs.FacilityPresetOTel) {
 		legacy := ""
 		if q, _ := (inputs.FacilitySpec{Preset: inputs.FacilityPresetLegacy}).Queries(); q[input].PromQL != "" {

@@ -70,6 +70,9 @@ var frozenMetrics = []struct {
 	{JoulieCaptureNodeTwinSchedulableClass, "joulie.capture.nodetwin.schedulable_class", "1", UpDownCounter, Int, OwnerJoulie, []string{"k8s.node.name", "joulie.node.schedulable_class"}},
 	{JoulieCaptureNodeTwinControlResult, "joulie.capture.nodetwin.control_result", "1", UpDownCounter, Int, OwnerJoulie, []string{"k8s.node.name", "hw.type", "joulie.nodetwin.control.backend", "joulie.nodetwin.control.result"}},
 	{JoulieScenarioAssertionValue, "joulie.scenario.assertion.value", "{value}", Gauge, Double, OwnerJoulie, []string{"joulie.assertion.name", "joulie.assertion.source"}},
+
+	// The carbon stage: what the controller manager's facility input read.
+	{JoulieGridCarbonIntensity, "joulie.grid.carbon_intensity", "g/(kW.h)", Gauge, Double, OwnerJoulie, []string{"joulie.grid.carbon_intensity.signal"}},
 }
 
 // frozenAttributes pins every attribute constant, each of which must be
@@ -119,6 +122,8 @@ var frozenAttributes = map[string]string{
 	AttrJoulieAssertionExpected: "joulie.assertion.expected", AttrJoulieAssertionSource: "joulie.assertion.source",
 	AttrTestSuiteName: "test.suite.name", AttrTestSuiteRunStatus: "test.suite.run.status",
 	AttrTestCaseName: "test.case.name", AttrTestCaseResultStatus: "test.case.result.status",
+
+	AttrJoulieGridCarbonIntensitySignal: "joulie.grid.carbon_intensity.signal",
 }
 
 // frozenValues pins every value constant: the constant, then its spelling.
@@ -141,6 +146,7 @@ var frozenValues = [][2]string{
 	{TestCaseResultStatusPass, "pass"}, {TestCaseResultStatusFail, "fail"}, {ErrorTypePodDeleted, "pod_deleted"},
 	{ErrorTypePodFailed, "pod_failed"}, {ErrorTypeCreateRejected, "create_rejected"}, {ErrorTypePatchFailed, "patch_failed"},
 	{ErrorTypeAssertionFailed, "assertion_failed"}, {CaptureMetricPrefix, "joulie.capture."}, {SimclusterSummarySchema, "joulie.simcluster.summary/v1"},
+	{CarbonIntensitySignalMarginal, "marginal"}, {CarbonIntensitySignalAverage, "average"},
 }
 
 // frozenEvents pins every event: the simulator's node and hardware events,
@@ -483,16 +489,23 @@ func TestSV03JoulieNamesUseTheApplicationPrefix(t *testing.T) {
 // SV04: no name ends in _total, which Prometheus appends to counters; units
 // are the UCUM units the table uses or an annotation; every hw.* metric has
 // the instrument, unit and value type of its v1.44.0 definition, so host
-// energy and both CPU speeds are Int.
+// energy and both CPU speeds are Int. g/(kW.h) is the carbon intensity's
+// grams per kilowatt-hour, which Prometheus spells _grams_per_kW_h. UCUM
+// reads the period and the solidus left to right with equal precedence, so
+// a product after a solidus is parenthesised: g/kW.h is (g/kW).h, gram-hours
+// per kilowatt.
 func TestSV04UnitsSuffixesAndValueTypes(t *testing.T) {
-	units := map[string]bool{"J": true, "W": true, "Cel": true, "Hz": true, "1": true, "s": true, "By": true}
+	units := map[string]bool{"J": true, "W": true, "Cel": true, "Hz": true, "1": true, "s": true, "By": true, "g/(kW.h)": true}
 	annotation := regexp.MustCompile(`^\{[a-z][a-z0-9_.]*\}$`)
 	for _, m := range Metrics() {
 		if strings.HasSuffix(m.Name, "_total") {
 			t.Errorf("metric %q ends in _total; Prometheus adds the suffix to counters itself", m.Name)
 		}
 		if !units[m.Unit] && !annotation.MatchString(m.Unit) {
-			t.Errorf("metric %q has unit %q, want one of J, W, Cel, Hz, 1, s, By or an annotation {...}", m.Name, m.Unit)
+			t.Errorf("metric %q has unit %q, want one of J, W, Cel, Hz, 1, s, By, g/(kW.h) or an annotation {...}", m.Name, m.Unit)
+		}
+		if ucumProductAfterSolidus(m.Unit) {
+			t.Errorf("metric %q has unit %q: UCUM multiplies a period after a solidus into the numerator; parenthesise the denominator, such as g/(kW.h)", m.Name, m.Unit)
 		}
 		if !strings.HasPrefix(m.Name, "hw.") {
 			continue
@@ -557,6 +570,44 @@ func TestSV05EventNamesAndSeverities(t *testing.T) {
 		}
 		if want := shortName(e.SeverityNumber); e.SeverityText != want {
 			t.Errorf("event %q has severity text %q for %d, want %q", e.Name, e.SeverityText, e.SeverityNumber, want)
+		}
+	}
+}
+
+// ucumProductAfterSolidus reports a period that follows a solidus outside
+// parentheses and annotations. UCUM evaluates both operators left to right
+// with equal precedence, so such a unit multiplies by the term after the
+// period instead of dividing by it.
+func ucumProductAfterSolidus(unit string) bool {
+	depth, annotation, solidus := 0, false, false
+	for _, r := range unit {
+		switch {
+		case annotation:
+			annotation = r != '}'
+		case r == '{':
+			annotation = true
+		case r == '(':
+			depth++
+		case r == ')':
+			depth--
+		case depth == 0 && r == '/':
+			solidus = true
+		case depth == 0 && r == '.' && solidus:
+			return true
+		}
+	}
+	return false
+}
+
+// TestSV04bProductAfterSolidus: the check SV04 runs on every unit tells a
+// parenthesised denominator from a product after a solidus.
+func TestSV04bProductAfterSolidus(t *testing.T) {
+	for unit, want := range map[string]bool{
+		"g/kW.h": true, "m/s.s": true, "{x}/s.m": true,
+		"g/(kW.h)": false, "g/kW/h": false, "kW.h": false, "kW.h/g": false, "W": false, "{a.b}/s": false, "By/{a.b}": false,
+	} {
+		if got := ucumProductAfterSolidus(unit); got != want {
+			t.Errorf("ucumProductAfterSolidus(%q) = %v, want %v", unit, got, want)
 		}
 	}
 }

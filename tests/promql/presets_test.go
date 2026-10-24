@@ -809,9 +809,10 @@ func sameSet(a, b []string) bool {
 // otel presets select exactly the metrics semconv lists as inputs, spelled
 // by promname under each strategy: semconv.NodeInputs across both scopes
 // (plus target_info in the target_info form) and semconv.FacilityInputs
-// across the six facility inputs (plus target_info, which the node inlet
-// joins for series without the node label). A metric added to either list
-// without a query, or a query reading a name outside them, fails here.
+// across the facility inputs the otel preset reads, all but the carbon
+// intensity (plus target_info, which the node inlet joins for series
+// without the node label). A metric added to either list without a query,
+// or a query reading a name outside them, fails here.
 func TestPresetQueriesSelectTheSemconvInputs(t *testing.T) {
 	for _, s := range promname.Strategies() {
 		var want []string
@@ -846,7 +847,9 @@ func TestPresetQueriesSelectTheSemconvInputs(t *testing.T) {
 		}
 		var got []string
 		for _, input := range inputs.FacilityInputs() {
-			got = append(got, metricNames(t, qs[input].PromQL)...)
+			if q, ok := qs[input]; ok {
+				got = append(got, metricNames(t, q.PromQL)...)
+			}
 		}
 		if !sameSet(dedupeStrings(got), want) {
 			t.Errorf("%s facility selects %v, want %v", s, dedupeStrings(got), want)
@@ -873,7 +876,9 @@ func TestFacilityMetricNamesMatchPresetQueries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want = append(want, metricNames(t, qs[input].PromQL)...)
+			if q, ok := qs[input]; ok {
+				want = append(want, metricNames(t, q.PromQL)...)
+			}
 		}
 		if q, ok := legacy[input]; ok {
 			want = append(want, metricNames(t, q.PromQL)...)
@@ -882,6 +887,45 @@ func TestFacilityMetricNamesMatchPresetQueries(t *testing.T) {
 		if got := inputs.FacilityMetricNames(input); !sameSet(got, want) {
 			t.Errorf("%s: FacilityMetricNames %v, the preset queries select %v", input, got, want)
 		}
+	}
+}
+
+// TestCarbonIntensityOverrideShapes evaluates FACILITY_CARBON_INTENSITY_QUERY
+// as the controller manager builds it, on series as two exporters store
+// them: a bare metric name that two replicas of an exporter report for the
+// same zone reads the zone's value, where a sum would double it; a query
+// that selects one zone is kept as written; a bare name that holds two
+// zones averages them, so a query must select the cluster's zone. Every
+// answer is one value, which the facility reader takes.
+func TestCarbonIntensityOverrideShapes(t *testing.T) {
+	st := load(t, []series{
+		{"electricitymaps_carbon_intensity", map[string]string{"zone": "CH", "pod": "exporter-0"}, "40x10"},
+		{"electricitymaps_carbon_intensity", map[string]string{"zone": "CH", "pod": "exporter-1"}, "40x10"},
+		{"watttime_co2_moer", map[string]string{"region": "CAISO_NORTH"}, "900x10"},
+		{"watttime_co2_moer", map[string]string{"region": "PJM_DC"}, "1300x10"},
+	})
+	for _, c := range []struct {
+		override, promQL string
+		want             float64
+	}{
+		{"electricitymaps_carbon_intensity", "avg(electricitymaps_carbon_intensity)", 40},
+		{`watttime_co2_moer{region="CAISO_NORTH"}`, `watttime_co2_moer{region="CAISO_NORTH"}`, 900},
+		{"watttime_co2_moer", "avg(watttime_co2_moer)", 1100},
+	} {
+		qs, err := inputs.FacilitySpec{
+			Preset:          inputs.FacilityPresetCustom,
+			Overrides:       map[inputs.FacilityInput]string{inputs.FacilityInputCarbonIntensity: c.override},
+			CarbonIntensity: inputs.CarbonIntensitySpec{Signal: inputs.CarbonSignalMarginal},
+		}.Queries()
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := qs[inputs.FacilityInputCarbonIntensity]
+		if q.PromQL != c.promQL || q.GroupLabel != "" {
+			t.Errorf("%s: query %+v, want %q with no group label", c.override, q, c.promQL)
+			continue
+		}
+		checkFacilityInput(t, "carbon_intensity "+c.override, st, q, map[string]float64{"": c.want})
 	}
 }
 

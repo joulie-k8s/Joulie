@@ -14,6 +14,10 @@ The user-visible changes of each release, what to check when upgrading, and the 
 
 - The emulated Kepler 0.7 exporter also serves `joulie_sim_kepler07_idle_excess_joules_total{instance, family}`, the idle energy its series report beyond the energy they measured, which Kepler 0.7 reports while a cap holds a package below the idle power it recorded. It is the simulator's own series, not Kepler's. The simulated cluster adds it to the truth of the `kepler-legacy` checks and warns about every node that has some, so the nightly smoke no longer fails on a reading Kepler 0.7 itself inflates. (#91)
 
+### Controller manager
+
+- The facility input reads the grid carbon intensity from the operator's own query, `FACILITY_CARBON_INTENSITY_QUERY`, with its unit (`FACILITY_CARBON_INTENSITY_UNIT`, default `gCO2eq/kWh`, `lbsCO2/MWh` for WattTime) and its signal (`FACILITY_CARBON_INTENSITY_SIGNAL`, `marginal` or `average`, required), converts it to gCO2eq/kWh, counts it in `joulie_twin_input_queries_total{input="carbon_intensity"}`, exports it as `joulie_grid_carbon_intensity_grams_per_kW_h{joulie_grid_carbon_intensity_signal}` (OpenTelemetry `joulie.grid.carbon_intensity`), and hands it to the policy with the rest of the facility snapshot, which no policy reads yet. (#101)
+
 ### Upgrading
 
 - A link or script to an example needs its new path: the examples are `examples/01-simulated-cluster` to `examples/06-cooling-pue`, and `examples/07-simulator-gpu-powercaps` is `experiments/kwok-cluster`. (#95)

@@ -28,6 +28,7 @@ metric	joulie.facility.cooling.power	W	gauge	joulie_facility_cooling_power_watts
 metric	joulie.facility.it.energy	J	counter	joulie_facility_it_energy_joules_total	joulie.facility.it.energy_joules_total	joulie_facility_it_energy	joulie.facility.it.energy
 metric	joulie.facility.it.power	W	gauge	joulie_facility_it_power_watts	joulie.facility.it.power_watts	joulie_facility_it_power	joulie.facility.it.power
 metric	joulie.facility.pue	1	gauge	joulie_facility_pue_ratio	joulie.facility.pue_ratio	joulie_facility_pue	joulie.facility.pue
+metric	joulie.grid.carbon_intensity	g/(kW.h)	gauge	joulie_grid_carbon_intensity_grams_per_kW_h	joulie.grid.carbon_intensity_grams_per_(kW.h)	joulie_grid_carbon_intensity	joulie.grid.carbon_intensity
 metric	joulie.hw.governor	1	updowncounter	joulie_hw_governor	joulie.hw.governor	joulie_hw_governor	joulie.hw.governor
 metric	joulie.hw.gpu.speed	Hz	gauge	joulie_hw_gpu_speed_hertz	joulie.hw.gpu.speed_hertz	joulie_hw_gpu_speed	joulie.hw.gpu.speed
 metric	joulie.hw.gpu.speed.limit	Hz	gauge	joulie_hw_gpu_speed_limit_hertz	joulie.hw.gpu.speed.limit_hertz	joulie_hw_gpu_speed_limit	joulie.hw.gpu.speed.limit
@@ -83,6 +84,7 @@ label	joulie.calibration.class			joulie_calibration_class	joulie.calibration.cla
 label	joulie.calibration.knob			joulie_calibration_knob	joulie.calibration.knob	joulie_calibration_knob	joulie.calibration.knob
 label	joulie.calibration.memory_intensity			joulie_calibration_memory_intensity	joulie.calibration.memory_intensity	joulie_calibration_memory_intensity	joulie.calibration.memory_intensity
 label	joulie.cooling_zone.name			joulie_cooling_zone_name	joulie.cooling_zone.name	joulie_cooling_zone_name	joulie.cooling_zone.name
+label	joulie.grid.carbon_intensity.signal			joulie_grid_carbon_intensity_signal	joulie.grid.carbon_intensity.signal	joulie_grid_carbon_intensity_signal	joulie.grid.carbon_intensity.signal
 label	joulie.hw.clock.domain			joulie_hw_clock_domain	joulie.hw.clock.domain	joulie_hw_clock_domain	joulie.hw.clock.domain
 label	joulie.hw.governor.native			joulie_hw_governor_native	joulie.hw.governor.native	joulie_hw_governor_native	joulie.hw.governor.native
 label	joulie.hw.governor.preset			joulie_hw_governor_preset	joulie.hw.governor.preset	joulie_hw_governor_preset	joulie.hw.governor.preset

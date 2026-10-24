@@ -434,7 +434,10 @@ func reconcileWithCatalog(
 			nodeHardwareByName[nodeName] = nh
 		}
 	}
-	plan := buildPlanByPolicy(ctx, reader, policyType, eligible, nodeHardwareByName, nodesByName, interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
+	// One facility snapshot serves the whole reconcile: the policy plans
+	// with it, and every twin below reads the same one.
+	facility := currentTwinFacility()
+	plan := planByPolicy(ctx, reader, policyType, eligible, nodeHardwareByName, nodesByName, facility.forPolicy(), interval, perfCap, ecoCap, staticHPFrac, queueHPBaseFrac, queueHPMin, queueHPMax, queuePerfPerHPNode)
 	for i := range plan {
 		plan[i].SourceProfile = currentProfileOrDefault(nodesByName[plan[i].NodeName])
 		plan[i].Draining = false
@@ -514,7 +517,6 @@ func reconcileWithCatalog(
 	// Every node of this reconcile reads one answer to the grouped node
 	// power query, and the same facility snapshot.
 	ctx = withNodePowerRound(ctx)
-	facility := currentTwinFacility()
 
 	// Build per-rack estimated power for topology-aware PSU stress.
 	// Sum each node's estimated power (CPU + GPU at current cap %) per rack.
@@ -579,8 +581,9 @@ func reconcileWithCatalog(
 }
 
 // reconcileWithCatalogAndFacility wraps reconcileWithCatalog and passes facility metrics
-// to the twin computation via reconcileNodeTwin: the outdoor, cooling zone and node
-// inlet temperatures for cooling stress, and the IT and rack power for PSU stress.
+// to the policy, the carbon intensity included, and to the twin computation via
+// reconcileNodeTwin: the outdoor, cooling zone and node inlet temperatures for cooling
+// stress, and the IT and rack power for PSU stress.
 func reconcileWithCatalogAndFacility(
 	ctx context.Context,
 	reader kube.Reader,
@@ -726,6 +729,27 @@ func recordFamilySplit(plan []NodeAssignment, nodeHardwareByName map[string]Node
 	}
 }
 
+// planFunc is the signature of buildPlanByPolicy.
+type planFunc func(
+	ctx context.Context,
+	reader kube.Reader,
+	policyType string,
+	nodes []string,
+	nodeHardwareByName map[string]NodeHardware,
+	currentProfiles map[string]string,
+	facility policy.Facility,
+	interval time.Duration,
+	perfCap, ecoCap, staticHPFrac, queueHPBaseFrac float64,
+	queueHPMin, queueHPMax, queuePerfPerHPNode int,
+) []NodeAssignment
+
+// planByPolicy is the plan step of reconcileWithCatalog; a test wraps it to
+// see what the policy planned with.
+var planByPolicy planFunc = buildPlanByPolicy
+
+// buildPlanByPolicy runs the policy policyType. facility is the facility
+// snapshot of the reconcile, carbon intensity included; no policy reads it
+// yet, so it changes no plan.
 func buildPlanByPolicy(
 	ctx context.Context,
 	reader kube.Reader,
@@ -733,6 +757,7 @@ func buildPlanByPolicy(
 	nodes []string,
 	nodeHardwareByName map[string]NodeHardware,
 	currentProfiles map[string]string,
+	facility policy.Facility,
 	interval time.Duration,
 	perfCap, ecoCap, staticHPFrac, queueHPBaseFrac float64,
 	queueHPMin, queueHPMax, queuePerfPerHPNode int,
