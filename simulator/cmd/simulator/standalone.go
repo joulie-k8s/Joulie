@@ -90,6 +90,12 @@ type expandedNode struct {
 	// EcoPowerCap marks a profile node with a writable PL1: eco caps its CPU
 	// power, as the agent does, instead of scaling its frequency.
 	EcoPowerCap bool
+	// AgentCPUCapRange is the catalog CPU cap range a pool agent resolves a
+	// percent cap against on this legacy node, which it caps over HTTP
+	// without RAPL files (cmd/agent resolveCPUCapFromPct); nil for a
+	// profile node, a GPU node or a CPU the catalog does not know, which
+	// that agent throttles instead. initStandaloneNodes sets it.
+	AgentCPUCapRange *hwinv.NodeCPUCapRange
 }
 
 // standaloneNodeTracker tracks per-node resource usage for bin-packing.
@@ -472,10 +478,15 @@ func initStandaloneNodes(s *simulator, nodes []expandedNode) error {
 	}
 	s.refreshNodeStateFromKubeData(map[string]int{}, nil, legacy)
 
-	for _, n := range nodes {
+	for i, n := range nodes {
 		if n.Profile == nil {
 			if err := withInventoryGPUCaps(s, n); err != nil {
 				return fmt.Errorf("inventory node %s: %w", n.Name, err)
+			}
+			if n.GPUCount == 0 {
+				if r, err := s.catalog.NodeCPUCapRangeW(hwinv.SimulatedNodeCPU(n.Labels)); err == nil {
+					nodes[i].AgentCPUCapRange = &r
+				}
 			}
 			continue
 		}
@@ -1436,7 +1447,7 @@ func applyPowerPolicy(s *simulator, tracker map[string]*standaloneNodeTracker, n
 			// Performance node: full power, no throttle.
 			st.FreqScale = 1.0
 			st.TargetThrottlePct = 0
-			st.TargetCapWatts = model.DefaultCapW
+			st.TargetCapWatts = perfCPUCapW(nodeByName[name], model)
 			st.GPUCapWattsPerGpu = model.GPU.MaxWattsPerGPU
 			st.GPUTargetCapWattsPerGpu = model.GPU.MaxWattsPerGPU
 			t.isEco = false
@@ -1449,7 +1460,7 @@ func applyPowerPolicy(s *simulator, tracker map[string]*standaloneNodeTracker, n
 				// DrainingPerformance: keep perf caps, mark as draining.
 				st.FreqScale = 1.0
 				st.TargetThrottlePct = 0
-				st.TargetCapWatts = model.DefaultCapW
+				st.TargetCapWatts = perfCPUCapW(nodeByName[name], model)
 				st.GPUCapWattsPerGpu = model.GPU.MaxWattsPerGPU
 				st.GPUTargetCapWattsPerGpu = model.GPU.MaxWattsPerGPU
 				t.isEco = false
@@ -1460,9 +1471,11 @@ func applyPowerPolicy(s *simulator, tracker map[string]*standaloneNodeTracker, n
 				// as on a performance node, since capping it saves little
 				// and slows the GPU data feed by more (exp-03). A CPU-only
 				// profile node with a writable PL1 gets a CPU power cap,
-				// as the agent writes one; any other CPU-only node, HSMP
-				// included since the agent has no HSMP path, gets a
-				// frequency scale.
+				// as the agent writes one. A legacy CPU-only node whose
+				// CPU the catalog knows gets the watt cap its pool agent
+				// resolves from the catalog range and sends over HTTP.
+				// Any other CPU-only node, HSMP included since the agent
+				// has no HSMP path, gets a frequency scale.
 				n := nodeByName[name]
 				switch {
 				case n != nil && n.GPUCount > 0:
@@ -1473,6 +1486,10 @@ func applyPowerPolicy(s *simulator, tracker map[string]*standaloneNodeTracker, n
 					st.FreqScale = 1.0
 					st.TargetThrottlePct = 0
 					st.TargetCapWatts = cpuEcoPct * model.RaplCapMaxW
+				case n != nil && n.AgentCPUCapRange != nil:
+					st.FreqScale = 1.0
+					st.TargetThrottlePct = 0
+					st.TargetCapWatts = n.AgentCPUCapRange.CapForPctW(cpuEcoPct * 100)
 				default:
 					throttlePct := int(math.Round((1.0 - cpuEcoPct) * 100))
 					st.FreqScale = cpuEcoPct
@@ -1489,6 +1506,18 @@ func applyPowerPolicy(s *simulator, tracker map[string]*standaloneNodeTracker, n
 		}
 	}
 	s.mu.Unlock()
+}
+
+// perfCPUCapW is the CPU cap of a performance or draining node under
+// baseline B or C, the cap the agent applies for a 100 % CPU cap: on a legacy
+// node with AgentCPUCapRange its pool agent resolves 100 % to the top of the
+// catalog range and sends it as watts, which binds where the node's power
+// curve peaks above its TDP; any other node keeps its default cap.
+func perfCPUCapW(n *expandedNode, model simModel) float64 {
+	if n != nil && n.AgentCPUCapRange != nil {
+		return n.AgentCPUCapRange.MaxW()
+	}
+	return model.DefaultCapW
 }
 
 // countPendingJobs returns the number of submitted but not-yet-completed jobs.

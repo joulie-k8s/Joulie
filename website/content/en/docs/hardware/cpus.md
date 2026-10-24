@@ -25,8 +25,8 @@ CPU cap values are generated per profile and written into `NodeTwin.spec`:
 - performance profile typically maps to a higher cap (often 100%)
 - eco profile maps to a lower cap
 
-For heterogeneous nodes, percentage-based intent remains useful because each node resolves normalized intent using node-local capabilities.
-If percentage intent cannot be converted to watts (for example missing RAPL range), the agent applies a DVFS percent fallback path when possible.
+For heterogeneous nodes, percentage-based intent remains useful because each node resolves normalized intent using node-local capabilities: `pct` of the package cap maximum, clamped to the range, from the node's RAPL files. A node without RAPL files that the agent caps through an HTTP control backend (the simulator's KWOK nodes) takes the range of the hardware catalog for its CPU instead, times its socket count: per socket, the TDP at the top and the low end of the cTDP range, or 0.55 x TDP, at the bottom. On two AMD EPYC 9654 sockets (TDP 360 W, cTDP 320 to 400 W) a 95 % cap is 684 W and a 60 % cap is clamped to 640 W; an EPYC 9375F, whose cTDP low end equals its 320 W TDP, stays at its TDP whatever the percent.
+If percentage intent cannot be converted to watts (no RAPL range, and no catalog range or no HTTP control), the agent applies a DVFS percent fallback path when possible. See [CPU enforcement algorithm]({{< relref "/docs/architecture/agent.md#cpu-enforcement-algorithm" >}}).
 
 ## Driver/back-end semantics
 

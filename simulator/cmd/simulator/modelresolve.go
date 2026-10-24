@@ -73,12 +73,12 @@ func (s *simulator) applyCatalogModelDefaults(model simModel, nodeLabels map[str
 	if s.catalog == nil {
 		return model, ""
 	}
+	// The CPU and its socket count are read as the agent reads them for a
+	// node it caps over HTTP (hwinv.SimulatedNodeCPU).
+	cpuModelRaw, cpuSockets := hwinv.SimulatedNodeCPU(nodeLabels)
 	desc := hwinv.NodeDescriptor{
-		CPUModelRaw: firstNonEmpty(
-			nodeLabels["joulie.io/hw.cpu-model"],
-			nodeLabels["feature.node.kubernetes.io/cpu-model.name"],
-		),
-		CPUSockets: hwinv.ParseIntString(nodeLabels["joulie.io/hw.cpu-sockets"]),
+		CPUModelRaw: cpuModelRaw,
+		CPUSockets:  cpuSockets,
 		// After the simulator's own label, the controller manager's
 		// GPU_PRODUCT_LABEL_KEYS default, in its order: the AMD node
 		// labeller names the board in gpu.product-name, under both of its
@@ -126,16 +126,14 @@ func (s *simulator) applyCatalogModelDefaults(model simModel, nodeLabels map[str
 		if cpuSpec.ProxyFrom != nil {
 			model.CPUProxyFrom = cpuSpec.ProxyFrom.Family
 		}
-		if tdp := cpuSpec.Official.TDPW; tdp > 0 {
+		// The socket cap range is hwinv's, the one the agent resolves a
+		// percent cap against when it controls this node over HTTP.
+		if minW, tdp, ok := cpuSpec.Official.SocketCapRangeW(); ok {
 			if catalogFills(model.Defaulted.CPUSocketCapMaxW, model.CPUSocketCapMaxW) {
 				model.CPUSocketCapMaxW = tdp
 				model.Defaulted.CPUSocketCapMaxW = false
 			}
 			if catalogFills(model.Defaulted.CPUSocketCapMinW, model.CPUSocketCapMinW) {
-				minW := 0.55 * tdp
-				if r := cpuSpec.Official.CTdpRangeW; len(r) > 0 && r[0] > 0 {
-					minW = r[0]
-				}
 				model.CPUSocketCapMinW = capMinAtMax(minW, model.CPUSocketCapMaxW)
 				model.Defaulted.CPUSocketCapMinW = false
 			}

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	joulie "github.com/matbun/joulie/pkg/api"
+	"github.com/matbun/joulie/pkg/hwinv"
 )
 
 // Input holds all the inputs needed to compute twin state for one node.
@@ -137,7 +138,11 @@ func Compute(in Input) Output {
 	}
 	nodeTDP := cpuTDP + gpuTDP
 
-	cpuCappedPower := cpuTDP * in.CPUCapPct / 100.0
+	// The agent resolves a percent CPU cap against the node's cap range,
+	// clamped up to its minimum (hwinv.CapForPctW): on a CPU whose cTDP low
+	// end is close to its TDP the minimum binds, and pct x TDP alone would
+	// understate the budget the node runs under.
+	cpuCappedPower := hwinv.CapForPctW(in.CPUCapPct, in.Hardware.CPU.CapRange.MinWattsPerSocket*float64(cpuSockets), cpuTDP)
 	gpuCappedPower := gpuTDP * in.GPUCapPct / 100.0
 	if in.GPUCapNotApplied {
 		gpuCappedPower = gpuTDP

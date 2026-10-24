@@ -31,7 +31,7 @@ The `powerMeasurement` block in `NodeTwin.status` provides the scheduler with th
 |-------|------|-------------|
 | `source` | string | Where the power reading came from (see below) |
 | `measuredNodePowerW` | watts | Current power of the CPU packages plus the GPUs (`NODE_POWER_SCOPE=components`, the default) or of the whole host (`NODE_POWER_SCOPE=host`) |
-| `cpuCappedPowerW` | watts | CPU power budget (CPU TDP x cap percentage) |
+| `cpuCappedPowerW` | watts | CPU power budget: CPU TDP x cap percentage, clamped up to the bottom of the CPU cap range (min watts per socket x sockets), as the agent clamps the cap it applies |
 | `gpuCappedPowerW` | watts | GPU power budget (GPU TDP x cap percentage, or the GPU TDP where the cap does not apply) |
 | `nodeCappedPowerW` | watts | Total node power budget (CPU + GPU capped power) |
 | `cpuTdpW` | watts | CPU thermal design power (max watts per socket x sockets) |
@@ -81,14 +81,14 @@ When the socket count is unknown but a per-socket maximum is known, the twin ass
 
 ### Reference node used in the examples below
 
-A node with two AMD EPYC 9654 sockets (360 W per socket) and four NVIDIA H100 NVL GPUs (400 W each), running eco at a 60% cap on both CPU and GPU:
+A node with two AMD EPYC 9654 sockets (360 W per socket at the top of the cap range, 320 W at the bottom, the catalog's cTDP low end) and four NVIDIA H100 NVL GPUs (400 W each), running eco at a 60% cap on both CPU and GPU:
 
 - `cpuTdpW` = 360 * 2 = 720 W
 - `gpuTdpW` = 400 * 4 = 1600 W
 - `nodeTdpW` = 2320 W
-- `cpuCappedPowerW` = 720 * 0.6 = 432 W
+- `cpuCappedPowerW` = max(720 * 0.6, 320 * 2) = max(432, 640) = 640 W: the agent cannot cap the CPU below its range
 - `gpuCappedPowerW` = 1600 * 0.6 = 960 W
-- `nodeCappedPowerW` = 1392 W
+- `nodeCappedPowerW` = 1600 W
 
 ## CoolingStress formula
 
@@ -143,13 +143,13 @@ headroom = min(100, (nodeCappedPower - measuredPower) / nodeCappedPower * 100)
 
 It is clamped at 100 at the top but **not** at the bottom: a node drawing more than its budget scores negative, which ranks it below an idle node instead of tying with one. If `nodeCappedPower` is 0 (unknown hardware) the score is 100, a neutral value that avoids penalizing nodes the twin knows nothing about.
 
-**Example**: the reference node (1392 W capped budget) drawing a measured 1160 W:
+**Example**: the reference node (1600 W capped budget) drawing a measured 1160 W:
 
-- `headroom` = (1392 - 1160) / 1392 * 100 = **16.7**
+- `headroom` = (1600 - 1160) / 1600 * 100 = **27.5**
 
-**Example**: the same node drawing 1600 W, over its eco budget:
+**Example**: the same node drawing 1800 W, over its eco budget:
 
-- `headroom` = (1392 - 1600) / 1392 * 100 = **-14.9**
+- `headroom` = (1600 - 1800) / 1600 * 100 = **-12.5**
 
 The scheduler prefers its own projected headroom, computed from `powerMeasurement` plus the candidate pod's marginal watts, and falls back to this `predictedPowerHeadroomScore` only for a node with no `powerMeasurement` block.
 

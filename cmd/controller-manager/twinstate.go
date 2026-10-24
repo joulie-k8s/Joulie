@@ -334,10 +334,13 @@ func enrichHardwareFromCatalog(hw *joulie.NodeHardware) {
 			cpuQuery = hw.CPU.RawModel
 		}
 		if cpuQuery != "" {
+			// The socket range the agent and the simulator use for this
+			// CPU (hwinv's SocketCapRangeW), so the twin's capped budget
+			// clamps where the agent's cap does.
 			if _, spec, ok := twinHardwareCatalog.MatchCPU(cpuQuery); ok {
-				hw.CPU.CapRange.MaxWattsPerSocket = spec.Official.TDPW
-				if len(spec.Official.CTdpRangeW) >= 2 {
-					hw.CPU.CapRange.MinWattsPerSocket = spec.Official.CTdpRangeW[0]
+				if minW, maxW, ok := spec.Official.SocketCapRangeW(); ok {
+					hw.CPU.CapRange.MaxWattsPerSocket = maxW
+					hw.CPU.CapRange.MinWattsPerSocket = minW
 				}
 			}
 		}

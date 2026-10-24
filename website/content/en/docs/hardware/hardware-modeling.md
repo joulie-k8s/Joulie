@@ -181,7 +181,7 @@ In the simulator, five hardware facts follow a fixed precedence: the node class 
 | CPU socket cap minimum (`cpuSocketCapMinW`) | `SIM_CPU_SOCKET_CAP_MIN_W` | the low end of `cTdpRangeW`, else 0.55 x `tdpW` | 120 W |
 | Peak CPU power of the generic model (`pMaxW`) | `SIM_P_MAX_W` | sockets x `tdpW`, for a CPU without a measured curve (assumed: a package draws its TDP at full load) | 420 W |
 
-A catalog minimum above a maximum set by a class or a variable is lowered to that maximum. A measured `node2S` curve was taken on a two-socket server; on another socket count the simulator scales the whole curve, idle included, by sockets/2 (assumed: no public curve of such a node exists). A curve from a node class is used as given.
+A catalog minimum above a maximum set by a class or a variable is lowered to that maximum. The catalog's CPU socket cap range comes from `hwinv.CPUOfficialSpec.SocketCapRangeW`, which the agent also reads: a pool agent that caps a simulated node over HTTP resolves a percent CPU cap against it, times the socket count, so it asks for caps inside the range the node is modelled with. A class or a variable that changes the range is not seen by the agent. A measured `node2S` curve was taken on a two-socket server; on another socket count the simulator scales the whole curve, idle included, by sockets/2 (assumed: no public curve of such a node exists). A curve from a node class is used as given.
 
 If the platform is not in the inventory described on this page, the system still works.
 What changes is the level of realism and how much hardware-specific information is available:
