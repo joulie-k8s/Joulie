@@ -273,10 +273,13 @@ assert_golden_doc() {
 }
 
 # assert_doc checks that one document holds a line matching an extended regex
-# ("has") or none ("lacks").
+# ("has") or none ("lacks"). Every grep that reads a pipe here reads all of
+# it (grep >/dev/null, never grep -q): grep -q exits at the first match, the
+# writer then dies of SIGPIPE, and under pipefail the pipeline fails as if
+# nothing had matched.
 assert_doc() {
 	local slug="$1" want="$2" kind="$3" name="$4" pattern="$5" what="$6"
-	if doc "${slug}" "${kind}" "${name}" | grep -qE -- "${pattern}"; then
+	if doc "${slug}" "${kind}" "${name}" | grep -E -- "${pattern}" >/dev/null; then
 		[ "${want}" = has ] && return 0
 		fail "${kind}/${name}: ${what}: found /${pattern}/"
 	else
@@ -302,7 +305,7 @@ assert_env() {
 	local slug="$1" deploy="$2" var="$3" want="$4" got
 	got="$(env_of "${slug}" "${deploy}" "${var}")"
 	if [ "${want}" = "-" ]; then
-		if doc "${slug}" Deployment "${deploy}" | grep -qE "^[[:space:]]+- name: ${var}\$"; then
+		if doc "${slug}" Deployment "${deploy}" | grep -E "^[[:space:]]+- name: ${var}\$" >/dev/null; then
 			fail "Deployment/${deploy}: env ${var} must not be rendered"
 			return 1
 		fi
@@ -332,7 +335,7 @@ assert_optional_volumes() {
 			')"
 		if [ -z "${block}" ]; then
 			fail "Deployment/${deploy}: no volume ${vol}"
-		elif ! printf '%s\n' "${block}" | grep -qE '^[[:space:]]+optional: true$'; then
+		elif ! printf '%s\n' "${block}" | grep -E '^[[:space:]]+optional: true$' >/dev/null; then
 			fail "Deployment/${deploy}: volume ${vol} is not optional"
 		fi
 	done
@@ -363,7 +366,7 @@ assert_entry() {
 		fail "Deployment/${deploy}: no ${list} entry ${name}"
 		return 1
 	fi
-	if printf '%s\n' "${block}" | grep -qE -- "${pattern}"; then
+	if printf '%s\n' "${block}" | grep -E -- "${pattern}" >/dev/null; then
 		[ "${want}" = has ] && return 0
 		fail "Deployment/${deploy}: ${list} ${name}: found /${pattern}/"
 	else
