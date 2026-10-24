@@ -16,6 +16,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -416,5 +417,106 @@ func TestDB03GrafanaVariablesBecomeValidPromQL(t *testing.T) {
 		if _, err := selectedMetrics(want); err != nil {
 			t.Errorf("%s: %v", want, err)
 		}
+	}
+}
+
+// TestDB04SimulatedClusterMatrixLabelsEveryNode: the node matrix of the
+// simulator chart's dashboard has one cell per node the policy controller
+// plans or the simulator measures. Its value is the node's inlet
+// temperature, NaN for a node that has none (a hypervisor guest exports no
+// hw.* metric), and its label the policy controller's state of the node:
+// performance, draining (planned in eco, still on performance caps) or eco,
+// or unmanaged for a node the controller does not plan. A state a node left
+// (0) never shows. When two controller manager pods disagree on a node, as
+// during a rolling update, the matrix and the profile timeline both show
+// the state further toward eco, instead of failing on the duplicate or
+// adding the codes. The inlet history and the node variable list every node
+// of the matrix.
+func TestDB04SimulatedClusterMatrixLabelsEveryNode(t *testing.T) {
+	const path = "charts/joulie-simulator/dashboards/joulie-simulated-cluster.json"
+	queries, err := dashboardQueries(filepath.Join(repoRoot, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inlet := func(node, values string) series {
+		return series{"hw_host_ambient_temperature_celsius", map[string]string{
+			"k8s_node_name": node, "instance": node, "job": "joulie/joulie-simulator", "hw_id": "host"}, values}
+	}
+	// controller is what one controller manager pod exports for a node in
+	// state, as recordNodeStateMetrics and recordNodeProfileLabelMetrics
+	// write it: the profile label of a draining node is eco.
+	controller := func(pod, node, state string) []series {
+		var out []series
+		for _, s := range []string{"ActivePerformance", "DrainingPerformance", "ActiveEco"} {
+			v := "0+0x10"
+			if s == state {
+				v = "1+0x10"
+			}
+			out = append(out, series{"joulie_policy_node_state", map[string]string{
+				"node": node, "state": s, "pod": pod, "job": "joulie"}, v})
+		}
+		profile := "eco"
+		if state == "ActivePerformance" {
+			profile = "performance"
+		}
+		for _, p := range []string{"performance", "eco"} {
+			v := "0+0x10"
+			if p == profile {
+				v = "1+0x10"
+			}
+			out = append(out, series{"joulie_policy_node_profile_label", map[string]string{
+				"node": node, "profile": p, "pod": pod, "job": "joulie"}, v})
+		}
+		return out
+	}
+	ss := []series{inlet("cpu-0", "22+0x10"), inlet("gpu-0", "26+0x10"), inlet("drain-0", "24+0x10"), inlet("other-0", "22.5+0x10")}
+	for _, c := range [][3]string{
+		{"cm-a", "cpu-0", "ActivePerformance"}, {"cm-b", "cpu-0", "ActivePerformance"},
+		{"cm-a", "gpu-0", "ActivePerformance"}, {"cm-b", "gpu-0", "ActiveEco"},
+		{"cm-a", "drain-0", "DrainingPerformance"},
+		{"cm-a", "vm-0", "ActiveEco"},
+	} {
+		ss = append(ss, controller(c[0], c[1], c[2])...)
+	}
+	st := load(t, ss)
+
+	// byNode evaluates the query at where, with every node selected, and
+	// returns its samples by the node label: profile and value. It returns
+	// nil for a query that fails.
+	byNode := func(where, label string) map[string]string {
+		t.Helper()
+		i := slices.IndexFunc(queries, func(q dashboardQuery) bool { return q.where == where })
+		if i < 0 {
+			t.Fatalf("%s has no %s", path, where)
+		}
+		res, err := eval(t, st, strings.ReplaceAll(queries[i].expr, "$node", ".*"))
+		if err != nil {
+			t.Errorf("%s: %v", where, err)
+			return nil
+		}
+		got := map[string]string{}
+		for _, s := range res.Samples {
+			got[s.Labels[label]] += strings.TrimSpace(fmt.Sprintf("%s %g", s.Labels["profile"], s.Value)) + ";"
+		}
+		return got
+	}
+	for _, c := range []struct {
+		where, label string
+		want         map[string]string
+	}{
+		{fmt.Sprintf("panel %q target 0", "Inlet temperature and power profile"), "k8s_node_name", map[string]string{
+			"cpu-0": "performance 22;", "gpu-0": "eco 26;", "drain-0": "draining 24;", "vm-0": "eco NaN;", "other-0": "unmanaged 22.5;"}},
+		{fmt.Sprintf("panel %q target 0", "Power profile per node"), "node", map[string]string{
+			"cpu-0": "1;", "gpu-0": "3;", "drain-0": "2;", "vm-0": "3;"}},
+		{fmt.Sprintf("panel %q target 0", "Inlet temperature per node"), "k8s_node_name", map[string]string{
+			"cpu-0": "22;", "gpu-0": "26;", "drain-0": "24;", "vm-0": "NaN;", "other-0": "22.5;"}},
+	} {
+		if got := byNode(c.where, c.label); !maps.Equal(got, c.want) {
+			t.Errorf("%s by %s = %v, want %v", c.where, c.label, got, c.want)
+		}
+	}
+	nodes := slices.Sorted(maps.Keys(byNode("variable node", "k8s_node_name")))
+	if want := []string{"cpu-0", "drain-0", "gpu-0", "other-0", "vm-0"}; !slices.Equal(nodes, want) {
+		t.Errorf("variable node lists %v, want %v", nodes, want)
 	}
 }

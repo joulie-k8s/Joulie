@@ -491,6 +491,13 @@ Helm values of `charts/joulie-simulator`, rendered only when `emulate.enabled` i
 
 For queries, Prometheus should promote `k8s.node.name` and `host.name` onto the data series (`otlp.promote_resource_attributes`); without that, the node name is joined from `target_info`. See [Prometheus settings]({{< relref "/docs/architecture/telemetry.md#prometheus-settings" >}}).
 
+The simulator chart also ships the Grafana dashboard `Joulie - Simulated Cluster` ([Dashboard]({{< relref "/docs/simulator/simulated-cluster.md#dashboard" >}})), which reads these metrics with `k8s.node.name` promoted, and the controller manager's `joulie_policy_*` and `joulie_twin_*`. These values render whether or not `emulate.enabled` is true:
+
+| Value | Default | Effect |
+|-------|---------|--------|
+| `grafanaDashboard.enabled` | `false` | Renders the ConfigMap `joulie-simulator-grafana-dashboard` in the release namespace, holding `dashboards/joulie-simulated-cluster.json`, for a Grafana sidecar that loads dashboards from ConfigMaps. |
+| `grafanaDashboard.labels` | `grafana_dashboard: "1"` | Labels of that ConfigMap: the ones the sidecar selects, kube-prometheus-stack's by default. |
+
 ### Simulator hardware profiles
 
 The simulator (`simulator/cmd/simulator`) emulates a node from a hardware profile picked by name: one of the builtin profiles in `simulator/pkg/hwemu/profiles/`, or a local one. Local profiles stay outside the repository and are the only ones whose measured sources (`measured:` provenance) may name the machine they were measured on, such as a calibration of your own nodes. A builtin profile may cite a measurement too, but describes the machine by its hardware only.

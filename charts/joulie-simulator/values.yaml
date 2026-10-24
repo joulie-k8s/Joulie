@@ -105,6 +105,17 @@ otel:
   # service.instance.id, k8s.node.name or host.name.
   resourceAttributes: {}
 
+# Ships the dashboard "Joulie - Simulated Cluster"
+# (dashboards/joulie-simulated-cluster.json) in a ConfigMap with these
+# labels, for a Grafana sidecar that loads dashboards from ConfigMaps
+# (kube-prometheus-stack's looks for grafana_dashboard: "1"). Off by default.
+# It reads the OTLP metrics emulate mode pushes, with k8s.node.name promoted
+# to a label, and the Joulie chart's joulie_policy_* and joulie_twin_*.
+grafanaDashboard:
+  enabled: false
+  labels:
+    grafana_dashboard: "1"
+
 serviceMonitor:
   enabled: false
   interval: 30s

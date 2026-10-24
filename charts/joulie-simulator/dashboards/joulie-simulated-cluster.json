@@ -1,0 +1,810 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "The simulated cluster as a matrix of nodes: inlet temperature and the power profile Joulie applied, over the facility's outside air, power and PUE.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "type": "row",
+      "title": "Node matrix at the end of the time range",
+      "collapsed": false,
+      "id": 1,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "One cell per node, at the end of the time range: move the end of the time picker to see another time of day. The colour is the node's inlet temperature (hw.host.ambient_temperature): the facility's outside air plus the offset of the node's cooling zone, so the nodes of one zone share a colour. Blue below 18 C, green from 18, yellow from 24, orange from 27 (above the ASHRAE A1 recommended 27 C), red from 32 C (above the A1 allowable); grey for a node with no inlet sensor, a hypervisor guest, which exports no hw.* metric. The label is the policy controller's state of the node (joulie_policy_node_state): performance, draining (planned in eco, still on performance caps until its performance pods finish) or eco; unmanaged is a node Joulie does not plan. When two controller manager pods disagree on a node, as during a rolling update, the cell shows the state further toward eco.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "no inlet sensor",
+                  "color": "#8e8e8e",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 18
+              },
+              {
+                "color": "yellow",
+                "value": 24
+              },
+              {
+                "color": "orange",
+                "value": 27
+              },
+              {
+                "color": "red",
+                "value": 32
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 0,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^Value$/",
+          "values": true
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 14,
+          "valueSize": 26
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (k8s_node_name) (hw_host_ambient_temperature_celsius{k8s_node_name=~\"$node\"})\n  + on (k8s_node_name) group_left (profile)\n  (0 * max by (k8s_node_name, profile) (label_replace(topk by (node) (1,\n      label_replace(joulie_policy_node_state{node=~\"$node\",state=\"ActivePerformance\"} == 1, \"profile\", \"performance\", \"\", \"\")\n    or label_replace(2 * (joulie_policy_node_state{node=~\"$node\",state=\"DrainingPerformance\"} == 1), \"profile\", \"draining\", \"\", \"\")\n    or label_replace(3 * (joulie_policy_node_state{node=~\"$node\",state=\"ActiveEco\"} == 1), \"profile\", \"eco\", \"\", \"\")), \"k8s_node_name\", \"$1\", \"node\", \"(.+)\")))\nor on (k8s_node_name)\n  label_replace(max by (k8s_node_name) (hw_host_ambient_temperature_celsius{k8s_node_name=~\"$node\"}), \"profile\", \"unmanaged\", \"\", \"\")\nor on (k8s_node_name)\n  0 * max by (k8s_node_name, profile) (label_replace(topk by (node) (1,\n      label_replace(joulie_policy_node_state{node=~\"$node\",state=\"ActivePerformance\"} == 1, \"profile\", \"performance\", \"\", \"\")\n    or label_replace(2 * (joulie_policy_node_state{node=~\"$node\",state=\"DrainingPerformance\"} == 1), \"profile\", \"draining\", \"\", \"\")\n    or label_replace(3 * (joulie_policy_node_state{node=~\"$node\",state=\"ActiveEco\"} == 1), \"profile\", \"eco\", \"\", \"\")), \"k8s_node_name\", \"$1\", \"node\", \"(.+)\")) / 0",
+          "legendFormat": "{{k8s_node_name}} {{profile}}",
+          "refId": "A",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "title": "Inlet temperature and power profile",
+      "type": "stat",
+      "transformations": [
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "k8s_node_name"
+              }
+            ]
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "k8s_node_name": 0,
+              "profile": 1,
+              "Value": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "title": "Controls",
+      "id": 3,
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 1
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Time of day**: the time picker. The matrix shows the end of the range, the rows below the whole range. The outside air is a sine that starts with the simulator, `periodH` hours long.\n\n**Outside air**: not settable from Grafana. Edit `facility` (`ambientC`, `amplitudeC`, `periodH`) in the cluster spec, then run `make simcluster-up` and `make simcluster-deploy`, which restart the simulator with it. `SIM_FACILITY_*` fill what the spec leaves unset.\n\n**Data**: the simulator's OTLP push as the default telemetry mode, `otel`, stores it, with `k8s.node.name` promoted to a label, and the controller manager's `joulie_policy_*` and `joulie_twin_*`."
+      }
+    },
+    {
+      "type": "row",
+      "title": "Power profile and temperature over the time range",
+      "collapsed": false,
+      "id": 4,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "panels": []
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "The policy controller's state of each node over the time range (joulie_policy_node_state): performance, draining (a node planned in eco that still runs performance pods, which keeps its performance caps) and eco. When two controller manager pods disagree on a node, as during a rolling update, the row shows the state further toward eco, as the matrix does.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "performance",
+                  "color": "green",
+                  "index": 0
+                },
+                "2": {
+                  "text": "draining",
+                  "color": "orange",
+                  "index": 1
+                },
+                "3": {
+                  "text": "eco",
+                  "color": "blue",
+                  "index": 2
+                }
+              }
+            }
+          ],
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 11
+      },
+      "id": 5,
+      "options": {
+        "showValue": "auto",
+        "mergeValues": true,
+        "rowHeight": 0.85,
+        "alignValue": "center",
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (node) (\n    (joulie_policy_node_state{node=~\"$node\",state=\"ActivePerformance\"} == 1)\n  or 2 * (joulie_policy_node_state{node=~\"$node\",state=\"DrainingPerformance\"} == 1)\n  or 3 * (joulie_policy_node_state{node=~\"$node\",state=\"ActiveEco\"} == 1)\n)",
+          "legendFormat": "{{node}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Power profile per node",
+      "type": "state-timeline"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "The matrix over the time range: one row per node, one column per interval, coloured as the matrix; grey for a node with no inlet sensor.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "no inlet sensor",
+                  "color": "#8e8e8e",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 18
+              },
+              {
+                "color": "yellow",
+                "value": 24
+              },
+              {
+                "color": "orange",
+                "value": 27
+              },
+              {
+                "color": "red",
+                "value": 32
+              }
+            ]
+          },
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 11
+      },
+      "id": 6,
+      "options": {
+        "showValue": "never",
+        "rowHeight": 0.85,
+        "colWidth": 0.95,
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (k8s_node_name) (hw_host_ambient_temperature_celsius{k8s_node_name=~\"$node\"})\nor on (k8s_node_name)\n  0 * max by (k8s_node_name) (label_replace(joulie_policy_node_state{node=~\"$node\"}, \"k8s_node_name\", \"$1\", \"node\", \"(.+)\")) / 0",
+          "legendFormat": "{{k8s_node_name}}",
+          "refId": "A",
+          "interval": "1m"
+        }
+      ],
+      "title": "Inlet temperature per node",
+      "type": "status-history",
+      "maxDataPoints": 30
+    },
+    {
+      "type": "row",
+      "title": "Outside air and the facility",
+      "collapsed": false,
+      "id": 7,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 19
+      },
+      "panels": []
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "The facility's outside air (joulie.facility.ambient_temperature), each cooling zone's ambient, the inlet of its nodes (joulie.cooling_zone.ambient_temperature), and the outside air the digital twin last read (joulie_twin_facility_ambient_temperature_celsius), which the cooling stress of every NodeTwin uses.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "decimals": 1,
+          "custom": {
+            "fillOpacity": 0,
+            "lineWidth": 2
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "outside air"
+            },
+            "properties": [
+              {
+                "id": "custom.lineWidth",
+                "value": 5
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "read by the twin"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    6,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 20
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(joulie_facility_ambient_temperature_celsius)",
+          "legendFormat": "outside air",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (joulie_cooling_zone_name) (joulie_cooling_zone_ambient_temperature_celsius)",
+          "legendFormat": "{{joulie_cooling_zone_name}}",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(joulie_twin_facility_ambient_temperature_celsius)",
+          "legendFormat": "read by the twin",
+          "refId": "C"
+        }
+      ],
+      "title": "Outside air and cooling zones",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "The facility's IT power (joulie.facility.it.power), the sum of its nodes, and the cooling power (joulie.facility.cooling.power), which grows with the IT load and the outside air.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 20
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(joulie_facility_it_power_watts)",
+          "legendFormat": "IT",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(joulie_facility_cooling_power_watts)",
+          "legendFormat": "cooling",
+          "refId": "B"
+        }
+      ],
+      "title": "IT and cooling power",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Power usage effectiveness, (IT + cooling) / IT, as the facility model computes it (joulie.facility.pue).",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 20
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "showLegend": false,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(joulie_facility_pue_ratio)",
+          "legendFormat": "PUE",
+          "refId": "A"
+        }
+      ],
+      "title": "PUE",
+      "type": "timeseries"
+    },
+    {
+      "type": "row",
+      "title": "Node power and caps",
+      "collapsed": false,
+      "id": 11,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "panels": []
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Whole-host power of each emulated node (hw.host.power): the effect of its profile's caps and of the load. A pod alone does not load an emulated node: the load is the spec's baseLoad, or the jobs of a workload run (make simcluster-scenario); without either a node draws its idle power.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": {
+            "fillOpacity": 0,
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 0,
+        "y": 29
+      },
+      "id": 12,
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ],
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (k8s_node_name) (hw_host_power_watts{k8s_node_name=~\"$node\"})",
+          "legendFormat": "{{k8s_node_name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Host power per node",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Sum of the power limits in force on each node's CPU packages and GPUs (joulie.hw.power.limit, joulie.hw.limit.state enforced), as the agent wrote them for the node's profile. Empty for a node whose components have no settable limit.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": {
+            "fillOpacity": 0,
+            "lineWidth": 1,
+            "lineInterpolation": "stepAfter"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 8,
+        "y": 29
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ],
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (k8s_node_name) (joulie_hw_power_limit_watts{joulie_hw_limit_state=\"enforced\",k8s_node_name=~\"$node\"})",
+          "legendFormat": "{{k8s_node_name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Power limit enforced per node",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Power of each rack of the cluster spec (joulie.rack.power).",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 16,
+        "y": 29
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (joulie_rack_name) (joulie_rack_power_watts)",
+          "legendFormat": "{{joulie_rack_name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Rack power",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": [
+    "joulie",
+    "simulator",
+    "energy"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "Prometheus",
+          "value": "Prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "type": "datasource"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "query_result(max by (k8s_node_name) (hw_host_ambient_temperature_celsius) or on (k8s_node_name) max by (k8s_node_name) (label_replace(joulie_policy_node_state, \"k8s_node_name\", \"$1\", \"node\", \"(.+)\")))",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Node",
+        "multi": true,
+        "name": "node",
+        "options": [],
+        "query": {
+          "query": "query_result(max by (k8s_node_name) (hw_host_ambient_temperature_celsius) or on (k8s_node_name) max by (k8s_node_name) (label_replace(joulie_policy_node_state, \"k8s_node_name\", \"$1\", \"node\", \"(.+)\")))",
+          "refId": "NodeVariableQuery"
+        },
+        "regex": "/k8s_node_name=\"([^\"]+)\"/",
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Joulie - Simulated Cluster",
+  "uid": "joulie-simulated-cluster",
+  "version": 1
+}
