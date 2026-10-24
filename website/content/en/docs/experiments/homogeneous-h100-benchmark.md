@@ -6,7 +6,19 @@ This page reports results from the homogeneous H100 NVL cluster benchmark experi
 
 - [`experiments/03-homogeneous-h100-benchmark/`](https://github.com/joulie-k8s/Joulie/tree/main/experiments/03-homogeneous-h100-benchmark)
 
-> **Note (2026-10-09):** The results on this page, like the experiment's `REPORT.md` and `REPORT-standalone.md`, were produced with an older simulator model and have not been rerun. The simulator reads the hardware catalog embedded in it, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Simulator changes](https://github.com/joulie-k8s/Joulie/blob/main/simulator/CHANGES.md) lists each change and how far it moves the experiment's `configs/benchmark-debug.yaml`.
+> **Note (2026-10-09, updated 2026-10-24):** Every result on this page outside [Rerun with Joulie 0.2.4](#rerun-with-joulie-024), such as the 20.1% and 25.5% lower IT power of B and C, comes from an older simulator model, like the original sections of the experiment's `REPORT.md` and `REPORT-standalone.md`. The simulator reads the hardware catalog embedded in it, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Simulator changes](https://github.com/joulie-k8s/Joulie/blob/main/simulator/CHANGES.md) lists each change and how far it moves the experiment's `configs/benchmark-debug.yaml`.
+
+## Rerun with Joulie 0.2.4
+
+On 2026-10-24 `configs/benchmark-40n.yaml` ran again with the 0.2.4 release images: one seed, one run per baseline, each a fixed window of 660 s wall at time scale 120 (about 22 simulated hours) that ends with jobs still running, so the makespan is the same for every baseline by design.
+
+| Baseline | Average cluster power (W) | Energy over the window (kWh) | Power vs A |
+|---|---:|---:|---:|
+| A (no mgmt) | 55,220 | 1,237.8 | n/a |
+| B (static) | 50,505 | 1,137.3 | -8.5% |
+| C (queue-aware) | 50,827 | 1,138.6 | -8.0% |
+
+B and C drew 8.5% and 8.0% less average cluster power than A. These runs do not measure throughput: `throughput_jobs_per_sim_hour` divides the trace's job count by the run's length, every run stopped at the window with jobs still running, and `summary.csv` holds no count of completed jobs, so the table leaves throughput out. The [rerun section of the report](https://github.com/joulie-k8s/Joulie/blob/main/experiments/03-homogeneous-h100-benchmark/REPORT.md#rerun-with-joulie-024-2026-10-24) has the plots and the columns the table comes from.
 
 ## Scope
 

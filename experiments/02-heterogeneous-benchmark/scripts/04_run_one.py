@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import platform
 import subprocess
 import sys
@@ -339,6 +340,38 @@ def wait_completion(timeout_sec: int, poll_log_sec: int):
     return False
 
 
+# SIM_PORT is the simulator's HTTP port in its pod.
+SIM_PORT = 18080
+
+
+def forwarded_port(line: str):
+    """The local port of a kubectl port-forward "Forwarding from" line, or None."""
+    m = re.match(r"Forwarding from 127\.0\.0\.1:(\d+) -> %d" % SIM_PORT, line.strip())
+    return int(m.group(1)) if m else None
+
+
+def fetch_via_port_forward(endpoint: str, timeout_sec: int) -> str:
+    """GET endpoint from the simulator through a port-forward on a local port
+    kubectl picks. A fixed local port fails whenever another process holds
+    it, and every debug artifact of the run then came back empty."""
+    pf = subprocess.Popen(
+        ["kubectl", "-n", "joulie-sim-demo", "port-forward", "deploy/joulie-telemetry-sim", f":{SIM_PORT}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        port = forwarded_port(pf.stdout.readline())
+        if port is None:
+            pf.terminate()
+            raise RuntimeError("kubectl port-forward failed: " + (pf.communicate(timeout=5)[1].strip() or "no Forwarding line"))
+        return urlopen(f"http://127.0.0.1:{port}{endpoint}", timeout=timeout_sec).read().decode()
+    finally:
+        pf.terminate()
+        try:
+            pf.wait(timeout=5)
+        except Exception:
+            pf.kill()
+
+
 def collect_artifacts(
     run_dir: pathlib.Path,
     baseline: str,
@@ -364,21 +397,6 @@ def collect_artifacts(
             return False
         return isinstance(obj, dict) and bool(obj)
 
-    def fetch_via_port_forward(endpoint: str, timeout_sec: int) -> str:
-        pf = subprocess.Popen(
-            ["kubectl", "-n", "joulie-sim-demo", "port-forward", "deploy/joulie-telemetry-sim", "18080:18080"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        try:
-            time.sleep(1.5)
-            return urlopen(f"http://127.0.0.1:18080{endpoint}", timeout=timeout_sec).read().decode()
-        finally:
-            pf.terminate()
-            try:
-                pf.wait(timeout=5)
-            except Exception:
-                pf.kill()
 
     def fetch_via_exec(filename: str) -> str:
         out = run(
@@ -403,8 +421,8 @@ def collect_artifacts(
                 payload = fetch_via_port_forward(endpoint, timeout_sec)
                 if valid_debug_payload(payload):
                     return payload
-            except Exception:
-                pass
+            except Exception as err:
+                log(f"warning: {endpoint}: {err}")
             time.sleep(1)
         payload = fetch_via_exec(filename)
         if valid_debug_payload(payload):
