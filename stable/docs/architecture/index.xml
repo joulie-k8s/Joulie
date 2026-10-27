@@ -105,7 +105,7 @@ the agent is the component that turns that intent into concrete control actions.
 &lt;ol&gt;
 &lt;li&gt;Select eligible nodes from &lt;code&gt;NODE_SELECTOR&lt;/code&gt;, excluding reserved and unschedulable nodes.&lt;/li&gt;
 &lt;li&gt;Build a hardware view from &lt;code&gt;NodeHardware&lt;/code&gt; when available, otherwise from node labels/inventory fallback.&lt;/li&gt;
-&lt;li&gt;Build a desired plan with the selected policy.&lt;/li&gt;
+&lt;li&gt;Build a desired plan with the selected policy. The policy gets the facility snapshot of the reconcile (&lt;code&gt;policy.Facility&lt;/code&gt;: the grid carbon intensity with its signal, IT and cooling power, ambient, zone, rack and inlet readings, each known or not), from the same poll the twins read in step 5. No policy reads it yet, so it changes no plan; a carbon-aware policy will.&lt;/li&gt;
 &lt;li&gt;Apply downgrade guard (sets &lt;code&gt;NodeTwin.status.schedulableClass&lt;/code&gt; to &lt;code&gt;draining&lt;/code&gt; while blocking pods still run).&lt;/li&gt;
 &lt;li&gt;Write &lt;code&gt;NodeTwin.spec&lt;/code&gt; and update the &lt;code&gt;joulie.io/power-profile&lt;/code&gt; node label.&lt;/li&gt;
 &lt;/ol&gt;
