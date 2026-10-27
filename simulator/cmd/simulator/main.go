@@ -47,18 +47,24 @@ var (
 )
 
 type nodeState struct {
-	CapWatts                float64          `json:"capWatts"`
-	TargetCapWatts          float64          `json:"targetCapWatts"`
-	ThrottlePct             int              `json:"throttlePct"`
-	TargetThrottlePct       int              `json:"targetThrottlePct"`
-	FreqScale               float64          `json:"freqScale"`
-	CPUUtil                 float64          `json:"cpuUtil"`
-	CPUWorkClass            string           `json:"cpuWorkClass"`
-	CapSaturated            bool             `json:"capSaturated"`
-	LastAction              string           `json:"lastAction"`
-	LastResult              string           `json:"lastResult"`
-	LastUpdate              time.Time        `json:"lastUpdate"`
-	PodsRunning             int              `json:"podsRunning"`
+	CapWatts          float64   `json:"capWatts"`
+	TargetCapWatts    float64   `json:"targetCapWatts"`
+	ThrottlePct       int       `json:"throttlePct"`
+	TargetThrottlePct int       `json:"targetThrottlePct"`
+	FreqScale         float64   `json:"freqScale"`
+	CPUUtil           float64   `json:"cpuUtil"`
+	CPUWorkClass      string    `json:"cpuWorkClass"`
+	CapSaturated      bool      `json:"capSaturated"`
+	LastAction        string    `json:"lastAction"`
+	LastResult        string    `json:"lastResult"`
+	LastUpdate        time.Time `json:"lastUpdate"`
+	PodsRunning       int       `json:"podsRunning"`
+	// OtherPods counts the running pods on the node outside the workload
+	// engine's jobs, the load of a node without jobs (setNoJobLoad).
+	OtherPods int `json:"otherPods"`
+	// HasJobs tells whether the workload tick last saw jobs on the node:
+	// the tick then sets its load, and the pod poll leaves it alone.
+	HasJobs                 bool             `json:"hasJobs"`
 	ByIntentClass           map[string]int   `json:"byIntentClass,omitempty"`
 	GPUCapWattsPerGpu       float64          `json:"gpuCapWattsPerGpu"`
 	GPUTargetCapWattsPerGpu float64          `json:"gpuTargetCapWattsPerGpu"`
@@ -134,6 +140,7 @@ type runningPodInfo struct {
 	Node        string
 	IntentClass string
 	JobID       string
+	Running     bool
 }
 
 type simJob struct {
@@ -172,10 +179,10 @@ type simJob struct {
 	PodName            string
 	NodeName           string
 
-	// Read from the trace for the v1 engine. SchemaVersion is the record's
-	// schemaVersion. Affinity, NodeSelector and Tolerations are the
-	// podTemplate's placement, read from v3 records only; legacy pods never
-	// carry them. SensitivitySet is whether the record gave sensitivity.cpu
+	// Read from the trace. SchemaVersion is the record's schemaVersion.
+	// Affinity, NodeSelector and Tolerations are the podTemplate's
+	// placement; a legacy record keeps only its affinity, which its pod
+	// carries with the intent ANDed in (legacyAffinity). SensitivitySet is whether the record gave sensitivity.cpu
 	// or sensitivity.gpu; without either both are 1.
 	SchemaVersion  string
 	Affinity       *corev1.Affinity
@@ -771,10 +778,14 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 	switch payload.Action {
 	case "rapl.set_power_cap_watts":
 		if payload.CapWatts > 0 {
-			capW := payload.CapWatts
-			if capW < model.RaplCapMinW {
-				capW = model.RaplCapMinW
+			// A cap below the lowest one the CPUs accept is refused, never
+			// applied: a saving measured under it could not happen.
+			if floorW := cpuCapFloorW(model); payload.CapWatts < floorW {
+				result = "error"
+				message = fmt.Sprintf("capWatts %g is below the lowest cap this node's CPUs accept, %g W", payload.CapWatts, floorW)
+				break
 			}
+			capW := payload.CapWatts
 			if model.RaplCapMaxW > 0 && capW > model.RaplCapMaxW {
 				capW = model.RaplCapMaxW
 			}
@@ -802,10 +813,12 @@ func (s *simulator) handleControl(w http.ResponseWriter, r *http.Request) {
 			message = "capWattsPerGpu must be > 0"
 			break
 		}
-		cap := payload.CapWattsPerGpu
-		if cap < model.GPU.MinCapWattsPerGPU {
-			cap = model.GPU.MinCapWattsPerGPU
+		if payload.CapWattsPerGpu < model.GPU.MinCapWattsPerGPU {
+			result = "error"
+			message = fmt.Sprintf("capWattsPerGpu %g is below the lowest cap this node's GPUs accept, %g W", payload.CapWattsPerGpu, model.GPU.MinCapWattsPerGPU)
+			break
 		}
+		cap := payload.CapWattsPerGpu
 		if cap > model.GPU.MaxWattsPerGPU {
 			cap = model.GPU.MaxWattsPerGPU
 		}
@@ -1083,6 +1096,33 @@ func (s *simulator) setFacilityGauges(v facility.Values) {
 	s.facilityCoolingPowerW.Set(math.Round(v.CoolingPowerW*100) / 100)
 }
 
+// clusterUtilization is the cluster's CPU and GPU utilization: each node's
+// utilization weighted by its CPU cores (CPUCapacityCores, 1 when unknown)
+// and by its GPUs, so a node without GPUs does not count toward the GPU
+// figure and a 384-core node counts six times a 64-core one.
+func clusterUtilization(states []*nodeState) (cpu, gpu float64) {
+	var cpuW, cpuSum, gpuW, gpuSum float64
+	for _, st := range states {
+		cores := st.CPUCapacityCores
+		if cores <= 0 {
+			cores = 1
+		}
+		cpuW += cores
+		cpuSum += cores * st.CPUUtil
+		if n := float64(len(st.GPUDevices)); n > 0 {
+			gpuW += n
+			gpuSum += n * st.GPUUtil
+		}
+	}
+	if cpuW > 0 {
+		cpu = cpuSum / cpuW
+	}
+	if gpuW > 0 {
+		gpu = gpuSum / gpuW
+	}
+	return cpu, gpu
+}
+
 // appendTimeseriesRow writes one CSV row to the time-series file with the
 // current cluster power state. Called once per workload tick from the
 // workload loop, after updateFacilityMetrics.
@@ -1091,8 +1131,9 @@ func (s *simulator) appendTimeseriesRow(now time.Time) {
 		return
 	}
 	s.mu.RLock()
-	var itPowerW, cpuPowerW, gpuPowerW, cpuUtilSum, gpuUtilSum float64
+	var itPowerW, cpuPowerW, gpuPowerW float64
 	var nodesActive, podsRunning int
+	states := make([]*nodeState, 0, len(s.state))
 	for _, st := range s.state {
 		if st == nil {
 			continue
@@ -1106,9 +1147,9 @@ func (s *simulator) appendTimeseriesRow(now time.Time) {
 		} else {
 			itPowerW += st.CPUInstantPowerWatts + st.GPUPowerWatts
 		}
-		cpuUtilSum += st.CPUUtil
-		gpuUtilSum += st.GPUUtil
+		states = append(states, st)
 	}
+	clusterCPUUtil, clusterGPUUtil := clusterUtilization(states)
 	energyJ := s.energyTotalJ
 	s.mu.RUnlock()
 
@@ -1117,12 +1158,6 @@ func (s *simulator) appendTimeseriesRow(now time.Time) {
 	ambientTemp := readGaugeValue(s.facilityAmbientTemp)
 	coolingPowerW := readGaugeValue(s.facilityCoolingPowerW)
 	facilityPowerW := itPowerW + coolingPowerW
-
-	var clusterCPUUtil, clusterGPUUtil float64
-	if nodesActive > 0 {
-		clusterCPUUtil = cpuUtilSum / float64(nodesActive)
-		clusterGPUUtil = gpuUtilSum / float64(nodesActive)
-	}
 
 	// Since the workload start with a trace, else since the simulator
 	// start, which emulate mode writes rows from.
@@ -1488,12 +1523,16 @@ func (s *simulator) refreshNodeStateFromKubeData(counts map[string]int, pods []r
 
 	selected := map[string]bool{}
 	intentByNode := map[string]map[string]int{}
+	others := map[string]int{}
 	for node := range nodeLabels {
 		s.nodeSeen[node] = true
 	}
 	for _, p := range pods {
 		if p.Node == "" {
 			continue
+		}
+		if p.Running && (s.workload == nil || s.workload.jobByID[p.JobID] == nil) {
+			others[p.Node]++
 		}
 		if _, ok := intentByNode[p.Node]; !ok {
 			intentByNode[p.Node] = map[string]int{}
@@ -1602,6 +1641,7 @@ func (s *simulator) refreshNodeStateFromKubeData(counts map[string]int, pods []r
 		}
 		if !selected[node] {
 			st.PodsRunning = 0
+			st.OtherPods = 0
 			st.ByIntentClass = map[string]int{}
 			st.CPUUtil = 0
 			st.CPUWorkClass = "cpu.mixed"
@@ -1610,17 +1650,39 @@ func (s *simulator) refreshNodeStateFromKubeData(counts map[string]int, pods []r
 			continue
 		}
 		st.PodsRunning = counts[node]
+		st.OtherPods = others[node]
 		st.ByIntentClass = intentByNode[node]
 		if st.ByIntentClass == nil {
 			st.ByIntentClass = map[string]int{}
 		}
-		if s.workload == nil || !s.workload.overrideNodeUtil(st, node) {
-			st.CPUUtil = math.Min(1, float64(st.PodsRunning)*0.12)
-		}
-		if s.workload == nil {
-			st.GPUUtil = 0
+		// The workload tick sets the load of a node with jobs, every second
+		// and counting a job's CPU and GPU only while it has that work
+		// left; the poll set it too, from every running job, and the
+		// physics stepped on that load until the next tick. The tick marks
+		// such a node under s.mu (HasJobs); the jobs themselves are the
+		// tick's, unlocked.
+		if s.workload == nil || !st.HasJobs {
+			setNoJobLoad(st)
 		}
 	}
+}
+
+// setNoJobLoad sets the load of a node that runs no job of the workload:
+// what the job loop computes for an empty job list, with the CPU at the
+// estimate of 0.12 per running pod outside the workload (OtherPods). A
+// workload pod carries its job's load while the job runs and none after,
+// though the pod poll counts it until its deletion. The job loops visit
+// only nodes with jobs, so a node whose last job ended used to keep that
+// job's load, and draw its power, until a new job arrived.
+func setNoJobLoad(st *nodeState) {
+	st.HasJobs = false
+	st.CPUUtil = math.Min(1, float64(st.OtherPods)*0.12)
+	st.GPUUtil = 0
+	st.CPUWorkClass = "cpu.mixed"
+	st.GPUWorkClass = "gpu.mixed"
+	st.MemoryIntensity = 0
+	st.IOIntensity = 0
+	st.CPUFeedIntensity = 0
 }
 
 func (s *simulator) nodeSelected(nodeLabels map[string]string) bool {
@@ -1687,6 +1749,7 @@ func runningPodDetails(pods []corev1.Pod) []runningPodInfo {
 			Node:        p.Spec.NodeName,
 			IntentClass: classifyClassFromPodSpec(&p.Spec),
 			JobID:       p.Annotations[workload.AnnotationJobID],
+			Running:     p.Status.Phase == "Running",
 		})
 	}
 	return out
@@ -2015,12 +2078,17 @@ func loadTraceFileIntoEngine(path string, engine *workloadEngine, lineNum *int) 
 			}
 		}
 		var placement workload.Placement
-		if podTpl, ok := rec["podTemplate"].(map[string]any); ok && v3 {
+		if podTpl, ok := rec["podTemplate"].(map[string]any); ok {
 			p, err := workload.ParsePlacement(podTpl)
 			if err != nil {
 				return fmt.Errorf("trace line %d file=%s job=%s: %w", *lineNum, path, jobID, err)
 			}
 			placement = p
+			if !v3 {
+				// A legacy pod keeps the trace's affinity (legacyAffinity);
+				// its node selector and tolerations are the simulator's.
+				placement = workload.Placement{Affinity: p.Affinity}
+			}
 		}
 		if wcRaw, ok := rec["workloadClass"].(map[string]any); ok {
 			if v, ok := wcRaw["cpu"].(string); ok && strings.TrimSpace(v) != "" {
@@ -2200,7 +2268,7 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 			},
 			Spec: corev1.PodSpec{
 				RestartPolicy: corev1.RestartPolicyNever,
-				Affinity:      affinityForIntentClass(j.Class),
+				Affinity:      legacyAffinity(j),
 				Containers: []corev1.Container{
 					{
 						Name:  workload.ContainerName,
@@ -2260,31 +2328,14 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 	}
 }
 
-func affinityForIntentClass(intent string) *corev1.Affinity {
-	switch intent {
-	case workload.ClassPerformance:
-		return &corev1.Affinity{
-			NodeAffinity: &corev1.NodeAffinity{
-				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-					NodeSelectorTerms: []corev1.NodeSelectorTerm{
-						{
-							MatchExpressions: []corev1.NodeSelectorRequirement{
-								{
-									Key:      workload.LabelPowerProfile,
-									Operator: corev1.NodeSelectorOpNotIn,
-									Values:   []string{"eco"},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
-	default:
-		// Standard class: no explicit power-profile affinity constraint.
-		// The scheduler extender handles adaptive scoring via the annotation.
-		return nil
-	}
+// legacyAffinity is the affinity of a legacy pod: the trace's own, with the
+// NotIn-eco requirement of a performance pod ANDed into each required term
+// (workload.MergeIntent). A trace without affinity gives what the intent
+// class alone gave. The trace's affinity used to be dropped, so a CPU-only
+// job of experiments 02 and 03, which their sweeps restrict to
+// joulie.io/hw.kind=cpu-only nodes, could run on a GPU node.
+func legacyAffinity(j *simJob) *corev1.Affinity {
+	return workload.MergeIntent(j.Affinity, j.Class, workload.IntentAffinity)
 }
 
 func classifyClassFromPodSpec(spec *corev1.PodSpec) string {
@@ -2415,6 +2466,13 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 		s.ensureWorkloadPodDeleted(kube, j)
 		deletesThisTick++
 	}
+	s.mu.Lock()
+	for node, st := range s.state {
+		if st != nil && len(byNode[node]) == 0 && !s.emulated(node) {
+			setNoJobLoad(st)
+		}
+	}
+	s.mu.Unlock()
 	for node, jobs := range byNode {
 		if ctx.Err() != nil {
 			break
@@ -2485,6 +2543,7 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 				cpuCapacity = 16
 			}
 			s.mu.Lock()
+			st.HasJobs = true
 			st.CPUUtil = clamp01(totalCPUUtilDemand / cpuCapacity)
 			if gpuCount > 0 {
 				if totalGPUReq > 0 {
@@ -2529,6 +2588,7 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 		if gpuCount > 0 && totalGPUReq > gpuCount {
 			gpuShareFactor = clamp01(gpuCount / totalGPUReq)
 		}
+		var finished []*simJob
 		for _, j := range jobs {
 			if j.Gang && j.WorkloadID != "" {
 				total := len(s.workload.jobsByWorkload[j.WorkloadID])
@@ -2561,12 +2621,31 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 			}
 			j.Completed = true
 			j.CompletedAt = now
-			s.ensureWorkloadPodDeleted(kube, j)
+			finished = append(finished, j)
 			s.jobCompleted.WithLabelValues(j.Class, node).Inc()
 			if !j.SubmittedAt.IsZero() {
 				s.jobCompletion.Observe(j.CompletedAt.Sub(j.SubmittedAt).Seconds())
 			}
 			log.Printf("job completed id=%s node=%s class=%s elapsed=%.1fs", j.JobID, node, j.Class, j.CompletedAt.Sub(j.SubmittedAt).Seconds())
+		}
+		// A node whose last job ended in this tick runs no load from now
+		// on, not from the next tick, and before the jobs' pods are deleted
+		// through the API, whose calls take time: a pod poll after the
+		// deletion counts no pod on the node.
+		active := false
+		for _, j := range jobs {
+			if !j.Completed {
+				active = true
+				break
+			}
+		}
+		if !active {
+			s.mu.Lock()
+			setNoJobLoad(st)
+			s.mu.Unlock()
+		}
+		for _, j := range finished {
+			s.ensureWorkloadPodDeleted(kube, j)
 		}
 	}
 
@@ -2805,43 +2884,6 @@ func defaultCPUFeedIntensity(hasGPU bool) float64 {
 		return 0
 	}
 	return 0.45
-}
-
-func (w *workloadEngine) overrideNodeUtil(st *nodeState, node string) bool {
-	if w == nil {
-		return false
-	}
-	totalCPUUtil := 0.0
-	totalGPUUtil := 0.0
-	gpuReq := 0.0
-	active := 0
-	for _, j := range w.jobs {
-		if j.Completed || !j.Submitted || j.NodeName != node {
-			continue
-		}
-		totalCPUUtil += j.RequestedCPUCores * clamp01(j.CPUUtilTarget)
-		if j.RequestedGPUs > 0 {
-			totalGPUUtil += j.RequestedGPUs * clamp01(j.GPUUtilTarget)
-			gpuReq += j.RequestedGPUs
-		}
-		active++
-	}
-	if active == 0 {
-		return false
-	}
-	cpuCapacity := st.CPUCapacityCores
-	if cpuCapacity <= 0 {
-		cpuCapacity = 16
-	}
-	st.CPUUtil = clamp01(totalCPUUtil / cpuCapacity)
-	if gpuReq > 0 {
-		gpuCapacity := st.GPUCapacityDevices
-		if gpuCapacity <= 0 {
-			gpuCapacity = gpuReq
-		}
-		st.GPUUtil = clamp01(totalGPUUtil / gpuCapacity)
-	}
-	return true
 }
 
 func maxIntInt(a, b int) int {

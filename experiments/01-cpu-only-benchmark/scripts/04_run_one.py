@@ -220,33 +220,250 @@ def apply_trace_configmap(trace_path: pathlib.Path):
     log("simulator rollout complete")
 
 
-def wait_completion(timeout_sec: int, poll_log_sec: int):
-    log(f"waiting for completion timeout_sec={timeout_sec}")
+# LOAD_SAMPLES holds the host's 1-minute load average at each poll of
+# run_window: the simulator advances jobs by wall-clock time, so a
+# loaded host is part of the conditions of a run.
+LOAD_SAMPLES: list[float] = []
+
+
+def control_errors() -> int:
+    """How many control commands the simulator refused (result "error" in
+    joulie_sim_control_actions_total), such as a cap below what the node's
+    hardware accepts. A run with any is not a measurement."""
+    total = 0
+    for line in fetch_via_port_forward("/metrics", 30).splitlines():
+        if line.startswith("joulie_sim_control_actions_total{") and 'result="error"' in line:
+            total += int(float(line.rsplit(" ", 1)[1]))
+    return total
+
+
+def host_load() -> float:
+    """The host's 1-minute load average."""
+    return os.getloadavg()[0]
+
+
+def job_pools(trace_path: pathlib.Path) -> dict:
+    """Each trace job's pool, the GPU resource it requests (nvidia, amd) or
+    cpu for a job without GPUs, its submit offset, whether it is a
+    performance job (intentClass; under A too, whose trace keeps the class
+    without the affinity) and the GPUs it requests."""
+    pools = {}
+    for line in trace_path.read_text().splitlines():
+        if '"type":"job"' not in line:
+            continue
+        j = json.loads(line)
+        req = (j.get("podTemplate") or {}).get("requests") or {}
+        pool = "nvidia" if "nvidia.com/gpu" in req else "amd" if "amd.com/gpu" in req else "cpu"
+        gpus = float(req.get("nvidia.com/gpu") or req.get("amd.com/gpu") or 0)
+        pools[j["jobId"]] = (pool, float(j.get("submitTimeOffsetSec") or 0), j.get("intentClass") == "performance", gpus)
+    return pools
+
+
+def gpu_util_targets(trace_path: pathlib.Path) -> dict:
+    """Each GPU job's GPU utilization target as the simulator reads it,
+    workloadProfile.gpuUtilization within [0, 1], or None when the trace
+    gives none (the simulator then picks a default by work class)."""
+    out = {}
+    for line in trace_path.read_text().splitlines():
+        if '"type":"job"' not in line:
+            continue
+        j = json.loads(line)
+        req = (j.get("podTemplate") or {}).get("requests") or {}
+        if float(req.get("nvidia.com/gpu") or req.get("amd.com/gpu") or 0) > 0:
+            u = (j.get("workloadProfile") or {}).get("gpuUtilization")
+            out[j["jobId"]] = None if u is None else min(1.0, max(0.0, float(u)))
+    return out
+
+
+def placed_gpu_demand(jobs: list, gpu_util: dict) -> float:
+    """The GPU load of the placed jobs as the simulator's workload tick sums
+    it: GPUs x utilization target of every job on a node with GPU work
+    left; NaN when such a job has no target."""
+    total = 0.0
+    for j in jobs:
+        if j.get("node") and not j.get("completed") and float(j.get("gpuUnitsRemaining") or 0) > 0:
+            u = gpu_util.get(j.get("jobId"))
+            total += float(j.get("requestedGpus") or 0) * (float("nan") if u is None else u)
+    return total
+
+
+# A pending job counts as queued, waiting for capacity, after this long; a
+# shorter wait is placement: pods are created and bound at the simulator's
+# workload ticks and the scheduler's pace.
+QUEUED_AFTER_SEC = 30.0
+# The gates. Every run: no refused control, the
+# polls cover the measured window with no gap above GATE_MAX_GAP_SEC, and
+# at the end no node without a job shows a load (idle_load_failures). The setup of the load, checked on baseline A, which
+# caps nothing and keeps no job off a node: on average over the measured
+# window at most GATE_QUEUED_SHARE of the running pods queued (at least one
+# job), and a utilization of the binding resource at regime of at least
+# GATE_MIN_UTIL (Matteo: about 50 %, at least 45 %); in a GPU run, that
+# utilization also within GATE_UTIL_TOL of the GPU load of the placed jobs
+# (placed_gpu_util). Queueing and utilization under B and C are what the
+# policies cause: results, not gates. The last two checks came with the
+# simulator fix of 2026-10-27: a node used to keep its last job's load, and
+# 03's baseline A, seed 1, read a GPU utilization of 0.664 against about
+# 0.565 from its placed jobs, with 10 idle nodes at 0.10 to 1.0. Counting
+# each job from its submission instead of its placement adds the jobs that
+# wait for a node: 0.041 on the next run of that baseline, which has 1.6
+# 8-GPU jobs waiting on average. GATE_UTIL_TOL: the polls and the
+# simulator's samples read the same jobs, so they differ by sampling only,
+# a poll every 10 s against a sample every second: at most 0.0025 on that
+# run, against 0.068 or more from a kept load.
+GATE_MAX_GAP_SEC = 25.0
+GATE_QUEUED_SHARE = 0.01
+GATE_MIN_UTIL = 0.45
+GATE_UTIL_TOL = 0.03
+
+
+def idle_load_failures(run_dir: pathlib.Path) -> list[str]:
+    """The nodes that end the run with no job but a load, as a failure: a
+    GPU utilization above 0, or a CPU utilization above 0 with no pod
+    outside the workload (otherPods). The jobs are read before and after the
+    nodes, and a node runs a job when one was active on it in either read
+    or ended between them, so a job that starts or ends while the nodes are
+    read flags no node. A state that cannot be read, or lists no node,
+    fails too: the check would pass without looking at a node."""
+    try:
+        nodes = json.loads((run_dir / "sim_debug_nodes.json").read_text()).get("nodes") or []
+        before = json.loads((run_dir / "sim_debug_jobs_before.json").read_text()).get("jobs") or []
+        after = json.loads((run_dir / "sim_debug_jobs.json").read_text()).get("jobs") or []
+    except (OSError, ValueError, AttributeError) as err:
+        return [f"the simulator's node and job state cannot be read: {err}"]
+    if not any(n.get("state") for n in nodes):
+        return ["the simulator's node state lists no node"]
+    ended_before = {j.get("jobId") for j in before if j.get("completed")}
+    busy = {j.get("node") for j in before + after if j.get("submitted") and not j.get("completed")}
+    busy |= {j.get("node") for j in after if j.get("completed") and j.get("jobId") not in ended_before}
+    stale = []
+    for n in nodes:
+        st = n.get("state")
+        if st and n["node"] not in busy and (st.get("gpuUtil") or (st.get("cpuUtil") and not st.get("otherPods"))):
+            stale.append(f"{n['node']} GPU {st.get('gpuUtil') or 0:.2f} CPU {st.get('cpuUtil') or 0:.2f}")
+    return [f"{len(stale)} nodes with no job at a load above 0: {', '.join(stale[:5])}"] if stale else []
+
+
+def placed_gpu_util(run_dir: pathlib.Path, rows: list, measure_from: float, window: float):
+    """The GPU utilization of the placed jobs over the window: the mean of
+    the polls' gpu_demand (work_progress.csv) over all the GPUs of
+    nodes.json. None when a GPU job has no utilization target."""
+    if any(u is None for u in gpu_util_targets(run_dir / "trace.jsonl").values()):
+        return None
+    vals = [float(r["gpu_demand"]) for r in rows if measure_from <= float(r["elapsed_sec"]) <= window]
+    if any(v != v for v in vals):  # NaN: a placed job without a target
+        return None
+    items = json.loads((run_dir / "nodes.json").read_text())["items"]
+    total = sum(float(n["status"].get("allocatable", {}).get(k) or 0) for n in items for k in ("nvidia.com/gpu", "amd.com/gpu"))
+    return sum(vals) / len(vals) / total
+
+
+def gate_failures(run_dir: pathlib.Path, measure_from: float, window: float, baseline: str = "A") -> list[str]:
+    """Why the run in run_dir fails the gates, empty when it passes."""
+    import csv
+    rows = list(csv.DictReader((run_dir / "work_progress.csv").open()))
+    t = [float(r["elapsed_sec"]) for r in rows]
+    out = []
+    if not t or t[0] > measure_from or t[-1] < window - 1:
+        out.append(f"the polls cover {t[0] if t else 'nothing'} to {t[-1] if t else ''} s, not {measure_from:.0f} to {window:.0f} s")
+    gaps = [b - a for a, b in zip(t, t[1:])]
+    if gaps and max(gaps) > GATE_MAX_GAP_SEC:
+        out.append(f"a gap of {max(gaps):.0f} s between polls")
+    out += idle_load_failures(run_dir)
+    if baseline != "A":
+        return out
+    ts = list(csv.DictReader((run_dir / "timeseries.csv").open()))
+    gpu = any(float((json.loads(l).get("work") or {}).get("gpuUnits") or 0) > 0 for l in (run_dir / "trace.jsonl").open() if '"type":"job"' in l)
+    col = "cluster_gpu_util" if gpu else "cluster_cpu_util"
+    win = [r for r in ts if measure_from <= float(r["elapsed_sec"]) <= window]
+    util = sum(float(r[col]) for r in win) / max(1, len(win))
+    if util < GATE_MIN_UTIL:
+        out.append(f"{col} at regime {util:.3f} < {GATE_MIN_UTIL}")
+    if gpu:
+        try:
+            demand, why = placed_gpu_util(run_dir, rows, measure_from, window), "a GPU job without workloadProfile.gpuUtilization"
+        except (OSError, ValueError, KeyError, IndexError, ZeroDivisionError) as err:
+            demand, why = None, f"{type(err).__name__}: {err}"
+        if demand is None:
+            out.append(f"the placed jobs give no utilization to check: {why}")
+        elif abs(util - demand) > GATE_UTIL_TOL:
+            out.append(f"{col} at regime {util:.3f}, the placed jobs give {demand:.3f}")
+    # The queue over the whole measured window, not one poll: a single poll
+    # near the start of the window (run.measure_from_sec) flipped between 1 and 3 queued jobs from one 10 s poll to the
+    # next (03, seed 1, baseline A), while the gate is about a sustained
+    # backlog.
+    queued = [float(r["jobs_queued"]) for r in rows if measure_from <= float(r["elapsed_sec"]) <= window]
+    pods = sum(float(r["pods_running"]) for r in win) / max(1, len(win))
+    mean_queued = sum(queued) / max(1, len(queued))
+    if mean_queued > max(1.0, GATE_QUEUED_SHARE * pods):
+        out.append(f"{mean_queued:.1f} jobs queued on average from {measure_from:.0f} to {window:.0f} s, {pods:.0f} running")
+    return out
+
+
+def load_failures(record: dict) -> list[str]:
+    """A run whose mean 1-minute host load exceeds the host's CPUs ran on an
+    oversubscribed host, whatever its baseline, and stops the sweep to be run
+    again. The simulator advances jobs by wall-clock time, so a loaded host
+    can reach the measurement; each report gives every run's load."""
+    if record.get("host_load1_mean", 0.0) > record.get("host_cpus", float("inf")):
+        return [f"mean host load {record['host_load1_mean']:.1f} exceeds the {record['host_cpus']} CPUs"]
+    return []
+
+
+def run_window(duration_sec: int, poll_log_sec: int, progress_path: pathlib.Path, pools: dict | None = None, gpu_util: dict | None = None) -> int:
+    """Let the run go for duration_sec, the arrival window, and stop: the
+    report measures the cluster at regime, before the drain. Every 10 s it
+    reads the simulator's jobs (/debug/jobs) and energy (/debug/energy) and
+    writes to progress_path the elapsed seconds, the CPU and GPU work units
+    done so far (total minus remaining, over every job), the CPU work of the
+    jobs without GPU work, the jobs submitted,
+    completed and pending (submitted, on no node yet; in all, per pool of
+    pools, a job's GPU resource or cpu, of performance jobs, of jobs asking
+    for 8 GPUs or more, which need a whole 8-GPU node, and queued:
+    pending for more than QUEUED_AFTER_SEC since its submit offset), and the
+    cluster's
+    cumulative IT energy, all on one clock; each node's cumulative energy
+    goes, one JSON line per poll, to energy_by_node.jsonl beside it. Returns the
+    number of rows written."""
+    log(f"running for {duration_sec} s, the arrival window")
     start = time.time()
-    seen_nonzero = False
     last_log = 0.0
-    while time.time() - start < timeout_sec:
-        out = run([
-            "kubectl", "get", "pods", "-A", "-l", "app.kubernetes.io/part-of=joulie-sim-workload",
-            "-o", "json",
-        ], capture=True)
-        items = json.loads(out.stdout).get("items", [])
-        total = len(items)
-        if items:
-            seen_nonzero = True
-        active = sum(1 for p in items if p.get("status", {}).get("phase") in ("Pending", "Running"))
-        now = time.time()
-        if now - last_log >= poll_log_sec:
-            elapsed = int(now - start)
-            log(f"progress elapsed={elapsed}s total_pods={total} active_pods={active} seen_nonzero={seen_nonzero}")
-            last_log = now
-        if seen_nonzero and active == 0:
-            elapsed = int(time.time() - start)
-            log(f"all workload pods completed elapsed={elapsed}s")
-            return True
-        time.sleep(1)
-    log("timed out waiting for workload completion")
-    return False
+    rows = 0
+    with progress_path.open("w") as f:
+        f.write("elapsed_sec,cpu_units_done,gpu_units_done,cpu_only_units_done,jobs_submitted,jobs_completed,jobs_pending,jobs_queued,pending_nvidia,pending_amd,pending_cpu,pending_perf,pending_8gpu,energy_j,gpu_demand\n")
+        by_node = progress_path.with_name("energy_by_node.jsonl").open("w")
+        while True:
+            elapsed = time.time() - start
+            try:
+                jobs = json.loads(fetch_via_port_forward("/debug/jobs", 30)).get("jobs") or []
+                ereply = json.loads(fetch_via_port_forward("/debug/energy", 30))
+                energy = float(ereply.get("totalJoules") or 0)
+            except Exception as e:  # a failed fetch is retried at the next poll
+                log(f"warning: /debug/jobs or /debug/energy fetch failed: {e}")
+                jobs = None
+            LOAD_SAMPLES.append(host_load())
+            if jobs is not None:
+                cpu = sum(float(j.get("cpuUnitsTotal") or 0) - float(j.get("cpuUnitsRemaining") or 0) for j in jobs)
+                gpu = sum(float(j.get("gpuUnitsTotal") or 0) - float(j.get("gpuUnitsRemaining") or 0) for j in jobs)
+                cpu_only = sum(float(j.get("cpuUnitsTotal") or 0) - float(j.get("cpuUnitsRemaining") or 0) for j in jobs if not float(j.get("gpuUnitsTotal") or 0))
+                sub = sum(1 for j in jobs if j.get("submitted"))
+                done = sum(1 for j in jobs if j.get("completed"))
+                waiting = [j for j in jobs if j.get("submitted") and not j.get("completed") and not j.get("node")]
+                info = [(pools or {}).get(j.get("jobId"), ("", elapsed, False, 0.0)) for j in waiting]
+                by_pool = {p: sum(1 for pool, _, _, _ in info if pool == p) for p in ("nvidia", "amd", "cpu")}
+                queued = sum(1 for _, off, _, _ in info if elapsed - off > QUEUED_AFTER_SEC)
+                perf = sum(1 for _, _, x, _ in info if x)
+                whole = sum(1 for _, _, _, g in info if g >= 8)
+                f.write(f"{elapsed:.1f},{cpu:.3f},{gpu:.3f},{cpu_only:.3f},{sub},{done},{len(waiting)},{queued},{by_pool['nvidia']},{by_pool['amd']},{by_pool['cpu']},{perf},{whole},{energy:.1f},{placed_gpu_demand(jobs, gpu_util or {}):.3f}\n")
+                f.flush()
+                by_node.write(json.dumps({"elapsed_sec": round(elapsed, 1), "byNodeJoules": ereply.get("byNodeJoules") or {}}) + "\n")
+                by_node.flush()
+                rows += 1
+                if elapsed - last_log >= poll_log_sec:
+                    log(f"progress elapsed={int(elapsed)}s submitted={sub} completed={done}")
+                    last_log = elapsed
+            if elapsed >= duration_sec:
+                return rows
+            time.sleep(min(10.0, max(0.0, duration_sec - (time.time() - start))))
 
 
 # SIM_PORT is the simulator's HTTP port in its pod.
@@ -313,7 +530,11 @@ def collect_artifacts(
             time.sleep(2)
         return "{}"
 
+    # The jobs before and after the nodes: idle_load_failures reads a node
+    # as running a job when one was active on it at either read.
+    jobs_before = fetch_debug_artifact("/debug/jobs")
     nodes = fetch_debug_artifact("/debug/nodes")
+    jobs = fetch_debug_artifact("/debug/jobs")
     events = fetch_debug_artifact("/debug/events")
     energy = fetch_debug_artifact("/debug/energy")
     ts_csv = ""
@@ -327,6 +548,8 @@ def collect_artifacts(
         time.sleep(2)
 
     (run_dir / "sim_debug_nodes.json").write_text(nodes)
+    (run_dir / "sim_debug_jobs_before.json").write_text(jobs_before)
+    (run_dir / "sim_debug_jobs.json").write_text(jobs)
     (run_dir / "sim_debug_events.json").write_text(events)
     (run_dir / "sim_debug_energy.json").write_text(energy)
     if ts_csv:
@@ -335,9 +558,9 @@ def collect_artifacts(
     (run_dir / "pods.json").write_text(run(["kubectl", "get", "pods", "-A", "-o", "json"], capture=True).stdout)
     (run_dir / "nodepowerprofiles.yaml").write_text(run(["kubectl", "get", "nodepowerprofiles", "-o", "yaml"], capture=True, check=False).stdout)
 
-    (run_dir / "controller-manager.log").write_text(run(["kubectl", "-n", "joulie-system", "logs", "deploy/joulie-controller-manager", "--tail=400"], capture=True, check=False).stdout)
-    (run_dir / "agent.log").write_text(run(["kubectl", "-n", "joulie-system", "logs", "statefulset/joulie-agent-pool", "--tail=400"], capture=True, check=False).stdout)
-    (run_dir / "simulator.log").write_text(run(["kubectl", "-n", "joulie-sim-demo", "logs", "deploy/joulie-telemetry-sim", "--tail=400"], capture=True).stdout)
+    (run_dir / "controller-manager.log").write_text(run(["kubectl", "-n", "joulie-system", "logs", "deploy/joulie-controller-manager", "--tail=-1"], capture=True, check=False).stdout)
+    (run_dir / "agent.log").write_text(run(["kubectl", "-n", "joulie-system", "logs", "statefulset/joulie-agent-pool", "--tail=-1"], capture=True, check=False).stdout)
+    (run_dir / "simulator.log").write_text(run(["kubectl", "-n", "joulie-sim-demo", "logs", "deploy/joulie-telemetry-sim", "--tail=-1"], capture=True).stdout)
 
     summary = {
         "baseline": baseline,
@@ -394,13 +617,30 @@ def main():
     apply_trace_configmap(trace_path)
 
     start_ts = time.time()
-    done = wait_completion(args.timeout, args.poll_log_sec)
-    if not done:
-        print("timeout waiting for completion", file=sys.stderr)
+    rows = run_window(args.timeout, args.poll_log_sec, run_dir / "work_progress.csv", job_pools(trace_path), gpu_util_targets(trace_path))
+    refused = control_errors()
+    (run_dir / "completion.json").write_text(json.dumps({
+        "window_seconds": args.timeout, "stopped_after_seconds": time.time() - start_ts, "progress_rows": rows,
+        "control_errors": refused, "host_cpus": os.cpu_count(),
+        "host_load1_mean": sum(LOAD_SAMPLES) / max(1, len(LOAD_SAMPLES)), "host_load1_max": max(LOAD_SAMPLES, default=0.0),
+    }, indent=2) + "\n")
 
     collect_artifacts(run_dir, args.baseline, args.seed, start_ts, trace_path, args.time_scale)
     log(f"run completed run_id={run_id}")
-
+    run_cfg = {}
+    if args.benchmark_config.strip():
+        import yaml
+        run_cfg = (yaml.safe_load(open(args.benchmark_config)) or {}).get("run") or {}
+    record = json.loads((run_dir / "completion.json").read_text())
+    failures = gate_failures(run_dir, float(run_cfg.get("measure_from_sec", 0)), float(args.timeout), args.baseline) + load_failures(record)
+    record["gate_failures"] = failures
+    (run_dir / "completion.json").write_text(json.dumps(record, indent=2) + "\n")
+    if failures:
+        raise SystemExit(f"run {run_id} fails the gates: " + "; ".join(failures))
+    if refused:
+        raise SystemExit(f"run {run_id}: the simulator refused {refused} control commands (joulie_sim_control_actions_total result=error)")
+    if not rows:
+        raise SystemExit(f"run {run_id}: no progress sample from the simulator")
 
 if __name__ == "__main__":
     main()

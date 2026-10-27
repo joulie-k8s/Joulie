@@ -38,7 +38,7 @@ Node state:
 - GPU: per-device cap and target, per-device instantaneous and averaged power, per-device temperature and thermal-throttle fraction, aggregate utilization, effective performance multiplier.
 - Workload inputs aggregated from the running jobs: `memoryIntensity`, `ioIntensity`, `cpuFeedIntensity`.
 
-Control actions: `rapl.set_power_cap_watts`, `dvfs.set_throttle_pct`, `gpu.set_power_cap_watts`. The `capWatts` of `rapl.set_power_cap_watts` caps the node's CPU power as a whole, and each socket shows an even share of it, clamped to the socket cap range (`cpuSocketCapMinW` to `cpuSocketCapMaxW`). An agent controlling the node over HTTP resolves a percent CPU cap against that range times the socket count, the range of the hardware catalog for the node's CPU (`hwinv.CPUOfficialSpec.SocketCapRangeW`, which the simulator reads too).
+Control actions: `rapl.set_power_cap_watts`, `dvfs.set_throttle_pct`, `gpu.set_power_cap_watts`. The `capWatts` of `rapl.set_power_cap_watts` caps the node's CPU power as a whole, and each socket shows an even share of it, at most `cpuSocketCapMaxW`. A cap below `SIM_RAPL_CAP_MIN_W` (0 by default: no vendor publishes a minimum for the modelled CPUs) is refused with an error; a cap the CPU cannot reach holds it at its lowest-frequency power. A GPU cap below the board's minimum power is refused the same way. An agent controlling the node over HTTP resolves a percent CPU cap against the range of the hardware catalog for the node's CPU times the socket count (`hwinv.CPUOfficialSpec.SocketCapRangeW`: per socket 0.55 x TDP to TDP).
 
 ## Telemetry
 

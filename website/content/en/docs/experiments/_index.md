@@ -8,7 +8,7 @@ Reproducible experiments validating Joulie's energy savings across different clu
 
 - [CPU-Only Benchmark]({{< relref "cpu-only-benchmark.md" >}}): 40-node CPU cluster, 10.9 to 11.0% lower average cluster power in the 0.2.4 rerun (21.4 to 29.1% with the older simulator model)
 - [Heterogeneous GPU Benchmark]({{< relref "heterogeneous-benchmark.md" >}}): 41-node mixed GPU cluster (5 families), 3.2 to 4.7% lower average cluster power in the 0.2.4 rerun (20.1 to 25.5% with the older simulator model)
-- [Homogeneous H100 NVL Benchmark]({{< relref "homogeneous-h100-benchmark.md" >}}): 41-node identical H100 cluster, 8.0 to 8.5% lower average cluster power in the 0.2.4 rerun (20.1 to 25.5% with the older simulator model)
+- [Homogeneous H100 NVL Benchmark]({{< relref "homogeneous-h100-benchmark.md" >}}): 41-node identical H100 cluster; at regime, B and C used 7 to 10 % less GPU-node energy per unit of GPU work than A and finished 7 to 11 % less GPU work as performance jobs waited
 - [Scoring Formula Validation]({{< relref "scoring-formula-validation.md" >}}): Energy-aware scheduling formula tuning on 2,500-node cluster, 6.4% IT energy reduction
 - [Governor Exploration]({{< relref "governor-exploration.md" >}}): CPU and GPU governor presets on emulated nodes, energy and time per preset, workload kind and cap, with the assumed parameters swept
 

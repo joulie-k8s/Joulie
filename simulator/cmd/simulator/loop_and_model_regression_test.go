@@ -75,13 +75,12 @@ func TestFC01WorkloadLoopSurvivesANonPositiveTick(t *testing.T) {
 }
 
 // FC02: a cap minimum set by hand above the maximum the catalogue fills in
-// left the range inverted: SIM_CPU_SOCKET_CAP_MIN_W=200 on a Xeon Platinum
-// 8260 (TDP 165 W) gave 200 to 165 W, and SIM_GPU_MIN_CAP_WATTS_PER_GPU=800
-// on an H100 SXM (700 W board power) gave 800 to 700 W. The resolved ranges
-// are now ordered, with a warning.
+// left the range inverted: SIM_GPU_MIN_CAP_WATTS_PER_GPU=800 on an H100 SXM
+// (700 W board power) gave 800 to 700 W. The resolved range is now ordered,
+// with a warning. (The CPU socket minimum, SIM_CPU_SOCKET_CAP_MIN_W, is
+// gone: no power model read it.)
 func TestFC02ExplicitCapMinimumAboveTheCatalogueMaximumIsOrdered(t *testing.T) {
 	clearSimEnv(t)
-	t.Setenv("SIM_CPU_SOCKET_CAP_MIN_W", "200")
 	t.Setenv("SIM_GPU_MIN_CAP_WATTS_PER_GPU", "800")
 	removedKnobWarnMu.Lock()
 	removedKnobWarnSeen = map[string]struct{}{}
@@ -92,26 +91,15 @@ func TestFC02ExplicitCapMinimumAboveTheCatalogueMaximumIsOrdered(t *testing.T) {
 		"joulie.io/hw.cpu-model":   "INTEL XEON PLATINUM 8260",
 		"joulie.io/hw.cpu-sockets": "2",
 	}))
-	if model.CPUModel != "INTEL_XEON_PLATINUM_8260" || model.CPUSocketCapMaxW != 165 || model.GPU.MaxWattsPerGPU != 700 {
-		t.Fatalf("test setup: class %s, CPU %q with socket max %v W, GPU max %v W; want the 8260 at 165 W and the H100 SXM at 700 W from the catalogue",
-			class, model.CPUModel, model.CPUSocketCapMaxW, model.GPU.MaxWattsPerGPU)
-	}
-	if model.CPUSocketCapMinW > model.CPUSocketCapMaxW {
-		t.Errorf("socket cap range %v to %v W, want the minimum at or below the maximum", model.CPUSocketCapMinW, model.CPUSocketCapMaxW)
+	if model.CPUModel != "INTEL_XEON_PLATINUM_8260" || model.GPU.MaxWattsPerGPU != 700 {
+		t.Fatalf("test setup: class %s, CPU %q, GPU max %v W; want the 8260 and the H100 SXM at 700 W from the catalogue",
+			class, model.CPUModel, model.GPU.MaxWattsPerGPU)
 	}
 	if model.GPU.MinCapWattsPerGPU > model.GPU.MaxWattsPerGPU {
 		t.Errorf("GPU cap range %v to %v W, want the minimum at or below the maximum", model.GPU.MinCapWattsPerGPU, model.GPU.MaxWattsPerGPU)
 	}
-	for _, want := range []string{"CPU socket cap minimum 200 W is above its maximum 165 W", "GPU cap minimum 800 W is above its maximum 700 W"} {
-		if !strings.Contains(logs.String(), want) {
-			t.Errorf("log %q, want a warning containing %q", logs.String(), want)
-		}
-	}
-	// A minimum below the catalogue maximum stays as set.
-	t.Setenv("SIM_CPU_SOCKET_CAP_MIN_W", "100")
-	s, _ = mrSimulator(t, nil)
-	if model, _ := s.resolveModelForNode(map[string]string{"joulie.io/hw.cpu-model": "INTEL XEON PLATINUM 8260"}); model.CPUSocketCapMinW != 100 {
-		t.Errorf("socket cap minimum %v W with SIM_CPU_SOCKET_CAP_MIN_W=100, want 100 W", model.CPUSocketCapMinW)
+	if want := "GPU cap minimum 800 W is above its maximum 700 W"; !strings.Contains(logs.String(), want) {
+		t.Errorf("log %q, want a warning containing %q", logs.String(), want)
 	}
 }
 

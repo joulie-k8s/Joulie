@@ -59,7 +59,7 @@ func (c *controlRecorder) setRefused(action string, refused bool) {
 
 // take returns the payloads received since the last take, each as its
 // action followed by its capWatts or throttlePct ("rapl.set_power_cap_watts
-// 640", "dvfs.set_throttle_pct 40").
+// 432", "dvfs.set_throttle_pct 40").
 func (c *controlRecorder) take() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -172,8 +172,8 @@ func reconcilePctCap(t *testing.T, node *corev1.Node, pct float64) (backend, res
 }
 
 // A node without RAPL files whose CPU is in the catalog gets a watt cap: pct
-// of its sockets' TDP, clamped up to the low end of the cTDP range (or 0.55
-// x TDP without one), sent as rapl.set_power_cap_watts for the whole node.
+// of its sockets' TDP, clamped up to 0.55 x TDP (the cTDP range is no
+// floor), sent as rapl.set_power_cap_watts for the whole node.
 // The same percent gives different watts on different CPU families. The old
 // agent resolved only from RAPL files and sent dvfs.set_throttle_pct.
 func TestPoolNodeWithoutRAPLFilesGetsACatalogWattCap(t *testing.T) {
@@ -183,8 +183,8 @@ func TestPoolNodeWithoutRAPLFilesGetsACatalogWattCap(t *testing.T) {
 	}{
 		// 0.95 x 360 W = 342 W per socket, inside 320 to 360 W.
 		{"epyc9654-95", "AMD-EPYC-9654-96-Core-Processor", "2", "AMD_EPYC_9654", 95, 684},
-		// 0.60 x 360 W = 216 W per socket, clamped to the cTDP low end 320 W.
-		{"epyc9654-60", "AMD-EPYC-9654-96-Core-Processor", "2", "AMD_EPYC_9654", 60, 640},
+		// 0.60 x 360 W = 216 W per socket, below the cTDP low end 320 W.
+		{"epyc9654-60", "AMD-EPYC-9654-96-Core-Processor", "2", "AMD_EPYC_9654", 60, 432},
 		// 0.95 x 500 W = 475 W per socket, inside 450 to 500 W.
 		{"epyc9965-95", "AMD-EPYC-9965-192-Core-Processor", "2", "AMD_EPYC_9965", 95, 950},
 		// No cTDP range: 0.50 x 165 W = 82.5 W, clamped to 0.55 x 165 W.
@@ -247,8 +247,8 @@ func TestCatalogRangeReadsTheNodeLabelsTheSimulatorReads(t *testing.T) {
 	node := kwokNode("labels-like-the-simulator", "AMD-EPYC-9654-96-Core-Processor", "2")
 	node.Labels["feature.node.kubernetes.io/cpu-model.name"] = "INTEL XEON PLATINUM 8260"
 	reconcilePctCap(t, node, 60)
-	if got := rec.take(); len(got) == 0 || got[0] != "rapl.set_power_cap_watts 640" {
-		t.Fatalf("control backend got %q, want rapl.set_power_cap_watts 640 first: 2 x the EPYC 9654's 320 W cTDP low end, the CPU the simulator models from joulie.io/hw.cpu-model", got)
+	if got := rec.take(); len(got) == 0 || got[0] != "rapl.set_power_cap_watts 432" {
+		t.Fatalf("control backend got %q, want rapl.set_power_cap_watts 432 first: 60 %% of 2 x the EPYC 9654's 360 W TDP, the CPU the simulator models from joulie.io/hw.cpu-model", got)
 	}
 }
 
@@ -278,8 +278,8 @@ func TestCatalogRangeIsOnlyForHTTPRAPLControl(t *testing.T) {
 		t.Fatalf("resolved %v W from %q without RAPL files or HTTP control, want no range", got, r.source)
 	}
 	got, r, ok := resolveCPUCapFromPct(80, labels, true)
-	if !ok || !r.catalog || got != 640 || r.minW != 640 || r.maxW != 720 {
-		t.Fatalf("under HTTP control resolved %v W from %+v (ok %v), want 640 W from the catalog range 640 to 720 W", got, r, ok)
+	if !ok || !r.catalog || got != 576 || math.Abs(r.minW-0.55*720) > 1e-9 || r.maxW != 720 {
+		t.Fatalf("under HTTP control resolved %v W from %+v (ok %v), want 576 W, 80 %% of 720 W, from the catalog range 396 to 720 W", got, r, ok)
 	}
 }
 
@@ -292,8 +292,8 @@ func TestRefusedHTTPWattCapKeepsThePercentThrottle(t *testing.T) {
 	rec := useHTTPCPUControl(t, "rapl")
 	rec.setRefused("rapl.set_power_cap_watts", true)
 	backend, result, msg := reconcilePctCap(t, kwokNode("refused-watts", "AMD-EPYC-9654-96-Core-Processor", "2"), 60)
-	if got := rec.take(); strings.Join(got, ", ") != "rapl.set_power_cap_watts 640, dvfs.set_throttle_pct 40" {
-		t.Fatalf("control backend got %q, want the refused rapl.set_power_cap_watts 640, then dvfs.set_throttle_pct 40", got)
+	if got := rec.take(); strings.Join(got, ", ") != "rapl.set_power_cap_watts 432, dvfs.set_throttle_pct 40" {
+		t.Fatalf("control backend got %q, want the refused rapl.set_power_cap_watts 432, then dvfs.set_throttle_pct 40", got)
 	}
 	if backend != "dvfs" || result != "applied" {
 		t.Fatalf("control status %s/%s %q, want dvfs/applied", backend, result, msg)
@@ -313,10 +313,10 @@ func TestHTTPWattCapClearsTheThrottleOnce(t *testing.T) {
 		refused bool
 		want    string
 	}{
-		{"first watt cap", false, "rapl.set_power_cap_watts 640, dvfs.set_throttle_pct 0"},
-		{"throttle already cleared", false, "rapl.set_power_cap_watts 640"},
-		{"watts refused", true, "rapl.set_power_cap_watts 640, dvfs.set_throttle_pct 40"},
-		{"watts accepted again", false, "rapl.set_power_cap_watts 640, dvfs.set_throttle_pct 0"},
+		{"first watt cap", false, "rapl.set_power_cap_watts 432, dvfs.set_throttle_pct 0"},
+		{"throttle already cleared", false, "rapl.set_power_cap_watts 432"},
+		{"watts refused", true, "rapl.set_power_cap_watts 432, dvfs.set_throttle_pct 40"},
+		{"watts accepted again", false, "rapl.set_power_cap_watts 432, dvfs.set_throttle_pct 0"},
 	} {
 		rec.setRefused("rapl.set_power_cap_watts", step.refused)
 		reconcile()

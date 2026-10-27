@@ -288,9 +288,10 @@ func TestMatchGPUMI300XLabellerProductName(t *testing.T) {
 	}
 }
 
-// The socket cap range is TDP at the top and the low end of the cTDP range,
-// or 0.55 x TDP without one, at the bottom, never above the top. The
-// simulator and the agent both read it (issue #36).
+// The socket cap range is TDP at the top and 0.55 x TDP at the bottom; the
+// cTDP range is no cap floor, since a package power limit may be set below
+// its low end (AMD publication 58002). The simulator and the agent both read
+// it (issue #36).
 func TestSocketCapRangeW(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -298,9 +299,9 @@ func TestSocketCapRangeW(t *testing.T) {
 		minW, maxW float64
 		ok         bool
 	}{
-		{"cTDP low end", CPUOfficialSpec{TDPW: 360, CTdpRangeW: []float64{320, 400}}, 320, 360, true},
+		{"cTDP is no floor", CPUOfficialSpec{TDPW: 360, CTdpRangeW: []float64{320, 400}}, 0.55 * 360, 360, true},
 		{"no cTDP", CPUOfficialSpec{TDPW: 165}, 0.55 * 165, 165, true},
-		{"cTDP above TDP", CPUOfficialSpec{TDPW: 300, CTdpRangeW: []float64{320, 400}}, 300, 300, true},
+		{"cTDP above TDP", CPUOfficialSpec{TDPW: 300, CTdpRangeW: []float64{320, 400}}, 0.55 * 300, 300, true},
 		{"no TDP", CPUOfficialSpec{CTdpRangeW: []float64{320, 400}}, 0, 0, false},
 	} {
 		minW, maxW, ok := tc.spec.SocketCapRangeW()

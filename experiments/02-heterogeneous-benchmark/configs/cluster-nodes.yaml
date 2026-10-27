@@ -20,7 +20,7 @@ nodes:
     cpu_cores: 64
     memory_gib: 1024
     gpu_count: 4
-    gpu_min_cap_watts: 350
+    gpu_min_cap_watts: 300
     gpu_max_cap_watts: 700
 
   - node_name_prefix: kwok-l40s
@@ -44,7 +44,7 @@ nodes:
     cpu_cores: 128
     memory_gib: 1536
     gpu_count: 8
-    gpu_min_cap_watts: 350
+    gpu_min_cap_watts: 400
     gpu_max_cap_watts: 750
 
   - node_name_prefix: kwok-w7900

@@ -783,3 +783,26 @@ func TestReaderNilReturnsEmptyMaps(t *testing.T) {
 		t.Fatalf("hw infos=%d want=0 without Kubernetes", len(got))
 	}
 }
+
+// TestPrioritizeReturnsTheExtenderAPIScale is the regression test of the
+// extender's priority scale: kube-scheduler expects 0 to 10
+// (MaxExtenderPriority) and multiplies by 10 and the weight, so the 0 to 100
+// node score, which the extender returned as is, weighed ten times its
+// weight. A node without twin state scores the neutral 50, priority 5.
+func TestPrioritizeReturnsTheExtenderAPIScale(t *testing.T) {
+	for score, want := range map[int64]int64{0: 0, 4: 0, 5: 1, 41: 4, 50: 5, 99: 10, 100: 10} {
+		if got := extenderPriority(score); got != want {
+			t.Errorf("extenderPriority(%d) = %d, want %d", score, got, want)
+		}
+	}
+	names := []string{"a", "b"}
+	got := prioritizeNodes(context.Background(), ExtenderArgs{NodeNames: &names})
+	if len(got) != 2 {
+		t.Fatalf("priorities %v, want two", got)
+	}
+	for _, h := range got {
+		if h.Score != 5 {
+			t.Errorf("node %s priority %d, want 5 (neutral score 50 on the 0 to 10 scale)", h.Host, h.Score)
+		}
+	}
+}

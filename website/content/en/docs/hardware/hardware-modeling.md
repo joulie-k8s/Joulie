@@ -8,7 +8,9 @@ This page documents how Joulie models CPUs and GPUs across the project using a m
 
 - **official vendor specifications and management APIs**,
 - **public measured power curves**, and
-- **explicit proxy models** where public exact curves are not yet available.
+- **an analytic model** where no measured curve is public.
+
+Every modelled value, the official source it comes from, and the values that have none are listed in the [Joulie wiki](https://github.com/joulie-k8s/Joulie/wiki).
 
 It serves two closely related purposes:
 
@@ -178,7 +180,6 @@ In the simulator, five hardware facts follow a fixed precedence: the node class 
 | GPU maximum per GPU (`gpu.maxWattsPerGpu`) | `SIM_GPU_MAX_WATTS_PER_GPU` | `maxBoardPowerW` | 300 W |
 | GPU minimum cap per GPU (`gpu.minCapWattsPerGpu`) | `SIM_GPU_MIN_CAP_WATTS_PER_GPU` | `minBoardPowerW`, else half the maximum | 80 W |
 | CPU socket cap maximum (`cpuSocketCapMaxW`) | `SIM_CPU_SOCKET_CAP_MAX_W` | `tdpW` | 400 W |
-| CPU socket cap minimum (`cpuSocketCapMinW`) | `SIM_CPU_SOCKET_CAP_MIN_W` | the low end of `cTdpRangeW`, else 0.55 x `tdpW` | 120 W |
 | Peak CPU power of the generic model (`pMaxW`) | `SIM_P_MAX_W` | sockets x `tdpW`, for a CPU without a measured curve (assumed: a package draws its TDP at full load) | 420 W |
 
 A catalog minimum above a maximum set by a class or a variable is lowered to that maximum. The catalog's CPU socket cap range comes from `hwinv.CPUOfficialSpec.SocketCapRangeW`, which the agent also reads: a pool agent that caps a simulated node over HTTP resolves a percent CPU cap against it, times the socket count, so it asks for caps inside the range the node is modelled with. A class or a variable that changes the range is not seen by the agent. A measured `node2S` curve was taken on a two-socket server; on another socket count the simulator scales the whole curve, idle included, by sockets/2 (assumed: no public curve of such a node exists). A curve from a node class is used as given.
@@ -222,11 +223,7 @@ The minimum cap is `minBoardPowerW` in the catalog. When a node reports no GPU c
 
 ## 5. CPU physical model
 
-At the CPU side, Joulie combines three layers:
-
-- measured node-level curves where available,
-- family-level proxy curves where necessary,
-- and a generic fallback model when no better prior exists.
+At the CPU side, Joulie uses a measured node-level curve where one exists and an analytic model otherwise; a catalog entry's `proxyFrom` family only labels the telemetry, and no curve is borrowed from it.
 
 ## 5.1 Exact measured node curves where available
 
@@ -284,7 +281,7 @@ SPECpower_ssj2008 result 01522 [R20]: ASUSTeK Computer Inc. RS720A-E13-RS8U, tes
 - 90%: 661 W
 - 100%: 800 W
 
-These curves are interpolated with a monotone spline so that simulated power remains monotonic with load.
+Between its measured load points a curve is interpolated linearly, so simulated power stays monotonic with load.
 
 ## 5.2 Proxy CPU curves
 For CPU SKUs without exact public full curves, Joulie uses explicit family-level proxies:
@@ -589,13 +586,13 @@ The generic GPU model first computes a workload-dependent natural power draw.
 For compute-bound workloads:
 
 ```text
-P_nat = IdleW + (MaxW - IdleW) * util
+P_nat = IdleW + (MaxW - IdleW) * util^1.02
 ```
 
 For memory-bound workloads:
 
 ```text
-P_nat = IdleW + (MaxW - IdleW) * 0.65 * sqrt(util)
+P_nat = IdleW + (MaxW - IdleW) * (0.35 * sqrt(util) + 0.30 * util)
 ```
 
 For mixed workloads, the simulator blends the compute-bound and memory-bound curves.
@@ -841,7 +838,7 @@ For this reason, Joulie should be read as:
 ## 11. Limitations
 
 - GPU behavior is currently validated in **simulation first**; bare-metal GPU calibration is still pending.
-- Some CPU and GPU models still rely on proxy curves rather than exact public measured curves.
+- CPU models without a published measured curve run on the analytic model, and the GPU model parameters are assumptions ([wiki: Audit](https://github.com/joulie-k8s/Joulie/wiki/Audit)).
 - Vendor APIs expose min/max cap ranges, but exact internal PMU behavior can still depend on firmware and board design.
 - The current thermal model is still a first-order approximation; it does not attempt to model fan curves, hotspot sensors, package-to-package coupling, or chassis airflow in detail.
 - The current workload-boundness model is still a mixture-of-experts approximation; it is not yet calibrated from per-application traces for every workload family.
@@ -883,7 +880,7 @@ The list is intentionally grouped by role:
 - [R10] AMD EPYC 9655 product page, AMD.  
   <https://www.amd.com/en/products/processors/server/epyc/5th-generation-epyc/amd-epyc-9655.html>
 - [R11] Intel Xeon Gold 6530 specifications, Intel ARK.  
-  <https://www.intel.com/content/www/us/en/products/sku/236251/intel-xeon-gold-6530-processor-160m-cache-2-10-ghz/specifications.html>
+  <https://www.intel.com/content/www/us/en/products/sku/237249/intel-xeon-gold-6530-processor-160m-cache-2-10-ghz/specifications.html>
 - [R12] Linux `amd-pstate` documentation.  
   <https://docs.kernel.org/admin-guide/pm/amd-pstate.html>
 - [R13] Linux `intel_pstate` documentation.  
@@ -923,7 +920,7 @@ These SPECpower pages provide the detailed load-to-power points used for the mea
 - [R26] Roofline: an insightful visual performance model for multicore architectures.  
   <https://dl.acm.org/doi/10.1145/1498765.1498785>
 - [R27] NVML API reference, energy-consumption function semantics.  
-  <https://docs.nvidia.com/deploy/nvml-api/group__nvmlDeviceQueries.html>
+  <https://docs.nvidia.com/deploy/nvml-api/api/group__nvmlDeviceQueries.html>
 - [R28] Vladimir Ostapenco, Laurent Lefevre, Anne-Cecile Orgerie, Benjamin Fichel. Exploring RAPL as a Power Capping Leverage for Power-Constrained Infrastructures, ICA3PP 2024.  
   <https://perso.ens-lyon.fr/laurent.lefevre/pdf/ICA3PP2024_Ostapenco_Lefevre.pdf>
 - [R29] Dan Zhao, Siddharth Samsi, Joseph McDonald, Baolin Li, David Bestor, Michael Jones, Devesh Tiwari, Vijay Gadepally. Sustainable Supercomputing for AI: GPU Power Capping at HPC Scale, arXiv 2024.  

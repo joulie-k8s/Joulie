@@ -73,6 +73,68 @@ def to_baselines(raw) -> list[str]:
     return vals
 
 
+def _quantity(v) -> float:
+    """A Kubernetes CPU or GPU quantity as a number: "11.51", "500m", 2."""
+    s = str(v or 0).strip()
+    if s.endswith("m"):
+        return float(s[:-1]) / 1000.0
+    return float(s)
+
+
+def shape_trace(trace_path: pathlib.Path, arrival_window_sec: float, prefill_sec: float, base_speed_per_core: float, gpu_util_scale: float = 1.0) -> dict:
+    """Make a run start at regime and last arrival_window_sec. The trace is
+    read as if it had already run for prefill_sec seconds before the run
+    starts, with no queueing: a job submitted before then is submitted at
+    once, less the work it would have done since its submit offset (per wall
+    second, cores x base_speed_per_core CPU units and max(0.1, GPUs) x
+    base_speed_per_core GPU units, simulator/pkg/workload/rates.go), or left
+    out when it would have finished; later jobs keep their offsets, less
+    prefill_sec; jobs submitted after prefill_sec + arrival_window_sec are
+    left out. gpu_util_scale multiplies each job's
+    workloadProfile.gpuUtilization, at most 1: the generator's GPU jobs use
+    about half the GPUs they request. Returns how many jobs it prefilled and
+    left out."""
+    recs = [json.loads(raw) for raw in trace_path.read_text().splitlines() if raw.strip()]
+    end = prefill_sec + arrival_window_sec if arrival_window_sec > 0 else float("inf")
+    kept, prefilled, dropped = [], 0, 0
+    for rec in recs:
+        if rec.get("type", "job") != "job":
+            continue
+        off = float(rec.get("submitTimeOffsetSec", 0))
+        if off > end:
+            dropped += 1
+            continue
+        if off < prefill_sec and isinstance(rec.get("work"), dict):
+            req = (rec.get("podTemplate") or {}).get("requests") or {}
+            cores = _quantity(req.get("cpu"))
+            gpus = _quantity(req.get("nvidia.com/gpu") or req.get("amd.com/gpu"))
+            work, ran = rec["work"], prefill_sec - off
+            cpu = max(0.0, float(work.get("cpuUnits", 0) or 0) - ran * base_speed_per_core * cores)
+            gpu = max(0.0, float(work.get("gpuUnits", 0) or 0) - ran * base_speed_per_core * max(0.1, gpus))
+            if cpu <= 0 and gpu <= 0:
+                dropped += 1
+                continue
+            work["cpuUnits"], work["gpuUnits"] = cpu, gpu
+            prefilled += 1
+        rec["submitTimeOffsetSec"] = max(0.0, off - prefill_sec)
+        prof = rec.get("workloadProfile")
+        if gpu_util_scale != 1.0 and isinstance(prof, dict) and "gpuUtilization" in prof:
+            prof["gpuUtilization"] = min(1.0, float(prof["gpuUtilization"]) * gpu_util_scale)
+        kept.append(rec)
+    ids = {r.get("workloadId") for r in kept}
+    keep = {id(r) for r in kept}
+    out = []
+    for rec in recs:
+        if rec.get("type", "job") != "job":
+            if rec.get("workloadId") in ids:
+                rec["submitTimeOffsetSec"] = max(0.0, float(rec.get("submitTimeOffsetSec", 0)) - prefill_sec)
+                out.append(rec)
+        elif id(rec) in keep:
+            out.append(rec)
+    trace_path.write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in out))
+    return {"prefilled_jobs": prefilled, "dropped_jobs": dropped}
+
+
 def generate_canonical_seed_trace(
     seed: int,
     jobs: int,
@@ -89,6 +151,10 @@ def generate_canonical_seed_trace(
     work_scale: float,
     allowed_workload_types: list[str] | None,
     time_scale: float = 1.0,
+    arrival_window_sec: float = 0.0,
+    prefill_sec: float = 0.0,
+    base_speed_per_core: float = 1.0,
+    gpu_util_scale: float = 1.0,
 ) -> pathlib.Path:
     traces_dir = RESULTS / "traces"
     traces_dir.mkdir(parents=True, exist_ok=True)
@@ -100,6 +166,7 @@ def generate_canonical_seed_trace(
         f"_burstjobs_{str(burst_mean_jobs).replace('.', '_')}"
         f"_meta_{'on' if emit_workload_records else 'off'}"
         f"_wscale_{str(work_scale).replace('.', '_')}"
+        f"_win_{str(arrival_window_sec).replace('.', '_')}_prefill_{str(prefill_sec).replace('.', '_')}_gpuutil_{str(gpu_util_scale).replace('.', '_')}"
     )
     trace_name = (
         f"seed_{seed}_jobs_{jobs}_mia_{str(mean_inter_arrival_sec).replace('.', '_')}_"
@@ -168,6 +235,9 @@ def generate_canonical_seed_trace(
                         work["gpuUnits"] = float(work["gpuUnits"]) * work_scale
             filtered_scaled_lines.append(json.dumps(rec, separators=(",", ":")))
         trace_path.write_text("\n".join(filtered_scaled_lines) + ("\n" if filtered_scaled_lines else ""))
+    if arrival_window_sec > 0 or prefill_sec > 0 or gpu_util_scale != 1.0:
+        shaped = shape_trace(trace_path, arrival_window_sec, prefill_sec, base_speed_per_core, gpu_util_scale)
+        log(f"trace shaped arrival_window_sec={arrival_window_sec} prefill_sec={prefill_sec} prefilled_jobs={shaped['prefilled_jobs']} dropped_jobs={shaped['dropped_jobs']}")
     count = sum(1 for l in trace_path.read_text().splitlines() if l.strip())
     log(f"canonical seed trace generated records={count} file={trace_path}")
     return trace_path
@@ -382,6 +452,25 @@ def cleanup_workload_pods():
     )
 
 
+def run_schedule(baselines: list[str], seeds: int, repeat_first: bool = False) -> list[tuple[int, str]]:
+    """The sweep's runs as (seed, baseline) pairs: every baseline once per
+    seed. An odd seed rotates the order by one place per pair of seeds and
+    the even seed after it reverses that order, so over any two seeds each
+    baseline holds the same mean position. Running all of A, then all of B,
+    then all of C would confound the baseline with whatever else loads the
+    host meanwhile; the simulator advances jobs by wall-clock time, so host
+    load reaches the measurement. With repeat_first the first run is run
+    again at the end, to measure run-to-run noise."""
+    out = []
+    for seed in range(1, seeds + 1):
+        k = ((seed - 1) // 2) % len(baselines)
+        order = baselines[k:] + baselines[:k]
+        if seed % 2 == 0:
+            order = order[::-1]
+        out += [(seed, b) for b in order]
+    return out + out[:1] if repeat_first else out
+
+
 def reset_control_state():
     log("resetting control state (profiles + node power labels)")
     resources = {"nodepowerprofiles": "nodepowerprofiles.joulie.io", "telemetryprofiles": "telemetryprofiles.joulie.io"}
@@ -525,6 +614,10 @@ def main():
     )
     emit_workload_records = str(emit_workload_records_raw).strip().lower() not in {"false", "0", "no"}
     work_scale = float(get_cfg(cfg, "workload", "work_scale", default=1.0))
+    arrival_window_sec = float(get_cfg(cfg, "workload", "arrival_window_sec", default=0.0))
+    prefill_sec = float(get_cfg(cfg, "workload", "prefill_sec", default=0.0))
+    trace_base_speed = float(get_cfg(cfg, "simulator", "base_speed_per_core", default=1.0))
+    gpu_util_scale = float(get_cfg(cfg, "workload", "gpu_util_scale", default=1.0))
     diurnal_peak_rate = float(get_cfg(cfg, "workload", "diurnal_peak_rate", default=10.0))
     trace_mode = args.trace_mode
     baseline_a_strip_affinity = bool(get_cfg(cfg, "workload", "baseline_a_strip_affinity", default=True))
@@ -550,7 +643,7 @@ def main():
     if work_scale <= 0:
         raise SystemExit("work_scale must be > 0")
 
-    total_runs = len(baselines) * seeds
+    total_runs = len(baselines) * seeds + bool(get_cfg(cfg, "run", "repeat_first_run", default=False))
     done = 0
     log(
         f"starting sweep config={cfg_path} baselines={','.join(baselines)} seeds={seeds} jobs={jobs} "
@@ -625,7 +718,9 @@ def main():
 
     reset_control_state()
 
-    for baseline in baselines:
+    schedule = run_schedule(baselines, seeds, bool(get_cfg(cfg, "run", "repeat_first_run", default=False)))
+    log("run order: " + " ".join(f"{b}{s}" for s, b in schedule))
+    for run_seed, baseline in schedule:
         reset_control_state()
         log(f"installing components for baseline={baseline}")
         install_env = install_env_base.copy()
@@ -650,11 +745,12 @@ def main():
             check=True,
         )
         cleanup_workload_pods()
-        wait_zero_active_workload_pods(cleanup_timeout)
+        if not wait_zero_active_workload_pods(cleanup_timeout):
+            raise SystemExit(f"workload pods left after {cleanup_timeout} s of cleanup: the next run would start on them")
         log(f"policy settle sleep seconds={settle_seconds}")
         time.sleep(settle_seconds)
 
-        for seed in range(1, seeds + 1):
+        for seed in (run_seed,):  # one run per (seed, baseline) pair of the schedule
             done += 1
             log(f"run {done}/{total_runs}: baseline={baseline} seed={seed}")
             if trace_mode == "python":
@@ -697,6 +793,10 @@ def main():
                     work_scale=work_scale,
                     allowed_workload_types=allowed_workload_types,
                     time_scale=time_scale,
+                    arrival_window_sec=arrival_window_sec,
+                    prefill_sec=prefill_sec,
+                    base_speed_per_core=trace_base_speed,
+                    gpu_util_scale=gpu_util_scale,
                 )
             canonical_trace = retarget_trace_for_cluster(canonical_trace)
             trace_file = derive_baseline_trace(
@@ -706,7 +806,8 @@ def main():
             )
             log(f"using baseline trace file={trace_file}")
             cleanup_workload_pods()
-            wait_zero_active_workload_pods(cleanup_timeout)
+            if not wait_zero_active_workload_pods(cleanup_timeout):
+                raise SystemExit(f"workload pods left after {cleanup_timeout} s of cleanup: the next run would start on them")
             log(f"pre-run settle sleep seconds={settle_seconds}")
             time.sleep(settle_seconds)
             run(

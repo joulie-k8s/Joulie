@@ -13,7 +13,7 @@ extenders:
   - urlPrefix: "http://10.43.0.250:9876"
     filterVerb: "filter"
     prioritizeVerb: "prioritize"
-    weight: 5
+    weight: 1
     enableHTTPS: false
     nodeCacheCapable: false
     managedResources: []

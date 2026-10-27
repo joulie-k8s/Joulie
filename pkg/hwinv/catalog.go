@@ -3,7 +3,6 @@ package hwinv
 import (
 	_ "embed"
 	"fmt"
-	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -43,14 +42,14 @@ type CPUOfficialSpec struct {
 }
 
 // SocketCapMinFractionOfTDP is the lowest package power cap of one socket, as
-// a fraction of its TDP, for a CPU whose cTDP range is not published
-// (assumed: no public minimum).
+// a fraction of its TDP, that a percent cap resolves to (assumed: vendors
+// publish no minimum; a package power limit may be set below the low end of
+// the cTDP range, AMD EPYC 9004 HPC tuning guide, publication 58002).
 const SocketCapMinFractionOfTDP = 0.55
 
 // SocketCapRangeW is the package power cap range of one socket of this CPU:
-// the TDP is the maximum, and the low end of the cTDP range, or
-// SocketCapMinFractionOfTDP x TDP without one, the minimum, never above the
-// maximum. ok is false without a TDP. The simulator models a node's socket
+// the TDP is the maximum and SocketCapMinFractionOfTDP x TDP the minimum.
+// The cTDP range is not a cap floor. ok is false without a TDP. The simulator models a node's socket
 // cap range with it, and the agent resolves a percent CPU cap against it on
 // a node it controls over HTTP that has no RAPL files, so the two agree.
 func (o CPUOfficialSpec) SocketCapRangeW() (minW, maxW float64, ok bool) {
@@ -58,11 +57,7 @@ func (o CPUOfficialSpec) SocketCapRangeW() (minW, maxW float64, ok bool) {
 		return 0, 0, false
 	}
 	maxW = o.TDPW
-	minW = SocketCapMinFractionOfTDP * maxW
-	if len(o.CTdpRangeW) > 0 && o.CTdpRangeW[0] > 0 {
-		minW = o.CTdpRangeW[0]
-	}
-	return math.Min(minW, maxW), maxW, true
+	return SocketCapMinFractionOfTDP * maxW, maxW, true
 }
 
 // CapForPctW is pct of maxW clamped to minW and maxW: how the agent turns a

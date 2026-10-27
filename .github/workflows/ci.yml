@@ -39,12 +39,12 @@ jobs:
           args: test --source=.
           cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
 
-  # go test -race ./cmd/..., which CLAUDE.md asks for whenever a change
-  # touches caches or goroutines; a job of its own, since the race detector
-  # makes the tests several times slower.
+  # go test -race over ./cmd/... and the simulator, which CLAUDE.md asks
+  # for whenever a change touches caches or goroutines; a job of its own,
+  # since the race detector makes the tests several times slower.
   race:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

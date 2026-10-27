@@ -57,6 +57,17 @@ kubectl apply -f "$ROOT/charts/joulie/crds/joulie.io_nodetwins.yaml"
 if [[ "$BASELINE" == "A" ]]; then
   echo "baseline A selected: simulator only (no controller manager/agent)"
   helm uninstall joulie -n joulie-system >/dev/null 2>&1 || true
+  # The previous baseline's controller manager relabels nodes on every
+  # reconcile, also after the sweep cleared the labels and before this
+  # uninstall. Once its pods are gone nothing writes them: clear them again,
+  # and run A only on nodes without a profile.
+  kubectl -n joulie-system wait --for=delete pod --all --timeout=180s >/dev/null 2>&1 || true
+  kubectl label nodes -l joulie.io/managed=true joulie.io/power-profile- >/dev/null
+  kubectl label nodes -l joulie.io/managed=true joulie.io/draining=false --overwrite >/dev/null
+  if kubectl get nodes -l joulie.io/power-profile -o name | grep -q .; then
+    echo "baseline A: nodes still carry joulie.io/power-profile" >&2
+    exit 1
+  fi
 else
   # Baselines B and C both enable the scheduler extender for adaptive placement.
   # On KinD, the extender uses nodeName to bypass the scheduler (chicken-and-egg:
@@ -95,11 +106,6 @@ else
       --set "agent.env.TELEMETRY_GPU_CONTROL=http"
       --set "agent.env.TELEMETRY_GPU_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}"
       --set "agent.env.TELEMETRY_GPU_CONTROL_MODE=rapl"
-      --set "agent.env.JOULIE_TELEMETRY_SOURCE_TYPE=http"
-      --set "agent.env.JOULIE_TELEMETRY_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/telemetry/{node}"
-      --set "agent.env.JOULIE_CONTROL_TYPE=http"
-      --set "agent.env.JOULIE_CONTROL_HTTP_ENDPOINT=http://joulie-telemetry-sim.joulie-sim-demo.svc.cluster.local/control/{node}"
-      --set "agent.env.JOULIE_CONTROL_MODE=rapl"
     )
   fi
 
@@ -198,11 +204,12 @@ YAML
 SIM_HELM_ARGS=(
   --set "image.repository=${SIM_REGISTRY}/${SIM_IMAGE}"
   --set "image.tag=${SIM_TAG:-latest}"
-  --set "image.pullPolicy=Always"
+  --set "image.pullPolicy=${SIM_IMAGE_PULL_POLICY:-Always}"
   --set "env.SIM_HARDWARE_CATALOG_PATH="
-  --set "env.SIM_FACILITY_AMBIENT_BASE_C=${SIM_FACILITY_AMBIENT_BASE_C}"
-  --set "env.SIM_FACILITY_AMBIENT_AMPLITUDE_C=${SIM_FACILITY_AMBIENT_AMPLITUDE_C}"
-  --set "env.SIM_FACILITY_AMBIENT_PERIOD_SEC=${SIM_FACILITY_AMBIENT_PERIOD_SEC}"
+  --set "env.SIM_FACILITY_AMBIENT_TEMP_C=${SIM_FACILITY_AMBIENT_BASE_C}"
+  --set "env.SIM_FACILITY_TEMP_AMPLITUDE_C=${SIM_FACILITY_AMBIENT_AMPLITUDE_C}"
+  --set "env.SIM_FACILITY_TEMP_PERIOD_H=$(awk -v s="${SIM_FACILITY_AMBIENT_PERIOD_SEC}" 'BEGIN { printf "%.6f", s / 3600 }')"
+  --set "env.SIM_WORKLOAD_STALL_FORCE_COMPLETE=-1"
 )
 if [[ -n "$SIM_BASE_SPEED_PER_CORE" ]]; then
   SIM_HELM_ARGS+=(--set "extraEnv.SIM_BASE_SPEED_PER_CORE=${SIM_BASE_SPEED_PER_CORE}")

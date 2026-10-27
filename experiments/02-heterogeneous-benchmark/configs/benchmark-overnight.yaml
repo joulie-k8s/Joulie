@@ -18,7 +18,6 @@ workload:
   compute_bound_perf_boost: 3.5
   # Many jobs are GPU-backed, but CPU-side preprocessing/analytics is still common.
   gpu_ratio: 0.45
-  gpu_request_per_job: 1
   burst_day_probability: 0.25
   burst_mean_jobs: 8.0
   burst_multiplier: 2.0

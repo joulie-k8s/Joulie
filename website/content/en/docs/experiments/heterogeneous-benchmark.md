@@ -196,7 +196,6 @@ Assumptions: 8,760 h/yr continuous operation, $0.10/kWh, 0.385 kg CO₂/kWh (EPA
 
 - [Experiment folder](https://github.com/joulie-k8s/Joulie/tree/main/experiments/02-heterogeneous-benchmark)
 - [Full report (REPORT.md)](https://github.com/joulie-k8s/Joulie/blob/main/experiments/02-heterogeneous-benchmark/REPORT.md)
-- [Standalone 5k-node report](https://github.com/joulie-k8s/Joulie/blob/main/experiments/02-heterogeneous-benchmark/REPORT-standalone.md)
 - Main scripts:
   - [05_sweep.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/02-heterogeneous-benchmark/scripts/05_sweep.py)
   - [04_run_one.py](https://github.com/joulie-k8s/Joulie/blob/main/experiments/02-heterogeneous-benchmark/scripts/04_run_one.py)

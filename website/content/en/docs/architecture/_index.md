@@ -79,7 +79,7 @@ It discovers local hardware, publishes `NodeHardware`, reads `NodeTwin.spec`, an
 The scheduler extender is a read-only HTTP service that participates in the Kubernetes scheduling cycle. When a new pod is created, kube-scheduler calls the extender at two endpoints:
 
 - **Filter** (`POST /filter`): rejects eco and draining nodes for performance pods. Standard pods pass all nodes.
-- **Prioritize** (`POST /prioritize`): scores each node 0-100 using `score = headroomScore*0.7 + (100-coolingStress)*0.15 + trendBonus + profileBonus + pressureRelief`.
+- **Prioritize** (`POST /prioritize`): scores each node 0-100 using `score = headroomScore*0.7 + (100-coolingStress)*0.15 + trendBonus + profileBonus + pressureRelief`, and returns it as a priority from 0 to 10, the extender API's range.
 
 The score is **pod-specific**: the extender estimates how many watts the pod will add to each node (from its CPU/GPU requests) and subtracts that from the node's capped power budget before scoring. Heavy pods reduce headroom more, naturally steering them toward nodes with more power budget remaining.
 

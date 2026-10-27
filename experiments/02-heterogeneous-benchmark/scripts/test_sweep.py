@@ -7,6 +7,7 @@ requiring a Kubernetes cluster.  All kubectl / subprocess calls are mocked.
 import importlib
 import json
 import pathlib
+import re
 import subprocess
 import sys
 from collections import deque
@@ -600,10 +601,9 @@ class TestConfigSanity:
     def _prod_only_configs(self):
         """The prod configs, without the debug ones.
 
-        benchmark-5k-debug.yaml is the input of the standalone runs published in
-        REPORT-standalone.md (scripts/standalone_sweep.py, no kube-scheduler).
-        Editing it would stop those numbers from being reproducible, so rules
-        written for a Kubernetes run are checked on the prod configs only.
+        benchmark-5k-debug.yaml is the input of the standalone runs
+        (scripts/standalone_sweep.py, no kube-scheduler), so rules written for
+        a Kubernetes run are checked on the prod configs only.
         """
         import yaml as _yaml
         for p in sorted(self.CONFIGS_DIR.glob("benchmark-*-prod.yaml")):
@@ -724,7 +724,7 @@ class TestConfigSanity:
 
         There is no fixed floor: the fraction is relative to cluster size, and
         at 5000 nodes hp_base_frac=0.05 is 250 performance nodes, a deliberate
-        choice explained in REPORT-standalone.md.
+        choice for the 5,000-node configs.
         """
         for cfg_path, cfg in self._prod_configs():
             policy = cfg.get("policy", {})
@@ -970,3 +970,374 @@ def test_debug_fetch_reports_why_the_port_forward_failed(monkeypatch):
     monkeypatch.setattr(run_one.subprocess, "Popen", _FakePortForward("", "error: unable to listen on any of the requested ports"))
     with pytest.raises(RuntimeError, match="unable to listen"):
         run_one.fetch_via_port_forward("/debug/energy", 5)
+
+
+# ---------------------------------------------------------------------------
+# Runs that complete: trace shaping, the simulator's settings, the end of a run
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = SCRIPTS_DIR.parents[2]
+
+
+def test_shape_trace_prefills_the_cluster_and_keeps_the_window(tmp_path):
+    """A job submitted before prefill_sec is submitted at once, less the work
+    it would have done since (cores, or max(0.1, GPUs), x base speed per
+    second), or left out when it would have finished; later jobs keep their
+    offset less prefill_sec, and jobs after prefill_sec + window are left
+    out, with the workload records of every job left out."""
+    def job(jid, offset, requests, work):
+        return {"type": "job", "jobId": jid, "workloadId": jid, "submitTimeOffsetSec": offset,
+                "podTemplate": {"requests": requests}, "work": work}
+    recs = [
+        {"type": "workload", "workloadId": "a", "submitTimeOffsetSec": 10.0},
+        job("a", 10.0, {"cpu": "4"}, {"cpuUnits": 10000.0, "gpuUnits": 0.0}),
+        {"type": "workload", "workloadId": "b", "submitTimeOffsetSec": 20.0},
+        job("b", 20.0, {"cpu": "1"}, {"cpuUnits": 50.0, "gpuUnits": 0.0}),
+        job("c", 150.0, {"cpu": "1"}, {"cpuUnits": 50.0, "gpuUnits": 0.0}),
+        job("e", 50.0, {"cpu": "2", "nvidia.com/gpu": "2"}, {"cpuUnits": 10.0, "gpuUnits": 1000.0}),
+        job("d", 2000.0, {"cpu": "1"}, {"cpuUnits": 5.0, "gpuUnits": 0.0}),
+    ]
+    p = tmp_path / "trace.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    assert sweep.shape_trace(p, 900.0, 100.0, 2.0) == {"prefilled_jobs": 2, "dropped_jobs": 2}
+    out = [json.loads(l) for l in p.read_text().splitlines()]
+    assert [(r["type"], r["workloadId"], r["submitTimeOffsetSec"]) for r in out] == [
+        ("workload", "a", 0.0), ("job", "a", 0.0), ("job", "c", 50.0), ("job", "e", 0.0)]
+    work = {r["jobId"]: r["work"] for r in out if r["type"] == "job"}
+    assert work["a"] == {"cpuUnits": 10000.0 - 90 * 2 * 4, "gpuUnits": 0.0}
+    assert work["c"] == {"cpuUnits": 50.0, "gpuUnits": 0.0}
+    assert work["e"] == {"cpuUnits": 0.0, "gpuUnits": 1000.0 - 50 * 2 * 2}
+
+
+def test_install_sets_only_simulator_variables_the_simulator_reads():
+    """Every env.SIM_* the install script gives the simulator is read by the
+    simulator. The ambient model was set as SIM_FACILITY_AMBIENT_BASE_C,
+    _AMPLITUDE_C and _PERIOD_SEC, names the simulator never read, so every run
+    used its defaults. The stall force-completion is off: it ends a job that
+    made no progress, a pending one included, without its work."""
+    script = (SCRIPTS_DIR / "03_install_components.sh").read_text()
+    names = set(re.findall(r'(?:extraEnv|env)\.(SIM_[A-Z0-9_]+)=', script))
+    sources = "".join(p.read_text() for d in ("simulator/cmd/simulator", "simulator/pkg/workload")
+                      for p in (REPO_ROOT / d).glob("*.go") if not p.name.endswith("_test.go"))
+    assert names, "no simulator variables found"
+    assert sorted(n for n in names if f'"{n}"' not in sources) == []
+    assert '"env.SIM_WORKLOAD_STALL_FORCE_COMPLETE=-1"' in script
+
+
+def test_run_window_stops_at_the_window_and_records_work_done(monkeypatch, tmp_path):
+    """A run lasts the arrival window and stops before the drain; every poll
+    writes the CPU and GPU work done so far, total minus remaining over all
+    jobs, and the jobs submitted and completed."""
+    run_one = _load_run_one()
+    clock = iter([0.0, 0.0, 0.0, 10.0, 10.0, 20.0, 20.0, 20.0])
+    monkeypatch.setattr(run_one.time, "time", lambda: next(clock))
+    monkeypatch.setattr(run_one.time, "sleep", lambda s: None)
+    payload = {"jobs": [
+        {"submitted": True, "completed": True, "cpuUnitsTotal": 10, "cpuUnitsRemaining": 0, "gpuUnitsTotal": 4, "gpuUnitsRemaining": 0},
+        {"submitted": True, "completed": False, "node": "n1", "cpuUnitsTotal": 10, "cpuUnitsRemaining": 6, "gpuUnitsTotal": 0, "gpuUnitsRemaining": 0},
+        {"jobId": "j3", "submitted": True, "completed": False, "node": "", "cpuUnitsTotal": 3, "cpuUnitsRemaining": 3},
+        {"submitted": False, "completed": False, "cpuUnitsTotal": 5, "cpuUnitsRemaining": 5},
+    ]}
+    answers = {"/debug/jobs": json.dumps(payload), "/debug/energy": json.dumps({"totalJoules": 1234.5, "byNodeJoules": {"n1": 1000.0}})}
+    monkeypatch.setattr(run_one, "fetch_via_port_forward", lambda endpoint, timeout: answers[endpoint])
+    monkeypatch.setattr(run_one, "host_load", lambda: 1.0)
+    out = tmp_path / "work_progress.csv"
+    assert run_one.run_window(20, 1000, out, {"j3": ("amd", 0.0, True, 8.0)}) == 3
+    lines = out.read_text().splitlines()
+    assert lines[0] == "elapsed_sec,cpu_units_done,gpu_units_done,cpu_only_units_done,jobs_submitted,jobs_completed,jobs_pending,jobs_queued,pending_nvidia,pending_amd,pending_cpu,pending_perf,pending_8gpu,energy_j,gpu_demand"
+    assert lines[1:] == ["0.0,14.000,4.000,4.000,3,1,1,0,0,1,0,1,1,1234.5,0.000", "10.0,14.000,4.000,4.000,3,1,1,0,0,1,0,1,1,1234.5,0.000", "20.0,14.000,4.000,4.000,3,1,1,0,0,1,0,1,1,1234.5,0.000"]
+    by_node = [json.loads(l) for l in (tmp_path / "energy_by_node.jsonl").read_text().splitlines()]
+    assert by_node[-1] == {"elapsed_sec": 20.0, "byNodeJoules": {"n1": 1000.0}}
+
+
+def test_benchmark_config_runs_the_arrival_window():
+    """A run lasts the arrival window (run.timeout), the report measures from
+    run.measure_from_sec inside it, and the sweep runs at least two seeds."""
+    cfg = yaml.safe_load((SCRIPTS_DIR.parent / "configs" / "benchmark-40n.yaml").read_text())
+    w, run = cfg["workload"], cfg["run"]
+    assert run["timeout"] == w["arrival_window_sec"]
+    assert 0 < run["measure_from_sec"] < run["timeout"]
+    assert run["seeds"] >= 2
+
+
+def test_run_schedule_interleaves_the_baselines_within_each_seed():
+    """Each seed runs every baseline once, and over two seeds each baseline
+    holds the same mean position, so no baseline runs as a block or always
+    first or last."""
+    sched = sweep.run_schedule(["A", "B", "C"], 2)
+    assert sched == [(1, "A"), (1, "B"), (1, "C"), (2, "C"), (2, "B"), (2, "A")]
+    for seed in (1, 2, 3, 4):
+        assert sorted(b for s, b in sweep.run_schedule(["A", "B", "C"], 4) if s == seed) == ["A", "B", "C"]
+    assert sweep.run_schedule(["A", "B", "C"], 2, repeat_first=True)[-1] == (1, "A")
+
+
+def test_shape_trace_raises_gpu_utilization_up_to_one(tmp_path):
+    """gpu_util_scale multiplies each job's GPU utilization, never above 1,
+    and leaves CPU utilization and jobs without a GPU figure alone."""
+    recs = [
+        {"type": "job", "jobId": "a", "submitTimeOffsetSec": 1.0, "podTemplate": {"requests": {"cpu": "1"}},
+         "work": {"cpuUnits": 1.0, "gpuUnits": 1.0}, "workloadProfile": {"cpuUtilization": 0.5, "gpuUtilization": 0.5}},
+        {"type": "job", "jobId": "b", "submitTimeOffsetSec": 2.0, "podTemplate": {"requests": {"cpu": "1"}},
+         "work": {"cpuUnits": 1.0, "gpuUnits": 1.0}, "workloadProfile": {"gpuUtilization": 0.9}},
+        {"type": "job", "jobId": "c", "submitTimeOffsetSec": 3.0, "podTemplate": {"requests": {"cpu": "1"}},
+         "work": {"cpuUnits": 1.0, "gpuUnits": 0.0}, "workloadProfile": {"cpuUtilization": 0.4}},
+    ]
+    p = tmp_path / "trace.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    sweep.shape_trace(p, 0.0, 0.0, 2.0, gpu_util_scale=1.25)
+    prof = {r["jobId"]: r["workloadProfile"] for r in map(json.loads, p.read_text().splitlines())}
+    assert prof == {"a": {"cpuUtilization": 0.5, "gpuUtilization": 0.625}, "b": {"gpuUtilization": 1.0}, "c": {"cpuUtilization": 0.4}}
+
+
+def test_control_errors_counts_refused_commands(monkeypatch):
+    """A run counts the control commands the simulator refused, from its
+    joulie_sim_control_actions_total, and only those."""
+    run_one = _load_run_one()
+    metrics = "\n".join([
+        '# TYPE joulie_sim_control_actions_total counter',
+        'joulie_sim_control_actions_total{action="rapl.set_power_cap_watts",node="n1",result="error"} 3',
+        'joulie_sim_control_actions_total{action="rapl.set_power_cap_watts",node="n2",result="applied"} 40',
+        'joulie_sim_control_actions_total{action="gpu.set_power_cap_watts",node="n3",result="error"} 1',
+    ])
+    monkeypatch.setattr(run_one, "fetch_via_port_forward", lambda endpoint, timeout: metrics)
+    assert run_one.control_errors() == 4
+
+
+def test_pick_vendor_sends_a_job_where_gpus_are_free():
+    """A GPU job goes to the pool whose requested GPUs, the job's included,
+    are the lowest share of its GPUs, among pools that can host it; a job
+    that has ended frees its GPUs."""
+    pools = {"amd": {"gpus": 3, "largest": 3, "active": [], "load": 0.0},
+             "nvidia": {"gpus": 8, "largest": 8, "active": [], "load": 0.0}}
+    # Shares after the pick: nvidia 1/8 < amd 1/3, 2/8 < 1/3, then amd
+    # 1/3 < nvidia 3/8, then nvidia 3/8 < amd 2/3.
+    assert [sweep.pick_vendor(pools, 0, 1, 100) for _ in range(4)] == ["nvidia", "nvidia", "amd", "nvidia"]
+    # No AMD node holds 4 GPUs.
+    assert sweep.pick_vendor(pools, 50, 4, 1) == "nvidia"
+    # Every job has ended: nvidia 3/8 < amd 3/3; without freeing, nvidia
+    # would be at 10/8.
+    assert sweep.pick_vendor(pools, 200, 3, 1) == "nvidia"
+    with pytest.raises(SystemExit):
+        sweep.pick_vendor(pools, 300, 16, 1)
+
+
+def test_retarget_keeps_both_vendor_pools_at_the_same_load(tmp_path, monkeypatch):
+    """Over the experiment's inventory and jobs of heavy-tailed length, the
+    AMD pool (40 of 188 GPUs) and the NVIDIA pool carry about the same share
+    of their GPUs over time, and AMD peaks no higher than NVIDIA."""
+    import heapq, random
+    inv = yaml.safe_load((SCRIPTS_DIR.parent / "configs" / "cluster-nodes.yaml").read_text())
+    nodes = []
+    for n in inv["nodes"]:
+        for i in range(n.get("replicas", 1)):
+            g = int(n.get("gpu_count", 0))
+            vendor = "amd" if "amd" in str(n.get("vendor", "")).lower() else ("nvidia" if g else "none")
+            nodes.append({"name": f"{n['node_name_prefix']}-{i}", "vendor": vendor, "gpu_product": n.get("product", ""),
+                          "gpu_count": g, "cpu_model": n.get("cpu", ""), "cpu_only": g <= 0})
+    monkeypatch.setattr(sweep, "load_kwok_nodes", lambda: nodes)
+    cap = {v: sum(n["gpu_count"] for n in nodes if n["vendor"] == v) for v in ("amd", "nvidia")}
+    rng = random.Random(7)
+    jobs = []
+    for i in range(3000):
+        g = rng.choice([1, 1, 1, 1, 2, 4, 8])
+        jobs.append({"type": "job", "jobId": f"j{i}", "workloadId": f"j{i}", "submitTimeOffsetSec": i * 0.5,
+                     "podTemplate": {"requests": {"cpu": "1", "nvidia.com/gpu": str(g)}},
+                     "work": {"cpuUnits": 0.0, "gpuUnits": g * rng.paretovariate(1.5) * 10}})
+    p = tmp_path / "trace.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in jobs))
+    out = [json.loads(l) for l in sweep.retarget_trace_for_cluster(p).read_text().splitlines()]
+    ev = []
+    for r in out:
+        req = r["podTemplate"]["requests"]
+        v = "amd" if "amd.com/gpu" in req else "nvidia"
+        g = float(req[f"{v}.com/gpu"])
+        ev.append((r["submitTimeOffsetSec"], r["submitTimeOffsetSec"] + r["work"]["gpuUnits"] / g, v, g))
+    load = {v: [sum(g for s0, e, vv, g in ev if vv == v and s0 <= t < e) / cap[v] for t in range(300, 1500, 10)] for v in cap}
+    gap = sum(abs(a - b) for a, b in zip(load["amd"], load["nvidia"])) / len(load["amd"])
+    # The pick in proportion to GPU counts gave a mean gap of 0.26 and an
+    # AMD peak of 1.40 against 1.03 on NVIDIA.
+    assert gap < 0.1, gap
+    assert max(load["amd"]) <= max(load["nvidia"]) + 0.1, (max(load["amd"]), max(load["nvidia"]))
+
+
+def _write_debug_state(path, nodes, jobs=(), before=None):
+    """The simulator's state at the end of a run in path: nodes maps a node
+    to its state fields (sim_debug_nodes.json); jobs lists (node, completed)
+    as read after the nodes (sim_debug_jobs.json) and before, the same
+    jobs as read before them (sim_debug_jobs_before.json), jobs by default."""
+    path.joinpath("sim_debug_nodes.json").write_text(json.dumps({"nodes": [{"node": n, "state": st} for n, st in nodes.items()]}))
+    for name, js in (("sim_debug_jobs.json", jobs), ("sim_debug_jobs_before.json", jobs if before is None else before)):
+        path.joinpath(name).write_text(json.dumps({"jobs": [
+            {"jobId": f"j{i}", "node": n, "submitted": True, "completed": c} for i, (n, c) in enumerate(js)]}))
+
+
+def test_gate_failures_refuse_a_run_outside_the_gates(tmp_path):
+    """A run fails the gates when the polls leave the measured window or have
+    a gap, when jobs stay queued over the measured window on average, or
+    when the binding resource's utilization at regime is below 45 %."""
+    run_one = _load_run_one()
+    head = "elapsed_sec,cpu_units_done,gpu_units_done,cpu_only_units_done,jobs_submitted,jobs_completed,jobs_pending,jobs_queued,pending_nvidia,pending_amd,pending_cpu,pending_perf,pending_8gpu,energy_j\n"
+    (tmp_path / "trace.jsonl").write_text('{"type":"job","jobId":"a","work":{"cpuUnits":1,"gpuUnits":0}}\n')
+    _write_debug_state(tmp_path, {"n1": {"gpuUtil": 0, "cpuUtil": 0.3}}, [("n1", False)])
+    def write(polls, queued, util):
+        (tmp_path / "work_progress.csv").write_text(head + "".join(f"{t},0,0,0,0,0,{queued},{queued},0,0,0,0,0,0\n" for t in polls))
+        (tmp_path / "timeseries.csv").write_text("elapsed_sec,cluster_cpu_util,cluster_gpu_util,pods_running\n" + "".join(f"{t},{util},0,100\n" for t in range(0, 901, 10)))
+    write(range(0, 901, 10), 0, 0.5)
+    assert run_one.gate_failures(tmp_path, 120, 900) == []
+    write(range(0, 801, 10), 0, 0.5)
+    assert any("cover" in x for x in run_one.gate_failures(tmp_path, 120, 900))
+    write([*range(0, 300, 10), *range(400, 901, 10)], 0, 0.5)
+    assert any("gap" in x for x in run_one.gate_failures(tmp_path, 120, 900))
+    write(range(0, 901, 10), 5, 0.5)
+    assert any("queued" in x for x in run_one.gate_failures(tmp_path, 120, 900))
+    # One poll at the start of the window does not decide: 5 queued at
+    # 120 s only, none after.
+    (tmp_path / "work_progress.csv").write_text(head + "".join(f"{t},0,0,0,0,0,{5 if t == 120 else 0},{5 if t == 120 else 0},0,0,0,0,0,0\n" for t in range(0, 901, 10)))
+    assert run_one.gate_failures(tmp_path, 120, 900) == []
+    write(range(0, 901, 10), 0, 0.4)
+    assert any("util" in x for x in run_one.gate_failures(tmp_path, 120, 900))
+    # B and C cause their own queueing and utilization: only coverage gates them.
+    write(range(0, 901, 10), 5, 0.4)
+    assert run_one.gate_failures(tmp_path, 120, 900, "B") == []
+    write(range(0, 801, 10), 5, 0.4)
+    assert any("cover" in x for x in run_one.gate_failures(tmp_path, 120, 900, "C"))
+
+
+def test_gate_failures_refuse_a_node_left_with_load(tmp_path):
+    """Every run fails when a node with no pod and no job ends at a GPU
+    utilization above 0, and a GPU run under A when the simulator's GPU
+    utilization at regime is more than 0.03 from the GPU load of its placed
+    jobs. Two placed 8-GPU jobs at a GPU utilization of 0.5 on 16 GPUs: the
+    polls' gpu_demand is 8, the placed jobs give 0.5."""
+    run_one = _load_run_one()
+    head = "elapsed_sec,cpu_units_done,gpu_units_done,cpu_only_units_done,jobs_submitted,jobs_completed,jobs_pending,jobs_queued,pending_nvidia,pending_amd,pending_cpu,pending_perf,pending_8gpu,energy_j,gpu_demand\n"
+    (tmp_path / "work_progress.csv").write_text(head + "".join(f"{t},0,0,0,0,0,0,0,0,0,0,0,0,0,8.0\n" for t in range(0, 901, 10)))
+    (tmp_path / "trace.jsonl").write_text("".join(
+        json.dumps({"type": "job", "jobId": j, "submitTimeOffsetSec": 0, "podTemplate": {"requests": {"nvidia.com/gpu": "8"}},
+                    "workloadProfile": {"gpuUtilization": 0.5}, "work": {"cpuUnits": 1, "gpuUnits": 1}}, separators=(",", ":")) + "\n" for j in ("g1", "g2")))
+    (tmp_path / "nodes.json").write_text(json.dumps({"items": [
+        {"status": {"allocatable": {"nvidia.com/gpu": "8"}}}, {"status": {"allocatable": {"nvidia.com/gpu": "8"}}}, {"status": {"allocatable": {"cpu": "4"}}}]}))
+    def series(util):
+        (tmp_path / "timeseries.csv").write_text("timestamp_utc,elapsed_sec,cluster_cpu_util,cluster_gpu_util,pods_running\n" + "".join(
+            f"2026-10-27T00:{t // 60:02d}:{t % 60:02d}Z,{t},0.1,{util},2\n" for t in range(0, 901, 10)))
+    series(0.5)
+    busy = {"gpuUtil": 0.5, "cpuUtil": 0.1}
+    idle = {"gpuUtil": 0, "cpuUtil": 0, "otherPods": 0}
+    _write_debug_state(tmp_path, {"n1": busy, "n2": busy, "n3": idle}, [("n1", False), ("n2", False)])
+    assert run_one.gate_failures(tmp_path, 120, 900) == []
+    # A node whose last job ended before both reads kept its GPU load, or
+    # its CPU load with no pod outside the workload.
+    _write_debug_state(tmp_path, {"n1": busy, "n2": {"gpuUtil": 0.98, "cpuUtil": 0}}, [("n1", False), ("n2", True)])
+    assert any("no job at a load" in x for x in run_one.gate_failures(tmp_path, 120, 900))
+    assert any("no job at a load" in x for x in run_one.gate_failures(tmp_path, 120, 900, "B"))
+    _write_debug_state(tmp_path, {"n1": busy, "n2": {"gpuUtil": 0, "cpuUtil": 0.24, "otherPods": 0}}, [("n1", False), ("n2", True)])
+    assert any("n2 GPU 0.00 CPU 0.24" in x for x in run_one.gate_failures(tmp_path, 120, 900, "B"))
+    # A pod outside the workload loads the CPU of a node without jobs.
+    _write_debug_state(tmp_path, {"n1": busy, "n2": {"gpuUtil": 0, "cpuUtil": 0.12, "otherPods": 1}}, [("n1", False)])
+    assert run_one.gate_failures(tmp_path, 120, 900, "B") == []
+    # The job on n2 ended between the two reads of the jobs: the node read
+    # may show its load.
+    _write_debug_state(tmp_path, {"n1": busy, "n2": busy}, [("n1", False), ("n2", True)], before=[("n1", False), ("n2", False)])
+    assert run_one.gate_failures(tmp_path, 120, 900) == []
+    # A job placed on n2 and ended between the two reads.
+    _write_debug_state(tmp_path, {"n1": busy, "n2": busy}, [("n1", False), ("n2", True)], before=[("n1", False), ("", False)])
+    assert run_one.gate_failures(tmp_path, 120, 900) == []
+    # The simulator reads 0.6 where the requests give 0.5.
+    series(0.6)
+    assert any("placed jobs give 0.500" in x for x in run_one.gate_failures(tmp_path, 120, 900))
+    assert run_one.gate_failures(tmp_path, 120, 900, "C") == []
+    # What the checks read is missing or empty: a failure, never a crash
+    # or a pass that looked at nothing.
+    (tmp_path / "timeseries.csv").write_text("timestamp_utc,elapsed_sec,cluster_cpu_util,cluster_gpu_util,pods_running\n")
+    assert any("< 0.45" in x for x in run_one.gate_failures(tmp_path, 120, 900))
+    series(0.5)
+    (tmp_path / "work_progress.csv").write_text(head + "".join(f"{t},0,0,0,0,0,0,0,0,0,0,0,0,0,nan\n" for t in range(0, 901, 10)))
+    assert any("no utilization to check" in x for x in run_one.gate_failures(tmp_path, 120, 900))
+    (tmp_path / "work_progress.csv").write_text(head + "".join(f"{t},0,0,0,0,0,0,0,0,0,0,0,0,0,8.0\n" for t in range(0, 901, 10)))
+    series(0.5)
+    (tmp_path / "nodes.json").unlink()
+    assert any("no utilization to check" in x for x in run_one.gate_failures(tmp_path, 120, 900))
+    (tmp_path / "sim_debug_jobs_before.json").unlink()
+    assert any("cannot be read" in x for x in run_one.gate_failures(tmp_path, 120, 900, "B"))
+    (tmp_path / "sim_debug_nodes.json").write_text("{}")
+    (tmp_path / "sim_debug_jobs.json").write_text("{}")
+    (tmp_path / "sim_debug_jobs_before.json").write_text("{}")
+    assert any("lists no node" in x for x in run_one.gate_failures(tmp_path, 120, 900, "B"))
+
+
+def test_placed_gpu_demand_counts_the_jobs_the_simulator_counts(tmp_path):
+    """The polls sum GPUs x utilization target over the jobs on a node with
+    GPU work left, as the simulator's workload tick does: not a waiting job,
+    a job past its GPU work, or a completed one. A placed job without a
+    target makes the sum NaN, and the trace's targets are clamped to 1."""
+    run_one = _load_run_one()
+    jobs = [
+        {"jobId": "a", "node": "n1", "completed": False, "requestedGpus": 4, "gpuUnitsRemaining": 5},
+        {"jobId": "b", "node": "n1", "completed": False, "requestedGpus": 8, "gpuUnitsRemaining": 0},
+        {"jobId": "c", "node": "", "completed": False, "requestedGpus": 8, "gpuUnitsRemaining": 9},
+        {"jobId": "d", "node": "n2", "completed": True, "requestedGpus": 2, "gpuUnitsRemaining": 1},
+    ]
+    targets = {"a": 0.5, "b": 1.0, "c": 1.0, "d": 1.0}
+    assert run_one.placed_gpu_demand(jobs, targets) == 2.0
+    del targets["a"]
+    demand = run_one.placed_gpu_demand(jobs, targets)
+    assert demand != demand
+    p = tmp_path / "trace.jsonl"
+    p.write_text("\n".join(json.dumps(r, separators=(",", ":")) for r in [
+        {"type": "job", "jobId": "a", "podTemplate": {"requests": {"nvidia.com/gpu": "4"}}, "workloadProfile": {"gpuUtilization": 1.3}},
+        {"type": "job", "jobId": "b", "podTemplate": {"requests": {"amd.com/gpu": "1"}}},
+        {"type": "job", "jobId": "c", "podTemplate": {"requests": {"cpu": "2"}}, "workloadProfile": {"cpuUtilization": 0.4}},
+    ]))
+    assert run_one.gpu_util_targets(p) == {"a": 1.0, "b": None}
+
+
+def test_job_pools_reads_pool_offset_and_class(tmp_path):
+    """job_pools gives each job its GPU resource or cpu, its submit offset
+    and whether it is a performance job, from the trace's intentClass."""
+    run_one = _load_run_one()
+    p = tmp_path / "trace.jsonl"
+    p.write_text(
+        '{"type":"job","jobId":"a","submitTimeOffsetSec":5,"intentClass":"performance","podTemplate":{"requests":{"cpu":"2","amd.com/gpu":"1"}}}\n'
+        '{"type":"job","jobId":"b","submitTimeOffsetSec":0,"intentClass":"standard","podTemplate":{"requests":{"cpu":"2"}}}\n'
+        '{"type":"meta","jobId":"m"}\n')
+    assert run_one.job_pools(p) == {"a": ("amd", 5.0, True, 1.0), "b": ("cpu", 0.0, False, 0.0)}
+
+
+def test_scheduler_bin_packs_gpus():
+    """The cluster's scheduler configuration bin-packs the GPU resources
+    (NodeResourcesFit MostAllocated), so whole nodes stay free for 8-GPU
+    jobs; with the default LeastAllocated the 1-GPU jobs spread over the
+    8-GPU nodes and every 8-GPU job queued (02, seed 1, baseline A)."""
+    text = (SCRIPTS_DIR / "01_create_cluster_kwokctl.sh").read_text()
+    cfg = yaml.safe_load(text.split("<<SCHED_CFG\n", 1)[1].split("\nSCHED_CFG", 1)[0].replace("${EXTENDER_URL_PREFIX}", "http://x"))
+    args = {p["name"]: p["args"] for p in cfg["profiles"][0]["pluginConfig"]}["NodeResourcesFit"]
+    assert args["scoringStrategy"]["type"] == "MostAllocated"
+    assert {r["name"] for r in args["scoringStrategy"]["resources"]} == {"nvidia.com/gpu", "amd.com/gpu"}
+
+
+def test_load_failures_refuse_a_loaded_run():
+    """A run whose mean 1-minute host load exceeds the host's CPUs fails."""
+    run_one = _load_run_one()
+    assert run_one.load_failures({"host_load1_mean": 28.0, "host_cpus": 28}) == []
+    assert run_one.load_failures({"host_load1_mean": 30.0, "host_cpus": 28}) == ["mean host load 30.0 exceeds the 28 CPUs"]
+
+
+def test_inventory_gpu_cap_range_is_the_catalogs():
+    """Each GPU node pool's cap range is its catalog entry's
+    (pkg/hwinv/assets/hardware.yaml, minBoardPowerW and maxBoardPowerW): the
+    inventory sets the simulator's class keys, which override the catalog,
+    so another value models a board the catalog does not describe. 02 set
+    350 W minimums for the H100 SXM and the MI300X, against 300 W and 400 W,
+    until 2026-10-27."""
+    root = pathlib.Path(__file__).resolve().parents[3]
+    catalog = yaml.safe_load((root / "pkg/hwinv/assets/hardware.yaml").read_text())["gpuModels"]
+    by_alias = {a: m["official"] for m in catalog.values() for a in m.get("aliases") or []}
+    nodes = yaml.safe_load((SCRIPTS_DIR.parent / "configs" / "cluster-nodes.yaml").read_text())["nodes"]
+    checked = 0
+    for n in nodes:
+        if not n.get("gpu_count"):
+            continue
+        official = by_alias[n["product"]]
+        assert (n["gpu_min_cap_watts"], n["gpu_max_cap_watts"]) == (official["minBoardPowerW"], official["maxBoardPowerW"]), n["node_name_prefix"]
+        checked += 1
+    assert checked

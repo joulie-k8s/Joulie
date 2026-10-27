@@ -15,9 +15,9 @@ import (
 // of the node's CPU TDP, clamped up to the bottom of its cap range. A pool
 // node publishes no capRange, so the twin takes the socket range from the
 // catalog, the one the agent and the simulator use (hwinv's
-// SocketCapRangeW): on a 2x EPYC 9654 at 60 % the cTDP low end binds, and
-// the agent sends 640 W. The twin used to budget pct x TDP, 432 W, and to
-// fill no minimum for a CPU without a cTDP range. A range the agent read
+// SocketCapRangeW, whose floor is 0.55 x TDP; the cTDP range is no floor):
+// on a 2x EPYC 9654 at 60 % the agent sends 432 W. The twin used to fill no
+// minimum for a CPU without a cTDP range. A range the agent read
 // from RAPL files clamps the same way.
 func TestTwinCPUBudgetClampsAtTheCapRangeMinimum(t *testing.T) {
 	catalog, err := hwinv.LoadCatalog("")
@@ -34,7 +34,7 @@ func TestTwinCPUBudgetClampsAtTheCapRangeMinimum(t *testing.T) {
 		pct  float64
 		want float64
 	}{
-		{"2x EPYC 9654 at 60 %, catalog range", `{"rawModel": "AMD EPYC 9654 96-Core Processor", "sockets": 2}`, 60, 640},
+		{"2x EPYC 9654 at 60 %, catalog range", `{"rawModel": "AMD EPYC 9654 96-Core Processor", "sockets": 2}`, 60, 432},
 		{"2x EPYC 9654 at 95 %, inside the range", `{"rawModel": "AMD EPYC 9654 96-Core Processor", "sockets": 2}`, 95, 684},
 		{"Xeon 8260 at 50 %, no cTDP range", `{"rawModel": "Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz", "sockets": 1}`, 50, 0.55 * 165},
 		{"RAPL file range at 50 %", `{"rawModel": "AMD EPYC 9654 96-Core Processor", "sockets": 4, "capRange": {"type": "package", "minWattsPerSocket": 90, "maxWattsPerSocket": 165}}`, 50, 360},

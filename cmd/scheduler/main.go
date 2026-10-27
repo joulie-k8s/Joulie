@@ -570,15 +570,29 @@ func prioritizeNodes(ctx context.Context, args ExtenderArgs) ExtenderPriorityLis
 	if args.Nodes != nil {
 		for _, node := range args.Nodes.Items {
 			score := scoreNode(node.Metadata.Name, states, hwInfo, wpClass, perfPressure, clusterTrend, podDemand)
-			result = append(result, HostPriority{Host: node.Metadata.Name, Score: score})
+			result = append(result, HostPriority{Host: node.Metadata.Name, Score: extenderPriority(score)})
 		}
 	} else if args.NodeNames != nil {
 		for _, nodeName := range *args.NodeNames {
 			score := scoreNode(nodeName, states, hwInfo, wpClass, perfPressure, clusterTrend, podDemand)
-			result = append(result, HostPriority{Host: nodeName, Score: score})
+			result = append(result, HostPriority{Host: nodeName, Score: extenderPriority(score)})
 		}
 	}
 	return result
+}
+
+// maxExtenderPriority is the highest priority an extender may return,
+// MaxExtenderPriority of k8s.io/kube-scheduler/extender/v1.
+const maxExtenderPriority = 10
+
+// extenderPriority is a node score, 0 to 100, on the extender API's scale,
+// 0 to maxExtenderPriority, rounded. kube-scheduler multiplies an extender's
+// priority by its weight and by MaxNodeScore / MaxExtenderPriority (10) and
+// does not clamp it, so the 0 to 100 score the extender used to return
+// weighed ten times its configured weight and overrode every scoring plugin,
+// such as the GPU bin packing of experiments 02 and 03.
+func extenderPriority(score int64) int64 {
+	return (score*maxExtenderPriority + 50) / 100
 }
 
 // computeClusterTrend returns the average power trend (W/min) across all

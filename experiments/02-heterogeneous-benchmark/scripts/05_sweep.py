@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import datetime as dt
+import heapq
 import json
 import os
 import pathlib
@@ -73,6 +74,68 @@ def to_baselines(raw) -> list[str]:
     return vals
 
 
+def _quantity(v) -> float:
+    """A Kubernetes CPU or GPU quantity as a number: "11.51", "500m", 2."""
+    s = str(v or 0).strip()
+    if s.endswith("m"):
+        return float(s[:-1]) / 1000.0
+    return float(s)
+
+
+def shape_trace(trace_path: pathlib.Path, arrival_window_sec: float, prefill_sec: float, base_speed_per_core: float, gpu_util_scale: float = 1.0) -> dict:
+    """Make a run start at regime and last arrival_window_sec. The trace is
+    read as if it had already run for prefill_sec seconds before the run
+    starts, with no queueing: a job submitted before then is submitted at
+    once, less the work it would have done since its submit offset (per wall
+    second, cores x base_speed_per_core CPU units and max(0.1, GPUs) x
+    base_speed_per_core GPU units, simulator/pkg/workload/rates.go), or left
+    out when it would have finished; later jobs keep their offsets, less
+    prefill_sec; jobs submitted after prefill_sec + arrival_window_sec are
+    left out. gpu_util_scale multiplies each job's
+    workloadProfile.gpuUtilization, at most 1: the generator's GPU jobs use
+    about half the GPUs they request. Returns how many jobs it prefilled and
+    left out."""
+    recs = [json.loads(raw) for raw in trace_path.read_text().splitlines() if raw.strip()]
+    end = prefill_sec + arrival_window_sec if arrival_window_sec > 0 else float("inf")
+    kept, prefilled, dropped = [], 0, 0
+    for rec in recs:
+        if rec.get("type", "job") != "job":
+            continue
+        off = float(rec.get("submitTimeOffsetSec", 0))
+        if off > end:
+            dropped += 1
+            continue
+        if off < prefill_sec and isinstance(rec.get("work"), dict):
+            req = (rec.get("podTemplate") or {}).get("requests") or {}
+            cores = _quantity(req.get("cpu"))
+            gpus = _quantity(req.get("nvidia.com/gpu") or req.get("amd.com/gpu"))
+            work, ran = rec["work"], prefill_sec - off
+            cpu = max(0.0, float(work.get("cpuUnits", 0) or 0) - ran * base_speed_per_core * cores)
+            gpu = max(0.0, float(work.get("gpuUnits", 0) or 0) - ran * base_speed_per_core * max(0.1, gpus))
+            if cpu <= 0 and gpu <= 0:
+                dropped += 1
+                continue
+            work["cpuUnits"], work["gpuUnits"] = cpu, gpu
+            prefilled += 1
+        rec["submitTimeOffsetSec"] = max(0.0, off - prefill_sec)
+        prof = rec.get("workloadProfile")
+        if gpu_util_scale != 1.0 and isinstance(prof, dict) and "gpuUtilization" in prof:
+            prof["gpuUtilization"] = min(1.0, float(prof["gpuUtilization"]) * gpu_util_scale)
+        kept.append(rec)
+    ids = {r.get("workloadId") for r in kept}
+    keep = {id(r) for r in kept}
+    out = []
+    for rec in recs:
+        if rec.get("type", "job") != "job":
+            if rec.get("workloadId") in ids:
+                rec["submitTimeOffsetSec"] = max(0.0, float(rec.get("submitTimeOffsetSec", 0)) - prefill_sec)
+                out.append(rec)
+        elif id(rec) in keep:
+            out.append(rec)
+    trace_path.write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in out))
+    return {"prefilled_jobs": prefilled, "dropped_jobs": dropped}
+
+
 def generate_canonical_seed_trace(
     seed: int,
     jobs: int,
@@ -80,7 +143,6 @@ def generate_canonical_seed_trace(
     perf_ratio: float,
     compute_bound_perf_boost: float,
     gpu_ratio: float,
-    gpu_request_per_job: float,
     burst_day_probability: float,
     burst_mean_jobs: float,
     burst_multiplier: float,
@@ -90,18 +152,22 @@ def generate_canonical_seed_trace(
     work_scale: float,
     allowed_workload_types: list[str] | None,
     time_scale: float = 1.0,
+    arrival_window_sec: float = 0.0,
+    prefill_sec: float = 0.0,
+    base_speed_per_core: float = 1.0,
+    gpu_util_scale: float = 1.0,
 ) -> pathlib.Path:
     traces_dir = RESULTS / "traces"
     traces_dir.mkdir(parents=True, exist_ok=True)
     ratio_id = f"perf_{str(perf_ratio).replace('.', '_')}_cbpb_{str(compute_bound_perf_boost).replace('.', '_')}"
     workload_id = (
         f"gpur_{str(gpu_ratio).replace('.', '_')}"
-        f"_greq_{str(gpu_request_per_job).replace('.', '_')}"
         f"_burstp_{str(burst_day_probability).replace('.', '_')}"
         f"_burstm_{str(burst_multiplier).replace('.', '_')}"
         f"_burstjobs_{str(burst_mean_jobs).replace('.', '_')}"
         f"_meta_{'on' if emit_workload_records else 'off'}"
         f"_wscale_{str(work_scale).replace('.', '_')}"
+        f"_win_{str(arrival_window_sec).replace('.', '_')}_prefill_{str(prefill_sec).replace('.', '_')}_gpuutil_{str(gpu_util_scale).replace('.', '_')}"
     )
     trace_name = (
         f"seed_{seed}_jobs_{jobs}_mia_{str(mean_inter_arrival_sec).replace('.', '_')}_"
@@ -138,8 +204,6 @@ def generate_canonical_seed_trace(
             str(compute_bound_perf_boost),
             "--gpu-ratio",
             str(gpu_ratio),
-            "--gpu-request",
-            str(gpu_request_per_job),
             "--burst-day-probability",
             str(burst_day_probability),
             "--burst-mean-jobs",
@@ -176,6 +240,9 @@ def generate_canonical_seed_trace(
                         work["gpuUnits"] = float(work["gpuUnits"]) * work_scale
             filtered_scaled_lines.append(json.dumps(rec, separators=(",", ":")))
         trace_path.write_text("\n".join(filtered_scaled_lines) + ("\n" if filtered_scaled_lines else ""))
+    if arrival_window_sec > 0 or prefill_sec > 0 or gpu_util_scale != 1.0:
+        shaped = shape_trace(trace_path, arrival_window_sec, prefill_sec, base_speed_per_core, gpu_util_scale)
+        log(f"trace shaped arrival_window_sec={arrival_window_sec} prefill_sec={prefill_sec} prefilled_jobs={shaped['prefilled_jobs']} dropped_jobs={shaped['dropped_jobs']}")
     count = sum(1 for l in trace_path.read_text().splitlines() if l.strip())
     log(f"canonical seed trace generated records={count} file={trace_path}")
     return trace_path
@@ -214,6 +281,43 @@ def rotate_pick(pool: deque[dict]) -> dict:
     item = pool[0]
     pool.rotate(-1)
     return item
+
+
+def job_seconds(req: dict, work: dict, gpus: float, base_speed_per_core: float) -> float:
+    """How long a job runs without queueing or caps: it advances
+    cores x base_speed_per_core CPU units and max(0.1, GPUs) x
+    base_speed_per_core GPU units per second and ends when both are done
+    (simulator/pkg/workload/rates.go)."""
+    cores = _quantity(req.get("cpu"))
+    cpu = float(work.get("cpuUnits", 0) or 0) / (base_speed_per_core * cores) if cores > 0 else 0.0
+    gpu = float(work.get("gpuUnits", 0) or 0) / (base_speed_per_core * max(0.1, gpus))
+    return max(cpu, gpu)
+
+
+def pick_vendor(pools: dict, at: float, gpus: float, seconds: float) -> str:
+    """The GPU vendor pool for a job submitted at at: among the pools with a
+    node that can host its GPUs, the one whose requested GPUs, this job's
+    included, are the lowest share of its GPUs. Jobs go where GPUs are free,
+    as users of a cluster with several vendors do. A pick in proportion to
+    each pool's GPUs ignored how long jobs run, and in the small AMD pool
+    (40 of 188 GPUs) a few long jobs put the load above capacity at peaks
+    while NVIDIA had room. Jobs must come in submit order."""
+    best = None
+    for vendor in sorted(pools):
+        p = pools[vendor]
+        if p["largest"] < gpus:
+            continue
+        while p["active"] and p["active"][0][0] <= at:
+            p["load"] -= heapq.heappop(p["active"])[1]
+        share = (p["load"] + gpus) / p["gpus"]
+        if best is None or share < best[0]:
+            best = (share, vendor)
+    if best is None:
+        raise SystemExit(f"no GPU node can host {gpus} GPUs")
+    p = pools[best[1]]
+    p["load"] += gpus
+    heapq.heappush(p["active"], (at + seconds, gpus))
+    return best[1]
 
 
 def build_family_first_pool(nodes: list[dict], family_key: str) -> deque[dict]:
@@ -291,7 +395,7 @@ def strip_power_profile_affinity(affinity: dict | None) -> dict | None:
     return affinity or None
 
 
-def retarget_trace_for_cluster(trace_path: pathlib.Path) -> pathlib.Path:
+def retarget_trace_for_cluster(trace_path: pathlib.Path, base_speed_per_core: float = 1.0) -> pathlib.Path:
     nodes = load_kwok_nodes()
     gpu_nodes = [n for n in nodes if not n["cpu_only"]]
     cpu_nodes = build_family_first_pool([n for n in nodes if n["cpu_only"]], "cpu_model")
@@ -308,17 +412,27 @@ def retarget_trace_for_cluster(trace_path: pathlib.Path) -> pathlib.Path:
     # We intentionally do not add node-name affinity here. The benchmark should exercise the
     # scheduler against the allocatable extended GPU resources already advertised by the KWOK
     # nodes, not a pre-computed node assignment from the harness.
-    all_gpu_pool = build_family_first_pool(gpu_nodes, "gpu_product")
+    pools: dict[str, dict] = {}
+    for n in gpu_nodes:
+        p = pools.setdefault("amd" if n["vendor"] == "amd" else "nvidia", {"gpus": 0, "largest": 0, "active": [], "load": 0.0})
+        p["gpus"] += n["gpu_count"]
+        p["largest"] = max(p["largest"], n["gpu_count"])
+    records = [json.loads(raw) for raw in (r.strip() for r in trace_path.read_text().splitlines()) if raw]
+    vendor_of: dict[int, str] = {}
+    for k in sorted(range(len(records)), key=lambda k: float(records[k].get("submitTimeOffsetSec") or 0)):
+        rec = records[k]
+        req = (rec.get("podTemplate") or {}).get("requests") if rec.get("type", "job") == "job" else None
+        key = next((x for x in ("nvidia.com/gpu", "amd.com/gpu", "gpu") if isinstance(req, dict) and x in req), None)
+        if key is not None:
+            gpus = _quantity(req[key])
+            vendor_of[k] = pick_vendor(pools, float(rec.get("submitTimeOffsetSec") or 0), gpus,
+                                       job_seconds(req, rec.get("work") or {}, gpus, base_speed_per_core))
 
     total_job_count = 0
     gpu_job_count = 0
     cpu_job_count = 0
     lines = []
-    for raw in trace_path.read_text().splitlines():
-        raw = raw.strip()
-        if not raw:
-            continue
-        rec = json.loads(raw)
+    for k, rec in enumerate(records):
         if rec.get("type", "job") != "job":
             lines.append(json.dumps(rec, separators=(",", ":")))
             continue
@@ -354,9 +468,8 @@ def retarget_trace_for_cluster(trace_path: pathlib.Path) -> pathlib.Path:
             )
         else:
             gpu_job_count += 1
-            target = rotate_pick(all_gpu_pool)
             req.pop(gpu_key, None)
-            if target["vendor"] == "amd":
+            if vendor_of[k] == "amd":
                 req["amd.com/gpu"] = gpu_qty
             else:
                 req["nvidia.com/gpu"] = gpu_qty
@@ -429,6 +542,25 @@ def cleanup_workload_pods():
         ],
         check=False,
     )
+
+
+def run_schedule(baselines: list[str], seeds: int, repeat_first: bool = False) -> list[tuple[int, str]]:
+    """The sweep's runs as (seed, baseline) pairs: every baseline once per
+    seed. An odd seed rotates the order by one place per pair of seeds and
+    the even seed after it reverses that order, so over any two seeds each
+    baseline holds the same mean position. Running all of A, then all of B,
+    then all of C would confound the baseline with whatever else loads the
+    host meanwhile; the simulator advances jobs by wall-clock time, so host
+    load reaches the measurement. With repeat_first the first run is run
+    again at the end, to measure run-to-run noise."""
+    out = []
+    for seed in range(1, seeds + 1):
+        k = ((seed - 1) // 2) % len(baselines)
+        order = baselines[k:] + baselines[:k]
+        if seed % 2 == 0:
+            order = order[::-1]
+        out += [(seed, b) for b in order]
+    return out + out[:1] if repeat_first else out
 
 
 def reset_control_state():
@@ -511,7 +643,6 @@ def main():
     ap.add_argument("--perf-ratio", type=float, default=None)
     ap.add_argument("--compute-bound-perf-boost", type=float, default=None)
     ap.add_argument("--gpu-ratio", type=float, default=None)
-    ap.add_argument("--gpu-request-per-job", type=float, default=None)
     ap.add_argument("--burst-day-probability", type=float, default=None)
     ap.add_argument("--burst-mean-jobs", type=float, default=None)
     ap.add_argument("--burst-multiplier", type=float, default=None)
@@ -550,11 +681,6 @@ def main():
     gpu_ratio = (
         args.gpu_ratio if args.gpu_ratio is not None else float(get_cfg(cfg, "workload", "gpu_ratio", default=0.00))
     )
-    gpu_request_per_job = (
-        args.gpu_request_per_job
-        if args.gpu_request_per_job is not None
-        else float(get_cfg(cfg, "workload", "gpu_request_per_job", default=1.0))
-    )
     burst_day_probability = (
         args.burst_day_probability
         if args.burst_day_probability is not None
@@ -579,6 +705,10 @@ def main():
     )
     emit_workload_records = str(emit_workload_records_raw).strip().lower() not in {"false", "0", "no"}
     work_scale = float(get_cfg(cfg, "workload", "work_scale", default=1.0))
+    arrival_window_sec = float(get_cfg(cfg, "workload", "arrival_window_sec", default=0.0))
+    prefill_sec = float(get_cfg(cfg, "workload", "prefill_sec", default=0.0))
+    trace_base_speed = float(get_cfg(cfg, "simulator", "base_speed_per_core", default=1.0))
+    gpu_util_scale = float(get_cfg(cfg, "workload", "gpu_util_scale", default=1.0))
     diurnal_peak_rate = float(get_cfg(cfg, "workload", "diurnal_peak_rate", default=2.0))
     trace_mode = args.trace_mode
     baseline_a_strip_affinity = bool(get_cfg(cfg, "workload", "baseline_a_strip_affinity", default=True))
@@ -595,8 +725,6 @@ def main():
         raise SystemExit("compute_bound_perf_boost must be >= 1")
     if gpu_ratio < 0 or gpu_ratio > 1:
         raise SystemExit("gpu_ratio must be in [0,1]")
-    if gpu_request_per_job < 0:
-        raise SystemExit("gpu_request_per_job must be >= 0")
     if burst_day_probability < 0 or burst_day_probability > 1:
         raise SystemExit("burst_day_probability must be in [0,1]")
     if burst_mean_jobs < 0:
@@ -606,7 +734,7 @@ def main():
     if work_scale <= 0:
         raise SystemExit("work_scale must be > 0")
 
-    total_runs = len(baselines) * seeds
+    total_runs = len(baselines) * seeds + bool(get_cfg(cfg, "run", "repeat_first_run", default=False))
     done = 0
     log(
         f"starting sweep config={cfg_path} baselines={','.join(baselines)} seeds={seeds} jobs={jobs} "
@@ -640,7 +768,7 @@ def main():
     install_env_base["QUEUE_HP_MIN"] = str(get_cfg(cfg, "policy", "queue_aware", "hp_min", default=1))
     install_env_base["QUEUE_HP_MAX"] = str(get_cfg(cfg, "policy", "queue_aware", "hp_max", default=5))
     install_env_base["QUEUE_PERF_PER_HP_NODE"] = str(get_cfg(cfg, "policy", "queue_aware", "perf_per_hp_node", default=10))
-    install_env_base["PERFORMANCE_CAP_WATTS"] = str(get_cfg(cfg, "policy", "caps", "performance_watts", default=500))
+    install_env_base["PERFORMANCE_CAP_WATTS"] = str(get_cfg(cfg, "policy", "caps", "performance_watts", default=5000))
     install_env_base["ECO_CAP_WATTS"] = str(get_cfg(cfg, "policy", "caps", "eco_watts", default=140))
     install_env_base["CPU_PERFORMANCE_CAP_PCT_OF_MAX"] = str(
         get_cfg(cfg, "policy", "caps", "cpu_performance_pct_of_max", default=100)
@@ -687,7 +815,9 @@ def main():
 
     reset_control_state()
 
-    for baseline in baselines:
+    schedule = run_schedule(baselines, seeds, bool(get_cfg(cfg, "run", "repeat_first_run", default=False)))
+    log("run order: " + " ".join(f"{b}{s}" for s, b in schedule))
+    for run_seed, baseline in schedule:
         reset_control_state()
         log(f"installing components for baseline={baseline}")
         install_env = install_env_base.copy()
@@ -712,11 +842,12 @@ def main():
             check=True,
         )
         cleanup_workload_pods()
-        wait_zero_active_workload_pods(cleanup_timeout)
+        if not wait_zero_active_workload_pods(cleanup_timeout):
+            raise SystemExit(f"workload pods left after {cleanup_timeout} s of cleanup: the next run would start on them")
         log(f"policy settle sleep seconds={settle_seconds}")
         time.sleep(settle_seconds)
 
-        for seed in range(1, seeds + 1):
+        for seed in (run_seed,):  # one run per (seed, baseline) pair of the schedule
             done += 1
             log(f"run {done}/{total_runs}: baseline={baseline} seed={seed}")
             if trace_mode == "python":
@@ -749,7 +880,6 @@ def main():
                     perf_ratio=perf_ratio,
                     compute_bound_perf_boost=compute_bound_perf_boost,
                     gpu_ratio=gpu_ratio,
-                    gpu_request_per_job=gpu_request_per_job,
                     burst_day_probability=burst_day_probability,
                     burst_mean_jobs=burst_mean_jobs,
                     burst_multiplier=burst_multiplier,
@@ -759,8 +889,12 @@ def main():
                     work_scale=work_scale,
                     allowed_workload_types=allowed_workload_types,
                     time_scale=time_scale,
+                    arrival_window_sec=arrival_window_sec,
+                    prefill_sec=prefill_sec,
+                    base_speed_per_core=trace_base_speed,
+                    gpu_util_scale=gpu_util_scale,
                 )
-            canonical_trace = retarget_trace_for_cluster(canonical_trace)
+            canonical_trace = retarget_trace_for_cluster(canonical_trace, trace_base_speed)
             trace_file = derive_baseline_trace(
                 baseline=baseline,
                 canonical_trace=canonical_trace,
@@ -768,7 +902,8 @@ def main():
             )
             log(f"using baseline trace file={trace_file}")
             cleanup_workload_pods()
-            wait_zero_active_workload_pods(cleanup_timeout)
+            if not wait_zero_active_workload_pods(cleanup_timeout):
+                raise SystemExit(f"workload pods left after {cleanup_timeout} s of cleanup: the next run would start on them")
             log(f"pre-run settle sleep seconds={settle_seconds}")
             time.sleep(settle_seconds)
             run(

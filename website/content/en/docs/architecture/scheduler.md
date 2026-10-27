@@ -29,7 +29,7 @@ When a new pod is created in the cluster, the following sequence occurs:
        |  - Joulie reads NodeHardware CRs (cached, 30s TTL) for hardware specs
        |  - Joulie extracts pod CPU/GPU requests for marginal power estimation
        |  - Joulie scores each node 0-100 using the scoring formula
-       |  - Returns: list of (node, score) pairs
+       |  - Returns: list of (node, score / 10) pairs, the API's 0-10 range
        |
 6. kube-scheduler combines Joulie scores with its own plugin scores
        |
@@ -91,7 +91,7 @@ Standard pods (the default, or `joulie.io/workload-class: standard`) pass the fi
 
 ## Score logic (step 5)
 
-After filtering, the extender scores remaining nodes. Each node receives a score from 0 to 100. Higher scores are better. kube-scheduler uses these scores (combined with its own plugin scores) to pick the winning node.
+After filtering, the extender scores remaining nodes. Each node receives a score from 0 to 100, higher is better, and the extender returns it as a priority from 0 to 10, rounded, the range of the extender API. kube-scheduler multiplies that priority by the extender's `weight` and by 10 and adds it to its own plugin scores, each 0 to 100 times the plugin's weight, to pick the winning node.
 
 ### Scoring inputs per node
 

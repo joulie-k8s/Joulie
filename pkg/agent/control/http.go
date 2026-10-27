@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -112,10 +113,7 @@ func (h *HTTPControlClient) ApplyCPUControl(action string, capWatts float64, thr
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("control endpoint status=%d", resp.StatusCode)
-	}
-	return nil
+	return controlResponseError(resp)
 }
 
 // ApplyGPUControl sends a GPU control command to the control endpoint.
@@ -141,8 +139,25 @@ func (h *HTTPControlClient) ApplyGPUControl(action string, capWattsPerGPU float6
 		return err
 	}
 	defer resp.Body.Close()
+	return controlResponseError(resp)
+}
+
+// controlResponseError is the error of a control response: a status
+// outside 2xx, or a 2xx body that says the command was not applied
+// ({"ok": false, "result": ..., "message": ...}), as the simulator answers a
+// cap below what the hardware accepts. A body that is not that JSON, or has
+// no "ok", is applied.
+func controlResponseError(resp *http.Response) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("control endpoint status=%d", resp.StatusCode)
 	}
-	return nil
+	var body struct {
+		OK      *bool  `json:"ok"`
+		Result  string `json:"result"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&body); err != nil || body.OK == nil || *body.OK {
+		return nil
+	}
+	return fmt.Errorf("control endpoint did not apply the command: %s: %s", body.Result, body.Message)
 }

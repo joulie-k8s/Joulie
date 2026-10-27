@@ -1,29 +1,53 @@
 run:
   baselines: [A, B, C]
-  seeds: 1
-  # 40-NODE DEBUG: validate workload patterns on small cluster.
+  seeds: 2
   # 41 nodes (33 GPU + 8 CPU).  time_scale 120.
-  # 6000 jobs over 600 wall-sec → 20 sim-hours of arrivals (full day/night).
-  # timeout 660 wall-sec → 22 sim-hours (arrival + drain).
-  jobs: 6000
-  mean_inter_arrival_sec: 0.1
+  # The simulator has no time scale: a job advances base_speed_per_core work
+  # units per core (or GPU) per wall second. time_scale only maps the trace's
+  # wall-clock offsets onto the simulated day: 1 wall second is 120 simulated
+  # seconds, so the facility period of 720 s is one simulated day. A run
+  # starts at regime (workload.prefill_sec: the trace is read as if it had
+  # run for 1500 s already), lasts the arrival window (timeout =
+  # workload.arrival_window_sec, 900 s, 30 simulated hours) and is stopped
+  # there, before the drain; the report measures from measure_from_sec
+  # (120 s, once the prefilled pods run) to the end. repeat_first_run runs
+  # the first run again at the end, to measure run-to-run noise.
+  jobs: 8000
+  # Twice the arrival rate of experiment 01 (0.1 s): GPU jobs are longer,
+  # so the load is reached with shorter jobs.
+  mean_inter_arrival_sec: 0.05
   time_scale: 120
-  timeout: 660
+  timeout: 900
+  measure_from_sec: 120
+  repeat_first_run: true
   settle_seconds: 10
-  cleanup_timeout: 120
+  cleanup_timeout: 300
 
 workload:
   perf_ratio: 0.25
   compute_bound_perf_boost: 3.5
   gpu_ratio: 0.75
-  gpu_request_per_job: 1
   burst_day_probability: 0.50
   burst_mean_jobs: 25.0
   burst_multiplier: 3.5
   dip_day_probability: 0.40
   dip_multiplier: 0.08
   emit_workload_records: true
-  work_scale: 80.0
+  # work_scale sizes the load. At 0.0469 baseline A kept 8-GPU jobs waiting
+  # for whole nodes (queue gate); at 0.0380 its GPU utilization at regime,
+  # from the jobs' requests counted from submission, was 0.445 on seed 1,
+  # below the 45 % gate (the simulator then read 0.638, counting idle GPU
+  # nodes as busy). 0.0444 is 0.0380 x 0.52 / 0.445, for about 0.51, since
+  # the 0.445 includes about 0.006 of jobs waiting for a node. Requested GPUs x time over the
+  # window are then 0.64 to 0.70 of each vendor's GPUs on seeds 1 and 2
+  # (pool_load.py), at most 0.92 at a peak (experiments/README.md, "Sizing
+  # the load").
+  work_scale: 0.0444
+  arrival_window_sec: 900
+  prefill_sec: 1500
+  # gpu_util_scale raises each GPU job's GPU utilization by 45 % (at most 1):
+  # the generated GPU jobs use about half the GPUs they request.
+  gpu_util_scale: 1.45
   diurnal_peak_rate: 5
   baseline_a_strip_affinity: true
   allowed_workload_types:
@@ -40,33 +64,48 @@ simulator:
   facility_ambient_period_sec: 720
 
 policy:
-  cpu_write_absolute_caps: true
+  # Percent CPU caps: the agent resolves them into watts within each node's
+  # catalog cap range, sockets x 0.55 x TDP to sockets x TDP (a package power
+  # limit may be set below the cTDP range); a cap the CPU cannot reach holds
+  # it at its lowest-frequency power (no vendor publishes a minimum for these
+  # CPUs, so the simulator sets no floor).
+  cpu_write_absolute_caps: false
   gpu_write_absolute_caps: true
   caps:
+    # A GPU node's CPU always gets performance_watts as an absolute cap
+    # (controller manager, GPU nodes): 5000 W, the chart default, never binds.
+    performance_watts: 5000
     cpu_performance_pct_of_max: 100
     cpu_eco_pct_of_max: 60
     gpu_performance_pct_of_max: 100
     gpu_eco_pct_of_max: 70
-    performance_watts: 600
-    eco_watts: 220
   loop:
     operator_reconcile_interval: "20s"
     agent_reconcile_interval: "10s"
     queue_aware_operator_reconcile_sim_seconds: 300
+  # Sized on seeds 3 and 4, which the sweep does not measure, by
+  # experiments/kwok-cluster/pool_load.py: performance jobs run only on
+  # performance nodes under B and C, and PerformanceSet splits those over
+  # hardware families in proportion to their nodes. B holds the performance
+  # demand of every pool at its peak (31 of 41 nodes). C starts from the
+  # fewest nodes the demand needs (15) and adds a node per 3 performance
+  # pods, running or pending (3.5 per needed node on average), up to every
+  # node.
   static:
-    hp_frac: 0.35
+    hp_frac: 0.76
   queue_aware:
-    hp_base_frac: 0.35
+    hp_base_frac: 0.37
     hp_min: 1
-    hp_max: 25
-    perf_per_hp_node: 10
+    hp_max: 41
+    perf_per_hp_node: 3
 
 images:
-  joulie_registry: registry.cern.ch/joulie
-  joulie_tag: dev0.1.1
-  sim_registry: registry.cern.ch/joulie
+  # Built from this tree and loaded into the kind cluster (no registry pull).
+  joulie_registry: joulie.local
+  joulie_tag: rerun-2026-10-27
+  sim_registry: joulie.local
   sim_image: joulie-simulator
-  sim_tag: dev0.1.1
+  sim_tag: rerun-2026-10-27
 
 inventory:
   source: experiments/02-heterogeneous-benchmark/configs/cluster-nodes.yaml

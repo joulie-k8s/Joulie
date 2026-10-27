@@ -339,10 +339,10 @@ The simulator (`simulator/cmd/simulator`) reads these variables at startup too. 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SIM_P_MAX_W` | sockets x catalogue TDP, else `420` | Peak CPU power of the generic model, at full load and full frequency (`pMaxW`). A node with a measured curve uses the curve instead. |
+| `SIM_RAPL_CAP_MIN_W` | `0` | Lowest node CPU cap the simulator accepts; a cap below it is refused with an error. No floor by default: no vendor publishes a minimum package power limit for the modelled CPUs, and a cap the CPU cannot reach holds it at its lowest-frequency power. |
 | `SIM_CPU_SOCKET_CAP_MAX_W` | catalogue TDP, else `400` | Upper end of the per-socket CPU cap: the node cap is split evenly over the sockets and clamped to this range (`cpuSocketCapMaxW`). |
-| `SIM_CPU_SOCKET_CAP_MIN_W` | catalogue cTDP low end, else 0.55 x TDP, else `120` | Lower end of the per-socket CPU cap (`cpuSocketCapMinW`). |
 | `SIM_GPU_MAX_WATTS_PER_GPU` | catalogue `maxBoardPowerW`, else `300` | Board power of one GPU at full load, and its highest cap (`gpu.maxWattsPerGpu`). |
-| `SIM_GPU_MIN_CAP_WATTS_PER_GPU` | catalogue `minBoardPowerW`, else half the maximum, else `80` | Lowest cap of one GPU (`gpu.minCapWattsPerGpu`). |
+| `SIM_GPU_MIN_CAP_WATTS_PER_GPU` | catalogue `minBoardPowerW`, else half the maximum, else `80` | Lowest cap of one GPU (`gpu.minCapWattsPerGpu`); a cap below it is refused with an error. |
 
 A catalogue minimum above a maximum set by a class or a variable is lowered to that maximum. A measured two-socket curve from the catalogue is scaled by sockets/2 on a node with another socket count.
 

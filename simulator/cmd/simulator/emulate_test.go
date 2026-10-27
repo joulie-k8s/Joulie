@@ -411,7 +411,7 @@ func TestSE07SpecNodeKeepsItsProfileCapacity(t *testing.T) {
 	var pods []runningPodInfo
 	for _, n := range []string{node, "legacy-0"} {
 		for i := 0; i < 3; i++ {
-			pods = append(pods, runningPodInfo{Namespace: "default", Name: n + "-p" + string(rune('a'+i)), Node: n, IntentClass: "performance"})
+			pods = append(pods, runningPodInfo{Namespace: "default", Name: n + "-p" + string(rune('a'+i)), Node: n, IntentClass: "performance", Running: true})
 		}
 	}
 	for round := 0; round < 2; round++ {

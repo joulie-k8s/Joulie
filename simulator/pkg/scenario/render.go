@@ -418,7 +418,7 @@ var WorkloadgenFlags = []string{
 	"amd-gpu-ratio", "arrival-window-sec", "burst-day-probability", "burst-mean-jobs", "burst-multiplier",
 	"compute-bound-perf-boost", "cpu-sensitivity", "dip-day-probability", "dip-multiplier",
 	"diurnal-burst-max", "diurnal-burst-min", "diurnal-peak-rate", "emit-workload-records",
-	"gpu-ratio", "gpu-request", "gpu-sensitivity", "jobs", "max-duration-sec", "mean-inter-arrival-sec",
+	"gpu-ratio", "gpu-sensitivity", "jobs", "max-duration-sec", "mean-inter-arrival-sec",
 	"min-gpu-request", "mode", "namespace", "peer-transfer-intensity", "perf-ratio", "sim-hours", "time-scale", "work-scale",
 }
 

@@ -296,32 +296,21 @@ def make_kwok_node(row: dict[str, str]) -> str:
     return "\n".join(block)
 
 
-# Per-GPU-product hardware physics parameters.
+# Per-GPU-product hardware physics parameters. They are assumptions: no
+# product brief gives an idle power, and no published measurement gives these
+# exponents. The wiki lists what the briefs and papers state
+# (https://github.com/joulie-k8s/Joulie/wiki/GPU-Power-Model#per-family-parameters).
 #
-# idleWattsPerGpu:
-#   Board-level idle power divided by GPU count. Sources:
-#   - H100 NVL: ~450-480W board idle / 8 GPUs ≈ 60W/GPU. NVLink fabric adds ~20-30W idle
-#     overhead vs discrete cards (NVIDIA H100 NVL PCIe spec, board TBP 400W max, ~480W strap).
-#   - H100 SXM5: SXM5 socket with NVLink bridge; field measurements report ~800W board idle
-#     / 8 GPUs ≈ 100W/GPU (MLCommons MLPerf Training v4.1 power submissions).
-#   - L40S: PCIe card; NVIDIA specifies 30W idle board power, ~35W with GDDR6 retention.
-#   - MI300X: Unified memory APU-like design; AMD datasheet shows 700-750W TBP; memory
-#     coherency circuits and HBM3 self-refresh drive ~120W/GPU idle floor.
-#   - W7900: Workstation PCIe card; RDNA3 power floor ~25W/GPU (AMD Radeon PRO W7900 spec).
+# idleWattsPerGpu: board idle power per GPU. NVIDIA's H100 NVL (PB-11773) and
+#   L40S (PB-11470) product briefs give power limits and no idle figure; AMD's
+#   MI300X data sheet gives a 750 W TBP and no idle figure.
 #
-# computeGamma / memoryEpsilon / memoryGamma  (CappedBoardGPUModel parameters):
+# computeGamma / memoryEpsilon / memoryGamma (CappedBoardGPUModel parameters):
 #   computeScale = (capW / natW)^computeGamma
 #   memScale     = 1 - memoryEpsilon * (1 - capW/natW)^memoryGamma
-#
-#   Calibrated from:
-#   - MLPerf Power submissions (v3.1/v4.0): H100 shows steep compute regression under capping;
-#     MI300X compute holds up better due to unified-memory design.
-#   - "Characterizing Power Management Opportunities on DGX H100" (NeurIPS'23 Systems Workshop):
-#     H100 compute throughput drops ~30% at 80% power cap → gamma ≈ 1.4-1.5.
-#   - AMD MI300X architecture whitepaper: unified memory preserves compute at lower clock floors;
-#     CDNA3 sustains ~90% compute at 85% power cap → gamma ≈ 0.85.
-#   - GDDR6 bandwidth vs power: GDDR6 (L40S, W7900) is more sensitive than HBM3 to clock
-#     throttling → higher memoryEpsilon (0.25-0.30) vs HBM3 (0.10-0.15).
+#   The assumed shapes: compute falls more steeply under a cap on the H100
+#   than on the MI300X, and GDDR6 bandwidth (L40S, W7900) is more sensitive to
+#   a cap than HBM3 (H100, MI300X), hence the higher memoryEpsilon.
 _GPU_PHYSICS: dict[str, dict] = {
     # NVIDIA H100 NVL (HBM3, NVLink, 400W max TBP per GPU)
     "NVIDIA H100 NVL": {

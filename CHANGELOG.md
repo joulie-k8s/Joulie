@@ -4,6 +4,31 @@ The user-visible changes of each release, what to check when upgrading, and the 
 
 ## Unreleased
 
+### Agents and nodes
+
+- A percent CPU cap that the agent turns into watts spans, per socket, the catalog's TDP down to 0.55 x TDP. The low end of the cTDP range was the floor, but it is a configurable TDP, not the lowest package power limit, which no vendor publishes (AMD EPYC 9004 tuning guide, publication 58002). (#104)
+- A control command that the HTTP backend answers with `ok: false`, as the simulator answers a cap below what the hardware accepts, is an error in the agent's control status, where it counted as applied. (#104)
+
+### Simulator
+
+- A CPU or GPU cap below the lowest the hardware accepts is refused with an error, and the node keeps its cap, where the simulator raised the cap to that minimum. The CPU minimum is `SIM_RAPL_CAP_MIN_W`, now 0 (was 80 W), since no vendor publishes one; a cap the CPU cannot reach holds it at its lowest-frequency power. The GPU minimum is the board's lowest power limit (`SIM_GPU_MIN_CAP_WATTS_PER_GPU`). The per-socket floor `SIM_CPU_SOCKET_CAP_MIN_W` is removed. (#104)
+- The cluster CPU and GPU utilization of the simulator's time series weigh each node by its cores and its GPUs, where they averaged the nodes, so CPU-only nodes no longer dilute the GPU utilization. (#104)
+- In the simulator, a node whose last job ends runs no load from that moment, where it kept that job's CPU and GPU utilization, and its power, until a new job arrived. Idle nodes counted as busy in the energy and GPU utilization of the GPU experiments, and in standalone runs whose nodes go idle (the reference scenario's CPU energy falls by 2.7 to 2.9 %). (#104)
+- A pod of a legacy trace (schema v2) keeps the affinity of its record's `podTemplate`, with the NotIn-eco requirement of a performance pod ANDed into it, where it had only that requirement. The sweeps of experiments 02 and 03 restrict CPU-only jobs to `joulie.io/hw.kind=cpu-only` nodes, which the simulator ignored, so those jobs could run on GPU nodes. The record's `nodeSelector` and `tolerations` stay unread for legacy pods. (#104)
+
+### Scheduler extender
+
+- The extender returns its node score as a priority from 0 to 10, the range of the extender API, where it returned the 0 to 100 score. kube-scheduler multiplies a priority by the extender's weight and by 10 and does not clamp it, so the extender weighed ten times its configured weight and overrode every scoring plugin, such as a GPU bin-packing strategy. (#104)
+
+### Upgrading
+
+- Percent CPU caps over HTTP now reach 0.55 x TDP per socket, where the low end of the cTDP range was the floor (320 W per socket on the AMD EPYC 9654 and 9375F), so runs with percent caps change again: on experiment 01's `configs/benchmark-debug.yaml` the saving of C against A rises from 12.0 % to 13.3 % (`simulator/CHANGES.md`). (#104)
+- `SIM_CPU_SOCKET_CAP_MIN_W` and the class model key `cpuSocketCapMinW` are ignored with a warning. A cap below `SIM_RAPL_CAP_MIN_W` or `SIM_GPU_MIN_CAP_WATTS_PER_GPU` is now refused rather than raised, and the agent reports it as an error. (#104)
+- The scheduler extender now weighs as much as its `weight` says, ten times less than before at the same weight, so kube-scheduler's own scoring plugins take part in placement again. To keep the old balance, multiply the extender's `weight` in the scheduler configuration by 10. (#104)
+- `workloadgen` no longer accepts `-gpu-request`, which nothing read; drop it from scripts that pass it. (#104)
+
+## v0.2.5 (2026-10-27)
+
 ### Examples and dashboards
 
 - The examples are six tutorials that take a new user from a first install to the main features: a simulated cluster with the digital twin, the caps and `kubectl joulie`, workload classes and the scheduler extender, the Grafana dashboard, the OpenTelemetry Collector bridge, governor presets, and cooling and PUE. The first three need only Docker. Examples that no longer ran (stress-ng throttling, controller manager configuration, scheduler steering) or that the simulated cluster replaces (the simulated telemetry, KWOK and kubectl joulie demos, the Prometheus and workload class examples) are removed, and the KWOK cluster of the benchmark experiments moved to `experiments/kwok-cluster`. (#95)

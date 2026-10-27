@@ -128,8 +128,10 @@ step go test ./...; JOULIE_REQUIRE_FUSE=1 go test ./...
 
     @function
     async def race(self, source: Source) -> str:
-        """go test -race ./cmd/..., for the caches and goroutines of the binaries."""
-        return await checks.run(checks.go_container(source), "go test -race ./cmd/...")
+        """go test -race over the binaries (./cmd/...) and the simulator, for
+        their caches and goroutines: the simulator's pod poll and workload
+        tick share node state."""
+        return await checks.run(checks.go_container(source), "go test -race ./cmd/...\ngo test -race -timeout 30m ./simulator/cmd/simulator/")
 
     @function
     async def envtest(self, source: Source) -> str:
