@@ -41,10 +41,4 @@ The host code paths are designed to work on bare metal (NVIDIA, AMD, Intel) when
 &lt;li&gt;&lt;strong&gt;an analytic model&lt;/strong&gt; where no measured curve is public.&lt;/li&gt;
 &lt;/ul&gt;
 &lt;p&gt;Every modelled value, the official source it comes from, and the values that have none are listed in the &lt;a href="https://github.com/joulie-k8s/Joulie/wiki"&gt;Joulie wiki&lt;/a&gt;.&lt;/p&gt;
-&lt;p&gt;It serves two closely related purposes:&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;for the &lt;strong&gt;agent&lt;/strong&gt;, it describes the hardware assumptions used to resolve caps, interpret device limits, and reason about how throttling affects attainable performance&lt;/li&gt;
-&lt;li&gt;for the &lt;strong&gt;simulator&lt;/strong&gt;, it describes the physical model used to turn utilization and control actions into simulated power and slowdown&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id="quick-summary"&gt;Quick summary&lt;/h2&gt;
-&lt;p&gt;If you want the short version before the details:&lt;/p&gt;</description></item></channel></rss>
+&lt;p&gt;In the simulator these models make a test bed for Joulie&amp;rsquo;s behaviour, not evidence of energy savings: they rest on the assumptions listed on this page, not on measurements of our nodes. What meaningful experiments need is tracked in the milestone &lt;a href="https://github.com/joulie-k8s/Joulie/milestone/1"&gt;Evidence-based evaluation&lt;/a&gt;.&lt;/p&gt;</description></item></channel></rss>
