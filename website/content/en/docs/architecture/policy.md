@@ -135,7 +135,7 @@ Off by default: the controller manager writes presets only with `GOVERNOR_CONTRO
 - With `GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU=true`, a node whose GPU preset is `sustained` gets it only while a running pod on it requests 2 or more GPUs, and no GPU governor otherwise, so its agent restores the baseline: held data paths cost idle power and pay off in transfers between GPUs. A pod's GPUs are the units of every GPU resource (`pkg/api.GPUResourceKind`: whole GPUs, MIG devices, partitions, shared replicas), from its requests, else its limits; pending, finished and terminating pods do not count. The rule is checked at every reconcile, so the preset follows such a pod within one `RECONCILE_INTERVAL`.
 - When a field leaves the spec, because control was turned off or the node stopped listing the preset, the agent puts back the state it recorded before its first write.
 
-Both eco defaults are provisional until measured on hardware. In the simulator's [governor exploration]({{< relref "/docs/experiments/governor-exploration.md" >}}), CPU `efficiency` saved 0.5 % energy for a +22.2 % eco p95 slowdown, above the experiment's 20 % limit; GPU `efficient` at 80 % saved 10.3 % for +17.3 %.
+Both eco defaults are provisional until measured on hardware. They rest on the simulator's [governor exploration]({{< relref "/docs/experiments/governor-exploration.md" >}}) run of 2026-10-14, whose numbers predate later simulator changes and are being rerun.
 
 ### Governor fields
 

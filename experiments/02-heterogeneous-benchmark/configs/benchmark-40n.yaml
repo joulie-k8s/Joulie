@@ -38,11 +38,12 @@ workload:
   # from the jobs' requests counted from submission, was 0.445 on seed 1,
   # below the 45 % gate (the simulator then read 0.638, counting idle GPU
   # nodes as busy). 0.0444 is 0.0380 x 0.52 / 0.445, for about 0.51, since
-  # the 0.445 includes about 0.006 of jobs waiting for a node. Requested GPUs x time over the
-  # window are then 0.64 to 0.70 of each vendor's GPUs on seeds 1 and 2
-  # (pool_load.py), at most 0.92 at a peak (experiments/README.md, "Sizing
-  # the load").
-  work_scale: 0.0444
+  # the 0.445 includes about 0.006 of jobs waiting for a node. At 0.0444
+  # baseline A read 0.521 on seed 1 (the placed jobs 0.516) and failed the
+  # queue gate again (1.5 jobs queued on average, 0.6 of them 8-GPU jobs),
+  # so the scale comes down once more, to aim at 0.47: 0.0401 is
+  # 0.0444 x 0.47 / 0.521 (experiments/README.md, "Sizing the load").
+  work_scale: 0.0401
   arrival_window_sec: 900
   prefill_sec: 1500
   # gpu_util_scale raises each GPU job's GPU utilization by 45 % (at most 1):
@@ -88,13 +89,13 @@ policy:
   # performance nodes under B and C, and PerformanceSet splits those over
   # hardware families in proportion to their nodes. B holds the performance
   # demand of every pool at its peak (31 of 41 nodes). C starts from the
-  # fewest nodes the demand needs (15) and adds a node per 3 performance
-  # pods, running or pending (3.5 per needed node on average), up to every
+  # fewest nodes the demand needs (14) and adds a node per 3 performance
+  # pods, running or pending (3.4 per needed node on average), up to every
   # node.
   static:
     hp_frac: 0.76
   queue_aware:
-    hp_base_frac: 0.37
+    hp_base_frac: 0.34
     hp_min: 1
     hp_max: 41
     perf_per_hp_node: 3
@@ -102,10 +103,10 @@ policy:
 images:
   # Built from this tree and loaded into the kind cluster (no registry pull).
   joulie_registry: joulie.local
-  joulie_tag: rerun-2026-10-27
+  joulie_tag: rerun-2026-10-28
   sim_registry: joulie.local
   sim_image: joulie-simulator
-  sim_tag: rerun-2026-10-27
+  sim_tag: rerun-2026-10-28
 
 inventory:
   source: experiments/02-heterogeneous-benchmark/configs/cluster-nodes.yaml

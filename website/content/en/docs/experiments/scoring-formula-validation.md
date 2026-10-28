@@ -2,6 +2,8 @@
 title: "Scoring Formula Validation"
 ---
 
+> **Not a valid result yet (2026-10-28).** An audit of this experiment found that jobs that do not fit are dropped instead of queued, and energy is divided by the placed jobs only; the arms are mislabelled, and the selected formula never ran through the cooling model; the formula was chosen and reported on the same 8 seeds. The numbers below do not stand. The experiment is being redone in a separate pull request.
+
 This page reports results from the energy-aware scheduling formula validation experiment:
 
 - [`experiments/04-scoring-formula-validation/`](https://github.com/joulie-k8s/Joulie/tree/main/experiments/04-scoring-formula-validation)

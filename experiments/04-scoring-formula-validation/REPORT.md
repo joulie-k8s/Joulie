@@ -1,5 +1,7 @@
 # Experiment 04: Scoring Formula Validation
 
+> **Not a valid result yet (2026-10-28).** An audit of this experiment found that jobs that do not fit are dropped instead of queued, and energy is divided by the placed jobs only; the arms are mislabelled, and the selected formula never ran through the cooling model; the formula was chosen and reported on the same 8 seeds. The numbers below do not stand. The experiment is being redone in a separate pull request.
+
 > **Checked (2026-10-23, #89):** `sim_scoring.py --steps 50` runs in 14 s. The scripts model the cluster, the cooling and the scheduler's formula in Python and import no Joulie code: they still run, and do not follow later changes to the extender.
 
 ## Objective

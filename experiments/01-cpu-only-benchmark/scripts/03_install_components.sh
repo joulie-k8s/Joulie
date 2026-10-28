@@ -158,7 +158,20 @@ else
   CTRL_CONTAINER="${CLUSTER_NAME:-joulie-cpu-benchmark}-control-plane"
   if docker inspect "$CTRL_CONTAINER" >/dev/null 2>&1; then
     # KinD: check from control-plane node
-    if ! docker exec "$CTRL_CONTAINER" curl -sf --max-time 5 "$EXTENDER_URL" >/dev/null 2>&1; then
+    # Probed 12 times, 5 s apart (about two minutes at most with the 5 s
+    # curl timeout): one probe right after the rollout failed once
+    # (02 baseline B, 2026-10-27) where the same check passed on every other
+    # install; a misconfigured address still fails after the deadline.
+    reachable=false
+    for attempt in $(seq 1 12); do
+      if docker exec "$CTRL_CONTAINER" curl -sf --max-time 5 "$EXTENDER_URL" >/dev/null 2>&1; then
+        reachable=true
+        break
+      fi
+      echo "scheduler extender not reachable yet (attempt $attempt of 12)" >&2
+      sleep 5
+    done
+    if [ "$reachable" != true ]; then
       echo "FATAL: scheduler extender not reachable from control-plane at $EXTENDER_URL" >&2
       echo "DNS or networking is misconfigured: kube-scheduler cannot reach the extender." >&2
       exit 1

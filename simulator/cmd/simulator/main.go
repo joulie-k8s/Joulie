@@ -198,8 +198,13 @@ type simJob struct {
 }
 
 type workloadEngine struct {
-	startTime      time.Time
-	baseSpeedCore  float64
+	startTime     time.Time
+	baseSpeedCore float64
+	// jobsMu guards the jobs' fields: injectTraceJobs and
+	// advanceJobProgress hold it, as standalone does for each step, and
+	// the debug snapshot loop and /debug/jobs take it to read them
+	// (debugJobsPayload). The job maps are written only at load.
+	jobsMu         sync.Mutex
 	jobs           []*simJob
 	jobByID        map[string]*simJob
 	jobsByWorkload map[string][]*simJob
@@ -1277,6 +1282,8 @@ func (s *simulator) debugJobsPayload() map[string]any {
 	}
 	now := time.Now().UTC()
 	out := make([]map[string]any, 0, len(s.workload.jobs))
+	s.workload.jobsMu.Lock()
+	defer s.workload.jobsMu.Unlock()
 	for _, j := range s.workload.jobs {
 		stalledForSec := 0.0
 		if !j.LastProgressAt.IsZero() && !j.Completed {
@@ -2233,6 +2240,8 @@ func (s *simulator) injectTraceJobs(ctx context.Context, kube kubernetes.Interfa
 	if s.workload == nil {
 		return
 	}
+	s.workload.jobsMu.Lock()
+	defer s.workload.jobsMu.Unlock()
 	// Rate-limit pod injection to avoid overwhelming the K8s API server: at
 	// most SIM_WORKLOAD_MAX_CREATES_PER_TICK pods per tick (20 by default);
 	// the remaining jobs are injected on the next tick.
@@ -2408,6 +2417,10 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 	if s.workload == nil {
 		return
 	}
+	// The jobs' lock covers the stall detection too: deferred calls run
+	// last in, first out.
+	s.workload.jobsMu.Lock()
+	defer s.workload.jobsMu.Unlock()
 	// Stall detection runs unconditionally via defer, even if pod listing fails.
 	defer s.detectStalledJobs(kube, now)
 

@@ -32,15 +32,27 @@ toward eco nodes.
 Seeds 3 and 4 by default: the policies are sized on seeds the sweep does not
 measure (it runs seeds 1 and 2).
 
+With --jobmix PATH it also writes the CPU jobs of every seed's trace
+(workload type, class, memory and IO intensity, CPU units) to PATH, the
+fixture TestBetaFreqFit fits the simulator's CPU frequency exponent over
+(simulator/cmd/simulator/testdata/exp01-cpu-jobmix.json, from experiment
+01, seeds 3 and 4, which the sweep does not measure).
+
 Usage, from the repository root:
-    python experiments/kwok-cluster/pool_load.py EXPERIMENT [SEED ...]
+    python experiments/kwok-cluster/pool_load.py EXPERIMENT [SEED ...] [--jobmix PATH]
 """
 import importlib.util, json, math, pathlib, sys, tempfile
 from unittest.mock import patch, MagicMock
 import yaml
 
-exp = sys.argv[1]
-seeds = [int(s) for s in sys.argv[2:]] or [3, 4]
+args = sys.argv[1:]
+jobmix = None
+if "--jobmix" in args:
+    i = args.index("--jobmix")
+    jobmix = args[i + 1]
+    del args[i:i + 2]
+exp = args[0]
+seeds = [int(s) for s in args[1:]] or [3, 4]
 repo = pathlib.Path.cwd()
 
 
@@ -117,6 +129,7 @@ B = int(round(N * float(pol["static"]["hp_frac"])))
 qa = pol["queue_aware"]
 C_base, C_min, C_max, C_per = int(round(N * float(qa["hp_base_frac"]))), int(qa["hp_min"]), int(qa["hp_max"]), int(qa["perf_per_hp_node"])
 need_all, pods_all = [], []
+mix = []
 for seed in seeds:
     p = sw.generate_canonical_seed_trace(seed=seed, jobs=run["jobs"], mean_inter_arrival_sec=run["mean_inter_arrival_sec"],
         perf_ratio=w["perf_ratio"], compute_bound_perf_boost=w.get("compute_bound_perf_boost", 3.5), gpu_ratio=w["gpu_ratio"],
@@ -127,6 +140,13 @@ for seed in seeds:
         gpu_util_scale=w.get("gpu_util_scale", 1.0))
     # The GPU experiments pick a job's vendor by the pools' load, from its length.
     t = sw.retarget_trace_for_cluster(p, speed) if any(n["gpu_count"] for n in nodes) else sw.retarget_trace_for_cluster(p)
+    if jobmix:
+        for l in open(t):
+            j = json.loads(l)
+            if j.get("type") == "job" and (j.get("work") or {}).get("cpuUnits"):
+                wp = j.get("workloadProfile") or {}
+                mix.append([j["workloadType"], (j.get("workloadClass") or {}).get("cpu", ""), round(wp.get("memoryIntensity", 0), 3),
+                            round(wp.get("ioIntensity", 0), 3), round(j["work"]["cpuUnits"])])
     jobs = []
     for l in open(t):
         if '"type":"job"' not in l:
@@ -167,6 +187,11 @@ def holds(counts):
 per = sum(pods_all) / max(1, sum(need_all))
 full = min(((sum(c_counts(b, q)) / n_s, -q, b) for b in range(min(need_all), max(need_all) + 1) for q in range(1, 41)
             if holds(c_counts(b, q)) == n_s), default=None)
+if jobmix:
+    cmd = "python experiments/kwok-cluster/pool_load.py " + " ".join([exp, *map(str, seeds), "--jobmix", jobmix])
+    doc = {"source": f"the CPU jobs of seeds {', '.join(map(str, seeds))} of {exp}, configs/benchmark-40n.yaml (workloadType, workloadClass.cpu, memoryIntensity, ioIntensity, work.cpuUnits); regenerate with: {cmd}", "jobs": mix}
+    pathlib.Path(jobmix).write_text(json.dumps(doc, separators=(",", ":")) + "\n")
+    print(f"wrote {len(mix)} jobs to {jobmix}")
 print(f"needed performance nodes of {N}: min {min(need_all)} mean {sum(need_all)/n_s:.1f} max {max(need_all)}; performance pods per needed node {per:.1f}")
 print(f"  B: hp_frac >= {max(need_all)/N:.3f} ({max(need_all)} nodes)")
 print(f"  C: hp_base_frac {min(need_all)/N:.3f} ({min(need_all)} nodes), perf_per_hp_node {int(per)}")

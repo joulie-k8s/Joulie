@@ -208,7 +208,7 @@ When performance nodes are idle (`perfPressure = 0`), there is no penalty and st
 
 ### Experimental validation
 
-The scoring formula was validated in [Experiment 04: Scoring Formula Validation]({{< relref "/docs/experiments/scoring-formula-validation.md" >}}) across 2,500 nodes and 8 random seeds, confirming 6.4% IT energy reduction and 13% fewer dropped jobs versus standard Kubernetes bin-packing.
+[Experiment 04: Scoring Formula Validation]({{< relref "/docs/experiments/scoring-formula-validation.md" >}}) set out to compare the formula with standard Kubernetes bin-packing on 2,500 nodes; its results do not stand (the page says why), and it is being redone.
 
 ### Score clamping
 

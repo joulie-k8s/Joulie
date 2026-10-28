@@ -26,10 +26,10 @@ import (
 // loop_and_model_regression_test.go).
 var cpupowerGoldenPath = filepath.Join("testdata", "physics", "analytic-cpu-power.golden.json")
 
-// 500 W on the SPEC result 01203 curve (spec01203Curve) is load 70.25 %. A
-// compute-bound workload's throughput above the knee is 0.877 x scale + 0.123,
-// which reaches 0.7025 at scale 0.661. The old solver kept the scale at 1 and
-// reported the clamped 500 W.
+// At util 1 the SPEC result 01203 curve (spec01203Curve) draws 128 W at 0 %
+// load and 817 W at 100 %, so with the default BetaFreq 1.43 a 500 W cap
+// holds at 128 + 689 x scale^1.43 = 500, scale 0.650. The old solver kept the
+// scale at 1 and reported the clamped 500 W.
 func TestSolveFreqScaleForCapCurveThrottles(t *testing.T) {
 	clearSimEnv(t)
 	model := defaultBaseModelFromEnv()
@@ -39,18 +39,17 @@ func TestSolveFreqScaleForCapCurveThrottles(t *testing.T) {
 
 	power := cpuPowerWithModel(st, model)
 	throughput := cpuThroughputMultiplier(st.FreqScale, st.CPUWorkClass, model, st.MemoryIntensity, st.IOIntensity, st.CPUThermalThrottle)
-	if st.FreqScale >= 0.99 || math.Abs(st.FreqScale-0.661) > 0.005 || power < 485 || power > capW+model.RaplHeadW || throughput >= 1 {
-		t.Fatalf("D13: 2x EPYC 9654 curve at util 1 under a %.0f W cap: scale=%.4f power=%.2f W throughput=%.4f; want scale near 0.661 (below 0.99), power in [485, %.0f] W and throughput below 1. A curve that clamps to the cap hides the excess from the solver.",
+	if st.FreqScale >= 0.99 || math.Abs(st.FreqScale-0.650) > 0.005 || power < 485 || power > capW+model.RaplHeadW || throughput >= 1 {
+		t.Fatalf("D13: 2x EPYC 9654 curve at util 1 under a %.0f W cap: scale=%.4f power=%.2f W throughput=%.4f; want scale near 0.650 (below 0.99), power in [485, %.0f] W and throughput below 1. A curve that clamps to the cap hides the excess from the solver.",
 			capW, st.FreqScale, power, throughput, capW+model.RaplHeadW)
 	}
 }
 
 // The solver must see the node's whole state, not only its utilization and
-// class. A curve solver that bisects on utilization and class alone settles,
-// with memory or IO intensity, at a scale where the node draws more than the
-// cap (505 W, cap plus headroom, at memory intensity 0.8), and with a thermal
-// throttle at one where it draws far less (about 430 W at 0.2). Each variant
-// must land on the cap.
+// frequency. Memory and IO intensity change a curve node's throughput but not
+// its power at a frequency, so the cap holds at the same scale with or
+// without them; a thermal throttle lowers the power at every scale, so the
+// cap holds at a higher one. Each variant must land on the cap.
 func TestSolveFreqScaleForCapCurveSeesTheFullState(t *testing.T) {
 	clearSimEnv(t)
 	model := defaultBaseModelFromEnv()
@@ -79,10 +78,11 @@ func TestSolveFreqScaleForCapCurveSeesTheFullState(t *testing.T) {
 				t.Fatalf("D13: util 1 under a %.0f W cap with mem %.1f, io %.1f, thermal %.1f: power=%.2f W scale=%.4f; want power in [%.1f, %.0f] W and a scale below 1. A solver that drops part of the node state misses the cap.",
 					capW, tc.mem, tc.io, tc.thermal, power, scale, capW-0.5, capW)
 			}
-			// Memory-bound work loses less throughput per step of frequency,
-			// so the same cap needs a lower scale.
-			if tc.mem > 0 && scale >= bareScale {
-				t.Fatalf("D13: memory intensity %.1f gives scale %.4f, want below the %.4f of memory intensity 0", tc.mem, scale, bareScale)
+			if tc.thermal == 0 && math.Abs(scale-bareScale) > 1e-6 {
+				t.Fatalf("mem %.1f, io %.1f give scale %.4f, want the %.4f of the bare state: intensities act on throughput, not on power", tc.mem, tc.io, scale, bareScale)
+			}
+			if tc.thermal > 0 && scale <= bareScale {
+				t.Fatalf("thermal %.1f gives scale %.4f, want above the %.4f of the bare state", tc.thermal, scale, bareScale)
 			}
 		})
 	}
@@ -91,23 +91,24 @@ func TestSolveFreqScaleForCapCurveSeesTheFullState(t *testing.T) {
 // CapSaturated means that even the minimum frequency draws more than the cap.
 // For a curve node that is the curve's own power at the minimum scale, in the
 // node's full state, not the generic analytic model's (170.5 W with the
-// default 80 and 420 W), which would call a 300 W cap reachable. At util 1,
-// memory, IO and thermal 0, the minimum scale 0.375 is below the knee 0.5625:
-// the multiplier is 0.8625 x 0.375 + 0.11 x 0.7975 + 0.0275 x 0.96875 =
-// 0.4378 (weights and scales of phys.MeasuredCurveCPUModel), which the curve
-// puts at 390.1 W. Memory intensity 0.8 raises the floor to about 439 W and a
-// thermal throttle of 0.2 lowers it to about 359 W, so the last two caps are
-// on the other side of a floor that ignores either.
+// default 80 and 420 W), which would call a 250 W cap reachable. At util 1 and
+// the minimum scale 0.375 the curve draws 128 + 689 x 0.375^1.43 = 297.5 W
+// (BetaFreq 1.43); memory intensity leaves that floor where it is, and a
+// thermal throttle of 0.2 lowers it by 7 % to about 277 W, so a 285 W cap is
+// saturated without the throttle and reachable with it.
 func TestCapSaturatedUsesTheNodeModel(t *testing.T) {
 	clearSimEnv(t)
 	model := defaultBaseModelFromEnv()
 	model.CPUPowerCurve = spec01203Curve
 	const class = "cpu.compute_bound"
 	minScale := minFreqScale(model)
-	curve := phys.MeasuredCurveCPUModel{Points: model.CPUPowerCurve, Knee: cpuKneeFromModel(model)}
+	curve := cpuPowerModel(model)
 	bareFloorW := curve.Power(phys.DeviceState{Utilization: 1, FreqScale: minScale, Class: class})
-	if math.Abs(bareFloorW-390.1) > 0.5 {
-		t.Fatalf("test setup: curve power at util 1 and the minimum scale %.3f is %.2f W, want 390.1 W by hand", minScale, bareFloorW)
+	if math.Abs(bareFloorW-297.5) > 0.5 {
+		t.Fatalf("test setup: curve power at util 1 and the minimum scale %.3f is %.2f W, want 297.5 W by hand", minScale, bareFloorW)
+	}
+	if memFloorW := curve.Power(phys.DeviceState{Utilization: 1, FreqScale: minScale, Class: class, MemoryIntensity: 0.8}); memFloorW != bareFloorW {
+		t.Fatalf("memory intensity 0.8 moves the floor to %.2f W from %.2f W; it acts on throughput only", memFloorW, bareFloorW)
 	}
 
 	cases := []struct {
@@ -116,10 +117,9 @@ func TestCapSaturatedUsesTheNodeModel(t *testing.T) {
 		mem, thermal float64
 		saturated    bool
 	}{
-		{"cap below the curve at minimum scale", 300, 0, 0, true},
-		{"cap above the curve at minimum scale", 400, 0, 0, false},
-		{"memory intensity raises the floor above the cap", 420, 0.8, 0, true},
-		{"thermal throttle lowers the floor below the cap", 375, 0, 0.2, false},
+		{"cap below the curve at minimum scale", 250, 0, 0, true},
+		{"cap above the curve at minimum scale", 350, 0, 0, false},
+		{"thermal throttle lowers the floor below the cap", 285, 0, 0.2, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -434,6 +434,44 @@ def idle_load_failures(run_dir: pathlib.Path) -> list[str]:
     return [f"{len(stale)} nodes with no job at a load above 0: {', '.join(stale[:5])}"] if stale else []
 
 
+def class_failures(run_dir: pathlib.Path, classes_path: pathlib.Path) -> list[str]:
+    """The GPU nodes whose model in the simulator differs from the node class
+    their labels match in classes_path, the file the installer loaded, or
+    that match none. The experiments' installers once fell back to another
+    file, which held the H100 NVL alone, and the other GPU families ran on
+    the simulator defaults with no check noticing. Unreadable state, or no
+    GPU node checked while the file has GPU classes, fails too."""
+    import yaml
+
+    fields = (("computeGamma", "ComputeGamma"), ("memoryEpsilon", "MemoryEpsilon"), ("memoryGamma", "MemoryGamma"),
+              ("idleWattsPerGpu", "IdleWattsPerGPU"), ("maxWattsPerGpu", "MaxWattsPerGPU"), ("minCapWattsPerGpu", "MinCapWattsPerGPU"))
+    try:
+        classes = [c for c in (yaml.safe_load(classes_path.read_text()) or {}).get("classes") or [] if (c.get("model") or {}).get("gpu")]
+        items = json.loads((run_dir / "nodes.json").read_text())["items"]
+        sim = {n["node"]: (n.get("model") or {}).get("GPU") or {} for n in json.loads((run_dir / "sim_debug_nodes.json").read_text()).get("nodes") or []}
+    except (OSError, ValueError, KeyError, AttributeError, TypeError) as err:
+        return [f"the node classes or the simulator's nodes cannot be read: {err}"]
+    if not classes:
+        return []
+    out, checked = [], 0
+    for item in items:
+        name, labels = item["metadata"]["name"], item["metadata"].get("labels") or {}
+        if "joulie.io/gpu.product" not in labels:
+            continue
+        match = [c for c in classes if all(labels.get(k) == v for k, v in (c.get("matchLabels") or {}).items())]
+        if not match:
+            out.append(f"{name} matches no GPU class")
+            continue
+        want, got = match[0]["model"]["gpu"], sim.get(name, {})
+        checked += 1
+        diff = [f"{k} {got.get(g)} not {want[k]}" for k, g in fields if k in want and (got.get(g) is None or abs(float(got[g]) - float(want[k])) > 1e-9)]
+        if diff:
+            out.append(f"{name} ({match[0].get('name')}): {', '.join(diff)}")
+    if not checked and not out:
+        return ["no GPU node to check against the node classes"]
+    return [f"{len(out)} GPU nodes off their node class: {'; '.join(out[:3])}"] if out else []
+
+
 def placed_gpu_util(run_dir: pathlib.Path, rows: list, measure_from: float, window: float):
     """The GPU utilization of the placed jobs over the window: the mean of
     the polls' gpu_demand (work_progress.csv) over all the GPUs of
@@ -448,7 +486,7 @@ def placed_gpu_util(run_dir: pathlib.Path, rows: list, measure_from: float, wind
     return sum(vals) / len(vals) / total
 
 
-def gate_failures(run_dir: pathlib.Path, measure_from: float, window: float, baseline: str = "A") -> list[str]:
+def gate_failures(run_dir: pathlib.Path, measure_from: float, window: float, baseline: str = "A", classes: pathlib.Path | None = None) -> list[str]:
     """Why the run in run_dir fails the gates, empty when it passes."""
     import csv
     rows = list(csv.DictReader((run_dir / "work_progress.csv").open()))
@@ -460,6 +498,8 @@ def gate_failures(run_dir: pathlib.Path, measure_from: float, window: float, bas
     if gaps and max(gaps) > GATE_MAX_GAP_SEC:
         out.append(f"a gap of {max(gaps):.0f} s between polls")
     out += idle_load_failures(run_dir)
+    if classes is not None:
+        out += class_failures(run_dir, classes)
     if baseline != "A":
         return out
     ts = list(csv.DictReader((run_dir / "timeseries.csv").open()))
@@ -801,7 +841,12 @@ def main():
         import yaml
         run_cfg = (yaml.safe_load(open(args.benchmark_config)) or {}).get("run") or {}
     record = json.loads((run_dir / "completion.json").read_text())
-    failures = gate_failures(run_dir, float(run_cfg.get("measure_from_sec", 0)), float(args.timeout), args.baseline) + load_failures(record)
+    # The classes the installer loaded (03_install_components.sh), kept
+    # with the run.
+    classes = pathlib.Path(os.environ.get("GENERATED_CLASSES") or ROOT / "generated" / "10-node-classes.yaml")
+    if classes.exists():
+        (run_dir / "node-classes.yaml").write_text(classes.read_text())
+    failures = gate_failures(run_dir, float(run_cfg.get("measure_from_sec", 0)), float(args.timeout), args.baseline, classes) + load_failures(record)
     record["gate_failures"] = failures
     (run_dir / "completion.json").write_text(json.dumps(record, indent=2) + "\n")
     if failures:

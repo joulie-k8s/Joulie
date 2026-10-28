@@ -286,7 +286,7 @@ func TestCB11SweepCollectorOverAnHwemuTree(t *testing.T) {
 	within(t, r, pathCPUIdle, 40, 0.01)
 	within(t, r, pathCPUMax, 360, 0.01)
 	near(t, r, pathCPUAlpha, 1.15, 0.02)
-	near(t, r, pathCPUBeta, 1.35, 0.03)
+	near(t, r, pathCPUBeta, 1.43, 0.03)
 	if r.Segments != 18 || r.Steady != 18 {
 		t.Errorf("%d segments, %d steady, want 18 and 18", r.Segments, r.Steady)
 	}

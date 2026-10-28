@@ -15,16 +15,22 @@ The user-visible changes of each release, what to check when upgrading, and the 
 - The cluster CPU and GPU utilization of the simulator's time series weigh each node by its cores and its GPUs, where they averaged the nodes, so CPU-only nodes no longer dilute the GPU utilization. (#104)
 - In the simulator, a node whose last job ends runs no load from that moment, where it kept that job's CPU and GPU utilization, and its power, until a new job arrived. Idle nodes counted as busy in the energy and GPU utilization of the GPU experiments, and in standalone runs whose nodes go idle (the reference scenario's CPU energy falls by 2.7 to 2.9 %). (#104)
 - A pod of a legacy trace (schema v2) keeps the affinity of its record's `podTemplate`, with the NotIn-eco requirement of a performance pod ANDed into it, where it had only that requirement. The sweeps of experiments 02 and 03 restrict CPU-only jobs to `joulie.io/hw.kind=cpu-only` nodes, which the simulator ignored, so those jobs could run on GPU nodes. The record's `nodeSelector` and `tolerations` stay unread for legacy pods. (#104)
+- A CPU on a measured SPECpower curve draws the curve at its utilization, with the dynamic part scaled by the frequency scale to the power `SIM_BETA_FREQ`, as the generic CPU model does. It drew the curve at utilization x throughput, so every watt a cap saved came out of delivered work, and a cap cost more throughput than power by construction. `SIM_BETA_FREQ` defaults to 1.43 (was 1.35, unsourced), fitted to published frequency and power caps on servers (`TestBetaFreqFit`); the emulated profiles that took the old default take the new one. (#104)
 
 ### Scheduler extender
 
 - The extender returns its node score as a priority from 0 to 10, the range of the extender API, where it returned the 0 to 100 score. kube-scheduler multiplies a priority by the extender's weight and by 10 and does not clamp it, so the extender weighed ten times its configured weight and overrode every scoring plugin, such as a GPU bin-packing strategy. (#104)
+
+### Experiments
+
+- Experiments 01 to 03 ran again on this release's simulator, measured at regime with 2 seeds and a repeat each, and every run passed gates on the queue, the utilization, idle nodes and the node classes. On one GPU family (03) the policies drew 6 to 9 % less power and did 6 to 10 % less GPU work, at about the same energy per unit. On mixed families they used 1.4 to 2.7 % (01, CPU) and 0.1 to 4.6 % (02, GPU) more energy per unit; that sign rests on the simulator giving every core and every GPU the same speed. These replace the 3 to 11 % lower power of the 0.2.4 rerun, which ran one seed over a fixed window with jobs still running. Since then the simulator's idle nodes, CPU curve law and GPU cap exponents, the scheduler extender's weight, the node classes of experiment 02 and the measurement window have changed (above, and `simulator/CHANGES.md`); no run separates their shares. (#104)
 
 ### Upgrading
 
 - Percent CPU caps over HTTP now reach 0.55 x TDP per socket, where the low end of the cTDP range was the floor (320 W per socket on the AMD EPYC 9654 and 9375F), so runs with percent caps change again: on experiment 01's `configs/benchmark-debug.yaml` the saving of C against A rises from 12.0 % to 13.3 % (`simulator/CHANGES.md`). (#104)
 - `SIM_CPU_SOCKET_CAP_MIN_W` and the class model key `cpuSocketCapMinW` are ignored with a warning. A cap below `SIM_RAPL_CAP_MIN_W` or `SIM_GPU_MIN_CAP_WATTS_PER_GPU` is now refused rather than raised, and the agent reports it as an error. (#104)
 - The scheduler extender now weighs as much as its `weight` says, ten times less than before at the same weight, so kube-scheduler's own scoring plugins take part in placement again. To keep the old balance, multiply the extender's `weight` in the scheduler configuration by 10. (#104)
+- A CPU cap that binds on a node with a measured curve now costs less throughput than power, where it cost more, and `SIM_BETA_FREQ` defaults to 1.43: runs with binding CPU caps change (the reference scenario's B and C by -0.04 % of CPU energy; `simulator/CHANGES.md`). Set `SIM_BETA_FREQ=1.35` to keep the old exponent on the generic model; the old curve behaviour has no switch. (#104)
 - `workloadgen` no longer accepts `-gpu-request`, which nothing read; drop it from scripts that pass it. (#104)
 
 ## v0.2.5 (2026-10-27)

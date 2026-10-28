@@ -36,6 +36,6 @@ experiments/03-homogeneous-h100-benchmark/scripts/20_run_benchmark.sh \
 ## Notes
 
 - kube-scheduler reaches the extender at a fixed ClusterIP: see [experiments/README.md](../README.md) ("DNS and the scheduler extender").
-- The `generate_heterogeneous_assets.py` script applies H100 NVL-specific physics parameters (`computeGamma: 1.5`, `memoryEpsilon: 0.15`, `memoryGamma: 0.9`, `idleWattsPerGpu: 60`) to all GPU nodes.
+- The `generate_heterogeneous_assets.py` script applies H100 NVL-specific physics parameters (`computeGamma: 0.5`, `memoryEpsilon: 0.01`, `memoryGamma: 0.9`, `idleWattsPerGpu: 58.6`; sources in the 02 README) to all GPU nodes.
 - The retargeting logic in `05_sweep.py` no longer pins jobs to exact node names. CPU-only jobs are constrained only to the CPU-only pool, while GPU jobs rely on the native `nvidia.com/gpu` extended resource so the Kubernetes scheduler can place them on any compatible H100 node.
 - All scripts share the same asset generation path (`scripts/generate_heterogeneous_assets.py`), so the node classes are regenerated from the homogeneous cluster-nodes.yaml before each benchmark run. No hardware catalog is generated: the simulator uses the one embedded in `pkg/hwinv/assets/hardware.yaml`.

@@ -339,6 +339,7 @@ The simulator (`simulator/cmd/simulator`) reads these variables at startup too. 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SIM_P_MAX_W` | sockets x catalogue TDP, else `420` | Peak CPU power of the generic model, at full load and full frequency (`pMaxW`). A node with a measured curve uses the curve instead. |
+| `SIM_BETA_FREQ` | `1.43` | Exponent of the frequency scale in the CPU's dynamic power, on the generic model and on a measured curve: `P = P(0) + (P(u) - P(0)) x f^beta`. Fitted to published frequency and power caps on servers (`TestBetaFreqFit`); 0.86 to 2.45 spans the measured applications. |
 | `SIM_RAPL_CAP_MIN_W` | `0` | Lowest node CPU cap the simulator accepts; a cap below it is refused with an error. No floor by default: no vendor publishes a minimum package power limit for the modelled CPUs, and a cap the CPU cannot reach holds it at its lowest-frequency power. |
 | `SIM_CPU_SOCKET_CAP_MAX_W` | catalogue TDP, else `400` | Upper end of the per-socket CPU cap: the node cap is split evenly over the sockets and clamped to this range (`cpuSocketCapMaxW`). |
 | `SIM_GPU_MAX_WATTS_PER_GPU` | catalogue `maxBoardPowerW`, else `300` | Board power of one GPU at full load, and its highest cap (`gpu.maxWattsPerGpu`). |

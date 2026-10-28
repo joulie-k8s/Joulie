@@ -156,7 +156,7 @@ Prior work has addressed energy measurement, power-aware scheduling, and data ce
 
 No existing Kubernetes scheduler plugin combines real-time eBPF energy telemetry, a digital twin with facility-stress modeling, and workload classification into a single scheduling pipeline.
 
-For production-scale validation of this pipeline, see [Scoring Formula Validation]({{< relref "/docs/experiments/scoring-formula-validation.md" >}}).
+[Scoring Formula Validation]({{< relref "/docs/experiments/scoring-formula-validation.md" >}}) tests the formula at scale; its results do not stand yet, and it is being redone.
 
 ## What to read next
 

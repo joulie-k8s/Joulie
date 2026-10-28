@@ -234,6 +234,7 @@ func runStandalone(s *simulator) {
 		elapsed := virtualNow.Sub(s.workload.startTime).Seconds()
 
 		// 1. Inject ready jobs (bin-packing scheduler), cursor-based, no cap.
+		s.workload.jobsMu.Lock()
 		injected := standaloneInjectJobsFast(s, tracker, nodeNames, nodeByName, virtualNow, &nextInjectIdx, activeNodes)
 		submittedCount += injected
 		pendingCount += injected
@@ -241,6 +242,7 @@ func runStandalone(s *simulator) {
 		// 2. Advance job progress, then step every node's physics by dt
 		// and book its energy (parallel across nodes).
 		completed := standaloneTickParallel(s, tracker, nodeNames, nodeByName, dt, substep, virtualNow, activeNodes, numWorkers)
+		s.workload.jobsMu.Unlock()
 		completedCount += completed
 		pendingCount -= completed
 

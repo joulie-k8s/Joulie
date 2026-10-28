@@ -27,7 +27,9 @@ CPU_WRITE_ABSOLUTE_CAPS=${CPU_WRITE_ABSOLUTE_CAPS:-false}
 GPU_WRITE_ABSOLUTE_CAPS=${GPU_WRITE_ABSOLUTE_CAPS:-true}
 OPERATOR_RECONCILE_INTERVAL=${OPERATOR_RECONCILE_INTERVAL:-20s}
 AGENT_RECONCILE_INTERVAL=${AGENT_RECONCILE_INTERVAL:-10s}
-GENERATED_CLASSES=${GENERATED_CLASSES:-$EXAMPLE_DIR/manifests/10-node-classes.yaml}
+# The node classes 00_generate_assets.sh writes for this experiment's
+# inventory, as in experiment 01.
+GENERATED_CLASSES=${GENERATED_CLASSES:-$EXP_ROOT/generated/10-node-classes.yaml}
 SIM_FACILITY_AMBIENT_BASE_C=${SIM_FACILITY_AMBIENT_BASE_C:-22.0}
 SIM_FACILITY_AMBIENT_AMPLITUDE_C=${SIM_FACILITY_AMBIENT_AMPLITUDE_C:-8.0}
 SIM_FACILITY_AMBIENT_PERIOD_SEC=${SIM_FACILITY_AMBIENT_PERIOD_SEC:-600}
@@ -163,7 +165,20 @@ else
   echo "verifying scheduler extender reachable..."
   CTRL_CONTAINER="${CLUSTER_NAME:-joulie-homogeneous-h100-benchmark}-control-plane"
   if docker inspect "$CTRL_CONTAINER" >/dev/null 2>&1; then
-    if ! docker exec "$CTRL_CONTAINER" curl -sf --max-time 5 "$EXTENDER_URL" >/dev/null 2>&1; then
+    # Probed 12 times, 5 s apart (about two minutes at most with the 5 s
+    # curl timeout): one probe right after the rollout failed once
+    # (02 baseline B, 2026-10-27) where the same check passed on every other
+    # install; a misconfigured address still fails after the deadline.
+    reachable=false
+    for attempt in $(seq 1 12); do
+      if docker exec "$CTRL_CONTAINER" curl -sf --max-time 5 "$EXTENDER_URL" >/dev/null 2>&1; then
+        reachable=true
+        break
+      fi
+      echo "scheduler extender not reachable yet (attempt $attempt of 12)" >&2
+      sleep 5
+    done
+    if [ "$reachable" != true ]; then
       echo "FATAL: scheduler extender not reachable from control-plane at $EXTENDER_URL" >&2
       echo "DNS or networking is misconfigured: kube-scheduler cannot reach the extender." >&2
       exit 1

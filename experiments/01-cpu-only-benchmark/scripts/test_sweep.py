@@ -1173,3 +1173,30 @@ def test_load_failures_refuse_a_loaded_run():
     run_one = _load_run_one()
     assert run_one.load_failures({"host_load1_mean": 28.0, "host_cpus": 28}) == []
     assert run_one.load_failures({"host_load1_mean": 30.0, "host_cpus": 28}) == ["mean host load 30.0 exceeds the 28 CPUs"]
+
+
+def test_extender_reachability_is_retried_until_a_deadline(tmp_path):
+    """The installer probes the scheduler extender from the control plane
+    before a run. One probe right after the rollout failed once (02 baseline
+    B, 2026-10-27) and ended the sweep; the probe is retried 12 times, 5 s apart,
+    and a probe that never succeeds still fails the install."""
+    import re
+    import subprocess
+
+    script = (SCRIPTS_DIR / "03_install_components.sh").read_text()
+    start = script.index('  if docker inspect "$CTRL_CONTAINER" >/dev/null 2>&1; then\n')
+    end = script.index('  else\n', start)
+    block = script[start:end] + '  fi\n'
+    stub = tmp_path / "docker"
+    calls = tmp_path / "calls"
+    def run(failures):
+        # docker inspect finds the control plane; each docker exec is one probe.
+        stub.write_text(f"#!/bin/bash\n[ \"$1\" = inspect ] && exit 0\necho x >> {calls}\n[ $(wc -l < {calls}) -gt {failures} ]\n")
+        stub.chmod(0o755)
+        calls.write_text("")
+        body = 'set -e\nCTRL_CONTAINER=c EXTENDER_URL=u\nsleep() { :; }\n' + block + 'echo OK\n'
+        return subprocess.run(["bash", "-c", body], env={"PATH": f"{tmp_path}:/usr/bin:/bin"}, capture_output=True, text=True)
+    ok = run(2)
+    assert ok.returncode == 0 and "OK" in ok.stdout and calls.read_text().count("x") == 3, (ok.stdout, ok.stderr)
+    never = run(100)
+    assert never.returncode == 1 and "FATAL" in never.stderr and calls.read_text().count("x") == 12, (never.stdout, never.stderr)

@@ -5,6 +5,7 @@ import importlib.util
 import json
 import math
 import pathlib
+import shutil
 import sys
 
 import pytest
@@ -29,7 +30,7 @@ def plan_line(sec, profiles):
     return f"{stamp} controller: assigned profiles policy=queue_aware_v1 interval=2.5s nodes={len(profiles)} plan={plan}\n"
 
 
-def make_run(results, baseline, seed, watts, log="", gate_failures=(), gpu_watts=0, stamp="20261027T010000Z"):
+def make_run(results, baseline, seed, watts, log="", gate_failures=(), gpu_watts=0, stamp="20261027T010000Z", beta=1.43):
     """A run of constant power and pace: watts on CPU-only node c1 and, with
     gpu_watts, a GPU node g1; 10 work units per second of the binding kind
     and 5 CPU-only units."""
@@ -40,7 +41,7 @@ def make_run(results, baseline, seed, watts, log="", gate_failures=(), gpu_watts
     (d / "metadata.json").write_text(json.dumps({"timeScale": 120}))
     gpu = 1e9 if gpu_watts else 0
     (d / "trace.jsonl").write_text(f'{{"type":"job","jobId":"j","submitTimeOffsetSec":0,"work":{{"cpuUnits":1e9,"gpuUnits":{gpu}}}}}\n')
-    (d / "sim_debug_nodes.json").write_text('[{"node": "c1", "model": {"GPU": {"Count": 0}}}, {"node": "g1", "model": {"GPU": {"Count": 8}}}]')
+    (d / "sim_debug_nodes.json").write_text(json.dumps([{"node": "c1", "model": {"GPU": {"Count": 0}, "BetaFreq": beta}}, {"node": "g1", "model": {"GPU": {"Count": 8}, "BetaFreq": beta}}]))
     it = watts + gpu_watts
     ts, wk, en = [TS], [WK], []
     for t in range(0, 901, 10):
@@ -137,8 +138,8 @@ def test_gpu_report_measures_energy_per_unit_on_each_kind_of_node(tmp_path, monk
     assert c["GPU-node energy per GPU unit (%)"] == "-20.0 / -20.0"
     assert c["CPU-only-node energy per CPU-only unit (%)"] == "+0.0 / +0.0"
     noise = table(text, "Run-to-run noise")
-    assert noise["A (no mgmt) 1"]["GPU-node energy per GPU unit (%)"] == "+0.5"
-    assert noise["A (no mgmt) 1"]["Host load mean, first / second (28 CPUs)"] == "10.0 / 10.0"
+    assert noise["A (no mgmt) 1"]["GPU-node energy per GPU unit (%)"] == "+0.50"
+    assert noise["A (no mgmt) 1"]["Host load mean, sweep run / replicate (28 CPUs)"] == "10.0 / 10.0"
 
 
 def test_report_refuses_a_run_on_a_loaded_host(tmp_path):
@@ -170,3 +171,99 @@ def test_report_leaves_out_a_repeat_above_the_load_limit(tmp_path, monkeypatch, 
     text = capsys.readouterr().out
     assert "Run-to-run noise: the repeat of A (no mgmt) seed 1" in text and "above the 28 CPUs, and is left out" in text
     assert "second run against the first" not in text
+
+
+def test_noise_table_lists_every_replicate(tmp_path, monkeypatch, capsys):
+    """Every replicate of a baseline and seed is listed with its label and
+    host load: a repeat in the sweep and each run of an extra sweep given as
+    LABEL=DIR. A run of an extra sweep that failed its gates or did not
+    finish is left out with the reason. A third replicate used to overwrite
+    the second."""
+    results, extra, out = tmp_path / "res", tmp_path / "old", tmp_path / "img"
+    for seed in (1, 2):
+        make_run(results, "A", seed, 1000)
+        make_run(results, "B", seed, 900)
+    make_run(results, "A", 1, 1010, stamp="20261027T020000Z")
+    make_run(extra, "A", 1, 990)
+    make_run(extra, "B", 1, 900, gate_failures=["1 nodes with no job at a load above 0: n1"])
+    (make_run(extra, "B", 2, 900) / "completion.json").unlink()
+    rf.SKIPPED.clear()
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text("run:\n  measure_from_sec: 120\n  timeout: 900\n")
+    monkeypatch.setattr(sys, "argv", ["report_figures.py", str(results), str(out), "x", str(cfg), f"attempt-7={extra}"])
+    rf.main()
+    text = capsys.readouterr().out
+    noise = text.split("Run-to-run noise: each replicate")[1]
+    rows = [line for line in noise.splitlines() if line.startswith("| A (no mgmt) | 1 |")]
+    assert [r.split("|")[3].strip() for r in rows] == ["repeat", "attempt-7"]
+    assert "+1.00" in rows[0] and "-1.00" in rows[1]
+    assert "the run of B (static) seed 1 in attempt-7" in text and "is left out" in text
+    assert "the run of B (static) seed 2 in attempt-7" in text and "did not finish" in text
+
+
+def test_tables_state_the_one_beta_freq_of_the_sweep(tmp_path, monkeypatch, capsys):
+    """The tables state the BetaFreq every run's simulator reports, and a
+    sweep whose runs report different values stops the report: a sweep at
+    another SIM_BETA_FREQ is a sweep of its own, with its own A, and so is a
+    replicate sweep (LABEL=DIR) at another value."""
+    results, out = tmp_path / "res", tmp_path / "img"
+    for seed in (1, 2):
+        make_run(results, "A", seed, 1000, beta=0.86)
+        make_run(results, "B", seed, 900, beta=0.86)
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text("run:\n  measure_from_sec: 120\n  timeout: 900\n")
+    monkeypatch.setattr(sys, "argv", ["report_figures.py", str(results), str(out), "x", str(cfg)])
+    rf.main()
+    assert "Every run's simulator reports BetaFreq 0.86 (SIM_BETA_FREQ)." in capsys.readouterr().out
+    make_run(results, "C", 1, 800, beta=1.43)
+    with pytest.raises(SystemExit) as stop:
+        rf.main()
+    assert "not one value" in str(stop.value)
+    # A replicate at another BetaFreq would count a band's run as noise.
+    shutil.rmtree(next(d for d in results.iterdir() if d.name.endswith("_bC_s1")))
+    other = tmp_path / "other"
+    make_run(other, "B", 1, 950, beta=1.43)
+    monkeypatch.setattr(sys, "argv", ["report_figures.py", str(results), str(out), "x", str(cfg), f"beta1.43={other}"])
+    with pytest.raises(SystemExit) as stop:
+        rf.main()
+    assert "runs and replicates report BetaFreq" in str(stop.value)
+
+
+def test_decompose_energy_prices_moved_work_at_its_dynamic_cost(tmp_path):
+    """decompose_energy.py splits B's change in J per unit against A into an
+    idle term, a placement term at each family's dynamic cost and each
+    family's own dynamic term. With idle power on every node, B moving work
+    from family x to family y at unchanged dynamic costs is placement alone:
+    priced at the average cost, idle included, the family that gains work
+    showed a spurious saving and the one that loses it a cost."""
+    import subprocess
+
+    # x runs a measured curve (idle at its 0 % point, 1.0 W, not BaseIdleW),
+    # y the generic model (BaseIdleW 0.5 W).
+    nodes = {"x": ("kwok-x-0", 1.0), "y": ("kwok-y-0", 0.5)}
+    dynamic = {"x": 1.0, "y": 3.0}
+    def run(name, work, seed):
+        d = tmp_path / f"20261028T000000Z_b{name}_s{seed}"
+        d.mkdir()
+        (d / "energy_by_node.jsonl").write_text(json.dumps({"elapsed_sec": 900, "byNodeJoules": {
+            nodes[f][0]: nodes[f][1] * 900 + work[f] * dynamic[f] for f in nodes}}) + "\n")
+        (d / "sim_debug_nodes.json").write_text(json.dumps({"nodes": [
+            {"node": "kwok-x-0", "model": {"BaseIdleW": 80, "CPUPowerCurve": [{"LoadPct": 0, "PowerW": 1.0}, {"LoadPct": 100, "PowerW": 9.0}]}},
+            {"node": "kwok-y-0", "model": {"BaseIdleW": 0.5}}]}))
+        (d / "trace.jsonl").write_text("".join(json.dumps({"type": "job", "jobId": f"j{f}", "workloadClass": {"cpu": "cpu.compute_bound"}}) + "\n" for f in nodes))
+        (d / "sim_debug_jobs.json").write_text(json.dumps({"jobs": [
+            {"jobId": f"j{f}", "submitted": True, "node": nodes[f][0], "cpuUnitsTotal": w, "cpuUnitsRemaining": 0, "gpuUnitsTotal": 0} for f, w in work.items()]}))
+        # One eco call that binds, one that does not, and a call at the
+        # performance cap, which never counts.
+        (d / "simulator.log").write_text("".join(f"x control node=kwok-x-0 action=rapl.set_power_cap_watts capW={c:.2f} throttlePct=0 powerW={p:.2f} pods=1\n"
+                                                 for c, p in ((480, 470), (480, 300), (800, 790))))
+    for seed in (1, 2):
+        run("A", {"x": 100, "y": 10}, seed)
+        run("B", {"x": 90, "y": 20}, seed)
+        run("C", {"x": 100, "y": 10}, seed)
+    script = pathlib.Path(__file__).parent / "decompose_energy.py"
+    out = subprocess.run([sys.executable, str(script), str(tmp_path)], capture_output=True, text=True, check=True).stdout
+    b = [l for l in out.splitlines() if l.strip().startswith("B:")][0]
+    assert "(+1.35 %) = idle +0.00 pp + placement +1.35 pp + kwok-x own +0.00 pp + kwok-y own +0.00 pp" in b, b
+    assert "kwok-x 1/2" in b, b
+

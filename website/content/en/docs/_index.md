@@ -14,9 +14,8 @@ That model drives two things: power cap enforcement (via RAPL and NVML) and sche
 
 Results from simulated benchmark experiments (Kind + KWOK clusters with physics-based power and cooling models):
 
-- **3 to 11% lower average cluster power** through combined capping and scheduling, on CPU-only, heterogeneous GPU and homogeneous H100 clusters (experiments 01 to 03 rerun on Joulie 0.2.4: one seed each, a fixed window of about 22 simulated hours that ends with jobs still running; the older simulator model gave 20 to 29%).
-- **6.4% savings from scheduling alone**: energy-aware pod placement reduces consumption without any power cap enforcement (validated on a simulated 2,500-node cluster with the older simulator model).
-- **Zero application impact** -- workload-class annotations let performance-critical pods bypass power constraints while background jobs absorb savings.
+- **Trade power for throughput at about the same energy per unit**: on 33 H100 NVL nodes, the two policies drew 6 to 9 % less power and did 6 to 10 % less GPU work than no management, at about the same GPU-node energy per unit of work (experiment 03, at regime, 2 seeds). The CPU-only and mixed-GPU experiments (01, 02) depend on a simulator assumption under review, that every core and every GPU does the same work per second; their reports give the numbers.
+- **Performance pods stay uncapped**: workload-class annotations keep performance-critical pods on uncapped nodes, where they wait when those nodes are full (experiment 03: 9 to 10 performance jobs waiting on average under the policies, against 0.7 with no management).
 - **Full observability** -- `kubectl joulie` (cluster status, live dashboard, node details, pod placement), Grafana dashboards, and Prometheus metrics give immediate visibility into per-node energy state.
 
 ## Where to start

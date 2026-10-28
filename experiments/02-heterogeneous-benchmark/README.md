@@ -49,10 +49,10 @@ The GPU model of each family (`scripts/generate_heterogeneous_assets.py`), with 
 
 | GPU | Idle W per GPU | computeGamma | memoryEpsilon | memoryGamma |
 |---|---:|---:|---:|---:|
-| NVIDIA H100 NVL | 60 | 1.50 | 0.15 | 0.90 |
-| NVIDIA H100 80GB HBM3 | 100 | 1.40 | 0.15 | 0.90 |
-| NVIDIA L40S | 35 | 1.20 | 0.25 | 1.10 |
-| AMD Instinct MI300X | 120 | 0.85 | 0.10 | 0.85 |
-| AMD Radeon PRO W7900 | 25 | 1.10 | 0.30 | 1.20 |
+| NVIDIA H100 NVL | 58.6 | 0.50 | 0.01 | 0.90 |
+| NVIDIA H100 80GB HBM3 | 69.6 | 0.43 | 0.01 | 0.90 |
+| NVIDIA L40S | 36.3 | 1.20 | 0.01 | 1.10 |
+| AMD Instinct MI300X | 120 | 0.62 | 0.20 | 1.10 |
+| AMD Radeon PRO W7900 | 10.8 | 1.00 | 0.20 | 1.10 |
 
-These values are assumptions: no product brief or paper gives them ([wiki: GPU power model](https://github.com/joulie-k8s/Joulie/wiki/GPU-Power-Model#per-family-parameters)).
+computeGamma is fitted to published throughput at several power limits: MLPerf Inference MaxQ against MaxP runs and papers for the H100 SXM (0.43) and MI300X (0.62); the H100 PCIe's 0.50 for the NVL, which has no published data; the L40S keeps 1.20, inside the published range for the L40S and L40. Memory-bound throughput stays flat within about 1 % on the NVIDIA families, hence memoryEpsilon 0.01. The W7900 has no published data for any RDNA3 GPU, and the AMD memory side none either: those take the generator's defaults (`_GPU_PHYSICS_DEFAULTS`: 1.0, 0.20, 1.10). The idle powers are the draws measured on real idle nodes (the emulated profiles' `physics.gpu.idleW`), except the MI300X's 120 W, assumed. Sources and fits: [wiki: GPU power model](https://github.com/joulie-k8s/Joulie/wiki/GPU-Power-Model#per-family-parameters).

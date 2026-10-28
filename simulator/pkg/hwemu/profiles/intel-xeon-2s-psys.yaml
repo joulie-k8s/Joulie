@@ -120,7 +120,7 @@ physics:
     maxPkgW: {v: 270, src: "published:ark6530#TDP"}
     idlePkgW: {v: 40, src: "assumed:bounded by spec01396 and spec01397, Active Idle 125 and 118 W for a whole 2S 32-core Emerald Rapids node"}
     alphaUtil: {v: 1.15, src: "assumed:simulator default SIM_ALPHA_UTIL"}
-    betaFreq: {v: 1.35, src: "assumed:simulator default SIM_BETA_FREQ"}
+    betaFreq: {v: 1.43, src: "assumed:simulator default SIM_BETA_FREQ, fitted to published frequency and power caps of other CPUs (TestBetaFreqFit)"}
     knee: {v: 0.7, src: "assumed:phys default knee of MeasuredCurveCPUModel"}
     freqRampMS: {v: 500, src: "assumed:simulator default SIM_DVFS_RAMP_MS"}
     idleGovernorDeltaW: {v: 0, src: "assumed:no idle cost of a governor that holds the top frequency until one is measured; to sweep from 0 to 5 % of the idle power"}

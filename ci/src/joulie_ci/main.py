@@ -130,7 +130,10 @@ step go test ./...; JOULIE_REQUIRE_FUSE=1 go test ./...
     async def race(self, source: Source) -> str:
         """go test -race over the binaries (./cmd/...) and the simulator, for
         their caches and goroutines: the simulator's pod poll and workload
-        tick share node state."""
+        tick share node state. The whole job took 16 min in the Dagger
+        container on a 28-CPU host (2026-10-27), 346 s of it the simulator's
+        package; its -timeout 30m leaves room above go test's default 10
+        minutes on a slower runner."""
         return await checks.run(checks.go_container(source), "go test -race ./cmd/...\ngo test -race -timeout 30m ./simulator/cmd/simulator/")
 
     @function

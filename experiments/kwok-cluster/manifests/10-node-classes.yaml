@@ -7,9 +7,9 @@ classes:
         vendor: nvidia
         product: "NVIDIA H100 NVL"
         count: 8
-        idleWattsPerGpu: 60
+        idleWattsPerGpu: 58.6
         maxWattsPerGpu: 400
         minCapWattsPerGpu: 200
-        computeGamma: 1.5
-        memoryEpsilon: 0.15
+        computeGamma: 0.5
+        memoryEpsilon: 0.01
         memoryGamma: 0.9

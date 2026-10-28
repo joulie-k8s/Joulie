@@ -306,7 +306,7 @@ func defaultBaseModelFromEnv() simModel {
 		DefaultCapW:               floatEnv("SIM_DEFAULT_CAP_W", 5000),
 		PMaxW:                     pMaxW,
 		AlphaUtil:                 floatEnv("SIM_ALPHA_UTIL", 1.15),
-		BetaFreq:                  floatEnv("SIM_BETA_FREQ", 1.35),
+		BetaFreq:                  floatEnv("SIM_BETA_FREQ", 1.43),
 		FMinMHz:                   floatEnv("SIM_F_MIN_MHZ", 1200),
 		FMaxMHz:                   floatEnv("SIM_F_MAX_MHZ", 3200),
 		RaplCapMinW:               floatEnv("SIM_RAPL_CAP_MIN_W", 0),

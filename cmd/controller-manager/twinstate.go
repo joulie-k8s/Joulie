@@ -345,7 +345,8 @@ func enrichHardwareFromCatalog(hw *joulie.NodeHardware) {
 			}
 		}
 		// Fallback: if CPU model unknown but we have core count, estimate
-		// TDP from a conservative 10W/core heuristic (typical server range).
+		// the per-socket TDP as 5 W per core, an assumed figure with no
+		// published source.
 		if hw.CPU.CapRange.MaxWattsPerSocket <= 0 && hw.CPU.TotalCores > 0 {
 			sockets := hw.CPU.Sockets
 			if sockets <= 0 {

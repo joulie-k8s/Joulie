@@ -41,16 +41,25 @@ load (1-minute load average, completion.json) is listed next to it. Time is
 simulated time: wall seconds times the run's time scale.
 
 Usage:
-    python experiments/kwok-cluster/report_figures.py RESULTS_DIR OUT_DIR "CPU-Only (40 nodes)" CONFIG
+    python experiments/kwok-cluster/report_figures.py RESULTS_DIR OUT_DIR "CPU-Only (40 nodes)" CONFIG [LABEL=RESULTS_DIR ...]
+
+The tables state the BetaFreq (SIM_BETA_FREQ) every run's simulator
+reports, which must be one value across the sweep: a sweep at another value
+is a sweep of its own, with its own A.
+
+Each LABEL=RESULTS_DIR is another sweep of the same code and config whose
+runs are replicates: the noise table lists each one with its label and host
+load next to the sweep's run of the same baseline and seed. A run of such a
+sweep that failed its gates or did not finish is left out with the reason.
 
 A run that failed the gates 04_run_one.py applied as it ended is refused
 with the reason: completion.json lists in gate_failures a window its polls
 do not cover for every run, and the mean queue over the window and the
 utilization for baseline A, and in control_errors the control commands the
-simulator refused. A run whose mean 1-minute host load exceeds 10 is refused
-too, except the repeat of the first run, which is left out of the noise
-table with the reason. Each run's performance node count comes from the
-plans the controller manager logged. Energy and work are given in simulated
+simulator refused. A run whose mean 1-minute host load exceeds the host's
+CPUs is refused too, except the repeat of the first run, which is left out
+of the noise table with the reason. Each run's performance node count comes
+from the plans the controller manager logged. Energy and work are given in simulated
 terms (wall values times the time scale), so energy per unit is the same in
 either.
 """
@@ -94,16 +103,27 @@ def csvcols(path):
 SKIPPED = []
 
 
-def load(results):
+def load(results, extra=()):
+    """The sweep's runs by (baseline, seed), and their replicates as lists of
+    (label, run): a second run of a baseline and seed in the sweep
+    ("repeat"), and every run of the extra (label, directory) sweeps."""
     SKIPPED.clear()
     runs, repeats = {}, {}
-    for d in sorted(results.glob("*_b?_s*")):
+    sources = [(None, d) for d in sorted(results.glob("*_b?_s*"))]
+    for label, base in extra:
+        sources += [(label, d) for d in sorted(base.glob("*_b?_s*"))]
+    for label, d in sources:
         m = re.search(r"_b([ABC])_s(\d+)$", d.name)
         if not m or not d.is_dir():
             continue
-        is_repeat = (m.group(1), int(m.group(2))) in runs
-        target = repeats if is_repeat else runs
+        is_repeat = label is not None or (m.group(1), int(m.group(2))) in runs
+        if label is not None and not (d / "completion.json").exists():
+            SKIPPED.append(f"the run of {SHORT[m.group(1)]} seed {m.group(2)} in {label} ({d.name}) did not finish and is left out")
+            continue
         done = json.load(open(d / "completion.json"))
+        if label is not None and (done.get("control_errors") or done.get("gate_failures") or done["host_load1_mean"] > done["host_cpus"]):
+            SKIPPED.append(f"the run of {SHORT[m.group(1)]} seed {m.group(2)} in {label} ({d.name}) failed its gates ({'; '.join(done.get('gate_failures') or []) or 'refused controls'}) and is left out")
+            continue
         # A repeat only estimates noise: one that failed the load gate alone
         # is left out, and the report says why.
         others = [g for g in (done.get("gate_failures") or []) if not g.startswith("mean host load")]
@@ -121,6 +141,7 @@ def load(results):
         jobs = [json.loads(l) for l in open(d / "trace.jsonl") if '"type":"job"' in l]
         nodes = json.load(open(d / "sim_debug_nodes.json"))
         nodes = nodes if isinstance(nodes, list) else nodes.get("nodes", [])
+        betas = sorted({(n.get("model") or {}).get("BetaFreq") for n in nodes if n.get("model")})
         gpu_nodes = {n["node"] for n in nodes if ((n.get("model") or {}).get("GPU") or {}).get("Count", 0) > 0}
         # Where each finished job ran (simulator.log "job completed id=...
         # node=..."): a job without GPUs must not run on a GPU node, or the
@@ -132,12 +153,18 @@ def load(results):
         by_node = {"elapsed_sec": [p["elapsed_sec"] for p in polls],
                    "gpu_nodes_j": [sum(v for k, v in p["byNodeJoules"].items() if k in gpu_nodes) for p in polls],
                    "cpu_nodes_j": [sum(v for k, v in p["byNodeJoules"].items() if k not in gpu_nodes) for p in polls]}
-        target[(m.group(1), int(m.group(2)))] = {
+        run = {
             "ts": ts, "work": csvcols(d / "work_progress.csv"), "scale": scale, "jobs": jobs, "by_node": by_node,
             "plans": plans(d),
             "finished": len(ran_on), "cpu_jobs_on_gpu_nodes": cpu_jobs_on_gpu_nodes,
             "load_mean": done["host_load1_mean"], "load_max": done["host_load1_max"], "cpus": done["host_cpus"],
+            "beta_freq": betas,
         }
+        key = (m.group(1), int(m.group(2)))
+        if is_repeat:
+            repeats.setdefault(key, []).append((label or "repeat", run))
+        else:
+            runs[key] = run
     return runs, repeats
 
 
@@ -408,27 +435,37 @@ def tables(runs, m, repeats, R, W, gpu_work):
     for note in SKIPPED:
         print(f"\nRun-to-run noise: {note}.")
     if repeats:
-        print("\nRun-to-run noise, the same baseline and seed run twice (second run against the first), with the host load of each, since the host is shared:\n")
-        print("| Baseline | Seed | " + " | ".join(f"{label} (%)" for _, label in keys) + f" | Host load mean, first / second ({cpus} CPUs) |")
-        print("|---|---:|" + "---:|" * (len(keys) + 1))
-        for (b, s), x in sorted(repeats.items()):
-            print(f"| {SHORT[b]} | {s} | " + " | ".join(f"{100 * (x[k] / m[(b, s)][k] - 1):+.1f}" for k, _ in keys) + f" | {m[(b, s)]['load_mean']:.1f} / {x['load_mean']:.1f} |")
+        print("\nRun-to-run noise: each replicate of a baseline and seed against the sweep's run, with the host load of each, since the host is shared:\n")
+        print("| Baseline | Seed | Replicate | " + " | ".join(f"{label} (%)" for _, label in keys) + f" | Host load mean, sweep run / replicate ({cpus} CPUs) |")
+        print("|---|---:|---|" + "---:|" * (len(keys) + 1))
+        for (b, s), reps in sorted(repeats.items()):
+            if (b, s) not in m:
+                continue
+            for label, x in reps:
+                print(f"| {SHORT[b]} | {s} | {label} | " + " | ".join(f"{100 * (x[k] / m[(b, s)][k] - 1):+.2f}" for k, _ in keys) + f" | {m[(b, s)]['load_mean']:.1f} / {x['load_mean']:.1f} |")
 
 
 def main():
-    if len(sys.argv) != 5:
+    if len(sys.argv) < 5 or not all("=" in a for a in sys.argv[5:]):
         sys.exit(__doc__)
+    extra = [(a.split("=", 1)[0], pathlib.Path(a.split("=", 1)[1])) for a in sys.argv[5:]]
     results, out, title = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
     run_cfg = yaml.safe_load(open(sys.argv[4]))["run"]
     R, W = float(run_cfg["measure_from_sec"]), float(run_cfg["timeout"])
     out.mkdir(parents=True, exist_ok=True)
-    runs, repeats = load(results)
+    runs, repeats = load(results, extra)
     if not runs:
         sys.exit(f"{results}: no run directories")
     gpu_work = any(max(r["work"]["gpu_units_done"]) > 0 for r in runs.values())
     m = {k: run_metrics(r, R, W, gpu_work) for k, r in runs.items()}
-    rm = {k: run_metrics(r, R, W, gpu_work) for k, r in repeats.items()}
+    rm = {k: [(label, run_metrics(r, R, W, gpu_work)) for label, r in reps] for k, reps in repeats.items()}
+    # Replicates count as noise only at the sweep's own BetaFreq: a run at
+    # another value is another sweep, compared through its own A.
+    betas = sorted({v for r in [*runs.values(), *(x for reps in repeats.values() for _, x in reps)] for v in r["beta_freq"]})
+    if len(betas) != 1:
+        sys.exit(f"{results}: the runs and replicates report BetaFreq {betas}, not one value: a sweep at another value is a sweep of its own")
     figures(runs, m, out, title, R, W, gpu_work)
+    print(f"Every run's simulator reports BetaFreq {betas[0]} (SIM_BETA_FREQ).\n")
     tables(runs, m, rm, R, W, gpu_work)
 
 

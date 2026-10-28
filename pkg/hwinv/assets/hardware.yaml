@@ -146,8 +146,8 @@ gpuModels:
     official:
       vendor: nvidia
       maxBoardPowerW: 400
-      # No public minimum for the NVL; 200 W is the H100 PCIe product brief's
-      # minimum (PB-11133-001_v01).
+      # The H100 NVL product brief (PB-11773-001_v01, Table 1) gives 400 W
+      # maximum (default) and 200 W minimum.
       minBoardPowerW: 200
   NVIDIA_H100_SXM:
     aliases: ["NVIDIA-H100-80GB-HBM3", "NVIDIA H100 80GB HBM3", "H100 SXM"]

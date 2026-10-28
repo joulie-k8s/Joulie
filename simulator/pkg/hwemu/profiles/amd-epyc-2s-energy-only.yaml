@@ -84,14 +84,15 @@ physics:
     # The SPECpower curve of the hardware catalog's AMD_EPYC_9654 entry
     # (spec01203, 2x EPYC 9654), split over the two sockets: at 10 % load
     # it adds 18.7 % of the idle to full-load range, where the analytic
-    # model of the facts below adds 7.1 % under performance. maxPkgW,
-    # idlePkgW, alphaUtil and betaFreq are kept for the profiles that
-    # extend this one with the analytic model.
+    # model of the facts below adds 7.1 % under performance. betaFreq
+    # scales the curve's dynamic power with frequency as well; maxPkgW,
+    # idlePkgW and alphaUtil are kept for the profiles that extend this one
+    # with the analytic model.
     model: catalog-curve
     maxPkgW: {v: 360, src: "published:amd9654#Default TDP"}
     idlePkgW: {v: 40, src: "assumed:bounded by spec01203 Active Idle 128 W for the whole node"}
     alphaUtil: {v: 1.15, src: "assumed:simulator default SIM_ALPHA_UTIL"}
-    betaFreq: {v: 1.35, src: "assumed:simulator default SIM_BETA_FREQ"}
+    betaFreq: {v: 1.43, src: "assumed:simulator default SIM_BETA_FREQ, fitted to published frequency and power caps of other CPUs (TestBetaFreqFit)"}
     knee: {v: 0.7, src: "assumed:phys default knee of MeasuredCurveCPUModel"}
     freqRampMS: {v: 500, src: "assumed:simulator default SIM_DVFS_RAMP_MS"}
     idleGovernorDeltaW: {v: 0, src: "assumed:no idle cost of a governor that holds the top frequency until one is measured; to sweep from 0 to 5 % of the idle power"}

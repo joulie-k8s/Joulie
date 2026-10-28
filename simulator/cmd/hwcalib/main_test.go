@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -154,7 +155,7 @@ func TestCB10FitEndToEnd(t *testing.T) {
 		t.Fatalf("local profiles %v", local)
 	}
 	cpu := p.Physics.CPU
-	if cpu.IdlePkgW.V != 40 || cpu.MaxPkgW.V != 360 || cpu.AlphaUtil.V != 1.15 || cpu.BetaFreq.V != 1.35 || !strings.HasPrefix(cpu.AlphaUtil.Src, "measured:sweep#") {
+	if cpu.IdlePkgW.V != 40 || cpu.MaxPkgW.V != 360 || cpu.AlphaUtil.V != 1.15 || cpu.BetaFreq.V != 1.43 || !strings.HasPrefix(cpu.AlphaUtil.Src, "measured:sweep#") {
 		t.Errorf("fitted cpu physics idle %v max %v alpha %v (%s) beta %v", cpu.IdlePkgW.V, cpu.MaxPkgW.V, cpu.AlphaUtil.V, cpu.AlphaUtil.Src, cpu.BetaFreq.V)
 	}
 	if src := p.Sources["sweep"]; src.Kind != "measured" || !strings.Contains(src.Ref, "sweep.jsonl") || !strings.Contains(src.Ref, testNode) {
@@ -253,6 +254,13 @@ func TestSweepPutsBackOnHangup(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("signals a child process the Linux way")
 	}
+	// A child inherits an ignored SIGHUP, so under a go test started with
+	// nohup the hangup case would be a second nohup case that never ends.
+	// A child starts with the default action for every signal this process
+	// handles, so handling SIGHUP here gives the sweep the default action.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	t.Cleanup(func() { signal.Stop(hup) })
 	for _, nohup := range []bool{false, true} {
 		name := "hangup"
 		if nohup {

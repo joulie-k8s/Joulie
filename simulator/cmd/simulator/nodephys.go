@@ -377,8 +377,9 @@ func cpuPower(st *nodeState, model simModel, scale float64) (powerW, solvedScale
 func cpuPowerModel(model simModel) phys.PowerModel {
 	if len(model.CPUPowerCurve) > 0 {
 		return phys.MeasuredCurveCPUModel{
-			Points: model.CPUPowerCurve,
-			Knee:   cpuKneeFromModel(model),
+			Points:   model.CPUPowerCurve,
+			Knee:     cpuKneeFromModel(model),
+			BetaFreq: model.BetaFreq,
 		}
 	}
 	return phys.AnalyticCPUModel{

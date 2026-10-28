@@ -192,8 +192,8 @@ func TestCatalogGPUMinimumsHavePublicSources(t *testing.T) {
 		"NVIDIA_H100_SXM": {300, "MLPerf Inference v4.0 DGX-H100 MaxQ", "MLPerf"},
 		// arXiv 2603.16164: limits below 400 W were not reliably enforced.
 		"AMD_INSTINCT_MI300X": {400, "arXiv 2603.16164", "arXiv 2603.16164"},
-		// No public minimum: the H100 PCIe product brief gives 200 W.
-		"NVIDIA_H100_NVL": {200, "H100 PCIe product brief PB-11133-001", "PB-11133-001"},
+		// The H100 NVL product brief gives 400 W maximum and 200 W minimum.
+		"NVIDIA_H100_NVL": {200, "H100 NVL product brief PB-11773-001", "PB-11773-001"},
 		// No public minimum: the L40S product brief says "TBD".
 		"NVIDIA_L40S": {200, "L40S product brief PB-11470-001 (TBD)", "PB-11470-001"},
 		// No public minimum: AMD publishes only TBP 295 W.

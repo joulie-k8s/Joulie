@@ -96,10 +96,10 @@ policy:
 images:
   # Built from this tree and loaded into the kind cluster (no registry pull).
   joulie_registry: joulie.local
-  joulie_tag: rerun-2026-10-27
+  joulie_tag: rerun-2026-10-28
   sim_registry: joulie.local
   sim_image: joulie-simulator
-  sim_tag: rerun-2026-10-27
+  sim_tag: rerun-2026-10-28
 
 inventory:
   source: experiments/03-homogeneous-h100-benchmark/configs/cluster-nodes.yaml

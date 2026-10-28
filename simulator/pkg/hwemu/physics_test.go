@@ -393,7 +393,7 @@ func TestCG15SchedutilAtLightLoadSitsAtTheLowestEntryAndRunsBusier(t *testing.T)
 // has no generic powersave). Its energy is the node's power once settled
 // times the work over the throughput. Race to idle wins when the idle share
 // of the power is high; with the shipped parameters (idle 40 of 165 W,
-// betaFreq 1.35) the job uses less energy at EPP 255, which this test pins,
+// betaFreq 1.43) the job uses 3.4 % less energy at EPP 255, which this test pins,
 // and with the package idle raised to 140 W performance uses less.
 func TestCG16FixedComputeJobEnergyUnderPerformanceAndEPP255(t *testing.T) {
 	t.Parallel()

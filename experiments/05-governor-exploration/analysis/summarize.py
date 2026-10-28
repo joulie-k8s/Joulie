@@ -146,14 +146,52 @@ def cpu_section(rows):
     return deltas(base_rows, key, arm, base)
 
 
+def gpu_arm(r):
+    a = r["preset"] + (r["ceiling_pct"] if r["ceiling_pct"] else "")
+    return f"{a} cap{r['cap_pct']}"
+
+
+def acceptance_deltas(rows, key, arm_of, base_arm):
+    """The deltas the acceptance rule judges, one per cell: job cells only
+    (an idle cell has no job to slow down, and its time is the window), each
+    cell's deltas averaged over its seeds (the emulator is deterministic, so
+    seeds repeat a cell rather than sample it; only the bursty cells' jitter
+    depends on the seed), and a timed-out cell kept with the slowdown at the
+    limit, a lower bound, and counted as censored. key leaves out the seed."""
+    base = defaultdict(list)
+    for r in rows:
+        if r["load"] != "idle" and r["status"] == "ok" and arm_of(r) == base_arm:
+            base[key(r)].append(r)
+    cells = defaultdict(lambda: {"e": [], "t": [], "censored": False})
+    for r in rows:
+        if r["load"] == "idle" or r["status"] not in ("ok", "timeout"):
+            continue
+        bs = [b for b in base.get(key(r), []) if b["seed"] == r["seed"]]
+        if not bs:
+            continue
+        be, bt = float(bs[0]["host_j"]), float(bs[0]["time_s"])
+        if be <= 0 or bt <= 0:
+            continue
+        c = cells[(arm_of(r), key(r))]
+        c["e"].append(100 * (float(r["host_j"]) / be - 1))
+        c["t"].append(100 * (float(r["time_s"]) / bt - 1))
+        c["censored"] |= r["status"] == "timeout"
+    out = defaultdict(lambda: {"e": [], "t": [], "n": 0, "censored": 0})
+    for (a, _), c in cells.items():
+        d = out[a]
+        d["e"].append(statistics.mean(c["e"]))
+        d["t"].append(statistics.mean(c["t"]))
+        d["n"] += 1
+        d["censored"] += c["censored"]
+    return out
+
+
 def gpu_section(rows):
     if not rows:
         return {}
     print("\n## E-G2: GPU presets\n")
     print(f"Baseline: `{GPU_BASE_PRESET}` with no cap on the same profile, workload, transfer, receiver gate and seed.")
-    def arm(r):
-        a = r["preset"] + (r["ceiling_pct"] if r["ceiling_pct"] else "")
-        return f"{a} cap{r['cap_pct']}"
+    arm = gpu_arm
     key = lambda r: (r["profile"], r["sens"], r["gate"], r["load"], r["class"], r["gpus"], r["transfer"], r["transfer_intensity"], r["seed"])
     base_arm = f"{GPU_BASE_PRESET} cap{GPU_BASE_CAP}"
     base_rows = [r for r in rows if not r["sens"]]
@@ -227,9 +265,11 @@ def sensitivity_section(cpu, gpu):
 def acceptance(cpu_d, gpu_d):
     print("\n## Acceptance rule, Tier A half\n")
     print(f"A candidate default passes Tier A when its median energy change is negative and its p95 slowdown is at "
-          f"most {PERF_P95:.0f} % (performance class) or {ECO_P95:.0f} % (eco class). Tier B and Q5 decide the rest.\n")
-    print("| candidate | class | energy median % | time p95 % | Tier A |")
-    print("|---|---|---|---|---|")
+          f"most {PERF_P95:.0f} % (performance class) or {ECO_P95:.0f} % (eco class). Tier B and Q5 decide the rest. "
+          "The rule judges job cells only, one value per cell (its seeds averaged); a timed-out cell counts with its "
+          "slowdown at the limit, a lower bound, so with any such cell a pass is not established.\n")
+    print("| candidate | class | cells | timed out | energy median % | time p95 % | Tier A |")
+    print("|---|---|---:|---:|---|---|---|")
     # The last field marks the baseline arm itself, which is not judged; a
     # candidate that changes nothing fails, since it lowers no energy.
     for name, cls, d, limit, is_base in (
@@ -247,7 +287,11 @@ def acceptance(cpu_d, gpu_d):
             continue
         e, t = statistics.median(d["e"]), pct(d["t"], 95)
         ok = "baseline" if is_base else ("pass" if e < 0 and t <= limit else "fail")
-        print(f"| {name} | {cls} | {fmt(e)} | {fmt(t)} | {ok} |")
+        # With censored cells the p95 is a lower bound: a pass is not established.
+        if d.get("censored") and ok == "pass":
+            ok = "undecided (timed-out cells)"
+        tcell = (">= " if d.get("censored") else "") + fmt(t)
+        print(f"| {name} | {cls} | {d['n']} | {d.get('censored', 0)} | {fmt(e)} | {tcell} | {ok} |")
 
 
 def main():
@@ -261,10 +305,14 @@ def main():
         return 1
     print(f"# Experiment 05, Tier A summary\n\nRun: `{os.path.basename(os.path.abspath(run))}`, "
           f"{len(cpu)} CPU cells and {len(gpu)} GPU cells.\n")
-    cpu_d = cpu_section(cpu)
-    gpu_d = gpu_section(gpu)
+    cpu_section(cpu)
+    gpu_section(gpu)
     sensitivity_section(cpu, gpu)
-    acceptance(cpu_d, gpu_d)
+    base_cpu, base_gpu = [r for r in cpu if not r["sens"]], [r for r in gpu if not r["sens"]]
+    cpu_key = lambda r: (r["profile"], r["load"], r["pct"], r["class"])
+    gpu_key = lambda r: (r["profile"], r["gate"], r["load"], r["class"], r["gpus"], r["transfer"], r["transfer_intensity"])
+    acceptance(acceptance_deltas(base_cpu, cpu_key, lambda r: r["arm"], cpu_base(base_cpu)) if base_cpu else {},
+               acceptance_deltas(base_gpu, gpu_key, gpu_arm, f"{GPU_BASE_PRESET} cap{GPU_BASE_CAP}") if base_gpu else {})
     return 0
 
 

@@ -1309,3 +1309,80 @@ def test_inventory_gpu_cap_range_is_the_catalogs():
         assert (n["gpu_min_cap_watts"], n["gpu_max_cap_watts"]) == (official["minBoardPowerW"], official["maxBoardPowerW"]), n["node_name_prefix"]
         checked += 1
     assert checked
+
+
+
+def test_install_gets_the_node_classes_generated_for_the_inventory():
+    """The sweep generates the node classes of its inventory
+    (00_generate_assets.sh), and the installer must load that file. It
+    loaded the kwok-cluster example's classes instead, which hold the H100
+    NVL alone, so in experiment 02 every other GPU family ran on the
+    simulator defaults (computeGamma 1, idle 30 W)."""
+    import re
+
+    generate = (SCRIPTS_DIR / "00_generate_assets.sh").read_text()
+    gen_dir = re.search(r'GENERATED_DIR="\$ROOT/([^"]+)"', generate).group(1)
+    assert '--out-classes "$GENERATED_DIR/10-node-classes.yaml"' in generate
+    install = (SCRIPTS_DIR / "03_install_components.sh").read_text()
+    exp_root = re.search(r'EXP_ROOT="\$ROOT/([^"]+)"', install).group(1)
+    default = re.search(r'GENERATED_CLASSES=\$\{GENERATED_CLASSES:-([^}]+)\}', install).group(1)
+    assert default.replace("$EXP_ROOT", exp_root) == f"{gen_dir}/10-node-classes.yaml"
+    assert 'node-classes.yaml "$GENERATED_CLASSES"' in install
+
+
+def test_gate_refuses_gpu_nodes_off_their_node_class(tmp_path):
+    """A GPU node whose model in the simulator differs from the class its
+    labels match, or that matches no class, fails the run; the defaults the
+    simulator gave every family but the H100 NVL are such a run."""
+    run_one = _load_run_one()
+    classes = tmp_path / "classes.yaml"
+    classes.write_text(
+        "classes:\n"
+        "  - name: gpu-class-1\n    matchLabels: {joulie.io/gpu.product: NVIDIA-H100-NVL}\n"
+        "    model: {gpu: {computeGamma: 0.5, memoryEpsilon: 0.01, idleWattsPerGpu: 58.6}}\n"
+        "  - name: gpu-class-2\n    matchLabels: {joulie.io/gpu.product: NVIDIA-L40S}\n"
+        "    model: {gpu: {computeGamma: 1.2, idleWattsPerGpu: 36.3}}\n")
+    def state(nodes):
+        (tmp_path / "nodes.json").write_text(json.dumps({"items": [
+            {"metadata": {"name": n, "labels": {"joulie.io/gpu.product": p} if p else {}}} for n, (p, _) in nodes.items()]}))
+        (tmp_path / "sim_debug_nodes.json").write_text(json.dumps({"nodes": [
+            {"node": n, "model": {"GPU": g}} for n, (_, g) in nodes.items()]}))
+    nvl = {"ComputeGamma": 0.5, "MemoryEpsilon": 0.01, "IdleWattsPerGPU": 58.6}
+    state({"a": ("NVIDIA-H100-NVL", nvl), "b": ("NVIDIA-L40S", {"ComputeGamma": 1.2, "IdleWattsPerGPU": 36.3}), "c": (None, {})})
+    assert run_one.class_failures(tmp_path, classes) == []
+    state({"a": ("NVIDIA-H100-NVL", nvl), "b": ("NVIDIA-L40S", {"ComputeGamma": 1, "IdleWattsPerGPU": 30})})
+    out = run_one.class_failures(tmp_path, classes)
+    assert len(out) == 1 and "b (gpu-class-2)" in out[0] and "computeGamma 1 not 1.2" in out[0], out
+    state({"a": ("NVIDIA-H100-NVL", nvl), "d": ("AMD-Radeon-PRO-W7900", {})})
+    assert "d matches no GPU class" in run_one.class_failures(tmp_path, classes)[0]
+    state({"c": (None, {})})
+    assert run_one.class_failures(tmp_path, classes) == ["no GPU node to check against the node classes"]
+    assert "cannot be read" in run_one.class_failures(tmp_path, tmp_path / "missing.yaml")[0]
+
+
+def test_extender_reachability_is_retried_until_a_deadline(tmp_path):
+    """The installer probes the scheduler extender from the control plane
+    before a run. One probe right after the rollout failed once (02 baseline
+    B, 2026-10-27) and ended the sweep; the probe is retried 12 times, 5 s apart,
+    and a probe that never succeeds still fails the install."""
+    import re
+    import subprocess
+
+    script = (SCRIPTS_DIR / "03_install_components.sh").read_text()
+    start = script.index('  if docker inspect "$CTRL_CONTAINER" >/dev/null 2>&1; then\n')
+    end = script.index('  else\n', start)
+    block = script[start:end] + '  fi\n'
+    stub = tmp_path / "docker"
+    calls = tmp_path / "calls"
+    def run(failures):
+        # docker inspect finds the control plane; each docker exec is one probe.
+        stub.write_text(f"#!/bin/bash\n[ \"$1\" = inspect ] && exit 0\necho x >> {calls}\n[ $(wc -l < {calls}) -gt {failures} ]\n")
+        stub.chmod(0o755)
+        calls.write_text("")
+        body = 'set -e\nCTRL_CONTAINER=c EXTENDER_URL=u\nsleep() { :; }\n' + block + 'echo OK\n'
+        return subprocess.run(["bash", "-c", body], env={"PATH": f"{tmp_path}:/usr/bin:/bin"}, capture_output=True, text=True)
+    ok = run(2)
+    assert ok.returncode == 0 and "OK" in ok.stdout and calls.read_text().count("x") == 3, (ok.stdout, ok.stderr)
+    never = run(100)
+    assert never.returncode == 1 and "FATAL" in never.stderr and calls.read_text().count("x") == 12, (never.stdout, never.stderr)
+

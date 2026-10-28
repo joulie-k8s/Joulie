@@ -2,6 +2,8 @@
 title: "Governor Exploration"
 ---
 
+> **To be rerun (2026-10-28).** Tier A ran on 2026-10-14, before later changes to the simulator: the CPU model (`SIM_BETA_FREQ`, a CPU on a measured curve) and the H100 NVL's default limit. An audit also found that its acceptance pools idle cells, drops timed-out cells and treats seeds of a deterministic emulator as replicates. The numbers below are not reproducible from this tree; Tier A is being rerun.
+
 This page reports experiment 05, CPU and GPU governor presets as an energy
 dimension of their own, next to power caps:
 
