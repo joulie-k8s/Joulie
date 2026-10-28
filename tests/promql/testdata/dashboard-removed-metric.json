@@ -7,7 +7,7 @@
       "targets": [{"expr": "sum by (state) (joulie_policy_node_state{node=~\"$node\"})"}]
     },
     {
-      "title": "Deprecated alias",
+      "title": "Removed alias",
       "type": "timeseries",
       "targets": [{"expr": "joulie_operator_node_state{node=~\"${node:regex}\"}"}]
     },

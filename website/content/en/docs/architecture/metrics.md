@@ -89,7 +89,7 @@ Written by the agent's [governor control]({{< relref "/docs/architecture/agent.m
 
 ## Policy controller metrics
 
-Exported by the controller manager. Until the next minor release each metric is also exported under its deprecated `joulie_operator_*` alias (same labels, same values, help text `Deprecated, use joulie_policy_...`); update dashboards and alerts to the `joulie_policy_*` names before that release.
+Exported by the controller manager.
 
 ### FSM state and profile label
 
@@ -111,7 +111,7 @@ Exported by the controller manager. Until the next minor release each metric is 
 
 ### Heterogeneous planning
 
-These two gauges have no `joulie_operator_*` alias. Both are reset every reconcile and computed from the plan after the downgrade guard, so a draining node counts as not performance. `family` is `gpu:<model>` when the node has GPUs, otherwise `cpu:<model>` (see [Heterogeneous planning]({{< relref "/docs/architecture/controller-manager.md#heterogeneous-planning" >}})).
+Both are reset every reconcile and computed from the plan after the downgrade guard, so a draining node counts as not performance. `family` is `gpu:<model>` when the node has GPUs, otherwise `cpu:<model>` (see [Heterogeneous planning]({{< relref "/docs/architecture/controller-manager.md#heterogeneous-planning" >}})).
 
 - `joulie_policy_family_nodes{family}` (gauge)
   - eligible nodes in each hardware family

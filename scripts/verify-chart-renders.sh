@@ -44,8 +44,7 @@ Options:
 Cases:
   defaults                 chart defaults
   values/joulie.yaml       the values file shipped for real installs
-  legacy operator: key     asserts it renders byte for byte what
-                           controllerManager: renders
+  removed operator: key    asserts the render fails naming controllerManager
   leaderElection.enabled   asserts the Lease Role and RoleBinding appear
   agent.mode=pool          asserts the StatefulSet replaces the DaemonSet
   schedulerExtender        asserts a second Deployment, one per component
@@ -453,34 +452,13 @@ if render release-values "${CHART}" -f "${REPO_ROOT}/values/joulie.yaml"; then
 fi
 
 # --------------------------------------------------------------------------
-# The deprecated "operator:" values key must still render byte for byte what
-# "controllerManager:" renders. The alias lives in templates/_helpers.tpl and
-# goes away a release from now; a key that stops being merged has to fail here
-# and not on an adopter's cluster.
+# The "operator:" values key, the old name of "controllerManager:", was
+# merged until v0.3.0. A values file that still sets it must fail the render
+# with the key to move to, not install a controller manager without its keys.
 # --------------------------------------------------------------------------
-case_start "legacy operator: key renders identically to controllerManager:"
-NEW_KEY_ARGS=(
-	--set 'controllerManager.leaderElection.enabled=true'
-	--set 'controllerManager.image.tag=v0.0.0-test'
-	--set 'controllerManager.image.pullPolicy=Always'
-	--set 'controllerManager.env.RECONCILE_INTERVAL=2m'
-	--set 'controllerManager.env.ECO_CAP_WATTS=99'
-	--set 'controllerManager.nodeSelector.disktype=ssd'
-	--set 'controllerManager.service.port=9191'
-)
-LEGACY_KEY_ARGS=("${NEW_KEY_ARGS[@]//controllerManager./operator.}")
-if render controller-manager-key "${CHART}" "${NEW_KEY_ARGS[@]}" &&
-	render operator-key "${CHART}" "${LEGACY_KEY_ARGS[@]}"; then
-	if ! diff -u "${WORKDIR}/controller-manager-key.yaml" "${WORKDIR}/operator-key.yaml" \
-		>"${WORKDIR}/alias.diff"; then
-		fail "the deprecated operator: key no longer renders what controllerManager: renders"
-		sed 's/^/    /' "${WORKDIR}/alias.diff" >&2
-	fi
-	assert_workloads operator-key \
-		"DaemonSet/joulie-agent" \
-		"Deployment/joulie-controller-manager"
-	assert_no_duplicates operator-key
-fi
+case_start "removed operator: key fails the render"
+render_fails operator-key "${CHART}" 'values key "operator" was removed in v0.3.0: move its contents under "controllerManager"' \
+	--set 'operator.env.ECO_CAP_WATTS=99'
 
 # --------------------------------------------------------------------------
 # Leader election on: the namespaced Lease Role and RoleBinding appear and the

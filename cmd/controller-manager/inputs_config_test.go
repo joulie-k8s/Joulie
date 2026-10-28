@@ -26,10 +26,8 @@ func clearInputEnv(t *testing.T) {
 	for _, in := range inputs.FacilityInputs() {
 		keys = append(keys, facilityQueryEnv(in))
 	}
-	for _, aliases := range []map[string]string{legacyEnvAliases, inputEnvAliases} {
-		for _, old := range aliases {
-			keys = append(keys, old)
-		}
+	for _, old := range inputEnvAliases {
+		keys = append(keys, old)
 	}
 	for _, k := range keys {
 		t.Setenv(k, "")
@@ -149,16 +147,14 @@ func TestLoadInputConfigDefaultsAndValidation(t *testing.T) {
 // stops the controller manager rather than read something else silently.
 func TestLoadInputConfigRejectsPresetWithQuery(t *testing.T) {
 	for _, preset := range []string{"otel", "kepler", "kepler-legacy"} {
-		for _, queryEnv := range []string{"NODE_POWER_PROMETHEUS_QUERY", "OPERATOR_NODE_POWER_PROMETHEUS_QUERY"} {
-			t.Run(preset+"/"+queryEnv, func(t *testing.T) {
-				clearInputEnv(t)
-				t.Setenv("NODE_POWER_PRESET", preset)
-				t.Setenv(queryEnv, `sum by (instance) (rate(node_power_joules_total[5m]))`)
-				if _, err := loadInputConfig(); err == nil || !strings.Contains(err.Error(), "custom") {
-					t.Fatalf("loadInputConfig error %v, want the preset and query combination refused", err)
-				}
-			})
-		}
+		t.Run(preset, func(t *testing.T) {
+			clearInputEnv(t)
+			t.Setenv("NODE_POWER_PRESET", preset)
+			t.Setenv("NODE_POWER_PROMETHEUS_QUERY", `sum by (instance) (rate(node_power_joules_total[5m]))`)
+			if _, err := loadInputConfig(); err == nil || !strings.Contains(err.Error(), "custom") {
+				t.Fatalf("loadInputConfig error %v, want the preset and query combination refused", err)
+			}
+		})
 	}
 }
 

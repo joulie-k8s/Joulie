@@ -15,6 +15,7 @@ What to check when you upgrade a Joulie installation from v0.2 to v0.3. Go throu
 
   Without a checkout, take them from the release chart: `helm pull oci://registry.cern.ch/joulie/joulie --version <version> --untar --untardir /tmp/joulie-chart`, then `kubectl apply -f /tmp/joulie-chart/joulie/crds/`.
 - [ ] **Registry.** Charts, images and the kubectl plugin are published under `registry.cern.ch/joulie`. A values file that sets an `image.repository` under `registry.cern.ch/mbunino/joulie` must point at `registry.cern.ch/joulie`; every tag up to 0.2.0 exists there with the same digest.
+- [ ] **Operator names.** The names the controller manager had before v0.2.0, kept as aliases since, are gone. Pull the image `joulie-controller-manager`, not `joulie-operator`. Set `NODE_POWER_*`, not `OPERATOR_NODE_POWER_*`, which is no longer read. Query `joulie_policy_*` in dashboards and alerts, not `joulie_operator_*`. Move the chart values under `operator` to `controllerManager`: a values file that still sets `operator` fails the render.
 
 ## kubectl plugin
 
@@ -27,7 +28,7 @@ What to check when you upgrade a Joulie installation from v0.2 to v0.3. Go throu
 - [ ] **Prometheus.** The chart sets `NODE_POWER_SOURCE=prometheus`, which reads the `otel` preset from `http://prometheus-operated.monitoring:9090`. Without Prometheus and node power data, every node reads 0 W with source `prometheus-no-data`. Set up Prometheus as the [quickstart]({{< relref "/docs/getting-started/01-quickstart.md#prerequisites" >}}) says, or set `controllerManager.env.NODE_POWER_SOURCE=static` to keep 0 W.
 - [ ] **Kepler.** `KEPLER_AVAILABLE` is gone. Use `NODE_POWER_PRESET=kepler` (Kepler 0.10 and later) or `kepler-legacy` (Kepler 0.7 to 0.9).
 - [ ] **Facility inputs.** The facility default is the `otel` preset. The `datacenter_*` metric names need `FACILITY_PRESET=legacy`, deprecated and removed in v0.4.0. `FACILITY_ZONE_AMBIENT_METRIC_TEMPLATE` and `FACILITY_RACK_POWER_METRIC_TEMPLATE` are gone: use `FACILITY_ZONE_AMBIENT_TEMP_QUERY` and `FACILITY_RACK_POWER_QUERY`. `FACILITY_POLL_INTERVAL` of 0 or less stops the controller manager at start. The chart does not set `FACILITY_PROMETHEUS_ADDRESS`; it defaults to `PROMETHEUS_ADDRESS`.
-- [ ] **Deprecated names.** Rename the variables the configuration reference lists as deprecated aliases (`OPERATOR_NODE_POWER_*`, `FACILITY_*_METRIC`): the controller manager logs a warning for each one it reads.
+- [ ] **Deprecated names.** Rename the variables the configuration reference lists as deprecated aliases (`FACILITY_*_METRIC`): the controller manager logs a warning for each one it reads.
 
 ## Agents and caps
 
