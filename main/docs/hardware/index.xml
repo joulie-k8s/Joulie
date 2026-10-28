@@ -17,7 +17,7 @@ CPU cap values are generated per profile and written into &lt;code&gt;NodeTwin.s
 &lt;li&gt;performance profile typically maps to a higher cap (often 100%)&lt;/li&gt;
 &lt;li&gt;eco profile maps to a lower cap&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;For heterogeneous nodes, percentage-based intent remains useful because each node resolves normalized intent using node-local capabilities: &lt;code&gt;pct&lt;/code&gt; of the package cap maximum, clamped to the range, from the node&amp;rsquo;s RAPL files. A node without RAPL files that the agent caps through an HTTP control backend (the simulator&amp;rsquo;s KWOK nodes) takes the range of the hardware catalog for its CPU instead, times its socket count: per socket, the TDP at the top and the low end of the cTDP range, or 0.55 x TDP, at the bottom. On two AMD EPYC 9654 sockets (TDP 360 W, cTDP 320 to 400 W) a 95 % cap is 684 W and a 60 % cap is clamped to 640 W; an EPYC 9375F, whose cTDP low end equals its 320 W TDP, stays at its TDP whatever the percent.
+&lt;p&gt;For heterogeneous nodes, percentage-based intent remains useful because each node resolves normalized intent using node-local capabilities: &lt;code&gt;pct&lt;/code&gt; of the package cap maximum, clamped to the range, from the node&amp;rsquo;s RAPL files. A node without RAPL files that the agent caps through an HTTP control backend (the simulator&amp;rsquo;s KWOK nodes) takes the range of the hardware catalog for its CPU instead, times its socket count: per socket, the TDP at the top and 0.55 x TDP at the bottom. The cTDP range is no floor: a package power limit may be set below its low end (&lt;a href="https://docs.amd.com/api/khub/documents/NgOfoW49HKdzztTeLBbekA/content"&gt;AMD EPYC 9004 HPC tuning guide, publication 58002&lt;/a&gt;), and no vendor publishes a minimum for these CPUs. On two AMD EPYC 9654 sockets (TDP 360 W) a 95 % cap is 684 W and a 60 % cap 432 W; a cap the CPU cannot reach holds it at its lowest-frequency power.
 If percentage intent cannot be converted to watts (no RAPL range, and no catalog range or no HTTP control), the agent applies a DVFS percent fallback path when possible. See &lt;a href="https://joulie-k8s.github.io/Joulie/main/docs/architecture/agent/#cpu-enforcement-algorithm"&gt;CPU enforcement algorithm&lt;/a&gt;.&lt;/p&gt;</description></item><item><title>GPU Support (NVIDIA, AMD, Intel)</title><link>https://joulie-k8s.github.io/Joulie/main/docs/hardware/gpus/</link><pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate><guid>https://joulie-k8s.github.io/Joulie/main/docs/hardware/gpus/</guid><description>&lt;p&gt;Joulie supports node-level GPU power-cap intents for NVIDIA, AMD and Intel.&lt;/p&gt;
 &lt;h2 id="validation-status"&gt;Validation status&lt;/h2&gt;
 &lt;p&gt;GPU support has been validated in simulator mode only (no bare-metal GPU access yet).
@@ -38,12 +38,7 @@ The host code paths are designed to work on bare metal (NVIDIA, AMD, Intel) when
 &lt;ul&gt;
 &lt;li&gt;&lt;strong&gt;official vendor specifications and management APIs&lt;/strong&gt;,&lt;/li&gt;
 &lt;li&gt;&lt;strong&gt;public measured power curves&lt;/strong&gt;, and&lt;/li&gt;
-&lt;li&gt;&lt;strong&gt;explicit proxy models&lt;/strong&gt; where public exact curves are not yet available.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;an analytic model&lt;/strong&gt; where no measured curve is public.&lt;/li&gt;
 &lt;/ul&gt;
-&lt;p&gt;It serves two closely related purposes:&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;for the &lt;strong&gt;agent&lt;/strong&gt;, it describes the hardware assumptions used to resolve caps, interpret device limits, and reason about how throttling affects attainable performance&lt;/li&gt;
-&lt;li&gt;for the &lt;strong&gt;simulator&lt;/strong&gt;, it describes the physical model used to turn utilization and control actions into simulated power and slowdown&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id="quick-summary"&gt;Quick summary&lt;/h2&gt;
-&lt;p&gt;If you want the short version before the details:&lt;/p&gt;</description></item></channel></rss>
+&lt;p&gt;Every modelled value, the official source it comes from, and the values that have none are listed in the &lt;a href="https://github.com/joulie-k8s/Joulie/wiki"&gt;Joulie wiki&lt;/a&gt;.&lt;/p&gt;
+&lt;p&gt;In the simulator these models make a test bed for Joulie&amp;rsquo;s behaviour, not evidence of energy savings: they rest on the assumptions listed on this page, not on measurements of our nodes. What meaningful experiments need is tracked in the milestone &lt;a href="https://github.com/joulie-k8s/Joulie/milestone/1"&gt;Evidence-based evaluation&lt;/a&gt;.&lt;/p&gt;</description></item></channel></rss>
