@@ -179,7 +179,7 @@ classes:
 
 The keys `podW`, `dvfsDropWPerPct`, `noiseStddevW` and `gpu.powerModel` and the variables `SIM_POD_W`, `SIM_DVFS_DROP_W_PER_PCT`, `SIM_GPU_ALPHA_UTIL` and `SIM_GPU_BETA_CAP` are removed: nothing read them. A class file or an environment that still sets them works, with one warning per key.
 
-For a node whose labels match the hardware catalogue, five values come from the catalogue unless a node class or a variable sets them: `pMaxW` (sockets x TDP, for a CPU without a measured curve), `cpuSocketCapMaxW` (TDP), `cpuSocketCapMinW` (the low end of the cTDP range, else 0.55 x TDP), `gpu.maxWattsPerGpu` (maximum board power) and `gpu.minCapWattsPerGpu` (minimum board power, else half the maximum). A measured two-socket curve scales by sockets/2. Hardware the catalogue does not know keeps 420, 400, 120, 300 and 80 W.
+For a node whose labels match the hardware catalogue, four values come from the catalogue unless a node class or a variable sets them: `pMaxW` (sockets x TDP, for a CPU without a measured curve), `cpuSocketCapMaxW` (TDP), `gpu.maxWattsPerGpu` (maximum board power) and `gpu.minCapWattsPerGpu` (minimum board power, else half the maximum). A measured two-socket curve scales by sockets/2. Hardware the catalogue does not know keeps 420, 400, 300 and 80 W.
 
 Today the runtime model combines:
 

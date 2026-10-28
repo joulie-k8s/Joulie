@@ -296,67 +296,81 @@ def make_kwok_node(row: dict[str, str]) -> str:
     return "\n".join(block)
 
 
-# Per-GPU-product hardware physics parameters.
+# Per-GPU-product hardware physics parameters. The wiki gives every source
+# and the fit (https://github.com/joulie-k8s/Joulie/wiki/GPU-Power-Model#per-family-parameters).
 #
-# idleWattsPerGpu:
-#   Board-level idle power divided by GPU count. Sources:
-#   - H100 NVL: ~450-480W board idle / 8 GPUs ≈ 60W/GPU. NVLink fabric adds ~20-30W idle
-#     overhead vs discrete cards (NVIDIA H100 NVL PCIe spec, board TBP 400W max, ~480W strap).
-#   - H100 SXM5: SXM5 socket with NVLink bridge; field measurements report ~800W board idle
-#     / 8 GPUs ≈ 100W/GPU (MLCommons MLPerf Training v4.1 power submissions).
-#   - L40S: PCIe card; NVIDIA specifies 30W idle board power, ~35W with GDDR6 retention.
-#   - MI300X: Unified memory APU-like design; AMD datasheet shows 700-750W TBP; memory
-#     coherency circuits and HBM3 self-refresh drive ~120W/GPU idle floor.
-#   - W7900: Workstation PCIe card; RDNA3 power floor ~25W/GPU (AMD Radeon PRO W7900 spec).
+# idleWattsPerGpu: board idle power per GPU. No product brief or data sheet
+#   gives one (H100 NVL PB-11773, L40S PB-11470, MI300X data sheet). The H100
+#   NVL, H100 SXM, L40S and W7900 take the idle draw measured read-only on
+#   real nodes, each emulated profile's physics.gpu.idleW
+#   (simulator/pkg/hwemu/profiles): 58.6, 69.6, 36.3 and 10.8 W. The MI300X,
+#   never measured, keeps 120 W, assumed, as its profile does.
 #
-# computeGamma / memoryEpsilon / memoryGamma  (CappedBoardGPUModel parameters):
+# computeGamma / memoryEpsilon / memoryGamma (CappedBoardGPUModel parameters):
 #   computeScale = (capW / natW)^computeGamma
 #   memScale     = 1 - memoryEpsilon * (1 - capW/natW)^memoryGamma
-#
-#   Calibrated from:
-#   - MLPerf Power submissions (v3.1/v4.0): H100 shows steep compute regression under capping;
-#     MI300X compute holds up better due to unified-memory design.
-#   - "Characterizing Power Management Opportunities on DGX H100" (NeurIPS'23 Systems Workshop):
-#     H100 compute throughput drops ~30% at 80% power cap → gamma ≈ 1.4-1.5.
-#   - AMD MI300X architecture whitepaper: unified memory preserves compute at lower clock floors;
-#     CDNA3 sustains ~90% compute at 85% power cap → gamma ≈ 0.85.
-#   - GDDR6 bandwidth vs power: GDDR6 (L40S, W7900) is more sensitive than HBM3 to clock
-#     throttling → higher memoryEpsilon (0.25-0.30) vs HBM3 (0.10-0.15).
+#   computeGamma is fitted, through the origin in log space, to published
+#   throughput at two or more power limits of the same system; a family
+#   without such data takes _GPU_PHYSICS_DEFAULTS below, as a product missing
+#   from this table does. Those differ from the simulator's own fallback
+#   for a GPU with no class in memoryGamma (1.2, SIM_GPU_MEMORY_GAMMA).
+#   - H100 80GB HBM3 (SXM): 0.43, from 19 points at 350 to 650 W of 700 W:
+#     MLPerf Inference v3.1 and v4.0, NVIDIA closed, MaxQ against MaxP
+#     (configs/*/Offline/__init__.py power_limit, mlperf_log_summary.txt);
+#     cuBLAS DGEMM (arXiv 2604.11391, Fig. 2a); Splitwise prefill (ISCA 2024,
+#     arXiv 2311.18677, Fig. 9a).
+#   - H100 NVL: no published data for the NVL. 0.50 from the H100 PCIe, the
+#     same GH100 silicon on a PCIe board: 0.508 from 12 MLPerf Inference v3.0
+#     and v3.1 points at 200 to 300 W of 350 W.
+#   - L40S: 1.20, inside the published range: 0.76 to 1.07 for the L40S at
+#     an 80 % cap (MLPerf Inference v4.0 SDXL, Fujitsu at 280 W against MaxP
+#     systems), 1.03 to 1.45 at 50 to 70 % for the L40 (GROMACS, arXiv
+#     2510.06902, Fig. 4b).
+#   - MI300X: 0.62, from 12 points of three compute-bound workloads at 400
+#     to 700 W of 750 W (arXiv 2603.16164, Tables 3 and 4); 0.35 to 0.78 by
+#     workload.
+#   - Radeon PRO W7900: no published data for any RDNA3 GPU; the defaults.
+#   memoryEpsilon: memory-bound throughput stays flat within about 1 % under
+#   caps down to half the power on the H100 (STREAM Triad and Splitwise
+#   decode, arXiv 2311.18677) and the L40 (BabelStream Triad, arXiv
+#   2510.06902, Fig. 5b): 0.01, since 0 reads as unset. No data for the AMD
+#   families: _GPU_PHYSICS_DEFAULTS. memoryGamma has no source; at 0.01 it
+#   barely matters.
 _GPU_PHYSICS: dict[str, dict] = {
     # NVIDIA H100 NVL (HBM3, NVLink, 400W max TBP per GPU)
     "NVIDIA H100 NVL": {
-        "idleWattsPerGpu": 60,
-        "computeGamma": 1.50,
-        "memoryEpsilon": 0.15,
+        "idleWattsPerGpu": 58.6,
+        "computeGamma": 0.50,
+        "memoryEpsilon": 0.01,
         "memoryGamma": 0.90,
     },
     # NVIDIA H100 80GB HBM3 (SXM5 socket, NVLink bridge, 700W max TBP per GPU)
     "NVIDIA H100 80GB HBM3": {
-        "idleWattsPerGpu": 100,
-        "computeGamma": 1.40,
-        "memoryEpsilon": 0.15,
+        "idleWattsPerGpu": 69.6,
+        "computeGamma": 0.43,
+        "memoryEpsilon": 0.01,
         "memoryGamma": 0.90,
     },
     # NVIDIA L40S (GDDR6, inference/rendering, 350W max TBP)
     "NVIDIA L40S": {
-        "idleWattsPerGpu": 35,
+        "idleWattsPerGpu": 36.3,
         "computeGamma": 1.20,
-        "memoryEpsilon": 0.25,
+        "memoryEpsilon": 0.01,
         "memoryGamma": 1.10,
     },
     # AMD Instinct MI300X (HBM3 unified memory, 750W max TBP)
     "AMD Instinct MI300X": {
         "idleWattsPerGpu": 120,
-        "computeGamma": 0.85,
-        "memoryEpsilon": 0.10,
-        "memoryGamma": 0.85,
+        "computeGamma": 0.62,
+        "memoryEpsilon": 0.20,
+        "memoryGamma": 1.10,
     },
     # AMD Radeon PRO W7900 (GDDR6, workstation, 295W max TBP)
     "AMD Radeon PRO W7900": {
-        "idleWattsPerGpu": 25,
-        "computeGamma": 1.10,
-        "memoryEpsilon": 0.30,
-        "memoryGamma": 1.20,
+        "idleWattsPerGpu": 10.8,
+        "computeGamma": 1.0,
+        "memoryEpsilon": 0.20,
+        "memoryGamma": 1.10,
     },
 }
 

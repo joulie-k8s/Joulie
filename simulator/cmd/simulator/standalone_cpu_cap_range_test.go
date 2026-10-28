@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"sort"
 	"testing"
 
@@ -63,8 +64,8 @@ func TestStandaloneLegacyCPUNodeTakesTheAgentsCatalogWattCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("test setup: the agent's catalog range for %q x %d: %v", model, sockets, err)
 	}
-	if agent.MinW() != 640 || agent.MaxW() != 720 {
-		t.Fatalf("test setup: the agent's range is %v to %v W, want 640 to 720 W", agent.MinW(), agent.MaxW())
+	if math.Abs(agent.MinW()-0.55*720) > 1e-9 || agent.MaxW() != 720 {
+		t.Fatalf("test setup: the agent's range is %v to %v W, want 396 to 720 W", agent.MinW(), agent.MaxW())
 	}
 
 	p.apply("B", 0)
@@ -72,7 +73,7 @@ func TestStandaloneLegacyCPUNodeTakesTheAgentsCatalogWattCap(t *testing.T) {
 	if p.tracker["p-0"].isEco || !p.tracker["p-1"].isEco {
 		t.Fatalf("eco = p-0 %v, p-1 %v; want p-1 only", p.tracker["p-0"].isEco, p.tracker["p-1"].isEco)
 	}
-	if want := agent.CapForPctW(60); eco.TargetCapWatts != want || want != 640 || eco.FreqScale != 1 || eco.TargetThrottlePct != 0 {
+	if want := agent.CapForPctW(60); eco.TargetCapWatts != want || want != 0.6*720 || eco.FreqScale != 1 || eco.TargetThrottlePct != 0 {
 		t.Errorf("eco: CPU cap %v W at scale %v, throttle %d%%; want the agent's %v W at 1 and 0", eco.TargetCapWatts, eco.FreqScale, eco.TargetThrottlePct, want)
 	}
 	if perf.TargetCapWatts != agent.MaxW() || perf.FreqScale != 1 || perf.TargetThrottlePct != 0 {

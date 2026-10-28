@@ -234,6 +234,7 @@ func runStandalone(s *simulator) {
 		elapsed := virtualNow.Sub(s.workload.startTime).Seconds()
 
 		// 1. Inject ready jobs (bin-packing scheduler), cursor-based, no cap.
+		s.workload.jobsMu.Lock()
 		injected := standaloneInjectJobsFast(s, tracker, nodeNames, nodeByName, virtualNow, &nextInjectIdx, activeNodes)
 		submittedCount += injected
 		pendingCount += injected
@@ -241,6 +242,7 @@ func runStandalone(s *simulator) {
 		// 2. Advance job progress, then step every node's physics by dt
 		// and book its energy (parallel across nodes).
 		completed := standaloneTickParallel(s, tracker, nodeNames, nodeByName, dt, substep, virtualNow, activeNodes, numWorkers)
+		s.workload.jobsMu.Unlock()
 		completedCount += completed
 		pendingCount -= completed
 
@@ -860,6 +862,7 @@ func standaloneAdvanceJobProgressFast(s *simulator, tracker map[string]*standalo
 			cpuCapacity = 16
 		}
 		s.mu.Lock()
+		st.HasJobs = true
 		st.CPUUtil = clamp01(totalCPUUtilDemand / cpuCapacity)
 		if gpuCount > 0 {
 			if totalGPUReq > 0 {
@@ -976,6 +979,9 @@ func standaloneAdvanceJobProgressFast(s *simulator, tracker map[string]*standalo
 		t.jobs = alive
 		if len(t.jobs) == 0 {
 			delete(activeNodes, nodeName)
+			s.mu.Lock()
+			setNoJobLoad(st)
+			s.mu.Unlock()
 		}
 	}
 	return completedThisTick
@@ -1113,6 +1119,7 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 				if cpuCapacity <= 0 {
 					cpuCapacity = 16
 				}
+				st.HasJobs = true
 				st.CPUUtil = clamp01(totalCPUUtilDemand / cpuCapacity)
 				if gpuCount > 0 && totalGPUReq > 0 {
 					st.GPUUtil = clamp01(totalGPUUtilDemand / gpuCount)
@@ -1293,9 +1300,14 @@ func standaloneTickParallel(s *simulator, tracker map[string]*standaloneNodeTrac
 				s.jobCompletion.Observe(c.duration)
 			}
 		}
+		s.mu.Lock()
 		for _, name := range res.emptyNodes {
 			delete(activeNodes, name)
+			if st := s.state[name]; st != nil {
+				setNoJobLoad(st)
+			}
 		}
+		s.mu.Unlock()
 		// Merge energy from active nodes.
 		s.mu.Lock()
 		for _, e := range res.energy {

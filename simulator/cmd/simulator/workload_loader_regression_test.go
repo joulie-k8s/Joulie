@@ -1,7 +1,8 @@
 package main
 
 // The regression tests of the legacy loader: every job gets a pod of its
-// own, and a trace line longer than the scanner's default buffer loads.
+// own, a trace line longer than the scanner's default buffer loads, and a
+// pod keeps the trace's affinity.
 
 import (
 	"context"
@@ -122,4 +123,92 @@ func TestLoadTraceLongLine(t *testing.T) {
 			t.Fatalf("error = %v, want one naming trace line 2", err)
 		}
 	})
+}
+
+// TestLegacyPodKeepsTheTraceAffinity is the regression test of the third
+// loader fix: a legacy pod carries its trace record's affinity, with the
+// NotIn-eco requirement of a performance pod ANDed into it. Before, the pod
+// had only the requirement of its intent class, so a CPU-only job that the
+// sweeps of experiments 02 and 03 restrict to joulie.io/hw.kind=cpu-only
+// nodes could run on a GPU node.
+func TestLegacyPodKeepsTheTraceAffinity(t *testing.T) {
+	cpuOnly := `"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"joulie.io/hw.kind","operator":"In","values":["cpu-only"]}]}]}}}`
+	s := newLoaderTestSimulator()
+	path := writeTrace(t,
+		`{"type":"job","jobId":"perf","submitTimeOffsetSec":0,"intentClass":"performance","podTemplate":{"requests":{"cpu":"1"},`+cpuOnly+`}}`,
+		`{"type":"job","jobId":"std","submitTimeOffsetSec":0,"intentClass":"standard","podTemplate":{"requests":{"cpu":"1"},`+cpuOnly+`}}`,
+		`{"type":"job","jobId":"bare","submitTimeOffsetSec":0,"intentClass":"standard","podTemplate":{"requests":{"cpu":"1"}}}`,
+	)
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
+	}
+	kube := k8sfake.NewSimpleClientset()
+	s.injectTraceJobs(context.Background(), kube, time.Now().Add(time.Second))
+	terms := func(id string) [][]string {
+		for _, j := range s.workload.jobs {
+			if j.JobID != id {
+				continue
+			}
+			pod, err := kube.CoreV1().Pods(j.Namespace).Get(context.Background(), j.PodName, metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("job %q: no pod: %v", id, err)
+			}
+			if pod.Spec.Affinity == nil {
+				return nil
+			}
+			var out [][]string
+			for _, term := range pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
+				var exprs []string
+				for _, e := range term.MatchExpressions {
+					exprs = append(exprs, fmt.Sprintf("%s %s %v", e.Key, e.Operator, e.Values))
+				}
+				out = append(out, exprs)
+			}
+			return out
+		}
+		t.Fatalf("no job %q", id)
+		return nil
+	}
+	if got, want := fmt.Sprint(terms("perf")), "[[joulie.io/hw.kind In [cpu-only] joulie.io/power-profile NotIn [eco]]]"; got != want {
+		t.Errorf("performance pod terms %s, want %s", got, want)
+	}
+	if got, want := fmt.Sprint(terms("std")), "[[joulie.io/hw.kind In [cpu-only]]]"; got != want {
+		t.Errorf("standard pod terms %s, want %s", got, want)
+	}
+	if got := terms("bare"); got != nil {
+		t.Errorf("a standard pod without trace affinity has terms %v, want none", got)
+	}
+}
+
+// TestIdleGPUNodeDropsItsUtilization is the regression test of a GPU node
+// whose last job ended: the pod poll sets its GPU utilization to 0, and its
+// CPU to 0.12 per running pod outside the workload only. The
+// workload tick only visits nodes with running pods, and the poll used to
+// reset only the CPU, so the node kept its last job's GPU utilization, and
+// that job's GPU power, until a new job arrived.
+func TestIdleGPUNodeDropsItsUtilization(t *testing.T) {
+	s := newLoaderTestSimulator()
+	path := writeTrace(t, `{"type":"job","jobId":"j","submitTimeOffsetSec":0,"podTemplate":{"requests":{"cpu":"1","nvidia.com/gpu":"1"}},"work":{"cpuUnits":1,"gpuUnits":1}}`)
+	if err := s.initWorkloadEngineWithOptions(path, workloadOptions{}); err != nil {
+		t.Fatalf("initWorkloadEngineWithOptions: %v", err)
+	}
+	labels := map[string]map[string]string{"g1": {"joulie.io/hw.gpu-count": "8", "joulie.io/hw.cpu-cores": "64"}}
+	s.refreshNodeStateFromKubeData(map[string]int{}, nil, labels)
+	st := s.state["g1"]
+	if st == nil {
+		t.Fatalf("no state for g1")
+	}
+	st.GPUUtil = 0.9 // left by the node's last job
+	// The pod of job j, which is not running on g1, adds no CPU load; a
+	// pod outside the workload adds 0.12.
+	workloadPod := runningPodInfo{Node: "g1", JobID: "j", Running: true}
+	s.refreshNodeStateFromKubeData(map[string]int{"g1": 1}, []runningPodInfo{workloadPod}, labels)
+	if st.GPUUtil != 0 || st.CPUUtil != 0 {
+		t.Fatalf("node without jobs, one workload pod: GPU utilization %g, CPU %g, want 0 and 0", st.GPUUtil, st.CPUUtil)
+	}
+	otherPod := runningPodInfo{Node: "g1", Running: true}
+	s.refreshNodeStateFromKubeData(map[string]int{"g1": 2}, []runningPodInfo{workloadPod, otherPod}, labels)
+	if st.GPUUtil != 0 || st.CPUUtil != 0.12 {
+		t.Fatalf("node without jobs, one pod outside the workload: GPU utilization %g, CPU %g, want 0 and 0.12", st.GPUUtil, st.CPUUtil)
+	}
 }

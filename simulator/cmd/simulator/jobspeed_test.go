@@ -127,6 +127,135 @@ func TestGPUCapSlowsAGPUJobOnce(t *testing.T) {
 	})
 }
 
+// A node whose last job ends runs no load: its GPU and CPU utilization go
+// to 0, as on a node that never ran a job. The job loops visit only nodes
+// with jobs, so the node used to keep its last job's utilization, and draw
+// that job's power, until a new job arrived: on 2026-10-27, GPU nodes with
+// no pod at the end of experiment 03 showed a GPU utilization of 0.98 to 1.
+// All three copies of the legacy progress loop are covered.
+func TestFinishedJobLeavesItsNodeIdle(t *testing.T) {
+	check := func(t *testing.T, s *simulator, jobs []*simJob) {
+		t.Helper()
+		for _, j := range jobs {
+			if !j.Completed {
+				t.Fatalf("precondition: %s did not complete", j.JobID)
+			}
+			st := s.state[j.NodeName]
+			if st.GPUUtil != 0 || st.CPUUtil != 0 {
+				t.Fatalf("%s after its last job: GPU utilization %g, CPU %g, want 0 and 0", j.NodeName, st.GPUUtil, st.CPUUtil)
+			}
+		}
+	}
+	almostDone := func(jobs []*simJob) {
+		for _, j := range jobs {
+			j.GPUUnitsRemaining = 1e-9
+		}
+	}
+	now := time.Now().UTC()
+
+	t.Run("standaloneAdvanceJobProgressFast", func(t *testing.T) {
+		s, jobs := gpuCapSimulator(t, []string{"gpu-0"})
+		almostDone(jobs)
+		tracker := map[string]*standaloneNodeTracker{"gpu-0": {usedCPU: 1, usedGPU: 8, jobs: jobs}}
+		standaloneAdvanceJobProgressFast(s, tracker, 1, now, map[string]bool{"gpu-0": true})
+		check(t, s, jobs)
+	})
+
+	t.Run("standaloneTickParallel", func(t *testing.T) {
+		names := make([]string, 32)
+		for i := range names {
+			names[i] = fmt.Sprintf("gpu-%02d", i)
+		}
+		s, jobs := gpuCapSimulator(t, names)
+		almostDone(jobs)
+		tracker := map[string]*standaloneNodeTracker{}
+		active := map[string]bool{}
+		for i, name := range names {
+			tracker[name] = &standaloneNodeTracker{usedCPU: 1, usedGPU: 8, jobs: []*simJob{jobs[i]}}
+			active[name] = true
+		}
+		standaloneTickParallel(s, tracker, names, nil, 1, time.Second, now, active, 2)
+		check(t, s, jobs)
+	})
+
+	t.Run("advanceJobProgress", func(t *testing.T) {
+		s, jobs := gpuCapSimulator(t, []string{"gpu-0"})
+		almostDone(jobs)
+		podDetailFunc = func(_ context.Context, _ kubernetes.Interface) ([]runningPodInfo, error) {
+			return []runningPodInfo{{Namespace: "default", Name: "p", Node: "gpu-0", JobID: jobs[0].JobID}}, nil
+		}
+		defer func() { podDetailFunc = listRunningPodsDetailed }()
+		// A pod poll counted the job's pod. The job ends in this tick and
+		// its pod is deleted with it: the node is idle at once, CPU
+		// included, not from the next tick or the next pod poll.
+		s.state["gpu-0"].PodsRunning = 1
+		s.advanceJobProgress(context.Background(), k8sfake.NewSimpleClientset(), 1, now)
+		check(t, s, jobs)
+	})
+}
+
+// The pod poll leaves the load of a node with jobs to the workload tick,
+// which counts a job's CPU only while it has CPU work left and its GPU only
+// while it has GPU work left. The poll used to set the load from every
+// running job, its finished CPU or GPU work included, every 8 s, and the
+// physics stepped on that load until the next tick: at the end of 03's
+// baseline B (seed 1, 2026-10-27), 40 of 126 running GPU jobs had their CPU
+// work done.
+func TestPodPollLeavesTheLoadOfANodeWithJobsToTheTick(t *testing.T) {
+	labels := map[string]map[string]string{"gpu-0": {"joulie.io/hw.gpu-count": "8", "joulie.io/hw.cpu-cores": "64"}}
+	for _, tc := range []struct {
+		name             string
+		cpuLeft, gpuLeft float64
+		wantCPU, wantGPU float64
+	}{
+		{"CPU work done", 0, gpuCapWork, 0, 1},
+		{"GPU work done", gpuCapWork, 0, 0.5 / 64, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, jobs := gpuCapSimulator(t, []string{"gpu-0"})
+			j := jobs[0]
+			j.CPUUtilTarget, j.CPUUnitsRemaining, j.GPUUnitsRemaining = 0.5, tc.cpuLeft, tc.gpuLeft
+			pod := runningPodInfo{Namespace: "default", Name: "p", Node: "gpu-0", JobID: j.JobID, Running: true}
+			podDetailFunc = func(_ context.Context, _ kubernetes.Interface) ([]runningPodInfo, error) {
+				return []runningPodInfo{pod}, nil
+			}
+			defer func() { podDetailFunc = listRunningPodsDetailed }()
+			s.advanceJobProgress(context.Background(), k8sfake.NewSimpleClientset(), 1, time.Now().UTC())
+			s.refreshNodeStateFromKubeData(map[string]int{"gpu-0": 1}, []runningPodInfo{pod}, labels)
+			st := s.state["gpu-0"]
+			if math.Abs(st.CPUUtil-tc.wantCPU) > 1e-12 || st.GPUUtil != tc.wantGPU {
+				t.Fatalf("after a tick and a pod poll: CPU utilization %g, GPU %g, want the tick's %g and %g", st.CPUUtil, st.GPUUtil, tc.wantCPU, tc.wantGPU)
+			}
+		})
+	}
+}
+
+// The pod poll and the workload tick run on two goroutines in Kubernetes
+// mode, and the tick writes its jobs without s.mu: the poll reads only the
+// node state, under s.mu. Run with -race; the poll used to read the jobs
+// (overrideNodeUtil, then hasActiveJob), a data race.
+func TestPodPollAndWorkloadTickRunTogether(t *testing.T) {
+	labels := map[string]map[string]string{"gpu-0": {"joulie.io/hw.gpu-count": "8", "joulie.io/hw.cpu-cores": "64"}}
+	s, jobs := gpuCapSimulator(t, []string{"gpu-0"})
+	pod := runningPodInfo{Namespace: "default", Name: "p", Node: "gpu-0", JobID: jobs[0].JobID, Running: true}
+	podDetailFunc = func(_ context.Context, _ kubernetes.Interface) ([]runningPodInfo, error) {
+		return []runningPodInfo{pod}, nil
+	}
+	defer func() { podDetailFunc = listRunningPodsDetailed }()
+	kube := k8sfake.NewSimpleClientset()
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 50; i++ {
+			s.advanceJobProgress(context.Background(), kube, 0.001, time.Now().UTC())
+		}
+		close(done)
+	}()
+	for i := 0; i < 50; i++ {
+		s.refreshNodeStateFromKubeData(map[string]int{"gpu-0": 1}, []runningPodInfo{pod}, labels)
+	}
+	<-done
+}
+
 // legacyInlineCPURate is the legacy CPU progress formula, spelled out on
 // simJob's fields in the operand order the legacy experiments ran with: the
 // CPU throttle impact composed with the request, the base speed and the

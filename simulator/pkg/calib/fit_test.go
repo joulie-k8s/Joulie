@@ -60,19 +60,19 @@ func fit(t *testing.T, sw sweep, o Options) *Result {
 // CB01: a sweep of amd-epyc-2s-energy-only under the performance governor,
 // with three frequency ceilings and six loads, gives back the profile: idle
 // 40 W and maximum 360 W within 1 %, alpha 1.15 +- 0.02 and beta
-// 1.35 +- 0.03.
+// 1.43 +- 0.03.
 func TestCB01EPYCPerformanceSweepGivesBackTheProfile(t *testing.T) {
 	t.Parallel()
 	sw := epycPerformanceSweep(t)
 	cpu := sw.profile.Physics.CPU
-	if cpu.IdlePkgW.V != 40 || cpu.MaxPkgW.V != 360 || cpu.AlphaUtil.V != 1.15 || cpu.BetaFreq.V != 1.35 {
+	if cpu.IdlePkgW.V != 40 || cpu.MaxPkgW.V != 360 || cpu.AlphaUtil.V != 1.15 || cpu.BetaFreq.V != 1.43 {
 		t.Fatalf("the profile changed (idle %v, max %v, alpha %v, beta %v); update the expected values", cpu.IdlePkgW.V, cpu.MaxPkgW.V, cpu.AlphaUtil.V, cpu.BetaFreq.V)
 	}
 	r := fit(t, sw, Options{})
 	within(t, r, pathCPUIdle, 40, 0.01)
 	within(t, r, pathCPUMax, 360, 0.01)
 	near(t, r, pathCPUAlpha, 1.15, 0.02)
-	near(t, r, pathCPUBeta, 1.35, 0.03)
+	near(t, r, pathCPUBeta, 1.43, 0.03)
 	if r.Segments != 18 || r.Steady != 18 {
 		t.Errorf("%d segments, %d steady, want 18 and 18", r.Segments, r.Steady)
 	}

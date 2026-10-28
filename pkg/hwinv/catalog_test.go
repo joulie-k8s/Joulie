@@ -192,8 +192,8 @@ func TestCatalogGPUMinimumsHavePublicSources(t *testing.T) {
 		"NVIDIA_H100_SXM": {300, "MLPerf Inference v4.0 DGX-H100 MaxQ", "MLPerf"},
 		// arXiv 2603.16164: limits below 400 W were not reliably enforced.
 		"AMD_INSTINCT_MI300X": {400, "arXiv 2603.16164", "arXiv 2603.16164"},
-		// No public minimum: the H100 PCIe product brief gives 200 W.
-		"NVIDIA_H100_NVL": {200, "H100 PCIe product brief PB-11133-001", "PB-11133-001"},
+		// The H100 NVL product brief gives 400 W maximum and 200 W minimum.
+		"NVIDIA_H100_NVL": {200, "H100 NVL product brief PB-11773-001", "PB-11773-001"},
 		// No public minimum: the L40S product brief says "TBD".
 		"NVIDIA_L40S": {200, "L40S product brief PB-11470-001 (TBD)", "PB-11470-001"},
 		// No public minimum: AMD publishes only TBP 295 W.
@@ -288,9 +288,10 @@ func TestMatchGPUMI300XLabellerProductName(t *testing.T) {
 	}
 }
 
-// The socket cap range is TDP at the top and the low end of the cTDP range,
-// or 0.55 x TDP without one, at the bottom, never above the top. The
-// simulator and the agent both read it (issue #36).
+// The socket cap range is TDP at the top and 0.55 x TDP at the bottom; the
+// cTDP range is no cap floor, since a package power limit may be set below
+// its low end (AMD publication 58002). The simulator and the agent both read
+// it (issue #36).
 func TestSocketCapRangeW(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -298,9 +299,9 @@ func TestSocketCapRangeW(t *testing.T) {
 		minW, maxW float64
 		ok         bool
 	}{
-		{"cTDP low end", CPUOfficialSpec{TDPW: 360, CTdpRangeW: []float64{320, 400}}, 320, 360, true},
+		{"cTDP is no floor", CPUOfficialSpec{TDPW: 360, CTdpRangeW: []float64{320, 400}}, 0.55 * 360, 360, true},
 		{"no cTDP", CPUOfficialSpec{TDPW: 165}, 0.55 * 165, 165, true},
-		{"cTDP above TDP", CPUOfficialSpec{TDPW: 300, CTdpRangeW: []float64{320, 400}}, 300, 300, true},
+		{"cTDP above TDP", CPUOfficialSpec{TDPW: 300, CTdpRangeW: []float64{320, 400}}, 0.55 * 300, 300, true},
 		{"no TDP", CPUOfficialSpec{CTdpRangeW: []float64{320, 400}}, 0, 0, false},
 	} {
 		minW, maxW, ok := tc.spec.SocketCapRangeW()

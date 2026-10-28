@@ -115,7 +115,6 @@ type generatorConfig struct {
 	ComputeBoundPerfBoost float64
 	NoAffinityOnly        bool
 	GPURatio              float64
-	GPURequestPerJob      float64
 	CPURatePerCore        float64 // v2 only
 	GPURatePerGPU         float64 // v2 only
 	EmitWorkloadRecords   bool
@@ -303,7 +302,6 @@ func parseFlags(args []string) (generatorConfig, error) {
 	fs.Float64Var(&cfg.ComputeBoundPerfBoost, "compute-bound-perf-boost", 3.5, "multiplier for performance probability of compute-bound workloads")
 	fs.BoolVar(&cfg.NoAffinityOnly, "no-affinity-only", false, "if true, do not emit power-profile affinity")
 	fs.Float64Var(&cfg.GPURatio, "gpu-ratio", 0.80, "ratio of logical workloads that use GPUs")
-	fs.Float64Var(&cfg.GPURequestPerJob, "gpu-request", 1, "GPU request per worker/trial pod when using the legacy single-job mode semantics")
 	fs.Float64Var(&cfg.CPURatePerCore, "cpu-work-rate-per-core", 1.0, "v2 only: CPU work units produced per core-second at full speed (default mode)")
 	fs.Float64Var(&cfg.GPURatePerGPU, "gpu-work-rate-per-gpu", 1.0, "v2 only: GPU work units produced per GPU-second at full speed (default mode)")
 	fs.BoolVar(&cfg.EmitWorkloadRecords, "emit-workload-records", true, "emit type=workload metadata records in addition to pod-expanded type=job records")

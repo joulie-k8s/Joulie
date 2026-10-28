@@ -1,370 +1,156 @@
 # Homogeneous H100 NVL Benchmark Report (KWOK, 41 Nodes)
 
-This page reports results from the homogeneous H100 NVL KWOK benchmark experiment:
+These results come from the Joulie simulator, Joulie's test bed for its behaviour (caps applied, placement, policies), not evidence of energy savings. Their energy figures rest on hardware behaviour the simulator assumes: every CPU core and every GPU does the same work per second whatever its model, and cap responses, power curves and workload intensities are assumed or fitted, not measured on real nodes. They do not show what Joulie saves on real hardware; what meaningful experiments need is tracked in the milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
 
-- [`experiments/03-homogeneous-h100-benchmark/`](.)
+This report compares three baselines on a cluster whose GPU nodes are all H100 NVL, at regime: after the ramp-up and before the drain. The runs are of 2026-10-28, with the Joulie and simulator images `joulie.local/*:rerun-2026-10-28` built from this tree ([`experiments/README.md`](../README.md), "Images").
 
-> **Note (2026-10-09, updated 2026-10-24):** With the scripts in this repository, from the commit that added this report to v0.2.3, the installer pointed the simulator at a hardware catalog generated from the inventory, which holds no measured curves, so every CPU ran the analytic fallback model, not a SPECpower curve. GPU nodes took their parameters from the generated node classes (`10-node-classes.yaml`). Thermal throttling was on by default (CPU 85 to 97 °C, GPU 82 to 92 °C) and is opt-in now. The sections from Scope on report those runs, and the next section reruns the benchmark with Joulie 0.2.4; [Simulator changes](../../simulator/CHANGES.md) lists every change to the simulated numbers since v0.2.3 and how far each one moves this experiment's `configs/benchmark-debug.yaml`.
+- `A`: the simulator only, no power management.
+- `B`: Joulie with the static partition policy.
+- `C`: Joulie with the queue-aware policy.
 
-## Rerun with Joulie 0.2.4 (2026-10-24)
+In short:
+- B and C drew 5.7 to 8.8 % less IT power than A.
+- They did 6.4 to 10.0 % less GPU work, and 9.2 and 9.8 performance jobs waited on average where A had 0.7.
+- Per unit of GPU work, the GPU nodes' energy changed by -0.2 to +0.7 %, about nothing. A's repeat differed by 0.01 %; B's and C's own noise was not measured ([#113](https://github.com/joulie-k8s/Joulie/issues/113)).
 
-The rerun used `configs/benchmark-40n.yaml`, the configuration of the original runs, with `images.joulie_tag` and `images.sim_tag` set to `"0.2.4"`, so the Joulie images and the simulator image were those of the 0.2.4 release. One seed, one run per baseline. Each run lasts a fixed window of 660 s wall at time scale 120, about 22 simulated hours, and ends at the window with jobs still running (`run_outcome` is `incomplete`), so the makespan is the same for every baseline by design. All three runs read their energy from the simulator's debug endpoints (`energy_source` is `debug_energy`). The table comes from the run's `baseline_summary.csv`: average cluster power is `avg_cluster_power_w_est`, and energy is `energy_sim_kwh_est` over the window.
+An accounting split finds two parts that cancel:
+- The H100 NVL's dynamic energy per unit fell by 1.6 to 2.6 points; its eco GPUs are capped, with a cap response fitted below 1.
+- Idle power spread over less work added 2.3 to 3.5 points.
 
-| Baseline | Average cluster power (W) | Energy over the window (kWh) | Power vs A |
-|---|---:|---:|---:|
-| A (no mgmt) | 55,220 | 1,237.8 | n/a |
-| B (static) | 50,505 | 1,137.3 | -8.5% |
-| C (queue-aware) | 50,827 | 1,138.6 | -8.0% |
-
-B and C drew 8.5% and 8.0% less average cluster power than A. These runs do not measure throughput: `throughput_jobs_per_sim_hour` divides the trace's job count by the run's length, every run stopped at the window with jobs still running, and `summary.csv` holds no count of completed jobs, so the table leaves throughput out, and the throughput panel of the first plot below shows only each run's length.
-
-![Baseline means, rerun with 0.2.4](./img/rerun-0.2.4/baseline_means.png)
-
-![Cumulative energy, rerun with 0.2.4](./img/rerun-0.2.4/timeseries_cumulative_energy.png)
-
-The rest of this report describes the original runs, made with the older simulator model of the note above; none of its numbers come from this rerun.
-
-## Scope
-
-The benchmark compares three baselines on a **homogeneous GPU cluster** with 33 identical NVIDIA H100 NVL nodes plus 8 CPU-only nodes, running on a real Kind+KWOK Kubernetes cluster:
-
-- `A`: Simulator only (no power management)
-- `B`: Joulie with static partition policy
-- `C`: Joulie with queue-aware dynamic policy
-
-### Hypothesis
-
-Joulie performs better on a homogeneous cluster because every GPU node can accept any GPU job, eliminating the vendor/product-specific placement constraints that restrict policy flexibility in the heterogeneous case (Experiment 02).
-
----
+So B and C trade power for throughput at about the same energy per unit.
 
 ## 1. Experimental Setup
 
 ### 1.1 Cluster and nodes
 
-- [Kind](https://kind.sigs.k8s.io/) control-plane + worker (real Kubernetes control plane).
-- **41** managed [KWOK](https://kwok.sigs.k8s.io/) nodes: 33 GPU (H100 NVL) + 8 CPU-only.
-- Scheduler extender provides performance/eco affinity-based filtering and scoring.
-- GPU nodes get GPU RAPL caps; CPU-only nodes get CPU RAPL caps.
+A [kind](https://kind.sigs.k8s.io/) cluster (control plane and one worker) runs the real Kubernetes control plane and the Joulie components; 41 [KWOK](https://kwok.sigs.k8s.io/) nodes stand for the managed hardware, and the Joulie simulator models their power and runs the workload's pods.
 
 ### 1.2 Node inventory
 
-#### GPU nodes (33 total, 264 GPUs)
+| Nodes | Count | CPU | GPUs |
+|---|---:|---|---|
+| `kwok-h100-nvl` | 33 | 2 x AMD EPYC 9654 | 8 x NVIDIA H100 NVL (200 to 400 W) |
+| `kwok-cpu-highcore` | 2 | 2 x AMD EPYC 9965 | none |
+| `kwok-cpu-highfreq` | 2 | 2 x AMD EPYC 9375F | none |
+| `kwok-cpu-intensive` | 4 | 2 x AMD EPYC 9655 | none |
 
-| Node prefix | Count | GPU model | GPUs/node | GPU cap range | Host CPU | CPU cores/node |
-|---|---:|---|---:|---|---|---:|
-| kwok-h100-nvl | **33** | NVIDIA H100 NVL | 8 | 200-400 W | AMD EPYC 9654 | 192 |
+264 GPUs, and 8 CPU-only nodes (`configs/cluster-nodes.yaml`).
 
-#### CPU-only nodes (8 total)
+### 1.3 Hardware models in the simulator
 
-| Node prefix | Count | CPU model | CPU cores/node | RAM/node |
-|---|---:|---|---:|---:|
-| kwok-cpu-highcore | **2** | AMD EPYC 9965 192-Core | 384 (2x192) | 1,536 GiB |
-| kwok-cpu-highfreq | **2** | AMD EPYC 9375F 32-Core | 64 (2x32) | 770 GiB |
-| kwok-cpu-intensive | **4** | AMD EPYC 9655 96-Core | 192 (2x96) | 1,536 GiB |
+The H100 NVL's node class (`scripts/generate_heterogeneous_assets.py`, checked on every run by `class_failures`):
+- idle 58.6 W per GPU, measured on a real node;
+- `computeGamma` 0.50, the H100 PCIe's value fitted to MLPerf MaxQ against MaxP runs, since the NVL has no published data;
+- `memoryEpsilon` 0.01, from published memory-bound throughput under caps.
 
-**Total: 41 nodes, 264 GPUs (H100 NVL), ~7,504 CPU cores.**
-
-### 1.3 Hardware models in simulator
-
-GPU power per device uses the `CappedBoardGPUModel`:
-
-```text
-P_gpu(util) = wc * (IdleW + (MaxW - IdleW) * util^1.02) + wm * (IdleW + (MaxW - IdleW) * (0.35*sqrt(util) + 0.30*util))
-```
-
-H100 NVL parameters:
-
-| Parameter | Value |
-|---|---:|
-| IdleW | 60 W |
-| MaxW (TDP) | 400 W |
-| ComputeGamma | 1.50 |
-| MemoryEpsilon | 0.15 |
-| MemoryGamma | 0.90 |
-| Min cap | 200 W |
-| Max cap | 400 W |
+Sources and fits: [wiki: GPU power model](https://github.com/joulie-k8s/Joulie/wiki/GPU-Power-Model#per-family-parameters). Every GPU does the same GPU work per second (`simulator/pkg/workload/rates.go`). The CPUs run as in experiment 01 (`SIM_BETA_FREQ` 1.43).
 
 ### 1.4 Run configuration
 
 | Parameter | Value |
 |---|---|
-| Baselines | A, B, C |
-| Seeds | 1 |
-| Time scale | 120x (1 wall-sec = 120 sim-sec) |
-| Timeout | 660 wall-sec (~22 sim-hours) |
-| Diurnal peak rate | 5 jobs/min at peak |
-| Work scale | 80.0 |
-| Perf ratio | 25% |
-| GPU ratio | 75% |
-| GPU request per job | 1 |
-| Workload types | `debug_eval`, `single_gpu_training`, `cpu_preprocess`, `cpu_analytics` |
-| Trace generator | Python NHPP with cosine diurnal, OU noise, bursts, dips, surges |
+| Seeds | 2, plus a repeat of the first run (A, seed 1) |
+| Time scale | 120 (one wall second is two simulated minutes) |
+| Measured window | 120 to 900 wall seconds, 26 simulated hours, after a prefill of the backlog |
+| Workload | 75 % GPU jobs, 25 % performance jobs, work scale 0.0646 |
+| Load under A | GPU utilization 0.553 and 0.575, sized for 0.55 ([`experiments/README.md`](../README.md), "Sizing the load") |
 
-### 1.5 RAPL cap configuration
+kube-scheduler bin-packs GPUs, so whole nodes stay free for 8-GPU jobs.
 
-| Parameter | Performance | Eco |
-|---|---:|---:|
-| CPU cap (% of max) | 100% | 60% |
-| GPU cap (% of max) | 100% | 70% |
-| GPU eco cap per H100 NVL | 400 W | 280 W |
-| `cpu_write_absolute_caps` | true | true |
-| `gpu_write_absolute_caps` | true | true |
+### 1.5 Caps
 
-### 1.6 Policy tuning
+- **GPUs.** Eco GPUs are capped at 70 % of 400 W, 280 W.
+- **CPUs.** Eco GPU nodes keep their CPUs uncapped. The CPU-only nodes are capped at 60 % of sockets x TDP, as in experiment 01.
 
-| Parameter | Static (B) | Queue-aware (C) |
-|---|---:|---:|
-| HP fraction | 25% | base 25%, min 1, max 25 |
-| Operator reconcile | 20 s | 20 s |
-| Agent reconcile | 10 s | 10 s |
+### 1.6 Policy sizing
 
----
+Sized on seeds 3 and 4, which the sweep does not measure:
+- **B:** keeps 27 of the 41 nodes as performance nodes (`hp_frac` 0.66).
+- **C:** starts from 16 (`hp_base_frac` 0.39) and adds one per 5 performance pods, running or pending.
 
 ## 2. Policy Algorithms
 
-> **Note:** These runs used the controller manager's compute-density order to choose the performance nodes: one node per hardware family, then the remaining slots by descending compute-density score. Joulie v0.2.2 removed that order and splits the performance slots across hardware families in proportion to family size.
-
-### 2.1 Static partition (`static_partition`)
-
-Given `N=41` managed nodes with `STATIC_HP_FRAC=0.25`:
-
-- ~10 nodes -> `performance` profile (GPU at 400 W, CPU uncapped)
-- ~31 nodes -> `eco` profile (GPU at 280 W, CPU at 60% of max)
-
-### 2.2 Queue-aware (`queue_aware_v1`)
-
-Dynamically adjusts performance node count based on running performance-sensitive pods:
-
-- `hp_base_frac=0.25`, `hp_min=1`, `hp_max=25`, `perf_per_hp_node=10`
-- Homogeneous fleet eliminates placement constraints: any node can serve any GPU job.
-- This gives the queue-aware policy maximum flexibility to optimize the perf/eco split.
-
-### 2.3 Scheduler extender
-
-- Performance pods hard-reject eco nodes via `nodeAffinity`.
-- Standard pods steered to eco nodes via scoring penalties.
-
----
+- **Static partition (`static_partition`).** A fixed set of performance nodes; every other node is eco. Performance jobs may run only on performance nodes.
+- **Queue-aware (`queue_aware_v1`).** The performance set follows the demand, recomputed every 300 simulated seconds.
+- **Scheduler.** kube-scheduler with the Joulie scheduler extender at weight 1 under B and C. A performance job carries a required node affinity that excludes eco nodes; under A it is stripped.
 
 ## 3. Simulator Realism
 
-### 3.1 Workload arrival model
-
-The workload generator uses a **Non-Homogeneous Poisson Process (NHPP)** with:
-
-1. **Cosine diurnal cycle**: trough at 4 AM sim-time, peak at 4 PM sim-time, with Ornstein-Uhlenbeck rate noise.
-2. **Mega-burst overlay**: 4-8 burst events per simulated day, scaled by cluster size.
-3. **Maintenance dip windows**: 1-3 per day (GPU clusters get longer dips: 60-180 min sim-time).
-4. **Surge windows**: 1-2 per day, 1-3 sim-hours at 2-3x normal rate.
-5. **Mixed job sizes**: CPU-only (4-192 cores), GPU (1-8 GPUs), with workload-class-specific resource profiles.
-
-### 3.2 Ambient temperature model
-
-Sinusoidal day/night cycle: base 22 C, amplitude +/-8 C, period 720 wall-sec (24 sim-hours).
-
-### 3.3 PUE model (DXCooledAirsideEconomizer FMU)
-
-PUE is computed using the **DXCooledAirsideEconomizer** Functional Mock-up Unit (FMU), a physics-based cooling model adapted from the Lawrence Berkeley National Lab (LBL) Buildings Library v12.1.0. The FMU is compiled from a Modelica model (`examples/06-cooling-pue/cooling_models/DXCooledAirsideEconomizer.mo`) and executed as an FMI 2.0 co-simulation.
-
-The model captures:
-
-- **Three cooling modes**: free cooling (full airside economizer when outdoor temp < 13 C), partial mechanical (economizer + DX compressor), and full mechanical (DX only when outdoor temp > 18 C).
-- **Variable-speed DX compressor** with temperature-dependent COP (nominal 3.0), degrading at high outdoor temperatures.
-- **Airside economizer** with 5-100% outdoor air fraction based on temperature.
-- **Fan affinity laws**: power scales with speed cubed (P proportional to speed^3).
-- **Room thermal mass**: 50x40x3 m data center room with ~5 MJ/K effective thermal capacitance.
-
-Inputs per timestep: IT power (W) and ambient temperature (K). Outputs: cooling power (W), indoor temperature (K), and COP.
-
-PUE = (IT Power + Cooling Power) / IT Power. Range: ~1.13 (cool night) to ~1.15 (hot afternoon peak).
-
----
+- **Workload.** The trace comes from `simulator/cmd/workloadgen` (schema v2): Poisson arrivals at a rate that follows a 24-hour pattern in simulated time, with a burst hour on half of the days and a dip hour on 40 % of them. A GPU job's GPU utilization is the generator's raised by 45 % (at most 1).
+- **Facility.** The outside air follows a sinusoid of 22 ± 8 °C with a period of 24 simulated hours. The PUE is an assumed analytic function of that temperature and of the IT load (`simulator/pkg/facility`); cooling power is IT power x (PUE - 1).
 
 ## 4. Measured Results
 
-### 4.1 Per-baseline summary
+From `experiments/kwok-cluster/report_figures.py` over the runs of 2026-10-28; every run's simulator reports `BetaFreq` 1.43, and every run passed every gate.
 
-| Baseline | Avg IT Power (W) | Avg CPU Util (%) | Avg GPU Util (%) | Avg PUE | Avg Cooling (W) |
+### 4.1 Per run
+
+| Baseline | Seed | Avg IT power (W) | GPU work (units, simulated) | GPU-node J per GPU unit | GPU util (%) | Performance nodes | Pending performance jobs | Pending 8-GPU jobs | Host load mean (28 CPUs) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| A | 1 | 67,538 | 34,816,361 | 174.9 | 55.3 | none | 0.7 | 1.0 | 3.8 |
+| A | 2 | 69,508 | 35,977,891 | 173.9 | 57.5 | none | 0.7 | 0.1 | 4.1 |
+| B | 1 | 63,716 | 32,569,774 | 175.8 | 52.4 | 27.0 | 8.1 | 7.1 | 3.1 |
+| B | 2 | 64,545 | 33,274,192 | 173.5 | 52.4 | 27.0 | 10.2 | 9.6 | 3.8 |
+| C | 1 | 63,646 | 32,590,355 | 175.5 | 52.4 | 22.5 | 6.4 | 5.8 | 4.5 |
+| C | 2 | 63,422 | 32,368,823 | 175.2 | 50.7 | 25.6 | 13.3 | 12.7 | 4.5 |
+
+### 4.2 Change against A, paired by seed
+
+| Baseline | Avg IT power (%) | GPU work done (%) | GPU-node energy per GPU unit (%) | CPU-only-node energy per CPU-only unit (%) | Backlog at end (%) |
 |---|---:|---:|---:|---:|---:|
-| A (no mgmt) | 3,976 | 76.9% | 11.5% | 1.144 | 575 |
-| B (static) | 3,175 | 62.4% | 5.9% | 1.139 | 442 |
-| C (queue-aware) | 2,963 | 52.7% | 5.1% | 1.140 | 414 |
+| B | -5.7 / -7.1 | -6.5 / -7.5 | +0.5 / -0.2 | +3.8 / +7.3 | +33.9 / +27.9 |
+| C | -5.8 / -8.8 | -6.4 / -10.0 | +0.3 / +0.7 | +3.1 / +6.7 | +31.5 / +38.9 |
 
-### 4.2 Energy savings relative to baseline A
+### 4.3 Run-to-run noise
 
-| Baseline | IT Power Reduction | Power Savings (%) |
-|---|---:|---:|
-| B (static) | -801 W | **-20.1%** |
-| C (queue-aware) | -1,013 W | **-25.5%** |
+A's repeat on seed 1 (load 3.3 against 3.8) differed by +0.20 % in IT power, +0.20 % in GPU work and +0.01 % in GPU-node energy per GPU unit. B and C were not repeated, so their own noise is unknown; repeats for every arm are tracked in [#113](https://github.com/joulie-k8s/Joulie/issues/113). With changes of -0.2 to +0.7 % in energy per unit, of both signs, the energy per unit did not move measurably.
 
-Both managed baselines achieve significant power savings with zero throughput penalty.
+### 4.4 Where the energy went
 
-### 4.3 Throughput and makespan
+`experiments/kwok-cluster/decompose_energy.py` splits the change in GPU-node energy per GPU unit; with one GPU family there is no placement term. It is accounting, not cause, and it is on the whole run, 0 to 900 s, so the totals differ slightly from 4.2.
 
-All baselines run the same workload trace (8,272 jobs) over a fixed ~22 sim-hour window (660 wall-sec at 120× time scale). Makespan is identical by design. The simulator tracks 103 active jobs with work-unit completion:
-
-| Baseline | Jobs Completed | Δ vs A | Total Work Done | Δ vs A |
+| | Seed 1 B | Seed 1 C | Seed 2 B | Seed 2 C |
 |---|---:|---:|---:|---:|
-| A (no mgmt) | 88/103 (85%) | n/a | 71.2% | n/a |
-| B (static) | 91/103 (88%) | **+3.4%** | 77.6% | **+9.0%** |
-| C (queue-aware) | 94/103 (91%) | **+6.8%** | 83.2% | **+16.9%** |
+| Change in J per GPU unit | +0.88 % | +0.37 % | -0.16 % | +0.94 % |
+| Idle (its power over less work) | +2.46 pp | +2.27 pp | +2.46 pp | +3.54 pp |
+| H100 NVL dynamic energy per unit | -1.58 pp | -1.91 pp | -2.62 pp | -2.61 pp |
 
-| Baseline | Avg Concurrent Pods | Max Concurrent Pods | Δ Avg Pods vs A |
-|---|---:|---:|---:|
-| A (no mgmt) | 23.5 | 44 | n/a |
-| B (static) | 13.5 | 15 | **−42.6%** |
-| C (queue-aware) | 10.8 | 12 | **−54.0%** |
-
-Managed baselines actually **complete more jobs** than A despite eco capping. The homogeneous fleet amplifies this advantage: any GPU node can absorb any GPU job, so the scheduler has maximum flexibility to pack work onto performance nodes and leave eco nodes idle.
-
-### 4.4 Comparison with heterogeneous case (Experiment 02)
-
-| Metric | Exp02 (Hetero) C | Exp03 (Homo) C | Advantage |
-|---|---:|---:|---:|
-| Power savings | -25.5% | -25.5% | Equivalent |
-| Avg CPU Util (A) | 76.9% | 76.9% | Same trace |
-| Avg GPU Util (A) | 11.5% | 11.5% | Same trace |
-
-At this cluster scale (41 nodes), the homogeneous and heterogeneous configurations show nearly identical results because the workload generator uses the same parameters and the cluster has sufficient capacity in both cases. The homogeneous advantage would become more pronounced at larger scale where placement constraints create real bottlenecks.
-
----
+Under A, 30 % of the GPU nodes' energy is idle power (the GPUs' idle and the EPYC 9654 curve at 0 % load). The dynamic energy per unit falls under B and C, where the eco GPUs are capped at 280 W with a cap response fitted below 1. The jobs that run in the window also change, since performance jobs wait, and the split cannot tell the two apart.
 
 ## 5. Plot Commentary
 
-Plots are in: [`img/kwok/`](./img/kwok/)
-
-### 5.1 Power timeseries
+Plots are in [`img/kwok/`](./img/kwok/).
 
 ![Timeseries](./img/kwok/timeseries.png)
 
-Three-panel timeseries showing IT power (kW), CPU utilization (%), and running pods. Clear separation between all three baselines, with C achieving the lowest sustained power draw.
-
-### 5.2 Energy comparison
-
 ![Energy Comparison](./img/kwok/energy_comparison.png)
-
-Bar chart of average IT power per baseline with percentage savings annotations. Progressive reduction from A (3,976 W) to B (3,175 W) to C (2,963 W).
-
-### 5.3 Cumulative energy
 
 ![Cumulative Energy](./img/kwok/cumulative_energy.png)
 
-Cumulative energy (MJ) over time showing linear divergence from the start. C maintains the lowest cumulative energy throughout, with the gap widening over time.
-
-### 5.4 Utilization distribution
-
 ![Utilization Summary](./img/kwok/utilization_summary.png)
-
-CPU and GPU utilization histograms per baseline. The homogeneous fleet shows uniform GPU utilization patterns across all 264 H100 NVL GPUs, unlike the multi-modal distributions in Experiment 02's heterogeneous fleet.
-
-### 5.5 PUE analysis (IT Power, Cooling & PUE)
 
 ![PUE Analysis](./img/kwok/pue_analysis.png)
 
-Three-panel stacked timeseries showing IT equipment power (kW), cooling system power (kW), and PUE over simulated time. Cooling power is computed by the DXCooledAirsideEconomizer FMU -- a physics-based Modelica model that captures economizer free-cooling, DX compressor dynamics, and fan affinity laws. Managed baselines achieve lower IT power, which reduces cooling demand and marginally improves PUE.
-
-### 5.6 Facility power breakdown
-
 ![Facility Power Breakdown](./img/kwok/facility_power_breakdown.png)
-
-Stacked bar chart showing IT power + cooling power per baseline. Total facility power decreases from A to C, with cooling savings amplifying the IT power reduction.
-
----
 
 ## 6. Interpretation
 
-### Homogeneous advantage
+On one GPU family at a GPU utilization of 0.55 to 0.58, B and C traded power for throughput. They drew 6 to 9 % less power, did 6 to 10 % less GPU work and kept 9 to 10 performance jobs waiting, at about the same GPU-node energy per unit of work. In the accounting split the dynamic energy per unit falls, where the eco GPUs are capped, and the GPU nodes' idle power, spread over less work, takes that back. B and C differ little here.
 
-The homogeneous fleet eliminates GPU placement constraints entirely. Every H100 NVL node can serve any GPU job, giving the operator maximum flexibility to consolidate work onto performance nodes and cap the rest. At 41 nodes, this advantage is not yet visible compared to Experiment 02, but at datacenter scale (5,000+ nodes) it becomes significant.
+On the 8 CPU-only nodes energy per unit rose by 3 to 7 %, as in experiment 01.
 
-### Why does queue-aware (C) outperform static (B)?
+## 7. Limitations
 
-The queue-aware policy adds dynamic adaptation:
+- **Cap response.** The H100 NVL's cap response is the H100 PCIe's, since no NVL data is published. Measuring caps on real nodes is tracked in [#106](https://github.com/joulie-k8s/Joulie/issues/106).
+- **CPU-only nodes.** With one GPU family, the simulator's equal speed per GPU does not bias the comparison. The CPU-only nodes inherit experiment 01's equal speed per core, which is behind their 3 to 7 %. Per-device speed is tracked in [#107](https://github.com/joulie-k8s/Joulie/issues/107).
+- **Noise.** There are two seeds and one repeat, of A only. Repeats for every arm are tracked in [#113](https://github.com/joulie-k8s/Joulie/issues/113).
+- **Shared host.** Each run's load is listed. The mean load ranged from 3.1 to 4.5, under the gate of 28.
 
-- **Low demand**: nearly all nodes shift to eco (280 W GPU cap) -> deep savings.
-- **Burst events**: performance nodes provisioned on demand to absorb spikes.
-- **Maintenance dips**: performance allocation scales down rapidly.
-- The static partition keeps 25% at full power regardless of demand, wasting energy during low-demand periods.
+## Reproduce
 
-### Spike smoothing
-
-With 264 GPUs at 400 W TDP each, power spikes from burst events can be significant. Joulie's dynamic capping smooths these spikes by:
-
-1. Limiting eco nodes to 280 W per GPU during burst absorption.
-2. Only provisioning as many performance nodes as needed (queue-aware).
-3. Rapidly scaling back after burst subsides.
-
----
-
-## 7. PUE Analysis
-
-PUE is derived from the **DXCooledAirsideEconomizer FMU** (see Section 3.3), which models three cooling regimes:
-
-- **Free cooling** (outdoor temp < 13 C): Airside economizer provides all cooling. PUE ~1.05-1.10.
-- **Partial mechanical** (13-18 C): Economizer supplements DX compressor. PUE ~1.10-1.15.
-- **Full mechanical** (> 18 C): DX compressor provides all cooling. PUE ~1.15-1.20.
-
-Observed in this experiment:
-
-- **Night (low ambient, low load)**: PUE ~1.13.
-- **Day (high ambient, high load)**: PUE ~1.15.
-- **Joulie impact**: Reduced IT power reduces cooling demand and marginally improves PUE. With 264 GPUs, even small PUE improvements translate to meaningful absolute energy savings in cooling when scaled to datacenter size.
-
-At datacenter scale, the deeper eco caps enabled by homogeneous placement would produce larger IT power reductions, amplifying the PUE improvement compared to heterogeneous clusters.
-
----
-
-## 8. Reproducibility
-
-| Artifact | Path |
-|---|---|
-| Run config | [`configs/benchmark-40n.yaml`](./configs/benchmark-40n.yaml) |
-| Cluster nodes | [`configs/cluster-nodes.yaml`](./configs/cluster-nodes.yaml) |
-| Kind cluster config | [`configs/kind-cluster.yaml`](./configs/kind-cluster.yaml) |
-| Sweep script | [`scripts/05_sweep.py`](./scripts/05_sweep.py) |
-| Runner | [`scripts/04_run_one.py`](./scripts/04_run_one.py) |
-| Trace generator | [`../../scripts/trace_generator.py`](../../scripts/trace_generator.py) |
-| Plots | [`img/kwok/`](./img/kwok/) |
-
-To reproduce:
+Build and load the images as [`experiments/README.md`](../README.md) ("Images") shows, run `scripts/20_run_benchmark.sh configs/benchmark-40n.yaml`, then:
 
 ```bash
-# Set up Kind+KWOK cluster
-bash experiments/03-homogeneous-h100-benchmark/scripts/10_setup_cluster.sh
-
-# Run the sweep (all 3 baselines)
-python3 experiments/03-homogeneous-h100-benchmark/scripts/05_sweep.py \
-  --config experiments/03-homogeneous-h100-benchmark/configs/benchmark-40n-debug.yaml
+python experiments/kwok-cluster/report_figures.py RESULTS_DIR experiments/03-homogeneous-h100-benchmark/img/kwok "H100 NVL, 41 nodes" experiments/03-homogeneous-h100-benchmark/configs/benchmark-40n.yaml
+python experiments/kwok-cluster/decompose_energy.py RESULTS_DIR
 ```
-
----
-
-## 9. Annual Projections
-
-Extrapolating from the measured per-baseline power savings to a full year of continuous operation on a **5,000-node cluster** (122x the 41-node test cluster):
-
-### 9.1 Scaling assumptions
-
-- **Scale factor**: 5,000 / 41 = ~122x (linear power scaling).
-- **Annualization**: 8,760 hours/year of continuous operation.
-- **Electricity cost**: $0.10/kWh (US commercial/industrial rate).
-- **CO2 intensity**: 0.385 kg CO2/kWh (2024 EPA US national grid average).
-- **US household**: 10,500 kWh/year average consumption (EIA).
-
-### 9.2 Projected savings at 5,000-node scale
-
-| Metric | B (Static Partition) | C (Queue-Aware) |
-|---|---:|---:|
-| **Power savings per node** | 801 W | 1,013 W |
-| **Cluster power savings (5k nodes)** | 97.7 kW | 123.6 kW |
-| **Annual energy saved** | **856 MWh** | **1,083 MWh** |
-| **Equivalent US homes powered** | **82 homes** | **103 homes** |
-| **Cost savings** (@ $0.10/kWh) | **$85,600/yr** | **$108,300/yr** |
-| **CO2 avoided** (@ 0.385 kg/kWh) | **330 tonnes/yr** | **417 tonnes/yr** |
-
-### 9.3 Context
-
-This homogeneous H100 NVL cluster represents Joulie's strongest use case: a large-scale single-vendor GPU fleet where every node can accept any GPU job, giving the operator maximum placement flexibility. The queue-aware policy saves **$108K/year** and avoids **417 tonnes of CO2** -- equivalent to taking **91 passenger cars off the road** for a year (EPA: 4.6 tonnes CO2/car/year).
-
-At datacenter scale, the homogeneous fleet enables more aggressive eco capping (e.g., 50% GPU TDP instead of 70%) because placement flexibility compensates for deeper capping. This would push savings significantly higher -- see the standalone 5,000-node results in [`REPORT-standalone.md`](./REPORT-standalone.md).

@@ -86,18 +86,18 @@ func TestCatalogCPUSocketCapsReachTheModelWhenEnvIsUnset(t *testing.T) {
 	tdp8260 := 165.0 // no cTDP range in the catalogue
 	for _, tc := range []struct {
 		cpu          string
-		minW, maxW   float64
+		maxW         float64
 		catalogueKey string
 	}{
-		{cpu: "AMD EPYC 9654 96-Core Processor", minW: 320, maxW: 360, catalogueKey: "AMD_EPYC_9654"},
-		{cpu: "INTEL XEON PLATINUM 8260", minW: 0.55 * tdp8260, maxW: tdp8260, catalogueKey: "INTEL_XEON_PLATINUM_8260"},
+		{cpu: "AMD EPYC 9654 96-Core Processor", maxW: 360, catalogueKey: "AMD_EPYC_9654"},
+		{cpu: "INTEL XEON PLATINUM 8260", maxW: tdp8260, catalogueKey: "INTEL_XEON_PLATINUM_8260"},
 	} {
 		model, _ := s.resolveModelForNode(map[string]string{"joulie.io/hw.cpu-model": tc.cpu, "joulie.io/hw.cpu-sockets": "2"})
 		if model.CPUModel != tc.catalogueKey {
 			t.Fatalf("test setup: %q matched %q, want %s", tc.cpu, model.CPUModel, tc.catalogueKey)
 		}
-		if model.CPUSocketCapMinW != tc.minW || model.CPUSocketCapMaxW != tc.maxW {
-			t.Errorf("%s socket caps %v to %v W, want %v to %v W", tc.catalogueKey, model.CPUSocketCapMinW, model.CPUSocketCapMaxW, tc.minW, tc.maxW)
+		if model.CPUSocketCapMaxW != tc.maxW {
+			t.Errorf("%s socket cap maximum %v W, want %v W", tc.catalogueKey, model.CPUSocketCapMaxW, tc.maxW)
 		}
 	}
 }
@@ -109,7 +109,6 @@ func TestExplicitEnvOverridesCatalog(t *testing.T) {
 	t.Setenv("SIM_GPU_MAX_WATTS_PER_GPU", "500")
 	t.Setenv("SIM_GPU_MIN_CAP_WATTS_PER_GPU", "250")
 	t.Setenv("SIM_P_MAX_W", "450")
-	t.Setenv("SIM_CPU_SOCKET_CAP_MIN_W", "150")
 	t.Setenv("SIM_CPU_SOCKET_CAP_MAX_W", "300")
 	s, _ := mrSimulator(t, nil)
 	model, _ := s.resolveModelForNode(mrMergeLabels(mrH100SXMLabels, mrProxyCPULabels))
@@ -119,8 +118,8 @@ func TestExplicitEnvOverridesCatalog(t *testing.T) {
 	if model.PMaxW != 450 {
 		t.Errorf("pMaxW %v W, want 450 W from the environment", model.PMaxW)
 	}
-	if model.CPUSocketCapMinW != 150 || model.CPUSocketCapMaxW != 300 {
-		t.Errorf("socket caps %v to %v W, want 150 to 300 W from the environment", model.CPUSocketCapMinW, model.CPUSocketCapMaxW)
+	if model.CPUSocketCapMaxW != 300 {
+		t.Errorf("socket cap maximum %v W, want 300 W from the environment", model.CPUSocketCapMaxW)
 	}
 }
 
@@ -157,10 +156,6 @@ classes:
 	if model.PMaxW != 500 || model.CPUSocketCapMaxW != 250 {
 		t.Errorf("pMaxW %v W and socket max %v W, want 500 and 250 W from the class", model.PMaxW, model.CPUSocketCapMaxW)
 	}
-	// 9534: the cTDP low end, 240 W, is below the class maximum of 250 W.
-	if model.CPUSocketCapMinW != 240 {
-		t.Errorf("socket min %v W, want 240 W, the catalogue cTDP low end", model.CPUSocketCapMinW)
-	}
 
 	t.Setenv("SIM_GPU_MAX_WATTS_PER_GPU", "500")
 	if model, _ := resolve(); model.GPU.MaxWattsPerGPU != 600 {
@@ -173,11 +168,10 @@ classes:
 func TestCatalogMinimumNeverExceedsAnExplicitMaximum(t *testing.T) {
 	clearSimEnv(t)
 	t.Setenv("SIM_GPU_MAX_WATTS_PER_GPU", "250")
-	t.Setenv("SIM_CPU_SOCKET_CAP_MAX_W", "200")
 	s, _ := mrSimulator(t, nil)
 	model, _ := s.resolveModelForNode(mrMergeLabels(mrH100SXMLabels, mrProxyCPULabels))
-	if model.GPU.MinCapWattsPerGPU != 250 || model.CPUSocketCapMinW != 200 {
-		t.Fatalf("GPU min %v W under a 250 W maximum, socket min %v W under a 200 W maximum; want each equal to its maximum", model.GPU.MinCapWattsPerGPU, model.CPUSocketCapMinW)
+	if model.GPU.MinCapWattsPerGPU != 250 {
+		t.Fatalf("GPU min %v W under a 250 W maximum, want it equal to the maximum", model.GPU.MinCapWattsPerGPU)
 	}
 }
 
@@ -197,8 +191,8 @@ func TestUnmatchedGPUKeepsTheOldDefaults(t *testing.T) {
 	if model.GPU.MaxWattsPerGPU != 300 || model.GPU.MinCapWattsPerGPU != 80 {
 		t.Errorf("GPU caps %v to %v W, want 80 to 300 W", model.GPU.MinCapWattsPerGPU, model.GPU.MaxWattsPerGPU)
 	}
-	if model.PMaxW != 420 || model.CPUSocketCapMinW != 120 || model.CPUSocketCapMaxW != 400 {
-		t.Errorf("pMaxW %v W, socket caps %v to %v W; want 420 W and 120 to 400 W", model.PMaxW, model.CPUSocketCapMinW, model.CPUSocketCapMaxW)
+	if model.PMaxW != 420 || model.CPUSocketCapMaxW != 400 {
+		t.Errorf("pMaxW %v W, socket cap maximum %v W; want 420 and 400 W", model.PMaxW, model.CPUSocketCapMaxW)
 	}
 }
 
@@ -382,7 +376,7 @@ func TestCatalogCPUSocketCapRangeIsTheAgentsRange(t *testing.T) {
 		t.Fatal("test setup: the embedded catalogue has no CPU")
 	}
 	for key, spec := range catalog.CPUModels {
-		minW, maxW, ok := spec.Official.SocketCapRangeW()
+		_, maxW, ok := spec.Official.SocketCapRangeW()
 		if !ok {
 			t.Fatalf("%s: no socket cap range", key)
 		}
@@ -390,8 +384,8 @@ func TestCatalogCPUSocketCapRangeIsTheAgentsRange(t *testing.T) {
 		if model.CPUModel != key {
 			t.Fatalf("test setup: %s matched %q", key, model.CPUModel)
 		}
-		if model.CPUSocketCapMinW != minW || model.CPUSocketCapMaxW != maxW {
-			t.Errorf("%s: socket caps %v to %v W, want hwinv's %v to %v W", key, model.CPUSocketCapMinW, model.CPUSocketCapMaxW, minW, maxW)
+		if model.CPUSocketCapMaxW != maxW {
+			t.Errorf("%s: socket cap maximum %v W, want hwinv's %v W", key, model.CPUSocketCapMaxW, maxW)
 		}
 	}
 }

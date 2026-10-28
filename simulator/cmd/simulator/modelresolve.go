@@ -49,12 +49,12 @@ func (s *simulator) resolveModelForNode(nodeLabels map[string]string) (simModel,
 	return orderCapRanges(model, className), className
 }
 
-// orderCapRanges keeps each cap range of model ordered, its minimum at or
+// orderCapRanges keeps the GPU cap range of model ordered, its minimum at or
 // below its maximum, with a warning when it lowers one. A minimum set by hand
-// can sit above a maximum the catalogue filled in: SIM_CPU_SOCKET_CAP_MIN_W of
-// 200 on a Xeon Platinum 8260, whose TDP is 165 W. The maximum is the
-// hardware's limit, so the minimum comes down to it, as capMinAtMax does for
-// a catalogue minimum. className names the model in the warning.
+// can sit above a maximum the catalogue filled in:
+// SIM_GPU_MIN_CAP_WATTS_PER_GPU of 800 on an H100 SXM, whose board power is
+// 700 W. The maximum is the hardware's limit, so the minimum comes down to
+// it, as capMinAtMax does for a catalogue minimum. className names the model in the warning.
 func orderCapRanges(model simModel, className string) simModel {
 	order := func(what string, minW *float64, maxW float64) {
 		if maxW <= 0 || *minW <= maxW {
@@ -64,7 +64,6 @@ func orderCapRanges(model simModel, className string) simModel {
 			fmt.Sprintf("%s minimum %v W is above its maximum %v W for class %s; using %v W", what, *minW, maxW, className, maxW))
 		*minW = maxW
 	}
-	order("CPU socket cap", &model.CPUSocketCapMinW, model.CPUSocketCapMaxW)
 	order("GPU cap", &model.GPU.MinCapWattsPerGPU, model.GPU.MaxWattsPerGPU)
 	return model
 }
@@ -126,16 +125,13 @@ func (s *simulator) applyCatalogModelDefaults(model simModel, nodeLabels map[str
 		if cpuSpec.ProxyFrom != nil {
 			model.CPUProxyFrom = cpuSpec.ProxyFrom.Family
 		}
-		// The socket cap range is hwinv's, the one the agent resolves a
-		// percent cap against when it controls this node over HTTP.
-		if minW, tdp, ok := cpuSpec.Official.SocketCapRangeW(); ok {
+		// The socket cap maximum is hwinv's, the top of the range the agent
+		// resolves a percent cap against when it controls this node over
+		// HTTP; no minimum is modelled (cpuCapFloorW).
+		if _, tdp, ok := cpuSpec.Official.SocketCapRangeW(); ok {
 			if catalogFills(model.Defaulted.CPUSocketCapMaxW, model.CPUSocketCapMaxW) {
 				model.CPUSocketCapMaxW = tdp
 				model.Defaulted.CPUSocketCapMaxW = false
-			}
-			if catalogFills(model.Defaulted.CPUSocketCapMinW, model.CPUSocketCapMinW) {
-				model.CPUSocketCapMinW = capMinAtMax(minW, model.CPUSocketCapMaxW)
-				model.Defaulted.CPUSocketCapMinW = false
 			}
 			// The analytic model peaks at every socket's TDP (assumed: the
 			// package power at full load, with no measured curve to say
@@ -211,7 +207,7 @@ func loadNodeClasses(path string) ([]simNodeClass, error) {
 // removedModelEnv are the variables of model knobs that were removed because
 // nothing read them: the per-pod and per-throttle-percent watts of the old
 // linear power model, and the GPU power model (alpha, beta).
-var removedModelEnv = []string{"SIM_POD_W", "SIM_DVFS_DROP_W_PER_PCT", "SIM_GPU_ALPHA_UTIL", "SIM_GPU_BETA_CAP"}
+var removedModelEnv = []string{"SIM_POD_W", "SIM_DVFS_DROP_W_PER_PCT", "SIM_GPU_ALPHA_UTIL", "SIM_GPU_BETA_CAP", "SIM_CPU_SOCKET_CAP_MIN_W"}
 
 var (
 	removedKnobWarnMu   sync.Mutex
@@ -234,7 +230,6 @@ func warnOnce(key, msg string) {
 // Built-in values of the fields the hardware catalogue may set (hw.Defaulted).
 const (
 	defaultPMaxW                = 420
-	defaultCPUSocketCapMinW     = 120
 	defaultCPUSocketCapMaxW     = 400
 	defaultGPUMaxWattsPerGPU    = 300
 	defaultGPUMinCapWattsPerGPU = 80
@@ -294,7 +289,6 @@ func defaultBaseModelFromEnv() simModel {
 		}
 	}
 	pMaxW, pMaxDefaulted := envOrConstant("SIM_P_MAX_W", defaultPMaxW)
-	socketMinW, socketMinDefaulted := envOrConstant("SIM_CPU_SOCKET_CAP_MIN_W", defaultCPUSocketCapMinW)
 	socketMaxW, socketMaxDefaulted := envOrConstant("SIM_CPU_SOCKET_CAP_MAX_W", defaultCPUSocketCapMaxW)
 	gpuMaxW, gpuMaxDefaulted := envOrConstant("SIM_GPU_MAX_WATTS_PER_GPU", defaultGPUMaxWattsPerGPU)
 	gpuMinW, gpuMinDefaulted := envOrConstant("SIM_GPU_MIN_CAP_WATTS_PER_GPU", defaultGPUMinCapWattsPerGPU)
@@ -312,10 +306,10 @@ func defaultBaseModelFromEnv() simModel {
 		DefaultCapW:               floatEnv("SIM_DEFAULT_CAP_W", 5000),
 		PMaxW:                     pMaxW,
 		AlphaUtil:                 floatEnv("SIM_ALPHA_UTIL", 1.15),
-		BetaFreq:                  floatEnv("SIM_BETA_FREQ", 1.35),
+		BetaFreq:                  floatEnv("SIM_BETA_FREQ", 1.43),
 		FMinMHz:                   floatEnv("SIM_F_MIN_MHZ", 1200),
 		FMaxMHz:                   floatEnv("SIM_F_MAX_MHZ", 3200),
-		RaplCapMinW:               floatEnv("SIM_RAPL_CAP_MIN_W", 80),
+		RaplCapMinW:               floatEnv("SIM_RAPL_CAP_MIN_W", 0),
 		RaplCapMaxW:               floatEnv("SIM_RAPL_CAP_MAX_W", 5000),
 		DvfsRampMS:                int(floatEnv("SIM_DVFS_RAMP_MS", 500)),
 		CPUCapApplyTauMS:          int(floatEnv("SIM_CPU_CAP_APPLY_TAU_MS", 250)),
@@ -328,7 +322,6 @@ func defaultBaseModelFromEnv() simModel {
 		CPUDriverFamily:           strings.TrimSpace(envOrDefault("SIM_CPU_DRIVER_FAMILY", "amd-pstate")),
 		CPULowestNonlinearFreqMHz: floatEnv("SIM_CPU_LOWEST_NONLINEAR_FREQ_MHZ", 1800),
 		CPUSockets:                int(floatEnv("SIM_CPU_SOCKETS", 2)),
-		CPUSocketCapMinW:          socketMinW,
 		CPUSocketCapMaxW:          socketMaxW,
 		GPU: hw.GPUProfile{
 			Vendor:                strings.TrimSpace(envOrDefault("SIM_GPU_VENDOR", "")),
@@ -350,7 +343,6 @@ func defaultBaseModelFromEnv() simModel {
 		},
 		Defaulted: hw.Defaulted{
 			PMaxW:                pMaxDefaulted,
-			CPUSocketCapMinW:     socketMinDefaulted,
 			CPUSocketCapMaxW:     socketMaxDefaulted,
 			GPUMaxWattsPerGPU:    gpuMaxDefaulted,
 			GPUMinCapWattsPerGPU: gpuMinDefaulted,

@@ -106,7 +106,6 @@ func simModelFromProfile(p *hwemu.Profile, base simModel) (simModel, error) {
 		peak := profilePeakW(m)
 		m.RaplCapMaxW, m.DefaultCapW = peak, peak
 	}
-	m.CPUSocketCapMinW = 0
 	m.CPUSocketCapMaxW = m.RaplCapMaxW / n
 
 	m.CPUThermalThrottleStartC, m.CPUThermalThrottleFullC = 0, 0

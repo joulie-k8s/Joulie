@@ -61,30 +61,54 @@ else
   EXTENDER_URL_PREFIX="http://joulie-scheduler-extender.joulie-system.svc.cluster.local:9876"
 fi
 
-cat >/tmp/joulie-scheduler-config.yaml <<SCHED_CFG
+# Temporary files of their own, so two experiments can create clusters at once.
+SCHED_TMP=$(mktemp)
+PATCH_TMP=$(mktemp)
+export PATCH_TMP
+cat >"$SCHED_TMP" <<SCHED_CFG
 apiVersion: kubescheduler.config.k8s.io/v1
 kind: KubeSchedulerConfiguration
 clientConnection:
   kubeconfig: /etc/kubernetes/scheduler.conf
 profiles:
 - schedulerName: default-scheduler
+  # GPUs are bin-packed: a GPU pod goes to the node whose GPUs are already the
+  # most requested, so whole nodes stay free for 8-GPU jobs. With the default
+  # LeastAllocated, 1-GPU jobs spread over the 8-GPU nodes and the 8-GPU jobs
+  # queued. Only the GPU resources are listed, and the scheduler skips an
+  # extended resource the pod does not request, so this plugin gives a
+  # CPU-only pod no score (it gave the default LeastAllocated spread over CPU
+  # and memory); the other scoring plugins, then a random pick among ties,
+  # place it. Every baseline runs with this configuration.
+  # https://kubernetes.io/docs/concepts/scheduling-eviction/resource-bin-packing/
+  pluginConfig:
+  - name: NodeResourcesFit
+    args:
+      scoringStrategy:
+        type: MostAllocated
+        resources:
+        - name: nvidia.com/gpu
+          weight: 1
+        - name: amd.com/gpu
+          weight: 1
 extenders:
 - urlPrefix: "${EXTENDER_URL_PREFIX}"
   filterVerb: "filter"
   prioritizeVerb: "prioritize"
-  weight: 5
+  weight: 1
   enableHTTPS: false
   nodeCacheCapable: false
   ignorable: true
 SCHED_CFG
-docker exec -i "$CTRL_CONTAINER" sh -c 'cat > /etc/kubernetes/joulie-scheduler-config.yaml' < /tmp/joulie-scheduler-config.yaml
-rm -f /tmp/joulie-scheduler-config.yaml
+docker exec -i "$CTRL_CONTAINER" sh -c 'cat > /etc/kubernetes/joulie-scheduler-config.yaml' < "$SCHED_TMP"
+rm -f "$SCHED_TMP"
 
-docker cp "$CTRL_CONTAINER":/etc/kubernetes/manifests/kube-scheduler.yaml /tmp/kube-scheduler-patch.yaml
+docker cp "$CTRL_CONTAINER":/etc/kubernetes/manifests/kube-scheduler.yaml "$PATCH_TMP"
 python3 <<'PY'
 import yaml
 
-with open("/tmp/kube-scheduler-patch.yaml") as f:
+import os
+with open(os.environ["PATCH_TMP"]) as f:
     manifest = yaml.safe_load(f)
 
 container = manifest["spec"]["containers"][0]
@@ -109,16 +133,26 @@ manifest["spec"].setdefault("volumes", []).append({
     "name": "joulie-scheduler-config",
 })
 
-with open("/tmp/kube-scheduler-patch.yaml", "w") as f:
+with open(os.environ["PATCH_TMP"], "w") as f:
     yaml.dump(manifest, f, default_flow_style=False)
 print("kube-scheduler: extender configuration applied")
 PY
 
-docker exec -i "$CTRL_CONTAINER" sh -c 'cat > /etc/kubernetes/manifests/kube-scheduler.yaml' < /tmp/kube-scheduler-patch.yaml
-rm -f /tmp/kube-scheduler-patch.yaml
+docker exec -i "$CTRL_CONTAINER" sh -c 'cat > /etc/kubernetes/manifests/kube-scheduler.yaml' < "$PATCH_TMP"
+rm -f "$PATCH_TMP"
 
 echo "waiting for kube-scheduler to restart with extender config..."
-sleep 5
+# kubelet restarts the static pod once it sees the new manifest, up to its
+# file check period (20 s) later; until then the old process runs, and a
+# Ready wait passes on the old pod. Wait for the process with the config.
+sched_has_config() {
+  docker exec "$CTRL_CONTAINER" sh -c 'ps -eo args | grep -q "^kube-scheduler .*--config=/etc/kubernetes/joulie-scheduler-config.yaml"'
+}
+for _ in $(seq 1 90); do
+  sched_has_config && break
+  sleep 2
+done
+sched_has_config || { echo "kube-scheduler did not restart with the extender configuration" >&2; exit 1; }
 kubectl wait --for=condition=Ready pod -l component=kube-scheduler -n kube-system --timeout=60s
 
 echo "cluster ready: kind-${CLUSTER_NAME} (kubeconfig=${KUBECONFIG}) with KWOK ${KWOK_VER}"

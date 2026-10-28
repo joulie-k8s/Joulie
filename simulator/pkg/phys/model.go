@@ -25,28 +25,36 @@ type PowerModel interface {
 	ThroughputMultiplier(state DeviceState, workloadClass string) float64
 }
 
+// MeasuredCurveCPUModel is a CPU on a measured power curve (SPECpower: wall
+// power against load at full frequency). BetaFreq is the exponent of the
+// frequency scale in the dynamic power, as in AnalyticCPUModel; 0 means 1.
 type MeasuredCurveCPUModel struct {
-	Points []hw.PowerPoint
-	Knee   float64
+	Points   []hw.PowerPoint
+	Knee     float64
+	BetaFreq float64
 }
 
+// Power is the curve at the utilization, its dynamic part (above the curve's
+// power at 0 % load) scaled by FreqScale^BetaFreq: a lower frequency draws
+// less for the same utilization, as in AnalyticCPUModel, and the throughput
+// it costs is ThroughputMultiplier's. Reading the curve at utilization x
+// throughput instead made every watt a cap saved come out of delivered work,
+// so a cap cost more throughput than power on every curve node, against the
+// published frequency and power caps (wiki Audit row 17). Memory and IO
+// intensity act through the throughput only; a thermal throttle lowers the
+// power as in AnalyticCPUModel. A curve of zeros draws 0.
 func (m MeasuredCurveCPUModel) Power(state DeviceState) float64 {
 	if len(m.Points) == 0 {
 		return 0
 	}
 	util := clamp01(state.Utilization)
-	activity := cpuActivityFactor(state)
-	u := clamp01(util*activity) * 100.0
-	base := interpolateCurve(m.Points, u)
-	if base <= 0 {
-		return 0
+	beta := m.BetaFreq
+	if beta <= 0 {
+		beta = 1
 	}
-	scale := m.ThroughputMultiplier(state, state.Class)
-	if scale <= 0 {
-		scale = 0.01
-	}
-	adjLoad := clamp01(clamp01(state.Utilization)*scale) * 100.0
-	p := interpolateCurve(m.Points, adjLoad)
+	idle := interpolateCurve(m.Points, 0)
+	p := idle + math.Max(0, interpolateCurve(m.Points, util*100.0)-idle)*math.Pow(clamp01(state.FreqScale), beta)
+	p *= 1.0 - 0.35*clamp01(state.ThermalThrottle)
 	if state.CapWatts > 0 && p > state.CapWatts {
 		p = state.CapWatts
 	}
@@ -208,19 +216,6 @@ func clamp01(v float64) float64 {
 	return v
 }
 
-func cpuActivityFactor(state DeviceState) float64 {
-	mem := clamp01(state.MemoryIntensity)
-	io := clamp01(state.IOIntensity)
-	activity := 1.0 - 0.30*mem - 0.45*io
-	if stringsHasPrefixFast(state.Class, "cpu.compute_bound") {
-		activity += 0.08
-	}
-	if stringsHasPrefixFast(state.Class, "cpu.io_bound") {
-		activity -= 0.12
-	}
-	return clampRange(activity, 0.35, 1.0)
-}
-
 func cpuBoundnessWeights(state DeviceState, workloadClass string) (compute, memory, ioWeight float64) {
 	mem := clamp01(state.MemoryIntensity)
 	ioIntensity := clamp01(state.IOIntensity)
@@ -288,11 +283,4 @@ func clampRange(v, lo, hi float64) float64 {
 		return hi
 	}
 	return v
-}
-
-func stringsHasPrefixFast(s, prefix string) bool {
-	if len(s) < len(prefix) {
-		return false
-	}
-	return s[:len(prefix)] == prefix
 }

@@ -218,12 +218,12 @@ Off by default. With `GOVERNOR_CONTROL` on, the controller manager writes a vend
 |----------|---------|-------------|
 | `GOVERNOR_CONTROL` | `off` | `off`, `cpu` (CPU governors only), `gpu` (GPU governors only) or `all`. |
 | `CPU_GOVERNOR_PERFORMANCE_PRESET` | `performance` | CPU preset of performance nodes: `performance` (highest frequency at any load), `balanced` (demand-driven, quick ramp) or `efficiency` (demand-driven with an energy bias). |
-| `CPU_GOVERNOR_ECO_PRESET` | `efficiency` | CPU preset of eco nodes. Provisional: in the simulator's [governor exploration]({{< relref "/docs/experiments/governor-exploration.md#acceptance-tier-a-half" >}}) it saved 0.5 % energy for a 22.2 % eco p95 slowdown, above the experiment's 20 % limit. |
+| `CPU_GOVERNOR_ECO_PRESET` | `efficiency` | CPU preset of eco nodes. Provisional: in the simulator's [governor exploration]({{< relref "/docs/experiments/governor-exploration.md#acceptance-tier-a-half" >}}) it passes the experiment's Tier A half (lower energy, eco p95 slowdown within 20 %) on 2 of the 5 CPU drivers and its sensitivity check on 1, so as a default for every driver it does not pass, and it lengthens compute-bound bursts. |
 | `CPU_GOVERNOR_ECO_BOOST` | empty | `on` or `off`: frequency boost (turbo) with the eco preset, on nodes whose agent found a boost control (`status.cpu.governor.boost`). Empty leaves boost alone. |
 | `CPU_GOVERNOR_ON_GPU_NODES` | `false` | Write the CPU governor on GPU nodes too. |
 | `GPU_GOVERNOR_PERFORMANCE_PRESET` | empty | GPU preset of performance nodes: `auto`, `sustained`, `efficient`, `low`, `peak`, or empty for none. |
 | `GPU_GOVERNOR_ECO_PRESET` | `efficient` | GPU preset of eco nodes; set it to an empty value to write none. |
-| `GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX` | `80` | Compute clock ceiling of the `efficient` preset, in percent of the GPU's maximum compute clock, in (0, 100]. Written only with `efficient`; a value out of range gives 80. The default is provisional: in the simulator's [governor exploration]({{< relref "/docs/experiments/governor-exploration.md#acceptance-tier-a-half" >}}) 75 slowed eco work past the eco class's 20 % p95 limit and 80 did not. |
+| `GPU_GOVERNOR_ECO_CEILING_PCT_OF_MAX` | `80` | Compute clock ceiling of the `efficient` preset, in percent of the GPU's maximum compute clock, in (0, 100]. Written only with `efficient`; a value out of range gives 80. The default is provisional: in the simulator's [governor exploration]({{< relref "/docs/experiments/governor-exploration.md#acceptance-tier-a-half" >}}) 75 slowed eco work past the eco class's 20 % p95 limit on every GPU model that can express it, and 80 did not on any. |
 | `GPU_GOVERNOR_MODEL_PRESETS_JSON` | `{}` | Presets per GPU model: `{"<model>": {"performance": "<preset>", "eco": "<preset>", "ecoCeilingPctOfMax": <pct>}}`. Keyed like `GPU_MODEL_CAPS_JSON`, by the GPU product label value, and also matched against the GPU model the agent reports. A field left out keeps the default above, `""` writes none for that model, and an invalid field is dropped with a warning. |
 | `GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU` | `false` | If `true`, a node whose GPU preset is `sustained` gets it only while a running pod on it requests 2 or more GPUs (units of any GPU resource: whole GPUs, MIG devices, partitions, shared replicas), and no GPU governor otherwise. |
 
@@ -339,10 +339,11 @@ The simulator (`simulator/cmd/simulator`) reads these variables at startup too. 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SIM_P_MAX_W` | sockets x catalogue TDP, else `420` | Peak CPU power of the generic model, at full load and full frequency (`pMaxW`). A node with a measured curve uses the curve instead. |
+| `SIM_BETA_FREQ` | `1.43` | Exponent of the frequency scale in the CPU's dynamic power, on the generic model and on a measured curve: `P = P(0) + (P(u) - P(0)) x f^beta`. Fitted to published frequency and power caps on servers (`TestBetaFreqFit`); 0.86 to 2.45 spans the measured applications. |
+| `SIM_RAPL_CAP_MIN_W` | `0` | Lowest node CPU cap the simulator accepts; a cap below it is refused with an error. No floor by default: no vendor publishes a minimum package power limit for the modelled CPUs, and a cap the CPU cannot reach holds it at its lowest-frequency power. |
 | `SIM_CPU_SOCKET_CAP_MAX_W` | catalogue TDP, else `400` | Upper end of the per-socket CPU cap: the node cap is split evenly over the sockets and clamped to this range (`cpuSocketCapMaxW`). |
-| `SIM_CPU_SOCKET_CAP_MIN_W` | catalogue cTDP low end, else 0.55 x TDP, else `120` | Lower end of the per-socket CPU cap (`cpuSocketCapMinW`). |
 | `SIM_GPU_MAX_WATTS_PER_GPU` | catalogue `maxBoardPowerW`, else `300` | Board power of one GPU at full load, and its highest cap (`gpu.maxWattsPerGpu`). |
-| `SIM_GPU_MIN_CAP_WATTS_PER_GPU` | catalogue `minBoardPowerW`, else half the maximum, else `80` | Lowest cap of one GPU (`gpu.minCapWattsPerGpu`). |
+| `SIM_GPU_MIN_CAP_WATTS_PER_GPU` | catalogue `minBoardPowerW`, else half the maximum, else `80` | Lowest cap of one GPU (`gpu.minCapWattsPerGpu`); a cap below it is refused with an error. |
 
 A catalogue minimum above a maximum set by a class or a variable is lowered to that maximum. A measured two-socket curve from the catalogue is scaled by sockets/2 on a node with another socket count.
 

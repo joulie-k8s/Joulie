@@ -6,7 +6,7 @@ aliases:
   - "/docs/simulator/kubernetes-ai-workloads/"
 ---
 
-`workloadgen` (`simulator/cmd/workloadgen`) writes synthetic traces of AI cluster workloads for the simulator. This page says what a trace contains and how the generator samples it; [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}}) says how the simulator runs it.
+`workloadgen` (`simulator/cmd/workloadgen`) writes synthetic traces of AI cluster workloads for the simulator. This page says what a trace contains and how the generator samples it, and the wiki gives every distribution's parameters and the studies behind them ([Workload generation](https://github.com/joulie-k8s/Joulie/wiki/Workload-Generation)); [Workload Simulator]({{< relref "/docs/simulator/workload-simulator.md" >}}) says how the simulator runs it.
 
 ```bash
 go run ./simulator/cmd/workloadgen --out trace.jsonl --jobs 200 --seed 7

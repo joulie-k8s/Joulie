@@ -1089,42 +1089,32 @@ func TestClassifyClassFromPodSpecNilSpec(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// affinityForIntentClass tests
+// legacyAffinity tests
 // ---------------------------------------------------------------------------
 
-func TestAffinityForIntentClassPerformance(t *testing.T) {
-	aff := affinityForIntentClass("performance")
+func TestLegacyAffinityPerformance(t *testing.T) {
+	aff := legacyAffinity(&simJob{Class: "performance"})
 	if aff == nil || aff.NodeAffinity == nil {
 		t.Fatalf("expected non-nil affinity for performance")
 	}
 	required := aff.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
-	if required == nil || len(required.NodeSelectorTerms) == 0 {
-		t.Fatalf("expected NodeSelectorTerms")
+	if required == nil || len(required.NodeSelectorTerms) != 1 || len(required.NodeSelectorTerms[0].MatchExpressions) != 1 {
+		t.Fatalf("expected one term with one expression, got %+v", required)
 	}
 	expr := required.NodeSelectorTerms[0].MatchExpressions[0]
-	if expr.Key != "joulie.io/power-profile" || expr.Operator != corev1.NodeSelectorOpNotIn {
+	if expr.Key != "joulie.io/power-profile" || expr.Operator != corev1.NodeSelectorOpNotIn || len(expr.Values) != 1 || expr.Values[0] != "eco" {
 		t.Fatalf("unexpected expression: %+v", expr)
-	}
-	found := false
-	for _, v := range expr.Values {
-		if v == "eco" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected 'eco' in NotIn values, got %v", expr.Values)
 	}
 }
 
-func TestAffinityForIntentClassStandard(t *testing.T) {
-	if aff := affinityForIntentClass("standard"); aff != nil {
+func TestLegacyAffinityStandard(t *testing.T) {
+	if aff := legacyAffinity(&simJob{Class: "standard"}); aff != nil {
 		t.Fatalf("expected nil affinity for standard, got %+v", aff)
 	}
 }
 
-func TestAffinityForIntentClassRoundTrip(t *testing.T) {
-	aff := affinityForIntentClass("performance")
-	spec := &corev1.PodSpec{Affinity: aff}
+func TestLegacyAffinityRoundTrip(t *testing.T) {
+	spec := &corev1.PodSpec{Affinity: legacyAffinity(&simJob{Class: "performance"})}
 	if got := classifyClassFromPodSpec(spec); got != "performance" {
 		t.Fatalf("round-trip: expected 'performance', got %q", got)
 	}

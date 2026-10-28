@@ -8,7 +8,11 @@ This page documents how Joulie models CPUs and GPUs across the project using a m
 
 - **official vendor specifications and management APIs**,
 - **public measured power curves**, and
-- **explicit proxy models** where public exact curves are not yet available.
+- **an analytic model** where no measured curve is public.
+
+Every modelled value, the official source it comes from, and the values that have none are listed in the [Joulie wiki](https://github.com/joulie-k8s/Joulie/wiki).
+
+In the simulator these models make a test bed for Joulie's behaviour, not evidence of energy savings: they rest on the assumptions listed on this page, not on measurements of our nodes. What meaningful experiments need is tracked in the milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
 
 It serves two closely related purposes:
 
@@ -178,7 +182,6 @@ In the simulator, five hardware facts follow a fixed precedence: the node class 
 | GPU maximum per GPU (`gpu.maxWattsPerGpu`) | `SIM_GPU_MAX_WATTS_PER_GPU` | `maxBoardPowerW` | 300 W |
 | GPU minimum cap per GPU (`gpu.minCapWattsPerGpu`) | `SIM_GPU_MIN_CAP_WATTS_PER_GPU` | `minBoardPowerW`, else half the maximum | 80 W |
 | CPU socket cap maximum (`cpuSocketCapMaxW`) | `SIM_CPU_SOCKET_CAP_MAX_W` | `tdpW` | 400 W |
-| CPU socket cap minimum (`cpuSocketCapMinW`) | `SIM_CPU_SOCKET_CAP_MIN_W` | the low end of `cTdpRangeW`, else 0.55 x `tdpW` | 120 W |
 | Peak CPU power of the generic model (`pMaxW`) | `SIM_P_MAX_W` | sockets x `tdpW`, for a CPU without a measured curve (assumed: a package draws its TDP at full load) | 420 W |
 
 A catalog minimum above a maximum set by a class or a variable is lowered to that maximum. The catalog's CPU socket cap range comes from `hwinv.CPUOfficialSpec.SocketCapRangeW`, which the agent also reads: a pool agent that caps a simulated node over HTTP resolves a percent CPU cap against it, times the socket count, so it asks for caps inside the range the node is modelled with. A class or a variable that changes the range is not seen by the agent. A measured `node2S` curve was taken on a two-socket server; on another socket count the simulator scales the whole curve, idle included, by sockets/2 (assumed: no public curve of such a node exists). A curve from a node class is used as given.
@@ -211,7 +214,7 @@ This is an important design choice: unknown hardware should degrade realism, not
 - **Intel Xeon Gold 6530**: 32 cores, base 2.1 GHz, max turbo 4.0 GHz, TDP 270 W.
 
 ### 4.2 GPUs
-- **NVIDIA H100 NVL**: max TDP 400 W. Minimum cap 200 W: no minimum is published for the NVL, so the catalog uses the 200 W minimum of the [H100 PCIe product brief](https://www.nvidia.com/content/dam/en-zz/Solutions/gtcs22/data-center/h100/PB-11133-001_v01.pdf).
+- **NVIDIA H100 NVL**: max TDP 400 W. Minimum cap 200 W, from the [H100 NVL product brief](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/h100/PB-11773-001_v01.pdf) (Table 1: 400 W maximum by default, 200 W minimum).
 - **NVIDIA H100 SXM**: up to 700 W configurable. Minimum cap 300 W: the lowest limit NVIDIA set itself, in the DGX-H100 MaxQ configurations of its [MLPerf Inference v4.0 submission](https://github.com/mlcommons/inference_results_v4.0/tree/main/closed/NVIDIA) (`power_limit = 300`). It is not a datasheet minimum.
 - **NVIDIA L40S**: max power consumption 350 W. Minimum cap 200 W, with no public source: the [L40S product brief](https://www.pny.com/File%20Library/Company/Support/product-briefs/data-center-gpus/NVIDIA-L40S-Product-Brief.pdf) gives the minimum as "TBD".
 - **AMD Instinct MI300X**: maximum TBP 750 W. Minimum cap 400 W: [a public study](https://arxiv.org/html/2603.16164v1) found that limits below 400 W were not reliably enforced, and the GPUs drew more power than configured.
@@ -222,11 +225,7 @@ The minimum cap is `minBoardPowerW` in the catalog. When a node reports no GPU c
 
 ## 5. CPU physical model
 
-At the CPU side, Joulie combines three layers:
-
-- measured node-level curves where available,
-- family-level proxy curves where necessary,
-- and a generic fallback model when no better prior exists.
+At the CPU side, Joulie uses a measured node-level curve where one exists and an analytic model otherwise; a catalog entry's `proxyFrom` family only labels the telemetry, and no curve is borrowed from it.
 
 ## 5.1 Exact measured node curves where available
 
@@ -284,7 +283,9 @@ SPECpower_ssj2008 result 01522 [R20]: ASUSTeK Computer Inc. RS720A-E13-RS8U, tes
 - 90%: 661 W
 - 100%: 800 W
 
-These curves are interpolated with a monotone spline so that simulated power remains monotonic with load.
+Between its measured load points a curve is interpolated linearly, so simulated power stays monotonic with load.
+
+A curve gives power at full frequency. At a lower frequency scale `f` a node draws `P = P(0) + (P(u) - P(0)) x f^BetaFreq`, the curve at the utilization with its dynamic part scaled as in the generic model (section 5.6), and runs its jobs at the throughput of section 5.4. `BetaFreq` (`SIM_BETA_FREQ`, 1.43) is fitted to published frequency and power caps on servers: the median of seven applications on 2 to 8 ARCHER2 nodes and one on a Xeon Gold 6242 loses `g = ln(throughput ratio) / ln(power ratio) = 0.48`, and 1.43 gives that over experiment 01's job mix at its cap (seeds 3 and 4, which its sweep does not measure) (`TestBetaFreqFit`, the [wiki's CPU power model](https://github.com/joulie-k8s/Joulie/wiki/CPU-Power-Model)). Those applications span `g` 0.29 to 0.78, which is `BetaFreq` 2.45 to 0.86; no clean measurement exists for Zen 4, Zen 5 or recent Xeons. Across that range each of experiment 01's workload types loses less throughput than power on average under its cap; at the low end, 0.86, the most compute-bound jobs lose slightly more (`g` up to about 1.1). Node caps on a 64-node HPL run cost more (`g` 1.85 to 2.52), an effect of jobs that span nodes, which the simulator does not model. The cap binds on the curve's whole-server power, where a real package limit leaves the rest of the server out, so it binds earlier than on hardware.
 
 ## 5.2 Proxy CPU curves
 For CPU SKUs without exact public full curves, Joulie uses explicit family-level proxies:
@@ -401,7 +402,7 @@ Thermal throttling is opt-in. Two thresholds turn it on, as profile keys or as e
 - `cpuThermalThrottleStartC` (`SIM_CPU_THERMAL_THROTTLE_START_C`)
 - `cpuThermalThrottleFullC` (`SIM_CPU_THERMAL_THROTTLE_FULL_C`)
 
-Both default to 0, which means off: temperature is still modeled and reported in the telemetry response, but it never reduces throughput. With both set, the throttle fraction rises linearly from 0 at the start temperature to 1 at the full temperature and scales the throughput multiplier down by that fraction. On a measured curve the lower throughput moves the operating point down the curve; the generic fallback model (section 5.6) also lowers power by up to 35%. Set both thresholds, the full one above the start. As environment variables, one is enough: the other takes 85 °C (start) or 97 °C (full). As node class keys, a threshold the class leaves unset comes from the base profile, which is 0 unless the environment sets the pair. Setting only one in a class is therefore a known sharp edge:
+Both default to 0, which means off: temperature is still modeled and reported in the telemetry response, but it never reduces throughput. With both set, the throttle fraction rises linearly from 0 at the start temperature to 1 at the full temperature and scales the throughput multiplier down by that fraction. Both CPU models also lower power by up to 35%. Set both thresholds, the full one above the start. As environment variables, one is enough: the other takes 85 °C (start) or 97 °C (full). As node class keys, a threshold the class leaves unset comes from the base profile, which is 0 unless the environment sets the pair. Setting only one in a class is therefore a known sharp edge:
 
 - A full threshold alone is accepted and throttles linearly from 0 °C. With `cpuThermalThrottleFullC: 97`, an idle 2x AMD EPYC 9654 node on its measured curve (128 W, so 24 + 128 / 8 = 40 °C) already has a throttle fraction of 40 / 97 = 0.41.
 - A start threshold with no full threshold puts the start above the full threshold, which validation rejects: every class in `SIM_NODE_CLASS_CONFIG` is ignored, with only a warning in the log, and all nodes run on the base profile.
@@ -589,13 +590,13 @@ The generic GPU model first computes a workload-dependent natural power draw.
 For compute-bound workloads:
 
 ```text
-P_nat = IdleW + (MaxW - IdleW) * util
+P_nat = IdleW + (MaxW - IdleW) * util^1.02
 ```
 
 For memory-bound workloads:
 
 ```text
-P_nat = IdleW + (MaxW - IdleW) * 0.65 * sqrt(util)
+P_nat = IdleW + (MaxW - IdleW) * (0.35 * sqrt(util) + 0.30 * util)
 ```
 
 For mixed workloads, the simulator blends the compute-bound and memory-bound curves.
@@ -627,6 +628,8 @@ If the cap is below it:
 - `gpu.memory_bound`: throughput drops more gently
 - `gpu.mixed`: blend of compute-bound and memory-bound response
 
+With `ComputeGamma` below 1 a cap costs less throughput than power, so the energy per unit of compute-bound work falls under it; above 1, it rises. The node classes of the experiments fit `ComputeGamma` per GPU family to published throughput at several power limits: 0.43 for the H100 SXM and 0.62 for the MI300X; 0.50 for the H100 NVL, the H100 PCIe's value since the NVL has none; 1.20 for the L40S, inside its published range. A family without published data, such as the Radeon PRO W7900, keeps the default 1.0. The fits and their sources are on the [wiki's GPU power model page](https://github.com/joulie-k8s/Joulie/wiki/GPU-Power-Model#per-family-parameters).
+
 So the generic fallback GPU model preserves the same core behavior as the richer catalog-backed model:
 
 - compute-bound workloads are sensitive to caps earlier,
@@ -648,9 +651,9 @@ At every 100 ms substep each cpufreq policy's governor sets a frequency (`phys.G
 
 The governor reads the busy share of the substep that ended, measured at the frequency the CPU ran at, so it reacts one substep late, which stands in for `rate_limit_us`. A new load moves it at once; the running frequency then ramps toward its choice with `freqRampMS`.
 
-**Work in cycles.** A load's CPU utilization is the share of time the work keeps a CPU busy at the frequency performance would run it at under the present limits. At a lower frequency the same work keeps the CPU busy longer: `u_eff = min(1, u x f_performance / f_governor)`. Package power uses `u_eff` in place of `u` (`P = idle + (max - idle) x (u_eff x act)^alpha x f^beta` on an analytic profile; a `catalog-curve` profile, such as the 2x EPYC 9654 ones, reads its measured curve), State reports it as the package utilization, and the governor sees it, so schedutil at a demand of 0.3 on a 2x EPYC 9654 runs at 1.5 GHz with the CPUs 74 % busy. Under performance `u_eff = u`. A binding RAPL or HSMP cap wins over every governor's choice.
+**Work in cycles.** A load's CPU utilization is the share of time the work keeps a CPU busy at the frequency performance would run it at under the present limits. At a lower frequency the same work keeps the CPU busy longer: `u_eff = min(1, u x f_performance / f_governor)`. Package power uses `u_eff` in place of `u` (`P = idle + (max - idle) x (u_eff x act)^alpha x f^beta` on an analytic profile; a `catalog-curve` profile, such as the 2x EPYC 9654 ones, reads its measured curve at `u_eff`, its dynamic part scaled by `f^beta`), State reports it as the package utilization, and the governor sees it, so schedutil at a demand of 0.3 on a 2x EPYC 9654 runs at 1.5 GHz with the CPUs 74 % busy. Under performance `u_eff = u`. A binding RAPL or HSMP cap wins over every governor's choice.
 
-**Throughput reference.** A CPU job's speed is `S(f_eff) / S(f_ref)` for its class, where `S` is the knee model of section 5.4, `f_eff` the frequency `scaling_cur_freq` shows (governor, boost and cap included) and `f_ref` what performance runs at with `scaling_max_freq` at `cpuinfo_max_freq` and the profile's boost, whatever the governor. Performance uncapped gives 1; generic powersave at full load on the 9654 gives `S(1.5 GHz) / S(3.7 GHz)`. A governor that runs slower draws less power for longer, so its energy per unit of work can go either way. Whether a fixed job uses less energy under performance (race to idle) depends on the idle share of the power; on the shipped 2x Xeon 8260 profile (idle 40 of 165 W per package, `betaFreq` 1.35) EPP 255 uses about 2 % less energy than performance for a compute-bound job, and with a package idle of 140 W performance wins.
+**Throughput reference.** A CPU job's speed is `S(f_eff) / S(f_ref)` for its class, where `S` is the knee model of section 5.4, `f_eff` the frequency `scaling_cur_freq` shows (governor, boost and cap included) and `f_ref` what performance runs at with `scaling_max_freq` at `cpuinfo_max_freq` and the profile's boost, whatever the governor. Performance uncapped gives 1; generic powersave at full load on the 9654 gives `S(1.5 GHz) / S(3.7 GHz)`. A governor that runs slower draws less power for longer, so its energy per unit of work can go either way. Whether a fixed job uses less energy under performance (race to idle) depends on the idle share of the power; on the shipped 2x Xeon 8260 profile (idle 40 of 165 W per package, `betaFreq` 1.43) EPP 255 uses about 3 % less energy than performance for a compute-bound job, and with a package idle of 140 W performance wins.
 
 **Idle cost.** `physics.cpu.idleGovernorDeltaW` is added to an idle package (`u_eff` below 0.05) whose governor holds the top frequency; it is 0 in every builtin profile, so idle power is the same under every governor.
 
@@ -841,7 +844,7 @@ For this reason, Joulie should be read as:
 ## 11. Limitations
 
 - GPU behavior is currently validated in **simulation first**; bare-metal GPU calibration is still pending.
-- Some CPU and GPU models still rely on proxy curves rather than exact public measured curves.
+- CPU models without a published measured curve run on the analytic model, and the GPU model parameters are assumptions ([wiki: Audit](https://github.com/joulie-k8s/Joulie/wiki/Audit)).
 - Vendor APIs expose min/max cap ranges, but exact internal PMU behavior can still depend on firmware and board design.
 - The current thermal model is still a first-order approximation; it does not attempt to model fan curves, hotspot sensors, package-to-package coupling, or chassis airflow in detail.
 - The current workload-boundness model is still a mixture-of-experts approximation; it is not yet calibrated from per-application traces for every workload family.
@@ -883,7 +886,7 @@ The list is intentionally grouped by role:
 - [R10] AMD EPYC 9655 product page, AMD.  
   <https://www.amd.com/en/products/processors/server/epyc/5th-generation-epyc/amd-epyc-9655.html>
 - [R11] Intel Xeon Gold 6530 specifications, Intel ARK.  
-  <https://www.intel.com/content/www/us/en/products/sku/236251/intel-xeon-gold-6530-processor-160m-cache-2-10-ghz/specifications.html>
+  <https://www.intel.com/content/www/us/en/products/sku/237249/intel-xeon-gold-6530-processor-160m-cache-2-10-ghz/specifications.html>
 - [R12] Linux `amd-pstate` documentation.  
   <https://docs.kernel.org/admin-guide/pm/amd-pstate.html>
 - [R13] Linux `intel_pstate` documentation.  
@@ -923,7 +926,7 @@ These SPECpower pages provide the detailed load-to-power points used for the mea
 - [R26] Roofline: an insightful visual performance model for multicore architectures.  
   <https://dl.acm.org/doi/10.1145/1498765.1498785>
 - [R27] NVML API reference, energy-consumption function semantics.  
-  <https://docs.nvidia.com/deploy/nvml-api/group__nvmlDeviceQueries.html>
+  <https://docs.nvidia.com/deploy/nvml-api/api/group__nvmlDeviceQueries.html>
 - [R28] Vladimir Ostapenco, Laurent Lefevre, Anne-Cecile Orgerie, Benjamin Fichel. Exploring RAPL as a Power Capping Leverage for Power-Constrained Infrastructures, ICA3PP 2024.  
   <https://perso.ens-lyon.fr/laurent.lefevre/pdf/ICA3PP2024_Ostapenco_Lefevre.pdf>
 - [R29] Dan Zhao, Siddharth Samsi, Joseph McDonald, Baolin Li, David Bestor, Michael Jones, Devesh Tiwari, Vijay Gadepally. Sustainable Supercomputing for AI: GPU Power Capping at HPC Scale, arXiv 2024.  

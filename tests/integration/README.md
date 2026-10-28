@@ -22,7 +22,7 @@ Built in `ci/src/joulie_ci/main.py`, from `rancher/k3s:v1.34.1-k3s1`:
   Dagger containers on the RHEL 8 kernel) and with traefik, metrics-server and
   the default registry endpoint disabled.
 - The kube-scheduler is started with a `KubeSchedulerConfiguration` that
-  registers the Joulie extender at `http://127.0.0.1:9876`, `weight: 5`,
+  registers the Joulie extender at `http://127.0.0.1:9876`, `weight: 1`,
   `ignorable: true`. The loopback address works because the extender pod runs
   with `hostNetwork: true`, pinned to `k3s-server`.
 - The three images (`agent`, `controller-manager`, `scheduler`) are built from
@@ -57,7 +57,7 @@ Then, only when the scope is `all` or `full` (the CI default):
 | `IT-FSM-07` | A performance pod targeting an eco node stays Pending and the node does not flip |
 | `IT-FSM-05` | Idempotency: over several reconcile cycles the power profile label does not flap, and no `joulie.io/draining` label is ever created (draining lives in `NodeTwin.status.schedulableClass`) |
 | `IT-SCH-*` | End to end scheduling through the extender: performance pods land on the performance node and stay Pending on the eco node; standard pods schedule anywhere |
-| `IT-SCHED-SCORE-01` | `POST /prioritize` on the live extender returns one score per node, each within 0 to 100 |
+| `IT-SCHED-SCORE-01` | `POST /prioritize` on the live extender returns one score per node, each within 0 to 10, the extender API's range |
 | `IT-SCHED-FILTER-01` | `POST /filter` puts the eco node in `failedNodes` for a performance pod and passes both nodes for an unannotated one |
 | `IT-SCH-DRAIN-01` | A node in the draining state rejects a new performance pod |
 | `IT-SCH-STD-01` | An unannotated pod runs on both nodes under eco |

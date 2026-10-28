@@ -216,6 +216,7 @@ test-experiments:
 	python3 -m pytest experiments/01-cpu-only-benchmark/scripts/test_sweep.py -q --tb=short
 	python3 -m pytest experiments/02-heterogeneous-benchmark/scripts/test_sweep.py -q --tb=short
 	python3 -m pytest experiments/03-homogeneous-h100-benchmark/scripts/test_sweep.py -q --tb=short
+	python3 -m pytest experiments/kwok-cluster/test_report_figures.py -q --tb=short
 	python3 -m pytest experiments/05-governor-exploration/analysis/test_summarize.py -q --tb=short
 	@echo "All experiment sanity tests passed."
 

@@ -356,7 +356,6 @@ func defaultTestConfig() generatorConfig {
 		PerfRatio:             0.30,
 		ComputeBoundPerfBoost: 3.5,
 		GPURatio:              0.80,
-		GPURequestPerJob:      1,
 		CPURatePerCore:        1,
 		GPURatePerGPU:         1,
 		EmitWorkloadRecords:   true,
@@ -1418,7 +1417,7 @@ func TestWorkloadgenSchemaV2ByteIdentical(t *testing.T) {
 	}{
 		{"-jobs 60 -gpu-ratio 0.85 -amd-gpu-ratio 0.35 -mean-inter-arrival-sec 0.08 -min-gpu-request 2 -namespace demo -seed 42 -emit-workload-records=false", "e152e84d775ad65ecde13a41e923967507173188a3b0a55d6e932b53c3e9f67a"},
 		{"-jobs 40 -seed 7 -mean-inter-arrival-sec 3 -perf-ratio 0.2 -compute-bound-perf-boost 2 -gpu-ratio 0 -burst-day-probability 0.5 -burst-mean-jobs 6 -burst-multiplier 3", "172481fb419282347a7a966c2b528ae3729a20c9a1322f426c7ac199c65b4938"},
-		{"-jobs 40 -seed 11 -mean-inter-arrival-sec 4 -perf-ratio 0.4 -compute-bound-perf-boost 1.5 -gpu-ratio 0.7 -gpu-request 2 -burst-day-probability 0.3", "f741470e93595142de45c633a34c14cb435c4e4129bac990d631183cf8521485"},
+		{"-jobs 40 -seed 11 -mean-inter-arrival-sec 4 -perf-ratio 0.4 -compute-bound-perf-boost 1.5 -gpu-ratio 0.7 -burst-day-probability 0.3", "f741470e93595142de45c633a34c14cb435c4e4129bac990d631183cf8521485"},
 		{"-jobs 30 -seed 5 -cpu-work-rate-per-core 2 -gpu-work-rate-per-gpu 3 -no-affinity-only", "c417d086b93d96a57830ea8c8435a8bad0ec092f26787240683403b56975aca0"},
 		{"-mode diurnal -seed 3 -sim-hours 1 -gpu-ratio 0.6 -work-scale 2 -time-scale 30 -base-speed-per-core 1.5 -emit-workload-records=true -diurnal-burst-min 2 -diurnal-burst-max 6 -diurnal-peak-rate 6", "5aa7a5fac9a668a13ebcc3dda853a2ed22e22193a582bb19672ce84ecfa2b8a7"},
 		{"-mode diurnal -seed 9 -sim-hours 1 -no-affinity-only -emit-workload-records=false -min-gpu-request 2 -diurnal-peak-rate 6 -diurnal-burst-min 2 -diurnal-burst-max 5", "922c06b28da7d066b0483260cf6b73bd67aa87a59d4abe728ab3539fc694bfbb"},

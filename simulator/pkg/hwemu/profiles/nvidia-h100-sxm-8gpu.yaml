@@ -17,6 +17,7 @@ gpus:
     maxW: {v: 700, src: published:h100page}
     defaultW: {v: 700, src: "published:smih100#Default Power Limit 700.00 W"}
     minW: {v: 200, src: "published:smih100#Min Power Limit 200.00 W"}
+    currentW: {v: 700, src: "published:smih100#Current Power Limit 700.00 W; the NVL's raised 400 W is not this board's"}
   clocks:
     sm:
       minMHz: {v: 345, src: "assumed:the idle SM clock (smih100clk), taken as the lowest supported clock"}

@@ -145,8 +145,9 @@ func TestLoadTraceReadsV3Fields(t *testing.T) {
 		len(v3.Tolerations) != 1 || v3.Tolerations[0].Key != "nvidia.com/gpu" {
 		t.Errorf("v3-mig placement = %+v %v %v, want the trace's affinity, nodeSelector and toleration", v3.Affinity, v3.NodeSelector, v3.Tolerations)
 	}
-	if v2 := byID["v2-mig"]; v2.Affinity != nil || v2.NodeSelector != nil || v2.Tolerations != nil || v2.SchemaVersion != workload.TraceSchemaV2 {
-		t.Errorf("v2-mig: placement %+v %v %v, schema %q; want none, v2", v2.Affinity, v2.NodeSelector, v2.Tolerations, v2.SchemaVersion)
+	// A legacy record keeps the trace's affinity only (legacyAffinity).
+	if v2 := byID["v2-mig"]; v2.Affinity == nil || v2.NodeSelector != nil || v2.Tolerations != nil || v2.SchemaVersion != workload.TraceSchemaV2 {
+		t.Errorf("v2-mig: placement %+v %v %v, schema %q; want the affinity only, v2", v2.Affinity, v2.NodeSelector, v2.Tolerations, v2.SchemaVersion)
 	}
 
 	t.Run("a misspelled placement field is an error", func(t *testing.T) {

@@ -5,7 +5,7 @@ Every job a pull request runs is a function of this Dagger module, and the workf
 | Function | CI job | What it runs |
 |---|---|---|
 | `test` | `ci.yml` test | `go mod tidy -diff` for both modules, `make verify-manifests`, `make verify-fmt`, `go build ./...`, `go vet ./...`, `go test ./...` with the FUSE tests required |
-| `race` | `ci.yml` race | `go test -race ./cmd/...` |
+| `race` | `ci.yml` race | `go test -race ./cmd/...` and `./simulator/cmd/simulator/` |
 | `envtest` | `ci.yml` envtest | `make test-envtest` |
 | `promql` | `ci.yml` promql | `make test-promql` |
 | `prometheus-otlp-live --config=<c>` | `ci.yml` prometheus-otlp-live | the live input tests against the pinned Prometheus, `<c>` one of `promoted`, `unpromoted`, `utf8`, `utf8-unpromoted` |

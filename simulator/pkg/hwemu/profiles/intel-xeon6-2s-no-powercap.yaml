@@ -78,7 +78,7 @@ physics:
     maxPkgW: {v: 350, src: "published:ark6787p#TDP; perfspect's loaded 679 W over two packages is 340 W each"}
     idlePkgW: {v: 50, src: "assumed:bounded by spec01503 and spec01504, Active Idle 164 and 157 W for a whole 2S node; perfspect's 248.49 W package idle over two packages (124 W each) cannot fit there and reflects a shallower idle"}
     alphaUtil: {v: 1.15, src: "assumed:simulator default SIM_ALPHA_UTIL"}
-    betaFreq: {v: 1.35, src: "assumed:simulator default SIM_BETA_FREQ"}
+    betaFreq: {v: 1.43, src: "assumed:simulator default SIM_BETA_FREQ, fitted to published frequency and power caps of other CPUs (TestBetaFreqFit)"}
     knee: {v: 0.7, src: "assumed:phys default knee of MeasuredCurveCPUModel"}
     freqRampMS: {v: 500, src: "assumed:simulator default SIM_DVFS_RAMP_MS"}
     idleGovernorDeltaW: {v: 0, src: "assumed:no idle cost of a governor that holds the top frequency until one is measured; to sweep from 0 to 5 % of the idle power"}

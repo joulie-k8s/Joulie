@@ -217,7 +217,7 @@ extenders:
 - urlPrefix: "http://${EXTENDER_CLUSTER_IP}:9876"
   filterVerb: "filter"
   prioritizeVerb: "prioritize"
-  weight: 5
+  weight: 1
   enableHTTPS: false
   nodeCacheCapable: false
   ignorable: true
@@ -249,6 +249,17 @@ PY
 docker exec -i "$CTRL_CONTAINER" sh -c 'cat > /etc/kubernetes/manifests/kube-scheduler.yaml' \
   < "$WORK_DIR/kube-scheduler.yaml"
 log "waiting for kube-scheduler to restart with the extender config"
+# kubelet restarts the static pod once it sees the new manifest, up to its
+# file check period (20 s) later; until then the old process runs, and a
+# Ready wait passes on the old pod. Wait for the process with the config.
+sched_has_config() {
+  docker exec "$CTRL_CONTAINER" sh -c 'ps -eo args | grep -q "^kube-scheduler .*--config=/etc/kubernetes/joulie-scheduler-config.yaml"'
+}
+for _ in $(seq 1 90); do
+  sched_has_config && break
+  sleep 2
+done
+sched_has_config || { log "kube-scheduler did not restart with the extender config"; exit 1; }
 kubectl wait --for=condition=Ready pod -l component=kube-scheduler -n kube-system --timeout=180s >&2
 
 # ---------------------------------------------------------------------------

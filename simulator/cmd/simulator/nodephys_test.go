@@ -356,7 +356,7 @@ func TestCapBelowFloorReportsFloorPower(t *testing.T) {
 	if math.Abs(analyticFloorW-170.5) > 0.05 {
 		t.Fatalf("test setup: analytic power at util 1 and the minimum scale %.3f is %.4f W, want 170.5 W by hand", minScale, analyticFloorW)
 	}
-	curveFloorW := phys.MeasuredCurveCPUModel{Points: curve.CPUPowerCurve, Knee: cpuKneeFromModel(curve)}.Power(phys.DeviceState{Utilization: 1, FreqScale: minScale, Class: class})
+	curveFloorW := cpuPowerModel(curve).Power(phys.DeviceState{Utilization: 1, FreqScale: minScale, Class: class})
 
 	cases := []struct {
 		name   string

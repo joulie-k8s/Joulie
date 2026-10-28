@@ -95,7 +95,7 @@ func TestApplyOverrides(t *testing.T) {
 // A field a class sets is no longer the built-in constant, so the catalogue
 // must not replace it; the fields the class leaves alone keep their mark.
 func TestApplyOverridesClearsDefaultedMarks(t *testing.T) {
-	all := Defaulted{PMaxW: true, CPUSocketCapMinW: true, CPUSocketCapMaxW: true, GPUMaxWattsPerGPU: true, GPUMinCapWattsPerGPU: true}
+	all := Defaulted{PMaxW: true, CPUSocketCapMaxW: true, GPUMaxWattsPerGPU: true, GPUMinCapWattsPerGPU: true}
 	w := 250.0
 	for _, tc := range []struct {
 		key   string
@@ -104,7 +104,6 @@ func TestApplyOverridesClearsDefaultedMarks(t *testing.T) {
 		got   func(Profile) float64
 	}{
 		{"pMaxW", Overrides{PMaxW: &w}, func(d *Defaulted) { d.PMaxW = false }, func(p Profile) float64 { return p.PMaxW }},
-		{"cpuSocketCapMinW", Overrides{CPUSocketCapMinW: &w}, func(d *Defaulted) { d.CPUSocketCapMinW = false }, func(p Profile) float64 { return p.CPUSocketCapMinW }},
 		{"cpuSocketCapMaxW", Overrides{CPUSocketCapMaxW: &w}, func(d *Defaulted) { d.CPUSocketCapMaxW = false }, func(p Profile) float64 { return p.CPUSocketCapMaxW }},
 		{"gpu.maxWattsPerGpu", Overrides{GPU: &GPUOverrides{MaxWattsPerGPU: &w}}, func(d *Defaulted) { d.GPUMaxWattsPerGPU = false }, func(p Profile) float64 { return p.GPU.MaxWattsPerGPU }},
 		{"gpu.minCapWattsPerGpu", Overrides{GPU: &GPUOverrides{MinCapWattsPerGPU: &w}}, func(d *Defaulted) { d.GPUMinCapWattsPerGPU = false }, func(p Profile) float64 { return p.GPU.MinCapWattsPerGPU }},

@@ -59,7 +59,7 @@ func TestCB05OutputLoadsThroughLoadProfileSet(t *testing.T) {
 		{pathCPUIdle, cpu.IdlePkgW.V, cpu.IdlePkgW.Src, 40},
 		{pathCPUMax, cpu.MaxPkgW.V, cpu.MaxPkgW.Src, 360},
 		{pathCPUAlpha, cpu.AlphaUtil.V, cpu.AlphaUtil.Src, 1.15},
-		{pathCPUBeta, cpu.BetaFreq.V, cpu.BetaFreq.Src, 1.35},
+		{pathCPUBeta, cpu.BetaFreq.V, cpu.BetaFreq.Src, 1.43},
 	} {
 		fp := param(t, r, f.path)
 		if f.got != f.want || f.src != "measured:"+SourceID+"#"+fp.Fit {

@@ -924,7 +924,7 @@ func computeAbsoluteCPUCap(profile string, nh NodeHardware, catalog *hwinv.Catal
 	if target > maxW {
 		target = maxW
 	}
-	minW := maxW * 0.55
+	minW := maxW * hwinv.SocketCapMinFractionOfTDP
 	if target < minW {
 		target = minW
 	}

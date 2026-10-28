@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"slices"
@@ -79,15 +80,16 @@ type Intensity struct {
 
 // Bursty is the bursty CPU load: Bursts bursts of BurstMS at full load on
 // every logical CPU, one every PeriodMS, each arriving up to JitterMS late
-// (seeded), of class Class. A burst still running when the next arrives
-// delays it. Its cells run with SubstepMS as both step and substep.
+// (seeded), one cell per class of Classes. A burst still running when the
+// next arrives delays it. Its cells run with SubstepMS as both step and
+// substep, which is also the resolution of the burst latency.
 type Bursty struct {
-	Class     string `json:"class"`
-	BurstMS   int    `json:"burstMS"`
-	PeriodMS  int    `json:"periodMS"`
-	JitterMS  int    `json:"jitterMS"`
-	Bursts    int    `json:"bursts"`
-	SubstepMS int    `json:"substepMS"`
+	Classes   []string `json:"classes"`
+	BurstMS   int      `json:"burstMS"`
+	PeriodMS  int      `json:"periodMS"`
+	JitterMS  int      `json:"jitterMS"`
+	Bursts    int      `json:"bursts"`
+	SubstepMS int      `json:"substepMS"`
 }
 
 // GPUGrid is experiment E-G2: GPU profiles under each GPU preset, cap and
@@ -163,6 +165,12 @@ var sensitivityFacts = map[string]struct {
 		f := sensFact(v)
 		p.Physics.CPU.EPPCeilingDrop = &f
 		return p.CPUFreq != nil && p.CPUFreq.EPP != nil
+	}},
+	// The time the CPU frequency takes to follow the governor's target
+	// (hwemu's rampTau), which sets how long a burst runs below its clock.
+	"freqRampMS": {gridCPU, func(p *hwemu.Profile, v float64) bool {
+		p.Physics.CPU.FreqRampMS = hwemu.Fact[int]{V: int(math.Round(v)), Src: "assumed:govsweep sensitivity value"}
+		return p.CPUFreq != nil
 	}},
 	"dataPathHoldW":   {gridGPU, sensGPU(func(p *hwemu.Profile) *hwemu.Fact[float64] { return &p.Physics.GPU.DataPathHoldW })},
 	"gatingOffIdleW":  {gridGPU, sensGPU(func(p *hwemu.Profile) *hwemu.Fact[float64] { return &p.Physics.GPU.GatingOffIdleW })},
@@ -281,11 +289,16 @@ func (c *Config) validate() error {
 			checkClass(bad, "cpu", name, "cpu.", in)
 		}
 		if b := g.Bursty; b != nil {
-			if !strings.HasPrefix(b.Class, "cpu.") {
-				bad("cpu.bursty.class %q is not a cpu.* class", b.Class)
+			if len(b.Classes) == 0 {
+				bad("cpu.bursty.classes is empty")
 			}
-			if _, ok := g.Classes[b.Class]; !ok {
-				bad("cpu.bursty.class %q is not under cpu.classes", b.Class)
+			for _, class := range b.Classes {
+				if !strings.HasPrefix(class, "cpu.") {
+					bad("cpu.bursty.classes: %q is not a cpu.* class", class)
+				}
+				if _, ok := g.Classes[class]; !ok {
+					bad("cpu.bursty.classes: %q is not under cpu.classes", class)
+				}
 			}
 			if b.BurstMS <= 0 || b.PeriodMS < b.BurstMS || b.JitterMS < 0 || b.Bursts <= 0 || b.SubstepMS <= 0 || b.BurstMS%b.SubstepMS != 0 {
 				bad("cpu.bursty: burstMS positive and a multiple of substepMS, periodMS at least burstMS, jitterMS not negative, bursts positive")

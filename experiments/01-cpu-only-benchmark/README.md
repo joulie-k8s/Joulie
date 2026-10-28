@@ -1,245 +1,38 @@
-# KWOK Benchmark Experiment
+# 01 - CPU-only Benchmark
 
-> **Note (2026-10-09, updated 2026-10-24):** `REPORT-standalone.md` and every section of `REPORT.md` but its rerun with Joulie 0.2.4 were produced with an older simulator model. Runs made now read the hardware catalog embedded in the simulator, with a SPECpower curve for each CPU that has one, and thermal throttling is off unless configured. [Simulator changes](../../simulator/CHANGES.md) lists each change and how far it moves `configs/benchmark-debug.yaml`.
+Baselines A (no management), B (static partition) and C (queue-aware) on a cluster of CPU-only nodes of three AMD EPYC families. The results, measured at regime, are in [REPORT.md](REPORT.md); how the runs are set up, sized and gated is in [experiments/README.md](../README.md).
 
-> **Rerun (2026-10-24, #94):** `configs/benchmark-40n.yaml` ran again with the 0.2.4 release images: one seed, each run a fixed window of about 22 simulated hours that ends with jobs still running. The results are in [Rerun with Joulie 0.2.4](./REPORT.md#rerun-with-joulie-024-2026-10-24).
+These results come from the Joulie simulator, Joulie's test bed for its behaviour (caps applied, placement, policies), not evidence of energy savings. Their energy figures rest on hardware behaviour the simulator assumes: every CPU core does the same work per second whatever its model, and cap responses, power curves and workload intensities are assumed or fitted, not measured on real nodes. They do not show what Joulie saves on real hardware; what meaningful experiments need is tracked in the milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
 
-This experiment harness measures throughput/latency vs energy-control behavior in a mixed real+fake setup:
+## Cluster inventory
 
-- real scheduler/API server,
-- fake KWOK worker nodes for workload pods,
-- simulator telemetry/control loop,
-- optional Joulie controller manager+agent(pool).
+- 20 intensive nodes: AMD EPYC 9655, 2 sockets, 192 cores, 1536 GiB
+- 10 highcore nodes: AMD EPYC 9965, 2 sockets, 384 cores, 1536 GiB
+- 10 highfreq nodes: AMD EPYC 9375F, 2 sockets, 64 cores, 770 GiB
+- 40 nodes in all ([cluster-nodes.yaml](configs/cluster-nodes.yaml))
 
-Workload scheduling in benchmark pods uses affinity on `joulie.io/power-profile`:
+## How to run
 
-- `performance`: requires `joulie.io/power-profile NotIn ["eco"]`
-- no power-profile affinity: implicit general placement
-
-Benchmark policy intentionally generates only:
-
-- performance-constrained pods (`perf_ratio`)
-- unconstrained pods (remaining ratio)
-
-Compute-bound workloads are boosted toward performance class (`compute_bound_perf_boost=3.5`) for realistic scheduling behavior.
-
-Current trace behavior:
-
-- per-seed canonical trace is generated once and reused across baselines,
-- baseline `A` is derived from that canonical trace by stripping only power-profile affinity,
-- baselines `B`/`C` use the canonical trace as generated.
-
-## Baselines
-
-- `A`: simulator only (no controller manager/agent), using affinity-free workload pods (Joulie-free baseline).
-- `B`: simulator + Joulie with static partition-oriented config.
-- `C`: simulator + Joulie with queue-aware policy-oriented config.
-
-## Config file
-
-`configs/benchmark.yaml` contains:
-
-- run controls: baselines, seeds, jobs, inter-arrival, timeout, settle/cleanup,
-- run scaling: `run.time_scale` used in run metadata and derived simulated-time metrics,
-- workload mix: `perf_ratio` (remaining fraction is no-affinity general), plus `cpu_units_min/max`,
-- baseline A comparability: `baseline_a_strip_affinity` removes only affinity from a canonical seed trace while keeping submit/work/request values identical,
-- simulator speed control: `simulator.base_speed_per_core` (higher value = faster job completion),
-- policy controls: caps (`performance_watts`, `eco_watts`), control-loop intervals, static and queue-aware parameters,
-- image/tag/registry overrides,
-- optional simulator manifest path.
-
-Note: in `configs/benchmark.yaml`, `images.sim_tag: ""` means "do not override image tag, use the simulator image pinned in the manifest".
-For the `20_run_benchmark.sh` flow, `configs/benchmark.yaml` is the single source of truth for benchmark/image/policy configuration.
-
-## Artifacts per run
-
-Each run writes to `results/<run_id>/`:
-
-- `run_summary.json`
-- `metadata.json`
-- `trace.jsonl`
-- `pods.json`
-- `nodepowerprofiles.yaml`
-- controller manager/agent/simulator logs
-- simulator debug snapshots
-  - `sim_debug_energy.json` (simulator-integrated energy over all managed nodes)
-
-## Python setup (venv)
-
-Create and activate a virtual environment, then install dependencies:
+The report's configuration is [benchmark-40n.yaml](configs/benchmark-40n.yaml). Build and load the images as [experiments/README.md](../README.md) ("Images") shows, then:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+experiments/01-cpu-only-benchmark/scripts/10_setup_cluster.sh \
+  experiments/01-cpu-only-benchmark/configs/benchmark-40n.yaml
+SIM_IMAGE_PULL_POLICY=IfNotPresent experiments/01-cpu-only-benchmark/scripts/20_run_benchmark.sh \
+  experiments/01-cpu-only-benchmark/configs/benchmark-40n.yaml
 ```
 
-You can later reactivate with:
-
-```bash
-source .venv/bin/activate
-```
-
-## Quick run
-
-Benchmark run configuration is centralized in:
-
-- `configs/benchmark.yaml`
-
-Use two entry points.
-
-### 1) Environment + cluster setup
-
-From within this experiment directory:
-
-```bash
-source .venv/bin/activate
-./scripts/10_setup_cluster.sh
-```
-
-Equivalent expanded commands run by `10_setup_cluster.sh`:
-
-```bash
-./scripts/00_prereqs_check.sh
-./scripts/01_create_cluster_kwokctl.sh
-./scripts/02_apply_nodes.sh
-```
-
-### 2) Benchmark sweep + collect + plot (YAML-configured)
-
-From the repo root:
-
-```bash
-source experiments/01-cpu-only-benchmark/.venv/bin/activate
-experiments/01-cpu-only-benchmark/scripts/20_run_benchmark.sh
-```
-
-Optionally pass a custom config file path:
+A quick debug run:
 
 ```bash
 experiments/01-cpu-only-benchmark/scripts/20_run_benchmark.sh \
-  experiments/01-cpu-only-benchmark/configs/benchmark.yaml
+  experiments/01-cpu-only-benchmark/configs/benchmark-debug.yaml
 ```
 
-`05_sweep.py` still accepts CLI overrides, but the default workflow is to edit `configs/benchmark.yaml` only.
+## Benchmark configs
 
-While the Joulie experiment is being run, you can watch the power profiles applied to the nodes with:
-
-```bash
-watch -n 5 'kubectl get nodepowerprofiles -o wide; echo; kubectl get nodes -L type,joulie.io/managed,joulie.io/power-profile' 
-```
-
-However, in the no-Joulie baseline no power profiles will be applied to the nodes!
-
-You can manually check that the right containers were used by running:
-
-```bash
-kubectl get pods -A -o=jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{range .spec.containers[*]}{.name}{"="}{.image}{" "}{end}{"\n"}{end}' \
-| egrep 'joulie-(agent|controller-manager)|joulie-telemetry-sim'
-```
-
-Policy/image override for manual component installs (when running `03_install_components.sh` directly):
-
-```bash
-export POLICY_TYPE=static_partition
-export STATIC_HP_FRAC=0.50
-export QUEUE_HP_BASE_FRAC=0.60
-export QUEUE_HP_MIN=1
-export QUEUE_HP_MAX=5
-export QUEUE_PERF_PER_HP_NODE=10
-export JOULIE_TAG=dev0.0.13
-export SIM_TAG=dev0.0.13
-```
-
-`05_sweep.py` manages policy per baseline automatically:
-
-- `A` -> simulator-only / no policy (controller manager+agent not installed)
-- `B` -> `static_partition`
-- `C` -> `queue_aware_v1`
-
-`rule_swap_v1` is kept only for debugging and should not be used as benchmark default.
-
-Optional registry/image overrides for manual install script:
-
-```bash
-export JOULIE_REGISTRY=registry.cern.ch/joulie
-export SIM_REGISTRY=registry.cern.ch/joulie
-export SIM_IMAGE=joulie-simulator
-```
-
-`01_create_cluster_kwokctl.sh` uses `manifests/kind-cluster.yaml` by default.
-Override with:
-
-```bash
-KIND_CLUSTER_CONFIG=/path/to/kind-config.yaml ./scripts/01_create_cluster_kwokctl.sh
-```
-
-## Results
-
-- Run dirs: `results/<run_id>/...`
-- Aggregated CSV: `results/summary.csv`
-- Analysis report: [`REPORT.md`](./REPORT.md)
-- Report snapshot assets (commit-friendly): [`assets/`](./assets/)
-- Plots: `results/plots/*.png`
-  - `runtime_distribution.png`
-  - `throughput_vs_energy.png`
-  - `energy_vs_makespan.png`
-  - `baseline_means.png`
-- Seed-shared traces reused across baselines: `results/traces/*.jsonl`
-
-## Verifying no DNS leaks from KinD
-
-KinD clusters with kube-scheduler extenders can leak internal `.cluster.local` DNS queries to the host's upstream DNS (since kube-scheduler runs with `hostNetwork: true`). The cluster setup script (`01_create_cluster_kwokctl.sh`) applies iptables rules to redirect all DNS from the control-plane node to CoreDNS, but you should verify this after cluster creation:
-
-```bash
-# On the host VM, capture DNS traffic leaving the machine:
-sudo tcpdump -i eth0 port 53 -nn
-
-# You should see NO queries for *.cluster.local or *.svc.cluster.local.
-# If you see queries like:
-#   joulie-scheduler-extender.joulie-system.svc.cluster.local
-#   joulie-scheduler-extender.joulie-system.svc.cluster.local.cern.ch
-# then the iptables DNS redirect is not working: recreate the cluster.
-```
-
-If DNS leaks are observed, delete and recreate the cluster:
-
-```bash
-kind delete cluster --name joulie-cpu-benchmark
-REUSE_EXISTING_CLUSTER=false bash scripts/10_setup_cluster.sh
-```
-
-## Steady-State Measurement Approach
-
-This experiment uses a **timeout-based truncation** strategy to measure cluster behavior
-during quasi-steady state. Instead of waiting for all jobs to complete (which produces a
-long cooldown tail as the last few pods drain), the benchmark enforces a fixed timeout
-(`run.timeout` in the config, typically 300s wall-clock).
-
-**Rationale:**
-
-- The cooldown tail (where a nearly-empty cluster finishes the last few jobs) is not
-  representative of production workloads, where new work continuously arrives.
-- Energy metrics during the tail are dominated by idle-cluster power, which dilutes the
-  effect of energy-aware scheduling.
-- By truncating at timeout, we capture the steady-state window where the cluster is under
-  sustained load, exactly the regime where Joulie's power-capping policies matter most.
-
-**Consequences for analysis:**
-
-- The analysis pipeline (`06_collect.py`) does **not** filter out timed-out runs. All runs
-  are included in summary statistics regardless of whether all jobs completed.
-- The plotting pipeline (`07_plot.py`) does **not** generate completion-rate or
-  timed-out-run plots, since timeout is a deliberate measurement strategy, not a failure.
-- Energy, throughput, and makespan metrics reflect the truncated measurement window.
-
-This approach is inspired by HPC benchmarking practices where steady-state measurements
-are preferred over transient startup/shutdown phases.
-
-## Notes
-
-- This is the first benchmark harness implementation.
-- Energy in `summary.csv` now prefers simulator-integrated energy (`sim_debug_energy.json`) and falls back to debug telemetry events if unavailable.
-- Throughput-vs-energy and energy-vs-makespan tradeoff plots are generated from `summary.csv`.
-- If a run has missing `sim_debug_events.json` telemetry entries, energy fields can be empty for that run.
+- [benchmark-40n.yaml](configs/benchmark-40n.yaml) - the report's: 2 seeds and a repeat, at regime
+- [benchmark-debug.yaml](configs/benchmark-debug.yaml) - 800 jobs, 1 seed, fast iteration
+- [benchmark.yaml](configs/benchmark.yaml) - 300 jobs, 3 seeds
+- [benchmark-overnight.yaml](configs/benchmark-overnight.yaml) - 2500 jobs, 3 seeds
+- [benchmark-5k.yaml](configs/benchmark-5k.yaml) and its `-debug` and `-prod` variants - 5,000 nodes ([cluster-nodes-5k.yaml](configs/cluster-nodes-5k.yaml)) in standalone mode, run by `scripts/standalone_sweep.py`

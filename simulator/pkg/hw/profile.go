@@ -35,7 +35,6 @@ type Profile struct {
 	CPUDriverFamily           string
 	CPULowestNonlinearFreqMHz float64
 	CPUSockets                int
-	CPUSocketCapMinW          float64
 	CPUSocketCapMaxW          float64
 	GPU                       GPUProfile
 	// Defaulted marks the fields that still hold their built-in constant.
@@ -49,7 +48,6 @@ type Profile struct {
 // constant. ApplyOverrides clears the mark of every field a class sets.
 type Defaulted struct {
 	PMaxW                bool
-	CPUSocketCapMinW     bool
 	CPUSocketCapMaxW     bool
 	GPUMaxWattsPerGPU    bool
 	GPUMinCapWattsPerGPU bool
@@ -117,7 +115,6 @@ type Overrides struct {
 	CPUDriverFamily           *string       `yaml:"cpuDriverFamily"`
 	CPULowestNonlinearFreqMHz *float64      `yaml:"cpuLowestNonlinearFreqMHz"`
 	CPUSockets                *int          `yaml:"cpuSockets"`
-	CPUSocketCapMinW          *float64      `yaml:"cpuSocketCapMinW"`
 	CPUSocketCapMaxW          *float64      `yaml:"cpuSocketCapMaxW"`
 	GPU                       *GPUOverrides `yaml:"gpu"`
 }
@@ -223,10 +220,6 @@ func ApplyOverrides(base Profile, o Overrides) Profile {
 	if o.CPUSockets != nil {
 		out.CPUSockets = *o.CPUSockets
 	}
-	if o.CPUSocketCapMinW != nil {
-		out.CPUSocketCapMinW = *o.CPUSocketCapMinW
-		out.Defaulted.CPUSocketCapMinW = false
-	}
 	if o.CPUSocketCapMaxW != nil {
 		out.CPUSocketCapMaxW = *o.CPUSocketCapMaxW
 		out.Defaulted.CPUSocketCapMaxW = false
@@ -311,8 +304,8 @@ func ValidateProfile(p Profile) error {
 	if p.FMaxMHz < p.FMinMHz {
 		return fmt.Errorf("fMaxMHz must be >= fMinMHz")
 	}
-	if p.RaplCapMinW <= 0 {
-		return fmt.Errorf("raplCapMinW must be > 0")
+	if p.RaplCapMinW < 0 {
+		return fmt.Errorf("raplCapMinW must be >= 0")
 	}
 	if p.RaplCapMaxW <= 0 {
 		return fmt.Errorf("raplCapMaxW must be > 0")
@@ -350,14 +343,8 @@ func ValidateProfile(p Profile) error {
 	if p.CPUSockets < 0 {
 		return fmt.Errorf("cpuSockets must be >= 0")
 	}
-	if p.CPUSocketCapMinW < 0 {
-		return fmt.Errorf("cpuSocketCapMinW must be >= 0")
-	}
 	if p.CPUSocketCapMaxW < 0 {
 		return fmt.Errorf("cpuSocketCapMaxW must be >= 0")
-	}
-	if p.CPUSocketCapMaxW > 0 && p.CPUSocketCapMinW > p.CPUSocketCapMaxW {
-		return fmt.Errorf("cpuSocketCapMinW must be <= cpuSocketCapMaxW")
 	}
 	if p.CPULowestNonlinearFreqMHz < 0 {
 		return fmt.Errorf("cpuLowestNonlinearFreqMHz must be >= 0")
@@ -484,14 +471,8 @@ func ValidateOverrides(o Overrides) error {
 	if o.CPUSockets != nil && *o.CPUSockets < 0 {
 		return fmt.Errorf("cpuSockets override must be >= 0")
 	}
-	if o.CPUSocketCapMinW != nil && *o.CPUSocketCapMinW < 0 {
-		return fmt.Errorf("cpuSocketCapMinW override must be >= 0")
-	}
 	if o.CPUSocketCapMaxW != nil && *o.CPUSocketCapMaxW < 0 {
 		return fmt.Errorf("cpuSocketCapMaxW override must be >= 0")
-	}
-	if o.CPUSocketCapMinW != nil && o.CPUSocketCapMaxW != nil && *o.CPUSocketCapMinW > *o.CPUSocketCapMaxW {
-		return fmt.Errorf("cpuSocketCapMinW override must be <= cpuSocketCapMaxW override")
 	}
 	if len(o.CPUPowerCurve) > 0 {
 		lastLoad := -1.0
@@ -616,7 +597,7 @@ func ParseClasses(b []byte, base Profile) ([]Class, error) {
 // removedModelKeys are the class model keys of knobs that no longer exist;
 // nothing read them. removedGPUKeys are the same under model.gpu.
 var (
-	removedModelKeys = []string{"podW", "dvfsDropWPerPct", "noiseStddevW"}
+	removedModelKeys = []string{"podW", "dvfsDropWPerPct", "noiseStddevW", "cpuSocketCapMinW"}
 	removedGPUKeys   = []string{"powerModel"}
 )
 

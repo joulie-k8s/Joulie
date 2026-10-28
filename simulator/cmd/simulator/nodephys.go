@@ -107,10 +107,9 @@ func stepNodeOnce(st *nodeState, model simModel, h float64) (cpuW, gpuW float64)
 	for i := range st.CPUSockets {
 		st.CPUSockets[i].Utilization = clamp01(perSocketUtil)
 		st.CPUSockets[i].PerfMultiplier = cpuThroughputMultiplier(st.FreqScale, cpuClass, model, st.MemoryIntensity, st.IOIntensity, st.CPUThermalThrottle)
+		// No floor per socket: the node cap is refused below cpuCapFloorW,
+		// and a package power limit may be set below the cTDP range.
 		st.CPUSockets[i].CapWatts = st.CapWatts / float64(len(st.CPUSockets))
-		if model.CPUSocketCapMinW > 0 && st.CPUSockets[i].CapWatts < model.CPUSocketCapMinW {
-			st.CPUSockets[i].CapWatts = model.CPUSocketCapMinW
-		}
 		if model.CPUSocketCapMaxW > 0 && st.CPUSockets[i].CapWatts > model.CPUSocketCapMaxW {
 			st.CPUSockets[i].CapWatts = model.CPUSocketCapMaxW
 		}
@@ -297,6 +296,17 @@ func gpuDevicePowers(st *nodeState, model simModel) (powerW, perf []float64) {
 	return powerW, perf
 }
 
+// cpuCapFloorW is the lowest node CPU cap the simulator accepts,
+// RaplCapMinW (SIM_RAPL_CAP_MIN_W, 0 by default). No floor is invented: the
+// vendors of the modelled CPUs publish no minimum package power limit, and
+// one may be set below the low end of the cTDP range (AMD EPYC 9004 HPC
+// tuning guide, publication 58002). A cap the CPU cannot reach holds it at
+// its lowest-frequency power (cpuPower), as real hardware does. The control
+// refuses a cap below the floor and cpuPower never applies one.
+func cpuCapFloorW(model simModel) float64 {
+	return model.RaplCapMinW
+}
+
 // cpuPowerWithModel returns the node's CPU power and, above the cap, lowers
 // st.FreqScale to the scale that meets it and sets st.CapSaturated
 // (cpuPower).
@@ -319,10 +329,7 @@ func cpuPower(st *nodeState, model simModel, scale float64) (powerW, solvedScale
 	if cpuClass == "" {
 		cpuClass = "cpu.mixed"
 	}
-	capW := st.CapWatts
-	if capW < model.RaplCapMinW {
-		capW = model.RaplCapMinW
-	}
+	capW := math.Max(st.CapWatts, cpuCapFloorW(model))
 	if model.RaplCapMaxW > 0 && capW > model.RaplCapMaxW {
 		capW = model.RaplCapMaxW
 	}
@@ -370,8 +377,9 @@ func cpuPower(st *nodeState, model simModel, scale float64) (powerW, solvedScale
 func cpuPowerModel(model simModel) phys.PowerModel {
 	if len(model.CPUPowerCurve) > 0 {
 		return phys.MeasuredCurveCPUModel{
-			Points: model.CPUPowerCurve,
-			Knee:   cpuKneeFromModel(model),
+			Points:   model.CPUPowerCurve,
+			Knee:     cpuKneeFromModel(model),
+			BetaFreq: model.BetaFreq,
 		}
 	}
 	return phys.AnalyticCPUModel{

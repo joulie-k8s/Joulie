@@ -1225,8 +1225,10 @@ def test_scheduler_extender_scoring(ctx: Ctx) -> None:
         if "host" not in entry or "score" not in entry:
             raise AssertionError(f"missing host or score in prioritize response: {entry}")
         score = entry["score"]
-        if not (0 <= score <= 100):
-            raise AssertionError(f"score {score} out of range [0, 100] for {entry['host']}")
+        # The extender API's range, 0 to MaxExtenderPriority (10); the
+        # extender used to return its 0 to 100 node score.
+        if not (0 <= score <= 10):
+            raise AssertionError(f"score {score} out of range [0, 10] for {entry['host']}")
         log(f"node={entry['host']} score={score}")
 
     log("scheduler extender scoring verified")

@@ -588,7 +588,7 @@ func (n *Node) buildModels() error {
 		if err != nil {
 			return fmt.Errorf("hwemu: profile %s: %w", n.profile.Name, err)
 		}
-		n.cpuModel = phys.MeasuredCurveCPUModel{Points: points, Knee: ph.CPU.Knee.V}
+		n.cpuModel = phys.MeasuredCurveCPUModel{Points: points, Knee: ph.CPU.Knee.V, BetaFreq: ph.CPU.BetaFreq.V}
 	default:
 		return fmt.Errorf("hwemu: profile %s: unknown cpu model %q", n.profile.Name, ph.CPU.Model)
 	}

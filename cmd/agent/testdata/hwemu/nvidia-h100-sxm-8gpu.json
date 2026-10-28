@@ -86,7 +86,7 @@
     },
     "controlAvailable": true,
     "count": 8,
-    "currentCapWatts": 400,
+    "currentCapWatts": 700,
     "governor": {
       "baseline": {
         "devices": [

@@ -3,16 +3,21 @@
 
 Usage: summarize.py RUN_DIR
 
-Reads every *-cpu.csv and *-gpu.csv in RUN_DIR (govsweep's output) and
-prints, for each grid, the energy to solution and the time of every arm
-against the grid's baseline arm, per workload kind, as medians and 95th
-percentiles over profiles, loads, classes and seeds, then the acceptance
-rule of the experiment's README applied to the Tier A half of it.
+Reads every *-cpu.csv and *-gpu.csv in RUN_DIR (govsweep's output). For a
+Tier A run (configs/tier-a.yaml) it prints the energy to solution and the
+time of every arm against the grid's baseline arm, per workload kind, as
+medians and 95th percentiles over profiles, loads, classes and seeds, then
+the acceptance rule of the experiment's README, judged per profile. For a
+Q5 run (sensitivity variants, configs/tier-a-sensitivity.yaml) it prints
+the acceptance at every value of each assumed fact and the burst latency;
+for a Q3 run (the receiver gate forced on, configs/tier-a-gate.yaml), the
+gate's cost and what sustained buys back.
 
 Baselines: CPU, the performance preset with boost on (race to idle at the
 reference frequency); GPU, auto with no cap, in the same profile, workload,
 transfer and sensitivity variant. Only cells that ran (status ok) are
-compared; a cell whose arm is unsupported on its profile is counted apart.
+compared, timed-out cells aside in the acceptance; a cell whose arm or cap
+the profile cannot take is counted apart.
 Standard library only.
 """
 import csv
@@ -53,6 +58,8 @@ def load(run, grid):
 def cpu_kind(r):
     if r["load"] == "steady":
         return f"steady {r['pct']} %"
+    if r["load"] == "bursty":
+        return f"bursty {r['class']}"
     return r["load"]
 
 
@@ -132,18 +139,68 @@ def cpu_section(rows):
         natives = sorted({f"{r['arm']}: {r['native']} ({r['result'] or 'nothing written'})" for r in sub})
         table(f"Profile {prof}, steady loads ({'; '.join(natives)})", deltas(sub, key, arm, base), order)
     bursty = [r for r in base_rows if r["load"] == "bursty" and r["status"] == "ok"]
-    if bursty:
-        print("\n#### Bursty load: burst latency (ms, p95 over bursts, median over profiles and seeds)\n")
-        print("| arm | p50 ms | p95 ms |")
-        print("|---|---|---|")
-        by = defaultdict(lambda: ([], []))
-        for r in bursty:
+    for cls in sorted({r["class"] for r in bursty}):
+        # A bursty cell's time is the fixed window of its bursts; what an arm
+        # costs it is the burst latency, resolved to the burst step.
+        sub = [r for r in bursty if r["class"] == cls]
+        ref = {(r["profile"], r["seed"]): float(r["burst_p95_ms"]) for r in sub if r["arm"] == base}
+        print(f"\n#### Bursty load, {cls}: burst latency (p95 over bursts; median over profiles and seeds)\n")
+        print(f"| arm | p50 ms | p95 ms | p95 against `{base}` % |")
+        print("|---|---|---|---|")
+        by = defaultdict(lambda: ([], [], []))
+        for r in sub:
             by[r["arm"]][0].append(float(r["burst_p50_ms"]))
             by[r["arm"]][1].append(float(r["burst_p95_ms"]))
+            b = ref.get((r["profile"], r["seed"]))
+            if b:
+                by[r["arm"]][2].append(100 * (float(r["burst_p95_ms"]) / b - 1))
         for a in order:
             if a in by:
-                print(f"| {a} | {statistics.median(by[a][0]):.0f} | {statistics.median(by[a][1]):.0f} |")
+                p50, p95, d = by[a]
+                print(f"| {a} | {statistics.median(p50):.0f} | {statistics.median(p95):.0f} | {fmt(statistics.median(d)) if d else 'n/a'} |")
     return deltas(base_rows, key, arm, base)
+
+
+def gpu_arm(r):
+    a = r["preset"] + (r["ceiling_pct"] if r["ceiling_pct"] else "")
+    return f"{a} cap{r['cap_pct']}"
+
+
+def acceptance_deltas(rows, key, arm_of, base_arm, loads=None):
+    """The deltas the acceptance rule judges, by (arm, profile), one per cell:
+    job cells only, unless loads names others (an idle cell has no job to
+    slow down, and a bursty cell's time is a fixed window in every arm; both
+    are reported apart), each cell's deltas averaged over its seeds (the
+    emulator is deterministic, so seeds repeat a cell rather than sample it),
+    and a timed-out cell kept with the slowdown at the limit, a lower bound,
+    and counted as censored. key leaves out the seed and includes the profile."""
+    judged = (lambda r: r["load"] in loads) if loads else (lambda r: r["load"] not in ("idle", "bursty"))
+    base = defaultdict(list)
+    for r in rows:
+        if judged(r) and r["status"] == "ok" and arm_of(r) == base_arm:
+            base[key(r)].append(r)
+    cells = defaultdict(lambda: {"e": [], "t": [], "censored": False})
+    for r in rows:
+        if not judged(r) or r["status"] not in ("ok", "timeout"):
+            continue
+        bs = [b for b in base.get(key(r), []) if b["seed"] == r["seed"]]
+        if not bs:
+            continue
+        be, bt = float(bs[0]["host_j"]), float(bs[0]["time_s"])
+        if be <= 0 or bt <= 0:
+            continue
+        c = cells[(arm_of(r), key(r))]
+        c["e"].append(100 * (float(r["host_j"]) / be - 1))
+        c["t"].append(100 * (float(r["time_s"]) / bt - 1))
+        c["censored"] |= r["status"] == "timeout"
+    out = defaultdict(lambda: {"e": [], "t": [], "n": 0, "censored": 0})
+    for (a, k), c in cells.items():
+        d = out[(a, k[0])]
+        d["e"].append(statistics.mean(c["e"]))
+        d["t"].append(statistics.mean(c["t"]))
+        d["n"] += 1
+        d["censored"] += c["censored"]
+    return out
 
 
 def gpu_section(rows):
@@ -151,9 +208,7 @@ def gpu_section(rows):
         return {}
     print("\n## E-G2: GPU presets\n")
     print(f"Baseline: `{GPU_BASE_PRESET}` with no cap on the same profile, workload, transfer, receiver gate and seed.")
-    def arm(r):
-        a = r["preset"] + (r["ceiling_pct"] if r["ceiling_pct"] else "")
-        return f"{a} cap{r['cap_pct']}"
+    arm = gpu_arm
     key = lambda r: (r["profile"], r["sens"], r["gate"], r["load"], r["class"], r["gpus"], r["transfer"], r["transfer_intensity"], r["seed"])
     base_arm = f"{GPU_BASE_PRESET} cap{GPU_BASE_CAP}"
     base_rows = [r for r in rows if not r["sens"]]
@@ -161,9 +216,9 @@ def gpu_section(rows):
     unsupported = defaultdict(set)
     for r in base_rows:
         if r["status"] == "unsupported":
-            unsupported[r["profile"]].add(r["preset"] + (r["ceiling_pct"] or ""))
+            unsupported[r["profile"]].add(arm(r))
     if unsupported:
-        print("\nArms a profile cannot express (pkg/governor gives unsupported; nothing ran):\n")
+        print("\nArms a profile cannot express (pkg/governor gives unsupported, or the cap is outside the board's range; nothing ran):\n")
         for p in sorted(unsupported):
             print(f"- {p}: {', '.join(sorted(unsupported[p]))}")
     timeouts = defaultdict(int)
@@ -187,68 +242,214 @@ def gpu_section(rows):
     return deltas(base_rows, key, arm, base_arm)
 
 
-def sensitivity_section(cpu, gpu):
+CANDIDATES = (
+    # (name, class, arms in order of preference, limit, baseline arm)
+    ("CPU performance (boost on)", "performance", ("performance-boost-on", "performance"), PERF_P95, True),
+    ("CPU efficiency", "eco", ("efficiency-boost-on", "efficiency"), ECO_P95, False),
+    ("CPU balanced", "eco", ("balanced-boost-on", "balanced"), ECO_P95, False),
+    ("CPU efficiency, boost off (CPU_GOVERNOR_ECO_BOOST=off)", "eco", ("efficiency-boost-off",), ECO_P95, False),
+    ("GPU efficient 75 %", "eco", ("efficient75 cap100",), ECO_P95, False),
+    ("GPU efficient 80 %", "eco", ("efficient80 cap100",), ECO_P95, False),
+    ("GPU efficient 90 %", "eco", ("efficient90 cap100",), ECO_P95, False),
+    ("GPU efficient 75 % with a 60 % cap", "eco", ("efficient75 cap60",), ECO_P95, False),
+    ("GPU sustained", "performance", ("sustained cap100",), PERF_P95, False),
+)
+
+
+def burst_changes(cpu):
+    """Each arm's burst p95 change against the baseline arm, by (arm,
+    profile, class), median over seeds."""
+    rows = [r for r in cpu if r["load"] == "bursty" and r["status"] == "ok" and not r["sens"]]
+    if not rows:
+        return {}
+    base = cpu_base(rows)
+    ref = {(r["profile"], r["class"], r["seed"]): float(r["burst_p95_ms"]) for r in rows if r["arm"] == base}
+    out = defaultdict(list)
+    for r in rows:
+        b = ref.get((r["profile"], r["class"], r["seed"]))
+        if b:
+            out[(r["arm"], r["profile"], r["class"])].append(100 * (float(r["burst_p95_ms"]) / b - 1))
+    return {k: statistics.median(v) for k, v in out.items()}
+
+
+def acceptance(cpu_d, gpu_d, cpu_idle=None, gpu_idle=None, burst=None):
+    """Judges each candidate on each profile (a default applies to every
+    node, and the profiles answer differently). d and idle map (arm,
+    profile) to deltas (acceptance_deltas)."""
+    print("\n## Acceptance rule, Tier A half\n")
+    print(f"A candidate default passes Tier A on a profile when its median energy change there is negative and its p95 "
+          f"slowdown is at most {PERF_P95:.0f} % (performance class) or {ECO_P95:.0f} % (eco class). Tier B and Q5 decide the rest. "
+          "The rule judges job cells only, one value per cell (its seeds averaged); idle cells, with no job to slow down, "
+          "are reported apart, and bursty cells, whose time is a fixed window in every arm, are left to their burst latency in E-G1. A timed-out cell counts with its "
+          "slowdown at the limit, a lower bound, so with any such cell a pass is not established. "
+          "Idle energy is reported for the GPU candidates only: CPU idle power is the same under every preset by "
+          "assumption (`idleGovernorDeltaW` is 0 in every profile), and Q5 varies it. "
+          "Tier B has measured no energy or slowdown yet (Q4), so this rule adopts no default: a pass here is the Tier A half. "
+          "The burst column is each CPU candidate's burst p95 against the baseline, per burst class; the rule does not "
+          "count it yet. The time p95 is the nearest-rank 95th percentile over the profile's cells (the 19th of 20, "
+          "the 46th of 48), so the worst cell is shown beside it.\n")
+    burst = burst or {}
+    classes = sorted({k[2] for k in burst})
+    print("| candidate | class | profile | cells | timed out | energy median % | time p95 % | time worst cell % | idle energy median % | "
+          f"burst p95 % ({', '.join(classes) or 'none'}) | Tier A |")
+    print("|---|---|---|---:|---:|---|---|---|---|---|---|")
+    tally = []
+    for name, cls, arms, limit, is_base in CANDIDATES:
+        src, idle = (cpu_d, cpu_idle or {}) if name.startswith("CPU") else (gpu_d, gpu_idle or {})
+        arm = next((a for a in arms if any(k[0] == a for k in src)), None)
+        if arm is None:
+            continue
+        verdicts = []
+        for prof in sorted({k[1] for k in src if k[0] == arm}):
+            d = src[(arm, prof)]
+            if not d["n"]:
+                continue
+            e, t = statistics.median(d["e"]), pct(d["t"], 95)
+            ok = "baseline" if is_base else ("pass" if e < 0 and t <= limit else "fail")
+            # With censored cells the p95 is a lower bound: a pass is not established.
+            if d["censored"] and ok == "pass":
+                ok = "undecided (timed-out cells)"
+            i = idle.get((arm, prof))
+            icell = fmt(statistics.median(i["e"])) if i and i["n"] and name.startswith("GPU") else "n/a"
+            tcell = (">= " if d["censored"] else "") + fmt(t)
+            bs = [burst.get((arm, prof, c)) for c in classes]
+            bcell = ", ".join(fmt(b) if b is not None else "n/a" for b in bs) if name.startswith("CPU") and classes else "n/a"
+            wcell = (">= " if d["censored"] else "") + fmt(max(d["t"]))
+            print(f"| {name} | {cls} | {prof} | {d['n']} | {d['censored']} | {fmt(e)} | {tcell} | {wcell} | {icell} | {bcell} | {ok} |")
+            verdicts.append(ok)
+        if not is_base and verdicts:
+            tally.append((name, sum(v == "pass" for v in verdicts), len(verdicts)))
+    if tally:
+        print("\n| candidate | profiles where it passes |")
+        print("|---|---|")
+        for name, k, n in tally:
+            print(f"| {name} | {k} of {n} |")
+
+
+def sign_check(cpu, gpu):
+    """Q5's half of the acceptance rule: a candidate's energy change on a
+    profile, judged as the acceptance judges it, must stay negative and its
+    p95 slowdown within the candidate's limit at every value of every
+    assumed fact. Its worst cell and its idle energy are reported beside."""
     sens = sorted({r["sens"] for r in cpu + gpu if r["sens"]})
     if not sens:
         return
-    print("\n## Q5: sensitivity\n")
-    print("Median energy change against the baseline arm in the same variant; "
-          "a conclusion holds only if its sign is the same at every value of a fact.\n")
-    print("| variant | grid | arm | energy median % | time median % |")
-    print("|---|---|---|---|---|")
-    for s in sens:
-        for grid, rows in (("cpu", cpu), ("gpu", gpu)):
-            sub = [r for r in rows if r["sens"] == s]
-            if not sub:
+    cpu_key = lambda r: (r["profile"], r["load"], r["pct"], r["class"])
+    gpu_key = lambda r: (r["profile"], r["gate"], r["load"], r["class"], r["gpus"], r["transfer"], r["transfer_intensity"])
+    gpu_base = f"{GPU_BASE_PRESET} cap{GPU_BASE_CAP}"
+    by = defaultdict(lambda: defaultdict(list))  # (candidate, profile) -> fact -> [(value, energy, p95, idle)]
+    limits = {}
+    for v in sens:
+        fact, value = v.split("=", 1)
+        sub_cpu, sub_gpu = [r for r in cpu if r["sens"] == v], [r for r in gpu if r["sens"] == v]
+        d = {"CPU": acceptance_deltas(sub_cpu, cpu_key, lambda r: r["arm"], cpu_base(sub_cpu)) if sub_cpu else {},
+             "GPU": acceptance_deltas(sub_gpu, gpu_key, gpu_arm, gpu_base) if sub_gpu else {}}
+        idle = {"CPU": acceptance_deltas(sub_cpu, cpu_key, lambda r: r["arm"], cpu_base(sub_cpu), loads=("idle",)) if sub_cpu else {},
+                "GPU": acceptance_deltas(sub_gpu, gpu_key, gpu_arm, gpu_base, loads=("idle",)) if sub_gpu else {}}
+        for name, _, arms, limit, is_base in CANDIDATES:
+            grid = name[:3]
+            arm = next((a for a in arms if any(k[0] == a for k in d[grid])), None)
+            if is_base or arm is None:
                 continue
-            if grid == "cpu":
-                d = deltas(sub, lambda r: (r["profile"], r["load"], r["pct"], r["class"], r["seed"]), lambda r: r["arm"], cpu_base(sub))
-            else:
-                arm = lambda r: f"{r['preset']}{r['ceiling_pct']} cap{r['cap_pct']} gate-{r['gate']}"
-                key = lambda r: (r["profile"], r["load"], r["class"], r["gpus"], r["transfer"], r["transfer_intensity"], r["seed"], r["gate"])
-                base = {}
-                for r in sub:
-                    if r["status"] == "ok" and r["preset"] == "auto" and r["cap_pct"] == "100":
-                        base[key(r)] = r
-                d = defaultdict(lambda: {"e": [], "t": [], "n": 0})
-                for r in sub:
-                    b = base.get(key(r))
-                    if r["status"] != "ok" or b is None:
-                        continue
-                    x = d[arm(r)]
-                    x["e"].append(100 * (float(r["host_j"]) / float(b["host_j"]) - 1))
-                    x["t"].append(100 * (float(r["time_s"]) / float(b["time_s"]) - 1))
-                    x["n"] += 1
-            for a in sorted(d):
-                if d[a]["n"]:
-                    print(f"| {s} | {grid} | {a} | {fmt(statistics.median(d[a]['e']))} | {fmt(statistics.median(d[a]['t']))} |")
+            limits[name] = limit
+            for (a, prof), x in d[grid].items():
+                if a == arm and x["n"]:
+                    i = idle[grid].get((a, prof))
+                    by[(name, prof)][fact].append((value, statistics.median(x["e"]), pct(x["t"], 95),
+                                                   statistics.median(i["e"]) if i and i["n"] else None, max(x["t"])))
+    if not by:
+        return
+    print("\n## Q5: the acceptance at every value of each assumed fact\n")
+    print("Each candidate's energy change and p95 slowdown on each profile, judged as the acceptance judges it (job "
+          "cells, one value per cell), at every value of each assumed fact, one fact at a time. Q5 holds when, at every "
+          "value, the energy change stays negative and the p95 slowdown within the candidate's limit. Idle energy is "
+          "the median over the idle cells.\n")
+    print("| candidate | profile | energy not negative at | worst energy % | p95 over the limit at | worst p95 % | worst cell % | idle energy % (lowest to highest) | Q5 |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    for (name, prof), facts in sorted(by.items()):
+        rows = [(f, v, e, t, i) for f, vals in facts.items() for v, e, t, i, _ in vals]
+        wc = max(((w, f, v) for f, vals in facts.items() for v, _, _, _, w in vals), key=lambda x: x[0])
+        e_bad = sorted({f"{f}={v}" for f, v, e, _, _ in rows if e >= 0})
+        t_bad = sorted({f"{f}={v}" for f, v, _, t, _ in rows if t > limits[name]})
+        we = max(rows, key=lambda x: x[2])
+        wt = max(rows, key=lambda x: x[3])
+        idles = [i for *_, i in rows if i is not None]
+        icell = f"{fmt(min(idles))} to {fmt(max(idles))}" if idles else "n/a"
+        print(f"| {name} | {prof} | {', '.join(e_bad) or 'none'} | {fmt(we[2])} at {we[0]}={we[1]} | "
+              f"{', '.join(t_bad) or 'none'} | {fmt(wt[3])} at {wt[0]}={wt[1]} | {fmt(wc[0])} at {wc[1]}={wc[2]} | {icell} | "
+              f"{'fails' if e_bad or t_bad else 'holds'} |")
+    if any(f == "freqRampMS" for facts in by.values() for f in facts):
+        print("\nThe steady and job cells step the physics every substepMS (100 ms in configs/tier-a-sensitivity.yaml), "
+              "and a frequency ramp no longer than one substep completes within it (phys.FirstOrderToward), so "
+              "`freqRampMS` 5 and 50 give the same steady results; the bursts, stepped at 1 ms, tell them apart.")
+    missing = [name for name, *_, is_base in CANDIDATES if not is_base and name not in limits]
+    if missing:
+        print(f"\nNot run in Q5 (their arms are not in this grid), so not established: {'; '.join(missing)}.")
 
 
-def acceptance(cpu_d, gpu_d):
-    print("\n## Acceptance rule, Tier A half\n")
-    print(f"A candidate default passes Tier A when its median energy change is negative and its p95 slowdown is at "
-          f"most {PERF_P95:.0f} % (performance class) or {ECO_P95:.0f} % (eco class). Tier B and Q5 decide the rest.\n")
-    print("| candidate | class | energy median % | time p95 % | Tier A |")
-    print("|---|---|---|---|---|")
-    # The last field marks the baseline arm itself, which is not judged; a
-    # candidate that changes nothing fails, since it lowers no energy.
-    for name, cls, d, limit, is_base in (
-        ("CPU performance (boost on)", "performance", cpu_d.get("performance-boost-on") or cpu_d.get("performance"), PERF_P95, True),
-        ("CPU efficiency", "eco", cpu_d.get("efficiency-boost-on") or cpu_d.get("efficiency"), ECO_P95, False),
-        ("CPU balanced", "eco", cpu_d.get("balanced-boost-on") or cpu_d.get("balanced"), ECO_P95, False),
-        ("CPU efficiency, boost off (CPU_GOVERNOR_ECO_BOOST=off)", "eco", cpu_d.get("efficiency-boost-off"), ECO_P95, False),
-        ("GPU efficient 75 %", "eco", gpu_d.get("efficient75 cap100"), ECO_P95, False),
-        ("GPU efficient 80 %", "eco", gpu_d.get("efficient80 cap100"), ECO_P95, False),
-        ("GPU efficient 90 %", "eco", gpu_d.get("efficient90 cap100"), ECO_P95, False),
-        ("GPU efficient 75 % with a 60 % cap", "eco", gpu_d.get("efficient75 cap60"), ECO_P95, False),
-        ("GPU sustained", "performance", gpu_d.get("sustained cap100"), PERF_P95, False),
-    ):
-        if not d or not d["n"]:
+def burst_q5(cpu):
+    """Q5 for the bursty cells: each arm's burst p95, and its change against
+    the baseline arm on the same profile, at every value of each CPU fact;
+    medians over profiles."""
+    rows = [r for r in cpu if r["load"] == "bursty" and r["status"] == "ok"]
+    if not rows or not any(r["sens"] for r in rows):
+        return
+    base = cpu_base(rows)
+    arms = [base] + sorted({r["arm"] for r in rows} - {base})
+    ref = {(r["sens"], r["class"], r["profile"]): float(r["burst_p95_ms"]) for r in rows if r["arm"] == base}
+    by = defaultdict(lambda: ([], []))
+    for r in rows:
+        b = ref.get((r["sens"], r["class"], r["profile"]))
+        x = by[(r["sens"] or "profile values", r["class"], r["arm"])]
+        x[0].append(float(r["burst_p95_ms"]))
+        if b:
+            x[1].append(100 * (float(r["burst_p95_ms"]) / b - 1))
+    print("\n## Q5: burst latency at every value of each CPU fact\n")
+    print(f"Burst p95 in ms, and its change against `{base}` on the same profile in %; medians over profiles.\n")
+    print("| variant | class | " + " | ".join(f"`{a}`" for a in arms) + " |")
+    print("|---|---|" + "---|" * len(arms))
+    for v, cls in sorted({(k[0], k[1]) for k in by}):
+        cells = []
+        for a in arms:
+            ms, d = by.get((v, cls, a), ([], []))
+            cells.append(f"{statistics.median(ms):.0f} ({fmt(statistics.median(d))})" if ms and d else "n/a")
+        print(f"| {v} | {cls} | " + " | ".join(cells) + " |")
+
+
+def gate_section(gpu):
+    """Q3: under a forced receiver gate, what the gate costs a gather job under
+    auto, and what sustained buys back, per profile and slowFraction."""
+    rows = [r for r in gpu if r["status"] == "ok" and r["transfer"] == "gather" and r["cap_pct"] == "100"]
+    if not any(r["gate"] == "on" for r in rows):
+        return
+    cannot = {(r["profile"], r["preset"]) for r in gpu if r["status"] == "unsupported"}
+    print("\n## Q3: the receiver gate on gather jobs\n")
+    print("A job of four GPUs gathers into an idle one. `auto` with the gate on against the gate off (the profile's), "
+          "and `sustained` against `auto` with the gate on; medians over classes and seeds. The repository's "
+          "`slowFraction` is 1.0, which makes the gate neutral.\n")
+    print("| slowFraction | profile | `auto`, gate on against off: energy %, time %, kJ | `sustained` against `auto`, gate on: energy %, time %, kJ |")
+    print("|---|---|---|---|")
+    key = lambda r: (r["profile"], r["class"], r["gpus"], r["transfer_intensity"], r["seed"], r["sens"])
+    cell = {(key(r), r["preset"], r["gate"]): r for r in rows}
+    out = defaultdict(lambda: ([], [], [], [], [], []))
+    for (k, preset, gate), r in cell.items():
+        if preset != "auto" or gate != "on":
             continue
-        e, t = statistics.median(d["e"]), pct(d["t"], 95)
-        ok = "baseline" if is_base else ("pass" if e < 0 and t <= limit else "fail")
-        print(f"| {name} | {cls} | {fmt(e)} | {fmt(t)} | {ok} |")
-
+        off, sus = cell.get((k, "auto", "profile")), cell.get((k, "sustained", "on"))
+        o = out[(k[5].split("=", 1)[1] if k[5] else "1.0 (profile)", k[0])]
+        if off:
+            o[0].append(100 * (float(r["host_j"]) / float(off["host_j"]) - 1))
+            o[1].append(100 * (float(r["time_s"]) / float(off["time_s"]) - 1))
+            o[2].append((float(r["host_j"]) - float(off["host_j"])) / 1000)
+        if sus:
+            o[3].append(100 * (float(sus["host_j"]) / float(r["host_j"]) - 1))
+            o[4].append(100 * (float(sus["time_s"]) / float(r["time_s"]) - 1))
+            o[5].append((float(sus["host_j"]) - float(r["host_j"])) / 1000)
+    med = lambda xs, f=fmt: f(statistics.median(xs)) if xs else "n/a"
+    kj = lambda v: f"{v:+.1f}"
+    for (sf, prof), o in sorted(out.items()):
+        sus = "the profile cannot express `sustained`" if (prof, "sustained") in cannot else f"{med(o[3])}, {med(o[4])}, {med(o[5], kj)}"
+        print(f"| {sf} | {prof} | {med(o[0])}, {med(o[1])}, {med(o[2], kj)} | {sus} |")
 
 def main():
     if len(sys.argv) != 2:
@@ -259,12 +460,29 @@ def main():
     if not cpu and not gpu:
         print(f"summarize.py: no *-cpu.csv or *-gpu.csv in {run}", file=sys.stderr)
         return 1
-    print(f"# Experiment 05, Tier A summary\n\nRun: `{os.path.basename(os.path.abspath(run))}`, "
+    # A run is Tier A, Q5 (sensitivity variants) or Q3 (the receiver gate
+    # forced on), and gets only its own sections: the acceptance belongs to
+    # Tier A's cells.
+    kind = ("Q3, the receiver gate" if any(r["gate"] == "on" for r in gpu) else
+            "Q5, sensitivity" if any(r["sens"] for r in cpu + gpu) else "Tier A")
+    print(f"# Experiment 05, {kind} summary\n\nRun: `{os.path.basename(os.path.abspath(run))}`, "
           f"{len(cpu)} CPU cells and {len(gpu)} GPU cells.\n")
-    cpu_d = cpu_section(cpu)
-    gpu_d = gpu_section(gpu)
-    sensitivity_section(cpu, gpu)
-    acceptance(cpu_d, gpu_d)
+    if kind.startswith("Q3"):
+        gate_section(gpu)
+    elif any(r["sens"] for r in cpu + gpu):
+        sign_check(cpu, gpu)
+        burst_q5(cpu)
+    else:
+        cpu_section(cpu)
+        gpu_section(gpu)
+        cpu_key = lambda r: (r["profile"], r["load"], r["pct"], r["class"])
+        gpu_key = lambda r: (r["profile"], r["gate"], r["load"], r["class"], r["gpus"], r["transfer"], r["transfer_intensity"])
+        cpu_arm, gpu_base = lambda r: r["arm"], f"{GPU_BASE_PRESET} cap{GPU_BASE_CAP}"
+        acceptance(acceptance_deltas(cpu, cpu_key, cpu_arm, cpu_base(cpu)) if cpu else {},
+                   acceptance_deltas(gpu, gpu_key, gpu_arm, gpu_base) if gpu else {},
+                   acceptance_deltas(cpu, cpu_key, cpu_arm, cpu_base(cpu), loads=("idle",)) if cpu else {},
+                   acceptance_deltas(gpu, gpu_key, gpu_arm, gpu_base, loads=("idle",)) if gpu else {},
+                   burst_changes(cpu))
     return 0
 
 

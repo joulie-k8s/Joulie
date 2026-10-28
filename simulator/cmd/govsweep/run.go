@@ -126,6 +126,12 @@ func (r *runner) run(ctx context.Context, c Cell) (Row, otlpjson.MetricsData, er
 		row.Arm, row.Status = arm.(armResult), statusUnsupported
 		return row, otlpjson.MetricsData{}, nil
 	}
+	if c.Grid == gridGPU && !capInRange(p, c) {
+		row.Arm = armResult{Result: joulie.GovernorResultUnsupported, Message: fmt.Sprintf("a %g %% cap is %g W, outside the board's %g to %g W",
+			c.CapPct, capW(p, c), p.GPUs.Limits.MinW.V, p.GPUs.Limits.MaxW.V)}
+		row.Status = statusUnsupported
+		return row, otlpjson.MetricsData{}, nil
+	}
 	root := filepath.Join(r.work, "cells", c.ID())
 	if err := os.RemoveAll(root); err != nil {
 		return row, otlpjson.MetricsData{}, err
@@ -525,6 +531,11 @@ func (r *runner) runGPUJob(ctx context.Context, m *meter, c Cell, tree *hwemu.Tr
 	}
 	for _, g := range m.node.State().GPUs {
 		if slices.Contains(workers, g.Index) {
+			// The cap must have taken on every GPU the job holds; an idle
+			// GPU without persistence mode may drop it, a busy one may not.
+			if want := capW(p, c); c.CapPct < 100 && math.Abs(g.LimitW-want) > 0.5 {
+				return fmt.Errorf("set the cap: asked %g W of GPU %d, it reports %g W", want, g.Index, g.LimitW)
+			}
 			row.CapW += g.LimitW / float64(len(workers))
 		}
 	}

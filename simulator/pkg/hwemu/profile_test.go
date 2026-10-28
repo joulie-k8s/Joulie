@@ -292,6 +292,46 @@ func TestH01EmbeddedProfilesLoadAndHaveNoDashes(t *testing.T) {
 	}
 }
 
+// A profile that names its own GPU limits is another board: a currentW
+// inherited from its parent is an admin's setting on the parent's board. The
+// H100 SXM node inherited the NVL's 400 W that way, so it ran at 400 W of
+// its 700 W, and experiment 05's SXM cells measured a capped GPU.
+func TestH01ProfileWithItsOwnGPULimitsDoesNotInheritCurrentW(t *testing.T) {
+	t.Parallel()
+	profiles, err := BuiltinProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := fs.Glob(renderProfilesFS, "profiles/*.yaml")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no embedded profiles: %v", err)
+	}
+	for _, f := range files {
+		b, err := fs.ReadFile(renderProfilesFS, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tree, err := renderParseFile(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		base, _ := tree["extends"].(string)
+		gpus, _ := tree["gpus"].(map[string]any)
+		limits, _ := gpus["limits"].(map[string]any)
+		if base == "" || limits == nil || limits["currentW"] != nil {
+			continue
+		}
+		if parent := profiles[base]; parent != nil && parent.GPUs != nil && parent.GPUs.Limits.CurrentW.Src != "" {
+			t.Errorf("%s sets its own GPU limits but inherits %s's currentW %g W; state its own",
+				f, base, parent.GPUs.Limits.CurrentW.V)
+		}
+	}
+	sxm := profiles["nvidia-h100-sxm-8gpu"]
+	if got := sxm.GPUs.Limits.CurrentW.V; sxm.GPUs.Limits.CurrentW.Src != "" && got != sxm.GPUs.Limits.DefaultW.V {
+		t.Errorf("nvidia-h100-sxm-8gpu starts at %g W, want its default %g W", got, sxm.GPUs.Limits.DefaultW.V)
+	}
+}
+
 // H01: decoding is strict. A misspelled key anywhere, including inside a fact
 // or a zone, is an error naming its path, never a silently dropped value.
 func TestH01RejectsUnknownKeys(t *testing.T) {
