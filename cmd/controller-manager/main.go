@@ -119,27 +119,21 @@ var (
 	gpuIntentWarningMu   sync.Mutex
 	gpuIntentWarningSeen = map[string]struct{}{}
 
-	// Policy controller outputs. Each is exported under its joulie_policy_*
-	// name and, for one release, under the deprecated joulie_operator_* alias
-	// (see deprecated.go).
-	policyNodeState = newDualGaugeVec(
-		"joulie_policy_node_state", "joulie_operator_node_state",
-		"Current policy controller view of node state (1 for active state, 0 otherwise).",
-		[]string{"node", "state"},
-	)
-	policyNodeProfileLabel = newDualGaugeVec(
-		"joulie_policy_node_profile_label", "joulie_operator_node_profile_label",
-		"Current node power-profile label as seen/applied by the policy controller (1 for active profile, 0 otherwise).",
-		[]string{"node", "profile"},
-	)
-	policyStateTransitions = newDualCounterVec(
-		"joulie_policy_state_transitions_total", "joulie_operator_state_transitions_total",
-		"Total number of state-transition events handled by the policy controller.",
-		[]string{"node", "from_state", "to_state", "result"},
-	)
+	// Policy controller outputs.
+	policyNodeState = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "joulie_policy_node_state",
+		Help: "Current policy controller view of node state (1 for active state, 0 otherwise).",
+	}, []string{"node", "state"})
+	policyNodeProfileLabel = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "joulie_policy_node_profile_label",
+		Help: "Current node power-profile label as seen/applied by the policy controller (1 for active profile, 0 otherwise).",
+	}, []string{"node", "profile"})
+	policyStateTransitions = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "joulie_policy_state_transitions_total",
+		Help: "Total number of state-transition events handled by the policy controller.",
+	}, []string{"node", "from_state", "to_state", "result"})
 
 	// How the policy split the performance slots across hardware families.
-	// New in the per-family split, so there is no joulie_operator_* alias.
 	// Both are reset every reconcile because family keys change at runtime:
 	// cpu:unknown-cpu becomes a catalogue key once the agent publishes
 	// NodeHardware.
@@ -295,12 +289,10 @@ func reconcileLoop(ctx context.Context, interval time.Duration, run func(context
 	}
 }
 
-// registerMetrics registers every policy metric, current and deprecated name,
-// and every input metric with reg.
+// registerMetrics registers every policy metric and every input metric with
+// reg.
 func registerMetrics(reg prometheus.Registerer) {
-	reg.MustRegister(policyNodeState.collectors()...)
-	reg.MustRegister(policyNodeProfileLabel.collectors()...)
-	reg.MustRegister(policyStateTransitions.collectors()...)
+	reg.MustRegister(policyNodeState, policyNodeProfileLabel, policyStateTransitions)
 	reg.MustRegister(policyFamilyNodes, policyFamilyPerformanceNodes)
 	reg.MustRegister(twinNodesAgentReporting)
 	reg.MustRegister(inputMetricCollectors()...)
@@ -644,9 +636,9 @@ func recordNodeStateMetrics(nodeName, state string) {
 	if state == "ActiveEco" {
 		activeEco = 1
 	}
-	policyNodeState.Set(activePerf, nodeName, "ActivePerformance")
-	policyNodeState.Set(draining, nodeName, "DrainingPerformance")
-	policyNodeState.Set(activeEco, nodeName, "ActiveEco")
+	policyNodeState.WithLabelValues(nodeName, "ActivePerformance").Set(activePerf)
+	policyNodeState.WithLabelValues(nodeName, "DrainingPerformance").Set(draining)
+	policyNodeState.WithLabelValues(nodeName, "ActiveEco").Set(activeEco)
 }
 
 func recordNodeProfileLabelMetrics(nodeName, profile string) {
@@ -658,8 +650,8 @@ func recordNodeProfileLabelMetrics(nodeName, profile string) {
 	if profile == profileEco {
 		eco = 1
 	}
-	policyNodeProfileLabel.Set(perf, nodeName, profilePerformance)
-	policyNodeProfileLabel.Set(eco, nodeName, profileEco)
+	policyNodeProfileLabel.WithLabelValues(nodeName, profilePerformance).Set(perf)
+	policyNodeProfileLabel.WithLabelValues(nodeName, profileEco).Set(eco)
 }
 
 func recordTransitionMetrics(a NodeAssignment) {
@@ -671,7 +663,7 @@ func recordTransitionMetrics(a NodeAssignment) {
 	if fromState == "Unknown" || toState == "Unknown" || fromState == toState {
 		return
 	}
-	policyStateTransitions.Inc(a.NodeName, fromState, toState, "applied")
+	policyStateTransitions.WithLabelValues(a.NodeName, fromState, toState, "applied").Inc()
 }
 
 func applyDowngradeGuards(
@@ -685,7 +677,7 @@ func applyDowngradeGuards(
 	// Record metrics for guarded transitions.
 	for _, a := range plan {
 		if a.Draining {
-			policyStateTransitions.Inc(a.NodeName, "ActivePerformance", "ActiveEco", "deferred")
+			policyStateTransitions.WithLabelValues(a.NodeName, "ActivePerformance", "ActiveEco", "deferred").Inc()
 		}
 	}
 }

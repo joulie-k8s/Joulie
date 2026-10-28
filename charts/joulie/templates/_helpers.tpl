@@ -25,15 +25,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{/*
 joulie.controllerManager renders the controllerManager values section as YAML.
-Until the release after next, keys the user still sets under the deprecated
-"operator" section are merged on top, so a values file written for the old key
-keeps working. Read it with:
+The "operator" key it replaced was merged on top until v0.3.0; a values file
+that still sets it fails here, where the chart would otherwise drop its keys
+without a word. Read it with:
   {{- $cm := include "joulie.controllerManager" . | fromYaml }}
 */}}
 {{- define "joulie.controllerManager" -}}
-{{- $cm := deepCopy (.Values.controllerManager | default dict) -}}
-{{- $legacy := .Values.operator | default dict -}}
-{{- mergeOverwrite $cm $legacy | toYaml -}}
+{{- if .Values.operator -}}
+{{- fail "the values key \"operator\" was removed in v0.3.0: move its contents under \"controllerManager\"" -}}
+{{- end -}}
+{{- .Values.controllerManager | default dict | toYaml -}}
 {{- end -}}
 
 {{/*

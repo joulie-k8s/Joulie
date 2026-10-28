@@ -161,8 +161,6 @@ The Chart column is what `charts/joulie/values.yaml` sets; "unset" means the cod
 | `NODE_POWER_PROMETHEUS_QUERY` | (empty) | unset | Your own PromQL, in **watts**, for the `custom` preset. With `{node}` it runs once per node with the node name filled in, and every series it returns is summed (a warning names a node whose query returns more than one). Without `{node}` it is summed by `NODE_POWER_NODE_LABEL`. |
 | `NODE_POWER_HTTP_ENDPOINT` | (empty) | unset | With `NODE_POWER_SOURCE=http`: a URL with `{node}`, answering one OTLP JSON `ExportMetricsServiceRequest` per node, such as the simulator's `/otlp/telemetry/{node}`. It is read with the rules of the `otel` preset under `NODE_POWER_SCOPE`; see [HTTP input format]({{< relref "/docs/architecture/telemetry.md#http-input-format" >}}). The legacy `packagePowerWatts` JSON is still read with a warning until v0.4.0: its power is the first positive of `packagePowerWatts` and `cpu.packagePowerWatts`, whatever `NODE_POWER_SCOPE` says, and 0 W when neither is positive. An answer over 8 MiB is an error (`source: http-error`). |
 
-Deprecated aliases, removed in the next minor release: `OPERATOR_NODE_POWER_SOURCE`, `OPERATOR_NODE_POWER_HTTP_ENDPOINT`, `OPERATOR_NODE_POWER_PROMETHEUS_ADDRESS`, `OPERATOR_NODE_POWER_PROMETHEUS_QUERY`. They are read only when the new name is unset, and the controller manager logs a warning naming the replacement.
-
 A custom query must return instantaneous power in watts. Energy exporters
 publish cumulative joules counters, which grow without bound, so they have to
 be converted with `rate()`; the presets already do:

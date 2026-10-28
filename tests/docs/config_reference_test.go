@@ -89,8 +89,7 @@ func TestDeprecatedEnvAliasesAreDocumented(t *testing.T) {
 
 	// Each alias map with the constant naming the release that removes it.
 	groups := map[string]string{
-		"legacyEnvAliases": "legacyEnvAliasesRemovedIn",
-		"inputEnvAliases":  "inputAliasesRemovedIn",
+		"inputEnvAliases": "inputAliasesRemovedIn",
 	}
 	for name := range maps {
 		if strings.HasSuffix(name, "EnvAliases") {

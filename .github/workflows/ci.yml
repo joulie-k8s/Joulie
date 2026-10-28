@@ -60,7 +60,7 @@ jobs:
 
   # helm lint of both charts, and scripts/verify-chart-renders.sh, which
   # renders the chart under the value combinations that have broken before
-  # (defaults, the deprecated operator: key, leader election, agent pool
+  # (defaults, the removed operator: key, leader election, agent pool
   # mode) and asserts the workload objects.
   helm:
     runs-on: ubuntu-24.04

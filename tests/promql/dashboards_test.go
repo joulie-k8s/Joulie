@@ -52,19 +52,11 @@ var seriesSuffixes = map[string][]string{
 	"SummaryOpts":   {"", "_sum", "_count"},
 }
 
-// aliasHelper is a constructor in cmd/controller-manager/deprecated.go that
-// registers each of its string literal arguments that is a joulie_* name: a
-// metric and its deprecated alias.
-var aliasHelper = regexp.MustCompile(`^newDual[A-Za-z]*Vec$`)
-
-// joulieName is a whole joulie_* name.
-var joulieName = regexp.MustCompile(`^joulie_[a-z0-9_]+$`)
-
 // exportedMetricNames returns every metric name a dashboard may select, read
 // from the registrations in the non-test Go files under metricSourceDirs:
 // the Name of a prometheus.GaugeOpts, CounterOpts, HistogramOpts or
 // SummaryOpts literal with the series of its type, the name of a
-// prometheus.NewDesc, and the joulie_* arguments of an aliasHelper. A string
+// prometheus.NewDesc. A string
 // that is only a label or a constant is not a metric. The Prometheus names of
 // the semconv metrics are added.
 func exportedMetricNames(t *testing.T) map[string]bool {
@@ -108,13 +100,6 @@ func exportedMetricNames(t *testing.T) map[string]bool {
 					if prometheusName(n.Fun) == "NewDesc" && len(n.Args) > 0 {
 						if s, ok := stringLiteral(n.Args[0]); ok {
 							names[s] = true
-						}
-					}
-					if fn, ok := n.Fun.(*ast.Ident); ok && aliasHelper.MatchString(fn.Name) {
-						for _, arg := range n.Args {
-							if s, ok := stringLiteral(arg); ok && joulieName.MatchString(s) {
-								names[s] = true
-							}
 						}
 					}
 				}
@@ -383,15 +368,16 @@ func TestDB01DashboardQueriesSelectExportedMetrics(t *testing.T) {
 // Joulie no longer exports, joulie_policy_node_compute_density (removed in
 // #67), in a panel inside a collapsed row and in a variable, and a name the
 // code spells only as a label (joulie_component, in pkg/controller/inputs);
-// it accepts what the dashboards use: Grafana variables, a histogram's
-// _bucket series, a deprecated alias still exported, and an OpenTelemetry
-// name.
+// it reports the joulie_operator_* alias removed in v0.3.0, and accepts what
+// the dashboards use: Grafana variables, a histogram's _bucket series and an
+// OpenTelemetry name.
 func TestDB02DashboardCheckCatchesARemovedMetric(t *testing.T) {
 	problems, err := dashboardProblems("testdata/dashboard-removed-metric.json", exportedMetricNames(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
+		`panel "Removed alias" target 0: joulie_operator_node_state is not a metric Joulie exports`,
 		`panel "A label, not a metric" target 0: joulie_component is not a metric Joulie exports`,
 		`panel "Compute density" target 0: joulie_policy_node_compute_density is not a metric Joulie exports`,
 		`variable dense: joulie_policy_node_compute_density is not a metric Joulie exports`,

@@ -164,10 +164,6 @@ controllerManager:
       prometheus.io/port: "8081"
       prometheus.io/path: /metrics
 
-# Deprecated: old name of the controllerManager section, removed in the next
-# minor release. Keys set here are merged over controllerManager for now.
-operator: {}
-
 schedulerExtender:
   enabled: false  # disabled by default; enable when using custom kube-scheduler config
   image:

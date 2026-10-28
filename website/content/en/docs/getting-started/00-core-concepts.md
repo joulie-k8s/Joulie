@@ -45,7 +45,7 @@ In Kubernetes an *operator* is a whole extension: custom resources plus the cont
 - **Agent** (`joulie-agent`): the per-node DaemonSet, Joulie's counterpart of the kubelet as the primary node agent.
 - **Scheduler extender** (`joulie-scheduler-extender`): the HTTP service configured under `extenders` in the kube-scheduler configuration.
 
-Older releases and dashboards called the controller manager "the operator"; its image, Deployment, values key and metric names carried that name and are kept as deprecated aliases for one release.
+Releases before v0.2.0 called the controller manager "the operator", and its image, Deployment, values key, environment variables and metric names carried that name. v0.2.0 renamed them and kept the old image, values key, variable and metric names as aliases until v0.3.0, which removed them.
 
 ## Main components
 

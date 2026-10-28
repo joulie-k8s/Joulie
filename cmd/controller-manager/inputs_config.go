@@ -92,7 +92,7 @@ func loadInputConfig() (inputConfig, error) {
 	}
 
 	np := &cfg.nodePower
-	np.source = strings.ToLower(envOrDeprecated("NODE_POWER_SOURCE", nodePowerSourceStatic))
+	np.source = strings.ToLower(envOrDefault("NODE_POWER_SOURCE", nodePowerSourceStatic))
 	switch np.source {
 	case nodePowerSourceStatic, nodePowerSourcePrometheus, nodePowerSourceHTTP:
 	default:
@@ -100,8 +100,8 @@ func loadInputConfig() (inputConfig, error) {
 			np.source, nodePowerSourceStatic, nodePowerSourcePrometheus, nodePowerSourceHTTP, nodePowerSourceStatic)
 		np.source = nodePowerSourceStatic
 	}
-	np.httpEndpoint = envOrDeprecated("NODE_POWER_HTTP_ENDPOINT", "")
-	np.promAddress = envOrDeprecated("NODE_POWER_PROMETHEUS_ADDRESS", cfg.prometheusAddress)
+	np.httpEndpoint = envOrDefault("NODE_POWER_HTTP_ENDPOINT", "")
+	np.promAddress = envOrDefault("NODE_POWER_PROMETHEUS_ADDRESS", cfg.prometheusAddress)
 	spec, err := inputs.NodePowerSpec{
 		Preset:             inputs.NodePowerPreset(strings.ToLower(envOrDefault("NODE_POWER_PRESET", ""))),
 		Scope:              inputs.Scope(strings.ToLower(envOrDefault("NODE_POWER_SCOPE", string(inputs.ScopeComponents)))),
@@ -109,7 +109,7 @@ func loadInputConfig() (inputConfig, error) {
 		ResourceAttributes: inputs.ResourceAttributes(strings.ToLower(envOrDefault("PROMETHEUS_RESOURCE_ATTRIBUTES", string(inputs.ResourceAttributesAuto)))),
 		Window:             window,
 		NodeLabel:          envOrDefault("NODE_POWER_NODE_LABEL", ""),
-		CustomQuery:        envOrDeprecated("NODE_POWER_PROMETHEUS_QUERY", ""),
+		CustomQuery:        envOrDefault("NODE_POWER_PROMETHEUS_QUERY", ""),
 	}.WithDefaults()
 	if err == nil {
 		_, _, err = spec.Query()

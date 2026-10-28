@@ -132,8 +132,8 @@ The per-field table lives in `architecture/_index.md` ("Who writes what"). What 
 3. `getting-started/05-configuration-reference.md`, the table of that component.
 
 **Add or rename a metric**
-1. `joulie_<subsystem>_*` with subsystem in `policy`, `twin`, `agent`, `scheduler`, `sim`; on rename emit both names for one release (`newDualGaugeVec`).
-2. The dashboards: `charts/joulie/dashboards/joulie-overview.json`, and for the simulator's OTLP metrics `charts/joulie-simulator/dashboards/joulie-simulated-cluster.json` (never a `joulie_sim_*` name: the simulated cluster's Prometheus does not scrape the simulator's `/metrics`, C13); and `architecture/metrics.md` (`simulator/metrics.md` for `sim`). `cd tests/promql && go test -run TestDB` fails on a query that selects a name the Go code does not register (a `prometheus.*Opts` `Name`, a `prometheus.NewDesc`, a `newDual*Vec` argument) and no semconv metric gives.
+1. `joulie_<subsystem>_*` with subsystem in `policy`, `twin`, `agent`, `scheduler`, `sim`; on rename register the old name too for one release, with help `Deprecated, use <new name>.`
+2. The dashboards: `charts/joulie/dashboards/joulie-overview.json`, and for the simulator's OTLP metrics `charts/joulie-simulator/dashboards/joulie-simulated-cluster.json` (never a `joulie_sim_*` name: the simulated cluster's Prometheus does not scrape the simulator's `/metrics`, C13); and `architecture/metrics.md` (`simulator/metrics.md` for `sim`). `cd tests/promql && go test -run TestDB` fails on a query that selects a name the Go code does not register (a `prometheus.*Opts` `Name`, a `prometheus.NewDesc`) and no semconv metric gives.
 3. An OpenTelemetry name goes through the table instead: register it in `pkg/otel/semconv` (append-only, one file per stage), add its row to the golden `pkg/otel/promname/testdata/prometheus-names.tsv` (`TestPN01MetricNameMatchesGolden` prints the missing row), and name it with its Prometheus spelling in `website/content/en/docs/simulator/metrics.md` (`TestCO03MetricsPageNamesEveryOTelName`).
 
 **Add or change an input metric** (a metric the controller manager reads back from Prometheus)
