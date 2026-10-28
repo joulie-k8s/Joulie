@@ -50,10 +50,6 @@ jobs:
             registry.cern.ch/joulie/joulie-agent:${{ steps.vars.outputs.version }}
             ${{ steps.vars.outputs.latest == 'true' && 'registry.cern.ch/joulie/joulie-agent:latest' || '' }}
 
-      # The joulie-operator tags are a compatibility alias for the image that
-      # was renamed to joulie-controller-manager (same build, same digest).
-      # Drop the two joulie-operator lines in the minor release after the one
-      # that introduced joulie-controller-manager.
       - name: Build and push controller manager
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -65,8 +61,6 @@ jobs:
           tags: |
             registry.cern.ch/joulie/joulie-controller-manager:${{ steps.vars.outputs.version }}
             ${{ steps.vars.outputs.latest == 'true' && 'registry.cern.ch/joulie/joulie-controller-manager:latest' || '' }}
-            registry.cern.ch/joulie/joulie-operator:${{ steps.vars.outputs.version }}
-            ${{ steps.vars.outputs.latest == 'true' && 'registry.cern.ch/joulie/joulie-operator:latest' || '' }}
 
       - name: Build and push scheduler extender
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0

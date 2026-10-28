@@ -247,8 +247,8 @@ lengthens a compute-bound burst by 71 to 127 %.
 ### Tier B
 
 Arm `all` (`GOVERNOR_CONTROL=all`, `GOVERNOR_WRITES=true`) on a fresh
-simulated cluster of 16 Nodes, run on 2026-10-28 on commit `6cc3a1d3`
-with experiment 05's changes, before the lock fix in the simulator's
+simulated cluster of 16 Nodes, run on 2026-10-28 on commit `6cc3a1d3` (on the branch of
+[PR #105](https://github.com/joulie-k8s/Joulie/pull/105)) with experiment 05's changes, before the lock fix in the simulator's
 workload tick: every check passes (`TestSimclusterE2E`, GS01 to GS04, 311 s). Every agent lists the
 presets its profile maps to, every NodeTwin asks for the preset of its
 Node's state (CPU `performance` or `efficiency` on CPU-only Nodes, GPU
