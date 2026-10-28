@@ -36,7 +36,7 @@ cpu:
     cpu.memory_bound:  {memoryIntensity: 0.85, ioIntensity: 0.1}
     cpu.mixed:         {memoryIntensity: 0.5, ioIntensity: 0.15}
     cpu.io_bound:      {memoryIntensity: 0.3, ioIntensity: 0.85}
-  bursty: {class: cpu.io_bound, burstMS: 50, periodMS: 1000, jitterMS: 100, bursts: 30, substepMS: 10}
+  bursty: {classes: [cpu.io_bound, cpu.compute_bound], burstMS: 50, periodMS: 1000, jitterMS: 100, bursts: 30, substepMS: 1}
 gpu:
   profiles:
   - amd-radeon-pro-w7900-4gpu
@@ -52,8 +52,8 @@ gpu:
   - {preset: peak}
   capsPct: [100, 60]
   # Every repository profile leaves the gate off with neutral fractions, so
-  # forcing it on changes nothing here; the gate runs in
-  # tier-a-sensitivity.yaml, with slowFraction below 1.
+  # forcing it on changes nothing here; the gate runs in tier-a-gate.yaml,
+  # with slowFraction below 1.
   receiverGates: [profile]
   classes:
     gpu.compute_bound:   {memoryIntensity: 0.2}

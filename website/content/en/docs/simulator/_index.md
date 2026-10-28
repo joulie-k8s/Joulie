@@ -8,6 +8,8 @@ aliases:
 
 The Joulie simulator lets you evaluate energy management policies without the hardware they manage. Kubernetes scheduling and the Joulie components stay real; the simulator provides the hardware, its telemetry and the progress of the workload.
 
+The simulator is Joulie's test bed for its behaviour (caps applied, placement, policies, governors), not evidence of energy savings: its hardware models rest on the assumptions listed in [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}). What meaningful experiments need is tracked in the milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
+
 The real controller manager plans, the real scheduler extender scores, and the real agent caps, in one of two ways:
 
 - **Emulated agents** read emulated `/sys` files and GPU tools, one agent per node, as on bare metal. This is [emulate mode]({{< relref "/docs/simulator/emulate-mode.md" >}}), which the [simulated cluster]({{< relref "/docs/simulator/simulated-cluster.md" >}}) runs on one machine with Docker.

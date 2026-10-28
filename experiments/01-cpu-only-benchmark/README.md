@@ -2,6 +2,8 @@
 
 Baselines A (no management), B (static partition) and C (queue-aware) on a cluster of CPU-only nodes of three AMD EPYC families. The results, measured at regime, are in [REPORT.md](REPORT.md); how the runs are set up, sized and gated is in [experiments/README.md](../README.md).
 
+These results come from the Joulie simulator, Joulie's test bed for its behaviour (caps applied, placement, policies), not evidence of energy savings. Their energy figures rest on hardware behaviour the simulator assumes: every CPU core does the same work per second whatever its model, and cap responses, power curves and workload intensities are assumed or fitted, not measured on real nodes. They do not show what Joulie saves on real hardware; what meaningful experiments need is tracked in the milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
+
 ## Cluster inventory
 
 - 20 intensive nodes: AMD EPYC 9655, 2 sockets, 192 cores, 1536 GiB

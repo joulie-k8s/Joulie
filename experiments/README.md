@@ -1,17 +1,25 @@
 # Experiments
 
-The measurements behind Joulie's claims, each with its scripts, configs and a
+Experiments on Joulie's policies, each with its scripts, configs and a
 report. The [docs site](https://joulie-k8s.github.io/Joulie/main/docs/experiments/)
 has a page per experiment. To learn Joulie, start with the
 [examples](../examples/README.md) instead.
+
+These results come from the simulator, Joulie's test bed for its behaviour
+(caps applied, placement, policies, governors), not evidence of energy savings.
+Their energy figures rest on hardware behaviour the simulator assumes: every CPU
+core and every GPU does the same work per second whatever its model ([#107](https://github.com/joulie-k8s/Joulie/issues/107)), and
+cap responses, power curves and workload intensities are assumed or fitted, not
+measured on our nodes. What meaningful experiments need is tracked in the
+milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
 
 | Experiment | What it measures | How it runs |
 |---|---|---|
 | [01 CPU-only benchmark](01-cpu-only-benchmark/README.md) | Throughput and energy of baselines A (no Joulie), B (static partition) and C (queue-aware) on a CPU cluster | kind with KWOK fake nodes and the simulator in HTTP mode ([`kwok-cluster`](kwok-cluster/README.md)) |
 | [02 Heterogeneous benchmark](02-heterogeneous-benchmark/README.md) | The same baselines on a mixed cluster of five GPU families and CPU-only nodes | as 01 |
 | [03 Homogeneous H100 benchmark](03-homogeneous-h100-benchmark/README.md) | The same baselines on H100 NVL nodes only | as 01 |
-| [04 Scoring formula validation](04-scoring-formula-validation/REPORT.md) | The scheduler extender's scoring formula against bin packing, with a Modelica FMU for the cooling; its results do not stand and it is being redone (see its report) | Python models of the cluster, no Joulie code |
-| [05 Governor exploration](05-governor-exploration/README.md) | Energy and time per CPU and GPU governor preset, workload kind and cap; Tier A is being rerun after simulator changes (see its README) | Tier A: emulated nodes in `govsweep`; Tier B: the simulated cluster |
+| [04 Scoring formula validation](04-scoring-formula-validation/REPORT.md) | The scheduler extender's scoring formula against bin packing, with a Modelica FMU for the cooling; its results are not valid (see its report); it is to be redone on the extracted scheduling library ([#122](https://github.com/joulie-k8s/Joulie/issues/122)) as a behaviour scenario ([#115](https://github.com/joulie-k8s/Joulie/issues/115)) | Python models of the cluster, no Joulie code |
+| [05 Governor exploration](05-governor-exploration/README.md) | Energy and time per CPU and GPU governor preset, workload kind and cap; the cluster-level question (Q4) needs measured hardware behaviour ([#106](https://github.com/joulie-k8s/Joulie/issues/106)) and a pilot ([#114](https://github.com/joulie-k8s/Joulie/issues/114)) | Tier A: emulated nodes in `govsweep`; Tier B: the simulated cluster |
 
 
 ## Baselines
@@ -20,7 +28,7 @@ Experiments 01 to 03 run each seed's jobs, at the same times and with the same w
 
 ## Images
 
-The `configs/benchmark-40n.yaml` of experiments 01 to 03 pin the images the reports ran: `joulie.local/joulie-*:rerun-2026-10-28`, built from the commit that holds these configs and loaded into the kind cluster, with no registry. To run such a config, build the four images, create the cluster, load them, and keep the simulator from pulling:
+The `configs/benchmark-40n.yaml` of experiments 01 to 03 pin the images the reports ran: `joulie.local/joulie-*:rerun-2026-10-28`, built from commit `6cc3a1d3` and loaded into the kind cluster, with no registry. The later commits change nothing these runs exercise: a lock the simulator's workload tick now takes before reading a node's capacity, an emulated GPU profile, and experiment 05's sweep and analysis. To run such a config, build the four images, create the cluster, load them, and keep the simulator from pulling:
 
 ```bash
 tag=rerun-2026-10-28 e=02-heterogeneous-benchmark
@@ -59,7 +67,7 @@ Performance jobs may run only on performance nodes under B and C, and `Performan
 
 C counts pods, not the GPUs or cores they request, so it follows the demand loosely. Leaving its pending pods aside, it holds the demand in 157, 145 and 123 of 158 samples on seeds 3 and 4 (01, 02, 03); sized to hold every sample, it would keep as many nodes as B. On the measured seeds the demand is higher: B holds it in 158, 158 and 146 of 158 samples, C in 153, 107 and 34 before its pending pods grow it (`experiments/kwok-cluster/pool_load.py`; 02 at work scale 0.0401). These counts are an upper bound, since they assume no queueing and that standard jobs leave the performance nodes to performance jobs, while the scheduler only steers them toward eco nodes. Each report gives, per run, the performance nodes held and the pending performance jobs; these include the few seconds of placement every job takes, so a policy's cost to the jobs it protects is its difference against A. `python experiments/kwok-cluster/pool_load.py EXPERIMENT [SEED ...]` prints the loads and sizes.
 
-Each run checks its gates as it ends (`04_run_one.py`), and a failing run stops the sweep: every run must cover the measured window with its polls, have no refused control, and end with no load on a node that has no job (no GPU load, and no CPU load beyond its pods outside the workload); baseline A must also keep, on average over the measured window, at most 1 % of its running pods queued (pending for over 30 s, at least one job allowed) and reach at least 45 % utilization at regime, and in a GPU experiment its GPU utilization must be within 0.03 of the GPU load of the placed jobs (each placed job's GPUs times its GPU utilization, summed at every poll). The last two checks catch a simulator that keeps a node's load after its last job, as it did until 2026-10-27. Queueing and utilization under B and C are results, not gates. A run whose mean 1-minute host load exceeds the host's CPUs fails the load gate and is run again, except the repeat of the first run, which only estimates noise: the report script leaves it out and says why. Each report's noise table lists every replicate of a baseline with its mean host load, so what load does to a run can be read there. `experiments/kwok-cluster/report_figures.py` draws each report's figures and tables from a sweep and refuses a run that failed its gates.
+Each run checks its gates as it ends (`04_run_one.py`), and a failing run stops the sweep: every run must cover the measured window with its polls, have no refused control, and end with no load on a node that has no job (no GPU load, and no CPU load beyond its pods outside the workload); baseline A must also keep, on average over the measured window, at most 1 % of its running pods queued (pending for over 30 s, at least one job allowed) and reach at least 45 % utilization at regime, and in a GPU experiment its GPU utilization must be within 0.03 of the GPU load of the placed jobs (each placed job's GPUs times its GPU utilization, summed at every poll). The last two checks catch a simulator that keeps a node's load after its last job. Queueing and utilization under B and C are results, not gates. A run whose mean 1-minute host load exceeds the host's CPUs fails the load gate and is run again, except the repeat of the first run, which only estimates noise: the report script leaves it out and says why. Each report's noise table lists every replicate of a baseline with its mean host load, so what load does to a run can be read there. `experiments/kwok-cluster/report_figures.py` draws each report's figures and tables from a sweep and refuses a run that failed its gates.
 
 ## DNS and the scheduler extender
 

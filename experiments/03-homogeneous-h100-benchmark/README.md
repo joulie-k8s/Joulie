@@ -2,6 +2,8 @@
 
 Baselines A (no management), B (static partition) and C (queue-aware) on a cluster whose GPU nodes are all NVIDIA H100 NVL, so every GPU node can take any GPU job. The results, measured at regime, are in [REPORT.md](REPORT.md); how the runs are set up, sized and gated is in [experiments/README.md](../README.md).
 
+These results come from the Joulie simulator, Joulie's test bed for its behaviour (caps applied, placement, policies), not evidence of energy savings. Their energy figures rest on hardware behaviour the simulator assumes: every CPU core and every GPU does the same work per second whatever its model, and cap responses, power curves and workload intensities are assumed or fitted, not measured on real nodes. They do not show what Joulie saves on real hardware; what meaningful experiments need is tracked in the milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
+
 ## Cluster inventory
 
 - 33 H100 NVL nodes: 8 GPUs, 192 cores and 1536 GiB each
@@ -37,5 +39,5 @@ experiments/03-homogeneous-h100-benchmark/scripts/20_run_benchmark.sh \
 
 - kube-scheduler reaches the extender at a fixed ClusterIP: see [experiments/README.md](../README.md) ("DNS and the scheduler extender").
 - The `generate_heterogeneous_assets.py` script applies H100 NVL-specific physics parameters (`computeGamma: 0.5`, `memoryEpsilon: 0.01`, `memoryGamma: 0.9`, `idleWattsPerGpu: 58.6`; sources in the 02 README) to all GPU nodes.
-- The retargeting logic in `05_sweep.py` no longer pins jobs to exact node names. CPU-only jobs are constrained only to the CPU-only pool, while GPU jobs rely on the native `nvidia.com/gpu` extended resource so the Kubernetes scheduler can place them on any compatible H100 node.
+- The retargeting logic in `05_sweep.py` does not pin jobs to exact node names. CPU-only jobs are constrained only to the CPU-only pool, while GPU jobs rely on the native `nvidia.com/gpu` extended resource so the Kubernetes scheduler can place them on any compatible H100 node.
 - All scripts share the same asset generation path (`scripts/generate_heterogeneous_assets.py`), so the node classes are regenerated from the homogeneous cluster-nodes.yaml before each benchmark run. No hardware catalog is generated: the simulator uses the one embedded in `pkg/hwinv/assets/hardware.yaml`.

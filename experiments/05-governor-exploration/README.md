@@ -1,18 +1,16 @@
 # Experiment 05: governor exploration
 
-> **To be rerun (2026-10-28).** Tier A ran on 2026-10-14, before later changes to the simulator: the CPU model (`SIM_BETA_FREQ`, a CPU on a measured curve) and the H100 NVL's default limit. An audit also found that its acceptance pools idle cells, drops timed-out cells and treats seeds of a deterministic emulator as replicates. The numbers below are not reproducible from this tree; Tier A is being rerun.
-
 CPU frequency governors and GPU clock governors as an energy dimension of
 their own, next to power caps. Joulie writes them as vendor-neutral presets
 (`spec.cpu.governor`, `spec.gpu.governor` of the NodeTwin); the agent maps
 each preset to the native words of the node's CPU frequency driver and GPU
 family (`pkg/governor`). This experiment asks which presets lower energy to
 solution, at which cost in time, and which conclusions survive the
-parameters the simulator assumes.
+parameters the simulator assumes. Its results come from the simulator,
+Joulie's test bed, and rest on those assumed parameters; measuring them on
+real nodes is [#106](https://github.com/joulie-k8s/Joulie/issues/106), in the milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
 
 Docs page: [Governor exploration](../../website/content/en/docs/experiments/governor-exploration.md).
-
-> **Checked (2026-10-23, #89):** Tier A on one CPU profile (`amd-epyc-9534-2s-energy-only`), one GPU profile (`amd-radeon-pro-w7900-4gpu`), one seed and the 50 % steady load ran 1022 cells with none failed, and Tier B arm `all` passed its governor checks (`TestSimclusterE2E`, 231 s).
 
 ## Questions
 
@@ -26,10 +24,22 @@ Docs page: [Governor exploration](../../website/content/en/docs/experiments/gove
 
 ## Acceptance rule
 
-A default is adopted when, in Tier A and in Tier B, it lowers energy to
-solution against the baseline arm with a performance-class p95 slowdown at
-or below 5 % and an eco-class p95 slowdown at or below 20 %, and Q5 does not
-flip its sign.
+A default is judged on each profile. On a profile it passes when, in
+Tier A and in Tier B, it lowers energy to solution against the baseline arm
+with a performance-class p95 slowdown at or below 5 % and an eco-class p95
+slowdown at or below 20 %, and at every value Q5 gives an assumed fact the
+energy change stays negative and the p95 slowdown within the limit. Burst
+latency counts against the same limit once the frequency ramp is measured on
+real nodes ([#106](https://github.com/joulie-k8s/Joulie/issues/106)); until then it is reported and not judged. A GPU default is adopted for the GPU models it
+passes on, since `GPU_GOVERNOR_MODEL_PRESETS_JSON` sets presets per model; a
+CPU default applies to every driver, so it must pass on every CPU profile.
+
+In Tier A the energy change is the median over the profile's job cells, one
+value per cell with its two seeds averaged (the emulator is deterministic);
+idle cells, with no job to slow down, are reported apart, and bursty cells,
+timed on a fixed window, with their burst latency. A cell that timed out
+counts with its slowdown at the limit, a lower bound, so a pass is not
+established on its profile.
 
 | Metric | Source |
 |---|---|
@@ -44,7 +54,8 @@ flip its sign.
 | Path | What |
 |---|---|
 | `configs/tier-a.yaml` | Tier A grid: E-G1 (CPU) and E-G2 (GPU), 2 seeds |
-| `configs/tier-a-sensitivity.yaml` | Q5: each assumed fact at a low, mid and high value, one at a time, on a smaller grid; the receiver gate forced on |
+| `configs/tier-a-sensitivity.yaml` | Q5: each assumed fact at a low, mid and high value, one at a time, on Tier A's cells for the candidate arms, 1 seed |
+| `configs/tier-a-gate.yaml` | Q3: the receiver gate forced on against off, with `slowFraction` 0.5 and 0.7, on gather jobs |
 | `configs/tier-b-*.yaml` | Joulie values of each Tier B arm, after `tier-b-common.yaml` |
 | `scripts/run_tier_a.sh` | builds `simulator/cmd/govsweep`, runs a config, summarises it |
 | `scripts/run_tier_b.sh` | one arm on a fresh simulated cluster, the governor checks of the harness, then removes the cluster |
@@ -60,10 +71,11 @@ Results are written outside the repository, under
 ```bash
 experiments/05-governor-exploration/scripts/run_tier_a.sh                     # configs/tier-a.yaml
 experiments/05-governor-exploration/scripts/run_tier_a.sh experiments/05-governor-exploration/configs/tier-a-sensitivity.yaml
+experiments/05-governor-exploration/scripts/run_tier_a.sh experiments/05-governor-exploration/configs/tier-a-gate.yaml
 ```
 
 `govsweep` renders one emulated node (`simulator/pkg/hwemu`) per cell, in its
-own directory, and runs every cell in parallel. For each cell it reads the
+own directory, and runs 8 cells at a time (`GOVSWEEP_PARALLEL`). For each cell it reads the
 node's cpufreq, amdgpu and `nvidia-smi` facts as the agent's discovery does,
 plans the arm's preset with `pkg/governor`, and writes the plan's sysfs
 attributes or runs its `nvidia-smi` commands against the node's fake tools,
@@ -76,7 +88,7 @@ level, a clock lock) in a config is refused. GPU caps are set with
 |---|---|
 | CPU profiles | `amd-epyc-9534-2s-energy-only` (acpi-cpufreq), `intel-xeon-6530-2s-rapl` (intel_cpufreq), `intel-xeon-2s-rapl` (intel_pstate active, HWP), `amd-epyc-2s-hsmp` (amd-pstate-epp), `intel-xeon6-2s-tpmi` |
 | CPU arms | the profile's own governor (nothing written), `performance`, `balanced`, `efficiency`, each with boost on and off |
-| CPU loads | idle; steady 10, 30, 50, 70, 100 % of every logical CPU in each class; bursty (`cpu.io_bound`, 30 bursts of 50 ms every 1 s, up to 100 ms late) |
+| CPU loads | idle; steady 10, 30, 50, 70, 100 % of every logical CPU in each class; bursty (`cpu.io_bound` and `cpu.compute_bound`, 30 bursts of 50 ms every 1 s, up to 100 ms late, stepped and timed at 1 ms) |
 | CPU classes | `cpu.compute_bound`, `cpu.memory_bound`, `cpu.mixed`, `cpu.io_bound` |
 | GPU profiles | `amd-radeon-pro-w7900-4gpu`, `amd-instinct-mi300x-8gpu`, `nvidia-h100-sxm-8gpu`, `nvidia-h100-nvl-8gpu`, `nvidia-l40s-4gpu` |
 | GPU arms | `auto`, `sustained`, `efficient` at 50, 60, 70, 75, 80, 90 %, `low`, `peak`; cap 100 % and 60 % |
@@ -122,8 +134,9 @@ profile in NodeHardware, the result each preset gives, the native word in
 the emulated files, and the baseline back after an upgrade to
 `GOVERNOR_CONTROL=off`), and removes the cluster unless `SIMCLUSTER_KEEP=1`.
 Workload runs per arm (`make simcluster-scenario`, utilization raised to at
-least 50 % first, `static_partition` and `queue_aware_v1`) are the next step
-of Q4 and are not part of this package.
+least 50 % first, `static_partition` and `queue_aware_v1`) would answer Q4
+only on measured hardware behaviour ([#106](https://github.com/joulie-k8s/Joulie/issues/106)), and a claim needs a pilot on a
+real cluster ([#114](https://github.com/joulie-k8s/Joulie/issues/114)); they are not part of this package.
 
 ## What is assumed
 
@@ -134,17 +147,19 @@ simulator parameter tagged `assumed:` in its profile (`simulator/pkg/hwemu/profi
 |---|---|---|
 | `idleGovernorDeltaW`: idle power while a governor holds the top frequency | `physics.cpu` | 0, 2, 5 % of idle |
 | `eppGain`, `eppCeilingDrop`: how EPP moves frequency | `physics.cpu` | 0.5, 1, 2; 0, 0.2, 0.25 |
+| `freqRampMS`: how long the frequency takes to follow the governor (500 ms in every profile) | `physics.cpu` | 5, 50, 500 ms |
 | `dataPathHoldW`: idle power of data-path clocks held at their maximum (`sustained`) | `physics.gpu` | 1, 10, 50 W |
 | `gatingOffIdleW`: idle power with idle gating off (`peak` on AMD) | `physics.gpu` | 5, 20, 50 W |
 | `clockBeta`: exponent of the compute clock in dynamic power | `physics.gpu` | 1.0, 1.5, 2.5 |
 | `memoryKneeFrac`: compute clock fraction below which memory-bound work slows | `physics.gpu` | 0.4, 0.65, 0.87 |
-| receiver gate `slowFraction`: the link share an idle or low receiver lets in | `gpus.transfer.receiverGate` | 0.5, 0.7 (neutral 1.0 in the repository) |
+| receiver gate `slowFraction`: the link share an idle or low receiver lets in | `gpus.transfer.receiverGate` | 0.5, 0.7 in Q3 (neutral 1.0 in the repository) |
 | `autoHoldS`: how long `auto` holds the data path after a kernel | `gpus.dpm` | 2, 10, 60 s |
+| the MI300X's lowest cap, `limits.minW` (0 W, by analogy with an MI300A example): a cap below the real floor would be accepted | `gpus.limits` | no; `amd-smi static --limit` on an MI300X settles it |
 | class intensities (memory, IO) of each workload class | `configs/tier-a.yaml` | no |
 | the job model: v1 rates, ring transfers, one job per node | `simulator/cmd/govsweep` | no |
 
 The receiver gate is off, with neutral fractions, in every repository
-profile; Tier A therefore shows no gate effect, and `tier-a-sensitivity.yaml`
+profile; Tier A therefore shows no gate effect, and `tier-a-gate.yaml`
 forces it on with `slowFraction` below 1 to show the shape of Q3. Replacing
 the assumptions takes measurements on real hardware: the idle and loaded
 power of `sustained` against `auto` per GPU model, whether each GPU family

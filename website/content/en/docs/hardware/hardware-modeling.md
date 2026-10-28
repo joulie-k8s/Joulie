@@ -12,6 +12,8 @@ This page documents how Joulie models CPUs and GPUs across the project using a m
 
 Every modelled value, the official source it comes from, and the values that have none are listed in the [Joulie wiki](https://github.com/joulie-k8s/Joulie/wiki).
 
+In the simulator these models make a test bed for Joulie's behaviour, not evidence of energy savings: they rest on the assumptions listed on this page, not on measurements of our nodes. What meaningful experiments need is tracked in the milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
+
 It serves two closely related purposes:
 
 - for the **agent**, it describes the hardware assumptions used to resolve caps, interpret device limits, and reason about how throttling affects attainable performance

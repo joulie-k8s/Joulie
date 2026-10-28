@@ -2551,11 +2551,12 @@ func (s *simulator) advanceJobProgress(ctx context.Context, kube kubernetes.Inte
 		var snapThermalThrottle float64
 		var snapGPUCapPerGpu float64
 		if st != nil {
+			// The pod poll writes the capacity under s.mu; read it there.
+			s.mu.Lock()
 			cpuCapacity := st.CPUCapacityCores
 			if cpuCapacity <= 0 {
 				cpuCapacity = 16
 			}
-			s.mu.Lock()
 			st.HasJobs = true
 			st.CPUUtil = clamp01(totalCPUUtilDemand / cpuCapacity)
 			if gpuCount > 0 {

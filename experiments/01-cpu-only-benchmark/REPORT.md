@@ -1,5 +1,7 @@
 # CPU-Only Benchmark Report (KWOK, 40 Nodes)
 
+These results come from the Joulie simulator, Joulie's test bed for its behaviour (caps applied, placement, policies), not evidence of energy savings. Their energy figures rest on hardware behaviour the simulator assumes: every CPU core does the same work per second whatever its model, and cap responses, power curves and workload intensities are assumed or fitted, not measured on real nodes. They do not show what Joulie saves on real hardware; what meaningful experiments need is tracked in the milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
+
 This report compares three baselines on a cluster of CPU-only nodes, at regime: after the ramp-up and before the drain. The runs are of 2026-10-28, with the Joulie and simulator images `joulie.local/*:rerun-2026-10-28` built from this tree ([`experiments/README.md`](../README.md), "Images").
 
 - `A`: the simulator only, no power management.
@@ -8,11 +10,11 @@ This report compares three baselines on a cluster of CPU-only nodes, at regime: 
 
 In short:
 - B and C used 1.4 to 2.7 % more energy per unit of work than A, while doing the same work.
-- The sign held in all four pairs (two policies, two seeds). A's repeat differed by 0.24 %. B's and C's own noise was not measured.
+- The sign held in all four pairs (two policies, two seeds). A's repeat differed by 0.24 %. B's and C's own noise was not measured ([#113](https://github.com/joulie-k8s/Joulie/issues/113)).
 - An accounting split by node family puts most of the difference on the EPYC 9375F family. Under B and C it does more of the work, and its dynamic energy per unit rises as that work turns compute-bound.
 - The eco caps bind in about a third of the eco 9655 nodes' control calls, up to a sixth on the 9375F and almost never on the 9965.
 
-The split does not separate what the caps do from what the placement does: that needs a run with the caps off, which was not made. Both effects rest on simulator assumptions, notably that every core does the same work per second (section 7). So this experiment does not show what B and C would do on real hardware.
+The split does not separate what the caps do from what the placement does: that needs a run with the caps off ([#113](https://github.com/joulie-k8s/Joulie/issues/113)). Both effects rest on simulator assumptions, notably that every core does the same work per second (section 7, [#107](https://github.com/joulie-k8s/Joulie/issues/107)). So this experiment does not show what B and C would do on real hardware.
 
 ## 1. Experimental Setup
 
@@ -120,7 +122,7 @@ Every run passed every gate ([`experiments/README.md`](../README.md)).
 
 ### 4.3 Run-to-run noise
 
-A's repeat on seed 1 (load 17.3 against 16.6) differed by -0.30 % in IT power, -0.06 % in work and -0.24 % in energy per unit. B and C were not repeated, so their own noise is unknown; what stands is the sign, positive in all four of their changes against A.
+A's repeat on seed 1 (load 17.3 against 16.6) differed by -0.30 % in IT power, -0.06 % in work and -0.24 % in energy per unit. B and C were not repeated, so their own noise is unknown ([#113](https://github.com/joulie-k8s/Joulie/issues/113)); what stands is the sign, positive in all four of their changes against A.
 
 ### 4.4 Where the energy went
 
@@ -177,20 +179,20 @@ On seed 1, B and C draw slightly more power than A over most of the window, at t
 
 At this load and with these models, B and C cost energy instead of saving it: 1.4 to 2.7 % per unit of work, for the same work.
 
-**Where the energy went.** Most of the difference sits on the 9375F family, which the policies give more work, and more compute-bound work. The simulator gives every core the same speed, so the 9375F's high clock buys nothing while its power per core is several times the others'.
+**Where the energy went.** Most of the difference sits on the 9375F family, which the policies give more work, and more compute-bound work. The simulator gives every core the same speed, so the 9375F's high clock buys nothing while its power per core is several times the others'. Per-device speed is tracked in [#107](https://github.com/joulie-k8s/Joulie/issues/107).
 
-**The caps.** They bind in about a third of the eco 9655 nodes' control intervals, and the 9655's own term is small. Whether the caps or the placement drive each term would take a run of B and C with the eco caps off.
+**The caps.** They bind in about a third of the eco 9655 nodes' control intervals, and the 9655's own term is small. Whether the caps or the placement drive each term would take a run of B and C with the eco caps off ([#113](https://github.com/joulie-k8s/Joulie/issues/113)).
 
 **The frequency exponent.** `SIM_BETA_FREQ` acts only where a cap binds. No sweep at the ends of its published band (0.86 to 2.45) was run, so how far 01's result moves across the band is not measured. Every value in that band gives each workload type a mean throughput loss smaller than its power loss under a cap, so that saving is an input of the model, not a finding here.
 
 ## 7. Limitations
 
-- **Equal speed per core.** The simulator gives every core the same speed. A 9375F core at 3.8 to 4.8 GHz does more work per second than a 9965 core at 2.25 to 3.7 GHz, so the cost of placing work on the 9375F is overstated here.
+- **Equal speed per core.** The simulator gives every core the same speed. A 9375F core at 3.8 to 4.8 GHz does more work per second than a 9965 core at 2.25 to 3.7 GHz, so the cost of placing work on the 9375F is overstated here ([#107](https://github.com/joulie-k8s/Joulie/issues/107)).
 - **Activity factor.** The analytic model's activity factor (memory and IO intensity lower power) has assumed coefficients, and it sets the 9375F's own term.
 - **The frequency exponent.** It is fitted to measurements of older CPUs (Zen 2, Cascade Lake), none of the modelled ones.
 - **Whole-server power.** The caps bind on the curve's whole-server power, where a real package limit leaves out the rest of the server, so they bind earlier than on hardware.
 - **Caps below cTDP minimum.** The eco caps are below each CPU's cTDP minimum (section 1.5).
-- **Noise.** There are two seeds and one repeat, of A only.
+- **Noise.** There are two seeds and one repeat, of A only. Repeats for every arm are tracked in [#113](https://github.com/joulie-k8s/Joulie/issues/113).
 - **Shared host.** Each run's load is listed. The mean load ranged from 16.4 to 20.7, under the gate of 28.
 
 ## Reproduce

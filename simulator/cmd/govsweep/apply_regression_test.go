@@ -160,3 +160,77 @@ gpu:
 		t.Errorf("second cell %+v, want %+v", second, want)
 	}
 }
+
+// A 60 % cap on the W7900 asks 145 W of a board whose floor is 241 W. The
+// emulated rocm-smi refuses it and exits 0, so the cell ran at the floor and
+// was recorded ok, with a cap it never had (experiment 05, Tier A).
+func TestCapBelowTheBoardsFloorIsUnsupported(t *testing.T) {
+	cfg, err := loadConfig(writeConfig(t, `
+name: cap-floor
+seeds: [1]
+durationS: 2
+settleS: 1
+gpu:
+  profiles: [amd-radeon-pro-w7900-4gpu, nvidia-h100-nvl-8gpu]
+  arms: [{preset: auto}]
+  capsPct: [60]
+  receiverGates: [profile]
+  classes:
+    gpu.compute_bound: {memoryIntensity: 0.2}
+  jobs: [{gpus: 1}]
+  idle: true
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{cfg: cfg, profiles: newProfileCache("").get, work: t.TempDir()}
+	for _, c := range cfg.expand() {
+		row, _, err := r.run(context.Background(), c)
+		if err != nil {
+			t.Fatalf("%s: %v", c.ID(), err)
+		}
+		want := statusOK
+		if c.Profile == "amd-radeon-pro-w7900-4gpu" {
+			want = statusUnsupported
+		}
+		if row.Status != want {
+			t.Errorf("%s: status %q (cap %g W), want %q", c.ID(), row.Status, row.CapW, want)
+		}
+		if c.Load == loadJob && row.Status == statusOK && row.CapW != 240 {
+			t.Errorf("%s: the job's GPU runs at %g W, want the 60 %% cap, 240 W", c.ID(), row.CapW)
+		}
+	}
+}
+
+// Burst latency resolves only to the burst step. At 10 ms on I/O-bound
+// bursts every arm read 60 ms, boost off included; at 1 ms a compute-bound
+// burst shows what a lower clock costs.
+func TestBurstLatencyResolvesALowerClock(t *testing.T) {
+	cfg, err := loadConfig(writeConfig(t, `
+name: burst-resolution
+seeds: [1]
+durationS: 2
+settleS: 1
+cpu:
+  profiles: [intel-xeon-6530-2s-rapl]
+  arms: [{preset: performance, boost: "on"}, {preset: performance, boost: "off"}]
+  classes:
+    cpu.compute_bound: {memoryIntensity: 0.2, ioIntensity: 0.05}
+  bursty: {classes: [cpu.compute_bound], burstMS: 50, periodMS: 200, jitterMS: 0, bursts: 5, substepMS: 1}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{cfg: cfg, profiles: newProfileCache("").get, work: t.TempDir()}
+	p95 := map[string]float64{}
+	for _, c := range cfg.expand() {
+		row, _, err := r.run(context.Background(), c)
+		if err != nil || row.Status != statusOK {
+			t.Fatalf("%s: %q, %v", c.ID(), row.Status, err)
+		}
+		p95[c.Boost] = row.BurstP95MS
+	}
+	if !(p95["off"] > p95["on"]) {
+		t.Errorf("burst p95 with boost off %g ms, on %g ms; a lower clock must lengthen a compute-bound burst", p95["off"], p95["on"])
+	}
+}

@@ -1,5 +1,7 @@
 # Heterogeneous GPU Cluster Benchmark Report (KWOK, 41 Nodes)
 
+These results come from the Joulie simulator, Joulie's test bed for its behaviour (caps applied, placement, policies), not evidence of energy savings. Their energy figures rest on hardware behaviour the simulator assumes: every CPU core and every GPU does the same work per second whatever its model, and cap responses, power curves and workload intensities are assumed or fitted, not measured on real nodes. They do not show what Joulie saves on real hardware; what meaningful experiments need is tracked in the milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
+
 This report compares three baselines on a cluster of five GPU families and three CPU-only families, at regime: after the ramp-up and before the drain. The runs are of 2026-10-28, with the Joulie and simulator images `joulie.local/*:rerun-2026-10-28` built from this tree ([`experiments/README.md`](../README.md), "Images").
 
 - `A`: the simulator only, no power management.
@@ -9,11 +11,11 @@ This report compares three baselines on a cluster of five GPU families and three
 In short:
 - B and C used 0.1 to 4.6 % more GPU-node energy per unit of GPU work than A.
 - They kept 3.5 and 5.8 performance jobs waiting on average, where A had 0.7.
-- The sign held in all four pairs. A's repeat differed by 0.56 %. B's and C's own noise was not measured.
+- The sign held in all four pairs. A's repeat differed by 0.56 %. B's and C's own noise was not measured; repeats for every arm are tracked in [#113](https://github.com/joulie-k8s/Joulie/issues/113).
 
 An accounting split by GPU family puts the difference on placement. Under B and C more of the GPU work runs on the MI300X and the H100 NVL, which cost more per unit in the simulator. Against that, the H100 NVL's own dynamic energy per unit falls by 1.7 to 2.8 points.
 
-The split does not separate the caps from the placement: that needs a run with the caps off, which was not made. The per-family costs differ because the simulator gives every GPU the same speed, whatever its power (section 7).
+The split does not separate the caps from the placement: that needs a run with the caps off, which was not made ([#113](https://github.com/joulie-k8s/Joulie/issues/113)). The per-family costs differ because the simulator gives every GPU the same speed, whatever its power (section 7, [#107](https://github.com/joulie-k8s/Joulie/issues/107)).
 
 ## 1. Experimental Setup
 
@@ -113,7 +115,7 @@ From `experiments/kwok-cluster/report_figures.py` over the runs of 2026-10-28; e
 
 ### 4.3 Run-to-run noise
 
-A's repeat on seed 1 (load 6.0 against 4.0) differed by +0.61 % in IT power, +0.09 % in GPU work and +0.56 % in GPU-node energy per GPU unit. B and C were not repeated, so their own noise is unknown; what stands is the sign, positive in all four of their changes in energy per unit against A, though B's +0.1 % on seed 1 is within A's repeat.
+A's repeat on seed 1 (load 6.0 against 4.0) differed by +0.61 % in IT power, +0.09 % in GPU work and +0.56 % in GPU-node energy per GPU unit. B and C were not repeated, so their own noise is unknown ([#113](https://github.com/joulie-k8s/Joulie/issues/113)); what stands is the sign, positive in all four of their changes in energy per unit against A, though B's +0.1 % on seed 1 is within A's repeat.
 
 ### 4.4 Where the energy went
 
@@ -164,13 +166,13 @@ At this load (GPU utilization 0.46 to 0.49 under A), B and C did not lower GPU-n
 
 **Where the energy went.** It goes mostly to placement, more work on families the simulator makes costly per unit, partly offset by a lower dynamic cost on the H100 NVL, whose eco GPUs are capped.
 
-**The caps and the placement.** Separating the two would take a run of B and C with the eco caps off. The per-family costs come from the simulator giving every GPU the same speed.
+**The caps and the placement.** Separating the two would take a run of B and C with the eco caps off ([#113](https://github.com/joulie-k8s/Joulie/issues/113)). The per-family costs come from the simulator giving every GPU the same speed ([#107](https://github.com/joulie-k8s/Joulie/issues/107)).
 
 ## 7. Limitations
 
-- **Equal speed per GPU.** A GPU's speed is the same in every family, so the per-family cost of a unit of work (121 to 359 J) follows each family's power alone. On real hardware an MI300X or an H100 does more work per second than a W7900, so the placement term is overstated, by an amount these runs cannot measure.
-- **Cap response.** The H100 NVL's exponent is the H100 PCIe's, and the W7900's (1.0) and the AMD memory parameters have no published data. The MI300X idle power is assumed.
-- **Noise.** There are two seeds and one repeat, of A only.
+- **Equal speed per GPU.** A GPU's speed is the same in every family, so the per-family cost of a unit of work (121 to 359 J) follows each family's power alone. On real hardware an MI300X or an H100 does more work per second than a W7900, so the placement term is overstated, by an amount these runs cannot measure. Per-device speed is tracked in [#107](https://github.com/joulie-k8s/Joulie/issues/107).
+- **Cap response.** The H100 NVL's exponent is the H100 PCIe's, and the W7900's (1.0) and the AMD memory parameters have no published data. The MI300X idle power is assumed. Characterising caps on real nodes is tracked in [#106](https://github.com/joulie-k8s/Joulie/issues/106).
+- **Noise.** There are two seeds and one repeat, of A only. Repeats for every arm are tracked in [#113](https://github.com/joulie-k8s/Joulie/issues/113).
 - **Shared host.** Each run's load is listed. The mean load ranged from 4.0 to 13.7, under the gate of 28.
 
 ## Reproduce

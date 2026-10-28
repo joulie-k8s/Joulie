@@ -2,6 +2,8 @@
 title: "Heterogeneous GPU Cluster Benchmark"
 ---
 
+These results come from the Joulie simulator, Joulie's test bed for its behaviour (caps applied, placement, policies), not evidence of energy savings. Their energy figures rest on hardware behaviour the simulator assumes: every CPU core and every GPU does the same work per second whatever its model, and cap responses, power curves and workload intensities are assumed or fitted, not measured on real nodes. They do not show what Joulie saves on real hardware; what meaningful experiments need is tracked in the milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
+
 This page summarizes the heterogeneous GPU cluster benchmark (KWOK, 41 nodes); the full report, with every table and its sources, is [`experiments/02-heterogeneous-benchmark/REPORT.md`](https://github.com/joulie-k8s/Joulie/tree/main/experiments/02-heterogeneous-benchmark/REPORT.md).
 
 Three baselines, measured at regime (after the ramp-up and before the drain), 2 seeds and a repeat of the first run, on 2026-10-28:
@@ -36,11 +38,11 @@ A's repeat differed by 0.56 % in energy per unit.
 
 ## Interpretation
 
-B and C did not lower GPU-node energy per unit of work at this load, in all four pairs, and they kept more performance jobs waiting. A's repeat differed by 0.56 %; B's and C's own noise was not measured.
+B and C did not lower GPU-node energy per unit of work at this load, in all four pairs, and they kept more performance jobs waiting. A's repeat differed by 0.56 %; B's and C's own noise was not measured; repeats for every arm are tracked in [#113](https://github.com/joulie-k8s/Joulie/issues/113).
 
 An accounting split by GPU family puts the difference on placement: under B and C more of the GPU work runs on the MI300X and the H100 NVL, which cost more per unit in the simulator. Against that, the H100 NVL's own dynamic energy per unit falls by 1.7 to 2.8 points.
 
-The per-family costs differ because the simulator gives every GPU the same speed, whatever its power; on real hardware the faster GPUs do more work. Separating the caps from the placement would take a run with the caps off.
+The per-family costs differ because the simulator gives every GPU the same speed, whatever its power; on real hardware the faster GPUs do more work. Per-device speed is tracked in [#107](https://github.com/joulie-k8s/Joulie/issues/107). Separating the caps from the placement would take a run with the caps off, tracked in [#113](https://github.com/joulie-k8s/Joulie/issues/113).
 
 ## Plots
 

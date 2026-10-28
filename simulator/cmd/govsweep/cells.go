@@ -139,9 +139,11 @@ func (c *Config) expand() []Cell {
 						}
 					}
 					if b := g.Bursty; b != nil {
-						l := base
-						l.Load, l.Class, l.Intensity = loadBursty, b.Class, g.Classes[b.Class]
-						loads = append(loads, l)
+						for _, class := range b.Classes {
+							l := base
+							l.Load, l.Class, l.Intensity = loadBursty, class, g.Classes[class]
+							loads = append(loads, l)
+						}
 					}
 					out = appendSeeds(out, loads, c.Seeds)
 				}

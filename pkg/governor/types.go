@@ -38,10 +38,11 @@ const (
 // 80 is provisional. Published sweeps put the best energy per job between
 // 61 and 76 % of the maximum clock, and the constant power of the rest of
 // the node moves the node's optimum up; in the simulator's governor
-// exploration (experiment 05, Tier A) 75 missed the eco p95 slowdown limit
-// of 20 % (+22.5 %) and 80 passed (+17.3 %, energy -10.7 %). It stands until
-// hardware measures the clock exponent and the memory knee the simulator
-// assumes.
+// exploration (experiment 05, Tier A, judged per GPU model) 75 missed the
+// eco p95 slowdown limit of 20 % on every model that can express it (+22.5
+// to +22.7 %) and 80 passed on all of them (+17.1 to +17.6 %, energy -11 to
+// -17 %). It stands until hardware measures the clock exponent and the
+// memory knee the simulator assumes.
 const DefaultCeilingPctOfMax = 80.0
 
 // CPUFacts is what discovery reads about the cpufreq policies of a node, all

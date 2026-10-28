@@ -586,6 +586,16 @@ sim_rollout_report() {
       else "  \($obj): generation \($o.metadata.generation // 0), observed \($o.status.observedGeneration // 0), status \($o.status | del(.conditions) | tojson)" end' "$@" <<<"$list" >&2
   jq -r '.items[] | select(([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 0)
     | "  pod/\(.metadata.name): \(.status.phase // "unknown")\([.status.containerStatuses[]?.state.waiting.reason // empty] | if length > 0 then ", " + join(", ") else "" end)"' <<<"$pods" >&2
+  # Why a pod stays Pending is in the warning events and in the node: a
+  # pressure condition taints it (a full disk did, on a shared host), and the
+  # cluster is removed after this report.
+  kubectl -n "$ns" get events --field-selector type=Warning -o json 2>/dev/null |
+    jq -r '[.items[] | "  event \(.involvedObject.kind)/\(.involvedObject.name): \(.reason): \(.message)"] | .[-5:][]' >&2 || true
+  kubectl get nodes -o json 2>/dev/null |
+    jq -r '.items[] | select(.spec.unschedulable != true) | .metadata.name as $n
+      | ([.status.conditions[]? | select(.type != "Ready" and .status == "True") | .type]
+         + [.spec.taints[]? | "taint \(.key):\(.effect)"]) as $why
+      | select(($why | length) > 0) | "  node/\($n): \($why | join(", "))"' >&2 || true
 }
 
 # sim_rollouts <namespace> <object>... waits for the rollout of every object

@@ -12,9 +12,9 @@ That model drives two things: power cap enforcement (via RAPL and NVML) and sche
 
 ## What can Joulie do?
 
-Results from simulated benchmark experiments (Kind + KWOK clusters with physics-based power and cooling models):
+The results below come from the simulator (Kind + KWOK clusters with modelled power and cooling), Joulie's test bed for its behaviour: caps applied, placement, policies and governors. Their energy figures rest on hardware behaviour the simulator assumes, so they do not show what Joulie saves on real hardware. What meaningful experiments need is tracked in the milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
 
-- **Trade power for throughput at about the same energy per unit**: on 33 H100 NVL nodes, the two policies drew 6 to 9 % less power and did 6 to 10 % less GPU work than no management, at about the same GPU-node energy per unit of work (experiment 03, at regime, 2 seeds). The CPU-only and mixed-GPU experiments (01, 02) depend on a simulator assumption under review, that every core and every GPU does the same work per second; their reports give the numbers.
+- **Trade power for throughput at about the same energy per unit**: on 33 H100 NVL nodes, the two policies drew 6 to 9 % less power and did 6 to 10 % less GPU work than no management, at about the same GPU-node energy per unit of work (experiment 03, at regime, 2 seeds). The CPU-only and mixed-GPU experiments (01, 02) depend on a simulator assumption, that every core and every GPU does the same work per second whatever its model ([per-device speed](https://github.com/joulie-k8s/Joulie/issues/107)); their reports give the numbers.
 - **Performance pods stay uncapped**: workload-class annotations keep performance-critical pods on uncapped nodes, where they wait when those nodes are full (experiment 03: 9 to 10 performance jobs waiting on average under the policies, against 0.7 with no management).
 - **Full observability** -- `kubectl joulie` (cluster status, live dashboard, node details, pod placement), Grafana dashboards, and Prometheus metrics give immediate visibility into per-node energy state.
 
@@ -46,7 +46,7 @@ Core mental model:
 - [Simulator]({{< relref "/docs/simulator/_index.md" >}})
   - a simulated cluster on emulated nodes, KWOK and standalone modes, workload traces and scenarios, power and facility models
 - [Experiments]({{< relref "/docs/experiments/_index.md" >}})
-  - benchmark design, baseline comparisons, and measured power savings across heterogeneous clusters
+  - benchmark design and baseline comparisons on simulated clusters, and what their energy figures rest on
 
 ## What to expect
 

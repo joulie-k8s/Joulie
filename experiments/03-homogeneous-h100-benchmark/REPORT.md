@@ -1,5 +1,7 @@
 # Homogeneous H100 NVL Benchmark Report (KWOK, 41 Nodes)
 
+These results come from the Joulie simulator, Joulie's test bed for its behaviour (caps applied, placement, policies), not evidence of energy savings. Their energy figures rest on hardware behaviour the simulator assumes: every CPU core and every GPU does the same work per second whatever its model, and cap responses, power curves and workload intensities are assumed or fitted, not measured on real nodes. They do not show what Joulie saves on real hardware; what meaningful experiments need is tracked in the milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/milestone/1).
+
 This report compares three baselines on a cluster whose GPU nodes are all H100 NVL, at regime: after the ramp-up and before the drain. The runs are of 2026-10-28, with the Joulie and simulator images `joulie.local/*:rerun-2026-10-28` built from this tree ([`experiments/README.md`](../README.md), "Images").
 
 - `A`: the simulator only, no power management.
@@ -9,7 +11,7 @@ This report compares three baselines on a cluster whose GPU nodes are all H100 N
 In short:
 - B and C drew 5.7 to 8.8 % less IT power than A.
 - They did 6.4 to 10.0 % less GPU work, and 9.2 and 9.8 performance jobs waited on average where A had 0.7.
-- Per unit of GPU work, the GPU nodes' energy changed by -0.2 to +0.7 %, about nothing. A's repeat differed by 0.01 %; B's and C's own noise was not measured.
+- Per unit of GPU work, the GPU nodes' energy changed by -0.2 to +0.7 %, about nothing. A's repeat differed by 0.01 %; B's and C's own noise was not measured ([#113](https://github.com/joulie-k8s/Joulie/issues/113)).
 
 An accounting split finds two parts that cancel:
 - The H100 NVL's dynamic energy per unit fell by 1.6 to 2.6 points; its eco GPUs are capped, with a cap response fitted below 1.
@@ -101,7 +103,7 @@ From `experiments/kwok-cluster/report_figures.py` over the runs of 2026-10-28; e
 
 ### 4.3 Run-to-run noise
 
-A's repeat on seed 1 (load 3.3 against 3.8) differed by +0.20 % in IT power, +0.20 % in GPU work and +0.01 % in GPU-node energy per GPU unit. B and C were not repeated, so their own noise is unknown. With changes of -0.2 to +0.7 % in energy per unit, of both signs, the energy per unit did not move measurably.
+A's repeat on seed 1 (load 3.3 against 3.8) differed by +0.20 % in IT power, +0.20 % in GPU work and +0.01 % in GPU-node energy per GPU unit. B and C were not repeated, so their own noise is unknown; repeats for every arm are tracked in [#113](https://github.com/joulie-k8s/Joulie/issues/113). With changes of -0.2 to +0.7 % in energy per unit, of both signs, the energy per unit did not move measurably.
 
 ### 4.4 Where the energy went
 
@@ -139,9 +141,9 @@ On the 8 CPU-only nodes energy per unit rose by 3 to 7 %, as in experiment 01.
 
 ## 7. Limitations
 
-- **Cap response.** The H100 NVL's cap response is the H100 PCIe's, since no NVL data is published.
-- **CPU-only nodes.** With one GPU family, the simulator's equal speed per GPU does not bias the comparison. The CPU-only nodes inherit experiment 01's equal speed per core, which is behind their 3 to 7 %.
-- **Noise.** There are two seeds and one repeat, of A only.
+- **Cap response.** The H100 NVL's cap response is the H100 PCIe's, since no NVL data is published. Measuring caps on real nodes is tracked in [#106](https://github.com/joulie-k8s/Joulie/issues/106).
+- **CPU-only nodes.** With one GPU family, the simulator's equal speed per GPU does not bias the comparison. The CPU-only nodes inherit experiment 01's equal speed per core, which is behind their 3 to 7 %. Per-device speed is tracked in [#107](https://github.com/joulie-k8s/Joulie/issues/107).
+- **Noise.** There are two seeds and one repeat, of A only. Repeats for every arm are tracked in [#113](https://github.com/joulie-k8s/Joulie/issues/113).
 - **Shared host.** Each run's load is listed. The mean load ranged from 3.1 to 4.5, under the gate of 28.
 
 ## Reproduce

@@ -166,7 +166,7 @@ func applyCap(ctx context.Context, n *hwemu.Node, t *hwemu.Tree, p *hwemu.Profil
 		return nil
 	}
 	r := smi.Runner{Env: smi.Env{SysRoot: t.SysRoot, StateRoot: t.StateRoot}}
-	w := strconv.Itoa(int(math.Round(c.CapPct / 100 * g.Limits.MaxW.V)))
+	w := strconv.Itoa(int(capW(p, c)))
 	for i := 0; i < g.Count.V; i++ {
 		var args []string
 		switch g.Vendor {
@@ -182,6 +182,22 @@ func applyCap(ctx context.Context, n *hwemu.Node, t *hwemu.Tree, p *hwemu.Profil
 		}
 	}
 	return n.Step(0)
+}
+
+// capW is the cap c asks of each GPU, in W, and whether the board can take
+// it: a cap outside the board's minW to maxW is refused by nvidia-smi, and
+// the emulated rocm-smi prints an error and exits 0, as it does on a host,
+// so the cell would run uncapped at the floor while recording the cap.
+func capW(p *hwemu.Profile, c Cell) float64 {
+	return math.Round(c.CapPct / 100 * p.GPUs.Limits.MaxW.V)
+}
+
+func capInRange(p *hwemu.Profile, c Cell) bool {
+	if c.CapPct >= 100 || p.GPUs == nil {
+		return true
+	}
+	w := capW(p, c)
+	return w >= p.GPUs.Limits.MinW.V && w <= p.GPUs.Limits.MaxW.V
 }
 
 // applyGPU sets c's GPU preset on every GPU: its pkg/governor plan per GPU,
