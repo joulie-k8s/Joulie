@@ -1,7 +1,7 @@
 package main
 
 // Compatibility shims of the OpenTelemetry inputs: inputEnvAliases, the
-// legacy facility preset and the legacy HTTP JSON body, added in v0.3.0 and
+// legacy facility preset and the legacy HTTP JSON body, added in v0.2.4 and
 // removed in inputAliasesRemovedIn. Delete the aliases, lookups and docs rows
 // together.
 

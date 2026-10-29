@@ -28,9 +28,10 @@ Experiments 01 to 03 run each seed's jobs, at the same times and with the same w
 
 ## Images
 
-The `configs/benchmark-40n.yaml` of experiments 01 to 03 pin the images the reports ran: `joulie.local/joulie-*:rerun-2026-10-28`, built from commit `6cc3a1d3` (on the branch of PR #105: `git fetch origin pull/105/head`) and loaded into the kind cluster, with no registry. The later commits change nothing these runs exercise: a lock the simulator's workload tick now takes before reading a node's capacity, an emulated GPU profile, and experiment 05's sweep and analysis. To run such a config, build the four images, create the cluster, load them, and keep the simulator from pulling:
+The `configs/benchmark-40n.yaml` of experiments 01 to 03 pin the images the reports ran: `joulie.local/joulie-*:rerun-2026-10-28`, built from commit `6cc3a1d3` (on the branch of PR #105: `git fetch origin pull/105/head`) and loaded into the kind cluster, with no registry. The later commits change nothing these runs exercise: a lock the simulator's workload tick now takes before reading a node's capacity, an emulated GPU profile, and experiment 05's sweep and analysis. To run such a config, check out that commit, build the four images, create the cluster, load them, and keep the simulator from pulling:
 
 ```bash
+git fetch origin pull/105/head && git checkout 6cc3a1d3
 tag=rerun-2026-10-28 e=02-heterogeneous-benchmark
 for c in agent controller-manager scheduler; do
   docker build --build-arg COMPONENT=$c -f Dockerfile -t joulie.local/joulie-$c:$tag .

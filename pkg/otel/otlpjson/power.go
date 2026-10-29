@@ -33,8 +33,8 @@ const MaxTelemetryBody = 8 << 20
 // replaced: the legacy packagePowerWatts JSON of the HTTP telemetry
 // endpoints, which ReadPower reads and the simulator serves until then, and
 // the controller manager's input aliases (FACILITY_*_METRIC and
-// FACILITY_PRESET=legacy). One minor release after v0.3.0 added their
-// replacements.
+// FACILITY_PRESET=legacy). Their replacements came in v0.2.4; the old
+// forms stay until v0.4.0, as the docs promise.
 const LegacyRemovedIn = "v0.4.0"
 
 // FetchTelemetry GETs url and returns the body of a 2xx answer. A body

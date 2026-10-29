@@ -49,6 +49,18 @@ jobs:
           ref: refs/tags/${{ steps.vars.outputs.version }}
           fetch-depth: 0
 
+      # "stable" serves the newest stable release, as ":latest" names its
+      # images, and scripts/release-version.sh decides both: a pre-release,
+      # flagged on GitHub or named like one (v0.3.0-rc0), publishes its own
+      # version only. v0.2.0-rc1 and v0.3.0-rc0 replaced the stable docs
+      # because every release was deployed there.
+      - name: Decide whether the release is stable
+        id: stable
+        env:
+          TAG: ${{ steps.vars.outputs.version }}
+          PRERELEASE: ${{ github.event.release.prerelease || 'false' }}
+        run: bash scripts/release-version.sh "${TAG}" "${PRERELEASE}" >> "$GITHUB_OUTPUT"
+
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -141,6 +153,7 @@ jobs:
             --destination ../public-version
 
       - name: Build stable docs
+        if: steps.stable.outputs.latest == 'true'
         working-directory: website
         run: |
           hugo --gc --minify \
@@ -158,6 +171,7 @@ jobs:
         run: bash scripts/gh-pages-push.sh publish public-version "versions/$VERSION" "$MESSAGE"
 
       - name: Deploy stable docs to gh-pages/stable
+        if: steps.stable.outputs.latest == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MESSAGE: "docs: deploy ${{ steps.vars.outputs.version }} as stable"

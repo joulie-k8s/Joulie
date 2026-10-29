@@ -88,6 +88,60 @@ func TestReleaseWorkflowTagsLatestOnlyForStableReleases(t *testing.T) {
 	}
 }
 
+// docsReleaseWorkflow is the part of .github/workflows/docs-release.yml the
+// stable docs check reads.
+type docsReleaseWorkflow struct {
+	Jobs map[string]struct {
+		Steps []struct {
+			Name string `json:"name"`
+			ID   string `json:"id"`
+			If   string `json:"if"`
+			Run  string `json:"run"`
+		} `json:"steps"`
+	} `json:"jobs"`
+}
+
+// TestDocsReleasePublishesStableOnlyForStableReleases: the stable docs are
+// the counterpart of ":latest", the newest stable release. v0.2.0-rc1 and
+// v0.3.0-rc0 replaced them because docs-release.yml built and deployed every
+// release there. Each step that builds or deploys the stable site runs only
+// when scripts/release-version.sh, which decides ":latest", says latest, and
+// that decision comes first.
+func TestDocsReleasePublishesStableOnlyForStableReleases(t *testing.T) {
+	path := filepath.Join(repoRoot(t), ".github", "workflows", "docs-release.yml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wf docsReleaseWorkflow
+	if err := yaml.Unmarshal(data, &wf); err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	found := 0
+	for _, name := range slices.Sorted(maps.Keys(wf.Jobs)) {
+		decider := ""
+		for _, step := range wf.Jobs[name].Steps {
+			if strings.Contains(step.Run, "scripts/release-version.sh") {
+				decider = step.ID
+			}
+			if !strings.Contains(step.Run, "public-stable") {
+				continue
+			}
+			found++
+			if decider == "" {
+				t.Errorf("docs-release.yml job %s step %q writes the stable docs with no earlier step deciding, through scripts/release-version.sh, whether the release is stable", name, step.Name)
+				continue
+			}
+			if want := "steps." + decider + ".outputs.latest == 'true'"; strings.TrimSpace(step.If) != want {
+				t.Errorf("docs-release.yml job %s step %q writes the stable docs on every release, pre-releases included: if is %q, want %q", name, step.Name, step.If, want)
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("docs-release.yml has no step that builds or deploys public-stable; update this test if that is intended")
+	}
+}
+
 // releaseWorkflow is the part of .github/workflows/release.yml the
 // platform checks read.
 type releaseWorkflow struct {
