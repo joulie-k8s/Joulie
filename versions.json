@@ -10,12 +10,12 @@
       "path": "/Joulie/main/"
     },
     {
-      "name": "v0.3.0-rc0",
-      "path": "/Joulie/versions/v0.3.0-rc0/"
-    },
-    {
       "name": "v0.2.5",
       "path": "/Joulie/versions/v0.2.5/"
+    },
+    {
+      "name": "v0.3.0-rc0",
+      "path": "/Joulie/versions/v0.3.0-rc0/"
     },
     {
       "name": "v0.2.4",
