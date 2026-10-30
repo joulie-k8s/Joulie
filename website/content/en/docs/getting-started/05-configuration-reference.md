@@ -527,7 +527,7 @@ A local profile may extend (`extends:`) a builtin profile or another local one, 
 
 ## kubectl plugin
 
-The `kubectl joulie` plugin reads the cluster through your kubeconfig, as kubectl does, and needs no configuration. It lists `NodeTwin`, `NodeHardware`, `Node` and `Pod` objects; without permission to list `NodeHardware` it shows no hardware and works otherwise. Install it with `kubectl krew install joulie`, or see the [quickstart]({{< relref "/docs/getting-started/01-quickstart.md#kubectl-plugin" >}}).
+The `kubectl joulie` plugin reads the cluster through your kubeconfig, as kubectl does, and needs no configuration. It lists `NodeTwin`, `NodeHardware`, `Node` and `Pod` objects; without permission to list `NodeHardware` it shows no hardware and works otherwise. Install it from a release, as the [quickstart]({{< relref "/docs/getting-started/01-quickstart.md#kubectl-plugin" >}}) shows; `kubectl krew install joulie` works once the Krew index lists the plugin.
 
 | Command | Shows |
 |---------|-------|

@@ -88,7 +88,7 @@ Joulie has five components:
 | **Agent** (`cmd/agent`) | Runs on every node. Discovers hardware (CPU/GPU caps, slicing modes). Enforces RAPL/NVML power caps. Applies governor presets when `GOVERNOR_WRITES=true`. Publishes `NodeHardware` CR. Reads `NodeTwin.spec` for desired state. Writes control feedback to `NodeTwin.status.controlStatus`. |
 | **Controller manager** (`cmd/controller-manager`) | Cluster-wide control loop. Reads `NodeHardware` + Prometheus metrics. Runs the digital twin model. Writes `NodeTwin` (spec = desired power state, status = twin output). |
 | **Scheduler extender** (`cmd/scheduler`) | HTTP extender for kube-scheduler. Reads `NodeTwin.status` (30s TTL cache). Rejects eco nodes for performance pods. Scores nodes by projected power headroom, cooling stress and power trend. |
-| **kubectl plugin** (`cmd/kubectl-joulie`) | `kubectl joulie` for the cluster's energy state, `kubectl joulie top` for the live dashboard; `kubectl krew install joulie`. |
+| **kubectl plugin** (`cmd/kubectl-joulie`) | `kubectl joulie` for the cluster's energy state, `kubectl joulie top` for the live dashboard; install it from a release ([quickstart](https://joulie-k8s.github.io/Joulie/stable/docs/getting-started/quickstart/#kubectl-plugin)). |
 | **Digital twin** (`pkg/controller/twin`) | O(1) parametric model. From a measured node power reading it computes power headroom (% of the capped budget still unused), cooling stress (% of node TDP in use, scaled by ambient temperature), PSU stress (% of rack PDU capacity), and estimated PUE. The last two are published for observability; the scheduler does not read them. |
 
 ## CRDs
