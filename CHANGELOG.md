@@ -4,6 +4,8 @@ The user-visible changes of each release, what to check when upgrading, and the 
 
 ## Unreleased
 
+## v0.3.0 (2026-10-30)
+
 ### Agents and nodes
 
 - A percent CPU cap that the agent turns into watts spans, per socket, the catalog's TDP down to 0.55 x TDP. The low end of the cTDP range was the floor, but it is a configurable TDP, not the lowest package power limit, which no vendor publishes (AMD EPYC 9004 tuning guide, publication 58002). (#105)

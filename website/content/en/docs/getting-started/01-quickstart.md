@@ -213,13 +213,6 @@ Or from source: `make simulator-install TAG=<version>`.
 
 {{< img src="images/kubectl-joulie.gif" alt="kubectl joulie: status, node and the live dashboard on a simulated 10-node cluster" >}}
 
-### Install with Krew
-
-```bash
-kubectl krew install joulie
-kubectl krew upgrade joulie   # later, for a new release
-```
-
 ### Install from a release
 
 Each [GitHub release](https://github.com/joulie-k8s/Joulie/releases) carries an archive per platform (`linux_amd64`, `linux_arm64`, `darwin_amd64`, `darwin_arm64`, `windows_amd64`), with the binary and the license, and the bare binary:
@@ -232,6 +225,15 @@ install kubectl-joulie ~/.local/bin/   # any directory in your PATH
 ```
 
 The bare binaries are also in the CERN registry: `oras pull "registry.cern.ch/joulie/kubectl-joulie:<version>-linux-amd64"` (the version without the `v`).
+
+### Install with Krew
+
+Once the Krew index lists the plugin, which waits on the review of [kubernetes-sigs/krew-index#6477](https://github.com/kubernetes-sigs/krew-index/pull/6477):
+
+```bash
+kubectl krew install joulie
+kubectl krew upgrade joulie   # later, for a new release
+```
 
 ### Install from source
 

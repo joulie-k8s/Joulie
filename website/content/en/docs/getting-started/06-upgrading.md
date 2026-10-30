@@ -21,7 +21,7 @@ What to check when you upgrade a Joulie installation from v0.2 to v0.3. Go throu
 
 - [ ] **Scripts.** `kubectl joulie status` prints styled tables and drops columns that do not fit the terminal. A script that parsed its text reads `kubectl joulie status -o json` instead ([fields]({{< relref "/docs/getting-started/05-configuration-reference.md#kubectl-plugin" >}})).
 - [ ] **Watch.** `kubectl joulie status -W` opens the live dashboard, also `kubectl joulie top`: `q` quits it.
-- [ ] **Install.** `kubectl krew install joulie`. A release attaches `kubectl-joulie_<tag>_<os>_<arch>.tar.gz` archives, Windows included, besides the bare binaries.
+- [ ] **Install.** A release attaches `kubectl-joulie_<tag>_<os>_<arch>.tar.gz` archives, Windows included, besides the bare binaries. `kubectl krew install joulie` works once the Krew index lists the plugin ([kubernetes-sigs/krew-index#6477](https://github.com/kubernetes-sigs/krew-index/pull/6477)).
 
 ## Measured node power
 
