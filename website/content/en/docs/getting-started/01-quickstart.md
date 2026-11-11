@@ -220,25 +220,6 @@ kubectl krew install joulie
 kubectl krew upgrade joulie   # later, for a new release
 ```
 
-### Install from a release
-
-Each [GitHub release](https://github.com/joulie-k8s/Joulie/releases) carries an archive per platform (`linux_amd64`, `linux_arm64`, `darwin_amd64`, `darwin_arm64`, `windows_amd64`), with the binary and the license, and the bare binary:
-
-```bash
-VERSION=v<version>
-PLATFORM=linux_amd64
-curl -sL "https://github.com/joulie-k8s/Joulie/releases/download/${VERSION}/kubectl-joulie_${VERSION}_${PLATFORM}.tar.gz" | tar xz kubectl-joulie
-install kubectl-joulie ~/.local/bin/   # any directory in your PATH
-```
-
-The bare binaries are also in the CERN registry: `oras pull "registry.cern.ch/joulie/kubectl-joulie:<version>-linux-amd64"` (the version without the `v`).
-
-### Install from source
-
-```bash
-make kubectl-plugin-install
-```
-
 ### Usage
 
 ```bash
