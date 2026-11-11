@@ -92,6 +92,11 @@ Cases:
                            dashboards/joulie-simulated-cluster.json byte for
                            byte, also from the packaged chart; the dashboard
                            selects no joulie_sim_* metric
+  C14 prometheusRule       off by default; on, one PrometheusRule whose spec
+                           is charts/joulie/alerts/joulie-alerts.yaml byte
+                           for byte, also from the packaged chart, in the
+                           release namespace or prometheusRule.namespace,
+                           with the labels of prometheusRule.labels
   GC12 governor control    the controller manager writes no governor by
                            default: GOVERNOR_CONTROL=off, with the documented
                            preset defaults, also under values/joulie.yaml
@@ -966,6 +971,44 @@ for c13_slug in sim-dashboard packaged-sim-dashboard; do
 done
 if grep -qE 'joulie_sim_[a-z]' "${SIM_DASH_FILE}"; then
 	fail "the simulated cluster dashboard selects a joulie_sim_* metric, which its Prometheus never scrapes"
+fi
+
+# --------------------------------------------------------------------------
+# C14: prometheusRule ships alerts/joulie-alerts.yaml in a PrometheusRule, off
+# by default: the PrometheusRule CRD belongs to the Prometheus Operator, and a
+# chart that rendered one unasked would fail every install without it. On,
+# its spec is the rules file byte for byte, from a checkout and from the
+# packaged chart, which must carry the file; it lives in the release namespace
+# unless prometheusRule.namespace names another, and prometheusRule.labels
+# reach its metadata, where a Prometheus ruleSelector reads them.
+# --------------------------------------------------------------------------
+case_start "C14 prometheusRule ships the alerts, off by default"
+RULE="joulie-joulie-alerts"
+RULES_FILE="${CHART}/alerts/joulie-alerts.yaml"
+assert_count defaults '^PrometheusRule/' 0
+assert_count release-values '^PrometheusRule/' 0
+for c14_slug in prometheus-rule packaged-prometheus-rule; do
+	c14_chart="${CHART}"
+	if [ "${c14_slug}" = packaged-prometheus-rule ]; then
+		[ -n "${PKG:-}" ] || continue
+		c14_chart="${PKG}"
+	fi
+	render "${c14_slug}" "${c14_chart}" --namespace joulie-system \
+		--set 'prometheusRule.enabled=true' --set 'prometheusRule.labels.release=kube-prometheus-stack' || continue
+	assert_count "${c14_slug}" '^PrometheusRule/' 1
+	assert_doc "${c14_slug}" has PrometheusRule "${RULE}" '^  namespace: joulie-system$' "the release namespace"
+	assert_doc "${c14_slug}" has PrometheusRule "${RULE}" '^    release: kube-prometheus-stack$' "a label of prometheusRule.labels"
+	# The rules under spec, without the 2 spaces of their indentation.
+	doc "${c14_slug}" PrometheusRule "${RULE}" |
+		awk 'on == 1 { print substr($0, 3); next } /^spec:$/ { on = 1 }' >"${WORKDIR}/${c14_slug}.rules.yaml"
+	if ! diff -u "${RULES_FILE}" "${WORKDIR}/${c14_slug}.rules.yaml" >"${WORKDIR}/${c14_slug}.diff"; then
+		fail "PrometheusRule/${RULE} (${c14_slug}): the rules differ from charts/joulie/alerts/joulie-alerts.yaml"
+		head -20 "${WORKDIR}/${c14_slug}.diff" | sed 's/^/    /' >&2
+	fi
+done
+if render prometheus-rule-namespace "${CHART}" --namespace joulie-system \
+	--set 'prometheusRule.enabled=true' --set 'prometheusRule.namespace=monitoring'; then
+	assert_doc prometheus-rule-namespace has PrometheusRule "${RULE}" '^  namespace: monitoring$' "prometheusRule.namespace"
 fi
 
 # --------------------------------------------------------------------------

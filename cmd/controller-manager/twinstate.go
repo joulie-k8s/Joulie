@@ -81,7 +81,7 @@ func nodeTopologyFor(nodeName, rack, zone string, rackPowerEstimates map[string]
 // The GPU budget counts the planned GPU cap only where it applies
 // (twin.GPUCapApplies), from NodeHardware and the agent's last GPU cap
 // result, which the controller manager reads and never writes.
-func reconcileNodeTwin(ctx context.Context, reader kube.Reader, dynClient dynamic.Interface, nodeName, profile string, cpuCapPct, gpuCapPct float64, draining bool, topo *nodeTopology) (*metav1.Condition, error) {
+func reconcileNodeTwin(ctx context.Context, reader kube.Reader, dynClient dynamic.Interface, nodeName, profile string, cpuCapPct, gpuCapPct float64, draining bool, topo *nodeTopology) (twinOutcome, error) {
 	hwObj, hwErr := readNodeHardware(ctx, reader, nodeName)
 	hw := twinHardware(nodeName, hwObj)
 	gpuCapNotApplied := !twin.GPUCapApplies(hw.GPU, fetchGPUControlResult(ctx, reader, nodeName))
@@ -150,16 +150,28 @@ func reconcileNodeTwin(ctx context.Context, reader kube.Reader, dynClient dynami
 		PowerMeasurement:            pm,
 		LastUpdated:                 out.LastUpdated,
 	}
+	outcome := twinOutcome{powerSource: source, lastUpdated: out.LastUpdated}
 	// A NodeHardware that could not be read says nothing about the agent,
 	// so the stored condition stays.
-	var agent *metav1.Condition
 	if hwErr == nil {
 		c := agentReportingCondition(hwObj, out.LastUpdated)
-		agent = &c
+		outcome.agent = &c
 		twinStatus.Conditions = []metav1.Condition{c}
 	}
 
-	return agent, upsertNodeTwinStatus(ctx, dynClient, nodeName, twinStatus)
+	return outcome, upsertNodeTwinStatus(ctx, dynClient, nodeName, twinStatus)
+}
+
+// twinOutcome is what reconcileNodeTwin computed for one node, for the
+// metrics of the reconcile.
+type twinOutcome struct {
+	// agent is the node's AgentReporting condition, nil when its
+	// NodeHardware could not be read.
+	agent *metav1.Condition
+	// powerSource is status.powerMeasurement.source.
+	powerSource string
+	// lastUpdated is status.lastUpdated.
+	lastUpdated time.Time
 }
 
 // agentReportingCondition is the AgentReporting condition of a node whose

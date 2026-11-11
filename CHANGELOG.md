@@ -4,6 +4,11 @@ The user-visible changes of each release, what to check when upgrading, and the 
 
 ## Unreleased
 
+### Alerts
+
+- The chart ships four alerting rules with runbooks: `JoulieCapNotApplied` (a CPU or GPU cap `blocked` or `error` for 15 minutes), `JoulieAgentWritesBlocked` (the API server refuses the agent's status writes), `JoulieTwinStale` (a `NodeTwin` status not written for 10 minutes) and `JoulieNodePowerNoData` (nodes the measured power source returns nothing for). They are in `charts/joulie/alerts/joulie-alerts.yaml`, rendered as a PrometheusRule with `prometheusRule.enabled` (off by default; `prometheusRule.namespace` and `prometheusRule.labels` place it), and the runbooks are in the docs' new Alerts and Runbooks page. (#127)
+- The agent exports `joulie_agent_cap_result{node,component,result}`, the result of each cap as it writes it to `status.controlStatus`, and `joulie_agent_status_write_errors_total{node,object}`, its `NodeTwin` and `NodeHardware` status writes that failed (a refused `NodeTwin` write was not even logged). A refused write of the status subresource now counts as failed, and the `NodeHardware` one is logged, also when the agent's fallback write of the object is accepted: that write leaves the status as it was, so it hid an agent without its `/status` verbs. The controller manager exports `joulie_twin_status_updated_timestamp_seconds{node}`, when it last wrote each node's `NodeTwin` status, and `joulie_twin_nodes_power_source{source}`, the managed nodes per measured power source. The overview dashboard plots the four in a new "Alert signals" row. (#127)
+
 ## v0.3.0 (2026-10-30)
 
 ### Agents and nodes

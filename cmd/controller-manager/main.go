@@ -295,6 +295,7 @@ func registerMetrics(reg prometheus.Registerer) {
 	reg.MustRegister(policyNodeState, policyNodeProfileLabel, policyStateTransitions)
 	reg.MustRegister(policyFamilyNodes, policyFamilyPerformanceNodes)
 	reg.MustRegister(twinNodesAgentReporting)
+	reg.MustRegister(twinNodesPowerSource, twinStatusUpdated)
 	reg.MustRegister(inputMetricCollectors()...)
 }
 
@@ -401,6 +402,8 @@ func reconcileWithCatalog(
 		log.Printf("no eligible nodes matched selector=%q", selector.String())
 		recordFamilySplit(nil, nil) // no families left, so no stale split either
 		recordAgentReporting(nil)
+		recordPowerSources(nil)
+		twinStatusFreshness.plan(nil, time.Now())
 		return nil
 	}
 
@@ -538,7 +541,13 @@ func reconcileWithCatalog(
 		}
 	}
 
+	planned := make([]string, 0, len(plan))
+	for _, a := range plan {
+		planned = append(planned, a.NodeName)
+	}
+	twinStatusFreshness.plan(planned, time.Now())
 	var agentConditions []metav1.Condition
+	var powerSources []string
 	for _, a := range plan {
 		if err := upsertNodeTwinSpec(ctx, dyn, a); err != nil {
 			return err
@@ -555,18 +564,22 @@ func reconcileWithCatalog(
 			gpuPct = *a.GPU.CapPctOfMax
 		}
 		topo := nodeTopologyFor(a.NodeName, nodeRack[a.NodeName], nodeZone[a.NodeName], rackPowerEstimates, facility)
-		agent, err := reconcileNodeTwin(ctx, reader, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo)
+		twinOut, err := reconcileNodeTwin(ctx, reader, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo)
 		if err != nil {
 			log.Printf("warning: reconcileNodeTwin %s: %v", a.NodeName, err)
+		} else {
+			twinStatusFreshness.wrote(a.NodeName, twinOut.lastUpdated)
 		}
-		if agent != nil {
-			agentConditions = append(agentConditions, *agent)
+		if twinOut.agent != nil {
+			agentConditions = append(agentConditions, *twinOut.agent)
 		}
+		powerSources = append(powerSources, twinOut.powerSource)
 		recordNodeStateMetrics(a.NodeName, a.State)
 		recordNodeProfileLabelMetrics(a.NodeName, a.Profile)
 		recordTransitionMetrics(a)
 	}
 	recordAgentReporting(agentConditions)
+	recordPowerSources(powerSources)
 
 	log.Printf("assigned profiles policy=%s interval=%s nodes=%d plan=%s", policyType, interval, len(eligible), summarizePlan(plan))
 	return nil

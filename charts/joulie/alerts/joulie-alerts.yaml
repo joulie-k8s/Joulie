@@ -1,0 +1,49 @@
+# Joulie alerting rules, in the Prometheus rule file format. The chart ships
+# them in a PrometheusRule when prometheusRule.enabled is true; a Prometheus
+# without the operator loads this file through rule_files as it is. Each
+# alert links to its runbook, and the runbook says why its threshold and its
+# for: duration are what they are. tests/promql evaluates every expression
+# (TestAL*).
+groups:
+  - name: joulie
+    rules:
+      - alert: JoulieCapNotApplied
+        expr: |
+          max by (node, component, result) (joulie_agent_cap_result{result=~"error|blocked"}) == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: A planned power cap is not applied on a node.
+          description: The {{ $labels.component }} cap of node {{ $labels.node }} has been {{ $labels.result }} for 15 minutes; the node runs above the power its profile plans.
+          runbook_url: https://joulie-k8s.github.io/Joulie/docs/getting-started/07-runbooks/#jouliecapnotapplied
+      - alert: JoulieAgentWritesBlocked
+        expr: |
+          sum by (node, object) (increase(joulie_agent_status_write_errors_total[10m])) > 0
+        for: 20m
+        labels:
+          severity: warning
+        annotations:
+          summary: The Joulie agent cannot write its status to the API server.
+          description: The agent of node {{ $labels.node }} has had its {{ $labels.object }} status writes refused for 20 minutes; what that object shows is out of date.
+          runbook_url: https://joulie-k8s.github.io/Joulie/docs/getting-started/07-runbooks/#joulieagentwritesblocked
+      - alert: JoulieTwinStale
+        expr: |
+          time() - max by (node) (joulie_twin_status_updated_timestamp_seconds) > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A NodeTwin status is no longer updated.
+          description: The controller manager has not written the NodeTwin status of node {{ $labels.node }} for more than 10 minutes; the scheduler extender gives the node a neutral score.
+          runbook_url: https://joulie-k8s.github.io/Joulie/docs/getting-started/07-runbooks/#joulietwinstale
+      - alert: JoulieNodePowerNoData
+        expr: |
+          max by (source) (joulie_twin_nodes_power_source{source=~"prometheus-no-data|http-error|http-no-endpoint"}) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: The measured power source returns no reading for some nodes.
+          description: '{{ $value }} managed nodes have had power source {{ $labels.source }} for 15 minutes; their twins count 0 W measured.'
+          runbook_url: https://joulie-k8s.github.io/Joulie/docs/getting-started/07-runbooks/#joulienodepowernodata

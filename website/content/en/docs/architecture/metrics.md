@@ -82,6 +82,20 @@ Written by the agent's [governor control]({{< relref "/docs/architecture/agent.m
 - `joulie_agent_governor_state{node,component,preset}` (gauge)
   - the preset in effect is `1` (result `applied`, `applied-unverified` or `equivalent`), every other preset of the component `0`; all `0` before a write and after a restore
 
+### Cap results and status writes
+
+What the agent reports in the API, exported so an alert needs no `NodeTwin` read and still sees a write the API server refused. The [alerts]({{< relref "/docs/getting-started/07-runbooks.md" >}}) `JoulieCapNotApplied` and `JoulieAgentWritesBlocked` read them.
+
+- `joulie_agent_cap_result{node,component,result}` (gauge)
+  - the result of the last CPU or GPU cap, as the agent writes it to `status.controlStatus.<component>.result`
+  - `component`: `cpu|gpu`
+  - `result`: `applied|blocked|error|none`; the result in effect is `1`, the others `0`, all four set at every reconcile, also when the status write is skipped because nothing changed
+  - a pool agent removes the series of a node it stops controlling
+- `joulie_agent_status_write_errors_total{node,object}` (counter)
+  - status writes the API server refused, or that failed to reach it; a refused write of the status subresource counts even when the agent's fallback write of the object is accepted, since that write leaves the status as it was
+  - `object`: `NodeTwin` (`status.controlStatus`, caps and governors) or `NodeHardware` (its status)
+  - a `NodeTwin` the controller manager has not created yet counts nothing
+
 ### Reliability
 
 - `joulie_reconcile_errors_total{node}` (counter)
@@ -154,6 +168,19 @@ Exported by the controller manager, set every reconcile from the `AgentReporting
   - all three series are set on every reconcile, `0` included, so `sum(joulie_twin_nodes_agent_reporting{status="false"}) > 0` works as an alert from the first reconcile on; a node whose `NodeHardware` could not be read in a reconcile is not counted in it
 
 The gauge has no `node` label; the nodes themselves are the `NodeTwin`s whose condition is `False`. The overview dashboard plots the `false` series in its "Agent: Reliability" row.
+
+## Twin health
+
+Exported by the controller manager, for the [alerts]({{< relref "/docs/getting-started/07-runbooks.md" >}}) `JoulieTwinStale` and `JoulieNodePowerNoData`.
+
+- `joulie_twin_status_updated_timestamp_seconds{node}` (gauge)
+  - Unix time of the `NodeTwin` status the controller manager last wrote for the node (`status.lastUpdated`)
+  - a node planned before any write holds the time of the reconcile that first planned it, so a twin the controller manager never manages to write ages as one it stopped writing; a node that leaves the plan loses its series
+  - `time() - joulie_twin_status_updated_timestamp_seconds` is the age of the twin
+- `joulie_twin_nodes_power_source{source}` (gauge)
+  - managed nodes per measured power source of the last reconcile, `status.powerMeasurement.source` of their `NodeTwin`
+  - `source`: `prometheus` or `http` with a reading; `prometheus-no-data`, `http-error` or `http-no-endpoint` without one; `static` when nothing is measured; `kepler` and `utilization` are reserved and stay `0`
+  - every source is set on every reconcile, `0` included; like the agent coverage gauge it has no `node` label, and the nodes are the `NodeTwin`s with that source
 
 ## Scheduler extender metrics
 
