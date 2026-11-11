@@ -466,6 +466,7 @@ func runPoolMode() {
 				continue
 			}
 			delete(controllers, node)
+			forgetNodeCapMetrics(node)
 			log.Printf("controller stopped node=%s shard=%d/%d", node, shardID, shards)
 		}
 		cancel()
@@ -684,9 +685,7 @@ func reconcileOnce(
 	// The governor baseline reaches NodeHardware before any governor write.
 	gov := nc.governorControl()
 	gov.prepare(ctx, dyn, &hw, selected)
-	if err := upsertNodeHardwareStatus(ctx, dyn, nodeName, hw); err != nil {
-		log.Printf("warning: failed to upsert NodeHardware status for node=%s: %v", nodeName, err)
-	}
+	writeNodeHardwareStatus(ctx, dyn, nodeName, hw)
 	if dvfsCtl != nil {
 		setDVFSPowerReaderForTelemetry(dvfsCtl, telemetry, nodeName)
 	}
@@ -2098,6 +2097,7 @@ func shouldWrite(key, payload string, now time.Time) bool {
 }
 
 func updateNodeTwinControlStatus(ctx context.Context, dyn dynamic.Interface, nodeName, component, backend, result, message string) error {
+	recordCapResult(nodeName, component, result)
 	return patchNodeTwinControlStatus(ctx, dyn, nodeName, component, backend+"|"+result+"|"+message, map[string]interface{}{
 		"backend":   backend,
 		"result":    result,
@@ -2160,13 +2160,28 @@ func patchNodeTwinControlStatus(ctx context.Context, dyn dynamic.Interface, node
 			return nil // NodeTwin not yet created by the controller manager
 		}
 		// Fallback: patch without status subresource
-		_, err = res.Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{FieldManager: joulie.FieldManagerAgent})
-		if err != nil && apierrors.IsNotFound(err) {
+		_, ferr := res.Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{FieldManager: joulie.FieldManagerAgent})
+		if ferr != nil && apierrors.IsNotFound(ferr) {
 			return nil
 		}
+		// The status endpoint exists (it did not answer not found), so a
+		// patch of the object leaves the status as it was: the refusal stands.
+		if ferr != nil {
+			err = ferr
+		}
+		recordStatusWriteError(nodeName, statusObjectNodeTwin)
 		return err
 	}
 	return nil
+}
+
+// writeNodeHardwareStatus writes the node's NodeHardware status; a failure
+// is logged and counted, and the reconcile goes on to the caps.
+func writeNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeName string, hw HardwareInfo) {
+	if err := upsertNodeHardwareStatus(ctx, dyn, nodeName, hw); err != nil {
+		recordStatusWriteError(nodeName, statusObjectNodeHardware)
+		log.Printf("warning: failed to upsert NodeHardware status for node=%s: %v", nodeName, err)
+	}
 }
 
 func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeName string, hw HardwareInfo) error {
@@ -2307,11 +2322,16 @@ func upsertNodeHardwareStatus(ctx context.Context, dyn dynamic.Interface, nodeNa
 	if err := unstructured.SetNestedField(obj.Object, status, "status"); err != nil {
 		return fmt.Errorf("set NodeHardware status: %w", err)
 	}
-	_, err = res.UpdateStatus(ctx, obj, metav1.UpdateOptions{FieldManager: joulie.FieldManagerAgent})
-	if err == nil {
+	_, serr := res.UpdateStatus(ctx, obj, metav1.UpdateOptions{FieldManager: joulie.FieldManagerAgent})
+	if serr == nil {
 		return nil
 	}
 	_, err = res.Update(ctx, obj, metav1.UpdateOptions{FieldManager: joulie.FieldManagerAgent})
+	if err == nil && !apierrors.IsNotFound(serr) {
+		// With a status subresource the update leaves the status as it
+		// was, so the refused status write stands.
+		return serr
+	}
 	return err
 }
 

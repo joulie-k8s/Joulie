@@ -204,3 +204,16 @@ grafanaDashboard:
   enabled: false  # enable if Grafana sidecar is configured to auto-provision dashboards
   labels:
     grafana_dashboard: "1"
+
+# Alerting rules with runbooks (alerts/joulie-alerts.yaml) in a PrometheusRule,
+# for a Prometheus run by the Prometheus Operator. Off by default: the
+# PrometheusRule CRD must be installed. Runbooks:
+# https://joulie-k8s.github.io/Joulie/docs/getting-started/07-runbooks/
+prometheusRule:
+  enabled: false
+  # Namespace of the PrometheusRule; empty is the release namespace. Set it to
+  # one your Prometheus ruleNamespaceSelector selects.
+  namespace: ""
+  # Labels added to the PrometheusRule, for your Prometheus ruleSelector, for
+  # example release: kube-prometheus-stack.
+  labels: {}

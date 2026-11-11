@@ -17,6 +17,7 @@ This section is ordered intentionally:
 5. [Agent Runtime Modes]({{< relref "/docs/getting-started/02-agent-runtime-modes.md" >}}) - DaemonSet, pool and emulated modes
 6. [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md" >}}) - all environment variables
 7. [Upgrading]({{< relref "/docs/getting-started/06-upgrading.md" >}}) - what to check before upgrading an installation
+8. [Alerts and Runbooks]({{< relref "/docs/getting-started/07-runbooks.md" >}}) - the chart's alerting rules and what to do when one fires
 
 By the end, you should understand:
 

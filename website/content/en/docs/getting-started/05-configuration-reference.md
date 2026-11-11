@@ -292,6 +292,16 @@ The Service `joulie-scheduler-extender` carries `schedulerExtender.service.annot
 
 With `schedulerExtender.hostNetwork: true` the chart deploys the extender with strategy `Recreate`: an old and a new pod cannot hold the host port on one node, so a rolling update would never finish. Pods are still scheduled while the extender restarts only if the scheduler configuration marks it `ignorable: true`; otherwise also set `schedulerExtender.nodeName`, so the new extender pod does not wait for the scheduler that waits for it.
 
+## Alerting rules
+
+The chart ships four alerting rules (`charts/joulie/alerts/joulie-alerts.yaml`), each with a runbook in [Alerts and Runbooks]({{< relref "/docs/getting-started/07-runbooks.md" >}}): `JoulieCapNotApplied`, `JoulieAgentWritesBlocked`, `JoulieTwinStale` and `JoulieNodePowerNoData`. They read the agent's `joulie_agent_cap_result` and `joulie_agent_status_write_errors_total` and the controller manager's `joulie_twin_status_updated_timestamp_seconds` and `joulie_twin_nodes_power_source` ([Metrics]({{< relref "/docs/architecture/metrics.md" >}})).
+
+| Value | Default | Effect |
+|-------|---------|--------|
+| `prometheusRule.enabled` | `false` | Render the rules in the PrometheusRule `<release>-joulie-alerts`, for a Prometheus run by the Prometheus Operator, whose CRD it needs. Without the operator, load the file with `rule_files`. |
+| `prometheusRule.namespace` | `""` | Namespace of the PrometheusRule; empty is the release namespace. |
+| `prometheusRule.labels` | `{}` | Labels added to the PrometheusRule, for the `ruleSelector` of your Prometheus (for example `release: kube-prometheus-stack`). |
+
 ## Simulator
 
 This section covers the binaries under `simulator/cmd`. Each subsection names the binary that reads its variables. The simulator's modes are described in [Simulator]({{< relref "/docs/simulator/_index.md" >}}).

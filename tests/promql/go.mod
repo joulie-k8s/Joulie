@@ -12,6 +12,7 @@ toolchain go1.26.10
 
 require (
 	github.com/matbun/joulie v0.0.0-00010101000000-000000000000
+	github.com/prometheus/common v0.71.0
 	github.com/prometheus/otlptranslator v1.0.0
 	github.com/prometheus/prometheus v0.315.0
 )
@@ -72,7 +73,6 @@ require (
 	github.com/prometheus/client_golang v1.24.1 // indirect
 	github.com/prometheus/client_golang/exp v0.0.0-20260907100614-57bb367da472 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
-	github.com/prometheus/common v0.71.0 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/prometheus/sigv4 v0.5.0 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
