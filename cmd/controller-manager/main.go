@@ -20,6 +20,7 @@ import (
 	"github.com/matbun/joulie/pkg/controller/fsm"
 	"github.com/matbun/joulie/pkg/controller/policy"
 	"github.com/matbun/joulie/pkg/hwinv"
+	"github.com/matbun/joulie/pkg/job/kubejob"
 	"github.com/matbun/joulie/pkg/kube"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -46,12 +47,9 @@ const (
 	// reconcileTimeout bounds one cluster-wide reconcile.
 	reconcileTimeout = 20 * time.Second
 
-	profilePerformance    = "performance"
-	profileEco            = "eco"
-	workloadClassUnknown  = "unknown"
-	workloadClassGeneral  = "general"
-	workloadClassEcoOnly  = "eco-only"
-	workloadClassPerfOnly = "performance-only"
+	profilePerformance   = "performance"
+	profileEco           = "eco"
+	workloadClassUnknown = "unknown"
 )
 
 // NodeAssignment and GPUCapIntent are defined in pkg/controller/policy.
@@ -69,7 +67,7 @@ func (c *cacheNodeOps) RunningPerformanceSensitivePodCount(ctx context.Context, 
 	if err := c.reader.List(ctx, &pods, client.MatchingFields{podNodeNameField: nodeName}); err != nil {
 		return 0, err
 	}
-	return fsm.CountPerformanceSensitivePods(pods.Items), nil
+	return fsm.CountPerformanceSensitiveJobs(kubejob.FromPods(pods.Items)), nil
 }
 
 type GPUModelCaps struct {
@@ -783,19 +781,11 @@ func performancePodDemand(
 	if err := reader.List(ctx, &pods); err != nil {
 		return 0, err
 	}
-	return fsm.CountPerformanceDemand(pods.Items), nil
+	return fsm.CountPerformanceDemand(kubejob.FromPods(pods.Items)), nil
 }
 
-// Delegate pod classification to fsm package.
-var (
-	isPerformanceSensitivePod = fsm.IsPerformanceSensitivePod
-	classifyPodByScheduling   = fsm.ClassifyPodByScheduling
-	podExcludesEco            = fsm.PodExcludesEco
-	podIsEcoOnly              = fsm.PodIsEcoOnly
-)
-
 // runningMultiGPUPodOnNode reports whether a running pod on nodeName requests
-// fsm.MultiGPUPodMinGPUs or more GPU units. The pods come from the cache by
+// fsm.MultiGPUJobMinGPUs or more GPU units. The pods come from the cache by
 // the spec.nodeName index; a failed list reports none, so no data path is
 // held on a guess.
 func runningMultiGPUPodOnNode(ctx context.Context, reader kube.Reader, nodeName string) bool {
@@ -804,7 +794,7 @@ func runningMultiGPUPodOnNode(ctx context.Context, reader kube.Reader, nodeName 
 		log.Printf("warning: cannot list pods on node=%s for GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU: %v", nodeName, err)
 		return false
 	}
-	return fsm.HasRunningMultiGPUPod(pods.Items)
+	return fsm.HasRunningMultiGPUJob(kubejob.FromPods(pods.Items))
 }
 
 func runningPerformanceSensitivePodCountOnNode(

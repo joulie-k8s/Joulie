@@ -23,8 +23,8 @@ func podNodeNameIndex(obj client.Object) []string {
 }
 
 // managerCacheOptions scopes what the controller manager keeps in memory. Pods are the
-// risk at cluster scale, so their informer stores only the fields the FSM
-// reads; every other kind just drops managedFields.
+// risk at cluster scale, so their informer stores only the fields the job
+// adapter (kubejob.FromPod) reads; every other kind just drops managedFields.
 func managerCacheOptions() cache.Options {
 	return cache.Options{
 		DefaultTransform: cache.TransformStripManagedFields(),
@@ -34,12 +34,13 @@ func managerCacheOptions() cache.Options {
 	}
 }
 
-// podTransform keeps only what pkg/controller/fsm reads (annotations,
-// spec.nodeSelector, spec.affinity, deletionTimestamp, status.phase, and the
-// GPU requests and limits of each container, for fsm.PodGPUUnits), the
-// spec.nodeName index key, and the identity and ownership metadata. The rest
-// of the containers, volumes and container statuses, which dominate a Pod's
-// size, never enter the cache: a pod without GPUs keeps no container at all.
+// podTransform keeps only what kubejob.FromPod reads to describe a pod as
+// the job pkg/controller/fsm counts (annotations, spec.nodeSelector,
+// spec.affinity, deletionTimestamp, status.phase, and the GPU requests and
+// limits of each container), the spec.nodeName index key, and the identity
+// and ownership metadata. The rest of the containers, volumes and container
+// statuses, which dominate a Pod's size, never enter the cache: a pod
+// without GPUs keeps no container at all.
 func podTransform(obj any) (any, error) {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {

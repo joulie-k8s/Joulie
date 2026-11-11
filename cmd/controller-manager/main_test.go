@@ -14,6 +14,7 @@ import (
 	"github.com/matbun/joulie/pkg/controller/policy"
 	"github.com/matbun/joulie/pkg/controller/twin"
 	"github.com/matbun/joulie/pkg/hwinv"
+	"github.com/matbun/joulie/pkg/job/kubejob"
 	"github.com/matbun/joulie/pkg/kube"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
@@ -228,90 +229,6 @@ func TestBuildPlanAtSingleNodeAlternatesProfile(t *testing.T) {
 	planOdd := policy.BuildRuleSwapPlanAt(nodes, interval, perfCap, ecoCap, time.Unix(180, 0))
 	if planOdd[0].Profile != "performance" || planOdd[0].CapWatts != perfCap {
 		t.Fatalf("unexpected single-node odd plan: %#v", planOdd[0])
-	}
-}
-
-func TestClassifyPodBySchedulingCornerCases(t *testing.T) {
-	t.Parallel()
-	mkRequired := func(op corev1.NodeSelectorOperator, values ...string) corev1.Pod {
-		return corev1.Pod{
-			Spec: corev1.PodSpec{
-				Affinity: &corev1.Affinity{
-					NodeAffinity: &corev1.NodeAffinity{
-						RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-							NodeSelectorTerms: []corev1.NodeSelectorTerm{
-								{
-									MatchExpressions: []corev1.NodeSelectorRequirement{
-										{Key: "joulie.io/power-profile", Operator: op, Values: values},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		}
-	}
-	mkRequiredOr := func(lhs, rhs []string) corev1.Pod {
-		return corev1.Pod{
-			Spec: corev1.PodSpec{
-				Affinity: &corev1.Affinity{
-					NodeAffinity: &corev1.NodeAffinity{
-						RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-							NodeSelectorTerms: []corev1.NodeSelectorTerm{
-								{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "joulie.io/power-profile", Operator: corev1.NodeSelectorOpIn, Values: lhs}}},
-								{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "joulie.io/power-profile", Operator: corev1.NodeSelectorOpIn, Values: rhs}}},
-							},
-						},
-					},
-				},
-			},
-		}
-	}
-
-	tests := []struct {
-		name string
-		pod  corev1.Pod
-		want string
-	}{
-		{name: "no constraints is general", pod: corev1.Pod{Spec: corev1.PodSpec{}}, want: workloadClassGeneral},
-		{name: "node selector performance only", pod: corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"joulie.io/power-profile": "performance"}}}, want: workloadClassPerfOnly},
-		{name: "node selector eco only", pod: corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"joulie.io/power-profile": "eco"}}}, want: workloadClassEcoOnly},
-		{name: "required affinity in performance", pod: mkRequired(corev1.NodeSelectorOpIn, "performance"), want: workloadClassPerfOnly},
-		{name: "required affinity in eco", pod: mkRequired(corev1.NodeSelectorOpIn, "eco"), want: workloadClassEcoOnly},
-		{name: "required affinity in both is general", pod: mkRequired(corev1.NodeSelectorOpIn, "eco", "performance"), want: workloadClassGeneral},
-		{name: "or terms perf or eco treated as performance-only by conservative rule", pod: mkRequiredOr([]string{"performance"}, []string{"eco"}), want: workloadClassPerfOnly},
-		{name: "notin eco means performance only", pod: mkRequired(corev1.NodeSelectorOpNotIn, "eco"), want: workloadClassPerfOnly},
-		{name: "notin performance is general", pod: mkRequired(corev1.NodeSelectorOpNotIn, "performance"), want: workloadClassGeneral},
-		{name: "does-not-exist on power-profile is general", pod: mkRequired(corev1.NodeSelectorOpDoesNotExist), want: workloadClassGeneral},
-		{name: "gt operator on power-profile is general", pod: mkRequired(corev1.NodeSelectorOpGt, "1"), want: workloadClassGeneral},
-		{name: "unknown node selector value is general", pod: corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"joulie.io/power-profile": "ultra"}}}, want: workloadClassGeneral},
-		{
-			name: "contradicting node selector and affinity is performance-only per compat selector",
-			pod: corev1.Pod{Spec: corev1.PodSpec{
-				NodeSelector: map[string]string{"joulie.io/power-profile": "performance"},
-				Affinity: &corev1.Affinity{
-					NodeAffinity: &corev1.NodeAffinity{
-						RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-							NodeSelectorTerms: []corev1.NodeSelectorTerm{
-								{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "joulie.io/power-profile", Operator: corev1.NodeSelectorOpIn, Values: []string{"eco"}}}},
-							},
-						},
-					},
-				},
-			}},
-			want: workloadClassPerfOnly,
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := classifyPodByScheduling(&tt.pod); got != tt.want {
-				t.Fatalf("classifyPodByScheduling=%q want=%q", got, tt.want)
-			}
-		})
 	}
 }
 
@@ -703,8 +620,8 @@ func TestPodTransformKeepsOnlyFSMFields(t *testing.T) {
 	// GC13: of the containers, only the GPU requests and limits stay, so the
 	// multi-GPU governor rule counts on the cached pod the GPUs of the full
 	// one; a container without GPUs is dropped whole.
-	if got, want := fsm.PodGPUUnits(pod), fsm.PodGPUUnits(full); got != 2 || want != 2 {
-		t.Fatalf("GPU units: stripped pod %d, full pod %d, want 2 for both", got, want)
+	if got, want := kubejob.FromPod(pod), kubejob.FromPod(full); got != want || want.GPUs != 2 {
+		t.Fatalf("job of the stripped pod %+v, of the full pod %+v, want the same with 2 GPU units", got, want)
 	}
 	if got, want := containerResources(pod.Spec.Containers), "[requests{nvidia.com/gpu=2} limits{nvidia.com/gpu=2}]"; got != want {
 		t.Fatalf("containers kept %s, want %s", got, want)
@@ -731,8 +648,30 @@ func TestPodTransformKeepsOnlyFSMFields(t *testing.T) {
 		t.Fatalf("metadata not stripped: %#v", pod.ObjectMeta)
 	}
 	// The stripped Pod still classifies the way the FSM expects.
-	if !isPerformanceSensitivePod(pod) {
+	if !fsm.IsPerformanceSensitive(kubejob.FromPod(pod)) {
 		t.Fatal("stripped pod no longer classifies as performance-sensitive")
+	}
+	// Each field the adapter reads survives on its own: a pod that declares
+	// its class, its GPUs or its phase through one field only reads as the
+	// same job before and after the transform.
+	annotated := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{"joulie.io/workload-class": "performance"}}}
+	ecoSelector := &corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"joulie.io/power-profile": "eco"}}}
+	always := corev1.ContainerRestartPolicyAlways
+	gpuSidecar := &corev1.Pod{Spec: corev1.PodSpec{
+		InitContainers: []corev1.Container{{RestartPolicy: &always, Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{"amd.com/gpu": resource.MustParse("1")}}}},
+		Containers:     []corev1.Container{{Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{"nvidia.com/gpu": resource.MustParse("1")}}}},
+	}}
+	pendingPerf := podWithRequiredPowerProfile("p3", "", "performance")
+	pendingPerf.Status.Phase = corev1.PodPending
+	finished := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodSucceeded}}
+	for _, in := range []*corev1.Pod{annotated, ecoSelector, gpuSidecar, pendingPerf, finished} {
+		out, err := podTransform(in)
+		if err != nil {
+			t.Fatalf("podTransform: %v", err)
+		}
+		if got, want := kubejob.FromPod(out.(*corev1.Pod)), kubejob.FromPod(in); got != want {
+			t.Fatalf("job after the transform %+v, before %+v", got, want)
+		}
 	}
 
 	// Tombstones pass through untouched.

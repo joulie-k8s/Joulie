@@ -9,17 +9,18 @@
 //
 // The FSM enforces downgrade guards: a node cannot transition from performance
 // to eco while performance-sensitive pods are still running on it.
+//
+// It reads jobs as pkg/job describes them and imports nothing from
+// Kubernetes; pkg/job/kubejob builds those jobs from pods.
 package fsm
 
 import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 
-	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/controller/policy"
-	corev1 "k8s.io/api/core/v1"
+	"github.com/matbun/joulie/pkg/job"
 )
 
 const (
@@ -33,10 +34,6 @@ const (
 
 	PowerProfileLabelKey    = "joulie.io/power-profile"
 	WorkloadClassAnnotation = "joulie.io/workload-class"
-
-	WorkloadClassPerfOnly = "performance-only"
-	WorkloadClassEcoOnly  = "eco-only"
-	WorkloadClassGeneral  = "general"
 )
 
 // NodeOps abstracts Kubernetes operations needed by the FSM.
@@ -117,92 +114,24 @@ func ApplyDowngradeGuards(
 	}
 }
 
-// IsPerformanceSensitivePod returns true if the pod's scheduling constraints
-// indicate it requires a performance (uncapped) node.
-func IsPerformanceSensitivePod(p *corev1.Pod) bool {
-	return PodExcludesEco(p)
+// IsPerformanceSensitive returns true if the job requires a performance
+// (uncapped) node: its class excludes eco.
+func IsPerformanceSensitive(j job.Job) bool {
+	return j.Class == job.ClassPerformanceOnly
 }
 
-// ClassifyPodByScheduling classifies a pod based on its node selector and
-// affinity expressions into one of: performance-only, eco-only, or general.
-func ClassifyPodByScheduling(p *corev1.Pod) string {
-	if PodExcludesEco(p) {
-		return WorkloadClassPerfOnly
-	}
-	if PodIsEcoOnly(p) {
-		return WorkloadClassEcoOnly
-	}
-	return WorkloadClassGeneral
-}
-
-// PodExcludesEco returns true if the pod explicitly targets performance nodes
-// via the workload-class annotation, nodeSelector, or node affinity.
-func PodExcludesEco(p *corev1.Pod) bool {
-	if strings.TrimSpace(p.Annotations[WorkloadClassAnnotation]) == ProfilePerformance {
-		return true
-	}
-	if strings.TrimSpace(p.Spec.NodeSelector[PowerProfileLabelKey]) == ProfilePerformance {
-		return true
-	}
-	required := p.Spec.Affinity
-	if required == nil || required.NodeAffinity == nil || required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-		return false
-	}
-	for _, term := range required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
-		for _, expr := range term.MatchExpressions {
-			if expr.Key != PowerProfileLabelKey {
-				continue
-			}
-			switch expr.Operator {
-			case corev1.NodeSelectorOpNotIn:
-				if containsString(expr.Values, ProfileEco) {
-					return true
-				}
-			case corev1.NodeSelectorOpIn:
-				if len(expr.Values) > 0 && !containsString(expr.Values, ProfileEco) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-// PodIsEcoOnly returns true if the pod explicitly targets only eco nodes.
-func PodIsEcoOnly(p *corev1.Pod) bool {
-	if strings.TrimSpace(p.Spec.NodeSelector[PowerProfileLabelKey]) == ProfileEco {
-		return true
-	}
-	required := p.Spec.Affinity
-	if required == nil || required.NodeAffinity == nil || required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
-		return false
-	}
-	for _, term := range required.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
-		for _, expr := range term.MatchExpressions {
-			if expr.Key != PowerProfileLabelKey {
-				continue
-			}
-			if expr.Operator == corev1.NodeSelectorOpIn && len(expr.Values) > 0 && !containsString(expr.Values, ProfilePerformance) && containsString(expr.Values, ProfileEco) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// CountPerformanceSensitivePods counts running, non-terminated pods that
-// require performance nodes from a pod list.
-func CountPerformanceSensitivePods(pods []corev1.Pod) int {
+// CountPerformanceSensitiveJobs counts the performance-sensitive jobs that
+// hold their node: not being deleted, and neither pending nor finished.
+func CountPerformanceSensitiveJobs(jobs []job.Job) int {
 	count := 0
-	for i := range pods {
-		p := &pods[i]
-		if p.DeletionTimestamp != nil {
+	for _, j := range jobs {
+		if j.Deleting {
 			continue
 		}
-		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed || p.Status.Phase == corev1.PodPending {
+		if j.Phase == job.PhaseFinished || j.Phase == job.PhasePending {
 			continue
 		}
-		if !IsPerformanceSensitivePod(p) {
+		if !IsPerformanceSensitive(j) {
 			continue
 		}
 		count++
@@ -210,23 +139,22 @@ func CountPerformanceSensitivePods(pods []corev1.Pod) int {
 	return count
 }
 
-// CountPerformanceDemand counts the performance-sensitive pods that need a
+// CountPerformanceDemand counts the performance-sensitive jobs that need a
 // performance node, cluster-wide: running ones and pending ones. It is the
 // demand queue_aware_v1 sizes the performance set from, so a queue of
-// performance pods waiting for a node raises it. CountPerformanceSensitivePods
-// leaves Pending pods out because it answers a different question: whether a
+// performance jobs waiting for a node raises it. CountPerformanceSensitiveJobs
+// leaves pending jobs out because it answers a different question: whether a
 // node still runs performance work and must keep draining.
-func CountPerformanceDemand(pods []corev1.Pod) int {
+func CountPerformanceDemand(jobs []job.Job) int {
 	count := 0
-	for i := range pods {
-		p := &pods[i]
-		if p.DeletionTimestamp != nil {
+	for _, j := range jobs {
+		if j.Deleting {
 			continue
 		}
-		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+		if j.Phase == job.PhaseFinished {
 			continue
 		}
-		if !IsPerformanceSensitivePod(p) {
+		if !IsPerformanceSensitive(j) {
 			continue
 		}
 		count++
@@ -234,57 +162,18 @@ func CountPerformanceDemand(pods []corev1.Pod) int {
 	return count
 }
 
-// MultiGPUPodMinGPUs is the GPU units from which a pod counts as a
-// multi-GPU pod (HasRunningMultiGPUPod).
-const MultiGPUPodMinGPUs = 2
+// MultiGPUJobMinGPUs is the GPU units from which a job counts as a
+// multi-GPU job (HasRunningMultiGPUJob).
+const MultiGPUJobMinGPUs = 2
 
-// PodGPUUnits is the number of GPU units a pod requests, of every GPU
-// resource pkg/api classifies (joulie.GPUResourceKind): whole GPUs, MIG
-// devices, partitions and shared replicas, one each. A container's request
-// counts, else its limit. As the scheduler sizes a pod, the containers and
-// the sidecars (init containers with restartPolicy Always) add up, and an
-// init container that asks for more counts instead.
-func PodGPUUnits(p *corev1.Pod) int64 {
-	var sum, initMax int64
-	for i := range p.Spec.Containers {
-		sum += containerGPUUnits(&p.Spec.Containers[i])
-	}
-	for i := range p.Spec.InitContainers {
-		c := &p.Spec.InitContainers[i]
-		units := containerGPUUnits(c)
-		if c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways {
-			sum += units
-		} else if units > initMax {
-			initMax = units
-		}
-	}
-	return max(sum, initMax)
-}
-
-func containerGPUUnits(c *corev1.Container) int64 {
-	var units int64
-	seen := map[corev1.ResourceName]bool{}
-	for _, list := range []corev1.ResourceList{c.Resources.Requests, c.Resources.Limits} {
-		for name, q := range list {
-			if seen[name] || joulie.GPUResourceKind(string(name)) == "" {
-				continue
-			}
-			seen[name] = true
-			units += q.Value()
-		}
-	}
-	return units
-}
-
-// HasRunningMultiGPUPod reports whether one of pods runs, is not being
-// deleted, and requests MultiGPUPodMinGPUs or more GPU units.
-func HasRunningMultiGPUPod(pods []corev1.Pod) bool {
-	for i := range pods {
-		p := &pods[i]
-		if p.DeletionTimestamp != nil || p.Status.Phase != corev1.PodRunning {
+// HasRunningMultiGPUJob reports whether one of jobs runs, is not being
+// deleted, and requests MultiGPUJobMinGPUs or more GPU units.
+func HasRunningMultiGPUJob(jobs []job.Job) bool {
+	for _, j := range jobs {
+		if j.Deleting || j.Phase != job.PhaseRunning {
 			continue
 		}
-		if PodGPUUnits(p) >= MultiGPUPodMinGPUs {
+		if j.GPUs >= MultiGPUJobMinGPUs {
 			return true
 		}
 	}
@@ -295,13 +184,4 @@ func HasRunningMultiGPUPod(pods []corev1.Pod) bool {
 // transition was guarded (for logging/debugging).
 func GuardedTransitionInfo(nodeName string, perfPodCount int) string {
 	return fmt.Sprintf("node=%s desired=eco draining=true reason=running-performance-sensitive-pods count=%d", nodeName, perfPodCount)
-}
-
-func containsString(in []string, v string) bool {
-	for _, x := range in {
-		if strings.TrimSpace(x) == v {
-			return true
-		}
-	}
-	return false
 }

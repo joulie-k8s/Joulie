@@ -56,7 +56,7 @@ type governorConfig struct {
 	// the agent reports.
 	gpuModelPresets map[string]gpuGovernorModelPresets
 	// gpuSustainedOnlyMultiGPU writes sustained only while a pod requesting
-	// fsm.MultiGPUPodMinGPUs or more GPUs runs on the node.
+	// fsm.MultiGPUJobMinGPUs or more GPUs runs on the node.
 	gpuSustainedOnlyMultiGPU bool
 }
 

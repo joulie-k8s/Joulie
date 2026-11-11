@@ -129,9 +129,10 @@ pkg/agent/dvfs/         RAPL powercap zones and DVFS (EMA smoothing, hysteresis,
 pkg/agent/control/      HTTP control and telemetry clients
 pkg/api/                In-memory structs and shared constants (field managers, object names)
 pkg/controller/policy/  Policy algorithms (static_partition, queue_aware_v1, rule_swap_v1)
-pkg/controller/fsm/     Node state machine (downgrade guards, pod classification, NodeOps interface)
+pkg/controller/fsm/     Node state machine (downgrade guards, job counts, NodeOps interface), free of Kubernetes
 pkg/controller/twin/    Digital twin model (power headroom, cooling stress, PSU stress)
 pkg/hwinv/              Hardware catalog: fills the facts a node cannot report about itself
+pkg/job/                The job the policies read (class, GPU units, phase), free of Kubernetes; kubejob/ builds it from pods
 pkg/kube/               Scheme, caches and manager wiring shared by the components
 pkg/otel/semconv/       The OpenTelemetry names Joulie writes and reads, each spelled once
 pkg/otel/promname/      Prometheus spelling of those names under each OTLP translation strategy
