@@ -21,6 +21,27 @@ milestone [Evidence-based evaluation](https://github.com/joulie-k8s/Joulie/miles
 | [04 Scoring formula validation](04-scoring-formula-validation/REPORT.md) | The scheduler extender's scoring formula against bin packing, with a Modelica FMU for the cooling; its results are not valid (see its report); it is to be redone on the extracted scheduling library ([#122](https://github.com/joulie-k8s/Joulie/issues/122)) as a behaviour scenario ([#115](https://github.com/joulie-k8s/Joulie/issues/115)) | Python models of the cluster, no Joulie code |
 | [05 Governor exploration](05-governor-exploration/README.md) | Energy and time per CPU and GPU governor preset, workload kind and cap; the cluster-level question (Q4) needs measured hardware behaviour ([#106](https://github.com/joulie-k8s/Joulie/issues/106)) and a pilot ([#114](https://github.com/joulie-k8s/Joulie/issues/114)) | Tier A: emulated nodes in `govsweep`; Tier B: the simulated cluster |
 
+## Protocol
+
+The reruns of experiments 01 to 03 found flaws in the model only after hours of runs. A campaign (the sweeps a pull request reports, each run by an experiment's `scripts/20_run_benchmark.sh`, which calls `scripts/05_sweep.py`) follows these steps; each says what blocks it.
+
+1. **A reviewed static audit before any run.** The pull request states, before the first run, what the campaign runs on, and a reviewer other than its author approves it.
+   - The model: every row added to [`simulator/CHANGES.md`](../simulator/CHANGES.md) since the commit the last reports ran on; on the images' commit, `TestReferenceScenarioStandalone` passes and the debug runs (`scripts/standalone_sweep.py --config experiments/0N-*/configs/benchmark-debug.yaml`) complete.
+   - The workload: `workloadgen` pinned to `-schema-version v2` (`TestWorkloadgenCallersPinSchemaVersion`), the load sized with `kwok-cluster/size_load.py`, and the performance nodes of B and C with `kwok-cluster/pool_load.py` on seeds 3 and 4 (see Sizing the load).
+   - The config: the images (see Images); every cap inside the hardware range of every node it reaches, the percent caps resolved into watts as the agent does; and `run.timeout` equal to `workload.arrival_window_sec`, since the run stops at the first and nothing checks that they match.
+
+   No run starts without the approval. This is a manual check today.
+2. **One batched campaign per pull request.** Every run the pull request reports (experiments, arms, seeds, repeats, ablations) is listed in it before the first one starts, and runs on the same images. A flaw found mid-campaign stops it; the fix lands in the same pull request, the audit is done again, and the whole batch runs again. A run outside the batch is not reported.
+3. **Repeats for every arm.** `run.repeat_first_run` repeats only the first run of the schedule, one arm on one seed. Until the sweep repeats every arm, run the sweep a second time with the same config, into its own `RUNS_ROOT`: `workloadgen` draws the same trace from the same seed and config, so the second pass repeats every arm on every seed. A difference between arms smaller than the spread between an arm's repeats is not reported as an effect.
+4. **Ablations designed in.** To separate the caps from the placement, B and C also run with their eco caps off: a copy of the config with `run.baselines: [B, C]` and `policy.caps.cpu_eco_pct_of_max` and `policy.caps.gpu_eco_pct_of_max` at 100, the performance level, in its own `RUNS_ROOT`. A against B without caps is the placement; B without caps against B is the caps; the same for C. A report that credits a difference to the caps or to the placement without the ablation is not merged.
+5. **A measured window at regime.** Runs are measured after ramp-up via prefill and before drain: the trace is prefilled (`workload.prefill_sec`), the run stops at `run.timeout`, the end of arrivals (`workload.arrival_window_sec`), and the report measures from `run.measure_from_sec` to it (see Sizing the load). Only baseline A is gated on reaching regime: a utilization below 45 % or a queue above 1 % of its running pods fails it (see the gates below). Under B and C, queueing and utilization are results, not gates.
+6. **Gates that stop a run.** A failing gate stops the sweep, and `kwok-cluster/report_figures.py` refuses a run that failed one as it ended:
+   - a cap below the lowest the hardware accepts: the simulator refuses it (`rapl.set_power_cap_watts` and `gpu.set_power_cap_watts` in `simulator/cmd/simulator/main.go`), and `04_run_one.py` stops on any refused control command;
+   - the polls not covering the window, a load left on a node with no job, a GPU node whose simulated model differs from its node class, and under A the queue, utilization and placed-load checks (`gate_failures` in `04_run_one.py`, listed under Sizing the load);
+   - a mean host load above the host's CPUs (`load_failures`): the sweep stops and the run is run again by hand;
+   - before a run, a node label left under A or a scheduler extender that never answers under B and C (`03_install_components.sh`).
+
+   Not gated today, so checked by hand in the audit: a cap above the hardware's maximum, which the simulator lowers to the maximum without an error, a `run.timeout` that differs from `workload.arrival_window_sec`, and a campaign whose images or config differ from the ones the pull request lists.
 
 ## Baselines
 
