@@ -131,7 +131,7 @@ the agent is the component that turns that intent into concrete control actions.
  | - Joulie reads NodeHardware CRs (cached, 30s TTL) for hardware specs
  | - Joulie extracts pod CPU/GPU requests for marginal power estimation
  | - Joulie scores each node 0-100 using the scoring formula
- | - Returns: list of (node, score) pairs
+ | - Returns: list of (node, score / 10) pairs, the API&amp;#39;s 0-10 range
  |
 6. kube-scheduler combines Joulie scores with its own plugin scores
  |
