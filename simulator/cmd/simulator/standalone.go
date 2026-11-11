@@ -1361,7 +1361,7 @@ func performanceNodes(catalog *hw.Catalog, nodeNames []string, nodeByName map[st
 
 // countPerformanceSensitivePending is the queue-aware demand: performance jobs
 // running on a node plus performance jobs waiting for one, the counterpart of
-// fsm.CountPerformanceDemand over Running and Pending pods. A job is waiting
+// fsm.CountPerformanceDemand over running and pending jobs. A job is waiting
 // when its submit time has passed (readySec, seconds since the workload start)
 // and no node has taken it: standalone marks a job Submitted only when it
 // places it, so a waiting job is one that is ready but not Submitted.

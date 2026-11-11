@@ -12,6 +12,7 @@ import (
 	v1alpha1 "github.com/matbun/joulie/api/v1alpha1"
 	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/controller/fsm"
+	"github.com/matbun/joulie/pkg/job/kubejob"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -278,7 +279,7 @@ func buildCluster(twins []v1alpha1.NodeTwin, hws []v1alpha1.NodeHardware, nodes 
 			class:     podClassStandard,
 			phase:     p.Status.Phase,
 		}
-		if fsm.IsPerformanceSensitivePod(p) {
+		if fsm.IsPerformanceSensitive(kubejob.FromPod(p)) {
 			pv.class = podClassPerformance
 			n.perfPods++
 		}

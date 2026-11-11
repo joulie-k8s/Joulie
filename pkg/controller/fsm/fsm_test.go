@@ -6,8 +6,7 @@ import (
 	"testing"
 
 	"github.com/matbun/joulie/pkg/controller/policy"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"github.com/matbun/joulie/pkg/job"
 )
 
 // mockNodeOps implements NodeOps for testing.
@@ -142,242 +141,67 @@ func TestApplyDowngradeGuards(t *testing.T) {
 	})
 }
 
-func TestPodExcludesEco(t *testing.T) {
-	tests := []struct {
-		name string
-		pod  *corev1.Pod
-		want bool
+func TestIsPerformanceSensitive(t *testing.T) {
+	for _, tt := range []struct {
+		class job.Class
+		want  bool
 	}{
-		{
-			name: "nodeSelector performance",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					NodeSelector: map[string]string{PowerProfileLabelKey: ProfilePerformance},
-				},
-			},
-			want: true,
-		},
-		{
-			name: "nodeSelector eco",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					NodeSelector: map[string]string{PowerProfileLabelKey: ProfileEco},
-				},
-			},
-			want: false,
-		},
-		{
-			name: "affinity NotIn eco",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Affinity: &corev1.Affinity{
-						NodeAffinity: &corev1.NodeAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-								NodeSelectorTerms: []corev1.NodeSelectorTerm{{
-									MatchExpressions: []corev1.NodeSelectorRequirement{{
-										Key:      PowerProfileLabelKey,
-										Operator: corev1.NodeSelectorOpNotIn,
-										Values:   []string{ProfileEco},
-									}},
-								}},
-							},
-						},
-					},
-				},
-			},
-			want: true,
-		},
-		{
-			name: "affinity In performance only",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Affinity: &corev1.Affinity{
-						NodeAffinity: &corev1.NodeAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-								NodeSelectorTerms: []corev1.NodeSelectorTerm{{
-									MatchExpressions: []corev1.NodeSelectorRequirement{{
-										Key:      PowerProfileLabelKey,
-										Operator: corev1.NodeSelectorOpIn,
-										Values:   []string{ProfilePerformance},
-									}},
-								}},
-							},
-						},
-					},
-				},
-			},
-			want: true,
-		},
-		{
-			name: "no constraints",
-			pod:  &corev1.Pod{},
-			want: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := PodExcludesEco(tt.pod)
-			if got != tt.want {
-				t.Errorf("PodExcludesEco() = %v, want %v", got, tt.want)
-			}
-		})
+		{job.ClassPerformanceOnly, true},
+		{job.ClassEcoOnly, false},
+		{job.ClassGeneral, false},
+		{"", false},
+	} {
+		if got := IsPerformanceSensitive(job.Job{Class: tt.class}); got != tt.want {
+			t.Errorf("IsPerformanceSensitive(class %q) = %v, want %v", tt.class, got, tt.want)
+		}
 	}
 }
 
-func TestPodIsEcoOnly(t *testing.T) {
-	tests := []struct {
-		name string
-		pod  *corev1.Pod
-		want bool
-	}{
-		{
-			name: "nodeSelector eco",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					NodeSelector: map[string]string{PowerProfileLabelKey: ProfileEco},
-				},
-			},
-			want: true,
-		},
-		{
-			name: "nodeSelector performance",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					NodeSelector: map[string]string{PowerProfileLabelKey: ProfilePerformance},
-				},
-			},
-			want: false,
-		},
-		{
-			name: "affinity In eco only",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Affinity: &corev1.Affinity{
-						NodeAffinity: &corev1.NodeAffinity{
-							RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
-								NodeSelectorTerms: []corev1.NodeSelectorTerm{{
-									MatchExpressions: []corev1.NodeSelectorRequirement{{
-										Key:      PowerProfileLabelKey,
-										Operator: corev1.NodeSelectorOpIn,
-										Values:   []string{ProfileEco},
-									}},
-								}},
-							},
-						},
-					},
-				},
-			},
-			want: true,
-		},
-		{
-			name: "no constraints",
-			pod:  &corev1.Pod{},
-			want: false,
-		},
+func TestCountPerformanceSensitiveJobs(t *testing.T) {
+	jobs := []job.Job{
+		// Running perf job
+		{Class: job.ClassPerformanceOnly, Phase: job.PhaseRunning},
+		// Deleted perf job (should not count)
+		{Class: job.ClassPerformanceOnly, Phase: job.PhaseRunning, Deleting: true},
+		// Finished perf job (should not count)
+		{Class: job.ClassPerformanceOnly, Phase: job.PhaseFinished},
+		// Running general job (should not count)
+		{Class: job.ClassGeneral, Phase: job.PhaseRunning},
+		// Perf job in an unknown phase still holds its node
+		{Class: job.ClassPerformanceOnly, Phase: job.PhaseUnknown},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := PodIsEcoOnly(tt.pod)
-			if got != tt.want {
-				t.Errorf("PodIsEcoOnly() = %v, want %v", got, tt.want)
-			}
-		})
+
+	got := CountPerformanceSensitiveJobs(jobs)
+	if got != 2 {
+		t.Errorf("CountPerformanceSensitiveJobs() = %d, want 2", got)
 	}
 }
 
-func TestClassifyPodByScheduling(t *testing.T) {
-	perfPod := &corev1.Pod{
-		Spec: corev1.PodSpec{
-			NodeSelector: map[string]string{PowerProfileLabelKey: ProfilePerformance},
-		},
-	}
-	ecoPod := &corev1.Pod{
-		Spec: corev1.PodSpec{
-			NodeSelector: map[string]string{PowerProfileLabelKey: ProfileEco},
-		},
-	}
-	generalPod := &corev1.Pod{}
-
-	if got := ClassifyPodByScheduling(perfPod); got != WorkloadClassPerfOnly {
-		t.Errorf("expected %s, got %s", WorkloadClassPerfOnly, got)
-	}
-	if got := ClassifyPodByScheduling(ecoPod); got != WorkloadClassEcoOnly {
-		t.Errorf("expected %s, got %s", WorkloadClassEcoOnly, got)
-	}
-	if got := ClassifyPodByScheduling(generalPod); got != WorkloadClassGeneral {
-		t.Errorf("expected %s, got %s", WorkloadClassGeneral, got)
-	}
-}
-
-func TestCountPerformanceSensitivePods(t *testing.T) {
-	pods := []corev1.Pod{
-		// Running perf pod
-		{
-			Spec: corev1.PodSpec{
-				NodeSelector: map[string]string{PowerProfileLabelKey: ProfilePerformance},
-			},
-			Status: corev1.PodStatus{Phase: corev1.PodRunning},
-		},
-		// Terminated perf pod (should not count)
-		{
-			ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &metav1.Time{}},
-			Spec: corev1.PodSpec{
-				NodeSelector: map[string]string{PowerProfileLabelKey: ProfilePerformance},
-			},
-			Status: corev1.PodStatus{Phase: corev1.PodRunning},
-		},
-		// Succeeded perf pod (should not count)
-		{
-			Spec: corev1.PodSpec{
-				NodeSelector: map[string]string{PowerProfileLabelKey: ProfilePerformance},
-			},
-			Status: corev1.PodStatus{Phase: corev1.PodSucceeded},
-		},
-		// Running general pod (should not count)
-		{
-			Status: corev1.PodStatus{Phase: corev1.PodRunning},
-		},
-	}
-
-	got := CountPerformanceSensitivePods(pods)
-	if got != 1 {
-		t.Errorf("CountPerformanceSensitivePods() = %d, want 1", got)
-	}
-}
-
-func TestCountPerformanceSensitivePodsPendingSkipped(t *testing.T) {
-	// Regression: Pending pods must not block draining.
-	pods := []corev1.Pod{
-		{
-			Spec: corev1.PodSpec{
-				NodeSelector: map[string]string{PowerProfileLabelKey: ProfilePerformance},
-			},
-			Status: corev1.PodStatus{Phase: corev1.PodPending},
-		},
-	}
-	got := CountPerformanceSensitivePods(pods)
+func TestCountPerformanceSensitiveJobsPendingSkipped(t *testing.T) {
+	// Regression: Pending jobs must not block draining.
+	jobs := []job.Job{{Class: job.ClassPerformanceOnly, Phase: job.PhasePending}}
+	got := CountPerformanceSensitiveJobs(jobs)
 	if got != 0 {
-		t.Errorf("Pending pods should not count as performance-sensitive, got %d", got)
+		t.Errorf("Pending jobs should not count as performance-sensitive, got %d", got)
 	}
 }
 
 // The queue-aware demand counts what still needs a performance node: running
-// and pending performance pods, not finished, deleting or standard ones.
+// and pending performance jobs, not finished, deleting or general ones.
 func TestCountPerformanceDemandIncludesPendingPods(t *testing.T) {
-	perf := corev1.PodSpec{NodeSelector: map[string]string{PowerProfileLabelKey: ProfilePerformance}}
-	pods := []corev1.Pod{
-		{Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodRunning}},
-		{Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodPending}},
-		{Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodSucceeded}},
-		{Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodFailed}},
-		{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &metav1.Time{}}, Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodPending}},
-		{Status: corev1.PodStatus{Phase: corev1.PodPending}},
+	perf := job.ClassPerformanceOnly
+	jobs := []job.Job{
+		{Class: perf, Phase: job.PhaseRunning},
+		{Class: perf, Phase: job.PhasePending},
+		{Class: perf, Phase: job.PhaseFinished},
+		{Class: perf, Phase: job.PhasePending, Deleting: true},
+		{Class: job.ClassGeneral, Phase: job.PhasePending},
 	}
-	if got := CountPerformanceDemand(pods); got != 2 {
+	if got := CountPerformanceDemand(jobs); got != 2 {
 		t.Fatalf("CountPerformanceDemand() = %d, want 2 (one running, one pending)", got)
 	}
-	// The drain check over the same pods still ignores the pending one.
-	if got := CountPerformanceSensitivePods(pods); got != 1 {
-		t.Fatalf("CountPerformanceSensitivePods() = %d, want 1", got)
+	// The drain check over the same jobs still ignores the pending one.
+	if got := CountPerformanceSensitiveJobs(jobs); got != 1 {
+		t.Fatalf("CountPerformanceSensitiveJobs() = %d, want 1", got)
 	}
 }

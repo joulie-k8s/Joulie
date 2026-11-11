@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/matbun/joulie/pkg/controller/fsm"
+	"github.com/matbun/joulie/pkg/job/kubejob"
 	"github.com/matbun/joulie/simulator/pkg/clusterspec"
 	"github.com/matbun/joulie/simulator/pkg/workload"
 )
@@ -71,7 +72,7 @@ func TestMergeIntentKeepsTraceTerms(t *testing.T) {
 			t.Errorf("%s: preferences or pod anti-affinity changed", intent)
 		}
 		pod := &corev1.Pod{Spec: corev1.PodSpec{Affinity: out}}
-		if !fsm.PodExcludesEco(pod) {
+		if !fsm.IsPerformanceSensitive(kubejob.FromPod(pod)) {
 			t.Errorf("%s: the controller does not see the merged affinity as excluding eco", intent)
 		}
 	}

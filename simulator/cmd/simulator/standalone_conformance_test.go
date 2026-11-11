@@ -7,6 +7,7 @@ import (
 	"github.com/matbun/joulie/pkg/controller/fsm"
 	"github.com/matbun/joulie/pkg/controller/policy"
 	"github.com/matbun/joulie/pkg/hwinv"
+	"github.com/matbun/joulie/pkg/job/kubejob"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -354,8 +355,9 @@ func itoa(i int) string {
 }
 
 // TestConformance_QueueAwareDemandMatchesController pins the queue_aware_v1
-// demand on both sides: what fsm.CountPerformanceDemand counts over pods, the
-// simulator counts over the same workload as jobs. A running performance pod
+// demand on both sides: what fsm.CountPerformanceDemand counts over pods,
+// read through kubejob as the controller manager reads them, the simulator
+// counts over the same workload as jobs. A running performance pod
 // is a performance job placed on a node; a Pending one is a performance job
 // whose submit time has passed and that no node has taken. Before this test
 // the simulator's waiting-job branch could never match anything, because
@@ -380,7 +382,7 @@ func TestConformance_QueueAwareDemandMatchesController(t *testing.T) {
 		{Spec: perf, Status: corev1.PodStatus{Phase: corev1.PodSucceeded}},
 		{Status: corev1.PodStatus{Phase: corev1.PodPending}},
 	}
-	ctrl := fsm.CountPerformanceDemand(pods)
+	ctrl := fsm.CountPerformanceDemand(kubejob.FromPods(pods))
 
 	if sim != 3 || ctrl != 3 {
 		t.Fatalf("queue-aware demand: simulator=%d controller=%d, want 3 on both (one running, two waiting)", sim, ctrl)

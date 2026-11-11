@@ -699,7 +699,8 @@ func TestSimulatorPodAffinityMatchesSchedulerFilter(t *testing.T) {
 	// The simulator's affinityForIntentClass("performance") creates:
 	//   NotIn [eco] on joulie.io/power-profile
 	// The scheduler's shouldFilterNode checks SchedulableClass and label fallback.
-	// The FSM's PodExcludesEco checks the same affinity pattern.
+	// The controller's job adapter (pkg/job/kubejob) reads the same affinity
+	// pattern as performance-only.
 	// Verify the workloadgen produces the same structure.
 	jobs, _ := generateTrace(t, 100)
 	for _, j := range jobs {

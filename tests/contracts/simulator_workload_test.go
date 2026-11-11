@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/matbun/joulie/pkg/controller/fsm"
+	"github.com/matbun/joulie/pkg/job/kubejob"
 	"github.com/matbun/joulie/simulator/pkg/workload"
 )
 
@@ -72,22 +73,22 @@ func TestSimulatorJobPodClassReadByFSM(t *testing.T) {
 		}
 		pod.Status.Phase = corev1.PodRunning
 		want := c.byAnnotation || c.byAffinity
-		if got := fsm.PodExcludesEco(&pod); got != want {
-			t.Errorf("%s under %s: PodExcludesEco = %v, want %v", c.class, c.intent, got, want)
+		if got := fsm.IsPerformanceSensitive(kubejob.FromPod(&pod)); got != want {
+			t.Errorf("%s under %s: IsPerformanceSensitive = %v, want %v", c.class, c.intent, got, want)
 		}
-		if got := fsm.CountPerformanceSensitivePods([]corev1.Pod{pod}); (got == 1) != want {
-			t.Errorf("%s under %s: CountPerformanceSensitivePods = %d", c.class, c.intent, got)
+		if got := fsm.CountPerformanceSensitiveJobs(kubejob.FromPods([]corev1.Pod{pod})); (got == 1) != want {
+			t.Errorf("%s under %s: CountPerformanceSensitiveJobs = %d", c.class, c.intent, got)
 		}
 
 		annOnly := pod.DeepCopy()
 		annOnly.Spec.Affinity = nil
-		if got := fsm.PodExcludesEco(annOnly); got != c.byAnnotation {
-			t.Errorf("%s under %s, affinity stripped: PodExcludesEco = %v, want %v", c.class, c.intent, got, c.byAnnotation)
+		if got := fsm.IsPerformanceSensitive(kubejob.FromPod(annOnly)); got != c.byAnnotation {
+			t.Errorf("%s under %s, affinity stripped: IsPerformanceSensitive = %v, want %v", c.class, c.intent, got, c.byAnnotation)
 		}
 		affOnly := pod.DeepCopy()
 		delete(affOnly.Annotations, fsm.WorkloadClassAnnotation)
-		if got := fsm.PodExcludesEco(affOnly); got != c.byAffinity {
-			t.Errorf("%s under %s, annotation stripped: PodExcludesEco = %v, want %v", c.class, c.intent, got, c.byAffinity)
+		if got := fsm.IsPerformanceSensitive(kubejob.FromPod(affOnly)); got != c.byAffinity {
+			t.Errorf("%s under %s, annotation stripped: IsPerformanceSensitive = %v, want %v", c.class, c.intent, got, c.byAffinity)
 		}
 	}
 }
