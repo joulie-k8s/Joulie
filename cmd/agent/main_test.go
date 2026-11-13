@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -1496,7 +1497,15 @@ func TestControlStatusWriteSkippedWhenUnchanged(t *testing.T) {
 
 func TestControlStatusPatchTouchesOnlyItsOwnSubtree(t *testing.T) {
 	t.Parallel()
-	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), nodeTwinObject("node-shape", "node-shape"))
+	// The controller manager's conditions, the decision ones included, are
+	// stored before the agent writes and must survive its patch.
+	twin := nodeTwinObject("node-shape", "node-shape")
+	conditions := []any{
+		map[string]any{"type": "AgentReporting", "status": "True", "reason": "NodeHardwareCurrent", "message": "m", "lastTransitionTime": "2026-11-01T12:00:00Z"},
+		map[string]any{"type": "EcoProfile", "status": "True", "reason": "NoPerformanceSlot", "message": "m", "lastTransitionTime": "2026-11-01T12:00:00Z"},
+	}
+	twin.Object["status"] = map[string]any{"conditions": conditions}
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), twin)
 	var captured []byte
 	dyn.PrependReactor("patch", "nodetwins", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		captured = action.(clienttesting.PatchAction).GetPatch()
@@ -1521,6 +1530,13 @@ func TestControlStatusPatchTouchesOnlyItsOwnSubtree(t *testing.T) {
 	cs := status["controlStatus"].(map[string]any)
 	if len(cs) != 1 || cs["gpu"] == nil {
 		t.Fatalf("patch touches components other than gpu: %v", cs)
+	}
+	after, err := dyn.Resource(nodeTwinGVR).Get(context.Background(), "node-shape", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := unstructured.NestedSlice(after.Object, "status", "conditions"); !reflect.DeepEqual(got, conditions) {
+		t.Fatalf("status.conditions after the agent's patch = %v, want the controller manager's %v untouched", got, conditions)
 	}
 }
 

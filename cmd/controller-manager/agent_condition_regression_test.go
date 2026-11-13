@@ -57,7 +57,7 @@ func TestD15ManagedNodeWithoutAnAgentIsReported(t *testing.T) {
 	if err := upsertNodeTwinSpec(ctx, dyn, NodeAssignment{NodeName: node, Profile: profilePerformance, CPUCapPctOfMax: &capPct}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reconcileNodeTwin(ctx, reader, dyn, node, profilePerformance, capPct, 100, false, nil); err != nil {
+	if _, err := reconcileNodeTwin(ctx, reader, dyn, node, profilePerformance, capPct, 100, false, nil, nil); err != nil {
 		t.Fatalf("reconcileNodeTwin: %v", err)
 	}
 	c := storedAgentCondition(t, dyn, node)
@@ -80,7 +80,7 @@ func TestD15ManagedNodeWithoutAnAgentIsReported(t *testing.T) {
 	}
 
 	reader = fakeReader(t, nodeHardwareUpdatedAt(t, node, time.Now().Add(-time.Minute)))
-	if _, err := reconcileNodeTwin(ctx, reader, dyn, node, profilePerformance, capPct, 100, false, nil); err != nil {
+	if _, err := reconcileNodeTwin(ctx, reader, dyn, node, profilePerformance, capPct, 100, false, nil, nil); err != nil {
 		t.Fatalf("reconcileNodeTwin: %v", err)
 	}
 	if c := storedAgentCondition(t, dyn, node); c == nil || c.Status != metav1.ConditionTrue || c.Reason != joulie.ReasonNodeHardwareCurrent {
@@ -89,7 +89,7 @@ func TestD15ManagedNodeWithoutAnAgentIsReported(t *testing.T) {
 
 	stale := time.Now().Add(-joulie.AgentReportingStaleAfter - time.Minute)
 	reader = fakeReader(t, nodeHardwareUpdatedAt(t, node, stale))
-	if _, err := reconcileNodeTwin(ctx, reader, dyn, node, profilePerformance, capPct, 100, false, nil); err != nil {
+	if _, err := reconcileNodeTwin(ctx, reader, dyn, node, profilePerformance, capPct, 100, false, nil, nil); err != nil {
 		t.Fatalf("reconcileNodeTwin: %v", err)
 	}
 	if c := storedAgentCondition(t, dyn, node); c == nil || c.Status != metav1.ConditionFalse || c.Reason != joulie.ReasonNodeHardwareStale ||

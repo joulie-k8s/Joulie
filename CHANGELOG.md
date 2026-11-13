@@ -4,6 +4,14 @@ The user-visible changes of each release, what to check when upgrading, and the 
 
 ## Unreleased
 
+### Controller manager
+
+- Each `NodeTwin` says why its node got its profile, caps and governors: the conditions `EcoProfile`, `CPUEcoCap`, `GPUEcoCap`, `CPUGovernorPreset` and `GPUGovernorPreset` in `status.conditions`, `True` while the decision is in force, with a reason naming the branch that decided it (a performance slot, no demand, performance pods still draining, a GPU node's CPU left uncapped, a GPU cap blocked, governor control off, and so on) and a sentence. `lastTransitionTime` of every condition, `AgentReporting` included, now moves when its reason changes too, and a reconcile that changes no condition leaves them out of its status patch. (#124)
+
+### kubectl plugin
+
+- `kubectl joulie node` shows these reasons in a `Why` panel, and `-o json` lists them under each node's `decisions`. (#124)
+
 ### Alerts
 
 - The chart ships four alerting rules with runbooks: `JoulieCapNotApplied` (a CPU or GPU cap `blocked` or `error` for 15 minutes), `JoulieAgentWritesBlocked` (the API server refuses the agent's status writes), `JoulieTwinStale` (a `NodeTwin` status not written for 10 minutes) and `JoulieNodePowerNoData` (nodes the measured power source returns nothing for). They are in `charts/joulie/alerts/joulie-alerts.yaml`, rendered as a PrometheusRule with `prometheusRule.enabled` (off by default; `prometheusRule.namespace` and `prometheusRule.labels` place it), and the runbooks are in the docs' new Alerts and Runbooks page. (#135)

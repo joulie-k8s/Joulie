@@ -15,6 +15,7 @@ import (
 	"github.com/matbun/joulie/pkg/job/kubejob"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -89,6 +90,9 @@ type nodeView struct {
 	gpuGovernor   *v1alpha1.ControlResult
 
 	agent agentState
+	// decisions are the twin's decision conditions, why the node got its
+	// profile, caps and governors, in joulie.DecisionConditionTypes order.
+	decisions []metav1.Condition
 
 	cpuAllocPct float64
 	memAllocPct float64
@@ -379,6 +383,11 @@ func twinView(t v1alpha1.NodeTwin) nodeView {
 	for _, cond := range st.Conditions {
 		if cond.Type == joulie.ConditionAgentReporting {
 			n.agent = agentState{known: true, reporting: cond.Status == metav1.ConditionTrue, reason: cond.Reason}
+		}
+	}
+	for _, t := range joulie.DecisionConditionTypes {
+		if cond := meta.FindStatusCondition(st.Conditions, t); cond != nil {
+			n.decisions = append(n.decisions, *cond)
 		}
 	}
 	if ts, err := time.Parse(time.RFC3339, st.LastUpdated); err == nil {

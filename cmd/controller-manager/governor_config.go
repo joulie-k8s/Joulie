@@ -249,13 +249,14 @@ func (c governorConfig) logSummary() {
 
 // gpuPresetFor returns the GPU preset and the ceiling of the efficient preset
 // for a node at profile: the model map entry first, for the first of keys it
-// holds, then the environment defaults.
-func (c governorConfig) gpuPresetFor(profile string, keys ...string) (string, float64) {
-	preset := c.gpuEcoPreset
+// holds, then the environment defaults. fromModel is true when the model map
+// set the preset.
+func (c governorConfig) gpuPresetFor(profile string, keys ...string) (preset string, ceiling float64, fromModel bool) {
+	preset = c.gpuEcoPreset
 	if profile == profilePerformance {
 		preset = c.gpuPerformancePreset
 	}
-	ceiling := c.gpuCeilingPctOfMax
+	ceiling = c.gpuCeilingPctOfMax
 	for _, k := range keys {
 		m, ok := c.gpuModelPresets[strings.TrimSpace(k)]
 		if strings.TrimSpace(k) == "" || !ok {
@@ -266,46 +267,73 @@ func (c governorConfig) gpuPresetFor(profile string, keys ...string) (string, fl
 			override = m.Performance
 		}
 		if override != nil {
-			preset = *override
+			preset, fromModel = *override, true
 		}
 		if m.EcoCeilingPctOfMax != nil {
 			ceiling = *m.EcoCeilingPctOfMax
 		}
 		break
 	}
-	return preset, ceiling
+	return preset, ceiling, fromModel
 }
 
-// governorIntents returns the governor presets of one node at profile, the
-// profile it runs at (a draining node keeps performance). A preset the node
-// does not list in NodeHardware status.{cpu,gpu}.governor.presets is not
-// written, with one warning: falling back to another preset, auto included,
-// would override a setting the node's operator chose. A GPU governor block
-// in a discovery gap (GPUGovernorGap) lists nothing about the node, and the
-// configured GPU preset is written as usual.
+// governorDecision is the governor plan of one node: the presets written to
+// spec, nil for none, and why, each a pkg/api reason of
+// ConditionCPUGovernorPreset and ConditionGPUGovernorPreset.
+type governorDecision struct {
+	cpu       *joulie.CPUGovernorIntent
+	gpu       *joulie.GPUGovernorIntent
+	cpuReason string
+	gpuReason string
+}
+
+// governorDecisions returns the governor presets of one node at profile, the
+// profile it runs at (a draining node, draining, keeps performance), and the
+// reason of each. A preset the node does not list in NodeHardware
+// status.{cpu,gpu}.governor.presets is not written, with one warning:
+// falling back to another preset, auto included, would override a setting
+// the node's operator chose. A GPU governor block in a discovery gap
+// (GPUGovernorGap) lists nothing about the node, and the configured GPU
+// preset is written as usual.
 //
 // GPU nodes get no CPU governor unless CPU_GOVERNOR_ON_GPU_NODES is set, the
 // rule the CPU cap follows; only GPU nodes get a GPU governor. With
 // GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU, a node whose GPU preset is sustained
 // gets it only while multiGPUPod, called only then (nil: never), reports a
 // running multi-GPU pod on the node, and no GPU governor otherwise.
-func (c governorConfig) governorIntents(nodeName, profile string, hasGPU bool, nh NodeHardware, gpuProduct string, multiGPUPod func() bool) (*joulie.CPUGovernorIntent, *joulie.GPUGovernorIntent) {
-	var cpu *joulie.CPUGovernorIntent
-	if c.cpuEnabled() && (!hasGPU || c.cpuOnGPUNodes) {
+func (c governorConfig) governorDecisions(nodeName, profile string, draining, hasGPU bool, nh NodeHardware, gpuProduct string, multiGPUPod func() bool) governorDecision {
+	// A preset that is written says the profile it follows.
+	written := joulie.ReasonEcoProfile
+	switch {
+	case draining:
+		written = joulie.ReasonDrainingPerformancePods
+	case profile == profilePerformance:
+		written = joulie.ReasonPerformanceProfile
+	}
+
+	var d governorDecision
+	switch {
+	case !c.cpuEnabled():
+		d.cpuReason = joulie.ReasonGovernorControlOff
+	case hasGPU && !c.cpuOnGPUNodes:
+		d.cpuReason = joulie.ReasonGPUNodeCPUGovernorUnset
+	default:
 		preset, boost := c.cpuEcoPreset, c.cpuEcoBoost
 		if profile == profilePerformance {
 			preset, boost = c.cpuPerformancePreset, ""
 		}
 		switch {
 		case preset == "":
+			d.cpuReason = joulie.ReasonNoPresetConfigured
 		case !slices.Contains(nh.CPUGovernorPresets, preset):
+			d.cpuReason = joulie.ReasonPresetNotListed
 			warnGovernorOnce(nodeName, "cpu", fmt.Sprintf(
 				"CPU governor preset %q is not in NodeHardware status.cpu.governor.presets %v; writing no CPU governor", preset, nh.CPUGovernorPresets))
 		default:
-			cpu = &joulie.CPUGovernorIntent{Preset: preset}
+			d.cpu, d.cpuReason = &joulie.CPUGovernorIntent{Preset: preset}, written
 			if boost != "" {
 				if nh.CPUBoostAvailable {
-					cpu.Boost = boost
+					d.cpu.Boost = boost
 				} else {
 					warnGovernorOnce(nodeName, "cpu-boost", fmt.Sprintf(
 						"NodeHardware reports no boost control (status.cpu.governor.boost); leaving boost alone instead of %q", boost))
@@ -314,18 +342,36 @@ func (c governorConfig) governorIntents(nodeName, profile string, hasGPU bool, n
 		}
 	}
 
-	var gpu *joulie.GPUGovernorIntent
-	if c.gpuEnabled() && hasGPU {
-		preset, ceiling := c.gpuPresetFor(profile, gpuProduct, nh.GPUModel, nh.GPURawModel)
+	switch {
+	case !c.gpuEnabled():
+		d.gpuReason = joulie.ReasonGovernorControlOff
+	case !hasGPU:
+		d.gpuReason = joulie.ReasonNoGPU
+	default:
+		preset, ceiling, fromModel := c.gpuPresetFor(profile, gpuProduct, nh.GPUModel, nh.GPURawModel)
+		reason := written
+		if fromModel {
+			reason = joulie.ReasonModelPreset
+		}
 		// Held data paths cost idle power and pay off in transfers between
 		// GPUs, so with the rule on a node holds them only while a pod spans
 		// several GPUs; the agent restores its baseline otherwise.
-		if preset == joulie.GPUGovernorPresetSustained && c.gpuSustainedOnlyMultiGPU && (multiGPUPod == nil || !multiGPUPod()) {
-			preset = ""
+		if preset == joulie.GPUGovernorPresetSustained && c.gpuSustainedOnlyMultiGPU {
+			if multiGPUPod == nil || !multiGPUPod() {
+				preset, reason = "", joulie.ReasonNoMultiGPUPod
+			} else {
+				reason = joulie.ReasonMultiGPUPodRunning
+			}
 		}
+		listed := slices.Contains(nh.GPUGovernorPresets, preset)
 		switch {
 		case preset == "":
-		case !slices.Contains(nh.GPUGovernorPresets, preset) && !nh.GPUGovernorGap:
+			if reason != joulie.ReasonNoMultiGPUPod {
+				reason = joulie.ReasonNoPresetConfigured
+			}
+			d.gpuReason = reason
+		case !listed && !nh.GPUGovernorGap:
+			d.gpuReason = joulie.ReasonPresetNotListed
 			warnGovernorOnce(nodeName, "gpu", fmt.Sprintf(
 				"GPU governor preset %q is not in NodeHardware status.gpu.governor.presets %v; writing no GPU governor", preset, nh.GPUGovernorPresets))
 		default:
@@ -333,13 +379,16 @@ func (c governorConfig) governorIntents(nodeName, profile string, hasGPU bool, n
 			// dropping the intent then would make the agent restore the
 			// baseline and set the preset again a reconcile later, so the
 			// preset is written, and the agent holds it until it can plan.
-			gpu = &joulie.GPUGovernorIntent{Preset: preset}
+			if !listed {
+				reason = joulie.ReasonGovernorDiscoveryGap
+			}
+			d.gpu, d.gpuReason = &joulie.GPUGovernorIntent{Preset: preset}, reason
 			if preset == joulie.GPUGovernorPresetEfficient {
-				gpu.ComputeClockCeilingPctOfMax = floatPtr(ceiling)
+				d.gpu.ComputeClockCeilingPctOfMax = floatPtr(ceiling)
 			}
 		}
 	}
-	return cpu, gpu
+	return d
 }
 
 // warnGovernorOnce logs a governor warning the first time it is seen for a

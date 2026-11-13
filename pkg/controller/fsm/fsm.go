@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 
+	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/controller/policy"
 	"github.com/matbun/joulie/pkg/job"
 )
@@ -87,7 +88,8 @@ func ComputeDesiredLabels(desiredProfile string, perfPods int) (string, bool) {
 
 // ApplyDowngradeGuards enforces the constraint that nodes with running
 // performance-sensitive pods cannot immediately transition to eco. Instead,
-// they enter the DrainingPerformance state until all such pods complete.
+// they enter the DrainingPerformance state until all such pods complete,
+// with joulie.ReasonDrainingPerformancePods as their profile reason.
 func ApplyDowngradeGuards(
 	ctx context.Context,
 	ops NodeOps,
@@ -109,6 +111,7 @@ func ApplyDowngradeGuards(
 		a.Profile, a.Draining = ComputeDesiredLabels(a.Profile, count)
 		a.State = AssignmentState(a.Profile, a.Draining)
 		if a.Draining {
+			a.ProfileReason = joulie.ReasonDrainingPerformancePods
 			log.Printf("transition guarded node=%s desired=eco draining=true reason=running-performance-sensitive-pods count=%d", a.NodeName, count)
 		}
 	}

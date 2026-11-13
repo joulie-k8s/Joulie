@@ -10,6 +10,8 @@ import (
 	"charm.land/lipgloss/v2/table"
 	"github.com/charmbracelet/x/ansi"
 	v1alpha1 "github.com/matbun/joulie/api/v1alpha1"
+	joulie "github.com/matbun/joulie/pkg/api"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // findNode returns the node named name, or false.
@@ -211,6 +213,10 @@ func nodeDetail(c cluster, n nodeView, context string, width int, history []floa
 
 	top := pair("Hardware", kv(hw), "Power", kv(power), width)
 	mid := pair("Digital Twin", kv(scores), "Control", kv(ctl), width)
+	sections := []string{header("node", context, c.taken, width), " " + title, top, mid}
+	if len(n.decisions) > 0 {
+		sections = append(sections, panel("Why", fit(kv(decisionRows(n.decisions, c.taken)), width-4), width))
+	}
 
 	var pods []podView
 	for _, p := range c.pods {
@@ -218,13 +224,37 @@ func nodeDetail(c cluster, n nodeView, context string, width int, history []floa
 			pods = append(pods, p)
 		}
 	}
-	return strings.Join([]string{
-		header("node", context, c.taken, width),
-		" " + title,
-		top,
-		mid,
-		podTable(pods, c.taken, false, -1),
-	}, "\n")
+	return strings.Join(append(sections, podTable(pods, c.taken, false, -1)), "\n")
+}
+
+// decisionLabels names each decision condition in the Why panel.
+var decisionLabels = map[string]string{
+	joulie.ConditionEcoProfile:        "ECO",
+	joulie.ConditionCPUEcoCap:         "CPU ECO CAP",
+	joulie.ConditionGPUEcoCap:         "GPU ECO CAP",
+	joulie.ConditionCPUGovernorPreset: "CPU GOV",
+	joulie.ConditionGPUGovernorPreset: "GPU GOV",
+}
+
+// decisionRows are the lines of the Why panel: per decision condition, yes
+// or no, its reason, how long it has held, and its message below.
+func decisionRows(decisions []metav1.Condition, now time.Time) [][2]string {
+	rows := make([][2]string, 0, len(decisions))
+	for _, d := range decisions {
+		mark := stMuted.Render("· no ")
+		if d.Status == metav1.ConditionTrue {
+			mark = stGood.Render("✓ yes")
+		}
+		s := mark + "  " + stBold.Render(d.Reason)
+		if !d.LastTransitionTime.IsZero() {
+			s += stMuted.Render("  for " + ago(now.Sub(d.LastTransitionTime.Time)))
+		}
+		if d.Message != "" {
+			s += "\n" + stMuted.Render(d.Message)
+		}
+		rows = append(rows, [2]string{firstNonEmpty(decisionLabels[d.Type], d.Type), s})
+	}
+	return rows
 }
 
 // podTable lists pods; withNode adds the node and its class.

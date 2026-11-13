@@ -44,6 +44,17 @@ type NodeAssignment struct {
 	SourceDrain   bool
 	Draining      bool
 	State         string
+	// ProfileReason, CPUCapReason, GPUCapReason, CPUGovernorReason and
+	// GPUGovernorReason say why the node got its profile, caps and
+	// governors, each a pkg/api reason of the matching decision condition
+	// (pkg/api.DecisionReasonValues). The policies set ProfileReason, the
+	// downgrade guard replaces it on a draining node, and the controller
+	// manager sets the others with the caps and governors.
+	ProfileReason     string
+	CPUCapReason      string
+	GPUCapReason      string
+	CPUGovernorReason string
+	GPUGovernorReason string
 }
 
 // GPUCapIntent encodes GPU power cap intent.
@@ -77,17 +88,16 @@ func BuildStaticPlan(nodes []string, hw map[string]NodeHardwareInfo, current map
 
 	plan := make([]NodeAssignment, 0, n)
 	for _, node := range nodes {
-		profile := "eco"
-		cap := ecoCap
+		profile, cap, reason := "eco", ecoCap, joulie.ReasonNoPerformanceSlot
 		if perfNodes[node] {
-			profile = "performance"
-			cap = perfCap
+			profile, cap, reason = "performance", perfCap, joulie.ReasonPerformanceSlot
 		}
 		plan = append(plan, NodeAssignment{
-			NodeName:  node,
-			Profile:   profile,
-			CapWatts:  cap,
-			ManagedBy: "static-partition-v1",
+			NodeName:      node,
+			Profile:       profile,
+			CapWatts:      cap,
+			ManagedBy:     "static-partition-v1",
+			ProfileReason: reason,
 		})
 	}
 	return plan
@@ -122,19 +132,31 @@ func BuildQueueAwarePlan(nodes []string, hw map[string]NodeHardwareInfo, current
 	}
 	hpCount = clampInt(hpCount, hpMin, hpMax)
 	perfNodes := PerformanceSet(nodes, hw, current, hpCount)
+	// The reasons follow what set the count: the demand when it added nodes
+	// to those the base fraction, QUEUE_HP_MIN and the family slots keep,
+	// QUEUE_HP_MAX when it held the count below the demand.
+	perfReason, ecoReason := joulie.ReasonPerformanceSlot, joulie.ReasonPerformanceDemandMet
+	if len(perfNodes) > len(PerformanceSet(nodes, hw, current, clampInt(baseCount, hpMin, hpMax))) {
+		perfReason = joulie.ReasonPerformanceDemand
+	}
+	switch {
+	case queueNeed > len(perfNodes):
+		ecoReason = joulie.ReasonPerformanceNodesAtMax
+	case perfIntentPods <= 0:
+		ecoReason = joulie.ReasonNoPerformanceDemand
+	}
 	plan := make([]NodeAssignment, 0, n)
 	for _, node := range nodes {
-		profile := "eco"
-		cap := ecoCap
+		profile, cap, reason := "eco", ecoCap, ecoReason
 		if perfNodes[node] {
-			profile = "performance"
-			cap = perfCap
+			profile, cap, reason = "performance", perfCap, perfReason
 		}
 		plan = append(plan, NodeAssignment{
-			NodeName:  node,
-			Profile:   profile,
-			CapWatts:  cap,
-			ManagedBy: "queue-aware-v1",
+			NodeName:      node,
+			Profile:       profile,
+			CapWatts:      cap,
+			ManagedBy:     "queue-aware-v1",
+			ProfileReason: reason,
 		})
 	}
 	return plan
@@ -165,7 +187,7 @@ func BuildRuleSwapPlanAt(nodes []string, interval time.Duration, perfCap, ecoCap
 			profile = "eco"
 			cap = ecoCap
 		}
-		plan = append(plan, NodeAssignment{NodeName: n, Profile: profile, CapWatts: cap, ManagedBy: "rule-swap-v1"})
+		plan = append(plan, NodeAssignment{NodeName: n, Profile: profile, CapWatts: cap, ManagedBy: "rule-swap-v1", ProfileReason: joulie.ReasonRuleSwapPhase})
 	}
 	if len(nodes) == 1 {
 		if phase%2 == 0 {

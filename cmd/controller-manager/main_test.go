@@ -1196,9 +1196,20 @@ func TestNodeTwinStatusMapNeverContainsControlStatus(t *testing.T) {
 		CPUGovernor: &joulie.ControlResult{Backend: joulie.GovernorBackendCPUFreq, Result: joulie.GovernorResultApplied, Applied: "performance"},
 		GPUGovernor: &joulie.ControlResult{Backend: joulie.GovernorBackendAMDGPUSysfs, Result: joulie.GovernorResultApplied, Applied: "high"},
 	}
+	// The conditions the controller manager writes, its decisions included,
+	// carry nothing of the agent's either.
+	status.Conditions = append(decisionConditions(NodeAssignment{
+		NodeName: "n", Profile: profileEco, ProfileReason: joulie.ReasonNoPerformanceSlot,
+		CPUCapReason: joulie.ReasonEcoProfile, GPUCapReason: joulie.ReasonEcoProfile,
+		CPUGovernorReason: joulie.ReasonEcoProfile, CPUGovernor: &joulie.CPUGovernorIntent{Preset: "efficiency"},
+		GPUGovernorReason: joulie.ReasonEcoProfile, GPUGovernor: &joulie.GPUGovernorIntent{Preset: "efficient"},
+	}, joulie.ReasonGPUCapBlocked), agentReportingCondition(nil, time.Now()))
 	m := nodeTwinStatusToMap(status)
 	if _, ok := m["controlStatus"]; ok {
 		t.Fatalf("controller manager status payload contains controlStatus: %v", m)
+	}
+	if c, _ := m["conditions"].([]interface{}); len(c) != 1+len(joulie.DecisionConditionTypes) {
+		t.Fatalf("status payload conditions %v, want AgentReporting and every decision", m["conditions"])
 	}
 	var walk func(v interface{}, at string)
 	walk = func(v interface{}, at string) {

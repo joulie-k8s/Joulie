@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/controller/policy"
 	"github.com/matbun/joulie/pkg/job"
 )
@@ -89,11 +90,14 @@ func TestApplyDowngradeGuards(t *testing.T) {
 	t.Run("eco with running perf pods enters draining", func(t *testing.T) {
 		ops := &mockNodeOps{counts: map[string]int{"node-a": 2}}
 		plan := []policy.NodeAssignment{
-			{NodeName: "node-a", Profile: ProfileEco},
+			{NodeName: "node-a", Profile: ProfileEco, ProfileReason: joulie.ReasonNoPerformanceSlot},
 		}
 		ApplyDowngradeGuards(ctx, ops, plan, map[string]string{"node-a": ProfilePerformance})
 		if !plan[0].Draining {
 			t.Error("expected node-a to be draining")
+		}
+		if plan[0].ProfileReason != joulie.ReasonDrainingPerformancePods {
+			t.Errorf("profile reason %q, want %s: the guard, not the policy, decided the node's state", plan[0].ProfileReason, joulie.ReasonDrainingPerformancePods)
 		}
 		if plan[0].State != StateDrainingPerformance {
 			t.Errorf("expected state %s, got %s", StateDrainingPerformance, plan[0].State)
@@ -103,11 +107,14 @@ func TestApplyDowngradeGuards(t *testing.T) {
 	t.Run("eco with no perf pods transitions cleanly", func(t *testing.T) {
 		ops := &mockNodeOps{counts: map[string]int{"node-a": 0}}
 		plan := []policy.NodeAssignment{
-			{NodeName: "node-a", Profile: ProfileEco},
+			{NodeName: "node-a", Profile: ProfileEco, ProfileReason: joulie.ReasonNoPerformanceSlot},
 		}
 		ApplyDowngradeGuards(ctx, ops, plan, map[string]string{"node-a": ProfilePerformance})
 		if plan[0].Draining {
 			t.Error("expected node-a not to be draining")
+		}
+		if plan[0].ProfileReason != joulie.ReasonNoPerformanceSlot {
+			t.Errorf("profile reason %q, want the policy's %s kept", plan[0].ProfileReason, joulie.ReasonNoPerformanceSlot)
 		}
 		if plan[0].State != StateActiveEco {
 			t.Errorf("expected state %s, got %s", StateActiveEco, plan[0].State)

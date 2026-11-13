@@ -129,6 +129,10 @@ type NodeTwinStatus struct {
 	// NodeHardware, and False when none has published it (reason
 	// NoNodeHardware) or its last write is older than 15 minutes (reason
 	// NodeHardwareStale): the caps in spec are then planned, not enforced.
+	// EcoProfile, CPUEcoCap, GPUEcoCap, CPUGovernorPreset and
+	// GPUGovernorPreset record why the node got its profile, caps and
+	// governors: each is True while its decision is in force, and its reason
+	// names the branch that decided it.
 	// +listType=map
 	// +listMapKey=type
 	// +optional

@@ -48,7 +48,7 @@ func TestTwinCPUBudgetClampsAtTheCapRangeMinimum(t *testing.T) {
 				Spec:       v1alpha1.NodeTwinSpec{NodeName: "c1", Profile: profileEco},
 			}
 			reader, _, dyn := fakeClients(t, hw, nt)
-			if _, err := reconcileNodeTwin(context.Background(), reader, dyn, "c1", profileEco, tc.pct, 100, false, nil); err != nil {
+			if _, err := reconcileNodeTwin(context.Background(), reader, dyn, "c1", profileEco, tc.pct, 100, false, nil, nil); err != nil {
 				t.Fatalf("reconcileNodeTwin: %v", err)
 			}
 			u, err := dyn.Resource(nodeTwinGVR).Get(context.Background(), "c1", metav1.GetOptions{})

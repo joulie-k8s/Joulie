@@ -81,10 +81,15 @@ func nodeTopologyFor(nodeName, rack, zone string, rackPowerEstimates map[string]
 // The GPU budget counts the planned GPU cap only where it applies
 // (twin.GPUCapApplies), from NodeHardware and the agent's last GPU cap
 // result, which the controller manager reads and never writes.
-func reconcileNodeTwin(ctx context.Context, reader kube.Reader, dynClient dynamic.Interface, nodeName, profile string, cpuCapPct, gpuCapPct float64, draining bool, topo *nodeTopology) (twinOutcome, error) {
+//
+// decisions, when not nil, is the node's assignment of this reconcile; its
+// reasons become the decision conditions (decisionConditions), with the GPU
+// cap's refined by the same twin.GPUCapBlockReason the budget follows.
+func reconcileNodeTwin(ctx context.Context, reader kube.Reader, dynClient dynamic.Interface, nodeName, profile string, cpuCapPct, gpuCapPct float64, draining bool, topo *nodeTopology, decisions *NodeAssignment) (twinOutcome, error) {
 	hwObj, hwErr := readNodeHardware(ctx, reader, nodeName)
 	hw := twinHardware(nodeName, hwObj)
-	gpuCapNotApplied := !twin.GPUCapApplies(hw.GPU, fetchGPUControlResult(ctx, reader, nodeName))
+	gpuCapBlock := twin.GPUCapBlockReason(hw.GPU, fetchGPUControlResult(ctx, reader, nodeName))
+	gpuCapNotApplied := gpuCapBlock != ""
 
 	facility := currentTwinFacility()
 	outsideTempC, outsideKnown := facility.ambientC, facility.ambientKnown
@@ -158,6 +163,9 @@ func reconcileNodeTwin(ctx context.Context, reader kube.Reader, dynClient dynami
 		outcome.agent = &c
 		twinStatus.Conditions = []metav1.Condition{c}
 	}
+	if decisions != nil {
+		twinStatus.Conditions = append(twinStatus.Conditions, decisionConditions(*decisions, gpuCapBlock)...)
+	}
 
 	return outcome, upsertNodeTwinStatus(ctx, dynClient, nodeName, twinStatus)
 }
@@ -198,18 +206,24 @@ func agentReportingCondition(obj *v1alpha1.NodeHardware, now time.Time) metav1.C
 }
 
 // mergeConditions sets each of desired on existing as meta.SetStatusCondition
-// does: lastTransitionTime moves only when a condition's status changes, and
-// a condition not in desired stays. It returns the result and the desired
-// conditions whose status changed, a new condition included.
+// does, except that lastTransitionTime moves when a condition's status or
+// reason changes, not on its status alone; a condition not in desired stays.
+// It returns the result and the desired conditions whose status or reason
+// changed, a new condition included.
 func mergeConditions(existing, desired []metav1.Condition, now time.Time) (out, changed []metav1.Condition) {
 	out = append([]metav1.Condition(nil), existing...)
+	at := metav1.NewTime(now.UTC().Truncate(time.Second))
 	for _, d := range desired {
 		prev := meta.FindStatusCondition(out, d.Type)
-		if prev == nil || prev.Status != d.Status {
+		moved := prev == nil || prev.Status != d.Status || prev.Reason != d.Reason
+		if moved {
 			changed = append(changed, d)
 		}
-		d.LastTransitionTime = metav1.NewTime(now.UTC().Truncate(time.Second))
+		d.LastTransitionTime = at
 		meta.SetStatusCondition(&out, d)
+		if moved {
+			meta.FindStatusCondition(out, d.Type).LastTransitionTime = at
+		}
 	}
 	return out, changed
 }
@@ -398,6 +412,12 @@ func upsertNodeTwinStatus(ctx context.Context, dynClient dynamic.Interface, node
 				log.Printf("warning: node=%s %s=False reason=%s: %s", nodeName, c.Type, c.Reason, c.Message)
 			}
 		}
+		// Conditions equal to the stored ones stay out of the patch, so a
+		// reconcile with the same decisions does not rewrite them; a merge
+		// patch without the field keeps it.
+		if !notFound && jsonEqual(stored, status.Conditions) {
+			status.Conditions = nil
+		}
 	}
 	statusMap := nodeTwinStatusToMap(status)
 
@@ -508,7 +528,7 @@ func upsertNodeTwinSpec(ctx context.Context, dyn dynamic.Interface, a NodeAssign
 	}
 	// The whole spec is replaced below, so a governor the assignment no
 	// longer carries (GOVERNOR_CONTROL turned off, a preset the node stopped
-	// listing, but not a block in a discovery gap: governorIntents) leaves
+	// listing, but not a block in a discovery gap: governorDecisions) leaves
 	// the object in the same write.
 
 	obj := &unstructured.Unstructured{Object: map[string]any{

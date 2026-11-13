@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	joulie "github.com/matbun/joulie/pkg/api"
 )
 
 func TestBuildStaticPlanEmpty(t *testing.T) {
@@ -369,4 +371,72 @@ func TestPerformanceSetUsesSainteLagueWithTiesToTheSmallerKey(t *testing.T) {
 	if got["cpu:cpu-a"] != 4 || got["cpu:cpu-b"] != 2 || got["cpu:cpu-c"] != 1 {
 		t.Fatalf("performance nodes per family = %v, want cpu-a 4, cpu-b 2, cpu-c 1", got)
 	}
+}
+
+// reasonsOf maps each node of plan to its profile and profile reason.
+func reasonsOf(plan []NodeAssignment) map[string]string {
+	out := map[string]string{}
+	for _, a := range plan {
+		out[a.NodeName] = a.Profile + "/" + a.ProfileReason
+	}
+	return out
+}
+
+// Each policy says why it gave each node its profile: static_partition by
+// the slots of the family, queue_aware_v1 by what set its count (the base
+// fraction, the demand, QUEUE_HP_MAX), rule_swap_v1 by its phase.
+func TestPlansCarryTheirProfileReasons(t *testing.T) {
+	nodes := []string{"a", "b", "c", "d"}
+	hw := map[string]NodeHardwareInfo{}
+	for _, n := range nodes {
+		hw[n] = NodeHardwareInfo{CPUModel: "X"}
+	}
+	perf := "performance/" + joulie.ReasonPerformanceSlot
+	for _, tc := range []struct {
+		name string
+		plan []NodeAssignment
+		want map[string]string
+	}{
+		{"static", BuildStaticPlan(nodes, hw, nil, 5000, 120, 0.5), map[string]string{
+			"a": perf, "b": perf, "c": "eco/" + joulie.ReasonNoPerformanceSlot, "d": "eco/" + joulie.ReasonNoPerformanceSlot}},
+		{"queue aware, no demand", BuildQueueAwarePlan(nodes, hw, nil, 5000, 120, 0.25, 1, 4, 10, 0), map[string]string{
+			"a": perf, "b": "eco/" + joulie.ReasonNoPerformanceDemand}},
+		{"queue aware, demand within the base", BuildQueueAwarePlan(nodes, hw, nil, 5000, 120, 0.5, 1, 4, 10, 5), map[string]string{
+			"a": perf, "c": "eco/" + joulie.ReasonPerformanceDemandMet}},
+		{"queue aware, demand above the base", BuildQueueAwarePlan(nodes, hw, nil, 5000, 120, 0.25, 1, 4, 10, 25), map[string]string{
+			"a": "performance/" + joulie.ReasonPerformanceDemand, "c": "performance/" + joulie.ReasonPerformanceDemand, "d": "eco/" + joulie.ReasonPerformanceDemandMet}},
+		{"queue aware, demand within QUEUE_HP_MIN", BuildQueueAwarePlan(nodes, hw, nil, 5000, 120, 0.25, 3, 4, 10, 15), map[string]string{
+			"a": perf, "b": perf, "c": perf, "d": "eco/" + joulie.ReasonPerformanceDemandMet}},
+		{"queue aware, demand within the slots of every family", BuildQueueAwarePlan(nodes, map[string]NodeHardwareInfo{
+			"a": {CPUModel: "X"}, "b": {CPUModel: "X"}, "c": {CPUModel: "Y"}, "d": {CPUModel: "Z"}}, nil, 5000, 120, 0.25, 1, 4, 10, 15), map[string]string{
+			"a": perf, "c": perf, "d": perf, "b": "eco/" + joulie.ReasonPerformanceDemandMet}},
+		{"queue aware, demand above QUEUE_HP_MAX", BuildQueueAwarePlan(nodes, hw, nil, 5000, 120, 0.25, 1, 2, 10, 35), map[string]string{
+			"a": "performance/" + joulie.ReasonPerformanceDemand, "c": "eco/" + joulie.ReasonPerformanceNodesAtMax}},
+		{"rule swap", BuildRuleSwapPlanAt(nodes[:2], time.Minute, 5000, 120, time.Unix(0, 0)), map[string]string{
+			"a": "eco/" + joulie.ReasonRuleSwapPhase, "b": "performance/" + joulie.ReasonRuleSwapPhase}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := reasonsOf(tc.plan)
+			for node, want := range tc.want {
+				if got[node] != want {
+					t.Errorf("%s = %q, want %q (plan %v)", node, got[node], want, got)
+				}
+			}
+			for node, r := range got {
+				reason := r[strings.Index(r, "/")+1:]
+				if reason == "" || !contains(joulie.DecisionReasonValues[joulie.ConditionEcoProfile], reason) {
+					t.Errorf("%s reason %q is not an EcoProfile reason pkg/api lists", node, reason)
+				}
+			}
+		})
+	}
+}
+
+func contains(values []string, v string) bool {
+	for _, x := range values {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
