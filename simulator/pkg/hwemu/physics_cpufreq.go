@@ -72,6 +72,7 @@ func (n *Node) governorInput(i int, pol *nodePolicy, u, periodS float64) phys.Go
 	switch pol.governor {
 	case "ondemand", "conservative":
 		in.Tunables = n.governorTunables()
+		in.TransitionDelayUS = cpuGovTransitionDelayUS(n.profile.CPUFreq)
 	case "schedutil":
 		in.CurKHz = int64(math.Round(pol.shownKHz))
 	case "userspace":

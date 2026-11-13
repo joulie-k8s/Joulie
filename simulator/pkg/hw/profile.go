@@ -51,6 +51,7 @@ type Defaulted struct {
 	CPUSocketCapMaxW     bool
 	GPUMaxWattsPerGPU    bool
 	GPUMinCapWattsPerGPU bool
+	GPUTelemetryWindowMS bool
 }
 
 type PowerPoint struct {
@@ -250,6 +251,7 @@ func ApplyOverrides(base Profile, o Overrides) Profile {
 		}
 		if o.GPU.TelemetryWindowMS != nil {
 			out.GPU.TelemetryWindowMS = *o.GPU.TelemetryWindowMS
+			out.Defaulted.GPUTelemetryWindowMS = false
 		}
 		if o.GPU.AmbientTempC != nil {
 			out.GPU.AmbientTempC = *o.GPU.AmbientTempC

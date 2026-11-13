@@ -65,7 +65,17 @@ The score is clamped to 0 to 100. A node with stale (older than `TWIN_STALENESS_
 
 ```json
 {
-  "coefficients": {"cpuUtilCoeff": 0.8, "gpuUtilCoeffStandard": 0.6, "gpuUtilCoeffPerformance": 0.9},
+  "coefficients": {
+    "CPUUtilCoeff": 0.7,
+    "MemPowerCoeff": 0.01,
+    "MemPowerCap": 1.3,
+    "GPUUtilCoeffStandard": 0.65,
+    "GPUUtilCoeffPerformance": 0.85,
+    "CPUWattsPerCoreFallback": 3.5,
+    "GPUMaxWattsFallbackNVIDIA": 350,
+    "GPUMaxWattsFallbackAMD": 400,
+    "GPUMaxWattsFallbackGeneric": 350
+  },
   "nodes": [
     {
       "nodeName": "node-0",
@@ -80,7 +90,7 @@ The score is clamped to 0 to 100. A node with stale (older than `TWIN_STALENESS_
       "cpuTotalCores": 128,
       "cpuMaxWattsTotal": 700.0,
       "gpuCount": 8,
-      "gpuMaxWattsPerGpu": 400.0,
+      "gpuMaxWattsPerGPU": 400.0,
       "hasGpu": true,
       "stale": false
     }

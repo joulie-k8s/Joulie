@@ -78,6 +78,35 @@ func TestCatalogGPUCapsReachTheModelWhenEnvIsUnset(t *testing.T) {
 	}
 }
 
+// An MI300X reports its current socket power, with no average (catalogue
+// powerWindowMs 0), so with SIM_GPU_TELEMETRY_WINDOW_MS unset the power its
+// node reports after one 100 ms substep is the instantaneous power. A GPU
+// without a published window keeps the 1 s average, and the variable wins
+// over the catalogue. The old code gave every GPU the 1 s average, so an
+// MI300X reported a tenth of a step up after 100 ms.
+func TestCatalogGPUPowerWindowReachesTheModel(t *testing.T) {
+	clearSimEnv(t)
+	mi300x := map[string]string{"joulie.io/hw.gpu-model": "AMD Instinct MI300X", "joulie.io/hw.gpu-count": "8"}
+	s, _ := mrSimulator(t, nil)
+	model, _ := s.resolveModelForNode(mi300x)
+	if model.GPU.TelemetryWindowMS != 0 {
+		t.Fatalf("MI300X telemetry window %d ms, want 0 from the catalogue", model.GPU.TelemetryWindowMS)
+	}
+	st := &nodeState{GPUUtil: 1, FreqScale: 1, CapWatts: 5000, TargetCapWatts: 5000}
+	stepNode(st, model, physMaxSubstep.Seconds(), physMaxSubstep)
+	if o := observe(st); len(o.gpuW) != 8 || o.gpuW[0] != st.GPUDevices[0].PowerWatts || o.gpuW[0] <= model.GPU.IdleWattsPerGPU {
+		t.Errorf("MI300X reported GPU power %v after one substep, want the instantaneous %.2f W", o.gpuW, st.GPUDevices[0].PowerWatts)
+	}
+	if model, _ := s.resolveModelForNode(mrH100SXMLabels); model.GPU.TelemetryWindowMS != 1000 {
+		t.Errorf("H100 SXM telemetry window %d ms, want the 1000 ms default", model.GPU.TelemetryWindowMS)
+	}
+	t.Setenv("SIM_GPU_TELEMETRY_WINDOW_MS", "500")
+	s, _ = mrSimulator(t, nil)
+	if model, _ := s.resolveModelForNode(mi300x); model.GPU.TelemetryWindowMS != 500 {
+		t.Errorf("MI300X telemetry window %d ms with SIM_GPU_TELEMETRY_WINDOW_MS=500, want 500", model.GPU.TelemetryWindowMS)
+	}
+}
+
 // The socket cap range of a catalogue CPU is its TDP and the low end of its
 // cTDP range, or 0.55 x TDP without one. The old code kept 120 to 400 W.
 func TestCatalogCPUSocketCapsReachTheModelWhenEnvIsUnset(t *testing.T) {

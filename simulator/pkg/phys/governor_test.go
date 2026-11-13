@@ -360,6 +360,33 @@ func TestGP06OndemandJumpsToTheMaximumAboveUpThreshold(t *testing.T) {
 	}
 }
 
+// GP07: without a sampling_rate, conservative samples at the larger of two
+// ticks (2000 us at HZ 1000) and the policy's transition delay
+// (cpufreq_governor.c:22, 449-451). intel_cpufreq with HWP sets a 5000 us
+// delay (intel_pstate.c:43, 3253), so a busy policy climbs two freq_steps in
+// 10 ms, not five.
+func TestGP07ConservativeSamplesAtTheTransitionDelayAboveTwoTicks(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		delayUS    int64
+		samplingUS int64
+		want       int64
+	}{
+		{"no delay: two ticks, 5 periods", 0, 0, 2750000},
+		{"500 us delay: two ticks, 5 periods", 500, 0, 2750000},
+		{"5000 us delay: 2 periods", 5000, 0, 2300000},
+		{"sampling_rate wins over the delay: 1 period", 5000, 10000, 2150000},
+	} {
+		in := continuousInput("conservative", 1, 2000000)
+		in.PeriodS = 0.010
+		in.TransitionDelayUS = tc.delayUS
+		in.Tunables.OndemandSamplingRateUS = tc.samplingUS
+		if got := governorTargetKHz(in); got != tc.want {
+			t.Errorf("%s: got %d kHz, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestResolveTableKHzMatchesTheKernelRelations(t *testing.T) {
 	table := []int64{2400000, 1500000, 1900000}
 	for _, tc := range []struct {

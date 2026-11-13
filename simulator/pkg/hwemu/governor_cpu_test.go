@@ -803,3 +803,35 @@ func TestCK05BaseFrequencyIsAProfileFact(t *testing.T) {
 		t.Errorf("baseKHz above cpuinfoMaxKHz: err = %v, want one naming baseKHz", err)
 	}
 }
+
+// CG20: ondemand and conservative see the policy's transition delay, from
+// which they start sampling when it is above two ticks: intel_cpufreq sets
+// 5000 us with HWP and 500 us without (intel_pstate.c:43-44, 3250-3263),
+// and acpi-cpufreq with a cpuinfo_transition_latency of 0 gets 1000 us
+// (cpufreq.c:577-582). Before, the governors assumed a delay under 2 ms on
+// every driver.
+func TestCG20GovernorInputCarriesTheDriverTransitionDelay(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		profile string
+		hwp     bool
+		want    int64
+	}{
+		{"intel-xeon-6530-2s-rapl", true, 5000},
+		{"intel-xeon-6530-2s-rapl", false, 500},
+		{"amd-epyc-2s-energy-only", false, 1000},
+	} {
+		p := ensureBuiltin(t, c.profile)
+		if c.hwp {
+			p.CPUFreq.HWP = Fact[bool]{V: true, Src: "assumed:test"}
+		}
+		n, _ := cgNode(t, p)
+		for _, gov := range []string{"ondemand", "conservative"} {
+			pol := n.policies[0]
+			pol.governor = gov
+			if got := n.governorInput(0, pol, 1, 0.01).TransitionDelayUS; got != c.want {
+				t.Errorf("%s hwp %v, %s: transition delay %d us, want %d", c.profile, c.hwp, gov, got, c.want)
+			}
+		}
+	}
+}

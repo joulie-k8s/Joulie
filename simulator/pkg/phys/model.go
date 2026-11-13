@@ -109,6 +109,17 @@ func (m ProxyCurveCPUModel) ThroughputMultiplier(state DeviceState, workloadClas
 	return m.Base.ThroughputMultiplier(state, workloadClass)
 }
 
+// The throughput parameters a capped board takes when its model leaves one
+// unset (0). The simulator's SIM_GPU_COMPUTE_GAMMA, SIM_GPU_MEMORY_EPSILON
+// and SIM_GPU_MEMORY_GAMMA default to them, and the node class generator's
+// _GPU_PHYSICS_DEFAULTS (scripts/generate_heterogeneous_assets.py) repeats
+// them; TestGPUThroughputDefaultsAgree checks all three.
+const (
+	DefaultGPUComputeGamma  = 1.0
+	DefaultGPUMemoryEpsilon = 0.2
+	DefaultGPUMemoryGamma   = 1.2
+)
+
 type CappedBoardGPUModel struct {
 	IdleW         float64
 	MaxW          float64
@@ -157,24 +168,29 @@ func (m CappedBoardGPUModel) ThroughputMultiplier(state DeviceState, workloadCla
 	if capW >= pNat {
 		return 1
 	}
-	ratio := clamp01(capW / pNat)
-	computeGamma := m.ComputeGamma
-	if computeGamma <= 0 {
-		computeGamma = 1.0
-	}
-	memEps := m.MemoryEpsilon
-	if memEps <= 0 {
-		memEps = 0.2
-	}
-	memGamma := m.MemoryGamma
-	if memGamma <= 0 {
-		memGamma = 1.1
-	}
-	computeScale := math.Pow(ratio, computeGamma)
-	memScale := 1.0 - memEps*math.Pow(1.0-ratio, memGamma)
+	computeScale, memScale := m.capRatioScales(clamp01(capW / pNat))
 	wc, wm := gpuBoundnessWeights(state, workloadClass)
 	out := wc*computeScale + wm*memScale
 	return applyThermalPenalty(clamp01(out), state)
+}
+
+// capRatioScales is the compute and memory throughput scale of a board
+// held at ratio of its natural power, with the Default* parameters for
+// those the model leaves unset.
+func (m CappedBoardGPUModel) capRatioScales(ratio float64) (compute, memory float64) {
+	computeGamma := m.ComputeGamma
+	if computeGamma <= 0 {
+		computeGamma = DefaultGPUComputeGamma
+	}
+	memEps := m.MemoryEpsilon
+	if memEps <= 0 {
+		memEps = DefaultGPUMemoryEpsilon
+	}
+	memGamma := m.MemoryGamma
+	if memGamma <= 0 {
+		memGamma = DefaultGPUMemoryGamma
+	}
+	return math.Pow(ratio, computeGamma), 1.0 - memEps*math.Pow(1.0-ratio, memGamma)
 }
 
 func (m CappedBoardGPUModel) naturalPower(util float64, state DeviceState) float64 {

@@ -142,20 +142,8 @@ func gpuCapScales(m CappedBoardGPUModel, s DeviceState) (compute, memory float64
 	if capW <= 0 || pNat <= 0 || capW >= pNat {
 		return 1, 1, false
 	}
-	ratio := clamp01(capW / pNat)
-	computeGamma := m.ComputeGamma
-	if computeGamma <= 0 {
-		computeGamma = 1.0
-	}
-	memEps := m.MemoryEpsilon
-	if memEps <= 0 {
-		memEps = 0.2
-	}
-	memGamma := m.MemoryGamma
-	if memGamma <= 0 {
-		memGamma = 1.1
-	}
-	return math.Pow(ratio, computeGamma), 1.0 - memEps*math.Pow(1.0-ratio, memGamma), true
+	compute, memory = m.capRatioScales(clamp01(capW / pNat))
+	return compute, memory, true
 }
 
 // gpuGovernorScale is the compute clock the governor allows as a fraction of
