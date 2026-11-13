@@ -67,6 +67,63 @@ spec:
     name: static-partition-v1
 ```
 
+### Why a node got its state
+
+Five conditions in `status.conditions` say why the node got its profile, caps and governors. Each is `True` while its decision is in force, its `reason` names the branch that decided it, and `lastTransitionTime` moves only when the status or the reason changes. `kubectl joulie node <node>` shows them in its `Why` panel.
+
+`EcoProfile`: `True` while the node runs eco with eco caps.
+
+| Status | Reason | Why |
+|---|---|---|
+| `False` | `PerformanceSlot` | The policy keeps the node in one of the performance slots of its hardware family (`static_partition`, and `queue_aware_v1` at its base fraction, `QUEUE_HP_MIN` or the one slot of each hardware family) |
+| `False` | `PerformanceDemand` | `queue_aware_v1` keeps more nodes in performance than its base fraction, `QUEUE_HP_MIN` and the one slot of each hardware family would, for the performance pods that run or wait, and this node is one of them |
+| `True` | `NoPerformanceSlot` | Other nodes of its hardware family hold the performance slots of `static_partition` |
+| `True` | `NoPerformanceDemand` | No performance pod runs or waits, so `queue_aware_v1` keeps only its base fraction in performance |
+| `True` | `PerformanceDemandMet` | The performance pods that run or wait fit on the nodes `queue_aware_v1` keeps in performance |
+| `True` | `PerformanceNodesAtMax` | The performance pods need more performance nodes than `QUEUE_HP_MAX` allows |
+| either | `RuleSwapPhase` | `rule_swap_v1` alternates eco between nodes on a timer, and the current phase sets this node's profile |
+| `False` | `DrainingPerformancePods` | The policy planned eco, but performance pods still run on the node, so it keeps the performance caps and governors until they finish |
+
+`CPUEcoCap`: `True` while the node's CPU takes the eco cap (`CPU_ECO_CAP_PCT_OF_MAX`, or `ECO_CAP_WATTS` with absolute caps).
+
+| Status | Reason | Why |
+|---|---|---|
+| `True` | `EcoProfile` | The node runs eco |
+| `True` | `CPUEcoCapOnUncappableGPUNode` | The node's GPUs cannot be capped and `CPU_ECO_CAP_ON_UNCAPPABLE_GPU_NODES` is on |
+| `False` | `PerformanceProfile` | The node runs performance |
+| `False` | `DrainingPerformancePods` | Performance pods still run on the node |
+| `False` | `GPUNodeCPUUncapped` | A GPU node's CPU keeps the performance cap in eco, since a CPU cap slows the GPU data feed by more than it saves |
+
+`GPUEcoCap`: `True` while the node's GPUs take an eco cap that applies, as the twin's GPU budget counts it.
+
+| Status | Reason | Why |
+|---|---|---|
+| `True` | `EcoProfile` | The node runs eco |
+| `False` | `PerformanceProfile` | The node runs performance |
+| `False` | `DrainingPerformancePods` | Performance pods still run on the node |
+| `False` | `NoGPU` | The node has no GPU |
+| `False` | `GPUCapNotConfigured` | `GPU_ECO_CAP_PCT_OF_MAX` is 0 or below, so no GPU cap is written |
+| `False` | `GPUCapBlocked` | The agent's last GPU cap result, `status.controlStatus.gpu.result`, is `blocked`: the node offers no way to apply the cap |
+| `False` | `GPUCapFailed` | That result is `error`: the agent's last GPU cap write failed |
+| `False` | `GPUCapNotApplicable` | `NodeHardware` reports the GPUs without power control (`status.gpu.controlAvailable` false) and no cap was `applied` |
+
+`CPUGovernorPreset` and `GPUGovernorPreset`: `True` while `spec.cpu.governor` or `spec.gpu.governor` holds a preset; the message names it. [Governor policy](#governor-policy) below has the rules.
+
+| Status | Reason | Why |
+|---|---|---|
+| `True` | `PerformanceProfile` | The node runs performance, and the performance preset is written |
+| `True` | `EcoProfile` | The node runs eco, and the eco preset is written |
+| `True` | `DrainingPerformancePods` | Performance pods still run on the node, and it keeps the performance preset |
+| `True` | `ModelPreset` | GPU only: `GPU_GOVERNOR_MODEL_PRESETS_JSON` sets the preset for the node's GPU model |
+| `True` | `MultiGPUPodRunning` | GPU only: the `sustained` preset is written while a pod using several GPUs runs (`GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU`) |
+| `True` | `GovernorDiscoveryGap` | GPU only: the agent's last GPU governor discovery listed no presets, so the configured preset is written and the agent holds it until it can plan |
+| `False` | `GovernorControlOff` | `GOVERNOR_CONTROL` leaves this component's governor alone |
+| `False` | `GPUNodeCPUGovernorUnset` | CPU only: a GPU node's CPU governor is left alone unless `CPU_GOVERNOR_ON_GPU_NODES` is on |
+| `False` | `NoGPU` | GPU only: the node has no GPU |
+| `False` | `NoPresetConfigured` | No preset is configured for the profile the node runs at (a GPU preset variable or model entry set to empty) |
+| `False` | `PresetNotListed` | The node does not list the configured preset in `NodeHardware` `status.{cpu,gpu}.governor.presets`, so none is written |
+| `False` | `NoMultiGPUPod` | GPU only: the `sustained` preset is written only while a pod using several GPUs runs, and none runs |
+
 ## Governor policy
 
 A governor decides how eagerly a CPU or GPU raises its clocks: it saves less than a cap and slows work less. Joulie writes one vendor-neutral preset per component, chosen by the node's profile (a draining node keeps the performance presets); the agent maps it to native settings.

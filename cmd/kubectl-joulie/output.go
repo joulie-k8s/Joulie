@@ -53,6 +53,20 @@ type jsonNode struct {
 	PerformancePods int      `json:"performancePods"`
 	AgentReporting  *bool    `json:"agentReporting,omitempty"`
 	AgentReason     string   `json:"agentReason,omitempty"`
+	// Decisions say why the node got its profile, caps and governors: the
+	// twin's decision conditions, absent before the controller manager
+	// writes them.
+	Decisions []jsonDecision `json:"decisions,omitempty"`
+}
+
+// jsonDecision is one decision condition of a NodeTwin, in the shape of a
+// Kubernetes condition.
+type jsonDecision struct {
+	Type               string    `json:"type"`
+	Status             string    `json:"status"`
+	Reason             string    `json:"reason"`
+	Message            string    `json:"message,omitempty"`
+	LastTransitionTime time.Time `json:"lastTransitionTime"`
 }
 
 type jsonPod struct {
@@ -145,6 +159,12 @@ func nodeJSON(n nodeView) jsonNode {
 		v := n.agent.reporting
 		j.AgentReporting = &v
 		j.AgentReason = n.agent.reason
+	}
+	for _, d := range n.decisions {
+		j.Decisions = append(j.Decisions, jsonDecision{
+			Type: d.Type, Status: string(d.Status), Reason: d.Reason, Message: d.Message,
+			LastTransitionTime: d.LastTransitionTime.UTC(),
+		})
 	}
 	return j
 }

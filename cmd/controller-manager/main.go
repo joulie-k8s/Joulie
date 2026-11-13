@@ -467,6 +467,7 @@ func reconcileWithCatalog(
 		if capProfile == profilePerformance || !cpuCapsByProfile {
 			plan[i].CapWatts = perfCap
 		}
+		plan[i].CPUCapReason, plan[i].GPUCapReason = capReasons(plan[i], hasGPU, cpuCapsByProfile)
 		if cpuCapsByProfile {
 			if cpuWriteAbsolute {
 				plan[i].CPUCapPctOfMax = nil
@@ -485,6 +486,9 @@ func reconcileWithCatalog(
 		}
 		if n := nodeObjs[plan[i].NodeName]; n != nil {
 			plan[i].GPU = computeGPUIntentForNodeWithHardware(*n, capProfile, gpuPerfCapPct, gpuEcoCapPct, gpuWriteAbsolute, gpuModelCaps, gpuProductLabelKeys, nodeHardwareByName[plan[i].NodeName], hardwareCatalog)
+			if hasGPU && plan[i].GPU == nil && plan[i].GPUCapReason == joulie.ReasonEcoProfile {
+				plan[i].GPUCapReason = joulie.ReasonGPUCapNotConfigured
+			}
 			if hasGPU && plan[i].GPU == nil {
 				reason := "no GPU cap configured"
 				if capProfile == profilePerformance && gpuPerfCapPct <= 0 {
@@ -502,8 +506,9 @@ func reconcileWithCatalog(
 		}
 		nodeName := plan[i].NodeName
 		multiGPUPod := func() bool { return runningMultiGPUPodOnNode(ctx, reader, nodeName) }
-		plan[i].CPUGovernor, plan[i].GPUGovernor = govCfg.governorIntents(
-			nodeName, capProfile, hasGPU, nh, gpuProduct, multiGPUPod)
+		gov := govCfg.governorDecisions(nodeName, capProfile, plan[i].Draining, hasGPU, nh, gpuProduct, multiGPUPod)
+		plan[i].CPUGovernor, plan[i].GPUGovernor = gov.cpu, gov.gpu
+		plan[i].CPUGovernorReason, plan[i].GPUGovernorReason = gov.cpuReason, gov.gpuReason
 	}
 	recordFamilySplit(plan, nodeHardwareByName)
 
@@ -562,7 +567,7 @@ func reconcileWithCatalog(
 			gpuPct = *a.GPU.CapPctOfMax
 		}
 		topo := nodeTopologyFor(a.NodeName, nodeRack[a.NodeName], nodeZone[a.NodeName], rackPowerEstimates, facility)
-		twinOut, err := reconcileNodeTwin(ctx, reader, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo)
+		twinOut, err := reconcileNodeTwin(ctx, reader, dyn, a.NodeName, a.Profile, cpuPct, gpuPct, a.Draining, topo, &a)
 		if err != nil {
 			log.Printf("warning: reconcileNodeTwin %s: %v", a.NodeName, err)
 		} else {
@@ -870,6 +875,33 @@ func currentCapOptions() capOptions {
 	capOptionsMu.RLock()
 	defer capOptionsMu.RUnlock()
 	return capOpts
+}
+
+// capReasons are the reasons of the CPU and GPU cap decisions of a: the
+// profile it runs at decides both, except that a GPU node's CPU keeps the
+// performance cap unless cpuCapsByProfile (CPU_ECO_CAP_ON_UNCAPPABLE_GPU_NODES
+// on a node whose GPUs cannot be capped). The GPU reason is refined later:
+// ReasonGPUCapNotConfigured when no GPU cap is planned, and the agent's
+// result in reconcileNodeTwin.
+func capReasons(a NodeAssignment, hasGPU, cpuCapsByProfile bool) (cpu, gpu string) {
+	switch {
+	case a.Draining:
+		cpu, gpu = joulie.ReasonDrainingPerformancePods, joulie.ReasonDrainingPerformancePods
+	case a.Profile == profilePerformance:
+		cpu, gpu = joulie.ReasonPerformanceProfile, joulie.ReasonPerformanceProfile
+	default:
+		cpu, gpu = joulie.ReasonEcoProfile, joulie.ReasonEcoProfile
+		if hasGPU {
+			cpu = joulie.ReasonGPUNodeCPUUncapped
+			if cpuCapsByProfile {
+				cpu = joulie.ReasonCPUEcoCapOnUncappableGPUNode
+			}
+		}
+	}
+	if !hasGPU {
+		gpu = joulie.ReasonNoGPU
+	}
+	return cpu, gpu
 }
 
 // agentReportsNoGPUControl is true when the node's agent published its GPUs

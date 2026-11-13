@@ -19,6 +19,14 @@ var governorEnvVars = []string{
 	"GPU_GOVERNOR_MODEL_PRESETS_JSON", "GPU_GOVERNOR_SUSTAINED_ONLY_MULTI_GPU",
 }
 
+// governorIntents returns the governor presets of one node at profile, the
+// profile it runs at, as governorDecisions plans them for a node that does
+// not drain.
+func (c governorConfig) governorIntents(nodeName, profile string, hasGPU bool, nh NodeHardware, gpuProduct string, multiGPUPod func() bool) (*joulie.CPUGovernorIntent, *joulie.GPUGovernorIntent) {
+	d := c.governorDecisions(nodeName, profile, false, hasGPU, nh, gpuProduct, multiGPUPod)
+	return d.cpu, d.gpu
+}
+
 // setGovernorEnv unsets every governor variable, then sets env, for the
 // length of the test. An empty GPU preset is a value, so unset is not "".
 func setGovernorEnv(t *testing.T, env map[string]string) {

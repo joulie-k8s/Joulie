@@ -380,3 +380,31 @@ func TestNodeTwinStatusAcceptsTheAgentReportingCondition(t *testing.T) {
 		}
 	}
 }
+
+// TestNodeTwinStatusAcceptsEveryDecisionCondition writes every decision
+// condition with every reason pkg/api lists for it, in one merge patch with
+// AgentReporting as the controller manager sends them, and reads them back:
+// a reason the CRD's pattern rejects would fail the whole status write.
+func TestNodeTwinStatusAcceptsEveryDecisionCondition(t *testing.T) {
+	c := newClient(t)
+	ctx := testContext(t)
+	twin := newNodeTwin(t, c, objectName(t, ""))
+	for _, condition := range joulie.DecisionConditionTypes {
+		for _, reason := range joulie.DecisionReasonValues[condition] {
+			p := []byte(`{"status":{"conditions":[` +
+				`{"type":"` + joulie.ConditionAgentReporting + `","status":"True","reason":"` + joulie.ReasonNodeHardwareCurrent + `","message":"m","lastTransitionTime":"2026-11-01T12:00:00Z"},` +
+				`{"type":"` + condition + `","status":"False","reason":"` + reason + `","message":"a sentence, with punctuation; and (parentheses)","lastTransitionTime":"2026-11-01T12:00:00Z"}]}}`)
+			if err := c.Status().Patch(ctx, twin, client.RawPatch(types.MergePatchType, p)); err != nil {
+				t.Errorf("API server rejected %s reason %s: %v", condition, reason, err)
+				continue
+			}
+			var got v1alpha1.NodeTwin
+			if err := c.Get(ctx, types.NamespacedName{Name: twin.Name}, &got); err != nil {
+				t.Fatalf("read back NodeTwin: %v", err)
+			}
+			if len(got.Status.Conditions) != 2 || got.Status.Conditions[1].Type != condition || got.Status.Conditions[1].Reason != reason {
+				t.Errorf("conditions %+v, want AgentReporting and %s reason %s", got.Status.Conditions, condition, reason)
+			}
+		}
+	}
+}

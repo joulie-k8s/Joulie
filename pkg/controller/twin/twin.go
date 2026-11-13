@@ -191,15 +191,28 @@ func Compute(in Input) Output {
 // a default limit, NVIDIA boards whose power limits read [N/A]) are not
 // capped.
 func GPUCapApplies(gpu joulie.NodeHardwareGPU, last *joulie.ControlResult) bool {
+	return GPUCapBlockReason(gpu, last) == ""
+}
+
+// GPUCapBlockReason is why a planned GPU cap does not reach the GPUs of a
+// node, as GPUCapApplies decides it: joulie.ReasonGPUCapBlocked or
+// joulie.ReasonGPUCapFailed after such a result, joulie.ReasonGPUCapNotApplicable
+// for GPUs without control, and "" when the cap applies.
+func GPUCapBlockReason(gpu joulie.NodeHardwareGPU, last *joulie.ControlResult) string {
 	if last != nil {
 		switch last.Result {
-		case joulie.CapResultBlocked, joulie.CapResultError:
-			return false
+		case joulie.CapResultBlocked:
+			return joulie.ReasonGPUCapBlocked
+		case joulie.CapResultError:
+			return joulie.ReasonGPUCapFailed
 		case joulie.CapResultApplied:
-			return true
+			return ""
 		}
 	}
-	return gpu.Count <= 0 || gpu.ControlAvailable
+	if gpu.Count <= 0 || gpu.ControlAvailable {
+		return ""
+	}
+	return joulie.ReasonGPUCapNotApplicable
 }
 
 // computePowerHeadroom returns a score (clamped to max 100) representing

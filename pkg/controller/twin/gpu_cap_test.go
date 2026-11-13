@@ -15,25 +15,29 @@ func TestGPUCapApplies(t *testing.T) {
 	}
 	result := func(r string) *joulie.ControlResult { return &joulie.ControlResult{Result: r} }
 	for _, tc := range []struct {
-		name string
-		gpu  joulie.NodeHardwareGPU
-		last *joulie.ControlResult
-		want bool
+		name   string
+		gpu    joulie.NodeHardwareGPU
+		last   *joulie.ControlResult
+		want   bool
+		reason string // GPUCapBlockReason
 	}{
-		{"no GPU", joulie.NodeHardwareGPU{}, nil, true},
-		{"GPUs with control, no result yet", gpus(true), nil, true},
-		{"GPUs with control, applied", gpus(true), result(joulie.CapResultApplied), true},
-		{"GPUs with control, no intent", gpus(true), result(joulie.CapResultNone), true},
-		{"GPUs with control, blocked", gpus(true), result(joulie.CapResultBlocked), false},
-		{"GPUs with control, error", gpus(true), result(joulie.CapResultError), false},
-		{"GPUs without control, no result yet", gpus(false), nil, false},
-		{"GPUs without control, no intent", gpus(false), result(joulie.CapResultNone), false},
-		{"GPUs without control, blocked", gpus(false), result(joulie.CapResultBlocked), false},
-		{"GPUs without control, applied through the HTTP backend", gpus(false), result(joulie.CapResultApplied), true},
+		{"no GPU", joulie.NodeHardwareGPU{}, nil, true, ""},
+		{"GPUs with control, no result yet", gpus(true), nil, true, ""},
+		{"GPUs with control, applied", gpus(true), result(joulie.CapResultApplied), true, ""},
+		{"GPUs with control, no intent", gpus(true), result(joulie.CapResultNone), true, ""},
+		{"GPUs with control, blocked", gpus(true), result(joulie.CapResultBlocked), false, joulie.ReasonGPUCapBlocked},
+		{"GPUs with control, error", gpus(true), result(joulie.CapResultError), false, joulie.ReasonGPUCapFailed},
+		{"GPUs without control, no result yet", gpus(false), nil, false, joulie.ReasonGPUCapNotApplicable},
+		{"GPUs without control, no intent", gpus(false), result(joulie.CapResultNone), false, joulie.ReasonGPUCapNotApplicable},
+		{"GPUs without control, blocked", gpus(false), result(joulie.CapResultBlocked), false, joulie.ReasonGPUCapBlocked},
+		{"GPUs without control, applied through the HTTP backend", gpus(false), result(joulie.CapResultApplied), true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := GPUCapApplies(tc.gpu, tc.last); got != tc.want {
 				t.Fatalf("GPUCapApplies = %v, want %v", got, tc.want)
+			}
+			if got := GPUCapBlockReason(tc.gpu, tc.last); got != tc.reason {
+				t.Fatalf("GPUCapBlockReason = %q, want %q", got, tc.reason)
 			}
 		})
 	}

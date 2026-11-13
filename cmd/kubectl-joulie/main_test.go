@@ -558,3 +558,76 @@ func TestUnknownCapIsNotShownAsZero(t *testing.T) {
 		t.Errorf("json caps %v %v, want none", j.CPUCapPct, j.GPUCapPct)
 	}
 }
+
+// The decision conditions the controller manager writes reach the node
+// screen and -o json: readCluster decodes them through the typed NodeTwin,
+// the Why panel shows each with its reason and message, in the order of
+// pkg/api, and the JSON lists them under decisions. AgentReporting stays in
+// its own fields, and a twin without decisions adds no field.
+func TestNodeDetailShowsWhyTheNodeGotItsState(t *testing.T) {
+	cond := func(typ, status, reason, msg string) map[string]interface{} {
+		return map[string]interface{}{"type": typ, "status": status, "reason": reason, "message": msg, "lastTransitionTime": "2026-10-21T14:00:00Z"}
+	}
+	c := fakeClients(t,
+		[]runtime.Object{node("gpu-0", "96", map[string]string{"nvidia.com/gpu": "4"}), node("cpu-0", "64", nil)},
+		twinObj("gpu-0", "eco", map[string]interface{}{"conditions": []interface{}{
+			cond("GPUEcoCap", "False", "GPUCapBlocked", "the agent reports that the node offers no way to apply the GPU cap"),
+			cond("AgentReporting", "True", "NodeHardwareCurrent", ""),
+			cond("EcoProfile", "True", "NoPerformanceSlot", "other nodes of its hardware family hold the performance slots, so this node runs eco"),
+			cond("CPUEcoCap", "False", "GPUNodeCPUUncapped", "a GPU node's CPU keeps the performance cap in eco"),
+		}}),
+		twinObj("cpu-0", "performance", nil),
+	)
+	snap, err := readCluster(context.Background(), c, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.taken = time.Date(2026, 10, 21, 15, 0, 0, 0, time.UTC)
+	n, ok := findNode(snap, "gpu-0")
+	if !ok {
+		t.Fatal("gpu-0 not read")
+	}
+	out := plain(nodeDetail(snap, n, "ctx", 160, nil))
+	for _, want := range []string{"Why", "ECO", "✓ yes  NoPerformanceSlot  for 1h", "other nodes of its hardware family hold the performance slots",
+		"CPU ECO CAP", "GPUNodeCPUUncapped", "GPU ECO CAP", "· no   GPUCapBlocked"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("node screen lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "NoPerformanceSlot") > strings.Index(out, "GPUNodeCPUUncapped") || strings.Index(out, "GPUNodeCPUUncapped") > strings.Index(out, "GPUCapBlocked") {
+		t.Errorf("decisions out of the pkg/api order:\n%s", out)
+	}
+
+	b, err := json.Marshal(toJSON(snap, "node", []string{"gpu-0"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Nodes []struct {
+			AgentReporting *bool `json:"agentReporting"`
+			Decisions      []struct {
+				Type, Status, Reason, Message string
+				LastTransitionTime            time.Time
+			} `json:"decisions"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Nodes) != 1 || doc.Nodes[0].AgentReporting == nil || !*doc.Nodes[0].AgentReporting {
+		t.Fatalf("node JSON %s, want gpu-0 with agentReporting true", b)
+	}
+	d := doc.Nodes[0].Decisions
+	if len(d) != 3 || d[0].Type != "EcoProfile" || d[0].Status != "True" || d[0].Reason != "NoPerformanceSlot" ||
+		d[2].Reason != "GPUCapBlocked" || d[0].Message == "" || !d[0].LastTransitionTime.Equal(time.Date(2026, 10, 21, 14, 0, 0, 0, time.UTC)) {
+		t.Errorf("decisions %+v, want EcoProfile, CPUEcoCap and GPUEcoCap with reason, message and time, without AgentReporting", d)
+	}
+
+	cpu, _ := findNode(snap, "cpu-0")
+	if out := plain(nodeDetail(snap, cpu, "ctx", 160, nil)); strings.Contains(out, "Why") {
+		t.Errorf("a twin without decisions shows a Why panel:\n%s", out)
+	}
+	if b, _ := json.Marshal(nodeJSON(cpu)); strings.Contains(string(b), "decisions") {
+		t.Errorf("a twin without decisions has the field: %s", b)
+	}
+}
