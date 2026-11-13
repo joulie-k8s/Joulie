@@ -3,31 +3,15 @@ title: "Metrics Reference"
 weight: 60
 ---
 
-Joulie exposes Prometheus metrics from multiple components.
-
-This page covers **controller manager + agent + scheduler extender** metrics.
-Simulator metrics are documented separately in:
-
-- [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}})
-
-For telemetry/control input interfaces (host/http routing), see:
-
-- [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
+Every Prometheus metric the agent, the controller manager and the scheduler extender export, for dashboards and alerts. Simulator metrics are on [Simulator Metrics]({{< relref "/docs/simulator/metrics.md" >}}); the metrics Joulie reads as input are on [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}}).
 
 ## Endpoints by component
 
-- Agent:
-  - path: `/metrics`
-  - default address: `:8080`
-  - env override: `METRICS_ADDR`
-- Controller manager:
-  - path: `/metrics`
-  - default address: `:8081`
-  - env override: `METRICS_ADDR`
-- Scheduler extender:
-  - path: `/metrics`
-  - default address: `:9877`
-  - env override: `METRICS_ADDR`
+| Component | Path | Default address | Override |
+|---|---|---|---|
+| Agent | `/metrics` | `:8080` | `METRICS_ADDR` |
+| Controller manager | `/metrics` | `:8081` | `METRICS_ADDR` |
+| Scheduler extender | `/metrics` | `:9877` | `METRICS_ADDR` |
 
 ## Agent metrics
 
@@ -84,17 +68,15 @@ Written by the agent's [governor control]({{< relref "/docs/architecture/agent.m
 
 ### Cap results and status writes
 
-What the agent reports in the API, exported so an alert needs no `NodeTwin` read and still sees a write the API server refused. The [alerts]({{< relref "/docs/getting-started/07-runbooks.md" >}}) `JoulieCapNotApplied` and `JoulieAgentWritesBlocked` read them.
+What the agent reports in the API, for the [alerts]({{< relref "/docs/getting-started/07-runbooks.md" >}}) `JoulieCapNotApplied` and `JoulieAgentWritesBlocked`.
 
 - `joulie_agent_cap_result{node,component,result}` (gauge)
   - the result of the last CPU or GPU cap, as the agent writes it to `status.controlStatus.<component>.result`
   - `component`: `cpu|gpu`
-  - `result`: `applied|blocked|error|none`; the result in effect is `1`, the others `0`, all four set at every reconcile, also when the status write is skipped because nothing changed
-  - a pool agent removes the series of a node it stops controlling
+  - `result`: `applied|blocked|error|none`; the result in effect is `1`, the others `0`
 - `joulie_agent_status_write_errors_total{node,object}` (counter)
-  - status writes the API server refused, or that failed to reach it; a refused write of the status subresource counts even when the agent's fallback write of the object is accepted, since that write leaves the status as it was
+  - status writes the API server refused, or that failed to reach it
   - `object`: `NodeTwin` (`status.controlStatus`, caps and governors) or `NodeHardware` (its status)
-  - a `NodeTwin` the controller manager has not created yet counts nothing
 
 ### Reliability
 
@@ -155,7 +137,7 @@ Exported by the controller manager. They show whether the measured inputs (see [
   - `joulie_grid_carbon_intensity_signal`: `marginal` or `average`, from `FACILITY_CARBON_INTENSITY_SIGNAL`; compare values of one signal only
   - the default Prometheus spelling of the OpenTelemetry metric `joulie.grid.carbon_intensity` (unit `g/(kW.h)`, grams per kilowatt-hour, attribute `joulie.grid.carbon_intensity.signal`), a cluster metric with no node label
 
-`preset` is `FACILITY_PRESET` (`otel`, `legacy` or `custom`). A facility gauge is absent while its input is unknown, so a stale reading never outlives the poll that lost it. PUE is `(it_power + cooling_power) / it_power`; the overview dashboard's "Twin inputs" row plots it.
+`preset` is `FACILITY_PRESET` (`otel`, `legacy` or `custom`). A facility gauge is absent while its input is unknown. PUE is `(it_power + cooling_power) / it_power`; the overview dashboard's "Twin inputs" row plots it.
 
 ## Twin agent coverage
 
@@ -165,22 +147,19 @@ Exported by the controller manager, set every reconcile from the `AgentReporting
   - managed nodes per condition status and reason
   - `status="true"`, `reason="NodeHardwareCurrent"`: an agent publishes the node's `NodeHardware`
   - `status="false"`, `reason="NoNodeHardware"` or `"NodeHardwareStale"`: no agent has published it, or its last write is more than 15 minutes old; the caps planned there are not enforced
-  - all three series are set on every reconcile, `0` included, so `sum(joulie_twin_nodes_agent_reporting{status="false"}) > 0` works as an alert from the first reconcile on; a node whose `NodeHardware` could not be read in a reconcile is not counted in it
+  - all three series are set on every reconcile, so `sum(joulie_twin_nodes_agent_reporting{status="false"}) > 0` works as an alert
 
-The gauge has no `node` label; the nodes themselves are the `NodeTwin`s whose condition is `False`. The overview dashboard plots the `false` series in its "Agent: Reliability" row.
+No `node` label: the nodes are the `NodeTwin`s whose condition is `False`. The overview dashboard plots the `false` series in its "Agent: Reliability" row.
 
 ## Twin health
 
 Exported by the controller manager, for the [alerts]({{< relref "/docs/getting-started/07-runbooks.md" >}}) `JoulieTwinStale` and `JoulieNodePowerNoData`.
 
 - `joulie_twin_status_updated_timestamp_seconds{node}` (gauge)
-  - Unix time of the `NodeTwin` status the controller manager last wrote for the node (`status.lastUpdated`)
-  - a node planned before any write holds the time of the reconcile that first planned it, so a twin the controller manager never manages to write ages as one it stopped writing; a node that leaves the plan loses its series
-  - `time() - joulie_twin_status_updated_timestamp_seconds` is the age of the twin
+  - Unix time of the node's last `NodeTwin` status write (`status.lastUpdated`); `time() - joulie_twin_status_updated_timestamp_seconds` is the age of the twin
 - `joulie_twin_nodes_power_source{source}` (gauge)
-  - managed nodes per measured power source of the last reconcile, `status.powerMeasurement.source` of their `NodeTwin`
+  - managed nodes per `status.powerMeasurement.source` of the last reconcile, every source set, `0` included
   - `source`: `prometheus` or `http` with a reading; `prometheus-no-data`, `http-error` or `http-no-endpoint` without one; `static` when nothing is measured; `kepler` and `utilization` are reserved and stay `0`
-  - every source is set on every reconcile, `0` included; like the agent coverage gauge it has no `node` label, and the nodes are the `NodeTwin`s with that source
 
 ## Scheduler extender metrics
 
@@ -217,5 +196,4 @@ Exported by the controller manager, for the [alerts]({{< relref "/docs/getting-s
 
 ## Notes
 
-- Metrics are pull-based; values depend on scrape interval.
-- Highest cardinality is usually per-CPU frequency series.
+Metrics are scraped, so values move at the scrape interval; the per-CPU frequency series have the highest cardinality.

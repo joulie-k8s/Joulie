@@ -5,67 +5,41 @@ slug = "core-concepts"
 weight = 1
 +++
 
-Before installing Joulie, understand the control model.
+The parts of Joulie and the control loop that ties them together. Read it before the [Quickstart]({{< relref "/docs/getting-started/01-quickstart.md" >}}).
 
 ## What Joulie is
 
-Joulie is a Kubernetes-native energy management system that uses **per-node digital twins** to optimize data center power consumption.
-
-It continuously ingests telemetry from every node (CPU/GPU power draw via RAPL and NVML/DCGM, read from Prometheus as the OpenTelemetry hardware metrics `hw.energy` and `hw.power` or as [Kepler](https://github.com/sustainable-computing-io/kepler) energy counters, and per-pod resource utilization via cAdvisor) to maintain an up-to-date model of each node's thermal and power state.
-
-These per-node digital twins drive two outcomes:
-
-1. **Energy control**: the controller manager writes desired power state into `NodeTwin` CRs (CPU and GPU power caps and, when enabled, governor presets). The node agent reads `NodeTwin.spec` and enforces them.
-2. **Scheduling decisions**: the scheduler extender reads computed `NodeTwin.status` (power headroom, predicted cooling stress, PSU load) to steer new pods toward nodes with the best energy-efficiency / performance trade-off.
-
-The feedback loop: telemetry → twin update → cap decisions → new pod placement → updated telemetry. This keeps the cluster's power envelope stable and prevents cooling or PSU spikes without sacrificing critical workload performance.
+Joulie is a Kubernetes-native energy management system that keeps a **digital twin** of every managed node. The twin is fed by telemetry: CPU and GPU power read from Prometheus as the OpenTelemetry hardware metrics `hw.energy` and `hw.power` or as [Kepler](https://github.com/sustainable-computing-io/kepler) energy counters, and per-pod utilization from cAdvisor. It drives two outcomes: power caps and governor presets that the node agent enforces (RAPL, NVML), and scheduling, where the scheduler extender steers new pods toward the nodes with the best energy and performance trade-off.
 
 ## Two energy knobs on a node
 
 - **Power caps (throttling).** A hard ceiling on CPU or GPU watts. The biggest savings, but work slows whenever it reaches the ceiling.
-- **Governors.** How eagerly a CPU or GPU raises its clocks: the Linux CPU governor and energy-performance preference, the GPU performance level or clock limit. Gentler than a cap: the hardware still speeds up when there is work, it just leans towards efficiency. Smaller savings, smaller slowdown.
+- **Governors.** How eagerly a CPU or GPU raises its clocks (the Linux CPU governor and energy-performance preference, the GPU performance level or clock limit). Smaller savings, smaller slowdown.
 
-Joulie picks a preset per node from its state: performance nodes stay fast, eco nodes get an efficient governor next to their cap. Governor control is off until you enable it; see [Governor policy]({{< relref "/docs/architecture/policy.md#governor-policy" >}}) and the [experiment]({{< relref "/docs/experiments/governor-exploration.md" >}}) for what each preset saves in the simulator.
+Performance nodes stay fast; eco nodes get an efficient governor next to their cap. Governor control is off until you enable it ([Governor policy]({{< relref "/docs/architecture/policy.md#governor-policy" >}}), [experiment]({{< relref "/docs/experiments/governor-exploration.md" >}})).
 
 ## Why it matters
 
-As AI and scientific workloads scale, clusters face:
-- **Cooling bottlenecks**: GPU-dense racks exceed cooling capacity during training bursts
-- **PSU/PDU overcommit**: peak power draw exceeds rack power budgets
-- **Carbon cost**: flat power profiles waste energy during low-demand periods
-
-Joulie addresses these by making the scheduler and controller manager aware of the physical energy state of the cluster in real time.
+Joulie makes the scheduler and the controller manager aware of the cluster's power and cooling state, against cooling bottlenecks, rack power overcommit and the carbon cost of flat power profiles.
 
 ## Vocabulary
 
-In Kubernetes an *operator* is a whole extension: custom resources plus the controllers that act on them. Joulie uses the word that way:
-
-- **Joulie operator**, or just **Joulie**: the whole system (CRDs, controller manager, agent, scheduler extender, kubectl plugin).
+- **Joulie** (the Joulie operator): the whole system, CRDs, controller manager, agent, scheduler extender and kubectl plugin.
 - **Controller manager** (`joulie-controller-manager`): the single cluster-scoped binary that hosts Joulie's controllers (twin, policy, facility metrics), like `kube-controller-manager` hosts the built-in ones.
-- **Agent** (`joulie-agent`): the per-node DaemonSet, Joulie's counterpart of the kubelet as the primary node agent.
+- **Agent** (`joulie-agent`): the per-node DaemonSet, Joulie's counterpart of the kubelet.
 - **Scheduler extender** (`joulie-scheduler-extender`): the HTTP service configured under `extenders` in the kube-scheduler configuration.
 
-Releases before v0.2.0 called the controller manager "the operator", and its image, Deployment, values key, environment variables and metric names carried that name. v0.2.0 renamed them and kept the old image, values key, variable and metric names as aliases until v0.3.0, which removed them.
+Releases before v0.2.0 called the controller manager "the operator" ([Upgrading]({{< relref "/docs/getting-started/06-upgrading.md" >}})).
 
 ## Main components
 
-- **Controller manager** (`cmd/controller-manager`): cluster-level decision engine and twin controller
-  - runs the digital twin model, computes `NodeTwin.status`
-  - decides desired node power profile/cap assignments
-  - writes desired state into `NodeTwin.spec`
-- **Agent** (`cmd/agent`): node-level actuator
-  - discovers local CPU/GPU hardware and capability
-  - publishes discovered hardware as `NodeHardware`
-  - reads `NodeTwin.spec` for desired state and enforces power controls (RAPL/NVML)
-  - writes control feedback to `NodeTwin.status.controlStatus`
-- **Scheduler extender** (`cmd/scheduler`): placement steering
-  - reads `NodeTwin.status` (30s TTL cache)
-  - rejects eco nodes for performance pods
-  - scores nodes by power headroom and facility stress
-- **kubectl plugin** (`cmd/kubectl-joulie`): cluster observability
-  - `kubectl joulie status` shows per-node energy state, power profiles, and cap settings; `kubectl joulie top` is the live dashboard
-- **Simulator** (`simulator/`): digital-twin execution environment
-  - enables repeatable experiments without requiring real hardware
+| Component | Binary or path | Role |
+|-----------|----------------|------|
+| Controller manager | `cmd/controller-manager` | Runs the twin, computes `NodeTwin.status`, decides each node's profile and caps, writes them to `NodeTwin.spec` |
+| Agent | `cmd/agent` | Discovers the node's hardware into `NodeHardware`, enforces `NodeTwin.spec` (RAPL, NVML), reports back in `NodeTwin.status.controlStatus` |
+| Scheduler extender | `cmd/scheduler` | Reads `NodeTwin.status` (30 s cache), rejects eco nodes for performance pods, scores nodes by power headroom and facility stress |
+| kubectl plugin | `cmd/kubectl-joulie` | `kubectl joulie status` and the live dashboard `kubectl joulie top` |
+| Simulator | `simulator/` | Repeatable experiments without real hardware |
 
 ## Key CRDs
 
@@ -74,36 +48,19 @@ Releases before v0.2.0 called the controller manager "the operator", and its ima
 | `NodeHardware` | Agent | Hardware facts: CPU/GPU model, cap ranges, frequency landmarks |
 | `NodeTwin` | Controller manager | Desired state (spec: power cap %) + twin output (status: headroom, cooling stress, PSU stress, schedulable class, control feedback) |
 
-## Node supply labels
-
-The controller manager sets one label on each managed node:
-
-- `joulie.io/power-profile`: `performance` or `eco`
-
-This label reflects the current power state of the node. Users do not need to interact with it directly for placement. The `joulie.io/workload-class` annotation on pods is the single source of truth for placement intent.
-
-## Workload classes
-
-Joulie uses a single `joulie.io/workload-class` pod annotation to drive placement:
-
-| Class | Scheduler behavior |
-|-------|-------------------|
-| `performance` | Hard-rejected from eco nodes. Must run on full-power nodes. |
-| `standard` | Default. Can run on any node. Adaptive scoring steers toward eco when performance nodes are congested. |
+Pods state their placement intent with the `joulie.io/workload-class` annotation, and the controller manager labels each node `joulie.io/power-profile`: see [Pod Compatibility]({{< relref "/docs/getting-started/03-pod-compatibility.md" >}}).
 
 ## Digital twin
 
-The digital twin is the core predictive engine of Joulie. It is a lightweight O(1) parametric model that predicts the impact of scheduling and power-cap decisions without running a full simulation for each scheduling decision.
+A lightweight O(1) parametric model that predicts the effect of placement and cap decisions. For each managed node it writes three scores to `NodeTwin.status`, which the scheduler extender caches for 30 seconds:
 
-For each managed node, the twin produces three scores written to `NodeTwin.status`:
+| Score | Range | Meaning |
+|-------|-------|---------|
+| Power headroom | 0-100 | Power budget left before thermal or PSU limits; higher is better for new pods |
+| CoolingStress | 0-100 | Predicted share of cooling capacity in use |
+| PSUStress | 0-100 | Predicted share of PDU or rack power capacity in use |
 
-- **Power headroom** (0-100): remaining power budget before hitting thermal or PSU limits. Higher is better for new workload placement.
-- **CoolingStress** (0-100): predicted percentage of cooling capacity in use. High values mean the node is near its thermal limit.
-- **PSUStress** (0-100): predicted percentage of PDU/rack power capacity in use. High values mean the rack is near its power supply limit.
-
-The scheduler extender caches these scores (30-second TTL) and uses them for filter and score decisions.
-
-For the formulas and the inputs they read, see [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}).
+Inputs and how each score is used: [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}).
 
 ## Digital twin feedback loop
 
@@ -117,4 +74,4 @@ telemetry (RAPL/NVML as OTel hw.* metrics, or Kepler; cAdvisor)
 
 ## Next step
 
-Proceed to [Quickstart]({{< relref "/docs/getting-started/01-quickstart.md" >}}), then use Architecture pages for deeper details.
+Install Joulie with the [Quickstart]({{< relref "/docs/getting-started/01-quickstart.md" >}}); the [Architecture]({{< relref "/docs/architecture/_index.md" >}}) pages say how each component works.

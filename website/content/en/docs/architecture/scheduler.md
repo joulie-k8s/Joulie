@@ -3,235 +3,50 @@ title: "Scheduler Extender"
 weight: 40
 ---
 
-Joulie ships a scheduler extender that steers workloads toward appropriate nodes based on power profile, thermal stress, and hardware capabilities.
+Joulie's scheduler extender keeps performance pods off eco nodes and ranks the remaining nodes by power headroom and cooling stress. It is an HTTP extender that kube-scheduler calls; it does not replace kube-scheduler. The chart always deploys it; without it pods get standard Kubernetes scheduling.
 
 ## How a pod gets scheduled (end-to-end)
 
-When a new pod is created in the cluster, the following sequence occurs:
+1. kube-scheduler picks up the new pod and runs its own filters (resources, taints, affinity).
+2. It calls Joulie's `POST /filter`: performance pods lose the eco and draining nodes.
+3. It calls `POST /prioritize`: Joulie scores each remaining node 0 to 100 for this pod and returns it as a 0 to 10 priority.
+4. kube-scheduler adds Joulie's priority, times the extender `weight`, to its own plugin scores and binds the pod to the best node.
 
-```
-1. Pod created (e.g., kubectl apply, Job controller, Deployment rollout)
-       |
-2. kube-scheduler picks up the unscheduled pod
-       |
-3. kube-scheduler runs its default filters (resource fits, taints, affinity)
-       |
-4. kube-scheduler calls Joulie's /filter endpoint
-       |  - Sends: pod spec + candidate node list
-       |  - Joulie reads pod annotation joulie.io/workload-class
-       |  - Performance pods: reject nodes with schedulableClass = eco or draining
-       |  - Standard pods: pass all nodes
-       |  - Returns: filtered node list + rejection reasons
-       |
-5. kube-scheduler calls Joulie's /prioritize endpoint
-       |  - Sends: pod spec + surviving node list
-       |  - Joulie reads NodeTwin CRs (cached, 30s TTL) for power state
-       |  - Joulie reads NodeHardware CRs (cached, 30s TTL) for hardware specs
-       |  - Joulie extracts pod CPU/GPU requests for marginal power estimation
-       |  - Joulie scores each node 0-100 using the scoring formula
-       |  - Returns: list of (node, score / 10) pairs, the API's 0-10 range
-       |
-6. kube-scheduler combines Joulie scores with its own plugin scores
-       |
-7. Pod is bound to the highest-scoring node
-```
-
-The extender participates in steps 4 and 5 only. It does not replace the Kubernetes scheduler; it extends it with energy-aware filter and scoring logic.
+Placement intent comes from one pod annotation, `joulie.io/workload-class`, so users write no scheduling rules. The extender does not migrate or evict pods and never overrides resource fits.
 
 ### What the extender reads
 
-| Source | CRD | What it provides | Cache TTL |
-|--------|-----|------------------|-----------|
-| Digital twin output | `NodeTwin.status` | `schedulableClass`, headroom, cooling stress, power measurement (measured/capped/TDP/trend) | 30s |
-| Hardware discovery | `NodeHardware.status` | CPU cores, CPU max watts, GPU count, GPU max watts, memory | 30s |
-| Pod spec | (from kube-scheduler request) | `joulie.io/workload-class` annotation, container CPU/GPU resource requests | per-request |
+| Source | What it provides | Cache |
+|--------|------------------|-------|
+| `NodeTwin.status` | `schedulableClass`, cooling stress, headroom, `powerMeasurement` (measured, capped, TDP, trend) | `CACHE_TTL` (30 s) |
+| `NodeHardware.status` | CPU cores and max watts, GPU count and max watts | `CACHE_TTL` |
+| the pod | `joulie.io/workload-class`, CPU and GPU requests | per request |
 
-### What the extender does NOT do
+## Filter logic
 
-- It does not execute a full digital twin simulation per scheduling decision.
-- It does not perform live pod migration or eviction.
-- It does not override Kubernetes resource fits; it only participates in the extender filter/prioritize hooks.
-- It does not make admission decisions for already-running pods.
+| Pod | Node | Result |
+|---|---|---|
+| `joulie.io/workload-class: performance` | `schedulableClass` `eco` or `draining` (or label `joulie.io/power-profile: eco` without a twin) | rejected |
+| `performance` | any other node, or no `NodeTwin` | allowed |
+| standard (no annotation, or `standard`) | any node | allowed |
 
-Decisions are lightweight: one cache lookup per node per scheduling attempt.
+## Score logic
 
-## Why a scheduler component is needed
-
-Kubernetes scheduling decisions are made before a pod is running.
-That is the right place to enforce Joulie's power-profile intent, because:
-
-- placing a performance workload on an eco (capped) node defeats energy savings and violates workload SLOs,
-- placing any workload on a node under heavy thermal stress increases the risk of throttling and headroom violations,
-- the `joulie.io/workload-class` annotation is the single source of truth for placement intent; the extender enforces it without requiring users to write complex scheduling rules.
-
-## What Joulie implements: scheduler extender
-
-Joulie implements an **HTTP-based scheduler extender**, not an in-tree plugin.
-
-The extender registers with `kube-scheduler` through a `KubeSchedulerConfiguration` extender block.
-The scheduler calls the extender's HTTP endpoints as part of the normal scheduling cycle:
-
-- **filter** (`POST /filter`): rejects nodes that are incompatible with the pod,
-- **prioritize** (`POST /prioritize`): ranks remaining nodes by suitability.
-
-The extender does not replace the Kubernetes scheduler.
-It runs as a lightweight HTTP service and participates in the existing scheduling cycle.
-
-The scheduler extender is always deployed as part of Joulie. Without it, pods run anywhere and get standard Kubernetes scheduling.
-
-## Filter logic (step 4)
-
-The extender applies one hard rule: **performance pods are rejected from eco and draining nodes**.
-
-A pod is treated as performance if it carries `joulie.io/workload-class: performance`.
-
-For such pods, the extender rejects any node whose `NodeTwin.status` has `schedulableClass` set to `"eco"` or `"draining"`. A label-based fallback also rejects nodes with `joulie.io/power-profile: eco` when no NodeTwin status is present.
-
-Standard pods (the default, or `joulie.io/workload-class: standard`) pass the filter unconditionally. Unknown nodes (no NodeTwin state) are allowed for all pod classes.
-
-## Score logic (step 5)
-
-After filtering, the extender scores remaining nodes. Each node receives a score from 0 to 100, higher is better, and the extender returns it as a priority from 0 to 10, rounded, the range of the extender API. kube-scheduler multiplies that priority by the extender's `weight` and by 10 and adds it to its own plugin scores, each 0 to 100 times the plugin's weight, to pick the winning node.
-
-### Scoring inputs per node
-
-For each candidate node, the extender gathers:
-
-1. **Power measurement** from `NodeTwin.status.powerMeasurement`:
-   - `measuredNodePowerW`: measured node power draw, the CPU packages plus the GPUs by default, which the controller manager reads from Prometheus (OpenTelemetry `hw.*` metrics or Kepler) or an HTTP endpoint, or 0 with `NODE_POWER_SOURCE=static` (see [Digital Twin]({{< relref "/docs/architecture/digital-twin.md#where-the-power-reading-comes-from" >}}))
-   - `nodeCappedPowerW`: the node's current power budget (sum of CPU + GPU caps)
-   - `nodeTdpW`: thermal design power (maximum possible draw)
-   - `powerTrendWPerMin`: rolling derivative of power draw (watts/minute, positive = rising)
-
-2. **Twin-computed scores** from `NodeTwin.status`:
-   - `predictedPowerHeadroomScore`: fallback headroom if no power measurement is available
-   - `predictedCoolingStressScore`: thermal stress (0 = cool, 100 = at cooling limit)
-   - `schedulableClass`: `performance`, `eco`, or `draining`
-
-3. **Pod resource demand** extracted from the pod's container specs:
-   - CPU cores requested (summed across all containers)
-   - GPUs requested, from requests or else limits: every GPU resource, each unit weighted by the share of a GPU it stands for. A whole GPU (`nvidia.com/gpu`, `amd.com/gpu`, `gpu.intel.com/xe`) is 1; a MIG device (`nvidia.com/mig-<profile>`) is its compute slices out of 7, so `1g.12gb` is 1/7; an AMD partition (`amd.com/cpx_nps4`) is 1 over the partitions of its compute mode (SPX 1, DPX 2, TPX 3, QPX 4, CPX 8); a time-sliced or MPS replica (`nvidia.com/gpu.shared`) is the device it shares, since it can drive that device alone. See [Shared and partitioned GPUs]({{< relref "/docs/hardware/gpus.md#shared-and-partitioned-gpus" >}})
-
-4. **Node hardware** from `NodeHardware.status`:
-   - CPU model, total cores, max watts per socket
-   - GPU model, count, max watts per GPU; where `status.gpu.powerDomains` is below the count (the two dies of an MI250X), a counted GPU stands for `maxWatts * powerDomains / count`, the share of the limit that holds it
-
-### Marginal power estimation
-
-Before scoring, the extender estimates how many additional watts this specific pod will add to the node. This makes the score **pod-specific**: the same node scores differently for a lightweight 2-core pod vs. an 8-GPU training pod.
-
-The estimation uses `powerest.EstimateMarginalImpact`:
+The score is pod-specific: the extender estimates the watts this pod would add to each node from its CPU and GPU requests (GPU shares for MIG devices and partitions, see [Shared and partitioned GPUs]({{< relref "/docs/hardware/gpus.md#shared-and-partitioned-gpus" >}})), adds them to the node's measured power, and compares the result with the node's capped budget. Nodes with room left after the pod score high; heavy pods on nearly full nodes and eco nodes, whose budget is lower, score low.
 
 ```
-podMarginalW = CPUUtilCoeff * (podCPUCores / nodeTotalCores) * nodeMaxCPUWatts
-             + GPUUtilCoeff * (podGPUCount / nodeGPUCount)   * nodeMaxGPUWatts
+score = headroomScore*0.7 + (100-coolingStress)*0.15 + trendBonus + profileBonus + pressureRelief
 ```
 
-Coefficients are tunable via environment variables (`MARGINAL_CPU_UTIL_COEFF`, `MARGINAL_GPU_UTIL_COEFF_STANDARD`, `MARGINAL_GPU_UTIL_COEFF_PERFORMANCE`). GPU coefficients differ by workload class because performance workloads typically drive GPUs harder.
+| Term | Range | From |
+|---|---|---|
+| projected headroom x 0.7 | negative to 70 | `powerMeasurement.measuredNodePowerW` plus the pod's watts, against `nodeCappedPowerW` ([Digital Twin]({{< relref "/docs/architecture/digital-twin.md#where-the-power-reading-comes-from" >}})) |
+| (100 - cooling stress) x 0.15 | 0 to 15 | `predictedCoolingStressScore` |
+| trend bonus | -25 to 25 | `powerTrendWPerMin`: falling power scores higher |
+| profile bonus | 0 or 10 | +10 for a standard pod on an eco node |
+| pressure relief | -30 to 0 | a standard pod on a performance node, when performance nodes are congested |
 
-### Scoring formula
-
-```
-projectedPower = measuredPower + podMarginalPower
-headroomScore  = (cappedPower - projectedPower) / cappedPower * 100
-coolingStress  = from NodeTwin.status.predictedCoolingStressScore (0-100)
-clusterTrend   = sum of all per-node powerTrend (W/min)
-trendScale     = 2.0 if |clusterTrend| > 500 else 6.0
-trendBonus     = -clamp(powerTrend / trendScale, -25, 25)
-
-score = headroomScore * 0.7
-      + (100 - coolingStress) * 0.15
-      + trendBonus
-      + profileBonus
-      + pressureRelief
-```
-
-Each component explained:
-
-| Component | Weight | Range | What it does |
-|-----------|--------|-------|--------------|
-| `headroomScore * 0.7` | 70% | can go negative to +70 | Favors nodes with room in their power budget after this pod is placed. Can go negative if the pod would exceed the budget, so the node is penalized, not just zeroed. |
-| `(100 - coolingStress) * 0.15` | 15% | 0 to +15 | Penalizes thermally stressed nodes. At coolingStress=0 (cool), contributes 15 points. At coolingStress=100, contributes 0. |
-| `trendBonus` | ±25 pts | -25 to +25 | Rewards nodes whose power draw is falling (trend < 0), penalizes nodes whose power is rising (trend > 0). Uses adaptive scaling: trendScale=6.0 at steady state (amplifies signal), trendScale=2.0 during cluster-wide bursts (\|clusterTrend\| > 500 W/min). |
-| `profileBonus` | +10 pts | 0 or +10 | Standard pods on eco nodes get +10, steering non-critical work toward energy-saving nodes. |
-| `pressureRelief` | up to -30 pts | -30 to 0 | Standard pods on performance nodes are penalized when performance nodes are congested (see below). |
-
-**Example**: A node with 600W capped power, 300W measured, pod adds 50W, cooling stress 20, power trend flat:
-
-- headroomScore = (600 - 350) / 600 * 100 = 41.7
-- score = 41.7 *0.7 + (100 - 20)* 0.15 + 0 = 29.2 + 12.0 = **41.2**
-
-**Example**: An ideal node (empty, fully uncapped, cool, standard pod on eco):
-
-- headroomScore = 100, coolingStress = 0, trendBonus = 0, profileBonus = 10
-- score = 100 *0.7 + 100* 0.15 + 0 + 10 = 70 + 15 + 10 = **95**
-
-### Projected headroom (the key innovation)
-
-Unlike simple utilization-based scheduling, Joulie computes headroom relative to the node's **capped power budget** (not TDP or max capacity), and it subtracts the **pod's estimated marginal power** before scoring:
-
-```
-projectedPower = measuredPower + podMarginalPower
-headroomScore  = (cappedPower - projectedPower) / cappedPower * 100
-```
-
-This means:
-
-- **Eco nodes** (capped at, say, 60%) have a lower `cappedPower`, so they run out of headroom sooner and are naturally deprioritized for heavy workloads.
-- **GPU-heavy pods** consume more marginal watts, so nodes near their cap are penalized more for GPU pods than CPU-only pods.
-- **headroomScore can go negative**: if the pod would push the node over its cap, the score goes below zero. After the formula is applied and clamped to [0, 100], such nodes get score 0 and are effectively last-choice.
-
-If power measurement data is unavailable (no `powerMeasurement` in NodeTwin status), the extender falls back to the twin-computed `predictedPowerHeadroomScore`.
-
-### Stale twin fallback
-
-If the NodeTwin's `lastUpdated` timestamp is older than 5 minutes (configurable via `TWIN_STALENESS_THRESHOLD`), the node receives a neutral score of 50. This prevents stale data from a controller manager that may have stopped updating from influencing placement. Nodes with no `lastUpdated` timestamp at all are also treated as stale. Nodes with no NodeTwin state at all also receive 50.
-
-### Adaptive performance pressure relief
-
-For standard pods on performance nodes, a pressure penalty is applied:
-
-```
-if workloadClass == "standard" AND schedulableClass == "performance":
-    score -= perfPressure * 0.3
-```
-
-Where `perfPressure` is computed once per scoring batch as the average congestion across all performance nodes:
-
-```
-perfPressure = average(100 - headroom) across all non-stale performance nodes
-```
-
-At full saturation (`perfPressure = 100`), this subtracts up to 30 points from the score on performance nodes. The effect steers standard pods toward eco nodes when performance nodes are congested, preserving performance capacity for performance-class workloads.
-
-When performance nodes are idle (`perfPressure = 0`), there is no penalty and standard pods spread normally.
-
-### Experimental validation
-
-[Experiment 04: Scoring Formula Validation]({{< relref "/docs/experiments/scoring-formula-validation.md" >}}) set out to compare the formula with standard Kubernetes bin-packing on 2,500 nodes; its results do not stand (the page says why), and it is being redone.
-
-### Score clamping
-
-All scores are clamped to `[0, 100]` before being returned to kube-scheduler.
-
-### PUE
-
-The scheduler extender does not weight marginal power by PUE. `NodeTwin.status.estimatedPUE` is derived from the node's predicted cooling stress (1.05 at no stress, 1.40 at full stress), is reserved for future use, and no score reads it. Facility metrics (`ENABLE_FACILITY_METRICS=true` on the controller manager) reach the score through the cooling stress term instead: the twin scales cooling stress with the most local ambient temperature it reads, so a node in a warm zone scores lower for the same power. The measured PUE, `(IT power + cooling power) / IT power`, is logged by the controller manager and can be plotted from `joulie_twin_facility_*`.
-
-## Summary
-
-| Condition | Effect |
-|-----------|--------|
-| Performance pod + eco/draining node | Hard reject (filter) |
-| Standard pod + any node | Allowed (no filter) |
-| Unknown node (no NodeTwin) + any pod | Allowed, neutral score (50) |
-| High headroom, low cooling stress, falling power trend | High score |
-| Low headroom (pod would exceed cap) | Low score (headroomScore goes negative) |
-| Standard pod + eco node | +10 bonus (profile steering) |
-| Standard pod + performance node under pressure | Score penalty up to -30 via pressureRelief |
-| Stale or missing NodeTwin | Neutral score (50) |
-| Heavy pod (high CPU/GPU) on nearly-full node | Low score (marginal power eats headroom) |
-| Light pod on same node | Higher score (less marginal power) |
+The score is clamped to 0 to 100. A node with stale (older than `TWIN_STALENESS_THRESHOLD`) or missing twin data gets a neutral 50. PSU stress and estimated PUE are not part of the score.
 
 ## Environment variables
 
@@ -246,7 +61,7 @@ The scheduler extender does not weight marginal power by PUE. `NodeTwin.status.e
 
 ## Debug endpoint
 
-The extender exposes `GET /debug/scoring` which returns the current scoring state for all nodes as JSON:
+`GET /debug/scoring` returns the current scoring state of every node as JSON, without a scheduling event:
 
 ```json
 {
@@ -273,8 +88,6 @@ The extender exposes `GET /debug/scoring` which returns the current scoring stat
 }
 ```
 
-This endpoint is useful for debugging scoring decisions without needing to trigger an actual scheduling event.
-
 ## How to deploy
 
 The scheduler extender is deployed as part of the Joulie Helm chart.
@@ -296,13 +109,11 @@ extenders:
   ignorable: true
 ```
 
-Setting `ignorable: true` means the scheduler proceeds normally if the extender is temporarily unreachable.
+`ignorable: true` lets the scheduler proceed normally if the extender is temporarily unreachable.
 
 ### Testing
 
-The extender exposes a `/healthz` endpoint.
-
-To verify filter decisions without a running scheduler:
+The extender exposes `/healthz`. To check filter decisions without a running scheduler:
 
 ```bash
 curl -s -X POST \
@@ -316,3 +127,5 @@ curl -s -X POST \
 1. [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}})
 2. [Pod Compatibility]({{< relref "/docs/getting-started/03-pod-compatibility.md" >}})
 3. [Joulie Controller Manager]({{< relref "/docs/architecture/controller-manager.md" >}})
+
+The full scoring formula, the marginal power model and its default coefficients, the fallbacks and worked examples: [Scheduler scoring](https://github.com/joulie-k8s/Joulie/wiki/Scheduler-Scoring) on the wiki.

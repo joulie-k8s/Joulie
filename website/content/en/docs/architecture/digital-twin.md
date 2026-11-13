@@ -3,231 +3,63 @@ title: "Digital Twin"
 weight: 35
 ---
 
-The digital twin is Joulie's core predictive engine. It is a lightweight O(1) parametric model that predicts the impact of scheduling and power-cap decisions on node thermal and power state, without running a full simulation for each scheduling decision.
+The digital twin turns each node's measured power and hardware limits into a few scores the scheduler and the policy use. It is a closed-form model in the controller manager (`pkg/controller/twin`), computed every reconcile, and its output is `NodeTwin.status`.
 
 ## What the digital twin computes
 
-For each managed node, the twin produces three scores stored in `NodeTwin.status`:
+| Field in `NodeTwin.status` | Meaning | Range | Read by |
+|---|---|---|---|
+| `predictedPowerHeadroomScore` | share of the node's capped power budget still unused | up to 100, negative when over budget | scheduler (fallback) |
+| `predictedCoolingStressScore` | measured power over node TDP, scaled up in warm ambient air | 0 to 100 | scheduler |
+| `predictedPsuStressScore` | rack (or cluster) power over a 50 kW reference capacity | 0 to 100 | nobody yet |
+| `estimatedPUE` | cooling stress restated on a PUE scale | 1.05 to 1.40 | nobody yet |
+| `schedulableClass` | `performance`, `eco` or `draining` | | scheduler, controller manager |
+| `powerMeasurement` | measured power, TDP, capped budget and trend, per node | watts | scheduler |
+| `conditions` | `AgentReporting`: whether an agent enforces the caps | | the `Agent` column of `kubectl get nodetwins` |
 
-| Signal | Range | Meaning |
-|--------|-------|---------|
-| **Power headroom** | up to 100, can go negative | Fraction of the node's capped power budget still unused. Higher is better for new workload placement. Negative means the node already draws more than its budget. |
-| **CoolingStress** | 0-100 | Measured node power as a fraction of node TDP, scaled by an ambient temperature multiplier. High values indicate the node is near its thermal limit. |
-| **PSUStress** | 0-100 | Rack power draw (or cluster power draw when no rack is known) as a fraction of a reference rack capacity. Computed and published, but not read by the scheduler today. |
+Every power score starts from the measured node power `powerMeasurement.measuredNodePowerW`, not from the caps.
 
-The twin also computes:
-
-- **SchedulableClass**: `performance`, `eco`, or `draining` (transition state). The scheduler extender uses this to filter and score nodes.
-- **EstimatedPUE**: derived from cooling stress, between 1.05 and 1.40. Published for observability; not read by the scheduler today.
-- **PowerMeasurement**: a block of measured and derived power values consumed directly by the scheduler for projected headroom scoring.
-
-Every power-derived score starts from one number: `measuredNodePowerW`. The twin is not a cap-based estimator. It reads what the node is drawing and compares it against budgets it derives from hardware.
-
-### PowerMeasurement output
-
-The `powerMeasurement` block in `NodeTwin.status` provides the scheduler with the real-time power data it needs for projected headroom scoring:
-
-| Field | Unit | Description |
-|-------|------|-------------|
-| `source` | string | Where the power reading came from (see below) |
-| `measuredNodePowerW` | watts | Current power of the CPU packages plus the GPUs (`NODE_POWER_SCOPE=components`, the default) or of the whole host (`NODE_POWER_SCOPE=host`) |
-| `cpuCappedPowerW` | watts | CPU power budget: CPU TDP x cap percentage, clamped up to the bottom of the CPU cap range (min watts per socket x sockets), as the agent clamps the cap it applies |
-| `gpuCappedPowerW` | watts | GPU power budget (GPU TDP x cap percentage, or the GPU TDP where the cap does not apply) |
-| `nodeCappedPowerW` | watts | Total node power budget (CPU + GPU capped power) |
-| `cpuTdpW` | watts | CPU thermal design power (max watts per socket x sockets) |
-| `gpuTdpW` | watts | GPU thermal design power (max watts per GPU x GPU count, 0 when no GPU is present) |
-| `nodeTdpW` | watts | Total node TDP (CPU + GPU) |
-| `powerTrendWPerMin` | watts/min | Rolling derivative of node power draw over a 5 minute window. Positive = rising, negative = falling. |
-
-The scheduler uses `measuredNodePowerW` + pod marginal power to compute projected headroom relative to `nodeCappedPowerW`. The `powerTrendWPerMin` feeds the trend bonus, capped at 25 points in either direction. See [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}}) for details.
+```bash
+kubectl get nodetwin <node> -o jsonpath='{.status.powerMeasurement}'
+```
 
 ## Where the power reading comes from
 
-The controller manager resolves `measuredNodePowerW` before calling the twin. `NODE_POWER_SOURCE` selects the source:
+`NODE_POWER_SOURCE` on the controller manager selects it, and `powerMeasurement.source` says which one answered:
 
-| `NODE_POWER_SOURCE` | Behaviour | `source` written |
-|---------------------|-----------|------------------|
-| `prometheus` (chart default) | Runs one grouped query per reconcile against `NODE_POWER_PROMETHEUS_ADDRESS` (default `PROMETHEUS_ADDRESS`) and reads every node from the answer. The default preset `otel` reads the OpenTelemetry metrics `hw.energy` (as a rate) and `hw.power` of the CPU packages and GPUs, keyed by `k8s.node.name`; `NODE_POWER_PRESET` selects Kepler or a custom query instead. See [Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}}). | `prometheus`, or `prometheus-no-data` when there is no address, the query fails, or the answer has no positive reading for the node |
-| `http` | GETs `NODE_POWER_HTTP_ENDPOINT` (with `{node}` substituted) and reads one OTLP JSON document with the same rules, such as the simulator's `/otlp/telemetry/{node}`. The legacy `packagePowerWatts` JSON is read until v0.4.0: its power is the first positive of `packagePowerWatts` and `cpu.packagePowerWatts`, whatever `NODE_POWER_SCOPE` says, and 0 W when neither is positive. | `http`; `http-error` when the request fails or the answer is unreadable or over 8 MiB; `http-no-endpoint` |
-| `static` (code default) | Returns 0 watts. | `static` |
+| `NODE_POWER_SOURCE` | Reads | `source` on failure |
+|---|---|---|
+| `prometheus` (chart default) | one query per reconcile: `hw.energy` and `hw.power` of the CPU packages and GPUs ([Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}})), or Kepler with `NODE_POWER_PRESET` | `prometheus-no-data` |
+| `http` | `NODE_POWER_HTTP_ENDPOINT`, one OTLP JSON document per node (the simulator) | `http-error`, `http-no-endpoint` |
+| `static` (code default) | nothing: 0 W, so every node reads headroom 100 and stress 0 | |
 
-`NODE_POWER_SCOPE` sets what the reading covers. The default, `components`, is the CPU packages plus the GPUs: the same boundary as `nodeTdpW` (CPU TDP plus GPU TDP), so headroom and cooling stress compare like with like. `host` reads the whole host's wall power instead, which includes memory, fans and the platform and exceeds `nodeTdpW` under load.
-
-Without the chart, the code default is `static`, and an unconfigured controller manager reports 0 watts for every node: headroom reads 100 and cooling stress reads 0 everywhere. Configure a source before treating the scores as a ranking signal.
-
-`kepler` and `utilization` are reserved source values; no component writes them yet. When a reading exceeds twice the node's TDP the controller manager logs a one-shot warning, because that is the signature of a cumulative joules counter being read as watts.
+`NODE_POWER_SCOPE=components` (default) covers the CPU packages and GPUs, the same boundary as the TDP; `host` reads the whole host. Configure a source before treating the scores as a ranking signal.
 
 ## Node TDP and the capped budget
 
-Both power formulas need the node's hardware limits, derived from `NodeHardware.status`:
+The twin derives two budgets from `NodeHardware`: the node TDP (CPU max watts per socket times sockets, plus GPU max watts times GPU power domains) and the capped budget (the same with the caps of `NodeTwin.spec` applied). A GPU cap counts only where it applies (not when the agent reports it `blocked` or `error`), and the CPU budget never goes below the bottom of the CPU cap range. Both appear in `powerMeasurement` as `nodeTdpW` and `nodeCappedPowerW`.
 
-```
-cpuTdp  = cpuMaxWattsPerSocket * sockets
-gpuTdp  = gpuMaxWatts * gpuPowerDomains   (0 when no GPU is present)
-nodeTdp = cpuTdp + gpuTdp
+## Cooling stress
 
-cpuCappedPower  = cpuTdp * cpuCapPct/100
-gpuCappedPower  = gpuTdp * gpuCapPct/100   (gpuTdp where the GPU cap does not apply)
-nodeCappedPower = cpuCappedPower + gpuCappedPower
-```
+Measured power over node TDP, times an ambient multiplier that is 1 at 20 °C or with no reading and rises to 2 at 45 °C. Facility metrics are off by default (`ENABLE_FACILITY_METRICS=false`), so the multiplier is usually 1; with them on, the twin uses the node's inlet temperature, then its cooling zone's, then the outdoor one ([Facility metrics]({{< relref "/docs/getting-started/05-configuration-reference.md#facility-metrics" >}})).
 
-`cpuCapPct` and `gpuCapPct` come from the resolved `NodeTwin.spec` intent, defaulting to 100 when unset or non-positive.
+## PSU stress and estimated PUE
 
-`gpuPowerDomains` is the number of GPUs that hold a power limit of their own, `status.gpu.powerDomains`, and `status.gpu.count` when the agent publishes none, which it does whenever every counted GPU holds its own. On a two-die AMD package such as an MI250X both dies are counted GPUs, and only the primary holds a limit, which bounds the package: four MI250X are eight GPUs, four power domains of 560 W and a `gpuTdp` of 2240 W. The planned node power the rack PSU estimate adds up counts the GPU cap the same way.
-
-The GPU cap counts only where it applies. It does not when the agent's last GPU cap result, `status.controlStatus.gpu.result`, is `blocked` or `error`, or when `NodeHardware` reports GPUs without control (`status.gpu.controlAvailable` false: Intel GPUs without a default limit in sysfs, NVIDIA boards whose power limits read `[N/A]`) and that result is not `applied`; an `applied` result counts, since the simulator's HTTP backend caps GPUs the agent cannot list. The controller manager reads the result and never writes it. `effectiveCapState.gpuPct` keeps the planned percentage.
-
-When the socket count is unknown but a per-socket maximum is known, the twin assumes a single socket. A zero socket count would multiply the per-socket maximum down to zero, and a zero budget reads as unlimited headroom further down, so a busy node would look like the emptiest one in the cluster. Assuming one socket underestimates the budget on a multi-socket machine, which is the safe direction: the node looks fuller than it is rather than infinitely free.
-
-### Reference node used in the examples below
-
-A node with two AMD EPYC 9654 sockets (360 W per socket at the top of the cap range, 320 W at the bottom, the catalog's cTDP low end) and four NVIDIA H100 NVL GPUs (400 W each), running eco at a 60% cap on both CPU and GPU:
-
-- `cpuTdpW` = 360 * 2 = 720 W
-- `gpuTdpW` = 400 * 4 = 1600 W
-- `nodeTdpW` = 2320 W
-- `cpuCappedPowerW` = max(720 * 0.6, 320 * 2) = max(432, 640) = 640 W: the agent cannot cap the CPU below its range
-- `gpuCappedPowerW` = 1600 * 0.6 = 960 W
-- `nodeCappedPowerW` = 1600 W
-
-## CoolingStress formula
-
-CoolingStress is a **per-node** metric. It answers: "how close is this node to its cooling limit?"
-
-```
-tempMultiplier = 1 / max(0.5, 1 - (ambientTempC - 20) * 0.02)
-coolingStress  = clamp((measuredPower / nodeTdp) * tempMultiplier * 100, 0, 100)
-```
-
-Stress is normalized against **uncapped TDP**, not against the capped budget, because the cooling system is sized for the hardware that is installed, not for the cap currently applied to it. Capping a node lowers its measured power and so lowers its cooling stress, which is the intended behaviour.
-
-| Term | Rationale |
-|------|-----------|
-| `measuredPower / nodeTdp` | Fraction of the node's installed thermal capacity actually in use. A node drawing its full TDP scores 100 at 20C ambient. |
-| `(ambientTempC - 20) * 0.02` | Each degree above a 20C baseline shrinks the denominator by 0.02, so warm air makes the same watts cost more cooling effort. Below 20C the denominator grows and the multiplier drops below 1. |
-| `max(0.5, ...)` | Floors the denominator, capping the multiplier at 2.0. The cap is reached at 45C ambient and holds for anything hotter. |
-
-If `nodeTdp` is 0 (no hardware information) the score is 0: the twin emits no stress signal rather than a fabricated one. The ambient temperature is the most local one the facility inputs read: the node's inlet, then its cooling zone's, then the outdoor ambient (see [Facility metrics]({{< relref "/docs/getting-started/05-configuration-reference.md#facility-metrics" >}})). Any reading counts, 0C and below included. With no reading the ambient is **unknown** and the multiplier is 1.0. Facility metrics are off by default (`ENABLE_FACILITY_METRICS=false`), so an unknown ambient is the common case.
-
-The multiplier at a few ambient temperatures:
-
-| Ambient | Multiplier |
-|---------|------------|
-| unknown (no reading) | 1.000 |
-| 15C | 0.909 |
-| 20C | 1.000 |
-| 25C | 1.111 |
-| 30C | 1.250 |
-| 40C | 1.667 |
-| 45C and above | 2.000 |
-
-**Example**: the reference node drawing a measured 1160 W at 25C ambient:
-
-- `measuredPower / nodeTdp` = 1160 / 2320 = 0.5
-- `tempMultiplier` = 1 / max(0.5, 1 - (25 - 20) * 0.02) = 1 / 0.9 = 1.111
-- `coolingStress` = 0.5 * 1.111 * 100 = **55.6**
-
-The same node with an unknown ambient temperature scores 0.5 * 1.0 * 100 = **50.0**.
-
-### Why this model
-
-It is an algebraic proxy. It avoids CFD or thermal RC simulation and runs in O(1) per node. It is deliberately conservative (it overestimates stress relative to real cooling capacity) because its job is to provide a ranking signal for the scheduler, not an exact thermal prediction.
-
-## Power headroom
-
-Power headroom is the fraction of the node's capped power budget that is still unused:
-
-```
-headroom = min(100, (nodeCappedPower - measuredPower) / nodeCappedPower * 100)
-```
-
-It is clamped at 100 at the top but **not** at the bottom: a node drawing more than its budget scores negative, which ranks it below an idle node instead of tying with one. If `nodeCappedPower` is 0 (unknown hardware) the score is 100, a neutral value that avoids penalizing nodes the twin knows nothing about.
-
-**Example**: the reference node (1600 W capped budget) drawing a measured 1160 W:
-
-- `headroom` = (1600 - 1160) / 1600 * 100 = **27.5**
-
-**Example**: the same node drawing 1800 W, over its eco budget:
-
-- `headroom` = (1600 - 1800) / 1600 * 100 = **-12.5**
-
-The scheduler prefers its own projected headroom, computed from `powerMeasurement` plus the candidate pod's marginal watts, and falls back to this `predictedPowerHeadroomScore` only for a node with no `powerMeasurement` block.
-
-## PSUStress formula
-
-PSUStress answers: "how close is this rack to its power supply limit?"
-
-```
-rackPower = rackTotalPowerW, or clusterTotalPowerW when no rack total is known
-psuStress = clamp(rackPower / 50000 * 100, 0, 100)
-```
-
-| Term | Rationale |
-|------|-----------|
-| `rackTotalPowerW` | Sum of estimated power for every node carrying the same `joulie.io/rack` label. Set only when rack topology is available. |
-| `clusterTotalPowerW` | Fallback: total cluster IT power from the facility metrics poller. Used when no rack total is known. |
-| `50000 W` (50 kW) | Reference rack capacity, a shared constant. In a real deployment this would come from per-rack facility data. |
-
-When neither power figure is available the score is 0. Both come from the facility metrics poller, which is disabled by default, so PSU stress is 0 on a default install.
-
-PSUStress is per-rack when rack topology is available and cluster-wide otherwise. In the cluster-wide case every node reports the same score, which is intentional: a PDU brownout affects every node behind it, not just the one drawing the most power.
-
-The scheduler does not read this score today. It is published for observability and reserved for rack-topology-aware placement.
-
-**Example**: a rack drawing 30 kW:
-
-- `psuStress` = 30000 / 50000 * 100 = **60**
-
-## Estimated PUE
-
-```
-estimatedPUE = 1.05 + (coolingStress / 100) * 0.35
-```
-
-A node at zero cooling stress reports 1.05 (best-case datacenter overhead) and one at full stress reports 1.40 (stressed cooling, high overhead). It is a restatement of cooling stress on a PUE scale, not an independent measurement, and the scheduler does not read it.
-
-**Example**: the reference node at cooling stress 55.6 reports 1.05 + 0.556 * 0.35 = **1.24**.
+PSU stress is per rack when nodes carry `joulie.io/rack` and cluster-wide otherwise; it is 0 on a default install. Estimated PUE is 1.05 plus 0.35 times cooling stress over 100. Neither enters the scheduler's score.
 
 ## How it feeds the scheduler
 
-The twin controller runs in the controller manager on each reconcile tick (~1 minute) and writes `NodeTwin.status` per managed node. The scheduler extender caches these `NodeTwin` CRs with a 30-second TTL and uses them in its filter and score logic:
-
-```
-twin controller (controller manager)
-  → writes NodeTwin.status
-    → scheduler extender cache (30s TTL)
-      → filter: rejects eco and draining nodes for performance pods
-      → score: headroomScore*0.7 + (100-coolingStress)*0.15 + trendBonus + profileBonus + pressureRelief
-```
-
-Of the twin's outputs, the scheduler reads `schedulableClass`, `predictedCoolingStressScore`, the whole `powerMeasurement` block, and `predictedPowerHeadroomScore` as a fallback. `predictedPsuStressScore` and `estimatedPUE` are not part of the score.
-
-This keeps scheduling decisions lightweight (one cache lookup per node per scheduling attempt) while reflecting the latest thermal and power state of the cluster.
+The scheduler extender caches `NodeTwin` (30 s) and uses `schedulableClass` to filter and `powerMeasurement` plus cooling stress to score ([Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}})).
 
 ## How it feeds the controller manager
 
-The twin also drives controller manager decisions:
-
-- **Transition guard**: when a node is transitioning from performance to eco, the twin sets `schedulableClass` to `draining` until all performance pods have completed or been drained.
-
-## Governors
-
-The twin reads no governor field: a governor moves the measured power, which the twin reads through `measuredNodePowerW`. The governor fields, and which node gets which preset, are under [Governor policy]({{< relref "/docs/architecture/policy.md#governor-policy" >}}).
-
-## Implementation
-
-The twin is implemented in `pkg/controller/twin/twin.go`. Key types and functions:
-
-- `Input`: everything needed to compute twin state for one node (hardware, profile, cap percentages, measured power, power trend, facility and topology signals).
-- `Output`: the computed `NodeTwin.status` fields.
-- `Compute(Input) Output`: the main computation function. Derives TDP and capped budgets, then calls the helpers below.
-- `computePowerHeadroom`, `computeCoolingStress`, `computePSUStress`: the three score formulas.
-
-There is no cooling model interface and no alternative cooling implementation. Cooling stress is the single closed-form expression above; replacing it with a higher-fidelity thermal model means changing `computeCoolingStress`.
+`schedulableClass` is `draining` while a node moving from performance to eco still runs performance pods. The twin reads no governor field ([Governor policy]({{< relref "/docs/architecture/policy.md#governor-policy" >}})).
 
 ## What to read next
 
 1. [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}})
 2. [Joulie Controller Manager]({{< relref "/docs/architecture/controller-manager.md" >}})
 3. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}})
-4. [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}): reference power profiles used by `NodeHardware` and the twin's TDP derivation
+4. [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}): the power profiles behind the TDP
+
+Formulas, worked examples and the field-by-field `powerMeasurement` reference: [Digital twin model](https://github.com/joulie-k8s/Joulie/wiki/Digital-Twin-Model) and [Cooling and PUE](https://github.com/joulie-k8s/Joulie/wiki/Cooling-and-PUE) on the wiki.

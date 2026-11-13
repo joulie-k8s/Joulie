@@ -131,14 +131,14 @@ helm upgrade --install joulie-sim charts/joulie-simulator -n joulie-sim --create
 curl -s localhost:18080/debug/emulate | jq '.nodes[] | {name, host}'   # after a port-forward
 ```
 
-The chart then runs one replica as root with strategy `Recreate`, on the node labelled `joulie.io/hwemu-host=true`, and keeps the node trees under `emulate.root` on that host. Restarting the simulator resumes the trees and keeps every exported counter increasing. The simulator also runs from a workstation with a kubeconfig. See `/docs/simulator/simulator/#emulate-mode` for both, `/docs/simulator/metrics/` for the exported names, and the configuration reference for every variable.
+The chart then runs one replica as root with strategy `Recreate`, on the node labelled `joulie.io/hwemu-host=true`, and keeps the node trees under `emulate.root` on that host. Restarting the simulator resumes the trees and keeps every exported counter increasing. The simulator also runs from a workstation with a kubeconfig. See `/docs/simulator/installation/#emulate-mode-in-a-cluster` and `/docs/simulator/installation/#emulate-mode-from-a-workstation`, `/docs/simulator/metrics/` for the exported names, and the configuration reference for every variable.
 
 ## Use with Joulie
 
 See:
 
 - `experiments/kwok-cluster/README.md`
-- `https://joulie-k8s.github.io/Joulie/docs/simulator/simulator/`
+- `https://joulie-k8s.github.io/Joulie/main/docs/simulator/simulator/`
 
 ## Node Discovery and Class Mapping
 

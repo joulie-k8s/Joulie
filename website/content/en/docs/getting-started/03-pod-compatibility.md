@@ -5,13 +5,15 @@ slug = "workload-compatibility"
 weight = 3
 +++
 
-Joulie uses a single pod annotation to express workload placement intent:
+How to tell Joulie where a pod may run. A single pod annotation expresses its placement intent:
 
 ```
 joulie.io/workload-class: performance | standard
 ```
 
 The scheduler extender reads this annotation and steers pods accordingly. No node affinity rules are needed.
+
+The controller manager labels each managed node `joulie.io/power-profile` (`performance` or `eco`) with its current power state. You do not need to use that label for placement: the annotation is the single source of truth for placement intent.
 
 ## Workload classes
 
