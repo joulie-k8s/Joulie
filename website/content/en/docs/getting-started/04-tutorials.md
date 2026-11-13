@@ -5,9 +5,7 @@ slug = "tutorials"
 weight = 2
 +++
 
-Six tutorials take you from a first install to the main features. Each one is a directory under [`examples/`](https://github.com/joulie-k8s/Joulie/tree/main/examples) with a README to follow and the files it applies.
-
-The first three run on the [simulated cluster]({{< relref "/docs/simulator/simulated-cluster.md" >}}): the real controller manager, agent and scheduler extender, built from your checkout, managing ten emulated bare-metal nodes in one Docker container. You need no hardware and no cluster of your own, so start there even if you plan to install Joulie on a real cluster next.
+Six tutorials take you from a first install to the main features, each a directory under [`examples/`](https://github.com/joulie-k8s/Joulie/tree/main/examples) with a README to follow. The first three run on the [simulated cluster]({{< relref "/docs/simulator/simulated-cluster.md" >}}), the real Joulie components managing ten emulated bare-metal nodes in one Docker container, so start there even before a real install.
 
 | Tutorial | What you will see | Needs |
 |---|---|---|
@@ -18,4 +16,4 @@ The first three run on the [simulated cluster]({{< relref "/docs/simulator/simul
 | [05 Governor presets](https://github.com/joulie-k8s/Joulie/tree/main/examples/05-governor-presets) | CPU and GPU governor presets, a second energy dimension next to the caps, on six hardware families | Docker, Go, `kubectl`, `helm`, `jq` |
 | [06 Cooling and PUE](https://github.com/joulie-k8s/Joulie/tree/main/examples/06-cooling-pue) | Cooling models and the PUE they give for a power trace, with a Modelica FMU | Python, Docker |
 
-Then install Joulie on your cluster with the [Quickstart]({{< relref "/docs/getting-started/01-quickstart.md" >}}). The [experiments]({{< relref "/docs/experiments/_index.md" >}}) measure what Joulie saves at scale.
+Then install Joulie on your cluster with the [Quickstart]({{< relref "/docs/getting-started/01-quickstart.md" >}}). The [experiments]({{< relref "/docs/experiments/_index.md" >}}) run Joulie at scale on the simulator.

@@ -13,3 +13,5 @@ Recommended reading order:
 1. [CPU Support]({{< relref "/docs/hardware/cpus.md" >}})
 2. [GPU Support]({{< relref "/docs/hardware/gpus.md" >}})
 3. [Hardware Modeling and Physical Power Model]({{< relref "/docs/hardware/hardware-modeling.md" >}})
+
+Every modelled value, its official source and the values that have none are on the [Joulie wiki](https://github.com/joulie-k8s/Joulie/wiki), starting with the [Hardware catalog](https://github.com/joulie-k8s/Joulie/wiki/Hardware-Catalog).

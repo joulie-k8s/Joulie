@@ -4,113 +4,56 @@ linkTitle: "Architecture"
 weight: 20
 ---
 
-This section explains how Joulie's per-node digital twins turn telemetry into enforcement decisions, covering every component from the node agent through the scheduler extender.
-
-If you are new, first read:
-
-1. [Core Concepts]({{< relref "/docs/getting-started/00-core-concepts.md" >}})
-2. [Quickstart]({{< relref "/docs/getting-started/01-quickstart.md" >}})
+How Joulie's components turn node telemetry into power caps and placement decisions. New to Joulie? Read [Core Concepts]({{< relref "/docs/getting-started/00-core-concepts.md" >}}) and the [Quickstart]({{< relref "/docs/getting-started/01-quickstart.md" >}}) first.
 
 ## Core story
 
-1. **Agent** discovers node hardware (CPU/GPU models, cap ranges, frequency landmarks) and publishes a single `NodeHardware` CR per node.
-2. **Twin controller** (in the controller manager) ingests `NodeHardware` + Prometheus telemetry, runs the digital twin model, and writes `NodeTwin.status` per node (headroom, cooling stress, PSU stress).
-3. **Policy controller** (in the controller manager) reads `NodeTwin.status` + demand signals, runs a policy algorithm, writes `NodeTwin.spec` and node supply labels (`joulie.io/power-profile`). Transition state is tracked internally via `NodeTwin.status.schedulableClass`.
-4. **Agent** reads `NodeTwin.spec` and enforces power caps via RAPL (CPU) and NVML (GPU). Writes control feedback to `NodeTwin.status.controlStatus`.
-5. **Scheduler extender** reads `NodeTwin.status` and filters/scores nodes at pod scheduling time based on power profile, facility stress, and workload class.
-6. Telemetry and status feed the next reconcile step, closing the loop.
+1. The **agent** discovers each node's hardware and publishes it as a `NodeHardware` object.
+2. The **controller manager** reads `NodeHardware` and measured power from Prometheus ([Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}})), runs the digital twin, and writes `NodeTwin.status`: headroom, cooling stress, PSU stress.
+3. Its policy plans which nodes run `performance` or `eco`, and writes `NodeTwin.spec` and the `joulie.io/power-profile` node label.
+4. The agent enforces `NodeTwin.spec` through RAPL (CPU) and NVML or sysfs (GPU), and reports the result in `NodeTwin.status.controlStatus`.
+5. The **scheduler extender** reads `NodeTwin.status` to filter and score nodes for each new pod. The next reconcile reads the new telemetry, closing the loop.
 
 <img src='{{< relURL "images/joulie-arch.png" >}}' alt="Joulie architecture overview">
+
+## Components
+
+| Component | Role | Reads | Writes |
+|---|---|---|---|
+| Agent | node-side discovery and enforcement | `NodeTwin.spec`, host RAPL, cpufreq and GPU interfaces (or the simulator over HTTP) | `NodeHardware`, `NodeTwin.status.controlStatus`, caps and governors on the node |
+| Controller manager | twin and policy: what each node should be | nodes, pods, `NodeHardware`, Prometheus | `NodeTwin.spec`, `NodeTwin.status`, `joulie.io/power-profile` label |
+| Scheduler extender | filter and score nodes for a pod | `NodeTwin`, `NodeHardware`, the pod | nothing (read-only) |
+| `kubectl joulie` plugin | the cluster's energy state in the terminal ([commands]({{< relref "/docs/getting-started/05-configuration-reference.md#kubectl-plugin" >}})) | `NodeTwin`, `NodeHardware` | nothing |
 
 ## Key CRDs
 
 | CRD | Owner | Purpose |
 |-----|-------|---------|
-| `NodeHardware` | Agent | Hardware facts: CPU/GPU model, cap ranges, frequency landmarks |
-| `NodeTwin` | Controller manager | Desired state (spec: power cap %) + twin output (status: headroom, cooling stress, PSU stress, control feedback) |
+| `NodeHardware` | Agent | Hardware facts: CPU/GPU model, cap ranges, frequency landmarks, governors |
+| `NodeTwin` | Controller manager and agent | Desired state (`spec`: profile, caps, governor presets) and twin output (`status`: headroom, stress scores, control feedback) |
 
 ### Who writes what
 
-`NodeTwin` is written by two components, so ownership is defined per field. Every write carries a field manager name (`joulie-controller-manager`, `joulie-agent`), so `kubectl get nodetwin <node> -o yaml --show-managed-fields` shows the owner of each field, and contract tests assert that no writer touches another owner's fields.
+| Object and field | Writer |
+|---|---|
+| `NodeHardware` (all of it) | Agent |
+| `NodeTwin.spec` | Controller manager (policy) |
+| `NodeTwin.status.controlStatus` | Agent |
+| every other `NodeTwin.status` field, `status.conditions` included | Controller manager (twin) |
 
-| Object | Field | Owner | Meaning |
-|--------|-------|-------|---------|
-| `NodeHardware` | `spec.nodeName` | Agent | which node this describes |
-| `NodeHardware` | `status.*` | Agent | discovered hardware facts |
-| `NodeHardware` | `status.cpu.governor`, `status.gpu.governor` | Agent | governor state read without writing, the presets the node accepts, and the baseline the agent restores |
-| `NodeHardware` | `status.cpu.landmarks` | Agent | minimum, nominal and maximum boost frequency from cpufreq |
-| `NodeHardware` | `status.gpu.powerDomains` | Agent | the GPUs that hold a power limit of their own, published only when fewer than `status.gpu.count`; readers use the count when it is absent |
-| `NodeTwin` | `spec.*` | Controller manager (policy) | desired profile, caps, policy name, draining |
-| `NodeTwin` | `spec.cpu.governor`, `spec.gpu.governor` | Controller manager (policy) | governor presets; absent means the agent leaves the governor as it is |
-| `NodeTwin` | `status.controlStatus.*` | Agent | what was applied on the node, per component; the twin reads `gpu.result` to count only a GPU cap that applied |
-| `NodeTwin` | `status.controlStatus.cpuGovernor`, `status.controlStatus.gpuGovernor` | Agent | outcome of the last governor write, with the native setting in `applied` |
-| `NodeTwin` | `status.conditions` | Controller manager (twin) | `AgentReporting`: whether an agent publishes the node's `NodeHardware`, so whether anything enforces the caps in `spec` |
-| `NodeTwin` | every other `status` field | Controller manager (twin) | the twin's computed state: measured power, headroom, stress scores, PUE |
-
-Rules that follow from the table:
-
-- The controller manager never writes `status.controlStatus`, and the agent never writes anything outside it. Both are patch-shaped so a violation is visible in the payload, not only in the result.
-- Both components derive the object name from the node name with the same function (`pkg/api.ObjectNameForNode`), so a node whose name is not a valid object name still maps to one object.
-- Writers skip a write when nothing changed. A write bumps `resourceVersion` and wakes every watcher, so idle nodes must not generate traffic. Unchanged state is rewritten at most every five minutes, which bounds how long a lost object stays unrepaired.
-- `status` holds the twin's current computed state, forecasts included. That is what a twin is; the CRD field descriptions say so.
-
-## Component roles
-
-### Controller manager
-
-The controller manager contains two reconcile-loop controllers and one background controller:
-
-**Reconcile-loop controllers** (run each tick):
-
-- **Twin controller**: ingests per-node measured power into `NodeTwin.status`, by default from Prometheus as the OpenTelemetry metrics `hw.energy` and `hw.power` (see [Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}})). Runs the cooling stress and PSU stress computations. Incorporates facility metrics (ambient temperature, IT power) when available. When nodes carry `joulie.io/rack` or `joulie.io/cooling-zone` labels, the twin computes PSU stress per rack and cooling stress with the zone's ambient temperature, or the node's own inlet temperature when the facility reads one.
-- **Policy controller**: reads `NodeTwin.status` + pod demand signals, runs the policy algorithm (`pkg/controller/policy/`), writes `NodeTwin.spec` and the `joulie.io/power-profile` node label. The state machine (`pkg/controller/fsm/`) enforces downgrade guards: nodes cannot transition from performance to eco while performance-sensitive pods are still running. Transition state is tracked via `NodeTwin.status.schedulableClass`.
-
-**Background controllers** (run on independent intervals):
-
-- **Facility metrics poller** (`ENABLE_FACILITY_METRICS=false` by default): queries Prometheus for the outdoor ambient temperature, IT and cooling power, and the ambient temperature of each cooling zone, the power of each rack and the inlet temperature of each node, by default as the `joulie.facility.*`, `joulie.cooling_zone.*`, `joulie.rack.*` and `hw.host.ambient_temperature` metrics. Logs PUE from IT and cooling power and exports the readings as `joulie_twin_facility_*`.
-
-### Agent
-
-The agent is the node-side enforcement component.
-It discovers local hardware, publishes `NodeHardware`, reads `NodeTwin.spec`, and applies CPU and GPU controls through configured backends (RAPL for CPU, NVML for GPU). Control feedback is written to `NodeTwin.status.controlStatus`.
-
-### Scheduler extender
-
-The scheduler extender is a read-only HTTP service that participates in the Kubernetes scheduling cycle. When a new pod is created, kube-scheduler calls the extender at two endpoints:
-
-- **Filter** (`POST /filter`): rejects eco and draining nodes for performance pods. Standard pods pass all nodes.
-- **Prioritize** (`POST /prioritize`): scores each node 0-100 using `score = headroomScore*0.7 + (100-coolingStress)*0.15 + trendBonus + profileBonus + pressureRelief`, and returns it as a priority from 0 to 10, the extender API's range.
-
-The score is **pod-specific**: the extender estimates how many watts the pod will add to each node (from its CPU/GPU requests) and subtracts that from the node's capped power budget before scoring. Heavy pods reduce headroom more, naturally steering them toward nodes with more power budget remaining.
-
-### kubectl plugin
-
-The `kubectl joulie` plugin (`cmd/kubectl-joulie`) shows the cluster's energy state in the terminal. It reads the `NodeTwin` and `NodeHardware` objects through the API server, nothing else of Joulie's, so it shows the twin data the scheduler extender and the agents act on:
-
-- `kubectl joulie status`: the cluster summary and one row per node: power against its cap, profile, applied caps, twin scores, requested resources, agent condition.
-- `kubectl joulie top`: the same as a live dashboard, with node details and pod placement.
-- `kubectl joulie node <node>`, `kubectl joulie pods`: one node in detail; where performance and standard pods run.
-
-No configuration is needed. The plugin reads your current kubeconfig context ([commands and flags]({{< relref "/docs/getting-started/05-configuration-reference.md#kubectl-plugin" >}})).
-
-### Digital twin model
-
-The `pkg/controller/twin` package implements an O(1) parametric model computing:
-- **Power headroom**: remaining capacity before hitting the configured cap
-- **Cooling stress** (0-100): predicted % of cooling capacity in use. High means risk of thermal throttling.
-- **PSU stress** (0-100): predicted % of PDU/rack power capacity in use. High means risk of power brownout.
-
-All three start from a measured node power reading supplied by the controller manager. Cooling stress is a single closed-form expression in `computeCoolingStress`: measured power over node TDP, scaled by an ambient temperature multiplier. There is no cooling model interface and no alternative implementation to select.
+Each write carries a field manager (`joulie-controller-manager` or `joulie-agent`), so `kubectl get nodetwin <node> -o yaml --show-managed-fields` shows who owns each field. The per-field table and the rules writers follow are on the wiki page [CRD contracts](https://github.com/joulie-k8s/Joulie/wiki/CRD-Contracts).
 
 ## Read in this order
 
-1. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}}) -- NodeHardware and NodeTwin CRDs, policy state machine
-2. [Joulie Controller Manager]({{< relref "/docs/architecture/controller-manager.md" >}}) -- twin controller, policy controller, facility metrics poller
-3. [Joulie Agent]({{< relref "/docs/architecture/agent.md" >}}) -- hardware discovery, cap enforcement via RAPL/NVML
-4. [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}) -- O(1) parametric model: headroom, cooling stress, PSU stress
-5. [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}}) -- filter and prioritize endpoints, scoring formula
-6. [Energy-Aware Scheduling]({{< relref "/docs/architecture/energy-aware-scheduling.md" >}}) -- workload-class-aware pod placement
-7. [Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}}) -- available policy implementations and tuning
-8. [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}}) -- Prometheus queries, RAPL/NVML control paths
-9. [Hardware Modeling and Physical Power Model]({{< relref "/docs/hardware/hardware-modeling.md" >}}) -- CPU/GPU power curves for simulation
-10. [Metrics Reference]({{< relref "/docs/architecture/metrics.md" >}}) -- all exported Prometheus metrics
+1. [CRD and Policy Model]({{< relref "/docs/architecture/policy.md" >}}): the `NodeHardware` and `NodeTwin` fields
+2. [Joulie Controller Manager]({{< relref "/docs/architecture/controller-manager.md" >}}): reconcile, policy, facility poller
+3. [Joulie Agent]({{< relref "/docs/architecture/agent.md" >}}): discovery and cap enforcement
+4. [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}): headroom, cooling stress, PSU stress
+5. [Scheduler Extender]({{< relref "/docs/architecture/scheduler.md" >}}): filter, score, deployment
+6. [Energy-Aware Scheduling]({{< relref "/docs/architecture/energy-aware-scheduling.md" >}}): the pipeline end to end
+7. [Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}}): the policies and their knobs
+8. [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}}): Prometheus inputs and control backends
+9. [Hardware Modeling and Physical Power Model]({{< relref "/docs/hardware/hardware-modeling.md" >}}): CPU and GPU power curves for simulation
+10. [Metrics Reference]({{< relref "/docs/architecture/metrics.md" >}}): every exported metric
+
+Detail on the contracts: [CRD contracts](https://github.com/joulie-k8s/Joulie/wiki/CRD-Contracts) on the wiki.

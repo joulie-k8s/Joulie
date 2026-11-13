@@ -117,7 +117,7 @@ func TestCurveNodeIsNotThermallyThrottledByDefault(t *testing.T) {
 // outcome then depends on the thresholds alone; board power would have to fall
 // below 408 W before the old defaults stopped throttling fully. Job progress
 // does not read this fraction (advanceJobProgress passes the node's CPU
-// fraction to the GPU throughput model, hardware-modeling.md 6.6), so that
+// fraction to the GPU throughput model, wiki GPU-Power-Model "Temperature"), so that
 // path is not exercised here.
 func TestGPUIsNotThermallyThrottledByDefault(t *testing.T) {
 	cases := []struct {
@@ -342,7 +342,7 @@ func TestThermalThresholdAloneFromEnvKeepsFormerPartner(t *testing.T) {
 
 // A node class that sets one threshold alone still takes the other one from
 // the base profile, which is 0 unless the environment sets the pair. This is
-// the sharp edge that remains, documented in hardware-modeling.md 5.5 and 6.6
+// the sharp edge that remains, documented on the wiki pages CPU-Power-Model and GPU-Power-Model ("Temperature")
 // and in the configuration reference: a start alone fails validation and
 // ParseClasses drops every class of the file, and a full alone throttles
 // linearly from 0 C, already at idle. A fix in simulator/pkg/hw or in

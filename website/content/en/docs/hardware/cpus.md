@@ -3,50 +3,45 @@ title: "CPU Support and Power Capping"
 weight: 5
 ---
 
-Joulie supports node-level CPU power capping through `NodeTwin` intents enforced by the agent.
+How Joulie caps the CPU packages of a node and sets their frequency governor, through `NodeTwin` intents the agent enforces.
 
 ## Contract model
 
-CPU intent is defined in `NodeTwin.spec.cpu`:
+CPU intent is in `NodeTwin.spec.cpu`. The first field present wins:
 
-- `packagePowerCapWatts` (optional absolute cap)
-- `packagePowerCapPctOfMax` (optional normalized profile intent)
-
-Precedence:
-
-1. `packagePowerCapWatts` if present
-2. otherwise `packagePowerCapPctOfMax`
+1. `packagePowerCapWatts`: an absolute cap.
+2. `packagePowerCapPctOfMax`: a percentage of the node's cap range.
 
 ## Policy behavior
 
-Controller manager profile assignment remains `performance` vs `eco`.
-CPU cap values are generated per profile and written into `NodeTwin.spec`:
+| Profile | CPU cap | CPU governor on a CPU-only node, when governor control is on |
+|---|---|---|
+| `performance` (or draining) | high, often 100 % | `CPU_GOVERNOR_PERFORMANCE_PRESET`, default `performance` |
+| `eco` | lower | `CPU_GOVERNOR_ECO_PRESET`, default `efficiency` (provisional) |
 
-- performance profile typically maps to a higher cap (often 100%)
-- eco profile maps to a lower cap
+See [Governor policy]({{< relref "/docs/architecture/policy.md#governor-policy" >}}).
 
-For heterogeneous nodes, percentage-based intent remains useful because each node resolves normalized intent using node-local capabilities: `pct` of the package cap maximum, clamped to the range, from the node's RAPL files. A node without RAPL files that the agent caps through an HTTP control backend (the simulator's KWOK nodes) takes the range of the hardware catalog for its CPU instead, times its socket count: per socket, the TDP at the top and 0.55 x TDP at the bottom. The cTDP range is no floor: a package power limit may be set below its low end ([AMD EPYC 9004 HPC tuning guide, publication 58002](https://docs.amd.com/api/khub/documents/NgOfoW49HKdzztTeLBbekA/content)), and no vendor publishes a minimum for these CPUs. On two AMD EPYC 9654 sockets (TDP 360 W) a 95 % cap is 684 W and a 60 % cap 432 W; a cap the CPU cannot reach holds it at its lowest-frequency power.
-If percentage intent cannot be converted to watts (no RAPL range, and no catalog range or no HTTP control), the agent applies a DVFS percent fallback path when possible. See [CPU enforcement algorithm]({{< relref "/docs/architecture/agent.md#cpu-enforcement-algorithm" >}}).
+A percentage resolves against the node's own range, so one profile fits heterogeneous nodes:
+
+| Node | Range a percentage resolves against |
+|---|---|
+| with RAPL files | the package cap range the files report, clamped to it |
+| without RAPL files, capped through an HTTP control backend (the simulator's KWOK nodes) | the hardware catalog's range for its CPU, times its sockets: TDP at the top, 0.55 x TDP at the bottom per socket |
+| neither | the DVFS percent fallback, when possible ([CPU enforcement algorithm]({{< relref "/docs/architecture/agent.md#cpu-enforcement-algorithm" >}})) |
+
+On two AMD EPYC 9654 sockets (TDP 360 W) a 95 % cap is 684 W and a 60 % cap 432 W. A cap the CPU cannot reach holds it at its lowest-frequency power. Why the floor is 0.55 x TDP and not the cTDP range is on the wiki's [CPU power model](https://github.com/joulie-k8s/Joulie/wiki/CPU-Power-Model#the-cap-range-and-the-055-x-tdp-floor).
 
 ## Driver/back-end semantics
 
-Joulie is designed around standard Linux CPU power/frequency controls:
-
-- AMD platforms: `amd-pstate`/CPPC semantics
-- Intel platforms: `intel_pstate` semantics
-
-In simulator mode, CPU dynamics include utilization-dependent power curves, cap effects, DVFS settling behavior, and:
-
-- CPU cap application settling (`cpuCapApplyTauMs`)
-- exported telemetry averaging (`cpuTelemetryWindowMs`)
-- first-order thermal behavior and thermal-throttle thresholds
-- workload-sensitive slowdown based on `memoryIntensity` and `ioIntensity`
+| Platform | Linux interface | Simulator counterpart |
+|---|---|---|
+| AMD | `amd-pstate` (CPPC) | continuous frequency scale, cap settling (`cpuCapApplyTauMs`) |
+| Intel | `intel_pstate` | as AMD |
+| any | RAPL package limits | averaged telemetry (`cpuTelemetryWindowMs`), first-order thermal model with opt-in throttling, slowdown that depends on `memoryIntensity` and `ioIntensity` |
 
 ## Governors
 
-Next to the cap, the agent can set the CPU frequency governor of a node from the preset in `NodeTwin.spec.cpu.governor` (`performance`, `balanced` or `efficiency`, and optionally `boost` `on` or `off`). It is off by default; see [Governor presets]({{< relref "/docs/hardware/hardware-modeling.md#69-governor-presets" >}}) for what the presets mean and [Governor control]({{< relref "/docs/architecture/agent.md#governor-control" >}}) for how the agent writes and restores them.
-
-The same preset goes to every cpufreq policy of the node. `pkg/governor` maps it to the native words of the node's driver:
+Next to the cap, the agent can set every cpufreq policy of a node from the preset in `NodeTwin.spec.cpu.governor` (`performance`, `balanced` or `efficiency`, and optionally `boost` `on` or `off`). It is off by default; see [Governor presets]({{< relref "/docs/hardware/hardware-modeling.md#69-governor-presets" >}}) for what the presets mean and [Governor control]({{< relref "/docs/architecture/agent.md#governor-control" >}}) for how the agent writes and restores them. `pkg/governor` maps a preset to the node's driver:
 
 | Driver (mode) | `performance` | `balanced` | `efficiency` |
 |---|---|---|---|
@@ -57,35 +52,25 @@ The same preset goes to every cpufreq policy of the node. `pkg/governor` maps it
 | `intel_cpufreq` without HWP, `acpi-cpufreq`, `amd-pstate` (passive, guided), `cppc_cpufreq` and other generic drivers | `performance` | `schedutil` | `conservative` |
 | no cpufreq (as on many VMs) | not listed | not listed | not listed |
 
-Rules:
-
-- A word is used only when `scaling_available_governors` (or `energy_performance_available_preferences`) lists it. `balanced` falls back to `ondemand` and `efficiency` to `schedutil`, and the result is then `equivalent` instead of `applied`; a preset with no usable word is left out of the node's `NodeHardware` `status.cpu.governor.presets`. One exception: under `performance`, amd-pstate-epp lists `performance` alone as an available preference, so there the agent takes the driver's full set (`default`, `performance`, `balance_performance`, `balance_power`, `power`, which it lists under `powersave`), and a preset's result does not change with the governor the node runs.
-- Under `performance` no EPP is written: the kernel rejects a non-zero preference there.
-- Boost is written only when the spec names it: the inverted `intel_pstate/no_turbo` on `intel_pstate` and `intel_cpufreq`, each policy's `boost` on `amd-pstate` and `amd-pstate-epp`, the global `cpufreq/boost` elsewhere, or each policy's `boost` where there is no global file. A node with none of them cannot take a `boost` word.
-- On `acpi-cpufreq`, where the global `cpufreq/boost` and each `policyN/boost` both exist, every policy file reads 0 at boot while `cpufreq/boost` reads 1 and the CPUs boost: a policy file shows the core's per-policy flag, not the boost in effect. A policy write equal to what the file shows changes nothing, and a global write of a new state sets every policy. The agent writes the global file there.
-- On drivers without an EPP file, `balanced` and `efficiency` differ only by `schedutil` against `conservative`.
-- Joulie never writes the driver mode, `scaling_min_freq`, governor tunables, idle states, the uncore clock, EPB or HSMP. `scaling_max_freq` belongs to the DVFS fallback, which works under any governor.
-- A GPU node gets no CPU governor unless the controller manager's `CPU_GOVERNOR_ON_GPU_NODES` is `true`, the rule the CPU cap follows.
-
-The mapping is tested against emulated nodes of each driver (`simulator/pkg/hwemu` profiles for `acpi-cpufreq`, `intel_cpufreq`, `intel_pstate` with HWP and `amd-pstate-epp`), not yet on hardware.
+- A word is used only when the driver lists it; otherwise a fallback gives `equivalent`, or the preset is not listed.
+- No EPP is written under `performance`, and boost only when the spec names it.
+- Joulie never writes the driver mode, `scaling_min_freq`, governor tunables, idle states, the uncore clock, EPB or HSMP; `scaling_max_freq` belongs to the DVFS fallback.
+- A GPU node gets no CPU governor unless `CPU_GOVERNOR_ON_GPU_NODES` is `true`.
+- The mapping is tested against emulated nodes of each driver, not yet on hardware.
 
 ## Measured vs proxy models
 
-Joulie distinguishes:
-
-- exact measured curves (for selected inventory-backed CPU platforms, e.g. SPECpower-backed)
-- proxy/inferred curves where direct public measured curves are unavailable
-
-See [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}) for full model provenance and references.
+Some catalog CPUs run a measured SPECpower curve; the others, proxies included, run an analytic model.
+See [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}}).
 
 ## Scheduling guidance
 
-Workload placement intent is expressed via the `joulie.io/workload-class` pod annotation:
+Placement intent is the `joulie.io/workload-class` pod annotation, which the scheduler extender enforces:
 
-- `performance`: must run on full-power nodes (extender hard-rejects eco nodes)
-- `standard`: default, can run on any node; adaptive scoring steers toward eco when performance nodes are congested
-
-The scheduler extender enforces these classes; CPU capping is then enforced through `NodeTwin.spec`.
+| Class | Placement |
+|---|---|
+| `performance` | full-power nodes only; the extender rejects eco nodes |
+| `standard` (default) | any node; adaptive scoring steers toward eco when performance nodes are congested |
 
 ## Related docs
 
@@ -93,3 +78,5 @@ The scheduler extender enforces these classes; CPU capping is then enforced thro
 - [Joulie Agent]({{< relref "/docs/architecture/agent.md" >}})
 - [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md#governor-control" >}}): the governor variables
 - [Hardware Modeling]({{< relref "/docs/hardware/hardware-modeling.md" >}})
+
+The fallbacks, the boost files per driver and the amd-pstate-epp exception: [Governors](https://github.com/joulie-k8s/Joulie/wiki/Governors#cpu-native-settings).

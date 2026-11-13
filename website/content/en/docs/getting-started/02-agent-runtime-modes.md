@@ -5,8 +5,7 @@ slug = "daemonset"
 weight = 4
 +++
 
-
-The chart runs the agent in one of three modes, or not at all (`agent.mode`):
+How the chart deploys the node agent. Pick the mode with `agent.mode`:
 
 | `agent.mode` | Pods | Use |
 |---|---|---|
@@ -17,34 +16,30 @@ The chart runs the agent in one of three modes, or not at all (`agent.mode`):
 
 ## DaemonSet mode (real hardware)
 
-### Required runtime settings
+Use it on real nodes, where the agent writes the power limits under the host's `/sys`. The chart sets:
 
-- `securityContext.privileged: true`
-- Host mount:
-  - host path `/sys` -> container path `/host-sys`
-- Env:
-  - `NODE_NAME` from `spec.nodeName`
-  - `AGENT_MODE=daemonset` (default)
-  - optional `RECONCILE_INTERVAL` (default `20s`)
-  - optional `SIMULATE_ONLY=true` (skip host writes, log requested actions)
-  - optional `METRICS_ADDR` (default `:8080`)
+| Setting | Value |
+|---|---|
+| `securityContext.privileged` | `true` |
+| Host mount | host `/sys` at container `/host-sys` |
+| `NODE_NAME` | from `spec.nodeName` |
+| `AGENT_MODE` | `daemonset` (default) |
+| `RECONCILE_INTERVAL` | optional, default `20s` |
+| `SIMULATE_ONLY` | optional, `true` skips host writes and logs the requested actions |
+| `METRICS_ADDR` | optional, default `:8080` |
 
 ## Pool mode (KWOK / simulation)
 
-Pool mode preserves per-node semantics but shards logical node controllers across replicas.
+Use it for KWOK-scale simulation: a real controller manager and scheduler, no physical hardware, and agents that control nodes over the simulator's HTTP API ([KWOK and Standalone Modes]({{< relref "/docs/simulator/simulator.md" >}})).
 
-Required env vars:
+| Env var | Value |
+|---|---|
+| `AGENT_MODE` | `pool` |
+| `POOL_NODE_SELECTOR` | for example `joulie.io/managed=true` |
+| `POOL_SHARDS` | total shards |
+| `POOL_SHARD_ID` | this pod's shard, or `POD_NAME` from the StatefulSet ordinal |
 
-- `AGENT_MODE=pool`
-- `POOL_NODE_SELECTOR` (for example `joulie.io/managed=true`)
-- `POOL_SHARDS` (total shards)
-- `POOL_SHARD_ID` (or `POD_NAME` from StatefulSet ordinal)
-
-Sharding function:
-
-- `owns(node) = fnv32(nodeName) % POOL_SHARDS == POOL_SHARD_ID`
-
-In chart values:
+A pod owns a node when `fnv32(nodeName) % POOL_SHARDS == POOL_SHARD_ID`. In chart values:
 
 ```yaml
 agent:
@@ -55,30 +50,17 @@ agent:
     nodeSelector: "joulie.io/managed=true"
 ```
 
-Use `daemonset` mode for real `/host-sys` enforcement and `pool` mode for KWOK-scale simulation: pool mode runs KWOK experiments over the simulator's HTTP API ([KWOK and Standalone Modes]({{< relref "/docs/simulator/simulator.md" >}})), with a real controller manager and scheduler and no physical hardware.
-
 ## Emulated mode (simulated cluster)
 
-With `agent.mode: emulated` the chart renders one Deployment `joulie-agent-emu-<i>` per entry of `agent.emulated.nodes`, on the node that runs the simulator in [emulate mode]({{< relref "/docs/simulator/emulate-mode.md" >}}). Each runs the unmodified agent binary for one node, with that node's emulated tree mounted where the agent reads `/sys`, `/proc/cpuinfo` and the GPU tools, a literal `NODE_NAME`, and no host network or privileges. The simulated cluster scripts write `agent.emulated.nodes` for you; the values are under [Agent chart values]({{< relref "/docs/getting-started/05-configuration-reference.md#agent-chart-values" >}}).
+Use it for the simulated cluster: one Deployment `joulie-agent-emu-<i>` per entry of `agent.emulated.nodes`, each running the unmodified agent against one node's emulated tree on the host that runs the simulator in [emulate mode]({{< relref "/docs/simulator/emulate-mode.md" >}}). The simulated cluster scripts write `agent.emulated.nodes` for you; the values are under [Agent chart values]({{< relref "/docs/getting-started/05-configuration-reference.md#agent-chart-values" >}}).
 
 ## Managed node selector
 
-- `joulie.io/managed=true`
+- The controller manager and the agent manage only nodes labelled `joulie.io/managed=true` by default (`agent.daemonset.nodeSelector`, `POOL_NODE_SELECTOR`); unlabelled nodes get no agent pod.
+- The agent tolerates every taint (`agent.tolerations`) and runs on `amd64` and `arm64`, so every labelled node gets one.
+- A managed node the agent still does not reach reports `AgentReporting` `False` on its `NodeTwin` ([Managed nodes without an agent]({{< relref "/docs/getting-started/05-configuration-reference.md#managed-nodes-without-an-agent" >}})).
 
-This label defines managed scope for both controller manager and agent by default.
-
-- Pool mode:
-  - uses `POOL_NODE_SELECTOR` (chart default: `joulie.io/managed=true`).
-- DaemonSet mode:
-  - chart default sets `agent.daemonset.nodeSelector.joulie.io/managed: "true"`.
-
-Default behavior:
-
-- nodes without `joulie.io/managed=true` are outside controller manager policy scope;
-- no DaemonSet agent pod is scheduled on unlabeled nodes;
-- every labelled node gets an agent pod whatever its taints, since the chart's `agent.tolerations` tolerates every taint, and whatever its architecture, `amd64` or `arm64`. A managed node the agent still does not reach reports `AgentReporting` `False` on its `NodeTwin` ([Managed nodes without an agent]({{< relref "/docs/getting-started/05-configuration-reference.md#managed-nodes-without-an-agent" >}})).
-
-Override example (if you need a different scope):
+To use another scope:
 
 ```yaml
 agent:
@@ -89,31 +71,23 @@ agent:
 
 ## RBAC
 
-Agent needs:
-
-- `nodes`
-- `nodetwins.joulie.io`
-
-Pool mode uses the same API permissions.
+The agent needs `nodes`, `nodetwins.joulie.io` and `nodehardwares.joulie.io`, with the status subresources of both CRDs (`charts/joulie/templates/rbac.yaml`). Pool mode uses the same permissions.
 
 ## NFD labels used by agent
 
-CPU vendor:
+| Label | Tells the agent |
+|---|---|
+| `feature.node.kubernetes.io/cpu-vendor` | CPU vendor, if present |
+| `feature.node.kubernetes.io/cpu-model.vendor_id` | CPU vendor, fallback (common with NFD) |
+| `feature.node.kubernetes.io/pci-10de.present` | NVIDIA GPU |
+| `feature.node.kubernetes.io/pci-1002.present` | AMD GPU |
+| `feature.node.kubernetes.io/pci-8086.present` | Intel GPU |
+| `feature.node.kubernetes.io/pci-<class>_<vendor>.present` | the same, in NFD's default class-specific form, for `0300` (VGA), `0302` (3D controller), `0380` (other display controller) and `1200` (processing accelerator, such as an AMD Instinct MI300X) |
 
-- `feature.node.kubernetes.io/cpu-vendor` (if present)
-- `feature.node.kubernetes.io/cpu-model.vendor_id` (fallback, common with NFD)
-
-GPU vendor discovery hints:
-
-- `feature.node.kubernetes.io/pci-10de.present` (NVIDIA)
-- `feature.node.kubernetes.io/pci-1002.present` (AMD)
-- `feature.node.kubernetes.io/pci-8086.present` (Intel)
-- and the class-specific forms `pci-<class>_<vendor>.present`, NFD's default, for the classes GPUs enumerate as: `0300` (VGA), `0302` (3D controller), `0380` (other display controller) and `1200` (processing accelerator, such as an AMD Instinct MI300X)
-
-GPU labels are used for capability detection, and GPU cap intents are enforced when a supported backend is available.
+GPU labels are used for capability detection; GPU caps are enforced when a supported backend is available.
 
 ## Desired-state source
 
-On each node, agent resolves desired state only from:
+On each node, the agent reads its desired state only from the `NodeTwin` whose `spec.nodeName` is that node.
 
-1. `NodeTwin.spec` matching `spec.nodeName=<this-node>`.
+Details: [Configuration notes, Agent runtime modes](https://github.com/joulie-k8s/Joulie/wiki/Configuration-Notes#agent-runtime-modes).

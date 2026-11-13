@@ -3,43 +3,21 @@ title: "Simulated Cluster"
 weight: 10
 ---
 
-The simulated cluster runs the real Joulie components on emulated bare-metal nodes, on one machine with Docker. The agent discovers and caps emulated hardware through the same files and tools it uses on a real node, the controller manager reads node power from the simulator's OpenTelemetry metrics in Prometheus, and the scheduler extender scores real pods. The scripts in `scripts/simcluster` drive it, and `tests/simcluster` checks it end to end.
+The simulated cluster runs the real Joulie components on emulated bare-metal nodes, on one machine with Docker. The agent discovers and caps emulated hardware through the same files and tools it uses on a real node, the controller manager reads node power from Prometheus, and the scheduler extender scores real pods.
 
 Use it to see a change to the agent, the controller manager, the extender, the chart or the simulator work across components. A change to discovery or capping alone is checked faster by the hwemu tests in `cmd/agent` (`go test ./cmd/agent/ -run Hwemu`).
 
-## Architecture
-
-```text
-host: Docker
-  container $SIMCLUSTER_NAME (--privileged): one k3s server
-    Node <name>-infra: the only real kubelet (joulie.io/infra=true, joulie.io/hwemu-host=true)
-      monitoring     Prometheus with its OTLP receiver; the Collector in modes otel-collector and otel-bridge
-      joulie-sim     the simulator in emulate mode: trees in /var/lib/joulie-hwemu/<node>/,
-                     their sys and state served through FUSE at /var/lib/joulie-hwemu/fuse/<node>/
-      joulie-system  the controller manager; the scheduler extender, on the host network or behind its Service
-      joulie-system  joulie-agent-emu-<i>: one agent per eligible fake Node, mounting its tree
-    KWOK            keeps the fake Nodes Ready
-    fake Nodes      rendered from the cluster spec
-```
-
-- **One k3s server in Docker.** The container `$SIMCLUSTER_NAME` (default `joulie-sim`) runs the k3s image pinned in `scripts/simcluster/versions.env`. Its own kubelet is the only real Node, `<name>-infra`, and runs every pod that really runs. The k3s state and the hwemu trees live in the named volumes `<name>-k3s` and `<name>-hwemu`, so they outlive a restart of the container: the trees, the limits agents wrote and the energy ledgers that keep exported counters from going back. The trees need no tmpfs: 200 emulated nodes take about 0.1 s per tick on the volume, depending on the machine ([Tick cost]({{< relref "/docs/simulator/emulate-mode.md#tick-cost" >}})).
-- **Fake Nodes.** `clusterspec render-nodes` turns the [cluster spec]({{< relref "/docs/simulator/emulate-mode.md#the-cluster-spec" >}}) into Node objects with the labels, taints, capacity and architecture of their hardware profiles, and KWOK v0.8.0 keeps them Ready. Its controller image is pinned by digest (`KWOK_IMAGE` and `KWOK_DIGEST` in `versions.env`) and imported like Prometheus, so the cluster never pulls it. Every fake Node carries `sim.joulie.io/cluster=<spec>` and `sim.joulie.io/pool=<pool>`.
-- **Emulated hardware.** The simulator runs in [emulate mode]({{< relref "/docs/simulator/emulate-mode.md" >}}) with the same spec: one tree per fake Node under `/var/lib/joulie-hwemu` on the infra Node, all stepped on one tick. `SIMCLUSTER_HWEMU` sets how the agents reach the files: `fuse`, the default, through the simulator's [FUSE views]({{< relref "/docs/simulator/emulate-mode.md#fuse-mode" >}}), where a refused write fails at once and counters move at read time; `files`, the trees themselves. In `fuse` the k3s container gets `/dev/fuse`, `up.sh` makes the hwemu root a shared mount in it, and `deploy.sh` adds `values/simcluster-simulator-fuse.yaml` and `values/simcluster-fuse.yaml`.
-- **Emulated agents.** The agent binary is the one a release ships, unmodified. With `agent.mode: emulated` the chart renders one Deployment `joulie-agent-emu-<i>` per entry of `agent.emulated.nodes`, on the infra Node, mounting its Node's tree where the agent reads `/sys`, `/proc/cpuinfo` and the GPU tools ([Agent chart values]({{< relref "/docs/getting-started/05-configuration-reference.md#agent-chart-values" >}})). Which Nodes get one is decided as in a real install: `simcluster agents` renders the chart's agent DaemonSet with the same values files as the install and keeps the Nodes it would reach. The node selector must match, every `NoSchedule` and `NoExecute` taint must be tolerated (counting the tolerations the DaemonSet controller adds), and the architecture must match the image. Every other Node is printed with its reason.
-- **Scheduler.** `SIMCLUSTER_EXTENDER` sets how the k3s scheduler reaches the extender. `hostnet`, the default: the extender runs on the infra Node's host network and the scheduler calls `127.0.0.1` (`scripts/simcluster/manifests/scheduler-config.yaml`, the same file the Dagger integration job uses). `service`: the extender runs off the host network, as a real install defaults to, and the scheduler calls its Service at a fixed ClusterIP (`scheduler-config-service.yaml` and `values/simcluster-extender-service.yaml`).
-- **Telemetry.** The simulator pushes OTLP straight into Prometheus, and the controller manager reads node power and the facility from there with its default settings, or with the settings of the chosen [telemetry mode](#telemetry-modes).
-- **Access.** Every cluster HTTP call goes through the API server's service proxy. The only published port is the API server's, on `127.0.0.1`, at a port Docker picks. The kubeconfig is `$SIMCLUSTER_DIR/kubeconfig`; `~/.kube` is never read or written.
-- **Images.** One `go build` (linux/amd64, CGO off) builds the agent, controller manager, extender, simulator and `fakesmi` from the working tree. Each binary is wrapped in the distroless image its release uses, tagged `joulie.local/joulie-<component>:dev-<first 12 hex of the binary's sha256>` (for the simulator image, which also carries `fakesmi`, a hash of both binaries) and imported into the cluster's containerd. The images build in parallel, but the imports take turns, one at a time per cluster and only after k3s has imported its air-gap bundle, and a failed import is tried again, three times in all, while the container runs. Pods pull with `IfNotPresent`, and the deploy checks each pod's image ID against `images.env`.
+It is one k3s container in Docker: its own kubelet runs every real pod (Prometheus, the simulator in [emulate mode]({{< relref "/docs/simulator/emulate-mode.md" >}}), the controller manager, the extender and one unmodified agent per fake Node), and KWOK keeps the fake Nodes of the [cluster spec]({{< relref "/docs/simulator/emulate-mode.md#the-cluster-spec" >}}) Ready. The agents reach their Node's files through the simulator's [FUSE views]({{< relref "/docs/simulator/emulate-mode.md#fuse-mode" >}}) by default. 200 emulated nodes take about 0.1 s per tick ([Tick cost]({{< relref "/docs/simulator/emulate-mode.md#tick-cost" >}})).
 
 ## Requirements
 
-- **Host.** amd64 Linux with Docker allowed to run a `--privileged` container: k3s runs its kubelet and containerd inside it. The images are built for linux/amd64 only.
-- **FUSE.** `/dev/fuse` on the host for `SIMCLUSTER_HWEMU=fuse`, the default; `up.sh` refuses to start without it. `SIMCLUSTER_HWEMU=files` needs none.
-- **Tools.** `docker`, `kubectl`, `helm`, `jq`, `sha256sum` and Go. The scripts build with the toolchain `go.mod` names (they set `GOTOOLCHAIN`), so the images match what CI builds. CI installs the Helm release that `HELM_VERSION` in `versions.env` pins.
-- **k3s 1.34 on a cgroup v1 host.** `stat -fc %T /sys/fs/cgroup` prints `tmpfs` on cgroup v1. k3s 1.35 and later refuse cgroup v1 unless the kubelet runs with `fail-cgroupv1=false`; `up.sh` adds that flag on such a host for such a k3s, but only the pinned 1.34 is tested there.
-- **`fs.inotify.max_user_instances`.** Every pod of the cluster runs on the one infra kubelet, so all their containers and file watches share the host's per-user inotify limit with the host's own programs. 128 is a common default. The smoke spec fits in it, but a scale run with many emulated agents, or several clusters on one host, may exhaust it. A k3s that gets no instance exits as it starts; the scripts then stop at once with the container's exit status and log, and name the limit. The scripts never change host settings: check it with `sysctl fs.inotify.max_user_instances` and raise it by hand before a large run.
-- **Pod capacity.** Every emulated agent is a pod on the infra Node. `up.sh` sizes its kubelet for the agents plus 50, at least 110 pods: up to 250 pods with the default /24 per Node, up to 1000 with a /22 per Node and the cluster CIDR `10.64.0.0/12`. Beyond 1000 it fails with "split across k3s agents". A running container created for fewer pods is never resized: `up.sh` asks for a recreate.
-- **Network on the first run.** The k3s system images, KWOK, Prometheus, the Collector and the distroless base are pulled once; third-party images are pulled by the digest `versions.env` pins. With `SIMCLUSTER_AIRGAP=1` the k3s system images come from the release's air-gap bundle, kept in `$SIMCLUSTER_DIR/images` for later runs.
+- **Host**: amd64 Linux with Docker allowed to run a `--privileged` container.
+- **FUSE**: `/dev/fuse` on the host for `SIMCLUSTER_HWEMU=fuse`, the default; `files` needs none.
+- **Tools**: `docker`, `kubectl`, `helm`, `jq`, `sha256sum` and Go.
+- **cgroup v1 hosts**: only the pinned k3s 1.34 is tested there (`stat -fc %T /sys/fs/cgroup` prints `tmpfs` on cgroup v1).
+- **inotify**: a large run may exhaust `fs.inotify.max_user_instances` (often 128); check it with `sysctl` and raise it by hand, since the scripts never change host settings.
+- **Pod capacity**: every emulated agent is a pod on the one infra Node; `up.sh` sizes it for the agents plus 50, up to 1000 pods.
+- **Network on the first run**: images are pulled once; `SIMCLUSTER_AIRGAP=1` takes the k3s system images from the release's air-gap bundle.
 
 ## Quick start
 
@@ -53,7 +31,7 @@ kubectl get nodetwins -o custom-columns=NODE:.spec.nodeName,SRC:.status.powerMea
 make simcluster-down SIMCLUSTER_NAME=joulie-sim-smoke
 ```
 
-`make simcluster-smoke` creates the cluster `joulie-sim-smoke` from `tests/simcluster/specs/smoke.yaml`, deploys with `tests/simcluster/smoke-values.yaml`, runs `TestSimclusterE2E`, collects the results and deletes the cluster unless `SIMCLUSTER_KEEP=1`. It builds the images and compiles the test while the cluster starts. The test times out after ten rate windows of the [timing](#timing), at least 20 minutes, unless `SIMCLUSTER_TEST_TIMEOUT` sets another. The smoke spec has nine Nodes: an Intel Xeon with RAPL, an AMD EPYC with energy counters only, an AMD EPYC with HSMP, an H100 NVL node, an H100 SXM node with persistence mode off, an MI300X node, a virtual machine, a managed Intel node with a taint of its own, which the agent tolerates, and a managed arm64 node, which no agent reaches because the images are built for amd64 only. The smoke values put every node in performance with CPU and GPU caps at 80 %; the test lowers them to 50 % halfway.
+`make simcluster-smoke` creates the cluster `joulie-sim-smoke` from `tests/simcluster/specs/smoke.yaml` (nine Nodes: Intel, AMD, NVIDIA and AMD GPU nodes, a VM, a tainted node and an arm64 node), runs `TestSimclusterE2E`, collects the results and deletes the cluster unless `SIMCLUSTER_KEEP=1`. The kubeconfig is `$SIMCLUSTER_DIR/kubeconfig`; `~/.kube` is never read or written.
 
 To keep a cluster and work on it step by step:
 
@@ -65,19 +43,19 @@ make simcluster-status
 
 ## Targets
 
-Each target runs one script of `scripts/simcluster` and nothing else, so `make -n` shows what will run. The scripts also run directly, and each starts with its usage.
+Each target runs one script of `scripts/simcluster`; `make -n` shows what will run, and each script starts with its usage.
 
 | Target | Script | What it does |
 |---|---|---|
-| `simcluster-up` | `up.sh` | Validates the spec (`simcluster validate`). Creates the k3s container, or reuses an existing one, starting it when stopped, if it was created for at least as many pods and as large pod CIDRs, with the same scheduler configuration (`SIMCLUSTER_EXTENDER`) and k3s image; otherwise it says to recreate. Installs KWOK, Prometheus and, in modes `otel-collector` and `otel-bridge`, the Collector. Applies the spec's Nodes and deletes the fake Nodes the spec no longer names. |
-| `simcluster-images` | `images.sh` | Builds and imports the Joulie images, and the pinned third-party ones, and writes `images.env`. An unchanged binary keeps its tag and is not imported again. Run directly, `--wait-container` builds first and then waits for the cluster's container to run, so the build overlaps the cluster's start. |
-| `simcluster-deploy` | `deploy.sh` | Images, CRDs, the simulator, the agent placement, Joulie. Waits for the rollouts (polling one list of the namespace's workloads, for 5 minutes plus 5 seconds per workload; on a timeout it prints what did not roll out and the pods that are not ready), one NodeHardware per emulated agent, the series of every measured Node and a NodeTwin per managed Node, then checks every pod's image. `-f <values>` adds a Joulie values file when run directly. |
-| `simcluster-reload C=<component>` | `reload.sh` | Rebuilds and rolls out `agent`, `controller-manager`, `scheduler`, `simulator` or `all`; see [the dev loop](#the-dev-loop). |
-| `simcluster-status` | `status.sh` | Prints every Node with its pool, profile and NodeTwin power. Exits 1 when a Node is NotReady, a pod without `joulie.io/workload-class` is bound to a fake Node, a pod runs another image than `images.env` names, an emulated agent's Node has no NodeHardware, or a measured Node has no series. |
-| `simcluster-tree [NODE=<node>]` | `tree.sh` | Without a Node, lists the Nodes that have a tree; with one, prints every file of its tree with its first line: the energy counters, limits, frequencies and GPU state its agent sees. |
-| `simcluster-logs C=<component> [NODE=<node>]` | `logs.sh` | The last 200 lines of `agent` (one Node's, or every agent's), `controller-manager`, `scheduler`, `simulator`, `prometheus`, `otelcol`, `kwok` or `k3s`. Run directly, it passes further flags such as `-f` to `kubectl logs`. |
-| `simcluster-smoke` | `smoke.sh` | See [Quick start](#quick-start). |
-| `simcluster-down` | `down.sh` | Removes the container with its anonymous volumes and the named volumes `<name>-k3s` and `<name>-hwemu`. Keeps `images/`, `runs/` and `bin/` of the state directory. |
+| `simcluster-up` | `up.sh` | Validates the spec, creates or reuses the k3s container, installs KWOK and Prometheus (and the Collector where the mode needs it), applies the spec's Nodes |
+| `simcluster-images` | `images.sh` | Builds and imports the Joulie images and writes `images.env`; an unchanged binary is not imported again |
+| `simcluster-deploy` | `deploy.sh` | Images, CRDs, the simulator, the agents, Joulie; waits until every component reports, then checks every pod's image |
+| `simcluster-reload C=<component>` | `reload.sh` | Rebuilds and rolls out `agent`, `controller-manager`, `scheduler`, `simulator` or `all`; see [the dev loop](#the-dev-loop) |
+| `simcluster-status` | `status.sh` | Prints every Node with its pool, profile and NodeTwin power; exits 1 when something is not ready or not reporting |
+| `simcluster-tree [NODE=<node>]` | `tree.sh` | Lists the Nodes that have a tree, or prints every file of one Node's tree with its first line |
+| `simcluster-logs C=<component> [NODE=<node>]` | `logs.sh` | The last 200 lines of `agent`, `controller-manager`, `scheduler`, `simulator`, `prometheus`, `otelcol`, `kwok` or `k3s` |
+| `simcluster-smoke` | `smoke.sh` | See [Quick start](#quick-start) |
+| `simcluster-down` | `down.sh` | Removes the container and its volumes; keeps `images/`, `runs/` and `bin/` of the state directory |
 
 ## Settings
 
@@ -85,63 +63,39 @@ The scripts read these variables from the environment; `make` passes on the ones
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SIMCLUSTER_NAME` | `joulie-sim`; `joulie-sim-smoke` for the smoke run | Container name and prefix of its volumes. It must match `^joulie-sim(-[a-z0-9]+)*$`: the scripts touch no container or volume named otherwise. |
-| `SIMCLUSTER_DIR` | `${XDG_CACHE_HOME:-~/.cache}/joulie/simcluster/<name>` | State directory, outside the repository (below). |
-| `SIMCLUSTER_SPEC` | `tests/simcluster/specs/smoke.yaml` | The cluster spec. `tests/simcluster/specs/medium.yaml` has 50 Nodes, 48 of them reached by the agent, with GPU sharing, AMD GPUs with a pinned power cap, Nodes without NFD labels or GPU driver tools, and an unmanaged pool. `tests/simcluster/specs/profiles.yaml` has one Node of every builtin profile. `tests/simcluster/specs/demo.yaml` has 10 Nodes in five hardware families, the cluster of the `kubectl joulie` recording (`scripts/kubectl-joulie-demo.sh`). |
-| `SIMCLUSTER_NODES` | (empty) | Instead of a spec, this many Nodes of one profile, for scale runs. |
-| `SIMCLUSTER_SCALE_PROFILE` | `intel-xeon-2s-rapl` | The profile of `SIMCLUSTER_NODES`. |
-| `SIMCLUSTER_TELEMETRY` | `otel` | The [telemetry mode](#telemetry-modes). |
-| `SIMCLUSTER_POWER_SCOPE` | `components` | The node power scope Joulie reads: `components` (CPU packages and GPUs) or `host` (`hw.host.*`, in every otel mode but `otel-bridge`). |
-| `SIMCLUSTER_TIMING` | `dev` | The [timing profile](#timing), a file `scripts/simcluster/timing/<name>.env`. |
-| `SIMCLUSTER_HWEMU` | `fuse` | How the emulated agents reach their Node's files: `fuse` (the simulator's FUSE views of `sys` and `state`, mounted with propagation `HostToContainer`) or `files` (the trees' own files). `deploy.sh` records it in `deploy.env`, so a reload keeps it. |
-| `SIMCLUSTER_EXTENDER` | `hostnet` | How the k3s scheduler reaches the extender: `hostnet` (the extender on the infra Node's host network, at `127.0.0.1`) or `service` (the extender off the host network, through its Service). The container is created for one of them; `up.sh` asks for a recreate to switch. |
-| `SIMCLUSTER_PROFILES_DIR` | (empty) | Local hardware profiles, read by the host tools only: the scripts always pass it as their `-profiles-dir`, so `SIM_PROFILES_DIR` does not apply. The simulator in the cluster reads its builtin profiles, so `up.sh` refuses a spec that needs a local one. |
-| `SIMCLUSTER_EXTRA_VALUES` | (empty) | Joulie values files, space separated, installed after `values/simcluster.yaml` and the generated files. They also decide which Nodes get an emulated agent. |
-| `SIMCLUSTER_SIM_EXTRA_VALUES` | (empty) | Simulator values files, space separated, installed after `values/simcluster-simulator.yaml` and the generated file. `deploy.sh` records them in `deploy.env`, so a later `reload.sh` installs with them too. |
-| `SIMCLUSTER_KEEP` | `0` | `1` keeps the smoke cluster after the run. |
-| `SIMCLUSTER_TEST_TIMEOUT` | ten `RATE_WINDOW`s of the timing, at least `20m` (`20m` in `dev`, `50m` in `production`) | Timeout of `TestSimclusterE2E` in the smoke run, a Go duration. |
-| `SIMCLUSTER_AIRGAP` | `0` | `1` loads the k3s system images from the release's air-gap bundle. |
-| `SIMCLUSTER_FORCE_RELOAD` | `0` | `1` makes every reload a `reload.sh --force`. |
-| `COMPONENT` (or `C`), `NODE` | (empty) | The component and the Node of `simcluster-reload`, `simcluster-logs` and `simcluster-tree`. |
-
-The state directory holds `kubeconfig`; `cluster.env` (how the container was created); `telemetry.env`, `spec.yaml`, `images.env`, `deploy.env` and `crds.sha` (what is installed); `values/` and `render/` (generated values files, renders and configurations); `bin/` (the binaries, with the host tools in `bin/host`); `images/` (image tarballs); and `runs/` (the [run results](#run-results)).
+| `SIMCLUSTER_NAME` | `joulie-sim`; `joulie-sim-smoke` for the smoke run | Container name and prefix of its volumes; must match `^joulie-sim(-[a-z0-9]+)*$` |
+| `SIMCLUSTER_DIR` | `${XDG_CACHE_HOME:-~/.cache}/joulie/simcluster/<name>` | State directory, outside the repository |
+| `SIMCLUSTER_SPEC` | `tests/simcluster/specs/smoke.yaml` | The cluster spec; `medium.yaml` (50 Nodes), `profiles.yaml` (one Node per builtin profile) and `demo.yaml` (10 Nodes) are in the same directory |
+| `SIMCLUSTER_NODES` | (empty) | Instead of a spec, this many Nodes of one profile, for scale runs |
+| `SIMCLUSTER_SCALE_PROFILE` | `intel-xeon-2s-rapl` | The profile of `SIMCLUSTER_NODES` |
+| `SIMCLUSTER_TELEMETRY` | `otel` | The [telemetry mode](#telemetry-modes) |
+| `SIMCLUSTER_POWER_SCOPE` | `components` | The node power scope Joulie reads: `components` (CPU packages and GPUs) or `host` |
+| `SIMCLUSTER_TIMING` | `dev` | The [timing profile](#timing): `dev` or `production` |
+| `SIMCLUSTER_HWEMU` | `fuse` | How the emulated agents reach their Node's files: `fuse` (the simulator's FUSE views) or `files` (the trees' own files) |
+| `SIMCLUSTER_EXTENDER` | `hostnet` | How the k3s scheduler reaches the extender: `hostnet` or `service`; switching recreates the container |
+| `SIMCLUSTER_PROFILES_DIR` | (empty) | Local hardware profiles, for the host tools only; the simulator in the cluster reads its builtin ones |
+| `SIMCLUSTER_EXTRA_VALUES` | (empty) | Joulie values files, space separated, installed after the generated ones |
+| `SIMCLUSTER_SIM_EXTRA_VALUES` | (empty) | Simulator values files, space separated; later reloads install with them too |
+| `SIMCLUSTER_KEEP` | `0` | `1` keeps the smoke cluster after the run |
+| `SIMCLUSTER_TEST_TIMEOUT` | ten `RATE_WINDOW`s of the timing, at least `20m` (`20m` in `dev`, `50m` in `production`) | Timeout of `TestSimclusterE2E` in the smoke run |
+| `SIMCLUSTER_AIRGAP` | `0` | `1` loads the k3s system images from the release's air-gap bundle |
+| `SIMCLUSTER_FORCE_RELOAD` | `0` | `1` makes every reload a `reload.sh --force` |
+| `COMPONENT` (or `C`), `NODE` | (empty) | The component and the Node of `simcluster-reload`, `simcluster-logs` and `simcluster-tree` |
 
 ## Telemetry modes
 
-A mode sets how the emulated Nodes' power reaches Prometheus and which Joulie input settings read it. Every mode is checked against the emulator's truth, read from the simulator's `/debug/emulate`.
+A mode sets how the emulated Nodes' power reaches Prometheus and which Joulie settings read it; every mode is checked against the simulator's truth (`/debug/emulate`), within 3 %.
 
-| `SIMCLUSTER_TELEMETRY` | Path to Prometheus | Joulie settings beyond the defaults | Checked against |
-|---|---|---|---|
-| `otel` (default) | the simulator pushes OTLP; Prometheus promotes `k8s.node.name` and `host.name` | none | CPU packages plus GPUs |
-| `otel-unpromoted` | as `otel`, without promotion | none: `auto` falls back to joining `target_info` | CPU packages plus GPUs |
-| `otel-labels-unpromoted` | as `otel-unpromoted` | `PROMETHEUS_RESOURCE_ATTRIBUTES=labels` | no data, with the promotion hint in the log |
-| `otel-utf8` | as `otel`, names translated with `NoUTF8EscapingWithSuffixes` | `PROMETHEUS_NAME_TRANSLATION=NoUTF8EscapingWithSuffixes` | CPU packages plus GPUs |
-| `otel-collector` | the simulator pushes to an OpenTelemetry Collector, whose `prometheus` exporter Prometheus scrapes with `honor_labels: true` | none | CPU packages plus GPUs |
-| `otel-bridge` | the simulator pushes no OTLP and serves `kepler-0.12`, `dcgm-4.8.4` and `amd-dme-1.5.2`; a contrib Collector runs `examples/04-otel-collector-bridge/collector.yaml` against them and pushes `hw.*` to Prometheus, the CPU as power gauges | none; the facility metrics stay off, as the chart has them | CPU packages plus GPUs, with the queries of Joulie's `otel` preset |
-| `kepler` | the simulator also serves Kepler 0.12 series, GPUs included (`SIM_KEPLER012_GPU=true`) | `NODE_POWER_PRESET=kepler` | CPU packages plus NVIDIA GPUs |
-| `kepler-legacy` | the simulator also serves Kepler 0.7 series, scraped with `honor_labels: false` | `NODE_POWER_PRESET=kepler-legacy` | CPU packages plus NVIDIA GPUs, plus the idle power Kepler 0.7 reports beyond them while a cap holds a package below the idle it recorded (`joulie_sim_kepler07_idle_excess_joules_total`); the summary warns about every node that has some |
-
-With `SIMCLUSTER_POWER_SCOPE=host`, an otel mode other than `otel-bridge`, which carries no whole-host power, also sets `NODE_POWER_SCOPE=host` and is checked against whole-host power. Each check passes within 3 % of the truth, and never needs to be closer than 1 W. `simcluster telemetry` prints what a mode generates, for example `go run ./simulator/cmd/simcluster telemetry --part prom-config --mode otel-utf8`; the parts are `prom-config`, `otelcol-config`, `sim-values`, `joulie-values`, `checks` and `wait`.
+| `SIMCLUSTER_TELEMETRY` | Path to Prometheus |
+|---|---|
+| `otel` (default) | the simulator pushes OTLP to Prometheus, which promotes `k8s.node.name` and `host.name` |
+| `otel-unpromoted`, `otel-labels-unpromoted`, `otel-utf8` | as `otel`, without the promotion or with another name translation, to check what Joulie reads then |
+| `otel-collector`, `otel-bridge` | through an OpenTelemetry Collector: OTLP, or the [compatibility exporters]({{< relref "/docs/simulator/metrics.md#compatibility-exporters-emulate-mode" >}}) bridged to `hw.*` |
+| `kepler`, `kepler-legacy` | Kepler 0.12 or 0.7 series, read with `NODE_POWER_PRESET=kepler` or `kepler-legacy` |
 
 ### Timing
 
-Timing names map onto the real settings, so a nightly run in `production` timing exercises the values a real install uses.
-
-| Timing setting | `dev` | `production` | Becomes |
-|---|---|---|---|
-| `CONTROLLER_RECONCILE_INTERVAL` | `10s` | `1m` | controller manager `RECONCILE_INTERVAL` |
-| `AGENT_RECONCILE_INTERVAL` | `5s` | `20s` | agent `RECONCILE_INTERVAL` |
-| `AGENT_SPEC_READ_TIMEOUT` | `60s` | `5m` | agent `SPEC_READ_TIMEOUT` |
-| `PROM_SCRAPE_INTERVAL` | `5s` | `1m` | Prometheus `scrape_interval` |
-| `OTLP_EXPORT_INTERVAL_MS` | `5000` | `60000` | simulator `otel.exportIntervalMillis` |
-| `RATE_WINDOW` | `30s` | `5m` | controller manager `PROMETHEUS_RATE_WINDOW` |
-| `FACILITY_POLL_INTERVAL` | `10s` | `30s` | controller manager `FACILITY_POLL_INTERVAL` |
-
-A rate window shorter than four export intervals reads too few samples.
-
-### What a real Prometheus needs
-
-The harness configures its Prometheus the way a production one must be configured for Joulie's OpenTelemetry inputs: `--web.enable-otlp-receiver`, `k8s.node.name` and `host.name` promoted onto the series, the translation strategy Joulie expects, and an out-of-order window for samples that carry the producer's timestamps. The settings, the kube-prometheus-stack values (`values/prometheus-grafana.yaml`) and the pitfalls are under [Prometheus settings]({{< relref "/docs/architecture/telemetry.md#prometheus-settings" >}}) and [Pitfalls]({{< relref "/docs/architecture/telemetry.md#pitfalls" >}}). The modes `otel-unpromoted`, `otel-labels-unpromoted` and `otel-utf8` check what Joulie reads when the promotion is missing or the strategy differs.
+`SIMCLUSTER_TIMING=dev` uses short intervals (a 10 s controller reconcile, a 30 s rate window); `production` uses the values a real install uses (1 min and 5 min).
 
 ## The dev loop
 
@@ -154,11 +108,9 @@ make simcluster-tree NODE=intel-0
 make simcluster-status
 ```
 
-- **A reload follows the binary, not the sources.** The image tag is the binary's sha256, so `reload.sh` imports and upgrades only when the binary changed; an unchanged binary changes nothing, with no import, no upgrade and no restart. Touching a source file is therefore a no-op. To restart a component anyway, use `reload.sh <component> --force` (through `make`, `SIMCLUSTER_FORCE_RELOAD=1`), which sets the pod template annotation `sim.joulie.io/reload` to the current time.
-- **A reload rolls out one component.** The others keep their images and pods even when shared code changed their binaries too; reload them, or `all`.
-- **A reload re-reads the charts and values files**, reruns the release's `helm upgrade` with only the component's tag changed, and re-applies the CRDs when they changed. The values files are those of the last deploy, as `deploy.env` records them, a scenario's `simulator.set` (`SIMCLUSTER_SIM_EXTRA_VALUES`) included.
-- **Another spec or mode.** `up.sh` with another `SIMCLUSTER_SPEC` applies its Nodes and deletes the ones it no longer names; `deploy.sh` sets Prometheus up again when the mode or the timing changed.
-- **Reading Prometheus and the truth**, through the API server proxy:
+- A reload rolls out one component, and only when its binary changed; `reload.sh <component> --force` (or `SIMCLUSTER_FORCE_RELOAD=1`) restarts it anyway.
+- Another `SIMCLUSTER_SPEC` or mode applies with `make simcluster-up` and `make simcluster-deploy` again.
+- To read Prometheus and the truth, through the API server proxy:
 
 ```bash
 export KUBECONFIG=~/.cache/joulie/simcluster/joulie-sim/kubeconfig
@@ -170,18 +122,11 @@ kubectl get --raw /api/v1/namespaces/joulie-sim/services/joulie-telemetry-sim:80
 
 ## Dashboard
 
-The simulator chart ships the Grafana dashboard **Joulie - Simulated Cluster** (`charts/joulie-simulator/dashboards/joulie-simulated-cluster.json`). Its matrix has one cell per Node that Joulie plans or the simulator measures, coloured by the Node's inlet temperature and labelled with the power profile Joulie applied. Below it are each Node's profile and inlet temperature over the time range, the outside air and the ambient of each cooling zone, IT and cooling power, PUE, host power, the power limits in force and the power of each rack.
+The simulator chart ships the Grafana dashboard **Joulie - Simulated Cluster** (`charts/joulie-simulator/dashboards/joulie-simulated-cluster.json`): one cell per Node, coloured by its inlet temperature and labelled with the power profile Joulie applied, and below it each Node's profile and temperature over time, the outside air, IT and cooling power, PUE, host power, the power limits in force and rack power.
 
 {{< img src="images/simulated-cluster-dashboard.png" alt="Joulie - Simulated Cluster on the demo spec under the workloads of tutorial 02, with the outside air raised from 22 to 30 °C halfway" >}}
 
-The demo spec under the workloads of [tutorial 02](https://github.com/joulie-k8s/Joulie/tree/main/examples/02-workload-classes), with the spec's outside air raised from 22 to 30 °C halfway through the range.
-
-- **Time of day** is the time picker. The matrix shows the end of the range, so moving the end shows another moment; the rows below show the whole range. The outside air is a sine of the spec's `facility.periodH` hours that starts when the simulator starts, not at midnight.
-- **Outside air** cannot be set from Grafana. Edit the spec's `facility` block (`ambientC`, `amplitudeC`, `periodH`), then run `make simcluster-up` and `make simcluster-deploy`: the new spec restarts the simulator. `SIM_FACILITY_AMBIENT_TEMP_C`, `SIM_FACILITY_TEMP_AMPLITUDE_C` and `SIM_FACILITY_TEMP_PERIOD_H` fill only what the spec leaves unset.
-- **Temperature** is the inlet temperature the simulator models, `hw.host.ambient_temperature`: the outside air plus the offset of the Node's cooling zone, so the Nodes of one zone share a colour. An emulated Node exports no die temperature, and a hypervisor guest, such as the profile `vm-no-powercap`, exports no `hw.*` metric at all, so its cell and row are grey, `no inlet sensor`.
-- **Profile** is the policy controller's state of the Node, `joulie_policy_node_state`: `performance`, `draining` (planned in eco, still on performance caps until its performance pods finish) or `eco`; `unmanaged` is a Node Joulie does not plan. When two controller manager pods report a Node at once, as during a rolling update, the matrix and the timeline show the state further toward eco.
-
-The dashboard reads the controller manager's `joulie_policy_*` and `joulie_twin_*`, and the simulator's OTLP metrics as Prometheus stores them in the default [telemetry mode](#telemetry-modes), `otel`: under their underscore names, with `k8s.node.name` promoted to the label `k8s_node_name`. The modes `otel-collector`, `kepler` and `kepler-legacy` store them the same way. In `otel-unpromoted` and `otel-labels-unpromoted` no series carries `k8s_node_name`, so no panel can tell the Nodes' temperatures and power apart; in `otel-utf8`, which keeps the dotted names, and `otel-bridge`, which pushes no temperature or facility series, the panels of the simulator's metrics stay empty. The dashboard selects no `joulie_sim_*` metric, since no mode scrapes the simulator's own `/metrics`. On a cluster whose Grafana loads dashboards from ConfigMaps, as kube-prometheus-stack's sidecar does, `grafanaDashboard.enabled=true` puts it in the ConfigMap `joulie-simulator-grafana-dashboard`, labelled `grafana_dashboard: "1"`; its Prometheus data source must be the one the simulator pushes to. The simulated cluster runs no Grafana, so run one beside it, with the dashboard file and a port-forward to its Prometheus:
+The simulated cluster runs no Grafana, so run one beside it with the dashboard file and a port-forward to its Prometheus:
 
 ```bash
 export KUBECONFIG=~/.cache/joulie/simcluster/joulie-sim/kubeconfig
@@ -201,30 +146,33 @@ docker run -d --name joulie-grafana --network host -e GF_SERVER_HTTP_ADDR=127.0.
   -v $PWD/charts/joulie-simulator/dashboards:/var/lib/grafana/dashboards:ro grafana/grafana:13.2.4
 ```
 
-Open <http://127.0.0.1:3000/d/joulie-simulated-cluster>. Grafana listens on `127.0.0.1` only, with anonymous admin access; `docker rm -f joulie-grafana` and `kill %1` stop both.
+Open <http://127.0.0.1:3000/d/joulie-simulated-cluster>. Grafana listens on `127.0.0.1` only, with anonymous admin access; `docker rm -f joulie-grafana` and `kill %1` stop both. The panels fill in the modes `otel`, `otel-collector`, `kepler` and `kepler-legacy`. To change the outside air, edit the spec's `facility` block and run `make simcluster-up` and `make simcluster-deploy`. On a cluster whose Grafana loads dashboards from ConfigMaps, `grafanaDashboard.enabled=true` in the simulator chart installs it.
 
 ## Deviations from a real cluster
 
-- **KWOK taint.** Every fake Node carries the KWOK annotation and the taint `kwok.x-k8s.io/node=fake:NoSchedule`, which keeps infrastructure pods off it. A pod meant for a fake Node must tolerate it. Placement ignores this taint, since a real Node does not have it.
-- **The `sim.joulie.io/cluster` selector.** The infra Node runs a real kubelet, so a workload pod could land there. The simulator's workload pods select `sim.joulie.io/cluster=<spec>` by default, and nothing without `joulie.io/workload-class` may be bound to a fake Node (`status.sh` checks it).
-- **Agents are Deployments, unprivileged.** On a real node the agent is a DaemonSet pod with host network and privileges. An emulated agent is a Deployment on the infra Node with `privileged: false` and no host network, and its `NODE_NAME` is a literal. A privileged pod would see the infra host's real devices on every fake Node, and only one host-network agent fits on a Node.
-- **`/dev/nvidiactl` is a file.** On NVIDIA Nodes the tree has an empty regular file mounted at `/dev/nvidiactl`, where a privileged agent on a real node sees the driver's character device. The agent only checks that it exists.
-- **Tool stubs.** `nvidia-smi`, `rocm-smi` and `amd-smi` are links to `fakesmi`, first on the agent's `PATH`. `fakesmi` checks what the real tool needs before it runs (the ELF loader, the C libraries and NVML for `nvidia-smi`, a script's interpreter; see [Simulator hardware emulation]({{< relref "/docs/getting-started/05-configuration-reference.md#simulator-hardware-emulation" >}})). A pool's `toolDelivery` under `spec.harness.pools` sets what they find. `mounted`: the harness mounts one stub file at the first path of each requirement (seven on an NVIDIA Node, two on an AMD one), standing in for a node where the chart's hooks deliver the driver; the stub is never run. `none`: nothing, so the tools fail as on a node without driver tools. A pool that does not set it follows the Joulie install: `mounted` only with `agent.runtimeClassName` or `agent.extraVolumes`, otherwise `none`, as a default install has it. The specs in `tests/simcluster/specs/` set it on every GPU pool. Only a profile whose tools list requirements can fail this way: a tool without requirements always runs.
-- **With `SIMCLUSTER_HWEMU=files`, writes and counters move once per tick.** A write the driver would refuse, such as one to a RAPL limit the firmware locks, succeeds and reads back until the next tick, which reverts it and reports `joulie.sim.write.rejected` with the errno a real kernel returns at once as `error.type` (`enodata` for a locked RAPL limit, `einval`, `ebusy` and so on; see [Events]({{< relref "/docs/simulator/metrics.md#events-emulate-mode" >}})). The writes made between two ticks are applied in order of modification time, and two writes to one file count as the last. `energy_uj` changes once per `SIM_EMULATE_TICK`, so a reader that turns energy differences into power over its own wall-clock interval is off by up to tick / interval per reading (20 % at a 1 s tick and a 5 s interval), without accumulating. The default, `fuse`, has none of these.
-- **A simulator restart in FUSE mode.** Until the new simulator serves its views, seconds after its pod starts, the agents' reads of `/host-sys` and `/emu/state` fail with `ENOTCONN`; they recover without a restart (check E17). Each restart leaves the old views mounted underneath until `make simcluster-down`.
-- **A root with directory limits is not resumed.** A tree in which locked limits are directories, as an older simulator rendered them, stops the start with `ErrTreeConflict`. Remove the root (`make simcluster-down` removes the volume `<name>-hwemu`) and deploy again.
-- **Fake Nodes have no kubelet.** KWOK moves a pod bound to a fake Node through its phases (its stages, plus `scripts/simcluster/manifests/stage-*.yaml`); no container runs, and the Node's power is the simulator's model of its load.
+- **KWOK taint**: every fake Node carries `kwok.x-k8s.io/node=fake:NoSchedule`; a pod meant for one must tolerate it.
+- **The `sim.joulie.io/cluster` selector**: workload pods select it, so none lands on the infra Node.
+- **Agents are unprivileged Deployments** on the infra Node, not privileged host-network DaemonSet pods.
+- **`/dev/nvidiactl` is an empty file**, not the driver's character device.
+- **GPU tools are `fakesmi` stubs**; a pool's `toolDelivery` sets whether the driver files they need are present.
+- **With `SIMCLUSTER_HWEMU=files`, writes and counters move once per tick**: a refused write reads back until the next tick, and energy changes once per `SIM_EMULATE_TICK`.
+- **A simulator restart in FUSE mode** makes the agents' reads fail with `ENOTCONN` for seconds; they recover without a restart.
+- **A root with directory limits is not resumed**: run `make simcluster-down` and deploy again.
+- **Fake Nodes have no kubelet**: no container runs, and a Node's power is the simulator's model of its load.
 
 ## Checks
 
-`make simcluster-smoke` runs `TestSimclusterE2E` (`tests/simcluster`, build tag `simcluster`) against the deployed cluster. Each check is one entry under `assertions` in the run's `summary.json`, with its status, observed and expected values. The list of checks, and what each one asserts, is in [`tests/simcluster/README.md`](https://github.com/joulie-k8s/Joulie/blob/main/tests/simcluster/README.md). The test changes the cluster as it goes (the caps go to 50 %, the extender is reloaded), so it expects a fresh deploy.
+`make simcluster-smoke` runs `TestSimclusterE2E` (`tests/simcluster`, build tag `simcluster`) against a fresh deploy; each check is one entry under `assertions` in `summary.json`. The list of checks is in [`tests/simcluster/README.md`](https://github.com/joulie-k8s/Joulie/blob/main/tests/simcluster/README.md).
 
 ## Run results
 
-Each smoke run writes `$SIMCLUSTER_DIR/runs/<UTC>-<spec>-<mode>-<sha12>[-dirty]/`, and `runs/latest` points at the newest. `down.sh` keeps them.
+Each smoke run writes `$SIMCLUSTER_DIR/runs/<UTC>-<spec>-<mode>-<sha12>[-dirty]/`, and `runs/latest` points at the newest; `down.sh` keeps them. The scenario runner writes the same layout.
 
-- `summary.json`, schema `joulie.simcluster.summary/v1`: `test.suite.name`, `test.suite.run.status` (`success`, `failure`, `timed_out` or `aborted`), `exitCode`, `failures`, `warnings`, `knownDefects` (see the tests README), one entry per check under `assertions` (`test.case.name`, `test.case.result.status`, observed and expected), the spec, mode, scope and timing, the git commit and whether the tree was dirty, the images, and the semantic conventions schema URL.
-- `otlp/harness.metrics.jsonl` and `otlp/harness.logs.jsonl`: one OTLP JSON object per line, with a `joulie.scenario.assertion.evaluated` log record and `joulie.scenario.assertion.value` points per check.
-- `k8s/` (the Nodes, NodeHardware, NodeTwins, pods and events at the end), `logs/` (every pod in `joulie-system`, `joulie-sim` and `monitoring`, k3s's whole log as `k3s.log` and containerd's as `containerd.log`, also from a container that exited), `values.effective.yaml` and `values.simulator.effective.yaml`, `images.env`, `deploy.env`, `cluster.env`, and `smoke.log`, everything the run printed.
+| File | Contents |
+|---|---|
+| `summary.json` | schema `joulie.simcluster.summary/v1`: the run status, failures, warnings, known defects, one entry per check, and what was run |
+| `otlp/harness.metrics.jsonl`, `otlp/harness.logs.jsonl` | the checks as OTLP JSON, one object per line |
+| `k8s/`, `logs/` | the cluster objects at the end and every pod's log, k3s and containerd included |
+| `values.effective.yaml`, `values.simulator.effective.yaml`, `images.env`, `deploy.env`, `cluster.env`, `smoke.log` | what was installed, and everything the run printed |
 
-The scenario runner writes the same layout and schema, so one reader serves both.
+Architecture, the requirements in detail, every target's and setting's full effect, the timing table, what a real Prometheus needs, the dashboard's series and why each deviation exists: [Simulated cluster](https://github.com/joulie-k8s/Joulie/wiki/Simulated-Cluster) on the wiki.

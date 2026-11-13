@@ -38,11 +38,17 @@ make test
 
 Useful targets:
 
-- `make install TAG=<tag>`
-- `make build-push TAG=<tag>`
-- `make rollout TAG=<tag>`
+- `make build-push TAG=<tag>` (pushes `registry.cern.ch/joulie/joulie-agent`, `joulie-controller-manager` and `joulie-scheduler` at `<tag>`)
+- `make install TAG=<tag>` (Helm install or upgrade of `charts/joulie` with the three images at `<tag>`; values from `values/joulie.yaml`, or `HELM_VALUES=<path-to-values.yaml>`)
+- `make build-push-install TAG=<tag>` (both, then waits for the rollout)
+- `make rollout TAG=<tag>` (upgrade a running install to a new tag)
+- `make uninstall` (removes the release and the `NodeTwin` and `NodeHardware` CRDs)
 - `make build-push-all TAG=<tag>` (agent + controller manager + simulator)
+- `make simulator-install TAG=<tag>` (the simulator chart)
+- `make kubectl-plugin-install` (builds `kubectl-joulie` into `/usr/local/bin`)
 - `make test-examples` (YAML dry-run validation)
+
+`install` and `rollout` apply the chart's CRDs first, since `helm upgrade` never updates them. Label the nodes to manage `joulie.io/managed=true`, as for a release install.
 
 ## Contributing a hardware capture
 

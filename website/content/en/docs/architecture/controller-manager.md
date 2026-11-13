@@ -4,164 +4,61 @@ weight: 20
 aliases: ["/docs/architecture/operator/"]
 ---
 
-The controller manager is Joulie's cluster-level decision engine.
-
-It does not write host power interfaces directly.
-Instead, it decides desired node states and publishes them through Kubernetes objects and labels.
-
-In practice, the controller manager answers one question over and over:
-which nodes should currently supply `performance` capacity, and which can safely supply `eco` capacity?
+The controller manager is Joulie's cluster-level decision engine: it decides which nodes supply `performance` capacity and which can safely supply `eco`, and publishes that through Kubernetes objects and labels. It never writes host power interfaces; the agent does.
 
 ## Responsibilities
 
-At each reconcile tick, the controller manager:
+| Part | Runs | Does |
+|---|---|---|
+| Twin controller | every `RECONCILE_INTERVAL` (1 min) | reads measured power and `NodeHardware`, writes the twin's scores to `NodeTwin.status` ([Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}})) |
+| Policy controller | every `RECONCILE_INTERVAL` | classifies demand, runs the policy, applies the downgrade guard, writes `NodeTwin.spec` (caps and, with governor control on, governor presets) and the `joulie.io/power-profile` label |
+| Facility poller | every `FACILITY_POLL_INTERVAL` (30 s), off by default | reads ambient temperatures, IT, cooling and rack power, carbon intensity ([Measured inputs](#measured-inputs)) |
 
-1. selects eligible managed nodes,
-2. reads `NodeHardware` when available and falls back to node labels when it is not,
-3. resolves hardware identity against the shared inventory,
-4. classifies workload demand from pod scheduling constraints,
-5. runs a policy algorithm (`pkg/controller/policy/`) to compute a plan,
-6. applies transition guards for safe downgrades,
-7. writes desired node targets (`NodeTwin.spec`: caps and, with governor control on, governor presets) and the `joulie.io/power-profile` node label.
-
-The agent then enforces those targets node-by-node.
-
-In addition to the reconcile loop, the controller manager runs a background controller: the facility poller (see [Measured inputs](#measured-inputs)).
+The controller manager decides **what** each node should be; the agent decides **how** to apply it on the node.
 
 ## Reads, writes and leader election
 
-All reads (nodes, pods, `NodeHardware`, `NodeTwin`) come from an informer cache maintained by a controller-runtime manager, so a reconcile touches the API server only when it writes. The pod informer keeps only the fields the policy needs (node name, node selector, affinity, annotations, phase, and the GPU requests and limits of each container); the rest of the container specs and the statuses are dropped before they reach memory. Writes carry the `joulie-controller-manager` field manager and are skipped when nothing changed.
-
-The reconcile loop and the facility poller run as manager runnables: they start once the cache has synced and, with `LEADER_ELECT=true` (Helm `controllerManager.leaderElection.enabled`), only on the holder of the `joulie-controller-manager` lease. Leader election is off by default, which matches the single replica the chart deploys.
+All reads come from an informer cache, so a reconcile touches the API server only when it writes. Writes carry the `joulie-controller-manager` field manager and are skipped when nothing changed. With `LEADER_ELECT=true` (Helm `controllerManager.leaderElection.enabled`) only the holder of the `joulie-controller-manager` lease reconciles; it is off by default, matching the chart's single replica.
 
 ## Measured inputs
 
-The controller manager is the only component that queries Prometheus. It reads two measured inputs, both as OpenTelemetry metrics that producers push to Prometheus' OTLP receiver ([Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}})):
-
-- **Node power** (`cmd/controller-manager/nodepower.go`), with `NODE_POWER_SOURCE=prometheus`, the chart default: one grouped query per reconcile, `hw.energy` as a rate or `hw.power`, of the CPU packages and GPUs of every node, keyed by `k8s.node.name`. Each node's sum becomes `NodeTwin.status.powerMeasurement.measuredNodePowerW`.
-- **Facility metrics** (`cmd/controller-manager/facility.go`): the outdoor ambient temperature, IT power and cooling power, and the ambient temperature of each cooling zone, the power of each rack and the inlet temperature of each node, plus the grid carbon intensity when `FACILITY_CARBON_INTENSITY_QUERY` is set. Disabled by default (`ENABLE_FACILITY_METRICS=false`). When enabled, the poller reads them at start and then every `FACILITY_POLL_INTERVAL` (default 30s), and logs PUE as `(IT power + cooling power) / IT power`. The twin uses the most local ambient temperature known to scale cooling stress, since the warmer the air, the harder the same watts are to remove (see [Digital Twin]({{< relref "/docs/architecture/digital-twin.md" >}}) for the multiplier), and the IT or rack power for PSU stress. The policy gets the same snapshot before it plans, the carbon intensity in gCO2eq/kWh with its signal (marginal or average) included, though no policy reads it yet.
-
-Package `pkg/controller/inputs` builds every query from a preset (`otel` by default; `kepler`, `kepler-legacy`, `legacy` and `custom` for other sources) under the receiver's name translation strategy. At start the controller manager logs one line per input with its query, and `joulie_twin_input_queries_total{input,result}` counts how each query ended.
-
-See [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md#measured-node-power" >}}) for the variables.
-
-## Control boundary with the agent
-
-- controller manager decides **what** each node should be
-- agent decides **how** to apply the corresponding controls on that node
-
-This separation keeps policy logic portable while actuator details stay node-local.
+The controller manager is the only component that queries Prometheus: node power every reconcile (`NODE_POWER_SOURCE=prometheus`, the chart default) and facility metrics when `ENABLE_FACILITY_METRICS=true`. The metric names are in [Input metrics (OpenTelemetry)]({{< relref "/docs/architecture/telemetry.md#input-metrics-opentelemetry" >}}), the variables in [Measured node power]({{< relref "/docs/getting-started/05-configuration-reference.md#measured-node-power" >}}).
 
 ## Reconcile flow
 
-1. Read nodes matching `NODE_SELECTOR` (chart default: `joulie.io/managed=true`).
-2. Ignore reserved/unschedulable nodes.
-3. Build a normalized hardware view:
-   - prefer `NodeHardware`
-   - otherwise derive hardware identity from node labels / allocatable resources
-   - take the GPU count from `NodeHardware`, else from the node's labels and GPU resources; the family split and the caps both read it, so a node is a GPU node for both or for neither ([Shared and partitioned GPUs]({{< relref "/docs/hardware/gpus.md#shared-and-partitioned-gpus" >}}))
-   - resolve CPU/GPU models against the inventory
-4. Build demand view from active pods:
-   - performance-constrained
-   - eco-constrained
-   - unconstrained
-5. Sort eligible nodes by name. The order does not choose performance nodes; only `rule_swap_v1` depends on it.
-6. Run policy (`static_partition`, `queue_aware_v1`, or debug `rule_swap_v1`). `static_partition` and `queue_aware_v1` split their performance slots across hardware families (see [Heterogeneous planning](#heterogeneous-planning)).
-7. For planned `performance -> eco` transitions, run downgrade guard:
-   - publish `profile=eco` as desired state
-   - set `NodeTwin.status.schedulableClass` to `draining` while performance pods are still present
-8. Persist desired state through `NodeTwin.spec` and update the `joulie.io/power-profile` node label.
+Each tick it reads the nodes matching `NODE_SELECTOR` (chart: `joulie.io/managed=true`), skips reserved and unschedulable ones, builds a hardware view from `NodeHardware` (or node labels before an agent publishes), counts performance demand from pod annotations, runs the policy (`POLICY_TYPE`), holds planned downgrades as `draining` while performance pods still run, and writes `NodeTwin.spec` and the node label.
 
-The important distinction is:
+```bash
+kubectl get nodetwins
+kubectl get nodes -L joulie.io/power-profile
+```
 
-- `NodeTwin.spec` expresses desired target state for enforcement,
-- `joulie.io/power-profile` node label expresses the current power profile,
-- `NodeTwin.status` holds twin output including `schedulableClass`, which expresses transition state (including `draining`) for the scheduler extender.
+## Power intent and governors
 
-## Power intent configuration knobs
-
-Controller manager intent emission is controlled by env vars:
-
-- CPU:
-  - `CPU_WRITE_ABSOLUTE_CAPS` (`true|false`)
-  - `CPU_PERFORMANCE_CAP_PCT_OF_MAX`
-  - `CPU_ECO_CAP_PCT_OF_MAX`
-  - `PERFORMANCE_CAP_WATTS`
-  - `ECO_CAP_WATTS`
-- GPU:
-  - `GPU_PERFORMANCE_CAP_PCT_OF_MAX`
-  - `GPU_ECO_CAP_PCT_OF_MAX`
-  - `GPU_WRITE_ABSOLUTE_CAPS` (`true|false`)
-  - `GPU_MODEL_CAPS_JSON`
-  - `GPU_PRODUCT_LABEL_KEYS`
-
-High-level behavior:
-
-- CPU:
-  - when `CPU_WRITE_ABSOLUTE_CAPS=false`, controller manager writes normalized percentage intent,
-  - when `CPU_WRITE_ABSOLUTE_CAPS=true`, controller manager writes absolute watts intent.
-- GPU:
-  - when `GPU_WRITE_ABSOLUTE_CAPS=false`, controller manager writes percentage intent,
-  - when `GPU_WRITE_ABSOLUTE_CAPS=true`, controller manager may write resolved `capWattsPerGpu` in addition to `capPctOfMax`, when model-based mapping is available.
-
-This is why GPU `NodeTwin.spec` objects may contain both normalized intent and resolved absolute caps at the same time.
-
-## Governor presets
-
-Off by default. With `GOVERNOR_CONTROL` set to `cpu`, `gpu` or `all`, the reconcile that writes a node's caps also writes a vendor-neutral governor preset per component into its `NodeTwin.spec`, `spec.cpu.governor` and `spec.gpu.governor` (`governorIntents` in `cmd/controller-manager/governor_config.go`). The controller manager never turns a preset into a native setting: the agent does, through `pkg/governor`, and only with its own `GOVERNOR_WRITES` on.
-
-Which node gets which preset, and the rules for presets a node does not list, are under [Governor policy]({{< relref "/docs/architecture/policy.md#governor-policy" >}}).
+Cap intent is set by the variables under [Power cap configuration]({{< relref "/docs/getting-started/05-configuration-reference.md#power-cap-configuration" >}}): percentages by default, absolute watts with `CPU_WRITE_ABSOLUTE_CAPS` or `GPU_WRITE_ABSOLUTE_CAPS`. Governor presets are off by default; see [Governor control]({{< relref "/docs/getting-started/05-configuration-reference.md#governor-control" >}}) and [Governor policy]({{< relref "/docs/architecture/policy.md#governor-policy" >}}).
 
 ## Heterogeneous planning
 
-The controller manager is inventory-aware.
+The policies `static_partition` and `queue_aware_v1` decide how many nodes stay in `performance`; the controller manager then splits those slots across hardware families (`gpu:<model>` or `cpu:<model>`) in proportion to family size, at least one per family. Nodes already in `performance` are kept first, so a reconcile at constant demand moves nothing. The split is exported as `joulie_policy_family_nodes{family}` and `joulie_policy_family_performance_nodes{family}` ([Metrics]({{< relref "/docs/architecture/metrics.md" >}})).
 
-`static_partition` and `queue_aware_v1` decide how many nodes stay in `performance` (`hpCount`); `policy.PerformanceSet` (`pkg/controller/policy/policy.go`) decides which ones. It groups eligible nodes into hardware families (`policy.NodeFamily`): `gpu:<model>` when the node has GPUs, otherwise `cpu:<model>`. The `hpCount` slots are then split across families in proportion to family size, with at least one per family.
-
-- `static_partition`: `hpCount = round(N * STATIC_HP_FRAC)`, so in effect about `STATIC_HP_FRAC` of every family stays in `performance`.
-- `queue_aware_v1`: `hpCount = max(round(N * QUEUE_HP_BASE_FRAC), ceil(running and pending performance-sensitive pods / QUEUE_PERF_PER_HP_NODE))`, clamped to `[QUEUE_HP_MIN, QUEUE_HP_MAX]`.
-
-`hpCount` is raised to the number of families and capped at the number of nodes. The split is the Sainte-Lague divisor method started from one slot per family: each further slot goes to the family with the largest `size / (2 * slots + 1)`, ties to the smaller family key. The method is house monotone, so when `hpCount` changes by one, exactly one node changes profile.
-
-Within a family, nodes whose current `joulie.io/power-profile` label is `performance` are kept first, so a reconcile at constant demand moves nothing; the node name orders the rest. The result does not depend on the order of the input list.
-
-**Example**: the exp02 5k inventory (`experiments/02-heterogeneous-benchmark/configs/cluster-nodes-5k.yaml`) with 1000 performance slots gives h100-nvl 290 of 1450, h100-sxm 146 of 730, l40s 170 of 850, mi300x 48 of 240, w7900 146 of 730, cpu-highcore 50 of 250, cpu-highfreq 50 of 250 and cpu-intensive 100 of 500.
-
-The `joulie_policy_family_nodes` and `joulie_policy_family_performance_nodes` gauges export the split per family (see [Metrics]({{< relref "/docs/architecture/metrics.md" >}})).
-
-If `NodeHardware` is not available yet:
-
-- the controller manager derives a best-effort hardware view from labels such as `joulie.io/hw.cpu-model`, `joulie.io/hw.gpu-model`, `joulie.io/hw.gpu-count`, GPU feature discovery's `nvidia.com/gpu.product` (without its `-MIG-<profile>` and `-SHARED` suffixes) and `nvidia.com/gpu.count`, and Intel's NFD rule labels `gpu.intel.com/product` and `gpu.intel.com/device.count`,
-- and from allocatable GPU resources: whole GPUs, MIG devices, AMD partitions and shared replicas (`nvidia.com/gpu`, `amd.com/gpu`, `nvidia.com/mig-<profile>`, `amd.com/cpx_nps4`, `nvidia.com/gpu.shared`, ...).
-
-That keeps simulator-first and bootstrap scenarios working without making `NodeHardware` a hand-authored prerequisite.
+Before an agent publishes `NodeHardware`, the hardware view comes from labels such as `joulie.io/hw.cpu-model`, `joulie.io/hw.gpu-model`, `nvidia.com/gpu.product` and from allocatable GPU resources ([Shared and partitioned GPUs]({{< relref "/docs/hardware/gpus.md#shared-and-partitioned-gpus" >}})).
 
 ## Node state model
 
-Joulie models two scheduler-facing supply states:
+| FSM state | Profile label | `schedulableClass` | Caps | Performance pods |
+|---|---|---|---|---|
+| `ActivePerformance` | `performance` | `performance` | performance | accepted |
+| `DrainingPerformance` | `eco` (desired) | `draining` | performance, until the performance pods finish | rejected for new ones |
+| `ActiveEco` | `eco` | `eco` | eco | rejected |
 
-- `performance`
-- `eco`
-
-`DrainingPerformance` is an internal controller manager FSM state tracked via `NodeTwin.status.schedulableClass = "draining"`.
-
-That state means:
-
-- the controller manager wants the node to end up in eco,
-- the transition is still guarded because performance pods are still present,
-- the node keeps its performance caps until those pods finish, and only then receives the eco caps,
-- the scheduler extender sees `schedulableClass: draining` and filters the node out for performance pods; it applies no score penalty to draining nodes.
-
-## Why this model
-
-- scheduler gets clear supply signal from node labels,
-- policy can evolve independently of host control implementation,
-- transitions are auditable and safer than instant downgrade.
+The scheduler extender filters `draining` and `eco` nodes out for performance pods and applies no score penalty to draining nodes. The guard never evicts.
 
 ## What to read next
 
 1. [Joulie Agent]({{< relref "/docs/architecture/agent.md" >}})
 2. [Policy Algorithms]({{< relref "/docs/architecture/policies.md" >}})
 3. [Energy-Aware Scheduling]({{< relref "/docs/architecture/energy-aware-scheduling.md" >}})
-5. [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
-6. [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md" >}})
+4. [Input Telemetry and Actuation Interfaces]({{< relref "/docs/architecture/telemetry.md" >}})
+5. [Configuration Reference]({{< relref "/docs/getting-started/05-configuration-reference.md" >}})
+
+The full reconcile flow, the family split algorithm and the reasoning behind the model: [Policy algorithms](https://github.com/joulie-k8s/Joulie/wiki/Policy-Algorithms) on the wiki.
