@@ -14,6 +14,7 @@ import (
 	joulie "github.com/matbun/joulie/pkg/api"
 	"github.com/matbun/joulie/pkg/hwinv"
 	"github.com/matbun/joulie/simulator/pkg/hw"
+	"github.com/matbun/joulie/simulator/pkg/phys"
 )
 
 func (s *simulator) modelForNode(node string) simModel {
@@ -159,6 +160,12 @@ func (s *simulator) applyCatalogModelDefaults(model simModel, nodeLabels map[str
 			model.GPU.MinCapWattsPerGPU = capMinAtMax(minW, model.GPU.MaxWattsPerGPU)
 			model.Defaulted.GPUMinCapWattsPerGPU = false
 		}
+		// 0 is a window here, an instantaneous reading, so only the mark
+		// lets the catalogue set it.
+		if w := gpuSpec.Official.PowerWindowMS; w != nil && model.Defaulted.GPUTelemetryWindowMS {
+			model.GPU.TelemetryWindowMS = *w
+			model.Defaulted.GPUTelemetryWindowMS = false
+		}
 	}
 	nameParts := []string{"default"}
 	if match.CPUKey != "" {
@@ -233,6 +240,9 @@ const (
 	defaultCPUSocketCapMaxW     = 400
 	defaultGPUMaxWattsPerGPU    = 300
 	defaultGPUMinCapWattsPerGPU = 80
+	// NVML averages power over 1 s on Ampere and newer; assumed for the
+	// other boards that publish no window.
+	defaultGPUTelemetryWindowMS = 1000
 )
 
 // envOrConstant is floatEnv for a field the catalogue may set: it also
@@ -270,9 +280,10 @@ func firstNonEmpty(values ...string) string {
 }
 
 // defaultBaseModelFromEnv builds the base hardware profile from SIM_* variables.
-// The peak power, the socket cap range and the GPU board power range are
-// marked hw.Defaulted while their variables are unset, so that a node the
-// hardware catalogue matches takes them from the catalogue instead.
+// The peak power, the socket cap range, the GPU board power range and the
+// GPU telemetry window are marked hw.Defaulted while their variables are
+// unset, so that a node the hardware catalogue matches takes them from the
+// catalogue instead.
 // Thermal throttling is opt-in: while both of a device's
 // *_THERMAL_THROTTLE_{START,FULL}_C are unset they default to 0, which
 // thermalThrottleFraction reads as off. Setting either one turns the pair on
@@ -292,6 +303,7 @@ func defaultBaseModelFromEnv() simModel {
 	socketMaxW, socketMaxDefaulted := envOrConstant("SIM_CPU_SOCKET_CAP_MAX_W", defaultCPUSocketCapMaxW)
 	gpuMaxW, gpuMaxDefaulted := envOrConstant("SIM_GPU_MAX_WATTS_PER_GPU", defaultGPUMaxWattsPerGPU)
 	gpuMinW, gpuMinDefaulted := envOrConstant("SIM_GPU_MIN_CAP_WATTS_PER_GPU", defaultGPUMinCapWattsPerGPU)
+	gpuWindowMS, gpuWindowDefaulted := envOrConstant("SIM_GPU_TELEMETRY_WINDOW_MS", defaultGPUTelemetryWindowMS)
 	cpuThrottleStartC, cpuThrottleFullC := 0.0, 0.0
 	if strings.TrimSpace(os.Getenv("SIM_CPU_THERMAL_THROTTLE_START_C")) != "" || strings.TrimSpace(os.Getenv("SIM_CPU_THERMAL_THROTTLE_FULL_C")) != "" {
 		cpuThrottleStartC, cpuThrottleFullC = 85, 97
@@ -331,21 +343,22 @@ func defaultBaseModelFromEnv() simModel {
 			MaxWattsPerGPU:        gpuMaxW,
 			MinCapWattsPerGPU:     gpuMinW,
 			CapApplyTauMS:         int(floatEnv("SIM_GPU_CAP_APPLY_TAU_MS", 150)),
-			TelemetryWindowMS:     int(floatEnv("SIM_GPU_TELEMETRY_WINDOW_MS", 1000)),
+			TelemetryWindowMS:     int(gpuWindowMS),
 			AmbientTempC:          floatEnv("SIM_GPU_AMBIENT_TEMP_C", 24),
 			ThermalTauMS:          int(floatEnv("SIM_GPU_THERMAL_TAU_MS", 2500)),
 			WattsPerDeltaC:        floatEnv("SIM_GPU_WATTS_PER_DELTA_C", 12.0),
 			ThermalThrottleStartC: floatEnv("SIM_GPU_THERMAL_THROTTLE_START_C", gpuThrottleStartC),
 			ThermalThrottleFullC:  floatEnv("SIM_GPU_THERMAL_THROTTLE_FULL_C", gpuThrottleFullC),
-			ComputeGamma:          floatEnv("SIM_GPU_COMPUTE_GAMMA", 1.0),
-			MemoryEpsilon:         floatEnv("SIM_GPU_MEMORY_EPSILON", 0.2),
-			MemoryGamma:           floatEnv("SIM_GPU_MEMORY_GAMMA", 1.2),
+			ComputeGamma:          floatEnv("SIM_GPU_COMPUTE_GAMMA", phys.DefaultGPUComputeGamma),
+			MemoryEpsilon:         floatEnv("SIM_GPU_MEMORY_EPSILON", phys.DefaultGPUMemoryEpsilon),
+			MemoryGamma:           floatEnv("SIM_GPU_MEMORY_GAMMA", phys.DefaultGPUMemoryGamma),
 		},
 		Defaulted: hw.Defaulted{
 			PMaxW:                pMaxDefaulted,
 			CPUSocketCapMaxW:     socketMaxDefaulted,
 			GPUMaxWattsPerGPU:    gpuMaxDefaulted,
 			GPUMinCapWattsPerGPU: gpuMinDefaulted,
+			GPUTelemetryWindowMS: gpuWindowDefaulted,
 		},
 	}
 }

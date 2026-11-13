@@ -639,3 +639,32 @@ func TestEPYC9654RunsItsSPECpowerCurve(t *testing.T) {
 		}
 	}
 }
+
+// The MI300X reports its instantaneous power, with no average
+// (amdgpu_pm.c:3246 in Linux v6.17; smu_v13_0_6_ppt.c serves no average
+// sensor), so its average follows a step in load within one substep. With
+// the former 1 s window it reached a tenth of the step after 100 ms, as the
+// W7900, which publishes no window, still does.
+func TestMI300XAveragePowerIsInstantaneous(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		profile string
+		instant bool
+	}{
+		{"amd-instinct-mi300x-8gpu", true},
+		{"amd-radeon-pro-w7900-4gpu", false},
+	} {
+		p := ensureBuiltin(t, c.profile)
+		n := nodeNewNode(t, p, renderTestTree(t, p))
+		nodeStep(t, n, time.Second)
+		n.SetLoad(Load{GPUUtil: []float64{1, 1, 1, 1, 1, 1, 1, 1}})
+		nodeStep(t, n, 100*time.Millisecond)
+		g := n.State().GPUs[0]
+		if g.PowerW <= 2*p.Physics.GPU.IdleW.V {
+			t.Fatalf("%s: power %.2f W under full load; the case needs a step well above idle", c.profile, g.PowerW)
+		}
+		if got := math.Abs(g.AvgPowerW-g.PowerW) < 1e-9*g.PowerW; got != c.instant {
+			t.Errorf("%s: average %.3f W, instantaneous %.3f W after 100 ms; average equals it %v, want %v", c.profile, g.AvgPowerW, g.PowerW, got, c.instant)
+		}
+	}
+}

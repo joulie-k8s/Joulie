@@ -56,10 +56,10 @@ gpus:
   vbiosVersion: {v: "113-X0000000-102", src: "assumed:synthetic; pattern parsed by showProduct in rocmsmi (lines 2756-2761)"}
   gfxVersion: {v: gfx942, src: "published:llvmamdgpu#processor table, gfx942 row"}
   limits:
-    minW: {v: 0, src: "assumed:by analogy with amdsmidoc MI300A example"}
+    minW: {v: 0, src: "published:smuv1306#smu_v13_0_6_get_power_limit sets min_power_limit to 0 (1743-1774)"}
     maxW: {v: 750, src: published:mi300xds}
     defaultW: {v: 750, src: "assumed:equal to max"}
-  powerSensor: {v: input, src: "assumed:average vs input is per product (amdgpupm:3827-3834)"}
+  powerSensor: {v: input, src: "published:smuv1306#AMDGPU_PP_SENSOR_GPU_AVG_POWER returns -EOPNOTSUPP (1734-1736), so only the input sensor exists"}
   ppt1: {v: absent, src: "assumed:fast PPT only on a few GPUs (amdgpupm:3670-3674)"}
   # The amdgpu performance level and clock tables, SMU 13.0.6: auto, manual
   # and perf_determinism only, overdrive always on, no power profiles.
@@ -134,7 +134,7 @@ physics:
     memoryEpsilon: {v: 0.2, src: "assumed:simulator default SIM_GPU_MEMORY_EPSILON; throughput only"}
     memoryGamma: {v: 1.2, src: "assumed:simulator default SIM_GPU_MEMORY_GAMMA; throughput only"}
     capSettleTauMS: {v: 350, src: "assumed:no public settling data; simulator uses 350 only when CapApplyTauMS<=0 (updateNodeDynamicsWithModel)"}
-    telemetryWindowMS: {v: 1000, src: "assumed:no public averaging window for power1_average"}
+    telemetryWindowMS: {v: 1, src: "derived:amdgpupm617#3246 power1_input is the instantaneous power, and smuv1306#1696-1700,1734-1736 serves the current socket power and no average; 1 ms, the shortest window, is instantaneous at every substep"}
     clockBeta: {v: 1.5, src: "assumed:dynamic power falls faster than the compute clock, as the voltage falls with it; to sweep from 1.0 to 2.5"}
     memoryKneeFrac: {v: 0.65, src: "assumed:memory-bound work keeps its speed down to 0.65 of the maximum compute clock, between the 0.41 and 0.87 where published memory-bound clock sweeps stop being flat"}
     memoryKneeGamma: {v: 1.0, src: "assumed:below the knee memory-bound work slows in proportion to the clock"}

@@ -177,6 +177,12 @@ gpuModels:
       # The lowest limit a public study saw enforced: below 400 W the GPUs drew
       # more than configured (arXiv 2603.16164).
       minBoardPowerW: 400
+      # The driver reports the current socket power only: power1_input is
+      # "instantaneous power" (Linux v6.17 amdgpu_pm.c:3246) and the average
+      # sensor returns -EOPNOTSUPP (smu_v13_0_6_ppt.c:1696-1700, 1734-1736);
+      # AMD SMI 7.2.0 amdsmi_power_info_t: "Current socket power in W, Mi 300+
+      # Series cards".
+      powerWindowMs: 0
   AMD_RADEON_PRO_W7900:
     aliases: ["AMD_Radeon_PRO_W7900", "AMD Radeon PRO W7900", "W7900"]
     provenance: official+runtime+literature

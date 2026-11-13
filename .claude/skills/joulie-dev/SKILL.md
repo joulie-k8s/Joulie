@@ -159,7 +159,7 @@ The per-field table lives on the wiki page `CRD-Contracts.md` ("Ownership per fi
 2. `go test ./simulator/cmd/simulator/ -run ReferenceScenario` prints the keys that moved; review them, rerun with `-update` and commit the golden. `go test -race -timeout 30m ./simulator/cmd/simulator/ -run Differential` must still pass, or the emulated side changes in the same PR.
 3. Debug runs before and after, on the same traces: `scripts/standalone_sweep.py --config experiments/0N-*/configs/benchmark-debug.yaml --simulator <bin>` for 01 to 03.
 4. A row in `simulator/CHANGES.md` with both deltas, and a dated note in each experiment report whose description stops being true.
-5. The wiki page that describes the value: its value, symbol, file and source, or its line on the wiki's Audit page when no official source gives it.
+5. The wiki page that describes the value: its value, symbol, file and source, or the mark that it is assumed, a design choice or a fit.
 
 **Before calling a change ready (a PR about to merge)**: the code is one part of the repository; the rest must still be true afterwards. Walk every consumer of what changed and bring it along in the same PR:
 

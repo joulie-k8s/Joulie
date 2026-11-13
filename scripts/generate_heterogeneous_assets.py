@@ -312,8 +312,10 @@ def make_kwok_node(row: dict[str, str]) -> str:
 #   computeGamma is fitted, through the origin in log space, to published
 #   throughput at two or more power limits of the same system; a family
 #   without such data takes _GPU_PHYSICS_DEFAULTS below, as a product missing
-#   from this table does. Those differ from the simulator's own fallback
-#   for a GPU with no class in memoryGamma (1.2, SIM_GPU_MEMORY_GAMMA).
+#   from this table does. The defaults are the simulator's own for a GPU
+#   with no class (SIM_GPU_COMPUTE_GAMMA, SIM_GPU_MEMORY_EPSILON,
+#   SIM_GPU_MEMORY_GAMMA; the Default* constants of simulator/pkg/phys,
+#   which TestGPUThroughputDefaultsAgree compares with this file).
 #   - H100 80GB HBM3 (SXM): 0.43, from 19 points at 350 to 650 W of 700 W:
 #     MLPerf Inference v3.1 and v4.0, NVIDIA closed, MaxQ against MaxP
 #     (configs/*/Offline/__init__.py power_limit, mlperf_log_summary.txt);
@@ -335,7 +337,8 @@ def make_kwok_node(row: dict[str, str]) -> str:
 #   decode, arXiv 2311.18677) and the L40 (BabelStream Triad, arXiv
 #   2510.06902, Fig. 5b): 0.01, since 0 reads as unset. No data for the AMD
 #   families: _GPU_PHYSICS_DEFAULTS. memoryGamma has no source; at 0.01 it
-#   barely matters.
+#   barely matters. The five families keep their own 0.90 and 1.10, not the
+#   default 1.2.
 _GPU_PHYSICS: dict[str, dict] = {
     # NVIDIA H100 NVL (HBM3, NVLink, 400W max TBP per GPU)
     "NVIDIA H100 NVL": {
@@ -378,7 +381,7 @@ _GPU_PHYSICS_DEFAULTS: dict = {
     "idleWattsPerGpu": 30,
     "computeGamma": 1.0,
     "memoryEpsilon": 0.20,
-    "memoryGamma": 1.10,
+    "memoryGamma": 1.2,
 }
 
 

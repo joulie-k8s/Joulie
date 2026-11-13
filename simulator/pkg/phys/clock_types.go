@@ -53,6 +53,12 @@ type GovernorInput struct {
 	PeriodS float64
 	// Tunables are the governor's sysfs tunables.
 	Tunables GovernorTunables
+	// TransitionDelayUS is the policy's transition delay, the driver's
+	// transition_delay_us or the one cpufreq derives
+	// (cpufreq_policy_transition_delay_us, cpufreq.c:570-583), from which
+	// ondemand and conservative start their sampling interval. 0 stands for
+	// a delay of two ticks or less.
+	TransitionDelayUS int64
 	// EPPGain and EPPCeilingDrop shape the HWP powersave target: how much a
 	// lower EPP raises the frequency at a given utilization, and how far EPP
 	// 128 lowers the full-load frequency, as a fraction of the range.

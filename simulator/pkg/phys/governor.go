@@ -6,8 +6,8 @@ import "math"
 // for one policy at one step. The rules are read from Linux v6.12 and quoted
 // as file:line, under drivers/cpufreq/ unless the path says otherwise. What
 // the kernel leaves to the hardware or to the platform (the HWP and
-// amd-pstate-epp powersave algorithm, the default sampling interval) is
-// marked assumed.
+// amd-pstate-epp powersave algorithm, the tick rate of the default sampling
+// interval) is marked assumed.
 
 // Kernel defaults of the generic governors' tunables. A zero tunable in
 // GovernorTunables stands for its default.
@@ -25,12 +25,12 @@ const (
 	// get_freq_step falls back to DEF_FREQUENCY_STEP, in kHz, when the
 	// percentage of policy->max rounds to zero (cpufreq_conservative.c:37-46).
 	conservativeMinStepKHz = 5
-	// The sampling interval of ondemand and conservative starts at
-	// max(CPUFREQ_DBS_MIN_SAMPLING_INTERVAL, transition delay)
-	// (cpufreq_governor.c:449-451), two ticks at least
-	// (cpufreq_governor.c:22). assumed: HZ 1000 and a transition delay
-	// below 2 ms, so 2000 us.
-	defaultDBSSamplingUS = 2000
+	// CPUFREQ_DBS_MIN_SAMPLING_INTERVAL, two ticks (cpufreq_governor.c:22).
+	// The sampling interval of ondemand and conservative starts at the
+	// larger of it and GovernorInput.TransitionDelayUS
+	// (cpufreq_governor.c:449-451). assumed: HZ 1000; the Kconfig default
+	// HZ_250 (kernel/Kconfig.hz:6-8) gives 8000 us.
+	dbsMinSamplingUS = 2000
 	// maxGovernorPeriods bounds the conservative loop of one call.
 	maxGovernorPeriods = 100000
 )
@@ -330,7 +330,7 @@ func conservativePeriods(in GovernorInput) int {
 	if in.PeriodS <= 0 {
 		return 1
 	}
-	samplingUS := tunableOr(in.Tunables.OndemandSamplingRateUS, defaultDBSSamplingUS)
+	samplingUS := tunableOr(in.Tunables.OndemandSamplingRateUS, max(dbsMinSamplingUS, in.TransitionDelayUS))
 	n := math.Floor(in.PeriodS * 1e6 / float64(samplingUS))
 	return int(min(max(n, 1), maxGovernorPeriods))
 }

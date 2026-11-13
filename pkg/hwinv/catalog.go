@@ -159,6 +159,10 @@ type GPUOfficialSpec struct {
 	Vendor         string  `yaml:"vendor"`
 	MaxBoardPowerW float64 `yaml:"maxBoardPowerW"`
 	MinBoardPowerW float64 `yaml:"minBoardPowerW,omitempty"`
+	// PowerWindowMS is the window, in ms, the board power the driver
+	// reports is averaged over: 0 for an instantaneous reading, nil where
+	// no window is published.
+	PowerWindowMS *int `yaml:"powerWindowMs,omitempty"`
 }
 
 type NodeDescriptor struct {
@@ -232,6 +236,9 @@ func ValidateCatalog(c *Catalog) error {
 		}
 		if gpu.Official.MaxBoardPowerW <= 0 {
 			return fmt.Errorf("gpu model %q: official.maxBoardPowerW must be > 0", key)
+		}
+		if w := gpu.Official.PowerWindowMS; w != nil && *w < 0 {
+			return fmt.Errorf("gpu model %q: official.powerWindowMs must be >= 0", key)
 		}
 	}
 	return nil

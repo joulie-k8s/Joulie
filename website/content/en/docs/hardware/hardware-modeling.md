@@ -53,7 +53,7 @@ A CPU with a public SPECpower curve (2x EPYC 9654, 9655 and 9965) runs that curv
 
 ## GPU model
 
-Each physical GPU is modelled on its own, and a node's GPU cap is the same per-device cap on every GPU. A workload has a natural power draw, lower for memory-bound work; a cap only matters once it falls below that draw. Under the cap, compute-bound work slows as `ratio^computeGamma`, fitted per family to published throughput (H100 SXM 0.43, H100 NVL 0.50, MI300X 0.62, L40S 1.20, others 1.0); memory-bound work slows less. Caps settle over a lag of 150 ms (350 ms on MI300X), and exported power is averaged over 1 s, as NVML reports it on NVIDIA. The equations, per-family values and sources are on [GPU power model](https://github.com/joulie-k8s/Joulie/wiki/GPU-Power-Model).
+Each physical GPU is modelled on its own, and a node's GPU cap is the same per-device cap on every GPU. A workload has a natural power draw, lower for memory-bound work; a cap only matters once it falls below that draw. Under the cap, compute-bound work slows as `ratio^computeGamma`, fitted per family to published throughput (H100 SXM 0.43, H100 NVL 0.50, MI300X 0.62, L40S 1.20, others 1.0); memory-bound work slows less. Caps settle over a lag of 150 ms (350 ms on MI300X), and exported power is averaged over 1 s, as NVML reports it on NVIDIA, except on MI300X, whose driver reports instantaneous power. The equations, per-family values and sources are on [GPU power model](https://github.com/joulie-k8s/Joulie/wiki/GPU-Power-Model).
 
 ## Workload boundness
 

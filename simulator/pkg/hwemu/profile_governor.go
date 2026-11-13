@@ -79,6 +79,32 @@ func cpuGovModeled(f *CPUFreqSpec) bool {
 		f.BoostScope.Src != "" || f.Tunables != nil || f.Uncore != nil)
 }
 
+// cpuGovTransitionDelayUS is the policies' transition delay in us, as
+// cpufreq_policy_transition_delay_us returns it (cpufreq.c:570-583): the
+// driver's own transition_delay_us where it sets one, intel_cpufreq 5000
+// with HWP and 500 without (intel_pstate.c:43-44, 3250-3263) and amd-pstate
+// AMD_PSTATE_TRANSITION_DELAY without a CPPC value, as
+// renderTransitionLatencyNS assumes (amd-pstate.c:53, 844-856); otherwise
+// 1.5 x cpuinfo_transition_latency, or 1000 when that is 0.
+func cpuGovTransitionDelayUS(f *CPUFreqSpec) int64 {
+	if f == nil {
+		return 0
+	}
+	switch f.Driver.V {
+	case "intel_cpufreq":
+		if f.HWP.V {
+			return 5000
+		}
+		return 500
+	case "amd-pstate":
+		return 1000
+	}
+	if us := int64(renderTransitionLatencyNS[f.Driver.V]) / 1000; us > 0 {
+		return us + us>>1
+	}
+	return 1000
+}
+
 // cpuGovIntel reports whether driver is intel_pstate in either mode.
 func cpuGovIntel(driver string) bool { return driver == "intel_pstate" || driver == "intel_cpufreq" }
 

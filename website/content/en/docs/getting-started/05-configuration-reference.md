@@ -341,6 +341,7 @@ The simulator (`simulator/cmd/simulator`) reads these at startup. For a node the
 | `SIM_CPU_SOCKET_CAP_MAX_W` | catalogue TDP, else `400` | Upper end of the per-socket CPU cap: the node cap is split evenly over the sockets and clamped to this range (`cpuSocketCapMaxW`). |
 | `SIM_GPU_MAX_WATTS_PER_GPU` | catalogue `maxBoardPowerW`, else `300` | Board power of one GPU at full load, and its highest cap (`gpu.maxWattsPerGpu`). |
 | `SIM_GPU_MIN_CAP_WATTS_PER_GPU` | catalogue `minBoardPowerW`, else half the maximum, else `80` | Lowest cap of one GPU (`gpu.minCapWattsPerGpu`); a cap below it is refused with an error. |
+| `SIM_GPU_TELEMETRY_WINDOW_MS` | catalogue `powerWindowMs`, else `1000` | Window in ms of the average GPU power a node reports (`gpu.telemetryWindowMs`); 0 reports the instantaneous power, as an MI300X does. Energy always integrates the instantaneous power. |
 
 A catalogue minimum above a maximum set by a class or a variable is lowered to that maximum. A measured two-socket curve from the catalogue is scaled by sockets/2 on a node with another socket count.
 

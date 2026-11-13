@@ -10,7 +10,7 @@ classes:
         vendor: nvidia
         product: NVIDIA-L40S
         count: 4
-        idleWattsPerGpu: 30
+        idleWattsPerGpu: 36.3
         maxWattsPerGpu: 350
         minCapWattsPerGpu: 200
   - name: amd-default
@@ -24,6 +24,6 @@ classes:
         vendor: amd
         product: AMD-Radeon-PRO-W7900
         count: 4
-        idleWattsPerGpu: 25
+        idleWattsPerGpu: 10.8
         maxWattsPerGpu: 295
         minCapWattsPerGpu: 200
